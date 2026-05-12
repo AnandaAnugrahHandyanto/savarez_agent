@@ -800,18 +800,44 @@ function Install-Dependencies {
     # preserved — no Out-Null swallowing — so the user can see what failed.
     #
     # Tier 1: [all] — everything, including RL git+https deps (best case).
-    # Tier 2: [core-extras] synthesised locally — all PyPI-only extras we
-    #         ship (web, mcp, cron, cli, voice, messaging, slack, dev, acp,
-    #         pty, homeassistant, sms, tts-premium, honcho, google, mistral,
-    #         bedrock, dingtalk, feishu, modal, daytona, vercel).  Drops [rl]
-    #         and [matrix] (linux-only) which are the usual failure culprits.
-    # Tier 3: [web,mcp,cron,cli,messaging,dev] — the minimum we strongly
+    # Tier 2: [all] minus a small list of currently-broken extras. The
+    #         broken list is centralised in $brokenExtras below — when
+    #         a package gets quarantined / yanked / pulled, add it here
+    #         and the resolver no longer chokes on it. This is what saves
+    #         the user from silently losing 10+ unrelated extras every
+    #         time one upstream package breaks.
+    # Tier 3: [core-extras] synthesised locally — all PyPI-only extras we
+    #         ship, also minus $brokenExtras. Drops [rl] and [matrix]
+    #         (linux-only) which are the usual failure culprits.
+    # Tier 4: [web,mcp,cron,cli,messaging,dev] — the minimum we strongly
     #         believe a user expects `hermes dashboard` / slash commands /
     #         cron / messaging platforms to work out of the box.
-    # Tier 4: bare `.` — last-resort so at least the core CLI launches.
+    # Tier 5: bare `.` — last-resort so at least the core CLI launches.
+
+    # Currently-broken extras. Edit this list when an upstream package
+    # gets quarantined / yanked / breaks resolution. As of May 2026:
+    #   mistral — mistralai 2.4.6 was malware, PyPI quarantined the project
+    $brokenExtras = @("mistral")
+
+    $allExtras = @(
+        "modal","daytona","vercel","messaging","matrix","cron","cli","dev",
+        "tts-premium","slack","pty","honcho","mcp","homeassistant","sms",
+        "acp","voice","dingtalk","feishu","google","mistral","bedrock","web",
+        "youtube"
+    )
+    $pypiExtras = @(
+        "web","mcp","cron","cli","voice","messaging","slack","dev","acp",
+        "pty","homeassistant","sms","tts-premium","honcho","google","mistral",
+        "bedrock","dingtalk","feishu","modal","daytona","vercel","youtube"
+    )
+    $safeAll  = ($allExtras  | Where-Object { $brokenExtras -notcontains $_ }) -join ","
+    $safePypi = ($pypiExtras | Where-Object { $brokenExtras -notcontains $_ }) -join ","
+    $brokenLabel = if ($brokenExtras) { ($brokenExtras -join ", ") } else { "none" }
+
     $installTiers = @(
         @{ Name = "all (with RL/matrix extras)"; Spec = ".[all]" },
-        @{ Name = "PyPI-only extras (no git deps)"; Spec = ".[web,mcp,cron,cli,voice,messaging,slack,dev,acp,pty,homeassistant,sms,tts-premium,honcho,google,mistral,bedrock,dingtalk,feishu,modal,daytona,vercel]" },
+        @{ Name = "all minus known-broken ($brokenLabel)"; Spec = ".[$safeAll]" },
+        @{ Name = "PyPI-only extras (no git deps)"; Spec = ".[$safePypi]" },
         @{ Name = "dashboard + core platforms"; Spec = ".[web,mcp,cron,cli,messaging,dev]" },
         @{ Name = "core only (no extras)"; Spec = "." }
     )

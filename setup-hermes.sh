@@ -183,16 +183,43 @@ if is_termux; then
 else
     # Prefer uv sync with lockfile (hash-verified installs) when available,
     # fall back to pip install for compatibility or when lockfile is stale.
+    #
+    # Multi-tier pip fallback. Goal: ONE compromised PyPI package
+    # (mistralai 2.4.6 in May 2026 → quarantined) shouldn't silently demote
+    # a fresh setup to "core only". Edit _BROKEN_EXTRAS when a transitive
+    # breaks; users keep voice / honcho / google / slack / matrix etc. even
+    # if mistral can't resolve.
+    _BROKEN_EXTRAS=("mistral")
+    _ALL_EXTRAS=(
+        modal daytona vercel messaging matrix cron cli dev tts-premium slack
+        pty honcho mcp homeassistant sms acp voice dingtalk feishu google
+        mistral bedrock web youtube
+    )
+    _SAFE_EXTRAS=()
+    for _e in "${_ALL_EXTRAS[@]}"; do
+        _skip=false
+        for _b in "${_BROKEN_EXTRAS[@]}"; do
+            [ "$_e" = "$_b" ] && _skip=true && break
+        done
+        [ "$_skip" = false ] && _SAFE_EXTRAS+=("$_e")
+    done
+    _SAFE_SPEC=".[$(IFS=,; echo "${_SAFE_EXTRAS[*]}")]"
+    _try_install() {
+        $UV_CMD pip install -e ".[all]" \
+            || $UV_CMD pip install -e "$_SAFE_SPEC" \
+            || $UV_CMD pip install -e "."
+    }
+
     if [ -f "uv.lock" ]; then
         echo -e "${CYAN}→${NC} Using uv.lock for hash-verified installation..."
         UV_PROJECT_ENVIRONMENT="$SCRIPT_DIR/venv" $UV_CMD sync --all-extras --locked 2>/dev/null && \
             echo -e "${GREEN}✓${NC} Dependencies installed (lockfile verified)" || {
             echo -e "${YELLOW}⚠${NC} Lockfile install failed (may be outdated), falling back to pip install..."
-            $UV_CMD pip install -e ".[all]" || $UV_CMD pip install -e "."
+            _try_install
             echo -e "${GREEN}✓${NC} Dependencies installed"
         }
     else
-        $UV_CMD pip install -e ".[all]" || $UV_CMD pip install -e "."
+        _try_install
         echo -e "${GREEN}✓${NC} Dependencies installed"
     fi
 fi
