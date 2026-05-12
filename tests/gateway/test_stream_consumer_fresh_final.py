@@ -188,15 +188,22 @@ class TestStreamConsumerConfigFreshFinalField:
 class TestStreamingConfigFreshFinalField:
     """The gateway-level StreamingConfig carries the setting."""
 
-    def test_default_enables_with_60s(self):
-        from gateway.config import StreamingConfig
+    def test_default_enables_immediate_telegram_fresh_final(self):
+        from gateway.config import (
+            DEFAULT_STREAMING_FRESH_FINAL_AFTER_SECONDS,
+            StreamingConfig,
+        )
         cfg = StreamingConfig()
-        assert cfg.fresh_final_after_seconds == 60.0
+        assert cfg.fresh_final_after_seconds == DEFAULT_STREAMING_FRESH_FINAL_AFTER_SECONDS
+        assert 0.0 < cfg.fresh_final_after_seconds < 1.0
 
     def test_from_dict_uses_default_when_missing(self):
-        from gateway.config import StreamingConfig
+        from gateway.config import (
+            DEFAULT_STREAMING_FRESH_FINAL_AFTER_SECONDS,
+            StreamingConfig,
+        )
         cfg = StreamingConfig.from_dict({"enabled": True})
-        assert cfg.fresh_final_after_seconds == 60.0
+        assert cfg.fresh_final_after_seconds == DEFAULT_STREAMING_FRESH_FINAL_AFTER_SECONDS
 
     def test_from_dict_respects_explicit_zero(self):
         from gateway.config import StreamingConfig

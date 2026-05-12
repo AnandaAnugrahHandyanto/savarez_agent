@@ -325,6 +325,10 @@ class PlatformConfig:
 DEFAULT_STREAMING_EDIT_INTERVAL: float = 0.8
 DEFAULT_STREAMING_BUFFER_THRESHOLD: int = 24
 DEFAULT_STREAMING_CURSOR: str = " ▉"
+# Telegram edit-based streaming is only a preview.  Final answers should land
+# as fresh sendMessage payloads so Telegram clients do not leave users with an
+# edited, stale, half-rendered preview/notification.
+DEFAULT_STREAMING_FRESH_FINAL_AFTER_SECONDS: float = 0.001
 
 
 @dataclass
@@ -344,13 +348,13 @@ class StreamingConfig:
     buffer_threshold: int = DEFAULT_STREAMING_BUFFER_THRESHOLD
     cursor: str = DEFAULT_STREAMING_CURSOR
     # Ported from openclaw/openclaw#72038.  When >0, the final edit for
-    # a long-running streamed response is delivered as a fresh message
-    # if the original preview has been visible for at least this many
-    # seconds, so the platform's visible timestamp reflects completion
-    # time instead of the preview creation time.  Currently applied to
-    # Telegram only (other platforms ignore the setting).  Default 60s
-    # matches the OpenClaw rollout.  Set to 0 to disable.
-    fresh_final_after_seconds: float = 60.0
+    # a streamed Telegram response is delivered as a fresh message if the
+    # original preview has been visible for at least this many seconds.  Keep
+    # the default near-zero: Telegram edit previews are lossy UX (stale
+    # notification, raw interim markdown, and occasionally stuck partials),
+    # while the final send path handles formatting/splitting reliably.
+    # Set to 0 to disable and keep legacy edit-in-place finalization.
+    fresh_final_after_seconds: float = DEFAULT_STREAMING_FRESH_FINAL_AFTER_SECONDS
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -377,7 +381,8 @@ class StreamingConfig:
             ),
             cursor=data.get("cursor", DEFAULT_STREAMING_CURSOR),
             fresh_final_after_seconds=_coerce_float(
-                data.get("fresh_final_after_seconds"), 60.0
+                data.get("fresh_final_after_seconds"),
+                DEFAULT_STREAMING_FRESH_FINAL_AFTER_SECONDS,
             ),
         )
 
