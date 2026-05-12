@@ -1878,6 +1878,8 @@ def build_anthropic_kwargs(
     base_url: str | None = None,
     fast_mode: bool = False,
     drop_context_1m_beta: bool = False,
+    oauth_stealth_mode: "oauth_compat.StealthMode | None" = None,
+    oauth_tool_map: "oauth_compat.ToolNameMap | None" = None,
 ) -> Dict[str, Any]:
     """Build kwargs for anthropic.messages.create().
 
@@ -1961,23 +1963,31 @@ def build_anthropic_kwargs(
                 text = text.replace("Nous Research", "Anthropic")
                 block["text"] = text
 
-        # 3. Prefix tool names with mcp_ (Claude Code convention)
-        if anthropic_tools:
-            for tool in anthropic_tools:
-                if "name" in tool:
-                    tool["name"] = _MCP_TOOL_PREFIX + tool["name"]
+        # 3. Prefix tool names with mcp_ (legacy Claude Code MCP convention).
+        #    Skipped when stealth mode is RENAME_ONLY / FULL_STEALTH — the
+        #    stealth path rewrites tool names to Claude Code canonicals
+        #    (or PascalCase) instead. See agent/oauth_compat.py and #15080.
+        from agent import oauth_compat  # local import: avoid cycle at load
+        _stealth = oauth_compat.StealthMode.parse(
+            oauth_stealth_mode, default=oauth_compat.StealthMode.OFF
+        )
+        if _stealth == oauth_compat.StealthMode.OFF:
+            if anthropic_tools:
+                for tool in anthropic_tools:
+                    if "name" in tool:
+                        tool["name"] = _MCP_TOOL_PREFIX + tool["name"]
 
-        # 4. Prefix tool names in message history (tool_use and tool_result blocks)
-        for msg in anthropic_messages:
-            content = msg.get("content")
-            if isinstance(content, list):
-                for block in content:
-                    if isinstance(block, dict):
-                        if block.get("type") == "tool_use" and "name" in block:
-                            if not block["name"].startswith(_MCP_TOOL_PREFIX):
-                                block["name"] = _MCP_TOOL_PREFIX + block["name"]
-                        elif block.get("type") == "tool_result" and "tool_use_id" in block:
-                            pass  # tool_result uses ID, not name
+            # 4. Prefix tool names in message history (tool_use and tool_result blocks)
+            for msg in anthropic_messages:
+                content = msg.get("content")
+                if isinstance(content, list):
+                    for block in content:
+                        if isinstance(block, dict):
+                            if block.get("type") == "tool_use" and "name" in block:
+                                if not block["name"].startswith(_MCP_TOOL_PREFIX):
+                                    block["name"] = _MCP_TOOL_PREFIX + block["name"]
+                            elif block.get("type") == "tool_result" and "tool_use_id" in block:
+                                pass  # tool_result uses ID, not name
 
     kwargs: Dict[str, Any] = {
         "model": model,
@@ -2080,6 +2090,17 @@ def build_anthropic_kwargs(
             betas.extend(_OAUTH_ONLY_BETAS)
         betas.append(_FAST_MODE_BETA)
         kwargs["extra_headers"] = {"anthropic-beta": ",".join(betas)}
+
+    # OAuth Claude-Code-stealth transforms (#15080). No-op when mode==OFF
+    # or when the request isn't OAuth. Runs last so beta-header logic and
+    # output_config decisions see the original tool names.
+    if is_oauth and oauth_tool_map is not None:
+        from agent import oauth_compat
+        _stealth = oauth_compat.StealthMode.parse(
+            oauth_stealth_mode, default=oauth_compat.StealthMode.OFF
+        )
+        if _stealth != oauth_compat.StealthMode.OFF:
+            oauth_compat.apply_to_kwargs(kwargs, mode=_stealth, tool_map=oauth_tool_map)
 
     return kwargs
 

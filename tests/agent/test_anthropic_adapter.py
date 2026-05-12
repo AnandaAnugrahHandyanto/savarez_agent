@@ -1951,3 +1951,102 @@ class TestConvertToolsToAnthropicDedup:
 
     def test_none_tools_returns_empty(self):
         assert convert_tools_to_anthropic(None) == []
+
+
+# ---------------------------------------------------------------------------
+# OAuth Claude-Code stealth integration (#15080)
+# ---------------------------------------------------------------------------
+
+class TestOAuthStealthIntegration:
+    """Regression tests that ``build_anthropic_kwargs`` honors the
+    ``oauth_stealth_mode`` / ``oauth_tool_map`` parameters threaded
+    through from run_agent. See agent/oauth_compat.py for the full
+    rationale (issue #15080)."""
+
+    def _tools(self):
+        return [
+            {"type": "function", "function": {
+                "name": "terminal", "description": "x",
+                "parameters": {"type": "object", "properties": {}},
+            }},
+            {"type": "function", "function": {
+                "name": "session_search", "description": "x",
+                "parameters": {"type": "object", "properties": {}},
+            }},
+        ]
+
+    def test_off_or_unset_keeps_legacy_mcp_prefix(self):
+        # No stealth params → legacy mcp_-prefixed names (existing behavior).
+        kwargs = build_anthropic_kwargs(
+            model="claude-opus-4-7",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=self._tools(),
+            max_tokens=4096,
+            reasoning_config=None,
+            is_oauth=True,
+        )
+        names = [t["name"] for t in kwargs["tools"]]
+        assert names == ["mcp_terminal", "mcp_session_search"]
+
+    def test_rename_only_rewrites_tools_keeps_system(self):
+        from agent import oauth_compat
+        tool_map = oauth_compat.ToolNameMap()
+        kwargs = build_anthropic_kwargs(
+            model="claude-opus-4-7",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=self._tools(),
+            max_tokens=4096,
+            reasoning_config=None,
+            is_oauth=True,
+            oauth_stealth_mode=oauth_compat.StealthMode.RENAME_ONLY,
+            oauth_tool_map=tool_map,
+        )
+        names = [t["name"] for t in kwargs["tools"]]
+        # terminal → Bash (canonical); session_search → SessionSearch (PascalCase).
+        assert names == ["Bash", "SessionSearch"]
+        # System prompt prepended with cc_block but NOT collapsed.
+        assert isinstance(kwargs["system"], list)
+        assert kwargs["system"][0]["text"].startswith("You are Claude Code")
+        # Reverse map populated for the dispatcher's response path.
+        assert tool_map.unrename("Bash") == "terminal"
+        assert tool_map.unrename("SessionSearch") == "session_search"
+
+    def test_full_stealth_collapses_system_to_single_block(self):
+        from agent import oauth_compat
+        tool_map = oauth_compat.ToolNameMap()
+        kwargs = build_anthropic_kwargs(
+            model="claude-opus-4-7",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=self._tools(),
+            max_tokens=4096,
+            reasoning_config=None,
+            is_oauth=True,
+            oauth_stealth_mode=oauth_compat.StealthMode.FULL_STEALTH,
+            oauth_tool_map=tool_map,
+        )
+        # Tools renamed.
+        assert [t["name"] for t in kwargs["tools"]] == ["Bash", "SessionSearch"]
+        # System collapsed to exactly one block: the bare CC identity line.
+        assert kwargs["system"] == [
+            {"type": "text", "text": oauth_compat.CLAUDE_CODE_SYSTEM_PREFIX}
+        ]
+
+    def test_stealth_no_op_when_not_oauth(self):
+        # API-key requests should never get the stealth transforms.
+        from agent import oauth_compat
+        tool_map = oauth_compat.ToolNameMap()
+        kwargs = build_anthropic_kwargs(
+            model="claude-opus-4-7",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=self._tools(),
+            max_tokens=4096,
+            reasoning_config=None,
+            is_oauth=False,
+            oauth_stealth_mode=oauth_compat.StealthMode.FULL_STEALTH,
+            oauth_tool_map=tool_map,
+        )
+        # No mcp_ prefix (only added on OAuth path) and no rename.
+        names = [t["name"] for t in kwargs["tools"]]
+        assert names == ["terminal", "session_search"]
+        # Map untouched.
+        assert len(tool_map) == 0
