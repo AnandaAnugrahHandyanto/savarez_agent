@@ -6,6 +6,7 @@ Handles: hermes gateway [run|start|stop|restart|status|install|uninstall|setup]
 
 import asyncio
 import os
+import plistlib
 import shutil
 import signal
 import subprocess
@@ -2237,6 +2238,65 @@ def _normalize_launchd_plist_for_comparison(text: str) -> str:
     )
 
 
+def _launchd_plist_uses_supported_custom_launcher(installed: str) -> bool:
+    """Return True for a launchd plist that intentionally wraps Hermes startup.
+
+    The generated macOS plist starts Python directly. Some durable installs need
+    a launcher script instead — for example a gateway can resolve 1Password
+    secret refs through ``op run --env-file`` before starting Hermes. Treat that
+    shape as current when the rest of the plist matches and the launcher has the
+    expected non-interactive 1Password gateway form. This prevents
+    ``hermes gateway start`` from "repairing" a working secure launcher back to
+    a vanilla Python invocation with unresolved secrets.
+    """
+    try:
+        installed_plist = plistlib.loads(installed.encode("utf-8"))
+        expected_plist = plistlib.loads(generate_launchd_plist().encode("utf-8"))
+    except Exception:
+        return False
+    if not isinstance(installed_plist, dict) or not isinstance(expected_plist, dict):
+        return False
+
+    installed_args = installed_plist.get("ProgramArguments")
+    if not isinstance(installed_args, list) or len(installed_args) != 1:
+        return False
+
+    launcher = Path(str(installed_args[0])).expanduser()
+    expected_launcher = get_hermes_home().resolve() / "bin" / "gateway-launcher.sh"
+    try:
+        if launcher.resolve() != expected_launcher:
+            return False
+    except OSError:
+        return False
+
+    try:
+        launcher_text = launcher.read_text(encoding="utf-8")
+    except OSError:
+        return False
+
+    required_launcher_tokens = (
+        "OP_SERVICE_ACCOUNT_TOKEN",
+        "OP_BIOMETRIC_UNLOCK_ENABLED=false",
+        "run --env-file",
+        "hermes_cli.main gateway run --replace",
+    )
+    if not all(token in launcher_text for token in required_launcher_tokens):
+        return False
+
+    # Compare the normal generated plist shape while intentionally accepting the
+    # wrapper ProgramArguments and ignoring PATH drift, same as the normal text
+    # currentness check.
+    installed_plist = dict(installed_plist)
+    expected_plist = dict(expected_plist)
+    installed_plist["ProgramArguments"] = expected_plist.get("ProgramArguments")
+    for plist in (installed_plist, expected_plist):
+        env = dict(plist.get("EnvironmentVariables") or {})
+        if "PATH" in env:
+            env["PATH"] = "__HERMES_PATH__"
+        plist["EnvironmentVariables"] = env
+    return installed_plist == expected_plist
+
+
 def systemd_unit_is_current(system: bool = False) -> bool:
     unit_path = get_systemd_unit_path(system=system)
     if not unit_path.exists():
@@ -2836,7 +2896,10 @@ def launchd_plist_is_current() -> bool:
 
     installed = plist_path.read_text(encoding="utf-8")
     expected = generate_launchd_plist()
-    return _normalize_launchd_plist_for_comparison(installed) == _normalize_launchd_plist_for_comparison(expected)
+    return (
+        _normalize_launchd_plist_for_comparison(installed) == _normalize_launchd_plist_for_comparison(expected)
+        or _launchd_plist_uses_supported_custom_launcher(installed)
+    )
 
 
 def refresh_launchd_plist_if_needed() -> bool:

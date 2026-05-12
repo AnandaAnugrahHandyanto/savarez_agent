@@ -6,6 +6,7 @@ rather than leaving zombie processes or telling users to manually restart
 when launchd will auto-respawn.
 """
 
+import plistlib
 import subprocess
 from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
@@ -222,6 +223,61 @@ class TestLaunchdPlistCurrentness:
         monkeypatch.setenv("PATH", "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin")
 
         assert gateway_cli.launchd_plist_is_current() is True
+
+    def test_launchd_plist_is_current_accepts_1password_gateway_launcher(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / "hermes"
+        launcher = hermes_home / "bin" / "gateway-launcher.sh"
+        launcher.parent.mkdir(parents=True)
+        launcher.write_text(
+            "#!/bin/bash\n"
+            "export OP_SERVICE_ACCOUNT_TOKEN\n"
+            "OP_SERVICE_ACCOUNT_TOKEN=\"$(<\"$HERMES_HOME/.sa-token\")\"\n"
+            "export OP_BIOMETRIC_UNLOCK_ENABLED=false\n"
+            "exec \"$OP_BIN\" run --env-file=\"$OP_ENV_FILE\" -- "
+            "\"$PYTHON_BIN\" -m hermes_cli.main gateway run --replace\n",
+            encoding="utf-8",
+        )
+
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: hermes_home)
+
+        plist = plistlib.loads(gateway_cli.generate_launchd_plist().encode("utf-8"))
+        plist["ProgramArguments"] = [str(launcher)]
+        plist_path.write_bytes(plistlib.dumps(plist))
+
+        assert gateway_cli.launchd_plist_is_current() is True
+
+    def test_refresh_skips_supported_1password_gateway_launcher(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / "hermes"
+        launcher = hermes_home / "bin" / "gateway-launcher.sh"
+        launcher.parent.mkdir(parents=True)
+        launcher.write_text(
+            "#!/bin/bash\n"
+            "export OP_SERVICE_ACCOUNT_TOKEN\n"
+            "export OP_BIOMETRIC_UNLOCK_ENABLED=false\n"
+            "exec \"$OP_BIN\" run --env-file=\"$OP_ENV_FILE\" -- "
+            "\"$PYTHON_BIN\" -m hermes_cli.main gateway run --replace\n",
+            encoding="utf-8",
+        )
+
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: hermes_home)
+
+        plist = plistlib.loads(gateway_cli.generate_launchd_plist().encode("utf-8"))
+        plist["ProgramArguments"] = [str(launcher)]
+        plist_path.write_bytes(plistlib.dumps(plist))
+
+        calls = []
+        monkeypatch.setattr(
+            gateway_cli.subprocess,
+            "run",
+            lambda cmd, **kw: calls.append(cmd) or SimpleNamespace(returncode=0),
+        )
+
+        assert gateway_cli.refresh_launchd_plist_if_needed() is False
+        assert calls == []
 
 
 # ---------------------------------------------------------------------------
