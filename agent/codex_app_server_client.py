@@ -29,6 +29,30 @@ def _split_env_args(value: str) -> list[str]:
     return shlex.split(value, posix=(os.name != "nt")) if value else []
 
 
+def _is_bare_codex_command(command: str) -> bool:
+    """Return True when command launches the interactive Codex CLI with no subcommand."""
+
+    try:
+        argv = shlex.split(command, posix=(os.name != "nt"))
+    except ValueError:
+        return False
+    return len(argv) == 1 and Path(argv[0]).name == "codex"
+
+
+def _normalize_codex_app_server_command(command: str, args: list[str]) -> tuple[str, list[str]]:
+    """Ensure a bare `codex` command starts Codex's stdio app-server.
+
+    Running plain `codex` requires a TTY and exits with "stdin is not a terminal"
+    under Hermes delegation. A bare Codex binary is therefore treated as the
+    default app-server launch. Explicit wrappers or commands with their own
+    subcommand are left untouched.
+    """
+
+    if _is_bare_codex_command(command) and not args:
+        return command, ["app-server", "--listen", "stdio://"]
+    return command, args
+
+
 def codex_app_server_command_from_env() -> tuple[str, list[str]]:
     """Resolve the Codex app-server launch command."""
 
@@ -41,7 +65,7 @@ def codex_app_server_command_from_env() -> tuple[str, list[str]]:
         or os.getenv("CODEX_APP_SERVER_ARGS", "").strip()
     )
     if raw_command:
-        return raw_command, _split_env_args(raw_args)
+        return _normalize_codex_app_server_command(raw_command, _split_env_args(raw_args))
     if raw_args:
         return "codex", _split_env_args(raw_args)
     return "codex", ["app-server", "--listen", "stdio://"]
@@ -68,8 +92,10 @@ class CodexAppServerSubagent:
         sandbox: str | None = None,
     ) -> None:
         env_command, env_args = codex_app_server_command_from_env()
-        self.command = command or env_command
-        self.args = list(args if args is not None else env_args)
+        self.command, self.args = _normalize_codex_app_server_command(
+            command or env_command,
+            list(args if args is not None else env_args),
+        )
         self.model = model or ""
         self.cwd = str(Path(cwd or os.getcwd()).resolve())
         self.context = context or ""

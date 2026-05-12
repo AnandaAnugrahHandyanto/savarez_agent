@@ -40,6 +40,33 @@ def test_command_defaults_to_codex_app_server(monkeypatch):
     assert args == ["app-server", "--listen", "stdio://"]
 
 
+def test_bare_codex_env_command_still_uses_app_server_args(monkeypatch):
+    monkeypatch.setenv("HERMES_CODEX_APP_SERVER_COMMAND", "codex")
+    monkeypatch.delenv("CODEX_APP_SERVER_COMMAND", raising=False)
+    monkeypatch.delenv("HERMES_CODEX_APP_SERVER_ARGS", raising=False)
+    monkeypatch.delenv("CODEX_APP_SERVER_ARGS", raising=False)
+
+    command, args = codex_app_server_command_from_env()
+
+    assert command == "codex"
+    assert args == ["app-server", "--listen", "stdio://"]
+
+
+def test_bare_codex_constructor_command_still_uses_app_server_args(tmp_path):
+    child = CodexAppServerSubagent(
+        model="gpt-5.5",
+        cwd=str(tmp_path),
+        context=None,
+        role="leaf",
+        toolsets=None,
+        command="codex",
+        args=[],
+    )
+
+    assert child.command == "codex"
+    assert child.args == ["app-server", "--listen", "stdio://"]
+
+
 def test_codex_app_server_subagent_runs_thread_turn_and_extracts_final_message(tmp_path):
     lines = [
         {"id": 1, "result": {"protocolVersion": "0.1.0"}},
