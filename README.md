@@ -193,3 +193,15 @@ scripts/run_tests.sh
 MIT — see [LICENSE](LICENSE).
 
 Built by [Nous Research](https://nousresearch.com).
+
+---
+
+## 分支策略 (yarnovo fork · akong 团队用)
+
+- `main` = 主分支 (我们 fork 后只用 main · upstream sync 时 merge NousResearch/hermes-agent main)
+- 临时分支: `feat/<name>` · `fix/<name>` · base 永远 `origin/main`
+- PR target = `main` · CI pass + mergeable + 无 conflict 才合
+- lead merge 不 auto · subagent 不自合
+- subagent 创 worktree 干活前必读本 README
+
+详见 `~/.claude/memories/feedback_lead_main_branch_only.md`
