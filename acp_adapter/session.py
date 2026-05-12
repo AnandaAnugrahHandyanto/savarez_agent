@@ -191,7 +191,7 @@ class SessionManager:
     via ``session_search``.
     """
 
-    def __init__(self, agent_factory=None, db=None):
+    def __init__(self, agent_factory=None, db=None, *, skills: str | list[str] | None = None):
         """
         Args:
             agent_factory: Optional callable that creates an AIAgent-like object.
@@ -204,6 +204,7 @@ class SessionManager:
         self._lock = Lock()
         self._agent_factory = agent_factory
         self._db_instance = db  # None → lazy-init on first use
+        self._skills = skills
 
     # ---- public API ---------------------------------------------------------
 
@@ -619,6 +620,24 @@ class SessionManager:
             )
         except Exception:
             logger.debug("ACP session falling back to default provider resolution", exc_info=True)
+
+        # --skills preloading (#24466)
+        if self._skills:
+            try:
+                from cli import _parse_skills_argument
+                from agent.skill_commands import build_preloaded_skills_prompt
+
+                parsed_skills = _parse_skills_argument(self._skills)
+                if parsed_skills:
+                    skills_prompt, _loaded, _missing = build_preloaded_skills_prompt(
+                        parsed_skills, task_id=session_id,
+                    )
+                    if skills_prompt:
+                        kwargs.setdefault("prefill_messages", []).append(
+                            {"role": "user", "content": skills_prompt},
+                        )
+            except Exception:
+                logger.debug("ACP skill preloading failed", exc_info=True)
 
         _register_task_cwd(session_id, cwd)
         agent = AIAgent(**kwargs)
