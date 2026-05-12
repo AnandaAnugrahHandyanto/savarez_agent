@@ -13421,12 +13421,6 @@ class GatewayRunner:
             resolve_gateway_approval, has_blocking_approval,
         )
 
-        if not has_blocking_approval(session_key):
-            if session_key in self._pending_approvals:
-                self._pending_approvals.pop(session_key)
-                return t("gateway.approval_expired")
-            return t("gateway.approve.no_pending")
-
         # Parse args: support "all", "all session", "all always", "session", "always"
         args = event.get_command_args().strip().lower().split()
         resolve_all = "all" in args
@@ -13438,6 +13432,27 @@ class GatewayRunner:
             choice = "session"
         else:
             choice = "once"
+
+        if not has_blocking_approval(session_key):
+            if session_key in self._pending_approvals:
+                self._pending_approvals.pop(session_key)
+                return t("gateway.approval_expired")
+            try:
+                from tools.shared_approval_broker import resolve_oldest_cli_approval
+                cli_count = resolve_oldest_cli_approval(
+                    choice,
+                    resolve_all=resolve_all,
+                    source=source.to_dict() if source else None,
+                )
+            except Exception as exc:
+                logger.debug("Shared CLI approval resolve failed: %s", exc)
+                cli_count = 0
+            if cli_count:
+                logger.info("User approved %d CLI approval(s) via /approve (%s)", cli_count, choice)
+                if cli_count > 1:
+                    return f"✅ Approved {cli_count} CLI approval requests remotely. Return to the terminal to continue."
+                return "✅ Approved CLI approval request remotely. Return to the terminal to continue."
+            return t("gateway.approve.no_pending")
 
         count = resolve_gateway_approval(session_key, choice, resolve_all=resolve_all)
         if not count:
@@ -13467,14 +13482,29 @@ class GatewayRunner:
             resolve_gateway_approval, has_blocking_approval,
         )
 
+        args = event.get_command_args().strip().lower()
+        resolve_all = "all" in args
+
         if not has_blocking_approval(session_key):
             if session_key in self._pending_approvals:
                 self._pending_approvals.pop(session_key)
                 return t("gateway.deny.stale")
+            try:
+                from tools.shared_approval_broker import resolve_oldest_cli_approval
+                cli_count = resolve_oldest_cli_approval(
+                    "deny",
+                    resolve_all=resolve_all,
+                    source=source.to_dict() if source else None,
+                )
+            except Exception as exc:
+                logger.debug("Shared CLI approval deny failed: %s", exc)
+                cli_count = 0
+            if cli_count:
+                logger.info("User denied %d CLI approval(s) via /deny", cli_count)
+                if cli_count > 1:
+                    return f"🚫 Denied {cli_count} CLI approval requests remotely."
+                return "🚫 Denied CLI approval request remotely."
             return t("gateway.deny.no_pending")
-
-        args = event.get_command_args().strip().lower()
-        resolve_all = "all" in args
 
         count = resolve_gateway_approval(session_key, "deny", resolve_all=resolve_all)
         if not count:

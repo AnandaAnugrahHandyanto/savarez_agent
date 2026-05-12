@@ -10671,42 +10671,188 @@ class HermesCLI:
         import time as _time
 
         with self._approval_lock:
-            timeout = int(CLI_CONFIG.get("approvals", {}).get("timeout", 60))
+            try:
+                from hermes_cli.config import load_config as _load_full_config
+                _approvals_cfg = (_load_full_config().get("approvals") or {})
+            except Exception:
+                _approvals_cfg = {}
+            try:
+                timeout = int(_approvals_cfg.get("timeout", 60) or 60)
+            except (TypeError, ValueError):
+                timeout = 60
+            notify_target = str(_approvals_cfg.get("notify_target", "") or "").strip()
             response_queue = queue.Queue()
 
+            choices = self._approval_choices(command, allow_permanent=allow_permanent)
             self._approval_state = {
                 "command": command,
                 "description": description,
-                "choices": self._approval_choices(command, allow_permanent=allow_permanent),
+                "choices": choices,
                 "selected": 0,
                 "response_queue": response_queue,
             }
             self._approval_deadline = _time.monotonic() + timeout
 
+            broker_request_id = None
+            try:
+                from tools.shared_approval_broker import register_cli_approval
+
+                title = self._resolve_approval_session_title()
+                try:
+                    cwd = os.getcwd()
+                except Exception:
+                    cwd = "unknown"
+                broker_request_id = register_cli_approval(
+                    {
+                        "session_key": f"cli:{getattr(self, 'session_id', '') or os.getpid()}",
+                        "session_id": str(getattr(self, "session_id", "") or "unknown"),
+                        "title": title,
+                        "cwd": cwd,
+                        "pid": os.getpid(),
+                        "command": command,
+                        "description": description,
+                        "allow_permanent": allow_permanent,
+                        "notify_target": notify_target,
+                    },
+                    ttl_seconds=timeout,
+                )
+            except Exception as exc:
+                logger.debug("Failed to register shared CLI approval: %s", exc)
+
             self._invalidate()
+            if notify_target:
+                self._send_approval_notification(notify_target, command, description, timeout)
 
             _last_countdown_refresh = _time.monotonic()
-            while True:
-                try:
-                    result = response_queue.get(timeout=1)
-                    self._approval_state = None
-                    self._approval_deadline = 0
-                    self._invalidate()
-                    return result
-                except queue.Empty:
-                    remaining = self._approval_deadline - _time.monotonic()
-                    if remaining <= 0:
-                        break
-                    now = _time.monotonic()
-                    if now - _last_countdown_refresh >= 5.0:
-                        _last_countdown_refresh = now
+            try:
+                while True:
+                    try:
+                        result = response_queue.get(timeout=1)
+                        self._approval_state = None
+                        self._approval_deadline = 0
                         self._invalidate()
+                        return result
+                    except queue.Empty:
+                        if broker_request_id:
+                            try:
+                                from tools.shared_approval_broker import wait_for_cli_approval
+
+                                remote_choice = wait_for_cli_approval(
+                                    broker_request_id,
+                                    timeout_seconds=0,
+                                    poll_interval=0.01,
+                                )
+                            except Exception as exc:
+                                logger.debug("Failed to poll shared CLI approval: %s", exc)
+                                remote_choice = None
+                            if remote_choice:
+                                if remote_choice == "always" and not allow_permanent:
+                                    remote_choice = "session"
+                                self._approval_state = None
+                                self._approval_deadline = 0
+                                self._invalidate()
+                                _cprint(f"\n{_DIM}  ✓ Remote approval received: {remote_choice}{_RST}")
+                                return remote_choice
+                        remaining = self._approval_deadline - _time.monotonic()
+                        if remaining <= 0:
+                            break
+                        now = _time.monotonic()
+                        if now - _last_countdown_refresh >= 5.0:
+                            _last_countdown_refresh = now
+                            self._invalidate()
+            finally:
+                if broker_request_id:
+                    try:
+                        from tools.shared_approval_broker import clear_cli_approval
+
+                        clear_cli_approval(broker_request_id)
+                    except Exception:
+                        pass
 
             self._approval_state = None
             self._approval_deadline = 0
             self._invalidate()
             _cprint(f"\n{_DIM}  ⏱ Timeout — denying command{_RST}")
             return "deny"
+
+    def _resolve_approval_session_title(self) -> str:
+        """Return a human-readable title for approval notifications."""
+        session_id = str(getattr(self, "session_id", "") or "unknown")
+        title = str(getattr(self, "_pending_title", "") or "").strip()
+        session_db = getattr(self, "_session_db", None)
+        if not title and session_db is not None:
+            try:
+                session_meta = session_db.get_session(session_id) or {}
+                title = str(session_meta.get("title") or "").strip()
+            except Exception:
+                title = ""
+        return title or "제목 없음"
+
+    def _build_approval_notification_message(self, command: str, description: str, timeout: int, notify_target: str = "") -> str:
+        """Build the out-of-band CLI approval notification body."""
+        cmd = command.strip().replace("\n", " ")
+        if len(cmd) > 900:
+            cmd = cmd[:900] + "…"
+        desc = (description or "권한 승인이 필요합니다.").strip()
+        if len(desc) > 500:
+            desc = desc[:500] + "…"
+
+        session_id = str(getattr(self, "session_id", "") or "unknown")
+        title = self._resolve_approval_session_title()
+
+        try:
+            cwd = os.getcwd()
+        except Exception:
+            cwd = "unknown"
+
+        try:
+            pid = os.getpid()
+        except Exception:
+            pid = "unknown"
+
+        remote_line = (
+            "원격 승인: Telegram/Gateway에서 /approve, /approve session, /approve always 또는 /deny를 보내면 이 CLI 대기가 해제됩니다."
+            if ":" in str(notify_target or "")
+            else "원격 승인: notify_target이 특정 채팅으로 지정된 경우에만 /approve 또는 /deny로 이 CLI 대기를 해제할 수 있습니다."
+        )
+
+        return textwrap.dedent(f"""\
+        Hermes CLI 권한 승인 요청
+
+        세션: {title}
+        세션 ID: {session_id}
+        작업 위치: {cwd}
+        프로세스: {pid}
+
+        설명: {desc}
+        명령: {cmd}
+        제한시간: {timeout}초
+
+        {remote_line}
+        터미널에서도 기존처럼 once/session/always/deny를 직접 선택할 수 있습니다.
+        """).strip()
+
+    def _send_approval_notification(self, target: str, command: str, description: str, timeout: int) -> None:
+        """Best-effort out-of-band notification for dangerous-command approvals.
+
+        This notifies the user that the terminal is waiting for approval.  The
+        CLI also registers the pending request in the shared broker, so an
+        authenticated gateway /approve or /deny can resolve it remotely.
+        """
+        def _worker() -> None:
+            try:
+                from tools.send_message_tool import send_message_tool as _send_message_tool
+
+                message = self._build_approval_notification_message(command, description, timeout, target)
+                _send_message_tool({"action": "send", "target": target, "message": message})
+            except Exception:
+                pass
+
+        try:
+            import threading as _threading
+            _threading.Thread(target=_worker, name="hermes-approval-notify", daemon=True).start()
+        except Exception:
+            pass
 
     def _approval_choices(self, command: str, *, allow_permanent: bool = True) -> list[str]:
         """Return approval choices for a dangerous command prompt."""

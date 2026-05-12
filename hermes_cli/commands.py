@@ -113,6 +113,16 @@ COMMAND_REGISTRY: list[CommandDef] = [
                gateway_only=True, aliases=("set-home",)),
     CommandDef("resume", "Resume a previously-named session", "Session",
                args_hint="[name]"),
+    CommandDef("projects", "List Telegram-routable tmux/project sessions", "Session",
+               gateway_only=True),
+    CommandDef("switch", "Switch the active Telegram project session", "Session",
+               gateway_only=True, args_hint="<number|name>"),
+    CommandDef("current", "Show the active Telegram project session", "Session",
+               gateway_only=True),
+    CommandDef("psend", "Send a prompt to the active Telegram project tmux pane", "Session",
+               gateway_only=True, args_hint="<prompt>"),
+    CommandDef("afterwork", "Put current/all Telegram project sessions into away mode", "Session",
+               gateway_only=True, aliases=("awaymode",), args_hint="[current|all]"),
 
     # Configuration
     CommandDef("sessions", "Browse and resume previous sessions", "Session"),
