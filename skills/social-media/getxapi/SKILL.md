@@ -7,7 +7,6 @@ license: MIT
 metadata:
   hermes:
     tags: [twitter, x, social-media, getxapi, api]
-    related_skills: [xurl]
 required_environment_variables:
   - name: GETXAPI_API_KEY
     prompt: getxapi API key (Bearer token)
@@ -138,7 +137,7 @@ Check `GET /account/me` before bulk operations. If credits drop below $1.00, red
 # Verify API key works
 curl -s -H "Authorization: Bearer <your-api-key>" \
   "https://api.getxapi.com/account/me"
-# Should return: {"email":"...","credits":"...","requests":"..."}
+# Should return account details with email, credit balance, and request counts.
 
 # Verify posting works
 curl -s -X POST "https://api.getxapi.com/twitter/tweet/create" \

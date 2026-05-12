@@ -35,6 +35,7 @@ Cost: $0.001. ~20 tweets/page. Cursor pagination.
 |-------|----------|-------|
 | `q` | Yes | Search query. Supports operators: `from:user`, `to:user`, `has:media`, `-filter:retweets`, `min_faves:N`, `since:YYYY-MM-DD` |
 | `product` | No | `Latest` (default) or `Top` |
+| `count` | No | Results per page (default 20, max ~20) |
 | `cursor` | No | Pagination cursor |
 
 ```bash
@@ -208,6 +209,7 @@ Cost: $0.001. ~20 tweets/page. User's profile "Posts" tab.
 |-------|----------|-------|
 | `userName` | Conditional | Screen name. Required if `userId` not provided |
 | `userId` | Conditional | Numeric ID. Faster — skips username lookup |
+| `count` | No | Results per page (default 20) |
 | `cursor` | No | Pagination cursor |
 
 ```bash
@@ -351,6 +353,8 @@ Cost: $0.001. ~20 users/page. Affiliated accounts of a verified organization.
 
 ### POST /twitter/user_login
 Cost: $0.001. Returns fresh auth tokens (auth_token, ct0, twid).
+
+**⚠️ SECURITY:** This endpoint accepts highly sensitive credentials — `username`, `password`, and optionally `totp_secret`. Never paste these into chat or agent context. Only use this endpoint locally with credentials stored in `~/.hermes/.env`.
 
 | Field | Required | Notes |
 |-------|----------|-------|
