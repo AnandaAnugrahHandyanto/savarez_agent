@@ -682,6 +682,7 @@ export interface Translations {
     confirmDone: string;
     confirmArchive: string;
     confirmBlocked: string;
+    confirmScheduled?: string;
     completionSummary: string;
     completionSummaryRequired: string;
     triagePlaceholder: string;

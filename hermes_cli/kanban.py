@@ -1,6 +1,6 @@
 """CLI for the Hermes Kanban board — ``hermes kanban …`` subcommand.
 
-Exposes the full 15-verb surface documented in the design spec
+Exposes the full Kanban command surface documented in the design spec
 (``docs/hermes-kanban-v1-spec.pdf``).  All DB work is delegated to
 ``kanban_db``.  This module adds:
 
@@ -34,6 +34,7 @@ _STATUS_ICONS = {
     "todo":     "◻",
     "ready":    "▶",
     "running":  "●",
+    "scheduled":"⏱",
     "blocked":  "⊘",
     "done":     "✓",
     "archived": "—",
@@ -431,7 +432,13 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_block.add_argument("--ids", nargs="+", default=None,
                          help="Additional task ids to block with the same reason (bulk mode)")
 
-    p_unblock = sub.add_parser("unblock", help="Return one or more blocked tasks to ready")
+    p_schedule = sub.add_parser("schedule", help="Park one or more tasks in Scheduled (waiting on time, not human input)")
+    p_schedule.add_argument("task_id")
+    p_schedule.add_argument("reason", nargs="*", help="Reason/timing note (also appended as a comment)")
+    p_schedule.add_argument("--ids", nargs="+", default=None,
+                            help="Additional task ids to schedule with the same reason (bulk mode)")
+
+    p_unblock = sub.add_parser("unblock", help="Return one or more blocked/scheduled tasks to ready")
     p_unblock.add_argument("task_ids", nargs="+")
 
     p_archive = sub.add_parser("archive", help="Archive one or more tasks")
@@ -724,6 +731,7 @@ def kanban_command(args: argparse.Namespace) -> int:
         "complete": _cmd_complete,
         "edit":     _cmd_edit,
         "block":    _cmd_block,
+        "schedule": _cmd_schedule,
         "unblock":  _cmd_unblock,
         "archive":  _cmd_archive,
         "tail":     _cmd_tail,
@@ -1627,6 +1635,28 @@ def _cmd_block(args: argparse.Namespace) -> int:
     return 0 if not failed else 1
 
 
+def _cmd_schedule(args: argparse.Namespace) -> int:
+    reason = " ".join(args.reason).strip() if args.reason else None
+    author = _profile_author()
+    ids = [args.task_id] + list(getattr(args, "ids", None) or [])
+    failed: list[str] = []
+    with kb.connect() as conn:
+        for tid in ids:
+            if reason:
+                kb.add_comment(conn, tid, author, f"SCHEDULED: {reason}")
+            if not kb.schedule_task(
+                conn,
+                tid,
+                reason=reason,
+                expected_run_id=_worker_run_id_for(tid),
+            ):
+                failed.append(tid)
+                print(f"cannot schedule {tid}", file=sys.stderr)
+            else:
+                print(f"Scheduled {tid}" + (f": {reason}" if reason else ""))
+    return 0 if not failed else 1
+
+
 def _cmd_unblock(args: argparse.Namespace) -> int:
     ids = list(args.task_ids or [])
     if not ids:
@@ -1637,7 +1667,7 @@ def _cmd_unblock(args: argparse.Namespace) -> int:
         for tid in ids:
             if not kb.unblock_task(conn, tid):
                 failed.append(tid)
-                print(f"cannot unblock {tid} (not blocked?)", file=sys.stderr)
+                print(f"cannot unblock {tid} (not blocked/scheduled?)", file=sys.stderr)
             else:
                 print(f"Unblocked {tid}")
     return 0 if not failed else 1
@@ -1922,7 +1952,7 @@ def _cmd_stats(args: argparse.Namespace) -> int:
         print(json.dumps(stats, indent=2, ensure_ascii=False))
         return 0
     print("By status:")
-    for k in ("triage", "todo", "ready", "running", "blocked", "done"):
+    for k in ("triage", "todo", "scheduled", "ready", "running", "blocked", "done"):
         print(f"  {k:8s}  {stats['by_status'].get(k, 0)}")
     if stats["by_assignee"]:
         print("\nBy assignee:")
@@ -2170,7 +2200,7 @@ Common subcommands:
   `create <title>…`     Create a task (auto-subscribes you to events)
   `comment <id> <msg>`  Append a comment
   `complete <id>…`      Mark task(s) done
-  `block <id> [reason]` Mark blocked; `unblock <id>` to revive
+  `block <id> [reason]` Mark blocked; `schedule <id> [reason]` parks time-delay work; `unblock <id>` to revive
   `assign <id> <profile>`  Reassign
   `boards list`         Show all boards
   `assignees`           Known profiles + counts

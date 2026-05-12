@@ -52,13 +52,14 @@
   }
 
   // Order matches BOARD_COLUMNS in plugin_api.py.
-  const COLUMN_ORDER = ["triage", "todo", "ready", "running", "blocked", "done"];
+  const COLUMN_ORDER = ["triage", "todo", "scheduled", "ready", "running", "blocked", "done"];
   // English fallback dictionaries — used when the i18n catalog is missing
   // a key, and as defaults for the get*() helpers below so callers running
   // outside any React component (where there's no `t`) still get sane text.
   const FALLBACK_COLUMN_LABEL = {
     triage: "Triage",
     todo: "Todo",
+    scheduled: "Scheduled",
     ready: "Ready",
     running: "In Progress",
     blocked: "Blocked",
@@ -68,6 +69,7 @@
   const FALLBACK_COLUMN_HELP = {
     triage: "Raw ideas — a specifier will flesh out the spec",
     todo: "Waiting on dependencies or unassigned",
+    scheduled: "Waiting on a known time delay or scheduled follow-up",
     ready: "Assigned and waiting for a dispatcher tick",
     running: "Claimed by a worker — in-flight",
     blocked: "Worker asked for human input",
@@ -78,6 +80,7 @@
     done: "Mark this task as done? The worker's claim is released and dependent children become ready.",
     archived: "Archive this task? It disappears from the default board view.",
     blocked: "Mark this task as blocked? The worker's claim is released.",
+    scheduled: "Move this task to Scheduled? Use this for known time delays rather than human blockers.",
   };
   const FALLBACK_DIAGNOSTIC_EVENT_LABELS = {
     completion_blocked_hallucination: "⚠ Completion blocked — phantom card ids",
@@ -91,6 +94,7 @@
     done: "confirmDone",
     archived: "confirmArchive",
     blocked: "confirmBlocked",
+    scheduled: "confirmScheduled",
   };
 
   function getColumnLabel(t, status) {
@@ -115,6 +119,7 @@
     todo: "hermes-kanban-dot-todo",
     ready: "hermes-kanban-dot-ready",
     running: "hermes-kanban-dot-running",
+    scheduled: "hermes-kanban-dot-scheduled",
     blocked: "hermes-kanban-dot-blocked",
     done: "hermes-kanban-dot-done",
     archived: "hermes-kanban-dot-archived",
@@ -3061,6 +3066,8 @@
       h("div", { className: "hermes-kanban-actions" },
         specifyButton,
         b("→ triage",  { status: "triage" },   task.status !== "triage"),
+        b("→ scheduled", { status: "scheduled" }, task.status !== "scheduled",
+          getDestructiveConfirm(t, "scheduled")),
         b("→ ready",   { status: "ready" },    task.status !== "ready"),
         // No direct → running button: /tasks/:id PATCH rejects status=running
         // with 400 (issue #19535). Tasks enter running only through the
@@ -3069,9 +3076,9 @@
         b(tx(t, "block", "Block"),     { status: "blocked" },
           task.status === "running" || task.status === "ready",
           getDestructiveConfirm(t, "blocked")),
-        b(tx(t, "unblock", "Unblock"),   { status: "ready" },    task.status === "blocked"),
+        b(tx(t, "unblock", "Unblock"),   { status: "ready" },    task.status === "blocked" || task.status === "scheduled"),
         b(tx(t, "complete", "Complete"),  { status: "done" },
-          task.status === "running" || task.status === "ready" || task.status === "blocked",
+          task.status === "running" || task.status === "ready" || task.status === "blocked" || task.status === "scheduled",
           getDestructiveConfirm(t, "done")),
         b(tx(t, "archive", "Archive"),   { status: "archived" }, task.status !== "archived",
           getDestructiveConfirm(t, "archived")),

@@ -90,7 +90,7 @@ from toolsets import get_toolset_names
 # Constants
 # ---------------------------------------------------------------------------
 
-VALID_STATUSES = {"triage", "todo", "ready", "running", "blocked", "done", "archived"}
+VALID_STATUSES = {"triage", "todo", "scheduled", "ready", "running", "blocked", "done", "archived"}
 VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
 KNOWN_TOOLSET_NAMES = frozenset(name.casefold() for name in get_toolset_names())
 
@@ -2637,7 +2637,7 @@ def block_task(
 
 
 def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
-    """Transition ``blocked -> ready``.
+    """Transition ``blocked``/``scheduled`` -> ready or todo.
 
     Defensively closes any stale ``current_run_id`` pointer before flipping
     status. In the common path (``block_task`` closed the run already) this
@@ -2649,7 +2649,7 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
     now = int(time.time())
     with write_txn(conn):
         stale = conn.execute(
-            "SELECT current_run_id FROM tasks WHERE id = ? AND status = 'blocked'",
+            "SELECT current_run_id FROM tasks WHERE id = ? AND status IN ('blocked', 'scheduled')",
             (task_id,),
         ).fetchone()
         if stale and stale["current_run_id"]:
@@ -2679,7 +2679,7 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
         new_status = "todo" if undone_parents else "ready"
         cur = conn.execute(
             "UPDATE tasks SET status = ?, current_run_id = NULL "
-            "WHERE id = ? AND status = 'blocked'",
+            "WHERE id = ? AND status IN ('blocked', 'scheduled')",
             (new_status, task_id),
         )
         if cur.rowcount != 1:
@@ -2877,6 +2877,51 @@ def set_workspace_path(
 
 
 # ---------------------------------------------------------------------------
+def schedule_task(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    reason: Optional[str] = None,
+    expected_run_id: Optional[int] = None,
+) -> bool:
+    """Park a task in ``scheduled`` so it is waiting on time, not human input.
+
+    ``scheduled`` tasks are intentionally not dispatchable; an external cron,
+    human action, or automation can later call ``unblock_task`` to re-gate them
+    to ``ready`` (or ``todo`` if parents are still incomplete).
+    """
+    with write_txn(conn):
+        params: list[Any] = [task_id]
+        sql = """
+            UPDATE tasks
+               SET status       = 'scheduled',
+                   claim_lock   = NULL,
+                   claim_expires= NULL,
+                   worker_pid   = NULL
+             WHERE id = ?
+               AND status IN ('todo', 'ready', 'running', 'blocked')
+        """
+        if expected_run_id is not None:
+            sql += " AND current_run_id = ?"
+            params.append(int(expected_run_id))
+        cur = conn.execute(sql, params)
+        if cur.rowcount != 1:
+            return False
+        run_id = _end_run(
+            conn, task_id,
+            outcome="scheduled", status="scheduled",
+            summary=reason,
+        )
+        if run_id is None and reason:
+            run_id = _synthesize_ended_run(
+                conn, task_id,
+                outcome="scheduled",
+                summary=reason,
+            )
+        _append_event(conn, task_id, "scheduled", {"reason": reason}, run_id=run_id)
+        return True
+
+
 # Dispatcher (one-shot pass)
 # ---------------------------------------------------------------------------
 
