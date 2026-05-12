@@ -115,9 +115,11 @@ def make_attachment(
     content_type: Optional[str],
     size: int = 1024,
     url: str = "https://cdn.discordapp.com/attachments/fake/file",
+    title: Optional[str] = None,
 ) -> SimpleNamespace:
     return SimpleNamespace(
         filename=filename,
+        title=title,
         content_type=content_type,
         size=size,
         url=url,
@@ -174,6 +176,25 @@ class TestIncomingDocumentHandling:
         assert os.path.exists(event.media_urls[0])
         assert event.media_types == ["application/pdf"]
         assert "[Content of" not in (event.text or "")
+
+    @pytest.mark.asyncio
+    async def test_document_cache_prefers_attachment_title_for_display_filename(self, adapter):
+        """Discord's richer attachment title should preserve the human filename when filename is lossy."""
+        pdf_bytes = b"%PDF-1.4 fake content"
+
+        with _mock_aiohttp_download(pdf_bytes):
+            msg = make_message([
+                make_attachment(
+                    filename="09_.pdf",
+                    title="논리회로 09강.pdf",
+                    content_type="application/pdf",
+                )
+            ])
+            await adapter._handle_message(msg)
+
+        event = adapter.handle_message.call_args[0][0]
+        assert len(event.media_urls) == 1
+        assert os.path.basename(event.media_urls[0]).endswith("_논리회로 09강.pdf")
 
     @pytest.mark.asyncio
     async def test_txt_content_injected(self, adapter):
