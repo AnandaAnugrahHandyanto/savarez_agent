@@ -77,6 +77,86 @@ def check_slack_requirements() -> bool:
     return SLACK_AVAILABLE
 
 
+_TABLE_SEPARATOR_RE = re.compile(
+    r'^\s*\|?\s*:?-+:?\s*(?:\|\s*:?-+:?\s*){1,}\|?\s*$'
+)
+
+
+def _split_markdown_table_row(line: str) -> list[str]:
+    """Split a simple GFM pipe-table row into stripped cell values."""
+    stripped = line.strip()
+    if stripped.startswith('|'):
+        stripped = stripped[1:]
+    if stripped.endswith('|'):
+        stripped = stripped[:-1]
+    return [cell.strip() for cell in stripped.split('|')]
+
+
+def _render_table_block_for_slack(table_block: list[str]) -> str:
+    """Render a GFM table as an aligned Slack-friendly code block."""
+    if len(table_block) < 3:
+        return '\n'.join(table_block)
+
+    headers = _split_markdown_table_row(table_block[0])
+    rows = [_split_markdown_table_row(row) for row in table_block[2:]]
+    if len(headers) < 2 or not rows:
+        return '\n'.join(table_block)
+
+    width = len(headers)
+    normalized_rows: list[list[str]] = []
+    for row in rows:
+        if len(row) < width:
+            row = row + [''] * (width - len(row))
+        normalized_rows.append(row[:width])
+
+    widths = [len(header) for header in headers]
+    for row in normalized_rows:
+        for idx, cell in enumerate(row):
+            widths[idx] = max(widths[idx], len(cell))
+
+    def fmt(row: list[str]) -> str:
+        return '  '.join(cell.ljust(widths[idx]) for idx, cell in enumerate(row)).rstrip()
+
+    rendered = [fmt(headers), fmt(['-' * width for width in widths])]
+    rendered.extend(fmt(row) for row in normalized_rows)
+    return '```\n' + '\n'.join(rendered) + '\n```'
+
+
+def _wrap_markdown_tables_for_slack(text: str) -> str:
+    """Rewrite GFM pipe tables into aligned code blocks for Slack."""
+    if '|' not in text or '-' not in text:
+        return text
+
+    lines = text.split('\n')
+    out: list[str] = []
+    in_fence = False
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        stripped = line.lstrip()
+        if stripped.startswith('```'):
+            in_fence = not in_fence
+            out.append(line)
+            i += 1
+            continue
+        if in_fence:
+            out.append(line)
+            i += 1
+            continue
+        if '|' in line and i + 1 < len(lines) and _TABLE_SEPARATOR_RE.match(lines[i + 1]):
+            table_block = [line, lines[i + 1]]
+            j = i + 2
+            while j < len(lines) and lines[j].strip() and '|' in lines[j]:
+                table_block.append(lines[j])
+                j += 1
+            out.append(_render_table_block_for_slack(table_block))
+            i = j
+            continue
+        out.append(line)
+        i += 1
+    return '\n'.join(out)
+
+
 def _extract_text_from_slack_blocks(blocks: list) -> str:
     """Extract readable text from Slack Block Kit blocks, including quoted/forwarded content.
 
@@ -1139,6 +1219,10 @@ class SlackAdapter(BasePlatformAdapter):
             return key
 
         text = content
+
+        # 0) Rewrite GFM-style pipe tables before protecting code blocks. Slack
+        #    has no table markdown, but it preserves monospaced code blocks.
+        text = _wrap_markdown_tables_for_slack(text)
 
         # 1) Protect fenced code blocks (``` ... ```)
         text = re.sub(
