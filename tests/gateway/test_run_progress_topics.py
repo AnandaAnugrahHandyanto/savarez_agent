@@ -2,7 +2,9 @@
 
 import asyncio
 import importlib
+import queue
 import sys
+import threading
 import time
 import types
 from types import SimpleNamespace
@@ -12,6 +14,8 @@ import pytest
 from gateway.config import Platform, PlatformConfig, StreamingConfig
 from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType, SendResult
 from gateway.session import SessionSource
+
+_REAL_QUEUE_CLS = queue.Queue
 
 
 class ProgressCaptureAdapter(BasePlatformAdapter):
@@ -116,6 +120,90 @@ class DelayedProgressAgent:
         time.sleep(0.45)
         self.tool_progress_callback("tool.started", "terminal", "second command", {})
         time.sleep(0.1)
+        return {
+            "final_response": "done",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
+class RecordingQueue:
+    def __init__(self):
+        self._queue = _REAL_QUEUE_CLS()
+        self.items = []
+        self._lock = threading.Lock()
+
+    def put(self, item, *args, **kwargs):
+        with self._lock:
+            self.items.append(item)
+        return self._queue.put(item, *args, **kwargs)
+
+    def __getattr__(self, name):
+        return getattr(self._queue, name)
+
+
+class FirstQueueCaptureFactory:
+    def __init__(self, observed_queue):
+        self._observed_queue = observed_queue
+        self._used_observed_queue = False
+
+    def __call__(self, *args, **kwargs):
+        if not self._used_observed_queue:
+            self._used_observed_queue = True
+            return self._observed_queue
+        return _REAL_QUEUE_CLS(*args, **kwargs)
+
+
+class ConcurrentDedupAgent:
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        cb = self.tool_progress_callback
+        barrier = threading.Barrier(2)
+
+        def worker():
+            barrier.wait()
+            cb("tool.started", "web_search", "duplicate preview one", {})
+            barrier.wait()
+            cb("tool.started", "web_search", "duplicate preview two", {})
+
+        threads = [threading.Thread(target=worker) for _ in range(2)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        time.sleep(0.35)
+        return {
+            "final_response": "done",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
+class ConcurrentNewModeAgent:
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        cb = self.tool_progress_callback
+        barrier = threading.Barrier(2)
+
+        def worker(preview):
+            barrier.wait()
+            cb("tool.started", "terminal", preview, {})
+
+        threads = [
+            threading.Thread(target=worker, args=("first concurrent command",)),
+            threading.Thread(target=worker, args=("second concurrent command",)),
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        time.sleep(0.35)
         return {
             "final_response": "done",
             "messages": [],
@@ -345,6 +433,51 @@ async def test_run_agent_feishu_progress_replies_inside_existing_thread(monkeypa
     assert adapter.sent[0]["metadata"] == {"thread_id": "topic_17585"}
     assert adapter.edits
     assert adapter.edits[0]["message_id"] == "progress-1"
+
+
+@pytest.mark.asyncio
+async def test_run_agent_progress_dedup_is_serialized_under_concurrency(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
+
+    observed_queue = RecordingQueue()
+    monkeypatch.setattr(queue, "Queue", FirstQueueCaptureFactory(observed_queue))
+
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        ConcurrentDedupAgent,
+        session_id="sess-progress-dedup-race",
+    )
+
+    assert result["final_response"] == "done"
+    non_dedup_entries = [item for item in observed_queue.items if isinstance(item, str)]
+    assert len(non_dedup_entries) == 2
+    assert sum("duplicate preview one" in item for item in non_dedup_entries) == 1
+    assert sum("duplicate preview two" in item for item in non_dedup_entries) == 1
+    dedup_entries = [item for item in observed_queue.items if isinstance(item, tuple)]
+    assert len(dedup_entries) == 2
+    assert adapter.sent
+
+
+@pytest.mark.asyncio
+async def test_run_agent_progress_new_mode_serializes_last_tool_check(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "new")
+
+    observed_queue = RecordingQueue()
+    monkeypatch.setattr(queue, "Queue", FirstQueueCaptureFactory(observed_queue))
+
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        ConcurrentNewModeAgent,
+        session_id="sess-progress-new-race",
+    )
+
+    assert result["final_response"] == "done"
+    non_dedup_entries = [item for item in observed_queue.items if isinstance(item, str)]
+    assert len(non_dedup_entries) == 1
+    assert "concurrent command" in non_dedup_entries[0]
+    assert adapter.sent
 
 
 # ---------------------------------------------------------------------------
