@@ -134,7 +134,7 @@ export function ClarifyPrompt({ cols = 80, onAnswer, onCancel, req, t }: Clarify
 
         <Text color={t.color.muted}>
           {ti('prompt.typeHint', { action: choices.length ? ti('prompt.typeHintBack') : ti('prompt.typeHintCancel') })}{' · '}
-          {isMac ? 'Cmd+C copy · Cmd+V paste · Ctrl+C cancel' : ti('input.interruptHintMac')}
+          {isMac ? ti('prompt.copyPasteHint') : ti('input.interruptHintMac')}
         </Text>
       </Box>
     )

@@ -79,9 +79,9 @@ export const coreCommands: SlashCommand[] = [
             ],
             ['/fortune [random|daily]', translate(ctx.ui.locale,'sys.helpFortune')]
           ],
-          title: 'TUI 命令'
+          title: translate(ctx.ui.locale, 'section.tuiCommands')
         },
-        { rows: HOTKEY_DEFS.map(([k, key]) => [k, translate(ctx.ui.locale,key)]), title: '快捷键' }
+        { rows: HOTKEY_DEFS.map(([k, key]) => [k, translate(ctx.ui.locale,key)]), title: translate(ctx.ui.locale, 'section.hotkeys') }
       )
 
       ctx.transcript.panel(ctx.ui.theme.brand.helpHeader, sections)
@@ -162,7 +162,7 @@ export const coreCommands: SlashCommand[] = [
     name: 'status',
     run: (_arg, ctx) => {
       if (!ctx.sid) {
-        return ctx.transcript.sys('no active session')
+        return ctx.transcript.sys(translate(ctx.ui.locale, 'sys.noActiveSession'))
       }
 
       ctx.gateway
@@ -189,7 +189,7 @@ export const coreCommands: SlashCommand[] = [
     name: 'title',
     run: (arg, ctx) => {
       if (!ctx.sid) {
-        return ctx.transcript.sys('no active session')
+        return ctx.transcript.sys(translate(ctx.ui.locale, 'sys.noActiveSession'))
       }
 
       const title = arg.trim()
@@ -419,7 +419,7 @@ export const coreCommands: SlashCommand[] = [
     run: (arg, ctx) => {
       const text = ctx.gateway.gw.getLogTail(Math.min(80, Math.max(1, parseInt(arg, 10) || 20)))
 
-      text ? ctx.transcript.page(text, '日志') : ctx.transcript.sys(translate(ctx.ui.locale,'sys.noGatewayLogs'))
+      text ? ctx.transcript.page(text, translate(ctx.ui.locale, 'section.log')) : ctx.transcript.sys(translate(ctx.ui.locale,'sys.noGatewayLogs'))
     }
   },
 
@@ -434,7 +434,7 @@ export const coreCommands: SlashCommand[] = [
       const items = ctx.local.getHistoryItems().filter(m => m.role === 'user' || m.role === 'assistant')
 
       if (!items.length) {
-        return ctx.transcript.sys('no conversation yet')
+        return ctx.transcript.sys(translate(ctx.ui.locale, 'sys.noConversation'))
       }
 
       const preview = Math.max(80, parseInt(arg, 10) || 400)
@@ -447,7 +447,7 @@ export const coreCommands: SlashCommand[] = [
         return `[${tag}]\n${clipped}`
       })
 
-ctx.transcript.page(lines.join('\n\n'), '历史记录')
+ctx.transcript.page(lines.join('\n\n'), translate(ctx.ui.locale, 'section.history'))
     }
   },
 
@@ -460,7 +460,7 @@ ctx.transcript.page(lines.join('\n\n'), '历史记录')
         .some(m => m.role === 'user' || m.role === 'assistant' || m.role === 'tool')
 
       if (!hasConversation) {
-        return ctx.transcript.sys('no conversation yet')
+        return ctx.transcript.sys(translate(ctx.ui.locale, 'sys.noConversation'))
       }
 
       if (!ctx.sid) {
