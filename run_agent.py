@@ -1369,6 +1369,7 @@ class AIAgent:
         # Model response configuration
         self.max_tokens = max_tokens  # None = use model default
         self.reasoning_config = reasoning_config  # None = use default (medium for OpenRouter)
+        self._turn_reasoning_config = None
         self.service_tier = service_tier
         self.request_overrides = dict(request_overrides or {})
         self.prefill_messages = prefill_messages or []  # Prefilled conversation turns
@@ -9386,8 +9387,16 @@ class AIAgent:
                     content[-1]["cache_control"] = {"type": "ephemeral"}
                 break
 
+    def _current_reasoning_config(self) -> dict | None:
+        """Return the active reasoning config, including turn-scoped overrides."""
+        turn_config = getattr(self, "_turn_reasoning_config", None)
+        if isinstance(turn_config, dict):
+            return turn_config
+        return self.reasoning_config
+
     def _build_api_kwargs(self, api_messages: list) -> dict:
         """Build the keyword arguments dict for the active API mode."""
+        reasoning_config = self._current_reasoning_config()
         # Resolve the tools array exactly once. When the long-lived
         # prefix-cache layout is active (Claude on Anthropic / OpenRouter
         # / Nous Portal), attach a 1h cache_control marker to the last
@@ -9415,7 +9424,7 @@ class AIAgent:
                 messages=anthropic_messages,
                 tools=tools_for_api,
                 max_tokens=ephemeral_out if ephemeral_out is not None else self.max_tokens,
-                reasoning_config=self.reasoning_config,
+                reasoning_config=reasoning_config,
                 is_oauth=self._is_anthropic_oauth,
                 preserve_dots=self._anthropic_preserve_dots(),
                 context_length=ctx_len,
@@ -9458,7 +9467,7 @@ class AIAgent:
                 model=self.model,
                 messages=_msgs_for_codex,
                 tools=tools_for_api,
-                reasoning_config=self.reasoning_config,
+                reasoning_config=reasoning_config,
                 session_id=getattr(self, "session_id", None),
                 max_tokens=self.max_tokens,
                 request_overrides=self.request_overrides,
@@ -9554,7 +9563,7 @@ class AIAgent:
                 max_tokens=self.max_tokens,
                 ephemeral_max_output_tokens=_ephemeral_out,
                 max_tokens_param_fn=self._max_tokens_param,
-                reasoning_config=self.reasoning_config,
+                reasoning_config=reasoning_config,
                 request_overrides=self.request_overrides,
                 session_id=getattr(self, "session_id", None),
                 provider_profile=_profile,
@@ -9586,7 +9595,7 @@ class AIAgent:
             max_tokens=self.max_tokens,
             ephemeral_max_output_tokens=_ephemeral_out,
             max_tokens_param_fn=self._max_tokens_param,
-            reasoning_config=self.reasoning_config,
+            reasoning_config=reasoning_config,
             request_overrides=self.request_overrides,
             session_id=getattr(self, "session_id", None),
             model_lower=(self.model or "").lower(),
@@ -9700,7 +9709,7 @@ class AIAgent:
         """
         from agent.lmstudio_reasoning import resolve_lmstudio_effort
         return resolve_lmstudio_effort(
-            self.reasoning_config,
+            self._current_reasoning_config(),
             self._lmstudio_reasoning_options_cached(),
         )
 
@@ -9715,11 +9724,12 @@ class AIAgent:
         if not supported_efforts:
             return None
 
-        if self.reasoning_config and isinstance(self.reasoning_config, dict):
-            if self.reasoning_config.get("enabled") is False:
+        reasoning_config = self._current_reasoning_config()
+        if reasoning_config and isinstance(reasoning_config, dict):
+            if reasoning_config.get("enabled") is False:
                 return None
             requested_effort = str(
-                self.reasoning_config.get("effort", "medium")
+                reasoning_config.get("effort", "medium")
             ).strip().lower()
         else:
             requested_effort = "medium"
@@ -11467,9 +11477,10 @@ class AIAgent:
                 self._resolve_lmstudio_summary_reasoning_effort()
                 if _is_lmstudio_summary else None
             )
+            reasoning_config = self._current_reasoning_config()
             if not _is_lmstudio_summary and self._supports_reasoning_extra_body():
-                if self.reasoning_config is not None:
-                    summary_extra_body["reasoning"] = self.reasoning_config
+                if reasoning_config is not None:
+                    summary_extra_body["reasoning"] = reasoning_config
                 else:
                     summary_extra_body["reasoning"] = {
                         "enabled": True,
@@ -11540,7 +11551,7 @@ class AIAgent:
                 if self.api_mode == "anthropic_messages":
                     _tsum = self._get_transport()
                     _ant_kw = _tsum.build_kwargs(model=self.model, messages=api_messages, tools=None,
-                                   max_tokens=self.max_tokens, reasoning_config=self.reasoning_config,
+                                   max_tokens=self.max_tokens, reasoning_config=reasoning_config,
                                    is_oauth=self._is_anthropic_oauth,
                                    preserve_dots=self._anthropic_preserve_dots())
                     summary_response = self._anthropic_messages_create(_ant_kw)
@@ -11571,7 +11582,7 @@ class AIAgent:
                     _tretry = self._get_transport()
                     _ant_kw2 = _tretry.build_kwargs(model=self.model, messages=api_messages, tools=None,
                                     is_oauth=self._is_anthropic_oauth,
-                                    max_tokens=self.max_tokens, reasoning_config=self.reasoning_config,
+                                    max_tokens=self.max_tokens, reasoning_config=reasoning_config,
                                     preserve_dots=self._anthropic_preserve_dots())
                     retry_response = self._anthropic_messages_create(_ant_kw2)
                     _retry_result = _tretry.normalize_response(retry_response, strip_tool_prefix=self._is_anthropic_oauth)
@@ -11962,6 +11973,7 @@ class AIAgent:
         #
         # All injected context is ephemeral (not persisted to session DB).
         _plugin_user_context = ""
+        self._turn_reasoning_config = None
         try:
             from hermes_cli.plugins import invoke_hook as _invoke_hook
             _pre_results = _invoke_hook(
@@ -11971,13 +11983,17 @@ class AIAgent:
                 conversation_history=list(messages),
                 is_first_turn=(not bool(conversation_history)),
                 model=self.model,
+                reasoning_config=self.reasoning_config,
                 platform=getattr(self, "platform", None) or "",
                 sender_id=getattr(self, "_user_id", None) or "",
             )
             _ctx_parts: list[str] = []
             for r in _pre_results:
-                if isinstance(r, dict) and r.get("context"):
-                    _ctx_parts.append(str(r["context"]))
+                if isinstance(r, dict):
+                    if r.get("context"):
+                        _ctx_parts.append(str(r["context"]))
+                    if isinstance(r.get("reasoning_config"), dict):
+                        self._turn_reasoning_config = dict(r["reasoning_config"])
                 elif isinstance(r, str) and r.strip():
                     _ctx_parts.append(r)
             if _ctx_parts:

@@ -2527,6 +2527,64 @@ class TestRunConversation:
         assert all("message_count" in c and "messages" not in c for c in pre_request_calls)
         assert all("usage" in c and "response" not in c for c in post_request_calls)
 
+    def test_pre_llm_call_can_override_reasoning_for_current_turn(self, agent):
+        self._setup_agent(agent)
+        agent.provider = "openrouter"
+        agent.base_url = "https://openrouter.ai/api/v1"
+        agent.model = "anthropic/claude-sonnet-4-20250514"
+        agent.reasoning_config = {"enabled": True, "effort": "low"}
+        agent.client.chat.completions.create.return_value = _mock_response(
+            content="Final answer",
+            finish_reason="stop",
+        )
+
+        override_enabled = True
+
+        def _hook(name, **kwargs):
+            if name == "pre_llm_call":
+                if not override_enabled:
+                    return []
+                return [{"reasoning_config": {"enabled": True, "effort": "high"}}]
+            return []
+
+        with (
+            patch("hermes_cli.plugins.invoke_hook", side_effect=_hook),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hello")
+
+        assert result["final_response"] == "Final answer"
+        request_kwargs = agent.client.chat.completions.create.call_args.kwargs
+        assert request_kwargs["extra_body"]["reasoning"] == {
+            "enabled": True,
+            "effort": "high",
+        }
+        assert agent.reasoning_config == {"enabled": True, "effort": "low"}
+
+        override_enabled = False
+        agent.client.chat.completions.create.reset_mock()
+        agent.client.chat.completions.create.return_value = _mock_response(
+            content="Second answer",
+            finish_reason="stop",
+        )
+
+        with (
+            patch("hermes_cli.plugins.invoke_hook", side_effect=_hook),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            second_result = agent.run_conversation("hello again")
+
+        assert second_result["final_response"] == "Second answer"
+        second_request_kwargs = agent.client.chat.completions.create.call_args.kwargs
+        assert second_request_kwargs["extra_body"]["reasoning"] == {
+            "enabled": True,
+            "effort": "low",
+        }
+
     def test_content_with_tool_calls_stays_silent_for_non_cli_quiet_mode(self, agent):
         self._setup_agent(agent)
         agent.platform = None
