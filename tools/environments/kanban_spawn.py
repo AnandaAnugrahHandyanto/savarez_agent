@@ -210,7 +210,7 @@ class DockerRuntime:
             "HERMES_KANBAN_TASK", "HERMES_KANBAN_DB", "HERMES_KANBAN_BOARD",
             "HERMES_KANBAN_WORKSPACES_ROOT", "HERMES_KANBAN_WORKSPACE",
             "HERMES_KANBAN_RUN_ID", "HERMES_KANBAN_CLAIM_LOCK",
-            "HERMES_PROFILE", "HERMES_TENANT",
+            "HERMES_PROFILE", "HERMES_TENANT", "HERMES_HOME",
         ):
             if key in env and key not in seen:
                 args.extend(["-e", f"{key}={env[key]}"])
@@ -267,6 +267,15 @@ class DockerRuntime:
         resolved_board = kb._normalize_board_slug(board) or kb.get_current_board()
         env["HERMES_KANBAN_BOARD"] = resolved_board
         env["HERMES_PROFILE"] = profile_arg
+        # Phase-8 P0 (triple-flagged): _default_spawn injects HERMES_HOME so
+        # the worker reads profile-scoped config (fallback_providers,
+        # toolsets, agent settings). DockerRuntime must do the same — but
+        # the in-container HERMES_HOME points at /hermes (set by the
+        # Dockerfile), not the host's resolved profile path. The profile
+        # subdir gets in via the bind-mount of the host's hermes home.
+        # The container's hermes -p <profile> then reads
+        # /hermes/profiles/<profile>/config.yaml as expected.
+        env["HERMES_HOME"] = "/hermes"
 
         # Container name (truncated task id for readability)
         short = task.id.replace("t_", "")[:12]

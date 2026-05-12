@@ -501,3 +501,48 @@ def test_load_runtime_docker_now_in_registry(monkeypatch):
     })
     assert isinstance(rt, DockerRuntime)
     assert rt.name == "docker"
+
+
+# ---------------------------------------------------------------------------
+# Phase 8 P0 fix #1 — HERMES_HOME injection (triple-flag intersection)
+# ---------------------------------------------------------------------------
+
+def test_docker_runtime_injects_hermes_home(monkeypatch):
+    """Phase-8 P0 fix: the in-container HERMES_HOME must be /hermes so
+    the worker reads /hermes/profiles/<profile>/config.yaml not the
+    host's path. _default_spawn (Local) sets a host-resolved profile path;
+    Docker sets /hermes because the Dockerfile establishes that root.
+
+    Without this fix, the container falls back to Path.home()/.hermes
+    inside the image, silently ignoring profile-specific config (the
+    same bug `_default_spawn` was patched to fix at kanban_db.py:3981).
+    """
+    from tools.environments.kanban_spawn import DockerRuntime
+    _stub_docker_present(monkeypatch)
+    _stub_kanban_db_helpers(monkeypatch)
+    monkeypatch.setattr("hermes_cli.profiles.normalize_profile_name", lambda n: n)
+
+    rt = DockerRuntime({
+        "image_per_profile": {"default": "hermes-worker:latest"},
+        "bind_mounts": [], "env_passthrough": [],
+        "network": "hermes-net",
+    })
+
+    captured = {}
+    def fake_run(cmd, **kw):
+        captured["cmd"] = cmd
+        out = MagicMock()
+        out.stdout = b"cid_xyz\n"
+        out.returncode = 0
+        return out
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+    rt.spawn(_make_fake_task(), workspace="/tmp", board="main")
+
+    cmd = captured["cmd"]
+    env_idxs = [i for i, x in enumerate(cmd) if x == "-e"]
+    env_pairs = [cmd[i + 1] for i in env_idxs]
+    # Critical assertion: HERMES_HOME=/hermes is injected
+    assert any(e == "HERMES_HOME=/hermes" for e in env_pairs), (
+        f"HERMES_HOME=/hermes missing from env args. Got pairs: {env_pairs}"
+    )

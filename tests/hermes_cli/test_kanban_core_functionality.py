@@ -2642,16 +2642,10 @@ def test_default_spawn_auto_loads_kanban_worker_skill(kanban_home, monkeypatch):
     We intercept Popen to capture the argv without actually spawning a
     hermes subprocess (which would hang trying to call an LLM).
 
-    D1 Task 2 note: the test pins the assignee_to_profile map to identity
-    (empty dict → fallback) so the assertion against 'some-profile' still
-    holds. Without this pin, the swarm-as-persona default {"*": "worker"}
-    would rewrite the assignee, which is correct behavior but unrelated
-    to this test's intent (skill auto-loading).
+    D1 Task 2 + Phase-8 P0 note: default assignee_to_profile is now {}
+    (identity passthrough), so 'some-profile' passes through unchanged.
+    No monkeypatch needed.
     """
-    # Pin assignee map to identity (no rewrite) — this test is about skill
-    # loading, not about swarm-as-persona.
-    monkeypatch.setattr(kb, "_load_assignee_map", lambda: {})
-
     captured = {}
 
     class FakeProc:

@@ -9,8 +9,14 @@ import pytest
 # _load_assignee_map
 # ============================================================================
 
-def test_load_assignee_map_default_is_swarm_worker(monkeypatch):
-    """No config key → default {'*': 'worker'} (swarm-as-persona default)."""
+def test_load_assignee_map_default_is_empty(monkeypatch):
+    """No config key → default {} (identity passthrough — Phase-8 P0 fix).
+
+    The original D1 Task 2 default was {"*": "worker"}, but that broke
+    existing installs that don't have a 'worker' profile on disk. The
+    safe default is identity passthrough; operators opt-in to swarm
+    collapse by setting the wildcard explicitly.
+    """
     from hermes_cli import kanban_db
 
     monkeypatch.setattr(
@@ -18,11 +24,11 @@ def test_load_assignee_map_default_is_swarm_worker(monkeypatch):
         lambda: {"kanban": {}},
     )
     m = kanban_db._load_assignee_map()
-    assert m == {"*": "worker"}
+    assert m == {}
 
 
-def test_load_assignee_map_empty_dict_is_swarm_default(monkeypatch):
-    """Empty assignee_to_profile dict still yields the swarm default."""
+def test_load_assignee_map_empty_dict_is_empty(monkeypatch):
+    """Empty assignee_to_profile dict → empty map (identity passthrough)."""
     from hermes_cli import kanban_db
 
     monkeypatch.setattr(
@@ -30,7 +36,7 @@ def test_load_assignee_map_empty_dict_is_swarm_default(monkeypatch):
         lambda: {"kanban": {"assignee_to_profile": {}}},
     )
     m = kanban_db._load_assignee_map()
-    assert m == {"*": "worker"}
+    assert m == {}
 
 
 def test_load_assignee_map_honors_user_overrides(monkeypatch):
@@ -68,7 +74,7 @@ def test_load_assignee_map_normalizes_str_types(monkeypatch):
 
 
 def test_load_assignee_map_returns_default_on_config_error(monkeypatch):
-    """If load_config raises, return the swarm default — don't crash workers."""
+    """If load_config raises, return the safe default ({}) — don't crash workers."""
     from hermes_cli import kanban_db
 
     def _raise(*a, **kw):
@@ -76,11 +82,11 @@ def test_load_assignee_map_returns_default_on_config_error(monkeypatch):
 
     monkeypatch.setattr("hermes_cli.config.load_config", _raise)
     m = kanban_db._load_assignee_map()
-    assert m == {"*": "worker"}
+    assert m == {}
 
 
 def test_load_assignee_map_returns_default_for_invalid_type(monkeypatch):
-    """If kanban.assignee_to_profile is not a dict, fall back to default."""
+    """If kanban.assignee_to_profile is not a dict, fall back to {}."""
     from hermes_cli import kanban_db
 
     monkeypatch.setattr(
@@ -88,21 +94,40 @@ def test_load_assignee_map_returns_default_for_invalid_type(monkeypatch):
         lambda: {"kanban": {"assignee_to_profile": "not-a-dict"}},
     )
     m = kanban_db._load_assignee_map()
+    assert m == {}
+
+
+def test_load_assignee_map_drops_none_values(monkeypatch):
+    """Phase-8 P1 fix: None values in map are skipped (would produce
+    'hermes -p None' argv otherwise)."""
+    from hermes_cli import kanban_db
+
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"kanban": {"assignee_to_profile": {"*": "worker", "ops": None}}},
+    )
+    m = kanban_db._load_assignee_map()
     assert m == {"*": "worker"}
+    assert "ops" not in m
 
 
-# ============================================================================
-# _resolve_assignee_to_profile
-# ============================================================================
+def test_resolve_default_is_identity(monkeypatch):
+    """With no config, every assignee passes through unchanged (Phase-8 P0 fix)."""
+    from hermes_cli import kanban_db
 
-def test_resolve_default_collapses_to_worker(monkeypatch):
-    """With default map, every assignee tag → 'worker'."""
+    monkeypatch.setattr(kanban_db, "_load_assignee_map", lambda: {})
+    assert kanban_db._resolve_assignee_to_profile("researcher") == "researcher"
+    assert kanban_db._resolve_assignee_to_profile("analyst") == "analyst"
+    assert kanban_db._resolve_assignee_to_profile("worker") == "worker"
+
+
+def test_resolve_swarm_collapse_when_wildcard_explicitly_set(monkeypatch):
+    """When operator opts in by setting '*': 'worker', all tags collapse."""
     from hermes_cli import kanban_db
 
     monkeypatch.setattr(kanban_db, "_load_assignee_map", lambda: {"*": "worker"})
     assert kanban_db._resolve_assignee_to_profile("researcher") == "worker"
     assert kanban_db._resolve_assignee_to_profile("analyst") == "worker"
-    assert kanban_db._resolve_assignee_to_profile("anything-else") == "worker"
 
 
 def test_resolve_explicit_override_wins(monkeypatch):

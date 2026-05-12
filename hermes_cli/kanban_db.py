@@ -3905,28 +3905,46 @@ def _resolve_hermes_argv() -> list[str]:
 def _load_assignee_map() -> dict:
     """Load kanban.assignee_to_profile from config.yaml (D1 Task 2).
 
-    Default (when key absent or empty): ``{"*": "worker"}`` — swarm-as-persona,
-    every assignee tag collapses to a single ``worker`` profile.
+    Default (when key absent or empty): ``{}`` — identity passthrough,
+    byte-identical to pre-D1 behavior. Operators opt INTO swarm-as-persona
+    by setting the wildcard explicitly:
 
-    Override examples in config.yaml:
+        kanban:
+          assignee_to_profile:
+            "*": worker          # collapse all assignees to 'worker' profile
+
+    Or for partial collapse with overrides:
 
         kanban:
           assignee_to_profile:
             "*": worker
-            ops: ops-special      # ops tasks still go to dedicated profile
+            ops: ops-special    # ops tasks get a dedicated profile
 
-    Returns dict[str, str]. Returns the swarm default on any config error.
+    Phase-8 P0 fix (triple-flagged): the original D1 Task 2 default was
+    {"*": "worker"} which routed every task through a `worker` profile.
+    But this profile doesn't exist by default on existing Hermes installs
+    (which carry persona-fleet profiles like coder/researcher/analyst).
+    Defaulting to identity passthrough makes the upgrade safe; operators
+    set the wildcard explicitly when they've created the worker profile
+    and want swarm collapse.
+
+    Returns dict[str, str]. Returns the safe default ({}) on any config error.
     """
     try:
         from hermes_cli.config import load_config as _lc
         cfg = _lc() or {}
     except Exception:
-        return {"*": "worker"}
+        return {}
     raw = (cfg.get("kanban") or {}).get("assignee_to_profile") or {}
-    if not isinstance(raw, dict) or not raw:
-        return {"*": "worker"}
-    # Normalize to str:str
-    return {str(k): str(v) for k, v in raw.items()}
+    if not isinstance(raw, dict):
+        return {}
+    # Normalize to str:str (drops None values per Phase-8 P1 finding)
+    out = {}
+    for k, v in raw.items():
+        if v is None:
+            continue   # Skip None values — they'd produce 'hermes -p None' argv
+        out[str(k)] = str(v)
+    return out
 
 
 def _resolve_assignee_to_profile(assignee: str) -> str:
@@ -3936,7 +3954,11 @@ def _resolve_assignee_to_profile(assignee: str) -> str:
       1. Exact match in the map
       2. Wildcard '*' fallback
       3. Identity (return assignee unchanged) — preserves pre-D1 behavior
-         when user explicitly deletes the wildcard from config.
+         when no map is configured.
+
+    Phase-8 P0 fix: default behavior with no config is identity passthrough,
+    matching pre-D1 for safe upgrades. Operators opt INTO swarm collapse
+    by setting `kanban.assignee_to_profile.'*': worker` explicitly.
     """
     m = _load_assignee_map()
     if assignee in m:
