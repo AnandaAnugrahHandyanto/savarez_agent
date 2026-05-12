@@ -1,6 +1,6 @@
 ---
 name: memori-memory
-description: Use Memori agent-native memory in Hermes for targeted recall, summaries, quota checks, signup, feedback, and trace-backed continuity across sessions.
+description: Use when working with Memori agent-native memory in Hermes for targeted recall, summaries, quota checks, signup, feedback, and trace-backed continuity across sessions.
 version: 0.1.0
 author: Memori Labs
 license: MIT
@@ -14,6 +14,8 @@ prerequisites:
 ---
 
 # Memori Memory
+
+## Overview
 
 Memori is agent-native memory infrastructure: an LLM-agnostic layer that structures memory from natural language and from agent execution trace.
 
@@ -29,6 +31,14 @@ Use it to understand:
 - Tooling and integrations
 - Expected behavior and constraints
 - Safety and privacy implications
+
+## Quick Reference
+
+- `memori_recall`: retrieve precise memories by query, project, session, time range, source, or signal.
+- `memori_recall_summary`: retrieve a state summary for session starts, daily briefs, or broad status checks.
+- `memori_feedback`: report irrelevant, missing, stale, or especially useful memory behavior.
+- `memori_signup`: create a Memori account or request an API key when the user explicitly asks.
+- `memori_quota`: check usage, quota, storage, or memory capacity when the user asks or limits appear to be reached.
 
 ## When to Use Memori
 
@@ -137,12 +147,21 @@ Useful daily brief shape:
 
 Treat summaries as working state, not unquestionable truth.
 
-## Typical Workflow
+## Procedure
 
 1. Start of a meaningful session: retrieve a summary.
 2. During the task: use targeted recall.
 3. When memory is missing or incorrect: send feedback.
 4. When limits are reached: degrade gracefully.
+
+## Common Pitfalls
+
+- Do not use broad recall when the user needs one specific fact, decision, or prior outcome.
+- Do not treat summaries as authoritative when exact details matter; use targeted recall or verify against current sources.
+- Do not call signup, quota, or feedback tools unless the user's request or a Memori error makes them relevant.
+- Do not provide a `session_id` without also providing a `project_id`.
+- Do not hide privacy tradeoffs: Memori captures completed-turn trace, including tool arguments and final tool result content after Hermes processing.
+- Do not let memory override current user instructions, repository rules, or verified facts from the active workspace.
 
 ## Safety and Correctness
 
@@ -212,3 +231,18 @@ When limits are reached or near:
 Example:
 
 > Memory limits have been reached. I can continue with limited recall, or you can upgrade to restore full functionality.
+
+## Verification
+
+Confirm the skill is working by loading it in a fresh Hermes session and checking that the agent follows the Memori-specific guidance:
+
+```bash
+hermes --toolsets skills -q "Use the memori-memory skill to explain when to use Memori recall versus Memori summaries."
+```
+
+Expected behavior:
+
+- The agent should load the Memori skill rather than answer from generic memory knowledge.
+- The answer should distinguish precise recall from broad state summaries.
+- The answer should mention targeted use, avoiding unnecessary recall, and treating current user instructions as higher priority than memory.
+- If Memori credentials or the `memori` package are unavailable, the agent should explain the setup gap without inventing recall results.
