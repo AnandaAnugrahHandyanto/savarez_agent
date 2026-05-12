@@ -2062,9 +2062,18 @@ class BasePlatformAdapter(ABC):
         cleaned = cleaned.replace("[[as_document]]", "")
         
         # Extract MEDIA:<path> tags, allowing optional whitespace after the colon
-        # and quoted/backticked paths for LLM-formatted outputs.
+        # and quoted/backticked paths for LLM-formatted outputs.  Unquoted
+        # absolute paths may contain spaces, including Windows drive paths
+        # (``C:\\Users\\Foo Bar\\file.pdf``), so match through a known media/file
+        # extension instead of stopping at the first whitespace.
+        media_exts = (
+            "png|jpe?g|gif|webp|mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a|flac|"
+            "epub|pdf|zip|rar|7z|docx?|xlsx?|pptx?|txt|csv|apk|ipa|kmz|kml|geojson|gpx|json|xml|html?"
+        )
         media_pattern = re.compile(
-            r'''[`"']?MEDIA:\s*(?P<path>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|(?:~/|/)\S+(?:[^\S\n]+\S+)*?\.(?:png|jpe?g|gif|webp|mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a|flac|epub|pdf|zip|rar|7z|docx?|xlsx?|pptx?|txt|csv|apk|ipa)(?=[\s`"',;:)\]}]|$)|\S+)[`"']?'''
+            r'''[`"']?MEDIA:\s*(?P<path>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|(?:[A-Za-z]:[\\/]|~/|/)[^\n`"']*?\.(?:'''
+            + media_exts
+            + r''')(?=[\s`"',;:)\]}]|$)|\S+)[`"']?'''
         )
         for match in media_pattern.finditer(content):
             path = match.group("path").strip()

@@ -329,6 +329,27 @@ class TestExtractMedia:
         assert media == [("/tmp/Jane Doe/speech.flac", False)]
         assert cleaned == ""
 
+    def test_media_tag_supports_unquoted_windows_paths_with_spaces(self):
+        content = r"MEDIA:C:\Users\Confera\OneDrive\Nusa Alam Kreasindo\Project\Foo\report.pdf"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert media == [
+            (r"C:\Users\Confera\OneDrive\Nusa Alam Kreasindo\Project\Foo\report.pdf", False)
+        ]
+        assert cleaned == ""
+
+    def test_media_tag_supports_unquoted_spaced_gis_paths(self):
+        content = "Map attached\nMEDIA:/tmp/Client Project/site boundary.geojson\nDone"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert media == [("/tmp/Client Project/site boundary.geojson", False)]
+        assert "Map attached" in cleaned
+        assert "Done" in cleaned
+
+    def test_media_tag_supports_unquoted_windows_gis_paths_with_spaces(self):
+        content = r"MEDIA:C:\Users\Confera\GIS Files\site boundary.kmz"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert media == [(r"C:\Users\Confera\GIS Files\site boundary.kmz", False)]
+        assert cleaned == ""
+
     def test_as_document_directive_stripped_from_cleaned_text(self):
         """[[as_document]] is a routing directive — strip it from
         user-visible text just like [[audio_as_voice]]. Callers detect the
