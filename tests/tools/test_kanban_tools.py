@@ -917,6 +917,70 @@ def test_kanban_guidance_prompt_size_bounded(monkeypatch, tmp_path):
     )
 
 
+def test_kanban_guidance_resolved_once_at_init(monkeypatch, tmp_path):
+    """Regression: the kanban-worker classification must be resolved once
+    at __init__ and cached on ``self._kanban_worker_guidance``, not re-checked
+    against ``valid_tool_names`` on every system-prompt rebuild.
+
+    The system prompt is rebuilt on every context-compression event; the
+    KANBAN_GUIDANCE block is session-static (the dispatcher decides worker
+    vs. non-worker once at spawn time), so the membership test belongs in
+    __init__ — not in the hot path. This test asserts the cache exists
+    and is the source of truth.
+    """
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_fake")
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    from pathlib import Path as _P
+    monkeypatch.setattr(_P, "home", lambda: tmp_path)
+
+    from run_agent import AIAgent
+    from agent.prompt_builder import KANBAN_GUIDANCE
+
+    a = AIAgent(
+        api_key="test",
+        base_url="https://openrouter.ai/api/v1",
+        quiet_mode=True,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+
+    # 1. Cache attribute exists and equals KANBAN_GUIDANCE for workers.
+    assert hasattr(a, "_kanban_worker_guidance")
+    assert a._kanban_worker_guidance == KANBAN_GUIDANCE
+
+    # 2. The system-prompt build consumes the cache, not the live tool set.
+    #    If we remove ``kanban_show`` from valid_tool_names AFTER init, the
+    #    cached guidance still drives the prompt — proving the membership
+    #    test isn't re-run per build.
+    a.valid_tool_names = a.valid_tool_names - {"kanban_show"}
+    prompt = a._build_system_prompt()
+    assert "Kanban task execution protocol" in prompt
+
+
+def test_kanban_guidance_cache_empty_for_normal_chat(monkeypatch, tmp_path):
+    """Normal chat sessions (no HERMES_KANBAN_TASK) must have an empty
+    ``_kanban_worker_guidance`` cache so we never accidentally inject the
+    worker protocol into a non-worker prompt."""
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    from pathlib import Path as _P
+    monkeypatch.setattr(_P, "home", lambda: tmp_path)
+
+    from run_agent import AIAgent
+    a = AIAgent(
+        api_key="test",
+        base_url="https://openrouter.ai/api/v1",
+        quiet_mode=True,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+    assert a._kanban_worker_guidance == ""
+
+
 # ---------------------------------------------------------------------------
 # Worker task-ownership enforcement (regression tests for #19534)
 # ---------------------------------------------------------------------------

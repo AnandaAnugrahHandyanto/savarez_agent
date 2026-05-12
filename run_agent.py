@@ -1792,7 +1792,7 @@ class AIAgent:
             tool_names = sorted(self.valid_tool_names)
             if not self.quiet_mode:
                 print(f"🛠️  Loaded {len(self.tools)} tools: {', '.join(tool_names)}")
-                
+
                 # Show filtering info if applied
                 if enabled_toolsets:
                     print(f"   ✅ Enabled toolsets: {', '.join(enabled_toolsets)}")
@@ -1800,6 +1800,16 @@ class AIAgent:
                     print(f"   ❌ Disabled toolsets: {', '.join(disabled_toolsets)}")
         elif not self.quiet_mode:
             print("🛠️  No tools loaded (all tools filtered out or unavailable)")
+
+        # Kanban worker/orchestrator lifecycle guidance is session-static:
+        # the dispatcher decides at spawn time whether this process is a
+        # kanban worker (kanban_show tool is present iff HERMES_KANBAN_TASK
+        # is set — see tools/kanban_tools.py:54). Resolving the ~835-token
+        # block once here avoids re-running the membership test + reference
+        # on every system-prompt rebuild (init + each context compression).
+        self._kanban_worker_guidance = (
+            KANBAN_GUIDANCE if "kanban_show" in self.valid_tool_names else ""
+        )
         
         # Check tool requirements
         if self.tools and not self.quiet_mode:
@@ -5783,9 +5793,9 @@ class AIAgent:
         # Kanban worker/orchestrator lifecycle — only present when the
         # dispatcher spawned this process (kanban_show check_fn gates on
         # HERMES_KANBAN_TASK env var). Normal chat sessions never see
-        # this block.
-        if "kanban_show" in self.valid_tool_names:
-            tool_guidance.append(KANBAN_GUIDANCE)
+        # this block. Resolved once at __init__ (see _kanban_worker_guidance).
+        if self._kanban_worker_guidance:
+            tool_guidance.append(self._kanban_worker_guidance)
         if tool_guidance:
             stable_parts.append(" ".join(tool_guidance))
 
