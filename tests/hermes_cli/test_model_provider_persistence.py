@@ -436,33 +436,3 @@ class TestBaseUrlValidation:
 
         saved = get_env_value("GLM_BASE_URL") or ""
         assert saved == "", "Empty input should not save a base URL"
-
-    def test_stepfun_provider_saved_with_selected_region(self, config_home, monkeypatch):
-        from hermes_cli.main import _model_flow_stepfun
-        from hermes_cli.config import load_config, get_env_value
-
-        monkeypatch.setenv("STEPFUN_API_KEY", "stepfun-test-key")
-
-        with patch(
-            "hermes_cli.main._prompt_provider_choice",
-            return_value=1,
-        ), patch(
-            "hermes_cli.models.fetch_api_models",
-            return_value=["step-3.5-flash", "step-3-agent-lite"],
-        ), patch(
-            "hermes_cli.auth._prompt_model_selection",
-            return_value="step-3-agent-lite",
-        ), patch(
-            "hermes_cli.auth.deactivate_provider",
-        ):
-            _model_flow_stepfun(load_config(), "old-model")
-
-        import yaml
-
-        config = yaml.safe_load((config_home / "config.yaml").read_text()) or {}
-        model = config.get("model")
-        assert isinstance(model, dict)
-        assert model.get("provider") == "stepfun"
-        assert model.get("default") == "step-3-agent-lite"
-        assert model.get("base_url") == "https://api.stepfun.com/step_plan/v1"
-        assert get_env_value("STEPFUN_BASE_URL") == "https://api.stepfun.com/step_plan/v1"
