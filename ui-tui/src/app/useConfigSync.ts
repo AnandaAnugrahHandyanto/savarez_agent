@@ -146,6 +146,7 @@ export const applyDisplay = (
     sections: resolveSections(d.sections),
     showCost: !!d.show_cost,
     showReasoning: !!d.show_reasoning,
+    selectioncopy: d.selectioncopy !== false,
     statusBar: normalizeStatusBar(d.tui_statusbar),
     streaming: d.streaming !== false
   })

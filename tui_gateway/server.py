@@ -3941,6 +3941,26 @@ def _(rid, params: dict) -> dict:
         _write_config_key("display.mouse_tracking", nv)
         return _ok(rid, {"key": key, "value": "on" if nv else "off"})
 
+    if key == "selectioncopy":
+        raw = str(value or "").strip().lower()
+        cfg = _load_cfg()
+        display = cfg.get("display") if isinstance(cfg.get("display"), dict) else {}
+        current = bool(display.get("selectioncopy", True))
+
+        if raw in {"", "toggle"}:
+            nv = not current
+        elif raw in {"on", "true", "1"}:
+            nv = True
+        elif raw in {"off", "false", "0"}:
+            nv = False
+        elif raw == "status":
+            return _ok(rid, {"key": key, "value": "on" if current else "off"})
+        else:
+            return _err(rid, 4002, f"unknown selectioncopy value: {value}")
+
+        _write_config_key("display.selectioncopy", nv)
+        return _ok(rid, {"key": key, "value": "on" if nv else "off"})
+
     if key == "indicator":
         # Use an explicit None check rather than `value or ""` so falsy
         # non-string inputs (0, False, []) still surface as themselves
@@ -4114,6 +4134,10 @@ def _(rid, params: dict) -> dict:
         display = _load_cfg().get("display")
         on = _display_mouse_tracking(display)
         return _ok(rid, {"value": "on" if on else "off"})
+    if key == "selectioncopy":
+        display = _load_cfg().get("display")
+        on = bool(display.get("selectioncopy", True)) if isinstance(display, dict) else True
+        return _ok(rid, {"value": "on" if on else "off"})
     if key == "mtime":
         cfg_path = _hermes_home / "config.yaml"
         try:
@@ -4250,6 +4274,7 @@ _TUI_EXTRA: list[tuple[str, str, str]] = [
     ("/compact", "Toggle compact display mode", "TUI"),
     ("/logs", "Show recent gateway log lines", "TUI"),
     ("/mouse", "Toggle mouse/wheel tracking [on|off|toggle]", "TUI"),
+    ("/selectioncopy", "Toggle auto-copy on mouse selection [on|off|status]", "TUI"),
 ]
 
 # Commands that queue messages onto _pending_input in the CLI.

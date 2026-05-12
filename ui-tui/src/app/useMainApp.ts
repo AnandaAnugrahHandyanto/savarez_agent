@@ -161,6 +161,9 @@ export function useMainApp(gw: GatewayClient) {
   // so React doesn't re-render MainApp on every drag-move tick. The version
   // ref de-dupes against re-entrant notifications.
   useEffect(() => {
+    if (!ui.selectioncopy) {
+      return
+    }
     return selection.subscribe(() => {
       if (!selection.hasSelection()) {
         return
@@ -179,9 +182,11 @@ export function useMainApp(gw: GatewayClient) {
       }
 
       lastCopiedVersionRef.current = version
-      void selection.copySelectionNoClear()
+      void selection.copySelectionNoClear().then(() => {
+        turnController.pushToast('clipboard-copy', 'Copied to clipboard', 'success')
+      })
     })
-  }, [selection])
+  }, [selection, ui.selectioncopy])
 
   const clearSelection = useCallback(() => {
     selection.clearSelection()

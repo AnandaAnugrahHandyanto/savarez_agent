@@ -1492,6 +1492,60 @@ def test_config_mouse_uses_documented_key_with_legacy_fallback(monkeypatch):
     assert get_null["result"]["value"] == "on"
 
 
+def test_config_selectioncopy_get_set(monkeypatch):
+    cfg = {"display": {"selectioncopy": True}}
+    writes = []
+
+    monkeypatch.setattr(server, "_load_cfg", lambda: cfg)
+    monkeypatch.setattr(
+        server, "_write_config_key", lambda path, value: writes.append((path, value))
+    )
+
+    get_on = server.handle_request(
+        {"id": "1", "method": "config.get", "params": {"key": "selectioncopy"}}
+    )
+    assert get_on["result"]["value"] == "on"
+
+    set_off = server.handle_request(
+        {"id": "2", "method": "config.set", "params": {"key": "selectioncopy", "value": "off"}}
+    )
+    assert set_off["result"] == {"key": "selectioncopy", "value": "off"}
+    assert writes == [("display.selectioncopy", False)]
+
+    cfg["display"] = {"selectioncopy": False}
+    get_off = server.handle_request(
+        {"id": "3", "method": "config.get", "params": {"key": "selectioncopy"}}
+    )
+    assert get_off["result"]["value"] == "off"
+
+    set_toggle = server.handle_request(
+        {"id": "4", "method": "config.set", "params": {"key": "selectioncopy", "value": "toggle"}}
+    )
+    assert set_toggle["result"] == {"key": "selectioncopy", "value": "on"}
+    assert writes[-1] == ("display.selectioncopy", True)
+
+
+def test_complete_slash_includes_tui_selectioncopy_command():
+    resp = server.handle_request(
+        {"id": "1", "method": "complete.slash", "params": {"text": "/sel"}}
+    )
+
+    assert any(item["text"] == "selectioncopy" for item in resp["result"]["items"])
+
+
+def test_commands_catalog_includes_tui_selectioncopy_command():
+    resp = server.handle_request(
+        {"id": "1", "method": "commands.catalog", "params": {}}
+    )
+
+    pairs = dict(resp["result"]["pairs"])
+    tui_cat = next(c for c in resp["result"]["categories"] if c["name"] == "TUI")
+    tui_pairs = dict(tui_cat["pairs"])
+
+    assert "/selectioncopy" in pairs
+    assert "/selectioncopy" in tui_pairs
+
+
 def test_enable_gateway_prompts_sets_gateway_env(monkeypatch):
     monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
     monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)

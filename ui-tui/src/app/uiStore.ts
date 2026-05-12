@@ -20,6 +20,7 @@ const buildUiState = (): UiState => ({
   sections: {},
   showCost: false,
   showReasoning: false,
+  selectioncopy: true,
   sid: null,
   status: 'summoning hermes…',
   statusBar: 'top',

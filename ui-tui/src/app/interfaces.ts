@@ -109,6 +109,7 @@ export interface UiState {
   showCost: boolean
   showReasoning: boolean
   indicatorStyle: IndicatorStyle
+  selectioncopy: boolean
   sid: null | string
   status: string
   statusBar: StatusBarMode

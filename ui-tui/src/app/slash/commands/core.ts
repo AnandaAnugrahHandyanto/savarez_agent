@@ -112,6 +112,24 @@ export const coreCommands: SlashCommand[] = [
   },
 
   {
+    help: 'toggle automatic copy on mouse selection [on|off|toggle]',
+    name: 'selectioncopy',
+    run: (arg, ctx) => {
+      const current = ctx.ui.selectioncopy
+      const next = flagFromArg(arg, current)
+
+      if (next === null) {
+        return ctx.transcript.sys('usage: /selectioncopy [on|off|toggle]')
+      }
+
+      patchUiState({ selectioncopy: next })
+      ctx.gateway.rpc<ConfigSetResponse>('config.set', { key: 'selectioncopy', value: next ? 'on' : 'off' }).catch(() => {})
+
+      queueMicrotask(() => ctx.transcript.sys(`selection copy ${next ? 'on' : 'off'}`))
+    }
+  },
+
+  {
     aliases: ['new'],
     help: 'start a new session',
     name: 'clear',

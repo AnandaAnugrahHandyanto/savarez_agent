@@ -7589,6 +7589,8 @@ class HermesCLI:
             self._handle_voice_command(cmd_original)
         elif canonical == "busy":
             self._handle_busy_command(cmd_original)
+        elif canonical == "selectioncopy":
+            self._handle_selectioncopy_command(cmd_original)
         else:
             # Check for user-defined quick commands (bypass agent loop, no LLM call)
             base_cmd = cmd_lower.split()[0]
@@ -8511,6 +8513,59 @@ class HermesCLI:
             _cprint(f"  {_DIM}{behavior}{_RST}")
         else:
             _cprint(f"  {_ACCENT}✓ Busy input mode set to '{arg}' (session only){_RST}")
+
+    def _handle_selectioncopy_command(self, cmd: str):
+        """Handle /selectioncopy — toggle TUI auto-copy on mouse selection.
+
+        Usage:
+            /selectioncopy          Toggle current state
+            /selectioncopy on       Enable auto-copy
+            /selectioncopy off      Disable auto-copy
+            /selectioncopy status   Show current state
+
+        In normal CLI, this toggles the shared config setting. The actual
+        automatic copy-on-select behavior only applies in TUI mode because
+        the terminal emulator owns the selection buffer in standard CLI.
+        """
+        from hermes_cli.config import load_config
+        from hermes_cli.colors import Colors as _Colors
+
+        parts = cmd.strip().split(maxsplit=1)
+        arg = parts[1].strip().lower() if len(parts) > 1 else ""
+
+        cfg = load_config() or {}
+        display = cfg.get("display") if isinstance(cfg.get("display"), dict) else {}
+        current = bool(display.get("selectioncopy", True))
+
+        if arg in {"status", "?"}:
+            state = "ON" if current else "OFF"
+            _cprint(
+                f"  {_Colors.BOLD}Selection auto-copy:{_Colors.RESET} {state}\n"
+                f"  {_Colors.DIM}Applies to TUI mode; normal CLI cannot auto-copy terminal selections.{_Colors.RESET}"
+            )
+            _cprint(f"  {_Colors.DIM}Usage: /selectioncopy [on|off|status]{_Colors.RESET}")
+            return
+
+        if arg in {"on", "enable", "true", "1"}:
+            new_state = True
+        elif arg in {"off", "disable", "false", "0"}:
+            new_state = False
+        elif arg in {"", "toggle"}:
+            new_state = not current
+        else:
+            _cprint(f"  {_Colors.DIM}Usage: /selectioncopy [on|off|status]{_Colors.RESET}")
+            return
+
+        if save_config_value("display.selectioncopy", new_state):
+            state = (
+                f"{_Colors.GREEN}ON{_Colors.RESET}" if new_state
+                else f"{_Colors.DIM}OFF{_Colors.RESET}"
+            )
+            _cprint(f"  Selection auto-copy: {state} (saved)")
+        else:
+            state = "ON" if new_state else "OFF"
+            _cprint(f"  Selection auto-copy: {state}")
+        _cprint(f"  {_Colors.DIM}Note: auto-copy only works in TUI mode.{_Colors.RESET}")
 
     def _handle_fast_command(self, cmd: str):
         """Handle /fast — toggle fast mode (OpenAI Priority Processing / Anthropic Fast Mode)."""
