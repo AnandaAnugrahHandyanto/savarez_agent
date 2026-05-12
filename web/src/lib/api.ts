@@ -139,11 +139,27 @@ export const api = {
 
   // Cron jobs
   getCronJobs: () => fetchJSON<CronJob[]>("/api/cron/jobs"),
-  createCronJob: (job: { prompt: string; schedule: string; name?: string; deliver?: string }) =>
+  createCronJob: (job: {
+    prompt: string;
+    schedule: string;
+    name?: string;
+    deliver?: string;
+    model?: string;
+    provider?: string;
+  }) =>
     fetchJSON<CronJob>("/api/cron/jobs", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(job),
+    }),
+  updateCronJob: (
+    id: string,
+    updates: Partial<Pick<CronJob, "model" | "provider">>,
+  ) =>
+    fetchJSON<CronJob>(`/api/cron/jobs/${encodeURIComponent(id)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ updates }),
     }),
   pauseCronJob: (id: string) =>
     fetchJSON<{ ok: boolean }>(`/api/cron/jobs/${id}/pause`, { method: "POST" }),
@@ -556,6 +572,9 @@ export interface CronJob {
   name?: string | null;
   prompt?: string | null;
   script?: string | null;
+  model?: string | null;
+  provider?: string | null;
+  base_url?: string | null;
   schedule?: { kind?: string; expr?: string; display?: string };
   schedule_display?: string | null;
   enabled: boolean;

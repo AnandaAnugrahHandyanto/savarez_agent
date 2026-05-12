@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { Clock, Pause, Play, Plus, Trash2, Zap } from "lucide-react";
+import { Clock, Pause, Pencil, Play, Plus, Trash2, Zap } from "lucide-react";
 import { Badge } from "@nous-research/ui/ui/components/badge";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Select, SelectOption } from "@nous-research/ui/ui/components/select";
@@ -39,6 +39,14 @@ function getJobPrompt(job: CronJob): string {
 
 function getJobName(job: CronJob): string {
   return asText(job.name).trim();
+}
+
+function getJobModel(job: CronJob): string {
+  return asText(job.model).trim();
+}
+
+function getJobProvider(job: CronJob): string {
+  return asText(job.provider).trim();
 }
 
 function getJobTitle(job: CronJob): string {
@@ -86,7 +94,13 @@ export default function CronPage() {
   const [schedule, setSchedule] = useState("");
   const [name, setName] = useState("");
   const [deliver, setDeliver] = useState("local");
+  const [model, setModel] = useState("");
+  const [provider, setProvider] = useState("");
   const [creating, setCreating] = useState(false);
+  const [editingJobId, setEditingJobId] = useState<string | null>(null);
+  const [editModel, setEditModel] = useState("");
+  const [editProvider, setEditProvider] = useState("");
+  const [savingEdit, setSavingEdit] = useState(false);
 
   const loadJobs = useCallback(() => {
     api
@@ -112,17 +126,44 @@ export default function CronPage() {
         schedule: schedule.trim(),
         name: name.trim() || undefined,
         deliver,
+        model: model.trim() || undefined,
+        provider: provider.trim() || undefined,
       });
       showToast(t.common.create + " ✓", "success");
       setPrompt("");
       setSchedule("");
       setName("");
       setDeliver("local");
+      setModel("");
+      setProvider("");
       loadJobs();
     } catch (e) {
       showToast(`${t.config.failedToSave}: ${e}`, "error");
     } finally {
       setCreating(false);
+    }
+  };
+
+  const openModelEdit = (job: CronJob) => {
+    setEditingJobId(job.id);
+    setEditModel(getJobModel(job));
+    setEditProvider(getJobProvider(job));
+  };
+
+  const handleSaveModelEdit = async (job: CronJob) => {
+    setSavingEdit(true);
+    try {
+      await api.updateCronJob(job.id, {
+        model: editModel.trim() || null,
+        provider: editProvider.trim() || null,
+      });
+      showToast(t.common.save + " ✓", "success");
+      setEditingJobId(null);
+      loadJobs();
+    } catch (e) {
+      showToast(`${t.config.failedToSave}: ${e}`, "error");
+    } finally {
+      setSavingEdit(false);
     }
   };
 
@@ -243,6 +284,28 @@ export default function CronPage() {
               />
             </div>
 
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div className="grid gap-2">
+                <Label htmlFor="cron-model">Model (optional)</Label>
+                <Input
+                  id="cron-model"
+                  placeholder="default from config.yaml"
+                  value={model}
+                  onChange={(e) => setModel(e.target.value)}
+                />
+              </div>
+
+              <div className="grid gap-2">
+                <Label htmlFor="cron-provider">Provider (optional)</Label>
+                <Input
+                  id="cron-provider"
+                  placeholder="e.g. openrouter, anthropic, custom:name"
+                  value={provider}
+                  onChange={(e) => setProvider(e.target.value)}
+                />
+              </div>
+            </div>
+
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
               <div className="grid gap-2">
                 <Label htmlFor="cron-schedule">{t.cron.schedule}</Label>
@@ -317,10 +380,13 @@ export default function CronPage() {
           const title = getJobTitle(job);
           const hasName = Boolean(getJobName(job));
           const deliver = asText(job.deliver);
+          const jobModel = getJobModel(job);
+          const jobProvider = getJobProvider(job);
+          const isEditingModel = editingJobId === job.id;
 
           return (
             <Card key={job.id}>
-              <CardContent className="flex items-center gap-4 py-4">
+              <CardContent className="flex flex-col gap-4 py-4 sm:flex-row sm:items-center">
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 mb-1">
                     <span className="font-medium text-sm truncate">
@@ -338,8 +404,16 @@ export default function CronPage() {
                       {truncateText(promptText, 100)}
                     </p>
                   )}
-                  <div className="flex items-center gap-4 text-xs text-muted-foreground">
-                    <span className="font-mono">{getJobScheduleDisplay(job)}</span>
+                  <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
+                    <span className="font-mono truncate">
+                      {getJobScheduleDisplay(job)}
+                    </span>
+                    <span className="min-w-0 truncate">
+                      Model: {jobModel || "default"}
+                    </span>
+                    <span className="min-w-0 truncate">
+                      Provider: {jobProvider || "default"}
+                    </span>
                     <span>
                       {t.cron.last}: {formatTime(job.last_run_at)}
                     </span>
@@ -354,7 +428,17 @@ export default function CronPage() {
                   )}
                 </div>
 
-                <div className="flex items-center gap-1 shrink-0">
+                <div className="flex items-center gap-1 shrink-0 self-end sm:self-auto">
+                  <Button
+                    ghost
+                    size="icon"
+                    title="Edit model/provider"
+                    aria-label="Edit model/provider"
+                    onClick={() => openModelEdit(job)}
+                  >
+                    <Pencil />
+                  </Button>
+
                   <Button
                     ghost
                     size="icon"
@@ -392,6 +476,52 @@ export default function CronPage() {
                   </Button>
                 </div>
               </CardContent>
+
+              {isEditingModel && (
+                <div className="border-t border-border px-4 pb-4 pt-3">
+                  <div className="grid grid-cols-1 sm:grid-cols-[1fr_1fr_auto] gap-3 items-end">
+                    <div className="grid gap-2">
+                      <Label htmlFor={`cron-edit-model-${job.id}`}>
+                        Model
+                      </Label>
+                      <Input
+                        id={`cron-edit-model-${job.id}`}
+                        placeholder="default from config.yaml"
+                        value={editModel}
+                        onChange={(e) => setEditModel(e.target.value)}
+                      />
+                    </div>
+                    <div className="grid gap-2">
+                      <Label htmlFor={`cron-edit-provider-${job.id}`}>
+                        Provider
+                      </Label>
+                      <Input
+                        id={`cron-edit-provider-${job.id}`}
+                        placeholder="e.g. openrouter, anthropic, custom:name"
+                        value={editProvider}
+                        onChange={(e) => setEditProvider(e.target.value)}
+                      />
+                    </div>
+                    <div className="flex gap-2">
+                      <Button
+                        size="sm"
+                        onClick={() => handleSaveModelEdit(job)}
+                        disabled={savingEdit}
+                      >
+                        {savingEdit ? t.common.saving : t.common.save}
+                      </Button>
+                      <Button
+                        size="sm"
+                        ghost
+                        onClick={() => setEditingJobId(null)}
+                        disabled={savingEdit}
+                      >
+                        {t.common.cancel}
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+              )}
             </Card>
           );
         })}
