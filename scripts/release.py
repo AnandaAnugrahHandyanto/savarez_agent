@@ -538,6 +538,8 @@ AUTHOR_MAP = {
     "balyan.sid@gmail.com": "alt-glitch",
     "52913345+alt-glitch@users.noreply.github.com": "alt-glitch",
     "oluwadareab12@gmail.com": "oluwadareab12",
+    "simpolism@gmail.com": "simpolism",
+    "jake@nousresearch.com": "simpolism",
     "simon@simonmarcus.org": "simon-marcus",
     "xowiekk@gmail.com": "Xowiek",
     "1243352777@qq.com": "zons-zhaozhy",
