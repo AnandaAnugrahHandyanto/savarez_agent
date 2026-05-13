@@ -70,6 +70,15 @@ const TERMINAL_THEME = {
   selectionBackground: "#f0e6d244",
 };
 
+function applyOscWindowTitle(data: string): boolean {
+  const title = data
+    .replace(/[\x00-\x1f\x7f]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  document.title = title || "Hermes Agent - Dashboard";
+  return true;
+}
+
 /**
  * CSS width for xterm font tiers.
  *
@@ -317,6 +326,12 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     // OSC 52 reads (terminal asking to read the clipboard) are not
     // supported — that would let any content the TUI renders exfiltrate
     // the user's clipboard.
+    // The embedded Ink TUI emits OSC 0/2 terminal-window titles.  Mirror
+    // those into the browser tab so multiple Dashboard Chat tabs can be
+    // distinguished by session title/status, just like native terminal tabs.
+    term.parser.registerOscHandler(0, applyOscWindowTitle);
+    term.parser.registerOscHandler(2, applyOscWindowTitle);
+
     term.parser.registerOscHandler(52, (data) => {
       // Format: "<targets>;<base64 | '?'>"
       const semi = data.indexOf(";");
