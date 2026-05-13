@@ -12117,6 +12117,16 @@ class AIAgent:
         # state registry.  Set BEFORE any tool dispatch so snapshots taken at
         # child-launch time see the parent's real id, not None.
         self._current_task_id = effective_task_id
+
+        # Hazel/Codex turn beacon: mark active work as running immediately.
+        # Best-effort only; never let observability break a user turn.
+        self._turn_beacon_start_sha = None
+        try:
+            from turn_beacon import mark_running as _turn_beacon_mark_running
+            _turn_beacon_ctx = _turn_beacon_mark_running(effective_task_id, _summarize_user_message_for_log(user_message))
+            self._turn_beacon_start_sha = _turn_beacon_ctx.get("start_sha")
+        except Exception as _turn_beacon_err:
+            logger.debug("turn beacon running update failed: %s", _turn_beacon_err)
         
         # Reset retry counters and iteration budget at the start of each turn
         # so subagent usage from a previous turn doesn't eat into the next one.
@@ -15812,6 +15822,34 @@ class AIAgent:
                 )
             except Exception as exc:
                 logger.warning("post_llm_call hook failed: %s", exc)
+
+        # Hazel/Codex turn beacon terminal update. This is the authoritative
+        # fast "idle/blocked" signal for Chris; the older 5-minute watcher
+        # treats a fresh beacon as already-covered.
+        try:
+            from turn_beacon import classify_status as _turn_beacon_classify_status
+            from turn_beacon import mark_finished as _turn_beacon_mark_finished
+            _beacon_status, _beacon_blocker = _turn_beacon_classify_status(
+                _turn_exit_reason,
+                interrupted,
+                final_response,
+                _last_msg_role,
+            )
+            _beacon_user_message = (
+                original_user_message if isinstance(original_user_message, str)
+                else _summarize_user_message_for_log(original_user_message)
+            )
+            _turn_beacon_mark_finished(
+                turn_id=effective_task_id,
+                start_sha=getattr(self, "_turn_beacon_start_sha", None),
+                status=_beacon_status,
+                blocker=_beacon_blocker,
+                final_response=final_response,
+                messages=messages,
+                user_message=_beacon_user_message,
+            )
+        except Exception as _turn_beacon_err:
+            logger.debug("turn beacon terminal update failed: %s", _turn_beacon_err)
 
         # Extract reasoning from the CURRENT turn only.  Walk backwards
         # but stop at the user message that started this turn — anything
