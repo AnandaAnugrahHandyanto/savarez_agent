@@ -362,9 +362,9 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       // konsole / Windows Terminal. Ctrl+Shift+C only copies if a selection exists;
       // without a selection it passes through to the TUI so agents can still
       // react to the keypress.
-      // Paste: Cmd+Shift+V on macOS, Ctrl+Shift+V on others.
+      // Paste: Cmd+V on macOS, Ctrl+V (or Ctrl+Shift+V) on others.
       const copyModifier = isMac ? ev.metaKey : ev.ctrlKey && ev.shiftKey;
-      const pasteModifier = isMac ? ev.metaKey : ev.ctrlKey && ev.shiftKey;
+      const pasteModifier = isMac ? ev.metaKey : ev.ctrlKey;
 
       if (copyModifier && ev.key.toLowerCase() === "c") {
         const sel = term.getSelection();
@@ -385,14 +385,71 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       }
 
       if (pasteModifier && ev.key.toLowerCase() === "v") {
-        navigator.clipboard
-          .readText()
-          .then((text) => {
-            if (text) term.paste(text);
-          })
-          .catch((err) => {
-            console.warn("[dashboard clipboard] paste failed:", err.message);
-          });
+        // Use read() instead of readText() to support both text and image
+        // clipboard data.  Falls back to readText() if the Clipboard API
+        // level 2 is unavailable (e.g. Firefox without user activation).
+        if (typeof navigator.clipboard.read === "function") {
+          navigator.clipboard
+            .read()
+            .then(async (items) => {
+              let pasted = false;
+              for (const item of items) {
+                // Prefer image types — convert to base64 data-URI and send
+                // to the TUI backend via the existing RPC channel.
+                for (const mime of item.types) {
+                  if (mime.startsWith("image/")) {
+                    const blob = await item.getType(mime);
+                    const reader = new FileReader();
+                    reader.onloadend = () => {
+                      const dataUrl = reader.result as string;
+                      // Send image as a special escape so the TUI backend
+                      // can display or attach it.  For now we log a warning
+                      // — full image-attach support requires a backend
+                      // endpoint (tracked separately).
+                      console.info(
+                        "[dashboard clipboard] image paste detected — " +
+                        `${mime}, ${blob.size} bytes (attach support TODO)`
+                      );
+                    };
+                    reader.readAsDataURL(blob);
+                    pasted = true;
+                  }
+                }
+                // Text fallback — always paste text if present.
+                if (item.types.includes("text/plain")) {
+                  const blob = await item.getType("text/plain");
+                  const text = await blob.text();
+                  if (text) {
+                    term.paste(text);
+                    pasted = true;
+                  }
+                }
+              }
+              if (!pasted) {
+                console.warn("[dashboard clipboard] no pasteable content found");
+              }
+            })
+            .catch((err) => {
+              // Fall back to readText() on permission/security errors.
+              navigator.clipboard
+                .readText()
+                .then((text) => {
+                  if (text) term.paste(text);
+                })
+                .catch((e2) => {
+                  console.warn("[dashboard clipboard] paste failed:", e2.message);
+                });
+            });
+        } else {
+          navigator.clipboard
+            .readText()
+            .then((text) => {
+              if (text) term.paste(text);
+            })
+            .catch((err) => {
+              console.warn("[dashboard clipboard] paste failed:", err.message);
+            });
+        }
         ev.preventDefault();
         return false;
       }
