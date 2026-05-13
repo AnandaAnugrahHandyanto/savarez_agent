@@ -1953,10 +1953,11 @@ def _setup_inkbox():
     print_info("  https://console.inkbox.ai → Mailboxes / Phone Numbers → Contact Rules")
     print_info("Anyone Inkbox lets through reaches the agent — no second allowlist to maintain.")
 
-    # ── Invalidate the stale identity-state file so prompt_builder + skill
-    # helpers don't read a previous identity's data. The gateway adapter is
-    # the sole writer of this file; it repopulates on next connect.
-    _inkbox_invalidate_identity_state()
+    # ── Seed the identity-state file from what the wizard just confirmed,
+    # so the CLI prompt builder surfaces the right handle / email / phone
+    # the moment setup finishes — gateway running or not. The gateway will
+    # overlay its tunnel URLs on first connect.
+    _inkbox_seed_identity_state(identity)
 
     # ── Final summary ──
     _inkbox_print_agent_summary(identity)
@@ -2039,22 +2040,57 @@ def _inkbox_setup_signing_key(api_key: str, base_url: str) -> None:
     print_info("  Signature verification enabled.")
 
 
-def _inkbox_invalidate_identity_state() -> None:
-    """Delete ``inkbox_identity_state.json`` so the gateway repopulates it.
+def _inkbox_seed_identity_state(identity) -> None:
+    """Seed ``inkbox_identity_state.json`` so the CLI prompt builder can
+    surface the agent's Inkbox identity *before* the gateway has ever run.
 
-    Keeps the gateway adapter as the single writer of this file (consistent
-    with how every other platform manages its runtime state). Until the
-    gateway connects again, ``build_inkbox_identity_hint`` returns an empty
-    string — empty hint > stale hint.
+    Previously the wizard deleted this file at the end of setup and relied
+    on the gateway adapter (the "single writer") to repopulate it on first
+    connect. That left the CLI agent blind to its own handle / email / phone
+    in the window between wizard-finish and gateway-first-connect — or
+    forever, if the user skipped the gateway-as-service prompt.
+
+    The gateway adapter still writes the same file on first connect, layering
+    in its ``public_url`` / ``webhook_url`` / ``ws_url``. Those URL fields
+    are unread by anyone except the gateway itself — the only consumer
+    (``prompt_builder.build_inkbox_identity_hint``) reads only ``handle`` /
+    ``email_address`` / ``phone_number``, all of which we know at setup time.
+
+    Args:
+        identity: AgentIdentity-like object with ``.agent_handle``, plus
+            either ``.email_address`` directly or ``.mailbox.email_address``
+            (signup-flow returns a lightweight proxy with the former shape;
+            api-key-flow returns a full SDK ``AgentIdentity``). Phone is
+            optional and may be ``None`` on un-provisioned identities.
+
+    Returns:
+        None — side effects only (atomic tmp+replace write into ``~/.hermes/``).
     """
     try:
         from hermes_cli.config import get_hermes_home
+        import json
+        import os
         state_path = get_hermes_home() / "inkbox_identity_state.json"
-        if state_path.exists():
-            state_path.unlink()
+        mailbox = getattr(identity, "mailbox", None)
+        phone = getattr(identity, "phone_number", None)
+        state = {
+            "handle": getattr(identity, "agent_handle", None),
+            "email_address": (
+                getattr(identity, "email_address", None)
+                or (getattr(mailbox, "email_address", None) if mailbox else None)
+            ),
+            "phone_number": getattr(phone, "number", None) if phone else None,
+            "phone_number_id": str(getattr(phone, "id", "")) if phone else None,
+        }
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        # Atomic write so a concurrent prompt-builder read in another
+        # process can never see a half-written file.
+        tmp_path = state_path.with_suffix(state_path.suffix + ".tmp")
+        tmp_path.write_text(json.dumps(state, indent=2) + "\n")
+        os.replace(tmp_path, state_path)
     except Exception as exc:
-        print_warning(f"  Couldn't invalidate inkbox_identity_state.json: {exc}")
-        print_info("  Restart the gateway to refresh it.")
+        print_warning(f"  Couldn't seed inkbox_identity_state.json: {exc}")
+        print_info("  Start the gateway and it'll populate the file on connect.")
 
 
 def _inkbox_self_signup_flow(base_url, Inkbox, InkboxAPIError):
