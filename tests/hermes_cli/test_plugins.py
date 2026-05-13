@@ -3,7 +3,9 @@
 import logging
 import os
 import sys
+import threading
 import types
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -1285,6 +1287,81 @@ class TestPluginDebugLogging:
             plugins_mod.logger.setLevel(original_level)
             plugins_mod.logger.handlers = original_handlers
 
+
+class TestGetPluginManagerToctouRace:
+    """Regression tests for the TOCTOU race in get_plugin_manager().
+
+    Before the fix, two threads could both observe _plugin_manager is None,
+    each create a PluginManager(), and race to write the global. The second
+    write wins; the first manager — including any hooks or plugins discovered
+    on it — is orphaned, and the global singleton ends up undiscovered.
+    """
+
+    def test_concurrent_calls_return_same_instance(self, monkeypatch):
+        """50 threads calling get_plugin_manager() concurrently must all
+        receive the exact same PluginManager object (identity, not equality)."""
+        from hermes_cli import plugins as pm_mod
+
+        monkeypatch.setattr(pm_mod, "_plugin_manager", None)
+
+        n = 50
+        barrier = threading.Barrier(n)
+        results: list = []
+        result_lock = threading.Lock()
+
+        def worker():
+            barrier.wait()
+            mgr = pm_mod.get_plugin_manager()
+            with result_lock:
+                results.append(id(mgr))
+
+        with ThreadPoolExecutor(max_workers=n) as ex:
+            futures = [ex.submit(worker) for _ in range(n)]
+            for f in futures:
+                f.result()
+
+        assert len(results) == n
+        assert len(set(results)) == 1, (
+            f"Expected 1 unique PluginManager instance, got {len(set(results))} — "
+            "TOCTOU race allowed multiple instances to be created"
+        )
+
+    def test_only_one_instance_created(self, monkeypatch):
+        """get_plugin_manager() must construct exactly one PluginManager even
+        under concurrent load. Counts constructor calls via a spy."""
+        from hermes_cli import plugins as pm_mod
+
+        monkeypatch.setattr(pm_mod, "_plugin_manager", None)
+
+        construction_count = 0
+        count_lock = threading.Lock()
+        original_cls = pm_mod.PluginManager
+
+        class SpyPluginManager(original_cls):
+            def __init__(self):
+                nonlocal construction_count
+                with count_lock:
+                    construction_count += 1
+                super().__init__()
+
+        monkeypatch.setattr(pm_mod, "PluginManager", SpyPluginManager)
+
+        n = 50
+        barrier = threading.Barrier(n)
+
+        def worker():
+            barrier.wait()
+            pm_mod.get_plugin_manager()
+
+        with ThreadPoolExecutor(max_workers=n) as ex:
+            futures = [ex.submit(worker) for _ in range(n)]
+            for f in futures:
+                f.result()
+
+        assert construction_count == 1, (
+            f"PluginManager constructed {construction_count} times — "
+            "lock did not prevent duplicate construction"
+        )
     def test_debug_handler_idempotent(self, monkeypatch):
         """Calling install twice (without force) does not double-attach."""
         monkeypatch.setenv("HERMES_PLUGINS_DEBUG", "1")
