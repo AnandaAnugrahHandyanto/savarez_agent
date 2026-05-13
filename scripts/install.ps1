@@ -1335,19 +1335,18 @@ function Invoke-SetupWizard {
     }
     
     Write-Host ""
-    Write-Info "Starting gateway setup wizard..."
+    Write-Info "Starting setup wizard..."
     Write-Host ""
 
     Push-Location $InstallDir
 
-    # Run `hermes gateway setup` using the venv Python directly. Single wizard
-    # that handles Inkbox self-signup + system-service install, matching the
-    # README's step-2 entry point so the install one-liner and the documented
-    # manual path land on the same prompts.
+    # `hermes setup` (broad wizard) walks the model/provider, terminal,
+    # gateway (incl. Inkbox self-signup + service install), tools, and
+    # agent-settings sections in one pass.
     if (-not $NoVenv) {
-        & ".\venv\Scripts\python.exe" -m hermes_cli.main gateway setup
+        & ".\venv\Scripts\python.exe" -m hermes_cli.main setup
     } else {
-        python -m hermes_cli.main gateway setup
+        python -m hermes_cli.main setup
     }
 
     Pop-Location
