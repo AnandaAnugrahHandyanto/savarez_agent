@@ -855,7 +855,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
             <span className="inline-flex items-center gap-1.5">
               <FileText className="h-3 w-3 shrink-0" />
               <span className="hidden min-[400px]:inline tracking-wide">
-                이어가기 안내
+                이동 준비
               </span>
             </span>
           </Button>

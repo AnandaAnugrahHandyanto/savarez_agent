@@ -23,9 +23,10 @@ def test_handoff_packet_is_structured_for_new_session_resume():
         context_tokens=75000,
         context_length=100000,
         current_step="Add CLI /handoff command",
+        created_at="2026-05-13T16:30:00Z",
     )
 
-    assert packet.startswith("[세션 이동 인계문]")
+    assert packet.startswith("[이동 준비: 새 세션 이어가기 안내]")
     for heading in [
         "## 목표",
         "## 현재 상태",
@@ -37,10 +38,13 @@ def test_handoff_packet_is_structured_for_new_session_resume():
     ]:
         assert heading in packet
     assert "원본 세션: sess-123" in packet
-    assert "기준: 현재 세션 전체 요약" in packet
-    hash_line = next(line for line in packet.splitlines() if line.startswith("본문 해시: "))
-    assert hash_line.startswith("본문 해시: sha256:")
-    assert len(hash_line.removeprefix("본문 해시: sha256:")) == 64
+    assert "source_session_id: sess-123" in packet
+    assert "packet_scope: full_session" in packet
+    assert "message_count: 4" in packet
+    assert "created_at: 2026-05-13T16:30:00Z" in packet
+    hash_line = next(line for line in packet.splitlines() if line.startswith("packet_hash: "))
+    assert hash_line.startswith("packet_hash: sha256:")
+    assert len(hash_line.removeprefix("packet_hash: sha256:")) == 64
     assert "75%" in packet
     assert "Build Context Continuity Manager" in packet
     assert "Add CLI /handoff command" in packet
@@ -59,7 +63,8 @@ def test_handoff_packet_is_concise_and_does_not_claim_automatic_move():
     assert "대상 세션" not in packet
     assert "전달 완료" not in packet
     assert "자동 생성" not in packet
-    assert "message_count" not in packet
+    assert "target_session_id" not in packet
+    assert "message_count: 2" in packet
 
 
 def test_recommend_continuity_action_prefers_handoff_before_compression():

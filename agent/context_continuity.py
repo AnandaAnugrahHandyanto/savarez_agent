@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any, Iterable, Mapping
 
 
@@ -128,7 +129,7 @@ def should_defer_automatic_compression(
     if recommendation.recommended_action in {"handoff", "handoff_required"}:
         reason = (
             f"자동 압축을 보류합니다. {recommendation.reason} "
-            "필요하면 /handoff로 새 세션 이동 인계문을 만드세요."
+            "필요하면 /handoff로 이동 준비 인계문을 만드세요."
         )
     elif recommendation.recommended_action == "checkpoint":
         reason = (
@@ -199,6 +200,7 @@ def build_handoff_packet(
     context_length: int | None = None,
     current_step: str | None = None,
     title: str | None = None,
+    created_at: str | None = None,
 ) -> str:
     """Build a copy/paste packet for resuming the task in a new session.
 
@@ -215,6 +217,8 @@ def build_handoff_packet(
     tool_count = sum(1 for m in messages if m.get("role") == "tool")
     user_count = sum(1 for m in messages if m.get("role") == "user")
     assistant_count = sum(1 for m in messages if m.get("role") == "assistant")
+    message_count = len(messages)
+    created_at = created_at or datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
     pct = _usage_percent(context_tokens or 0, context_length or 0)
     usage = "unknown"
     if context_tokens is not None and context_length:
@@ -238,7 +242,7 @@ def build_handoff_packet(
             f"- {_truncate(latest_assistant, 420)}",
             "",
             "## 중요 결정",
-            "- 컨텍스트가 무거워지면 손실 압축보다 새 세션 이동을 우선합니다.",
+            "- 컨텍스트가 무거워지면 숨은 손실 압축보다 이동 준비 인계문을 우선합니다.",
             "- 이 인계문은 작업 재개 기준점이며, 증명은 아닙니다.",
             "",
             "## 변경/검증 상태",
@@ -257,11 +261,15 @@ def build_handoff_packet(
 
     return "\n".join(
         [
-            "[세션 이동 인계문]",
+            "[이동 준비: 새 세션 이어가기 안내]",
             f"원본 세션: {session_id or 'unknown'}",
-            "기준: 현재 세션 전체 요약",
-            f"본문 해시: sha256:{packet_hash}",
-            "목적: 새 세션에서 가벼운 컨텍스트로 같은 작업을 이어갑니다.",
+            "범위: 현재 세션 전체",
+            f"source_session_id: {session_id or 'unknown'}",
+            "packet_scope: full_session",
+            f"message_count: {message_count}",
+            f"created_at: {created_at}",
+            f"packet_hash: sha256:{packet_hash}",
+            "목적: 새 세션에서 같은 작업을 이어가기 위한 준비 인계문입니다.",
             "",
             packet_body,
         ]
