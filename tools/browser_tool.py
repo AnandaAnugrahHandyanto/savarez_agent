@@ -1892,9 +1892,11 @@ def _run_browser_command(
                 except OSError:
                     pass
             if _needs_sandbox_bypass:
-                browser_env["AGENT_BROWSER_CHROME_FLAGS"] = (
-                    "--no-sandbox --disable-dev-shm-usage"
-                )
+                # AGENT_BROWSER_CHROME_FLAGS is NOT honoured by agent-browser 0.26+.
+                # Inject --args via cmd_parts instead. Each --args takes the flag as a single string value.
+                _chrome_args = ["--args", "--no-sandbox"]
+                _json_idx = cmd_parts.index("--json")
+                cmd_parts = cmd_parts[:_json_idx] + _chrome_args + cmd_parts[_json_idx:]
 
         # Use temp files for stdout/stderr instead of pipes.
         # agent-browser starts a background daemon that inherits file
