@@ -15,6 +15,7 @@ import os
 import re
 import subprocess
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
@@ -131,6 +132,24 @@ def validate_gates(raw_gates: list[dict[str, Any]]) -> tuple[list[dict[str, Any]
                 _safe_rel_path(str(artifact.get("path") or ""))
             except Exception as exc:
                 gate_errors.append(f"gate {gid}: {exc}")
+            gate_type = str(gate.get("type") or "").lower()
+            if _is_heavy_gate_type(gate_type):
+                expected_types = _HEAVY_ARTIFACT_GATE_TYPES.get(gate_type, set())
+                artifact_type = str(artifact.get("artifact_type") or "").strip().lower()
+                if not artifact_type:
+                    gate_errors.append(f"gate {gid}: artifact {artifact.get('path') or '<missing path>'} missing artifact_type")
+                elif expected_types and artifact_type not in expected_types:
+                    gate_errors.append(
+                        f"gate {gid}: artifact {artifact.get('path') or '<missing path>'} artifact_type {artifact_type!r} does not match gate type {gate_type!r}; expected one of {sorted(expected_types)}"
+                    )
+                for required_field in ("generating_command", "generated_at", "checksum", "command_exit_code"):
+                    if artifact.get(required_field) is None or str(artifact.get(required_field)).strip() == "":
+                        gate_errors.append(f"gate {gid}: artifact {artifact.get('path') or '<missing path>'} missing {required_field}")
+                checksum = str(artifact.get("checksum") or "").removeprefix("sha256:")
+                if checksum and re.fullmatch(r"[0-9a-fA-F]{64}", checksum) is None:
+                    gate_errors.append(f"gate {gid}: artifact {artifact.get('path') or '<missing path>'} checksum must be a sha256 hex digest")
+                if artifact.get("generated_at") is not None and _parse_generated_at(artifact.get("generated_at")) is None:
+                    gate_errors.append(f"gate {gid}: artifact {artifact.get('path') or '<missing path>'} generated_at must be epoch seconds or ISO-8601")
         for cmd in gate.get("commands") or []:
             if not isinstance(cmd, dict):
                 gate_errors.append(f"gate {gid}: commands entries must be objects")
@@ -145,7 +164,6 @@ def validate_gates(raw_gates: list[dict[str, Any]]) -> tuple[list[dict[str, Any]
                 gate_errors.append(f"gate {gid}: unsafe command cwd {cwd!r}: {exc}")
         if gate_errors:
             errors.extend(gate_errors)
-            continue
         gates.append(gate)
     return gates, errors
 
@@ -216,7 +234,157 @@ def _is_committed(workspace: Path, rel_path: str) -> bool:
         return False
 
 
-def _inspect_artifact(workspace: Path, artifact: dict[str, Any]) -> tuple[list[str], list[str], list[dict[str, Any]]]:
+_HEAVY_ARTIFACT_GATE_TYPES = {
+    "benchmark": {"benchmark_performance", "benchmark", "performance", "load_test", "k6"},
+    "benchmark_artifact": {"benchmark_performance", "benchmark", "performance", "load_test", "k6"},
+    "performance": {"benchmark_performance", "benchmark", "performance", "load_test", "k6"},
+    "load_test": {"benchmark_performance", "benchmark", "performance", "load_test", "k6"},
+    "k6": {"benchmark_performance", "benchmark", "performance", "load_test", "k6"},
+    "release": {"deploy_release", "release", "deployment"},
+    "deploy": {"deploy_release", "release", "deployment"},
+    "deployment": {"deploy_release", "release", "deployment"},
+    "helm_install": {"deploy_release", "release", "deployment"},
+    "gpu_colab": {"gpu_colab", "gpu", "colab"},
+    "gpu": {"gpu_colab", "gpu", "colab"},
+    "colab": {"gpu_colab", "gpu", "colab"},
+    "live_server": {"live_server", "live_service", "live_service_test"},
+    "live_service": {"live_server", "live_service", "live_service_test"},
+    "live_service_test": {"live_server", "live_service", "live_service_test"},
+    "security_scan": {"security_scan", "security"},
+    "security": {"security_scan", "security"},
+}
+
+
+def _is_heavy_gate_type(gate_type: str) -> bool:
+    return gate_type.lower() in _HEAVY_ARTIFACT_GATE_TYPES
+
+
+def _parse_generated_at(raw: Any) -> int | None:
+    if isinstance(raw, (int, float)):
+        return int(raw)
+    if isinstance(raw, str) and raw.strip():
+        s = raw.strip()
+        if s.isdigit():
+            return int(s)
+        try:
+            return int(datetime.fromisoformat(s.replace("Z", "+00:00")).timestamp())
+        except Exception:
+            return None
+    return None
+
+
+def _actual_sha256(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _load_json_artifact(path: Path) -> dict[str, Any]:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _artifact_claim_refs(raw: Any) -> set[str]:
+    if isinstance(raw, str):
+        return {raw}
+    if isinstance(raw, list):
+        return {str(x) for x in raw if str(x).strip()}
+    return set()
+
+
+def _semantic_check(artifact_type: str, data: dict[str, Any]) -> tuple[bool, str]:
+    normalized = artifact_type.lower()
+    if normalized in {"benchmark_performance", "benchmark", "performance", "load_test", "k6"}:
+        if data.get("dry_run") is True:
+            return False, "benchmark/performance evidence must be a real smoke or benchmark artifact, not dry_run=true"
+        metrics = data.get("metrics")
+        useful_metric_names = {"throughput", "throughput_rps", "p50_ms", "p95_ms", "p99_ms", "latency_ms", "requests_per_second"}
+        has_metric = isinstance(metrics, dict) and bool(useful_metric_names.intersection(metrics.keys()))
+        samples = data.get("sample_count", data.get("iterations", 0))
+        return bool(data.get("benchmark_tool") and has_metric and int(samples or 0) > 0), "requires benchmark_tool, non-empty latency/throughput metrics, and sample_count/iterations > 0"
+    if normalized in {"deploy_release", "release", "deployment"}:
+        if data.get("dry_run") is True:
+            return False, "deploy/release evidence must be a real publish/deploy artifact, not dry_run=true"
+        status = str(data.get("release_status") or data.get("deploy_status") or "").lower()
+        ok_status = status in {"published", "deployed", "succeeded", "success", "released"}
+        return bool((data.get("release_target") or data.get("environment")) and (data.get("version") or data.get("artifact_name")) and ok_status), "requires target/environment, version/artifact_name, and success/published/deployed status"
+    if normalized in {"gpu_colab", "gpu", "colab"}:
+        accelerator = str(data.get("accelerator") or "").lower()
+        available = data.get("gpu_available") is True or data.get("cuda_available") is True or data.get("tpu_available") is True
+        return bool(data.get("runtime") and accelerator in {"gpu", "cuda", "tpu"} and available and (data.get("gpu_model") or data.get("device_name") or data.get("tpu_type"))), "requires runtime, GPU/CUDA/TPU accelerator, availability=true, and device model/name"
+    if normalized in {"live_server", "live_service", "live_service_test"}:
+        if data.get("dry_run") is True:
+            return False, "live-server evidence must be a real smoke artifact, not dry_run=true"
+        try:
+            status = int(data.get("http_status"))
+        except Exception:
+            status = 0
+        return bool(data.get("base_url") and (data.get("healthcheck_url") or data.get("endpoint")) and 200 <= status < 400 and data.get("ready") is True), "requires base_url, healthcheck_url/endpoint, 2xx/3xx status, and ready=true"
+    if normalized in {"security_scan", "security"}:
+        findings = data.get("findings")
+        critical = high = None
+        if isinstance(findings, dict):
+            critical = int(findings.get("critical", 0) or 0)
+            high = int(findings.get("high", 0) or 0)
+        return bool(data.get("scanner") and isinstance(findings, dict) and critical == 0 and high == 0 and data.get("scanned_paths")), "requires scanner, scanned_paths, and zero critical/high findings"
+    return True, "no type-specific semantic rules"
+
+
+def _inspect_typed_artifact(workspace: Path, gate: dict[str, Any], artifact: dict[str, Any], resolved: Path, rel_found: str) -> list[dict[str, Any]]:
+    checks: list[dict[str, Any]] = []
+    gate_id = str(gate.get("id") or "")
+    gate_type = str(gate.get("type") or "").lower()
+    artifact_type = str(artifact.get("artifact_type") or "").lower()
+    expected_types = _HEAVY_ARTIFACT_GATE_TYPES.get(gate_type, set())
+    data = _load_json_artifact(resolved)
+
+    if not artifact_type:
+        checks.append({"name": f"typed_artifact_type:{rel_found}", "expected": sorted(expected_types), "actual": "missing", "status": "fail", "error": "artifact_type is required for heavy evidence artifacts"})
+    elif expected_types and artifact_type not in expected_types:
+        checks.append({"name": f"typed_artifact_type:{rel_found}", "expected": sorted(expected_types), "actual": artifact_type, "status": "fail", "error": "artifact_type does not match gate type"})
+    else:
+        checks.append({"name": f"typed_artifact_type:{rel_found}", "expected": sorted(expected_types), "actual": artifact_type, "status": "pass"})
+
+    for field in ("generating_command", "checksum", "command_exit_code", "generated_at"):
+        value = artifact.get(field)
+        ok = value is not None and str(value).strip() != ""
+        checks.append({"name": f"typed_artifact_required_field:{rel_found}:{field}", "expected": "present", "actual": "present" if ok else "missing", "status": "pass" if ok else "fail"})
+
+    checksum = str(artifact.get("checksum") or "").strip()
+    actual_hash = _actual_sha256(resolved) if resolved.exists() else ""
+    expected_hash = checksum.removeprefix("sha256:")
+    checksum_ok = bool(expected_hash) and re.fullmatch(r"[0-9a-fA-F]{64}", expected_hash) is not None and actual_hash.lower() == expected_hash.lower()
+    checks.append({"name": f"typed_artifact_checksum:{rel_found}", "expected": expected_hash or "sha256 hex digest", "actual": actual_hash, "status": "pass" if checksum_ok else "fail", **({"error": "missing or mismatched sha256 checksum"} if not checksum_ok else {})})
+
+    try:
+        exit_code = int(artifact.get("command_exit_code"))
+    except Exception:
+        exit_code = None
+    checks.append({"name": f"typed_artifact_command_exit:{rel_found}", "expected": 0, "actual": exit_code, "status": "pass" if exit_code == 0 else "fail"})
+
+    generated_at = _parse_generated_at(artifact.get("generated_at"))
+    max_age = int(artifact.get("max_age_seconds") or 24 * 60 * 60)
+    fresh = generated_at is not None and 0 <= _now() - generated_at <= max_age
+    checks.append({"name": f"typed_artifact_freshness:{rel_found}", "expected": f"generated_at within {max_age}s", "actual": generated_at, "status": "pass" if fresh else "fail", **({"error": "artifact is stale or generated_at is invalid"} if not fresh else {})})
+
+    claim_refs = _artifact_claim_refs(artifact.get("claim_refs")) or _artifact_claim_refs(data.get("claim_refs"))
+    acceptable_refs = {gate_id, str(gate.get("requirement_ref") or ""), str(gate.get("title") or "")}
+    acceptable_refs = {x for x in acceptable_refs if x}
+    relevant = bool(claim_refs.intersection(acceptable_refs))
+    checks.append({"name": f"typed_artifact_claim_ref:{rel_found}", "expected": sorted(acceptable_refs), "actual": sorted(claim_refs), "status": "pass" if relevant else "fail", **({"error": "artifact claim_refs do not reference this gate id or requirement_ref"} if not relevant else {})})
+
+    if artifact_type:
+        semantic_ok, semantic_reason = _semantic_check(artifact_type, data)
+        checks.append({"name": f"typed_artifact_semantics:{rel_found}", "expected": semantic_reason, "actual": "sufficient" if semantic_ok else "insufficient", "status": "pass" if semantic_ok else "fail"})
+    return checks
+
+
+def _inspect_artifact(workspace: Path, artifact: dict[str, Any], gate: dict[str, Any] | None = None) -> tuple[list[str], list[str], list[dict[str, Any]]]:
     rel = _safe_rel_path(str(artifact.get("path") or ""))
     pattern = str(workspace / rel)
     matches = [Path(p) for p in glob.glob(pattern, recursive=True)]
@@ -269,6 +437,8 @@ def _inspect_artifact(workspace: Path, artifact: dict[str, Any]) -> tuple[list[s
                 "actual": committed,
                 "status": "pass" if committed else "fail",
             })
+        if gate is not None and _is_heavy_gate_type(str(gate.get("type") or "")):
+            checks.extend(_inspect_typed_artifact(workspace, gate, artifact, resolved, rel_found))
     return evidence, missing, checks
 
 
@@ -341,7 +511,7 @@ def _gate_verdict(workspace: Path, report_dir: Path, gate: dict[str, Any]) -> di
                 threshold_results.append({"name": "command_policy", "expected": "safe executable command", "actual": str(exc), "status": "fail"})
 
     for artifact in artifact_defs:
-        ev, missing, checks = _inspect_artifact(workspace, artifact)
+        ev, missing, checks = _inspect_artifact(workspace, artifact, gate)
         evidence_paths.extend(ev)
         missing_artifacts.extend(missing)
         threshold_results.extend(checks)
@@ -349,11 +519,11 @@ def _gate_verdict(workspace: Path, report_dir: Path, gate: dict[str, Any]) -> di
     for threshold in gate.get("thresholds") or []:
         threshold_results.append(_eval_threshold(workspace, threshold))
 
-    artifact_required_types = {"benchmark", "benchmark_artifact", "performance", "load_test", "k6"}
-    if gate_type in artifact_required_types and not artifact_defs:
+    if _is_heavy_gate_type(gate_type) and not artifact_defs:
+        policy_name = "artifact_policy:benchmark_requires_real_artifact" if gate_type in {"benchmark", "benchmark_artifact", "performance", "load_test", "k6"} else "artifact_policy:heavy_claim_requires_typed_artifact"
         threshold_results.append({
-            "name": "artifact_policy:benchmark_requires_real_artifact",
-            "expected": "at least one expected_artifacts entry for benchmark/performance evidence",
+            "name": policy_name,
+            "expected": "at least one expected_artifacts entry for benchmark/performance, deploy/release, GPU/Colab, live-server, or security-scan evidence",
             "actual": "none",
             "status": "fail",
         })

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import sys
+import time
+import hashlib
 from pathlib import Path
 
 import pytest
@@ -59,6 +61,185 @@ def _verify(conn, tid: str, run_id: int):
     from hermes_cli.office_verifier import verify_task
 
     return verify_task(conn, tid, run_id=run_id, strict=True)
+
+
+def _sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _write_typed_artifact(workspace: Path, rel_path: str, payload: dict) -> dict:
+    path = workspace / rel_path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
+    return {
+        "path": rel_path,
+        "artifact_type": payload["artifact_type"],
+        "generating_command": payload["generating_command"],
+        "generated_at": payload["generated_at"],
+        "checksum": _sha256(path),
+        "command_exit_code": payload["command_exit_code"],
+        "must_exist": True,
+        "claim_refs": payload["claim_refs"],
+    }
+
+
+def _base_typed_payload(artifact_type: str, gate_id: str, **fields) -> dict:
+    payload = {
+        "artifact_type": artifact_type,
+        "generating_command": f"generate {artifact_type}",
+        "generated_at": int(time.time()),
+        "command_exit_code": 0,
+        "claim_refs": [gate_id, f"REQ-{gate_id}"],
+    }
+    payload.update(fields)
+    return payload
+
+
+@pytest.mark.parametrize(
+    "gate_type,artifact_type,rel_path,payload_extra",
+    [
+        (
+            "benchmark",
+            "benchmark_performance",
+            "reports/bench.json",
+            {"benchmark_tool": "pytest-benchmark", "metrics": {"p99_ms": 42.0, "throughput_rps": 1200}, "sample_count": 25},
+        ),
+        (
+            "release",
+            "deploy_release",
+            "reports/release.json",
+            {"release_target": "test-pypi", "version": "1.2.3", "release_status": "published", "evidence_url": "https://test.pypi.org/project/hermes-agent/1.2.3/"},
+        ),
+        (
+            "gpu_colab",
+            "gpu_colab",
+            "reports/colab.json",
+            {"runtime": "colab", "accelerator": "gpu", "gpu_available": True, "gpu_model": "T4", "notebook_path": "notebooks/train.ipynb"},
+        ),
+        (
+            "live_server",
+            "live_server",
+            "reports/live.json",
+            {"base_url": "http://127.0.0.1:8000", "healthcheck_url": "http://127.0.0.1:8000/health", "http_status": 200, "ready": True},
+        ),
+        (
+            "security_scan",
+            "security_scan",
+            "reports/security.json",
+            {"scanner": "bandit", "findings": {"critical": 0, "high": 0, "medium": 1}, "scanned_paths": ["hermes_cli"]},
+        ),
+    ],
+)
+def test_typed_heavy_artifact_contracts_pass_valid_semantic_evidence(
+    kanban_home, tmp_path, gate_type, artifact_type, rel_path, payload_extra
+):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    gate_id = f"valid-{artifact_type}"
+    payload = _base_typed_payload(artifact_type, gate_id, **payload_extra)
+    artifact = _write_typed_artifact(workspace, rel_path, payload)
+    gate = _gate(gate_id, gate_type, [artifact])
+
+    with kb.connect() as conn:
+        tid, run_id = _task_with_gates(conn, workspace, [gate])
+        report = _verify(conn, tid, run_id)
+
+    verdict = report["gate_verdicts"][0]
+    assert report["overall_status"] == "pass"
+    assert verdict["status"] == "pass"
+    assert any(c["name"].startswith("typed_artifact_semantics:") and c["status"] == "pass" for c in verdict["threshold_results"])
+
+
+@pytest.mark.parametrize(
+    "case,artifact_override,payload_override,expected_error",
+    [
+        ("missing-checksum", {"checksum": ""}, {}, "typed_artifact_checksum"),
+        ("mismatched-type", {"artifact_type": "security_scan"}, {}, "typed_artifact_type"),
+        ("stale", {"generated_at": int(time.time()) - 90000, "max_age_seconds": 60}, {"generated_at": int(time.time()) - 90000}, "typed_artifact_freshness"),
+        ("irrelevant", {"claim_refs": ["other-gate"]}, {"claim_refs": ["other-gate"]}, "typed_artifact_claim_ref"),
+        ("semantically-insufficient", {}, {"metrics": {}, "sample_count": 0}, "typed_artifact_semantics"),
+    ],
+)
+def test_typed_heavy_artifact_contracts_reject_laundered_or_insufficient_evidence(
+    kanban_home, tmp_path, case, artifact_override, payload_override, expected_error
+):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    gate_id = f"invalid-{case}"
+    payload = _base_typed_payload(
+        "benchmark_performance",
+        gate_id,
+        benchmark_tool="pytest-benchmark",
+        metrics={"p99_ms": 42.0},
+        sample_count=5,
+    )
+    payload.update(payload_override)
+    artifact = _write_typed_artifact(workspace, "reports/bench.json", payload)
+    artifact.update(artifact_override)
+    gate = _gate(gate_id, "benchmark", [artifact])
+
+    with kb.connect() as conn:
+        tid, run_id = _task_with_gates(conn, workspace, [gate])
+        report = _verify(conn, tid, run_id)
+
+    checks = report["gate_verdicts"][0]["threshold_results"]
+    assert report["overall_status"] == "fail"
+    assert any(c["name"].startswith(expected_error) and c["status"] == "fail" for c in checks)
+
+
+@pytest.mark.parametrize(
+    "gate_type,artifact_type,payload_extra,payload_override",
+    [
+        (
+            "benchmark",
+            "benchmark_performance",
+            {"benchmark_tool": "pytest-benchmark", "metrics": {"p99_ms": 42.0}, "sample_count": 10},
+            {"dry_run": True},
+        ),
+        (
+            "release",
+            "deploy_release",
+            {"release_target": "test-pypi", "version": "1.2.3", "release_status": "published"},
+            {"dry_run": True},
+        ),
+        (
+            "gpu_colab",
+            "gpu_colab",
+            {"runtime": "colab", "accelerator": "gpu", "gpu_available": True, "gpu_model": "T4"},
+            {"gpu_available": False},
+        ),
+        (
+            "live_server",
+            "live_server",
+            {"base_url": "http://127.0.0.1:8000", "healthcheck_url": "http://127.0.0.1:8000/health", "http_status": 200, "ready": True},
+            {"dry_run": True},
+        ),
+        (
+            "security_scan",
+            "security_scan",
+            {"scanner": "bandit", "findings": {"critical": 0, "high": 0}, "scanned_paths": ["hermes_cli"]},
+            {"findings": {"critical": 0, "high": 1}},
+        ),
+    ],
+)
+def test_typed_heavy_artifact_contracts_reject_semantic_failures_for_each_evidence_class(
+    kanban_home, tmp_path, gate_type, artifact_type, payload_extra, payload_override
+):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    gate_id = f"invalid-semantic-{artifact_type}"
+    payload = _base_typed_payload(artifact_type, gate_id, **payload_extra)
+    payload.update(payload_override)
+    artifact = _write_typed_artifact(workspace, f"reports/{artifact_type}.json", payload)
+    gate = _gate(gate_id, gate_type, [artifact])
+
+    with kb.connect() as conn:
+        tid, run_id = _task_with_gates(conn, workspace, [gate])
+        report = _verify(conn, tid, run_id)
+
+    checks = report["gate_verdicts"][0]["threshold_results"]
+    assert report["overall_status"] == "fail"
+    assert any(c["name"].startswith("typed_artifact_semantics:") and c["status"] == "fail" for c in checks)
 
 
 def test_verifier_writes_auditable_report_with_command_exit_codes_and_events(kanban_home, tmp_path):
@@ -258,11 +439,18 @@ def test_gate_bearing_completion_blocks_pending_scope_change_until_approved(kanb
 
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    (workspace / "BENCHMARKS.md").write_text("# Benchmarks\n\nthroughput: 100 req/s\np99: 10ms\n", encoding="utf-8")
+    benchmark_payload = _base_typed_payload(
+        "benchmark_performance",
+        "bench-report",
+        benchmark_tool="pytest-benchmark",
+        metrics={"throughput_rps": 100, "p99_ms": 10},
+        sample_count=10,
+    )
+    artifact = _write_typed_artifact(workspace, "reports/bench.json", benchmark_payload)
     gate = _gate(
         "bench-report",
         "benchmark",
-        [{"path": "BENCHMARKS.md", "must_exist": True, "min_bytes": 20, "content_regex": "p99|throughput|benchmark"}],
+        [artifact],
     )
     scope_body = """SCOPE_CHANGE_REQUEST
 requirement_ref: REQ-BENCH
@@ -306,11 +494,18 @@ def test_gate_bearing_office_completion_requires_verifier_and_independent_review
 
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    (workspace / "BENCHMARKS.md").write_text("# Benchmarks\n\nthroughput: 100 req/s\np99: 10ms\n", encoding="utf-8")
+    benchmark_payload = _base_typed_payload(
+        "benchmark_performance",
+        "bench-report",
+        benchmark_tool="pytest-benchmark",
+        metrics={"throughput_rps": 100, "p99_ms": 10},
+        sample_count=10,
+    )
+    artifact = _write_typed_artifact(workspace, "reports/bench.json", benchmark_payload)
     gate = _gate(
         "bench-report",
         "benchmark",
-        [{"path": "BENCHMARKS.md", "must_exist": True, "min_bytes": 20, "content_regex": "p99|throughput|benchmark"}],
+        [artifact],
     )
     with kb.connect() as conn:
         tid, run_id = _task_with_gates(conn, workspace, [gate])
@@ -424,9 +619,16 @@ def test_verifier_rerun_requires_fresh_review_for_new_report_hash(kanban_home, t
 
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    report_file = workspace / "BENCHMARKS.md"
-    report_file.write_text("# Benchmarks\n\nthroughput: 100 req/s\np99: 10ms\n", encoding="utf-8")
-    gate = _gate("bench-report", "benchmark", [{"path": "BENCHMARKS.md", "must_exist": True, "min_bytes": 20, "content_regex": "p99|throughput|benchmark"}])
+    benchmark_payload = _base_typed_payload(
+        "benchmark_performance",
+        "bench-report",
+        benchmark_tool="pytest-benchmark",
+        metrics={"throughput_rps": 100, "p99_ms": 10},
+        sample_count=10,
+    )
+    report_file = workspace / "reports" / "bench.json"
+    artifact = _write_typed_artifact(workspace, "reports/bench.json", benchmark_payload)
+    gate = _gate("bench-report", "benchmark", [artifact])
     with kb.connect() as conn:
         tid, run_id = _task_with_gates(conn, workspace, [gate])
         first = verify_task(conn, tid, run_id=run_id, strict=True)
@@ -444,7 +646,14 @@ def test_verifier_rerun_requires_fresh_review_for_new_report_hash(kanban_home, t
         )
         conn.commit()
         assert final_completion_ready(conn, tid)[0] is True
-        report_file.write_text("# Benchmarks\n\nthroughput: 200 req/s\np99: 8ms\n", encoding="utf-8")
+        benchmark_payload["metrics"] = {"throughput_rps": 200, "p99_ms": 8}
+        report_file.write_text(json.dumps(benchmark_payload, sort_keys=True), encoding="utf-8")
+        artifact["checksum"] = _sha256(report_file)
+        conn.execute(
+            "UPDATE task_runs SET metadata = ? WHERE id = ?",
+            (json.dumps({"verification_gates": [_gate("bench-report", "benchmark", [artifact])]}), run_id),
+        )
+        conn.commit()
         second = verify_task(conn, tid, run_id=run_id, strict=True)
         assert second["report_hash"] != first["report_hash"]
         ok, reason = final_completion_ready(conn, tid)
