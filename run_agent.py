@@ -2110,6 +2110,7 @@ class AIAgent:
             pass
         compression_enabled = str(_compression_cfg.get("enabled", True)).lower() in {"true", "1", "yes"}
         compression_target_ratio = float(_compression_cfg.get("target_ratio", 0.20))
+        compression_summary_ratio = float(_compression_cfg.get("summary_ratio", 0.20))
         compression_protect_last = int(_compression_cfg.get("protect_last_n", 20))
 
         # Read optional explicit context_length override for the auxiliary
@@ -2314,6 +2315,7 @@ class AIAgent:
                 protect_first_n=3,
                 protect_last_n=compression_protect_last,
                 summary_target_ratio=compression_target_ratio,
+                summary_ratio=compression_summary_ratio,
                 summary_model_override=None,
                 quiet_mode=self.quiet_mode,
                 base_url=self.base_url,
