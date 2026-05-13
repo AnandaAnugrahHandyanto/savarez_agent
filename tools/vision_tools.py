@@ -35,6 +35,7 @@ import math
 import os
 import shutil
 import subprocess
+import unicodedata
 import uuid
 from pathlib import Path
 from typing import Any, Awaitable, Dict, Optional
@@ -1105,6 +1106,10 @@ def _video_analysis_looks_unavailable(analysis: str) -> bool:
     if not isinstance(analysis, str) or not analysis.strip():
         return True
     text = analysis.lower().replace("’", "'").replace("‘", "'")
+    text_ascii = "".join(
+        ch for ch in unicodedata.normalize("NFKD", text)
+        if not unicodedata.combining(ch)
+    )
     unavailable_markers = (
         "cannot access", "can't access", "cannot view", "can't view",
         "unable to access", "unable to view", "do not have access",
@@ -1116,8 +1121,12 @@ def _video_analysis_looks_unavailable(analysis: str) -> bool:
         "local mp4", "local file", "file path", "video file was not provided",
         "no video", "without the video", "video_url is not supported",
         "does not support video", "not support video", "unsupported video",
+        # French/translated refusal strings from providers routed through Hermes.
+        "je n'ai pas acces", "pas acces a la video", "pas acces aux frames",
+        "aucune image extraite", "aucun frame", "aucune frame",
+        "impossible a determiner sans la video", "sans la video",
     )
-    return any(marker in text for marker in unavailable_markers)
+    return any(marker in text or marker in text_ascii for marker in unavailable_markers)
 
 
 def _probe_video_duration_seconds(video_path: Path) -> Optional[float]:

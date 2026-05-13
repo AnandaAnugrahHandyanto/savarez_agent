@@ -188,6 +188,12 @@ class TestVideoAnalyzeTool:
             "I can’t see any video or frames attached here. Please upload the short video."
         ) is True
 
+    def test_unavailable_heuristic_handles_french_no_video_response(self):
+        assert _video_analysis_looks_unavailable(
+            "Je n’ai pas accès à la vidéo ni à des images extraites/contact-sheet dans cette conversation, "
+            "donc impossible à déterminer sans la vidéo."
+        ) is True
+
     def test_local_file_success(self, tmp_path, monkeypatch):
         """Analyze a local video file — happy path."""
         video = tmp_path / "demo.mp4"
