@@ -17,6 +17,7 @@ import os
 import platform
 import subprocess
 from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 
 from hermes_constants import get_hermes_home
 from typing import Any, Dict, List, Optional, Tuple
@@ -361,6 +362,38 @@ def _normalize_base_url_text(base_url) -> str:
     return str(base_url).strip()
 
 
+def _normalize_anthropic_sdk_base_url(base_url) -> str:
+    """Return a base URL safe to pass to Anthropic's native SDK.
+
+    The SDK appends ``/v1/messages`` itself. Users sometimes configure the
+    OpenAI-style Anthropic models endpoint root (``https://api.anthropic.com/v1``),
+    which would make the SDK request ``/v1/v1/messages``. Only strip the suffix
+    on Anthropic's own host; third-party Anthropic-compatible URLs may require
+    their explicit path.
+    """
+    normalized = _normalize_base_url_text(base_url)
+    if not normalized:
+        return ""
+
+    try:
+        stripped = normalized.rstrip("/")
+        parsed = urlsplit(stripped)
+    except Exception:
+        return normalized
+
+    hostname = (parsed.hostname or "").lower().rstrip(".")
+    if (
+        parsed.scheme in {"http", "https"}
+        and hostname == "api.anthropic.com"
+        and parsed.path == "/v1"
+        and not parsed.query
+        and not parsed.fragment
+    ):
+        return urlunsplit((parsed.scheme, parsed.netloc, "", "", ""))
+
+    return normalized
+
+
 def _is_third_party_anthropic_endpoint(base_url: str | None) -> bool:
     """Return True for non-Anthropic endpoints using the Anthropic Messages API.
 
@@ -553,7 +586,7 @@ def build_anthropic_client(
 
     from httpx import Timeout
 
-    normalized_base_url = _normalize_base_url_text(base_url)
+    normalized_base_url = _normalize_anthropic_sdk_base_url(base_url)
     _read_timeout = timeout if (isinstance(timeout, (int, float)) and timeout > 0) else 900.0
     kwargs = {
         "timeout": Timeout(timeout=float(_read_timeout), connect=10.0),
@@ -2075,5 +2108,4 @@ def build_anthropic_kwargs(
         kwargs["extra_headers"] = {"anthropic-beta": ",".join(betas)}
 
     return kwargs
-
 

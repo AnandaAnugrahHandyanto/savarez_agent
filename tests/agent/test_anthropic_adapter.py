@@ -111,6 +111,25 @@ class TestBuildAnthropicClient:
                 "anthropic-beta": "interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14"
             }
 
+    @pytest.mark.parametrize(
+        "base_url",
+        [
+            "https://api.anthropic.com/v1",
+            "https://api.anthropic.com/v1/",
+        ],
+    )
+    def test_native_anthropic_base_url_strips_v1_for_sdk(self, base_url):
+        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
+            build_anthropic_client("sk-ant-api03-x", base_url=base_url)
+            kwargs = mock_sdk.Anthropic.call_args[1]
+            assert kwargs["base_url"] == "https://api.anthropic.com"
+
+    def test_custom_v1_base_url_is_preserved(self):
+        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
+            build_anthropic_client("sk-ant-api03-x", base_url="https://custom.api.com/v1")
+            kwargs = mock_sdk.Anthropic.call_args[1]
+            assert kwargs["base_url"] == "https://custom.api.com/v1"
+
     def test_azure_anthropic_endpoint_keeps_context_1m_beta(self):
         with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
             build_anthropic_client(
