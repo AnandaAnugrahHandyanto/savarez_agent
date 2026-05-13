@@ -1156,6 +1156,28 @@ def list_authenticated_providers(
         except Exception:
             return False
 
+
+    def _validate_env_token(hermes_slug: str, env_vars: tuple[str, ...] | list[str]) -> bool:
+        """Return False if the provider has env-var creds but the token format is invalid.
+
+        Currently only validates GitHub Copilot tokens (rejects classic PATs ghp_*).
+        For other providers, returns True (no validation needed).
+        """
+        if hermes_slug not in {"copilot", "copilot-acp"}:
+            return True
+        try:
+            from hermes_cli.copilot_auth import validate_copilot_token
+            for ev in env_vars:
+                val = os.environ.get(ev, "").strip()
+                if val:
+                    valid, _ = validate_copilot_token(val)
+                    if valid:
+                        return True
+            # All env var tokens failed validation
+            return False
+        except Exception:
+            # If validation itself fails, allow the provider through
+            return True
     data = fetch_models_dev()
 
     # Build curated model lists keyed by hermes provider ID
@@ -1228,6 +1250,9 @@ def list_authenticated_providers(
 
         # Check if any env var is set
         has_creds = any(os.environ.get(ev) for ev in env_vars)
+        # Validate token format for providers with strict requirements.
+        if has_creds and not _validate_env_token(hermes_id, env_vars):
+            has_creds = False
         if not has_creds:
             try:
                 from hermes_cli.auth import _load_auth_store
@@ -1290,13 +1315,16 @@ def list_authenticated_providers(
             has_creds = _has_aws_sdk_creds_for_listing(hermes_slug)
         elif overlay.extra_env_vars:
             has_creds = any(os.environ.get(ev) for ev in overlay.extra_env_vars)
+            if has_creds and not _validate_env_token(hermes_slug, overlay.extra_env_vars):
+                has_creds = False
         # Also check api_key_env_vars from PROVIDER_REGISTRY for api_key auth_type
         if not has_creds and overlay.auth_type == "api_key":
             for _key in (pid, hermes_slug):
                 pcfg = _auth_registry.get(_key)
                 if pcfg and pcfg.api_key_env_vars:
                     if any(os.environ.get(ev) for ev in pcfg.api_key_env_vars):
-                        has_creds = True
+                        if _validate_env_token(hermes_slug, pcfg.api_key_env_vars):
+                            has_creds = True
                         break
         # Check auth store and credential pool for non-env-var credentials.
         # This applies to OAuth providers AND api_key providers that also
@@ -1404,6 +1432,9 @@ def list_authenticated_providers(
         _cp_has_creds = False
         if _cp_config and _cp_config.api_key_env_vars:
             _cp_has_creds = any(os.environ.get(ev) for ev in _cp_config.api_key_env_vars)
+            # Validate token format for providers with strict requirements (e.g. copilot rejects ghp_*).
+            if _cp_has_creds and not _validate_env_token(_cp.slug, _cp_config.api_key_env_vars):
+                _cp_has_creds = False
         # Also check auth store and credential pool
         if not _cp_has_creds:
             try:
