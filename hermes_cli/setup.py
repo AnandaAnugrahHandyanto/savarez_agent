@@ -2638,12 +2638,14 @@ def _inkbox_print_agent_summary(identity):
     print(color("│            ✓ Inkbox configured                          │", Colors.GREEN))
     print(color("└─────────────────────────────────────────────────────────┘", Colors.GREEN))
     print()
-    print_info(f"  Handle:   {identity.agent_handle}")
+    # Handle / Mailbox / Phone — these are the bits the user wants to see
+    # most, so render them in the same vibrant green as the ✓ banner above.
+    print(color(f"  Handle:   {identity.agent_handle}", Colors.GREEN, Colors.BOLD))
 
     mailbox = getattr(identity, "mailbox", None)
     email = getattr(identity, "email_address", None) or (mailbox.email_address if mailbox else None)
     if email:
-        print_info(f"  Mailbox:  {email}")
+        print(color(f"  Mailbox:  {email}", Colors.GREEN, Colors.BOLD))
     else:
         print_info("  Mailbox:  (none — set up later in the Inkbox console)")
 
@@ -2652,7 +2654,7 @@ def _inkbox_print_agent_summary(identity):
         sms_status = getattr(phone, "sms_status", None)
         sms_value = sms_status.value if hasattr(sms_status, "value") else sms_status
         sms_str = f" · SMS: {sms_value}" if sms_status else ""
-        print_info(f"  Phone:    {phone.number} ({phone.type}){sms_str}")
+        print(color(f"  Phone:    {phone.number} ({phone.type}){sms_str}", Colors.GREEN, Colors.BOLD))
         if sms_value == "pending":
             print_info("            (telephone carrier propagation can take a few minutes)")
     else:
