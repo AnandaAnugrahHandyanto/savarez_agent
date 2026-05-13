@@ -246,15 +246,47 @@ class TestFallbackTransport:
         await transport.handle_async_request(_telegram_request())
         assert transport._sticky_ip == "149.154.167.220"
 
-        # Now .220 goes bad too
+        # Now .220 goes bad too and primary is still unreachable.
         calls.clear()
         behavior["149.154.167.220"] = "timeout"
 
         resp = await transport.handle_async_request(_telegram_request())
         assert resp.status_code == 200
-        # Tried sticky (.220) first, then fell through to .221
-        assert [c["url_host"] for c in calls] == ["149.154.167.220", "149.154.167.221"]
+        # Tried sticky (.220), re-probed primary, then fell through to .221.
+        assert [c["url_host"] for c in calls] == [
+            "149.154.167.220",
+            "api.telegram.org",
+            "149.154.167.221",
+        ]
         assert transport._sticky_ip == "149.154.167.221"
+
+    @pytest.mark.asyncio
+    async def test_stale_sticky_ip_reprobes_recovered_primary(self, monkeypatch):
+        """Regression: sticky fallback failure should not hide recovered primary route."""
+        calls = []
+        behavior = {
+            "api.telegram.org": "timeout",
+            "149.154.167.220": "ok",
+        }
+        monkeypatch.setattr(tnet.httpx, "AsyncHTTPTransport", _fake_transport_factory(calls, behavior))
+
+        transport = tnet.TelegramFallbackTransport(["149.154.167.220"])
+
+        # First request: primary fails → fallback works → becomes sticky.
+        await transport.handle_async_request(_telegram_request())
+        assert transport._sticky_ip == "149.154.167.220"
+
+        # Later, the fallback path fails but the primary path has recovered.
+        calls.clear()
+        behavior["149.154.167.220"] = "timeout"
+        behavior["api.telegram.org"] = "ok"
+
+        resp = await transport.handle_async_request(_telegram_request())
+        assert resp.status_code == 200
+        assert [c["url_host"] for c in calls] == ["149.154.167.220", "api.telegram.org"]
+        # Primary success leaves the existing sticky value intact; the next
+        # request still tries it first, then re-probes primary if needed.
+        assert transport._sticky_ip == "149.154.167.220"
 
 
 class TestFallbackTransportPassthrough:

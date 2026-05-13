@@ -75,7 +75,11 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
             return await self._primary.handle_async_request(request)
 
         sticky_ip = self._sticky_ip
-        attempt_order: list[Optional[str]] = [sticky_ip] if sticky_ip else [None]
+        # If a previously-good fallback IP becomes stale, re-probe the normal
+        # api.telegram.org path before trying the remaining fallbacks.  Without
+        # this, a transient outage on the sticky IP can make sends fail even
+        # after the primary Telegram route has recovered.
+        attempt_order: list[Optional[str]] = [sticky_ip, None] if sticky_ip else [None]
         for ip in self._fallback_ips:
             if ip != sticky_ip:
                 attempt_order.append(ip)
