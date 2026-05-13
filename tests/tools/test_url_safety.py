@@ -1,6 +1,8 @@
 """Tests for SSRF protection in url_safety module."""
 
 import socket
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import patch
 
 from tools.url_safety import (
@@ -474,3 +476,61 @@ class TestIsAlwaysBlockedUrl:
         """security.allow_private_urls can NOT unblock cloud metadata."""
         monkeypatch.setenv("HERMES_ALLOW_PRIVATE_URLS", "true")
         assert is_always_blocked_url("http://169.254.169.254/") is True
+
+
+class TestAllowPrivateUrlsToctouRace:
+    """Regression tests for the TOCTOU race in _global_allow_private_urls.
+
+    Before the fix (issue #24623), _allow_private_resolved was set to True
+    BEFORE _cached_allow_private was written, so a concurrent thread hitting
+    the fast path could read the stale False default even when allow_private
+    was configured to True.
+    """
+
+    def setup_method(self):
+        _reset_allow_private_cache()
+
+    def teardown_method(self):
+        _reset_allow_private_cache()
+
+    def test_concurrent_readers_all_see_true(self, monkeypatch):
+        """50 concurrent threads must all observe True, never the stale False.
+
+        Races _global_allow_private_urls() initialisation across threads to
+        expose any window where _allow_private_resolved=True but
+        _cached_allow_private is still the default False.
+        """
+        monkeypatch.setenv("HERMES_ALLOW_PRIVATE_URLS", "true")
+
+        results = []
+        barrier = threading.Barrier(50)
+
+        def read_toggle():
+            barrier.wait()  # all threads start simultaneously
+            return _global_allow_private_urls()
+
+        with ThreadPoolExecutor(max_workers=50) as pool:
+            futures = [pool.submit(read_toggle) for _ in range(50)]
+            results = [f.result() for f in futures]
+
+        assert all(r is True for r in results), (
+            f"Some threads saw stale False: {results.count(False)} of {len(results)}"
+        )
+
+    def test_concurrent_readers_all_see_false_when_disabled(self, monkeypatch):
+        """50 concurrent threads must all observe False when toggle is off."""
+        monkeypatch.setenv("HERMES_ALLOW_PRIVATE_URLS", "false")
+
+        barrier = threading.Barrier(50)
+
+        def read_toggle():
+            barrier.wait()
+            return _global_allow_private_urls()
+
+        with ThreadPoolExecutor(max_workers=50) as pool:
+            futures = [pool.submit(read_toggle) for _ in range(50)]
+            results = [f.result() for f in futures]
+
+        assert all(r is False for r in results), (
+            f"Some threads saw unexpected True: {results.count(True)} of {len(results)}"
+        )

@@ -27,6 +27,7 @@ import ipaddress
 import logging
 import os
 import socket
+import threading
 from urllib.parse import urlparse
 
 from utils import is_truthy_value
@@ -75,6 +76,7 @@ _CGNAT_NETWORK = ipaddress.ip_network("100.64.0.0/10")
 # Cached after first read so we don't hit the filesystem on every URL check.
 _allow_private_resolved = False
 _cached_allow_private: bool = False
+_allow_private_lock = threading.Lock()
 
 
 def _global_allow_private_urls() -> bool:
@@ -85,47 +87,54 @@ def _global_allow_private_urls() -> bool:
     2. ``security.allow_private_urls`` in config.yaml
     3. ``browser.allow_private_urls`` in config.yaml  (legacy / backward compat)
 
-    Result is cached for the process lifetime.
+    Result is cached for the process lifetime.  Thread-safe via double-checked
+    locking: ``_cached_allow_private`` is written before ``_allow_private_resolved``
+    is set to True so concurrent readers never observe a stale False default
+    (issue #24623).
     """
     global _allow_private_resolved, _cached_allow_private
+    # Fast path: lock-free after first initialisation
     if _allow_private_resolved:
         return _cached_allow_private
 
-    _allow_private_resolved = True
-    _cached_allow_private = False  # safe default
-
-    # 1. Env var override (highest priority)
-    env_val = os.getenv("HERMES_ALLOW_PRIVATE_URLS", "").strip().lower()
-    if env_val in {"true", "1", "yes"}:
-        _cached_allow_private = True
-        return _cached_allow_private
-    if env_val in {"false", "0", "no"}:
-        # Explicit false — don't fall through to config
-        return _cached_allow_private
-
-    # 2. Config file
-    try:
-        from hermes_cli.config import read_raw_config
-        cfg = read_raw_config()
-        # security.allow_private_urls (preferred)
-        sec = cfg.get("security", {})
-        if isinstance(sec, dict) and is_truthy_value(
-            sec.get("allow_private_urls"), default=False
-        ):
-            _cached_allow_private = True
+    with _allow_private_lock:
+        # Re-check: another thread may have completed init while we waited
+        if _allow_private_resolved:
             return _cached_allow_private
-        # browser.allow_private_urls (legacy fallback)
-        browser = cfg.get("browser", {})
-        if isinstance(browser, dict) and is_truthy_value(
-            browser.get("allow_private_urls"), default=False
-        ):
-            _cached_allow_private = True
-            return _cached_allow_private
-    except Exception:
-        # Config unavailable (e.g. tests, early import) — keep default
-        pass
 
-    return _cached_allow_private
+        result = False  # safe default
+
+        # 1. Env var override (highest priority)
+        env_val = os.getenv("HERMES_ALLOW_PRIVATE_URLS", "").strip().lower()
+        if env_val in {"true", "1", "yes"}:
+            result = True
+        elif env_val not in {"false", "0", "no"}:
+            # 2. Config file (only when env var is absent/empty)
+            try:
+                from hermes_cli.config import read_raw_config
+                cfg = read_raw_config()
+                # security.allow_private_urls (preferred)
+                sec = cfg.get("security", {})
+                if isinstance(sec, dict) and is_truthy_value(
+                    sec.get("allow_private_urls"), default=False
+                ):
+                    result = True
+                else:
+                    # browser.allow_private_urls (legacy fallback)
+                    browser = cfg.get("browser", {})
+                    if isinstance(browser, dict) and is_truthy_value(
+                        browser.get("allow_private_urls"), default=False
+                    ):
+                        result = True
+            except Exception:
+                # Config unavailable (e.g. tests, early import) — keep default
+                pass
+
+        # Publish value BEFORE setting resolved flag so no concurrent reader
+        # sees _allow_private_resolved=True with the stale default False
+        _cached_allow_private = result
+        _allow_private_resolved = True
+        return _cached_allow_private
 
 
 def _reset_allow_private_cache() -> None:
