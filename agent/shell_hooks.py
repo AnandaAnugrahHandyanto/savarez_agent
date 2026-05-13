@@ -492,8 +492,9 @@ def _parse_response(event: str, stdout: str) -> Optional[Dict[str, Any]]:
     skipping the translation silently breaks every ``pre_tool_call``
     block directive.
 
-    For ``pre_llm_call``, ``{"context": "..."}`` is passed through
-    unchanged to match the existing plugin-hook contract.
+    For ``pre_llm_call``, ``{"context": "..."}`` and
+    ``{"reasoning_config": {...}}`` are passed through unchanged to
+    match the plugin-hook contract.
 
     Anything else returns ``None``.
     """
@@ -522,6 +523,18 @@ def _parse_response(event: str, stdout: str) -> Optional[Dict[str, Any]]:
             message = data.get("reason") or data.get("message") or ""
             if isinstance(message, str) and message:
                 return {"action": "block", "message": message}
+        return None
+
+    if event == "pre_llm_call":
+        result: Dict[str, Any] = {}
+        context = data.get("context")
+        if isinstance(context, str) and context.strip():
+            result["context"] = context
+        reasoning_config = data.get("reasoning_config")
+        if isinstance(reasoning_config, dict):
+            result["reasoning_config"] = reasoning_config
+        if result:
+            return result
         return None
 
     context = data.get("context")
