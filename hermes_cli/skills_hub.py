@@ -624,11 +624,90 @@ def do_install(identifier: str, category: str = "", force: bool = False,
         c.print("[dim]Use /reset to start a new session now, or --now to activate immediately (invalidates prompt cache).[/]\n")
 
 
+def _try_inspect_local_skill(name: str, console: Console) -> bool:
+    """Try to inspect a locally installed skill by name.
+
+    Returns True if the skill was found and displayed, False otherwise.
+    """
+    from tools.skills_tool import SKILLS_DIR, _parse_frontmatter
+
+    try:
+        from agent.skill_utils import get_external_skills_dirs, iter_skill_index_files
+    except ImportError:
+        return False
+
+    dirs_to_scan = []
+    if SKILLS_DIR.exists():
+        dirs_to_scan.append(SKILLS_DIR)
+    dirs_to_scan.extend(get_external_skills_dirs())
+
+    for scan_dir in dirs_to_scan:
+        for skill_md in iter_skill_index_files(scan_dir, "SKILL.md"):
+            skill_dir = skill_md.parent
+            try:
+                raw = skill_md.read_text(encoding="utf-8")
+                frontmatter, body = _parse_frontmatter(raw[:4000])
+                skill_name = frontmatter.get("name", skill_dir.name)
+                if skill_name.lower() != name.lower():
+                    continue
+
+                # Found a local match — display it
+                console.print()
+                description = frontmatter.get("description", "")
+                if not description:
+                    for line in body.strip().split("\n"):
+                        line = line.strip()
+                        if line and not line.startswith("#"):
+                            description = line
+                            break
+
+                # Determine source label from path
+                try:
+                    rel = skill_md.relative_to(SKILLS_DIR)
+                    source_label = "local (builtin)" if len(rel.parts) >= 2 else "local"
+                except ValueError:
+                    source_label = "local (external)"
+
+                info_lines = [
+                    f"[bold]Name:[/] {skill_name}",
+                    f"[bold]Description:[/] {description}",
+                    f"[bold]Source:[/] {source_label}",
+                    f"[bold]Trust:[/] [bright_cyan]local[/]",
+                    f"[bold]Path:[/] {skill_md}",
+                ]
+                tags = frontmatter.get("tags")
+                if tags:
+                    if isinstance(tags, list):
+                        tags = ", ".join(str(t) for t in tags)
+                    info_lines.append(f"[bold]Tags:[/] {tags}")
+
+                console.print(Panel("\n".join(info_lines), title=f"Skill: {skill_name}"))
+
+                # Show SKILL.md preview
+                lines = raw.split("\n")
+                preview = "\n".join(lines[:50])
+                if len(lines) > 50:
+                    preview += f"\n\n... ({len(lines) - 50} more lines)"
+                console.print(Panel(preview, title="SKILL.md Preview", subtitle="Locally installed"))
+                console.print()
+                return True
+            except Exception:
+                continue
+
+    return False
+
+
 def do_inspect(identifier: str, console: Optional[Console] = None) -> None:
     """Preview a skill's SKILL.md content without installing."""
     from tools.skills_hub import GitHubAuth, create_source_router
 
     c = console or _console
+
+    # For bare names (no '/'), try local skills first before querying hub
+    if "/" not in identifier:
+        if _try_inspect_local_skill(identifier, c):
+            return
+
     auth = GitHubAuth()
     sources = create_source_router(auth)
 
@@ -720,9 +799,71 @@ def browse_skills(page: int = 1, page_size: int = 20, source: str = "all") -> di
     }
 
 
+def _try_inspect_local_skill_data(name: str) -> Optional[dict]:
+    """Try to get local skill metadata by name for programmatic callers."""
+    from tools.skills_tool import SKILLS_DIR, _parse_frontmatter
+
+    try:
+        from agent.skill_utils import get_external_skills_dirs, iter_skill_index_files
+    except ImportError:
+        return None
+
+    dirs_to_scan = []
+    if SKILLS_DIR.exists():
+        dirs_to_scan.append(SKILLS_DIR)
+    dirs_to_scan.extend(get_external_skills_dirs())
+
+    for scan_dir in dirs_to_scan:
+        for skill_md in iter_skill_index_files(scan_dir, "SKILL.md"):
+            skill_dir = skill_md.parent
+            try:
+                raw = skill_md.read_text(encoding="utf-8")
+                frontmatter, body = _parse_frontmatter(raw[:4000])
+                skill_name = frontmatter.get("name", skill_dir.name)
+                if skill_name.lower() != name.lower():
+                    continue
+
+                description = frontmatter.get("description", "")
+                if not description:
+                    for line in body.strip().split("\n"):
+                        line = line.strip()
+                        if line and not line.startswith("#"):
+                            description = line
+                            break
+
+                tags = frontmatter.get("tags", [])
+                if isinstance(tags, str):
+                    tags = [t.strip() for t in tags.split(",")]
+
+                out = {
+                    "name": skill_name,
+                    "description": description,
+                    "source": "local",
+                    "identifier": str(skill_md),
+                    "tags": tags if isinstance(tags, list) else [],
+                }
+
+                lines = raw.split("\n")
+                preview = "\n".join(lines[:50])
+                if len(lines) > 50:
+                    preview += f"\n\n... ({len(lines) - 50} more lines)"
+                out["skill_md_preview"] = preview
+                return out
+            except Exception:
+                continue
+
+    return None
+
+
 def inspect_skill(identifier: str) -> Optional[dict]:
     """Skill metadata (+ SKILL.md preview) for programmatic callers."""
     from tools.skills_hub import GitHubAuth, create_source_router
+
+    # For bare names, try local skills first
+    if "/" not in identifier:
+        local_result = _try_inspect_local_skill_data(identifier)
+        if local_result is not None:
+            return local_result
 
     class _Q:
         def print(self, *a, **k):
