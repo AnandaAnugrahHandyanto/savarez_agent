@@ -579,3 +579,76 @@ class TestPatchReplacePostWriteVerification:
         result = ops.patch_replace("/tmp/test/a.py", "hello", "hi")
         assert result.error is not None
         assert "could not re-read" in result.error.lower()
+
+
+class TestDryRunReplace:
+    """Tests for the dry-run preview mode of patch_replace."""
+
+    def test_dry_run_returns_diff_without_modifying_file(self, mock_env):
+        """Dry-run should return the diff but NOT write to disk."""
+        original = "hello world\n"
+        state = {"content": original}
+
+        def side_effect(command, stdin_data=None, **kwargs):
+            if command.startswith("cat "):
+                return {"output": state["content"], "returncode": 0}
+            return {"output": "", "returncode": 0}
+
+        mock_env.execute.side_effect = side_effect
+        ops = ShellFileOperations(mock_env)
+        result = ops.dry_run_replace("/tmp/test/a.py", "hello", "hi")
+
+        assert result.success is True
+        assert result.error is None
+        assert "hello" in result.diff or "hi" in result.diff, f"Diff missing change: {result.diff}"
+        assert result.match_count >= 1
+        assert result.strategy != ""
+        # File must NOT be modified
+        assert state["content"] == original, f"File was modified! {state['content']!r}"
+
+    def test_dry_run_no_match_returns_error(self, mock_env):
+        """Dry-run with non-matching text should return an error."""
+        mock_env.execute.return_value = {"output": "some content\n", "returncode": 0}
+        ops = ShellFileOperations(mock_env)
+        result = ops.dry_run_replace("/tmp/test/a.py", "nonexistent", "replacement")
+        assert result.success is False
+        assert result.error is not None
+
+    def test_dry_run_file_not_found(self, mock_env):
+        """Dry-run on a missing file should return an error."""
+        mock_env.execute.return_value = {"output": "", "returncode": 1}
+        ops = ShellFileOperations(mock_env)
+        result = ops.dry_run_replace("/tmp/test/missing.py", "old", "new")
+        assert result.error is not None
+        assert "Failed to read" in result.error
+
+    def test_dry_run_replace_all(self, mock_env):
+        """Dry-run with replace_all should match all occurrences."""
+        state = {"content": "hello hello world\n"}
+
+        def side_effect(command, stdin_data=None, **kwargs):
+            if command.startswith("cat "):
+                return {"output": state["content"], "returncode": 0}
+            return {"output": "", "returncode": 0}
+
+        mock_env.execute.side_effect = side_effect
+        ops = ShellFileOperations(mock_env)
+        result = ops.dry_run_replace("/tmp/test/a.py", "hello", "hi", replace_all=True)
+
+        assert result.success is True
+        assert result.match_count == 2, f"Expected 2 matches, got {result.match_count}"
+        assert state["content"] == "hello hello world\n", "File must not be modified"
+
+    def test_match_count_and_strategy_in_result(self, mock_env):
+        """Dry-run result must include match_count and strategy for inspection."""
+        mock_env.execute.return_value = {"output": "hello world\n", "returncode": 0}
+        ops = ShellFileOperations(mock_env)
+        result = ops.dry_run_replace("/tmp/test/a.py", "hello", "hi")
+
+        assert result.success is True
+        assert result.match_count == 1
+        assert isinstance(result.strategy, str) and len(result.strategy) > 0
+        # Verify to_dict includes new fields
+        d = result.to_dict()
+        assert "match_count" in d
+        assert "strategy" in d

@@ -51,6 +51,197 @@ class TestGuidanceConstants:
 
 
 # =========================================================================
+# Git context injection
+# =========================================================================
+
+
+class TestGitContext:
+    """Tests for _build_git_context() — git status in system prompt."""
+
+    def test_no_git_repo_returns_empty(self, tmp_path):
+        """Outside a git repo, _build_git_context should return ''."""
+        from agent.prompt_builder import _build_git_context
+        result = _build_git_context(tmp_path)
+        assert result == ""
+
+    def test_git_context_includes_branch_and_commits(self, tmp_path):
+        """In a git repo, context should include branch name and recent commits."""
+        import subprocess
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-b", "main"], cwd=str(repo), capture_output=True)
+        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=str(repo), capture_output=True)
+        subprocess.run(["git", "config", "user.name", "Test"], cwd=str(repo), capture_output=True)
+        (repo / "file.txt").write_text("content")
+        subprocess.run(["git", "add", "file.txt"], cwd=str(repo), capture_output=True)
+        subprocess.run(["git", "commit", "-m", "test commit"], cwd=str(repo), capture_output=True)
+
+        from agent.prompt_builder import _build_git_context
+        result = _build_git_context(repo)
+
+        assert "Branch: main" in result
+        assert "test commit" in result
+        assert "repo" in result  # repo name
+
+    def test_git_context_reports_dirty_tree(self, tmp_path):
+        """Dirty working tree should be reported with file counts."""
+        import subprocess
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-b", "main"], cwd=str(repo), capture_output=True)
+        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=str(repo), capture_output=True)
+        subprocess.run(["git", "config", "user.name", "Test"], cwd=str(repo), capture_output=True)
+        (repo / "file.txt").write_text("content")
+        subprocess.run(["git", "add", "file.txt"], cwd=str(repo), capture_output=True)
+        subprocess.run(["git", "commit", "-m", "initial"], cwd=str(repo), capture_output=True)
+        # Make it dirty
+        (repo / "file.txt").write_text("modified content")
+        (repo / "new.txt").write_text("untracked")
+
+        from agent.prompt_builder import _build_git_context
+        result = _build_git_context(repo)
+
+        assert "dirty" in result.lower(), f"Expected dirty report, got: {result}"
+
+    def test_git_context_clean_tree(self, tmp_path):
+        """Clean tree without changes should report 'clean'."""
+        import subprocess
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-b", "main"], cwd=str(repo), capture_output=True)
+        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=str(repo), capture_output=True)
+        subprocess.run(["git", "config", "user.name", "Test"], cwd=str(repo), capture_output=True)
+        (repo / "file.txt").write_text("content")
+        subprocess.run(["git", "add", "file.txt"], cwd=str(repo), capture_output=True)
+        subprocess.run(["git", "commit", "-m", "initial"], cwd=str(repo), capture_output=True)
+
+        from agent.prompt_builder import _build_git_context
+        result = _build_git_context(repo)
+
+        assert "clean" in result.lower(), f"Expected clean tree, got: {result}"
+
+    def test_detached_head_returns_empty(self, tmp_path):
+        """Detached HEAD should return empty context."""
+        import subprocess
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-b", "main"], cwd=str(repo), capture_output=True)
+        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=str(repo), capture_output=True)
+        subprocess.run(["git", "config", "user.name", "Test"], cwd=str(repo), capture_output=True)
+        (repo / "file.txt").write_text("content")
+        subprocess.run(["git", "add", "file.txt"], cwd=str(repo), capture_output=True)
+        subprocess.run(["git", "commit", "-m", "initial"], cwd=str(repo), capture_output=True)
+        # Detach HEAD
+        sha = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=str(repo), capture_output=True, text=True
+        ).stdout.strip()
+        subprocess.run(["git", "checkout", sha], cwd=str(repo), capture_output=True)
+
+        from agent.prompt_builder import _build_git_context
+        result = _build_git_context(repo)
+        assert result == ""
+
+    def test_git_context_injected_into_build_context_files(self, tmp_path):
+        """build_context_files_prompt should include git context when in a repo."""
+        import subprocess
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-b", "main"], cwd=str(repo), capture_output=True)
+        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=str(repo), capture_output=True)
+        subprocess.run(["git", "config", "user.name", "Test"], cwd=str(repo), capture_output=True)
+        (repo / "file.txt").write_text("content")
+        subprocess.run(["git", "add", "file.txt"], cwd=str(repo), capture_output=True)
+        subprocess.run(["git", "commit", "-m", "test commit"], cwd=str(repo), capture_output=True)
+
+        result = build_context_files_prompt(cwd=str(repo), skip_soul=True)
+
+        assert "# Git Status" in result, f"Git Status section missing: {result[:500]}"
+        assert "Branch: main" in result
+        # Should appear before SOUL.md placement (but soul is skipped here so just check presence)
+        assert "test commit" in result
+
+
+class TestAgentsMdUpwardWalk:
+    """Tests for _load_agents_md and _load_claude_md walking up to git root."""
+
+    def test_agents_md_in_parent_dir(self, tmp_path):
+        """AGENTS.md in parent directory should be found."""
+        import subprocess
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-b", "main"], cwd=str(repo), capture_output=True)
+        (repo / "AGENTS.md").write_text("# Test AGENTS.md\n\nProject rules here.")
+
+        nested = repo / "deep" / "nested"
+        nested.mkdir(parents=True)
+
+        from agent.prompt_builder import _load_agents_md
+        result = _load_agents_md(nested)
+        assert "Test AGENTS.md" in result, f"AGENTS.md not found: {result!r}"
+
+    def test_agents_md_stops_at_git_root(self, tmp_path):
+        """Walk should stop at git root, not go beyond."""
+        import subprocess
+        # Repo A
+        repo_a = tmp_path / "repo_a"
+        repo_a.mkdir()
+        subprocess.run(["git", "init", "-b", "main"], cwd=str(repo_a), capture_output=True)
+        (repo_a / "AGENTS.md").write_text("# Repo A rules")
+
+        # Repo B (subdirectory, but has its own .git)
+        repo_b = repo_a / "lib" / "repo_b"
+        repo_b.mkdir(parents=True)
+        subprocess.run(["git", "init", "-b", "main"], cwd=str(repo_b), capture_output=True)
+        (repo_b / "AGENTS.md").write_text("# Repo B rules")
+
+        from agent.prompt_builder import _load_agents_md
+        result = _load_agents_md(repo_b)
+        # Should find Repo B's AGENTS.md, not Repo A's
+        assert "Repo B rules" in result, f"Wrong AGENTS.md: {result!r}"
+        assert "Repo A rules" not in result
+
+    def test_agents_md_not_in_git_repo_stops_at_root(self, tmp_path):
+        """Without a git repo, walk should stop at filesystem root."""
+        from agent.prompt_builder import _load_agents_md
+        # tmp_path is not in a git repo, no AGENTS.md exists
+        result = _load_agents_md(tmp_path)
+        assert result == "", f"Should return empty, got: {result!r}"
+
+    def test_claude_md_walks_up_to_git_root(self, tmp_path):
+        """CLAUDE.md in parent directory should be found."""
+        import subprocess
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-b", "main"], cwd=str(repo), capture_output=True)
+        (repo / "CLAUDE.md").write_text("# Claude rules")
+
+        nested = repo / "deep" / "nested"
+        nested.mkdir(parents=True)
+
+        from agent.prompt_builder import _load_claude_md
+        result = _load_claude_md(nested)
+        assert "Claude rules" in result
+
+    def test_relative_path_display(self, tmp_path):
+        """When AGENTS.md is in a parent, show relative path."""
+        import subprocess
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-b", "main"], cwd=str(repo), capture_output=True)
+        (repo / "AGENTS.md").write_text("# Top-level rules")
+
+        nested = repo / "sub"
+        nested.mkdir()
+
+        from agent.prompt_builder import _load_agents_md
+        result = _load_agents_md(nested)
+        # Should show the heading containing the rules
+        assert "Top-level rules" in result
+        # Relative path should appear (../AGENTS.md or just AGENTS.md)
+        assert "AGENTS.md" in result, f"AGENTS.md heading not found: {result!r}"
+
+
+# =========================================================================
 # Context injection scanning
 # =========================================================================
 

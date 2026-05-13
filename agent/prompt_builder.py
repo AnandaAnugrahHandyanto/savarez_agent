@@ -1468,7 +1468,7 @@ def _load_agents_md(cwd_path: Path) -> str:
                 except Exception as e:
                     logger.debug("Could not read %s: %s", candidate, e)
         # Stop walking at the git root (or filesystem root)
-        if stop_at and directory == stop_at:
+        if directory.parent == directory or (stop_at and directory == stop_at):
             break
     return ""
 
@@ -1496,7 +1496,7 @@ def _load_claude_md(cwd_path: Path) -> str:
                 except Exception as e:
                     logger.debug("Could not read %s: %s", candidate, e)
         # Stop walking at the git root (or filesystem root)
-        if stop_at and directory == stop_at:
+        if directory.parent == directory or (stop_at and directory == stop_at):
             break
     return ""
 

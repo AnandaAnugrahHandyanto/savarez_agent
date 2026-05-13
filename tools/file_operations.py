@@ -281,6 +281,16 @@ class FileOperations(ABC):
         ...
 
     @abstractmethod
+    def dry_run_replace(self, path: str, old_string: str, new_string: str,
+                        replace_all: bool = False) -> PatchResult:
+        """Preview a find-and-replace without modifying the file.
+
+        Same fuzzy matching as :meth:`patch_replace`, but returns the diff
+        and match info without writing to disk or running lint checks.
+        """
+        ...
+
+    @abstractmethod
     def patch_v4a(self, patch_content: str) -> PatchResult:
         """Apply a V4A format patch."""
         ...
@@ -1085,7 +1095,7 @@ class ShellFileOperations(FileOperations):
         result = apply_v4a_operations(operations, self)
         return result
     
-    def _try_shell_lint(self, ext: str, path: str, template: str) -> LintResult | None:
+    def _try_shell_lint(self, path: str, template: str) -> LintResult | None:
         """Try running a shell linter template. Returns LintResult or None if unavailable."""
         base_cmd = template.split()[0]
         if not self._has_command(base_cmd):
@@ -1141,13 +1151,13 @@ class ShellFileOperations(FileOperations):
         primary_cmd, fallback_cmd = entry
 
         # Try primary first (ruff, eslint, clippy, etc.)
-        result = self._try_shell_lint(ext, path, primary_cmd)
+        result = self._try_shell_lint(path, primary_cmd)
         if result is not None:
             return result
 
         # Try fallback (py_compile, node --check, etc.)
         if fallback_cmd:
-            result = self._try_shell_lint(ext, path, fallback_cmd)
+            result = self._try_shell_lint(path, fallback_cmd)
             if result is not None:
                 return result
 
