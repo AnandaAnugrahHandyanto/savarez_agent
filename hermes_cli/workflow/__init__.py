@@ -7,6 +7,7 @@ modules instead of inferring workflow state from Kanban prose.
 
 from .dag import DagValidationResult, normalize_dag, validate_dag
 from .errors import WorkflowError, WorkflowValidationError
+from .materialize import MaterializationResult, MaterializedTask, materialize_workflow
 from .policy import DEFAULT_POLICY, PolicyLoadResult, WorkflowPolicy, load_policy
 from .worktrees import allocate_worktrees
 from .store import (
@@ -31,6 +32,8 @@ from .store import (
 __all__ = [
     "DEFAULT_POLICY",
     "DagValidationResult",
+    "MaterializationResult",
+    "MaterializedTask",
     "PolicyLoadResult",
     "WorkflowArtifact",
     "WorkflowError",
@@ -51,6 +54,7 @@ __all__ = [
     "list_gates",
     "list_workflows",
     "load_policy",
+    "materialize_workflow",
     "normalize_dag",
     "resolve_gate",
     "save_dag",
