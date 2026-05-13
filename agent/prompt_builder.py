@@ -1228,9 +1228,6 @@ def build_nous_subscription_prompt(valid_tool_names: "set[str] | None" = None) -
         logger.debug("Failed to import Nous subscription helper: %s", exc)
         return ""
 
-    if not managed_nous_tools_enabled():
-        return ""
-
     valid_names = set(valid_tool_names or set())
     relevant_tool_names = {
         "web_search",
@@ -1255,31 +1252,40 @@ def build_nous_subscription_prompt(valid_tool_names: "set[str] | None" = None) -
         return ""
 
     features = get_nous_subscription_features()
+    if not (
+        managed_nous_tools_enabled()
+        or features.nous_auth_present
+        or features.provider_is_nous
+        or features.subscribed
+    ):
+        return ""
 
     def _status_line(feature) -> str:
         if feature.managed_by_nous:
-            return f"- {feature.label}: active via Nous subscription"
+            return f"- {feature.label}: active via Nous paid access"
         if feature.active:
             current = feature.current_provider or "configured provider"
             return f"- {feature.label}: currently using {current}"
         if feature.included_by_default and features.nous_auth_present:
-            return f"- {feature.label}: included with Nous subscription, not currently selected"
+            return f"- {feature.label}: available with Nous paid access, not currently selected"
         if feature.key == "modal" and features.nous_auth_present:
-            return f"- {feature.label}: optional via Nous subscription"
+            return f"- {feature.label}: optional with Nous paid access"
         return f"- {feature.label}: not currently available"
 
     lines = [
-        "# Nous Subscription",
-        "Nous subscription includes managed web tools (Firecrawl), image generation (FAL), OpenAI TTS, and browser automation (Browser Use) by default. Modal execution is optional.",
+        "# Nous Account Access",
+        "Nous paid access means NAS reports positive usable credits. An active subscription with zero usable credits is not enough for paid Nous services.",
+        "Nous paid access can include managed web tools (Firecrawl), image generation (FAL), OpenAI TTS, and browser automation (Browser Use). Modal execution is optional.",
         "Current capability status:",
     ]
     lines.extend(_status_line(feature) for feature in features.items())
     lines.extend(
         [
             "When a Nous-managed feature is active, do not ask the user for Firecrawl, FAL, OpenAI TTS, or Browser-Use API keys.",
-            "If the user is not subscribed and asks for a capability that Nous subscription would unlock or simplify, suggest Nous subscription as one option alongside direct setup or local alternatives.",
-            "Do not mention subscription unless the user asks about it or it directly solves the current missing capability.",
-            "Useful commands: hermes setup, hermes setup tools, hermes setup terminal, hermes status.",
+            "If a Nous API returns 402, payment_required, insufficient credits, or SUBSCRIPTION_REQUIRED, inspect live account status via /usage or hermes status before recommending a fix.",
+            "If there is no active subscription, suggest Nous subscription as one option. If there is an active subscription but no usable credits, recommend topping up credits.",
+            "Do not mention subscription unless the user asks about it or it directly solves the current Nous access failure; do not mention top-up unless credits are the blocker.",
+            "Useful commands: /usage, hermes setup, hermes setup tools, hermes setup terminal, hermes status.",
         ]
     )
     return "\n".join(lines)

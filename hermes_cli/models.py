@@ -496,36 +496,60 @@ def fetch_nous_account_tier(access_token: str, portal_base_url: str = "") -> dic
 
     Returns an empty dict on any failure (network, auth, parse).
     """
-    base = (portal_base_url or "https://portal.nousresearch.com").rstrip("/")
-    url = f"{base}/api/oauth/account"
-    headers = {
-        "Authorization": f"Bearer {access_token}",
-        "Accept": "application/json",
-    }
     try:
-        req = urllib.request.Request(url, headers=headers)
-        with urllib.request.urlopen(req, timeout=8) as resp:
-            return json.loads(resp.read().decode())
+        from hermes_cli.nous_account import fetch_nous_account_info
+
+        return fetch_nous_account_info(access_token, portal_base_url)
     except Exception:
         return {}
 
 
 def is_nous_free_tier(account_info: dict[str, Any]) -> bool:
-    """Return True if the account info indicates a free (unpaid) tier.
+    """Return True when NAS says the account lacks paid service access."""
+    paid_service = account_info.get("paid_service_access")
+    if isinstance(paid_service, dict):
+        raw = paid_service.get("paid_access")
+        if raw is None:
+            raw = paid_service.get("allowed")
+        if isinstance(raw, bool):
+            return not raw
+        if isinstance(raw, str):
+            lowered = raw.strip().lower()
+            if lowered in {"true", "1", "yes", "on"}:
+                return False
+            if lowered in {"false", "0", "no", "off"}:
+                return True
 
-    Checks ``subscription.monthly_charge == 0``.  Returns False when
-    the field is missing or unparseable (assumes paid — don't block users).
-    """
+        total = paid_service.get("total_usable_credits")
+        if total is not None:
+            try:
+                return float(total) <= 0
+            except (TypeError, ValueError):
+                pass
+
     sub = account_info.get("subscription")
-    if not isinstance(sub, dict):
-        return False
-    charge = sub.get("monthly_charge")
-    if charge is None:
-        return False
-    try:
-        return float(charge) == 0
-    except (TypeError, ValueError):
-        return False
+    if isinstance(sub, dict):
+        charge = sub.get("monthly_charge")
+        if charge is not None:
+            try:
+                return float(charge) == 0
+            except (TypeError, ValueError):
+                return False
+
+    purchased = account_info.get("purchased_credits_remaining")
+    has_credit_fields = (
+        isinstance(sub, dict)
+        and "credits_remaining" in sub
+    ) or purchased is not None
+    if has_credit_fields:
+        try:
+            sub_credits = float((sub or {}).get("credits_remaining") or 0)
+            purchased_credits = float(purchased or 0)
+            return (sub_credits + purchased_credits) <= 0
+        except (TypeError, ValueError):
+            return False
+
+    return False
 
 
 def partition_nous_models_by_tier(
@@ -690,7 +714,7 @@ def union_with_portal_paid_recommendations(
 # TTL cache for free-tier detection — avoids repeated API calls within a
 # session while still picking up upgrades quickly.
 # ---------------------------------------------------------------------------
-_FREE_TIER_CACHE_TTL: int = 180  # seconds (3 minutes)
+_FREE_TIER_CACHE_TTL: int = 60  # seconds
 _free_tier_cache: tuple[bool, float] | None = None  # (result, timestamp)
 
 
@@ -713,7 +737,7 @@ def check_nous_free_tier() -> bool:
     try:
         from hermes_cli.auth import get_provider_auth_state, resolve_nous_runtime_credentials
 
-        # Ensure we have a fresh token (triggers refresh if needed)
+        # Ensure we have a fresh NAS JWT (triggers refresh if needed)
         resolve_nous_runtime_credentials(min_key_ttl_seconds=60)
 
         state = get_provider_auth_state("nous")

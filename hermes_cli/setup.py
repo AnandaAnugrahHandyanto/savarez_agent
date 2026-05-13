@@ -386,7 +386,7 @@ def _print_setup_summary(config: dict, hermes_home):
 
     # Web tools (Exa, Parallel, Firecrawl, or Tavily)
     if subscription_features.web.managed_by_nous:
-        tool_status.append(("Web Search & Extract (Nous subscription)", True, None))
+        tool_status.append(("Web Search & Extract (Nous paid access)", True, None))
     elif subscription_features.web.available:
         label = "Web Search & Extract"
         if subscription_features.web.current_provider:
@@ -426,7 +426,7 @@ def _print_setup_summary(config: dict, hermes_home):
     # Image generation — FAL (direct or via Nous), or any plugin-registered
     # provider (OpenAI, etc.)
     if subscription_features.image_gen.managed_by_nous:
-        tool_status.append(("Image Generation (Nous subscription)", True, None))
+        tool_status.append(("Image Generation (Nous paid access)", True, None))
     elif subscription_features.image_gen.available:
         tool_status.append(("Image Generation", True, None))
     else:
@@ -457,7 +457,7 @@ def _print_setup_summary(config: dict, hermes_home):
     # TTS — show configured provider
     tts_provider = cfg_get(config, "tts", "provider", default="edge")
     if subscription_features.tts.managed_by_nous:
-        tool_status.append(("Text-to-Speech (OpenAI via Nous subscription)", True, None))
+        tool_status.append(("Text-to-Speech (OpenAI via Nous paid access)", True, None))
     elif tts_provider == "elevenlabs" and get_env_value("ELEVENLABS_API_KEY"):
         tool_status.append(("Text-to-Speech (ElevenLabs)", True, None))
     elif tts_provider == "openai" and (
@@ -493,14 +493,14 @@ def _print_setup_summary(config: dict, hermes_home):
         tool_status.append(("Text-to-Speech (Edge TTS)", True, None))
 
     if subscription_features.modal.managed_by_nous:
-        tool_status.append(("Modal Execution (Nous subscription)", True, None))
+        tool_status.append(("Modal Execution (Nous paid access)", True, None))
     elif cfg_get(config, "terminal", "backend") == "modal":
         if subscription_features.modal.direct_override:
             tool_status.append(("Modal Execution (direct Modal)", True, None))
         else:
             tool_status.append(("Modal Execution", False, "run 'hermes setup terminal'"))
     elif managed_nous_tools_enabled() and subscription_features.nous_auth_present:
-        tool_status.append(("Modal Execution (optional via Nous subscription)", True, None))
+        tool_status.append(("Modal Execution (optional via Nous paid access)", True, None))
 
     # Tinker + WandB (RL training)
     if get_env_value("TINKER_API_KEY") and get_env_value("WANDB_API_KEY"):
@@ -1418,7 +1418,7 @@ def setup_terminal_backend(config: dict):
         use_managed_modal = False
         if managed_modal_available:
             modal_choices = [
-                "Use my Nous subscription",
+                "Use my Nous paid access",
                 "Use my own Modal account",
             ]
             if modal_mode == "managed":

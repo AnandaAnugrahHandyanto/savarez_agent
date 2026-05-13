@@ -12446,6 +12446,31 @@ class AIAgent:
             oauth_1m_beta_retry_attempted = False
             llama_cpp_grammar_retry_attempted = False
             has_retried_429 = False
+            nous_billing_guidance_printed = False
+
+            def _is_current_nous_runtime(provider: object, base_url: object) -> bool:
+                provider_l = str(provider or "").strip().lower()
+                return provider_l == "nous" or base_url_host_matches(str(base_url or ""), "nousresearch.com")
+
+            def _nous_billing_guidance_lines() -> list[str]:
+                try:
+                    from hermes_cli.nous_account import format_nous_billing_guidance_lines
+
+                    return format_nous_billing_guidance_lines(force_refresh=True)
+                except Exception:
+                    return [
+                        "Check your Nous billing and credits in Nous Portal.",
+                        "Billing: https://portal.nousresearch.com/billing",
+                    ]
+
+            def _print_nous_billing_guidance(provider: object, base_url: object) -> None:
+                nonlocal nous_billing_guidance_printed
+                if nous_billing_guidance_printed or not _is_current_nous_runtime(provider, base_url):
+                    return
+                nous_billing_guidance_printed = True
+                self._vprint(f"{self.log_prefix}   💡 Nous account guidance:", force=True)
+                for line in _nous_billing_guidance_lines():
+                    self._vprint(f"{self.log_prefix}      • {line}", force=True)
             restart_with_compressed_messages = False
             restart_with_length_continuation = False
 
@@ -13540,11 +13565,11 @@ class AIAgent:
                     ):
                         nous_auth_retry_attempted = True
                         if self._try_refresh_nous_client_credentials(force=True):
-                            print(f"{self.log_prefix}🔐 Nous agent key refreshed after 401. Retrying request...")
+                            print(f"{self.log_prefix}🔐 Nous JWT refreshed after 401. Retrying request...")
                             continue
                         # Credential refresh didn't help — show diagnostic info.
                         # Most common causes: Portal OAuth expired/revoked,
-                        # account out of credits, or agent key blocked.
+                        # account out of credits, or JWT rejected.
                         from hermes_constants import display_hermes_home as _dhh_fn
                         _dhh = _dhh_fn()
                         _body_text = ""
@@ -13557,10 +13582,10 @@ class AIAgent:
                         print(f"{self.log_prefix}🔐 Nous 401 — Portal authentication failed.")
                         if _body_text:
                             print(f"{self.log_prefix}   Response: {_body_text}")
-                        print(f"{self.log_prefix}   Most likely: Portal OAuth expired, account out of credits, or agent key revoked.")
+                        print(f"{self.log_prefix}   Most likely: Portal OAuth expired, account out of credits, or JWT rejected.")
                         print(f"{self.log_prefix}   Troubleshooting:")
                         print(f"{self.log_prefix}     • Re-authenticate: hermes login --provider nous")
-                        print(f"{self.log_prefix}     • Check credits / billing: https://portal.nousresearch.com")
+                        print(f"{self.log_prefix}     • Check credits / billing: https://portal.nousresearch.com/billing")
                         print(f"{self.log_prefix}     • Verify stored credentials: {_dhh}/auth.json")
                         print(f"{self.log_prefix}     • Switch providers temporarily: /model <model> --provider openrouter")
                     if (
@@ -13700,6 +13725,8 @@ class AIAgent:
                         _err_body_str = str(_err_body)[:300] if _err_body else None
                         if _err_body_str:
                             self._vprint(f"{self.log_prefix}   📋 Details: {_err_body_str}", force=True)
+                    if classified.reason == FailoverReason.billing:
+                        _print_nous_billing_guidance(_provider, _base)
                     self._vprint(f"{self.log_prefix}   ⏱️  Elapsed: {elapsed_time:.2f}s  Context: {len(api_messages)} msgs, ~{approx_tokens:,} tokens")
 
                     # Actionable hint for OpenRouter "no tool endpoints" error.
@@ -14280,6 +14307,8 @@ class AIAgent:
                                 "execute_code with Python's open() for large "
                                 "files, or to write in smaller sections."
                             )
+                        if classified.reason == FailoverReason.billing and _is_current_nous_runtime(_provider, _base):
+                            _final_response += "\n\n" + "\n".join(_nous_billing_guidance_lines())
                         return {
                             "final_response": _final_response,
                             "messages": messages,

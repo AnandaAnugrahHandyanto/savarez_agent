@@ -16,7 +16,6 @@ from hermes_cli.auth import (
     DEFAULT_CODEX_BASE_URL,
     DEFAULT_QWEN_BASE_URL,
     PROVIDER_REGISTRY,
-    _agent_key_is_usable,
     format_auth_error,
     resolve_provider,
     resolve_nous_runtime_credentials,
@@ -825,11 +824,9 @@ def _resolve_explicit_runtime(
             explicit_base_url
             or str(state.get("inference_base_url") or auth_mod.DEFAULT_NOUS_INFERENCE_URL).strip().rstrip("/")
         )
-        # Only use agent_key for inference — access_token is an OAuth token for the
-        # portal API (minting keys, refreshing tokens), not for the inference API.
-        # Falling back to access_token sends an OAuth bearer token to the inference
-        # endpoint, which returns 404 because it is not a valid inference credential.
-        api_key = explicit_api_key or str(state.get("agent_key") or "").strip()
+        # The inference API now accepts the NAS OAuth access JWT directly.
+        # ``agent_key`` is retained as a compatibility alias for the same JWT.
+        api_key = explicit_api_key or str(state.get("agent_key") or state.get("access_token") or "").strip()
         expires_at = state.get("agent_key_expires_at") or state.get("expires_at")
         if not api_key:
             creds = resolve_nous_runtime_credentials(
@@ -1019,20 +1016,15 @@ def resolve_runtime_provider(
                 getattr(entry, "runtime_api_key", None)
                 or getattr(entry, "access_token", "")
             )
-        # For Nous, the pool entry's runtime_api_key is the agent_key — a
-        # short-lived inference credential (~30 min TTL).  The pool doesn't
-        # refresh it during selection (that would trigger network calls in
-        # non-runtime contexts like `hermes auth list`).  If the key is
-        # expired, clear pool_api_key so we fall through to
-        # resolve_nous_runtime_credentials() which handles refresh + mint.
+        # For Nous, runtime_api_key is the NAS JWT (mirrored through the
+        # legacy agent_key field).  If the JWT is expiring, fall through to
+        # resolve_nous_runtime_credentials() so it can refresh and re-alias it.
         if provider == "nous" and entry is not None and pool_api_key:
-            min_ttl = max(60, int(os.getenv("HERMES_NOUS_MIN_KEY_TTL_SECONDS", "1800")))
-            nous_state = {
-                "agent_key": getattr(entry, "agent_key", None),
-                "agent_key_expires_at": getattr(entry, "agent_key_expires_at", None),
-            }
-            if not _agent_key_is_usable(nous_state, min_ttl):
-                logger.debug("Nous pool entry agent_key expired/missing, falling through to runtime resolution")
+            from hermes_cli.auth import _is_expiring, ACCESS_TOKEN_REFRESH_SKEW_SECONDS
+
+            expires_at = getattr(entry, "agent_key_expires_at", None) or getattr(entry, "expires_at", None)
+            if _is_expiring(expires_at, ACCESS_TOKEN_REFRESH_SKEW_SECONDS):
+                logger.debug("Nous pool entry JWT expired/expiring, falling through to runtime resolution")
                 pool_api_key = ""
         if entry is not None and pool_api_key:
             return _resolve_runtime_from_pool_entry(

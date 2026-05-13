@@ -15,11 +15,11 @@ _VALID_MODAL_MODES = {"auto", "direct", "managed"}
 
 
 def managed_nous_tools_enabled() -> bool:
-    """Return True when the user has an active paid Nous subscription.
+    """Return True when NAS reports paid access for managed Nous tools.
 
-    The Tool Gateway is available to any Nous subscriber who is NOT on
-    the free tier.  We intentionally catch all exceptions and return
-    False — never block the agent startup path.
+    Paid access means positive usable credits, not just an active
+    subscription.  We intentionally catch all exceptions and return False —
+    never block the agent startup path.
     """
     try:
         from hermes_cli.auth import get_nous_auth_status
@@ -28,11 +28,10 @@ def managed_nous_tools_enabled() -> bool:
         if not status.get("logged_in"):
             return False
 
-        from hermes_cli.models import check_nous_free_tier
+        from hermes_cli.nous_account import get_nous_account_status
 
-        if check_nous_free_tier():
-            return False  # free-tier users don't get gateway access
-        return True
+        account = get_nous_account_status()
+        return bool(account.available and account.paid_access)
     except Exception:
         return False
 

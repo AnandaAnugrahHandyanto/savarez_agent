@@ -100,7 +100,7 @@ def test_show_status_reports_managed_nous_features(monkeypatch, capsys, tmp_path
     out = capsys.readouterr().out
     assert "Nous Tool Gateway" in out
     assert "Browser automation" in out
-    assert "active via Nous subscription" in out
+    assert "active via Nous paid access" in out
 
 
 def test_show_status_hides_nous_subscription_section_when_feature_flag_is_off(monkeypatch, capsys, tmp_path):

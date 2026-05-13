@@ -16,6 +16,7 @@ from hermes_cli.auth import AuthError, resolve_provider
 from hermes_cli.colors import Colors, color
 from hermes_cli.config import get_env_path, get_env_value, get_hermes_home, load_config
 from hermes_cli.models import provider_label
+from hermes_cli.nous_account import format_nous_billing_guidance_lines, get_nous_account_status
 from hermes_cli.nous_subscription import get_nous_subscription_features
 from hermes_cli.runtime_provider import resolve_requested_provider
 from hermes_cli.vercel_auth import describe_vercel_auth
@@ -212,7 +213,7 @@ def show_status(args):
     if nous_logged_in or nous_status.get("access_expires_at"):
         print(f"    Access exp: {access_exp}")
     if nous_logged_in or nous_status.get("agent_key_expires_at"):
-        print(f"    Key exp:    {key_exp}")
+        print(f"    JWT exp:    {key_exp}")
     if nous_logged_in or nous_status.get("has_refresh_token"):
         print(f"    Refresh:    {refresh_label}")
     if nous_error and not nous_logged_in:
@@ -264,6 +265,13 @@ def show_status(args):
     # =========================================================================
     # Nous Subscription Features
     # =========================================================================
+    nous_account_status = None
+    if nous_logged_in:
+        try:
+            nous_account_status = get_nous_account_status(force_refresh=True)
+        except Exception:
+            nous_account_status = None
+
     if managed_nous_tools_enabled():
         features = get_nous_subscription_features(config)
         print()
@@ -271,32 +279,34 @@ def show_status(args):
         if not features.nous_auth_present:
             print("  Nous Portal   ✗ not logged in")
         else:
-            print("  Nous Portal   ✓ managed tools available")
+            print("  Nous Portal   ✓ paid access verified")
+            if features.total_usable_credits is not None:
+                print(f"  Credits       ${features.total_usable_credits:.2f} usable")
         for feature in features.items():
             if feature.managed_by_nous:
-                state = "active via Nous subscription"
+                state = "active via Nous paid access"
             elif feature.active:
                 current = feature.current_provider or "configured provider"
                 state = f"active via {current}"
             elif feature.included_by_default and features.nous_auth_present:
-                state = "included by subscription, not currently selected"
+                state = "available with paid access, not currently selected"
             elif feature.key == "modal" and features.nous_auth_present:
-                state = "available via subscription (optional)"
+                state = "available with paid access (optional)"
             else:
                 state = "not configured"
             print(f"  {feature.label:<15} {check_mark(feature.available or feature.active or feature.managed_by_nous)} {state}")
     elif nous_logged_in:
-        # Logged into Nous but on the free tier — show upgrade nudge
         print()
         print(color("◆ Nous Tool Gateway", Colors.CYAN, Colors.BOLD))
-        print("  Your free-tier Nous account does not include Tool Gateway access.")
-        print("  Upgrade your subscription to unlock managed web, image, TTS, and browser tools.")
-        try:
-            portal_url = nous_status.get("portal_base_url", "").rstrip("/")
+        if nous_account_status and nous_account_status.available:
+            print("  Nous paid access is not currently available for managed tools.")
+            for line in format_nous_billing_guidance_lines(nous_account_status, force_refresh=False):
+                print(f"  {line}")
+        else:
+            print("  Could not verify Nous paid access from NAS.")
+            portal_url = str(nous_status.get("portal_base_url") or "").rstrip("/")
             if portal_url:
-                print(f"  Upgrade: {portal_url}")
-        except Exception:
-            pass
+                print(f"  Check billing: {portal_url}/billing")
 
     # =========================================================================
     # API-Key Providers

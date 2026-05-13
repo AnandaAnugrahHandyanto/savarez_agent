@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Dict, Iterable, Optional, Set
 
 from hermes_cli.auth import get_nous_auth_status
+from hermes_cli.nous_account import NousAccountStatus, get_nous_account_status
 from hermes_cli.config import get_env_value, load_config
 from tools.managed_tool_gateway import is_managed_tool_gateway_ready
 from utils import is_truthy_value
@@ -53,6 +54,12 @@ class NousSubscriptionFeatures:
     nous_auth_present: bool
     provider_is_nous: bool
     features: Dict[str, NousFeatureState]
+    paid_access: bool = False
+    has_active_subscription: Optional[bool] = None
+    active_subscription_is_paid: Optional[bool] = None
+    total_usable_credits: Optional[float] = None
+    account_source: str = ""
+    account_unavailable_reason: str = ""
 
     @property
     def web(self) -> NousFeatureState:
@@ -239,9 +246,16 @@ def get_nous_subscription_features(
     except Exception:
         nous_status = {}
 
-    managed_tools_flag = managed_nous_tools_enabled()
     nous_auth_present = bool(nous_status.get("logged_in"))
-    subscribed = provider_is_nous or nous_auth_present
+    account_status: Optional[NousAccountStatus] = None
+    if nous_auth_present:
+        try:
+            account_status = get_nous_account_status()
+        except Exception:
+            account_status = None
+    paid_access = bool(account_status and account_status.available and account_status.paid_access)
+    managed_tools_flag = paid_access
+    subscribed = paid_access
 
     web_tool_enabled = _toolset_enabled(config, "web")
     image_tool_enabled = _toolset_enabled(config, "image_gen")
@@ -483,6 +497,12 @@ def get_nous_subscription_features(
         nous_auth_present=nous_auth_present,
         provider_is_nous=provider_is_nous,
         features=features,
+        paid_access=paid_access,
+        has_active_subscription=account_status.has_active_subscription if account_status else None,
+        active_subscription_is_paid=account_status.active_subscription_is_paid if account_status else None,
+        total_usable_credits=account_status.total_usable_credits if account_status else None,
+        account_source=account_status.source if account_status else "",
+        account_unavailable_reason=account_status.unavailable_reason if account_status else "",
     )
 
 
@@ -601,7 +621,7 @@ def get_gateway_eligible_tools(
     - has_direct: tools where the user has their own API keys
     - already_managed: tools already routed through the gateway
 
-    All lists are empty when the user is not a paid Nous subscriber or
+    All lists are empty when NAS does not report Nous paid access or the user
     is not using Nous as their provider.
     """
     if not managed_nous_tools_enabled():
@@ -717,7 +737,7 @@ def prompt_enable_tool_gateway(config: Dict[str, object]) -> set[str]:
     desc_parts: list[str] = [
         "",
         "  The Tool Gateway gives you access to web search, image generation,",
-        "  text-to-speech, and browser automation through your Nous subscription.",
+        "  text-to-speech, and browser automation through your Nous paid access.",
         "  No need to sign up for separate API keys — just pick the tools you want.",
         "",
     ]
@@ -766,7 +786,7 @@ def prompt_enable_tool_gateway(config: Dict[str, object]) -> set[str]:
 
     try:
         idx = prompt_choice(
-            "Your Nous subscription includes the Tool Gateway.",
+            "Your Nous paid access includes the Tool Gateway.",
             choices,
             default_idx,
             description=description,
@@ -793,7 +813,7 @@ def prompt_enable_tool_gateway(config: Dict[str, object]) -> set[str]:
         newly_switched = changed - set(already_managed)
         for key in sorted(newly_switched):
             label = _GATEWAY_TOOL_LABELS.get(key, key)
-            print(f"  ✓ {label}: enabled via Nous subscription")
+            print(f"  ✓ {label}: enabled via Nous paid access")
         if already_managed and not newly_switched:
             print("  (all tools already using Tool Gateway)")
     return changed

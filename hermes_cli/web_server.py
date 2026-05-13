@@ -2020,7 +2020,8 @@ def _nous_poller(session_id: str) -> None:
                 expires_in=expires_in,
                 poll_interval=interval,
             )
-        # Same post-processing as _nous_device_code_login (mint agent key)
+        # Same post-processing as _nous_device_code_login (alias access JWT
+        # into legacy runtime-key fields)
         now = datetime.now(timezone.utc)
         token_ttl = int(token_data.get("expires_in") or 0)
         auth_state = {
@@ -2040,7 +2041,7 @@ def _nous_poller(session_id: str) -> None:
         }
         full_state = refresh_nous_oauth_from_state(
             auth_state, min_key_ttl_seconds=300, timeout_seconds=15.0,
-            force_refresh=False, force_mint=True,
+            force_refresh=False, force_mint=False,
         )
         from hermes_cli.auth import persist_nous_credentials
         persist_nous_credentials(full_state)

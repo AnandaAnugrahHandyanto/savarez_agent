@@ -1460,7 +1460,7 @@ def _try_nous(vision: bool = False) -> Tuple[Optional[OpenAI], Optional[str]]:
 
     # Ask the Portal which model it currently recommends for this task type.
     # The /api/nous/recommended-models endpoint is the authoritative source:
-    # it distinguishes paid vs free tier recommendations, and get_nous_recommended_aux_model
+    # it distinguishes paid-access vs free recommendations, and get_nous_recommended_aux_model
     # auto-detects the caller's tier via check_nous_free_tier().  Fall back to
     # _NOUS_MODEL (google/gemini-3-flash-preview) when the Portal is unreachable
     # or returns a null recommendation for this task type.

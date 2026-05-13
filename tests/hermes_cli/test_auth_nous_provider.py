@@ -1,10 +1,8 @@
-"""Regression tests for Nous OAuth refresh + agent-key mint interactions."""
+"""Regression tests for Nous OAuth refresh + JWT runtime aliasing."""
 
 import json
-from datetime import datetime, timezone
 from pathlib import Path
 
-import httpx
 import pytest
 
 from hermes_cli.auth import AuthError, get_provider_auth_state, resolve_nous_runtime_credentials
@@ -154,16 +152,6 @@ def _setup_nous_auth(
     (hermes_home / "auth.json").write_text(json.dumps(auth_store, indent=2))
 
 
-def _mint_payload(api_key: str = "agent-key") -> dict:
-    return {
-        "api_key": api_key,
-        "key_id": "key-id-1",
-        "expires_at": datetime.now(timezone.utc).isoformat(),
-        "expires_in": 1800,
-        "reused": False,
-    }
-
-
 def test_get_nous_auth_status_checks_credential_pool(tmp_path, monkeypatch):
     """get_nous_auth_status() should find Nous credentials in the pool
     even when the auth store has no Nous provider entry — this is the
@@ -304,7 +292,7 @@ def test_get_nous_auth_status_empty_returns_not_logged_in(tmp_path, monkeypatch)
     assert status["logged_in"] is False
 
 
-def test_refresh_token_persisted_when_mint_returns_insufficient_credits(tmp_path, monkeypatch):
+def test_refresh_token_persisted_and_jwt_aliased_without_agent_key_mint(tmp_path, monkeypatch):
     hermes_home = tmp_path / "hermes"
     _setup_nous_auth(hermes_home, refresh_token="refresh-old")
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
@@ -324,28 +312,24 @@ def test_refresh_token_persisted_when_mint_returns_insufficient_credits(tmp_path
 
     def _fake_mint_agent_key(*, client, portal_base_url, access_token, min_ttl_seconds):
         mint_calls["count"] += 1
-        if mint_calls["count"] == 1:
-            raise AuthError("credits exhausted", provider="nous", code="insufficient_credits")
-        return _mint_payload(api_key="agent-key-2")
+        raise AssertionError("opaque agent-key minting should not be called")
 
     monkeypatch.setattr("hermes_cli.auth._refresh_access_token", _fake_refresh_access_token)
     monkeypatch.setattr("hermes_cli.auth._mint_agent_key", _fake_mint_agent_key)
 
-    with pytest.raises(AuthError) as exc:
-        resolve_nous_runtime_credentials(min_key_ttl_seconds=300)
-    assert exc.value.code == "insufficient_credits"
+    creds = resolve_nous_runtime_credentials(min_key_ttl_seconds=300)
+    assert creds["api_key"] == "access-1"
+    assert mint_calls["count"] == 0
 
     state_after_failure = get_provider_auth_state("nous")
     assert state_after_failure is not None
     assert state_after_failure["refresh_token"] == "refresh-1"
     assert state_after_failure["access_token"] == "access-1"
-
-    creds = resolve_nous_runtime_credentials(min_key_ttl_seconds=300)
-    assert creds["api_key"] == "agent-key-2"
-    assert refresh_calls == ["refresh-old", "refresh-1"]
+    assert state_after_failure["agent_key"] == "access-1"
+    assert refresh_calls == ["refresh-old"]
 
 
-def test_refresh_token_persisted_when_mint_times_out(tmp_path, monkeypatch):
+def test_refresh_token_persisted_when_jwt_refresh_succeeds(tmp_path, monkeypatch):
     hermes_home = tmp_path / "hermes"
     _setup_nous_auth(hermes_home, refresh_token="refresh-old")
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
@@ -359,21 +343,22 @@ def test_refresh_token_persisted_when_mint_times_out(tmp_path, monkeypatch):
         }
 
     def _fake_mint_agent_key(*, client, portal_base_url, access_token, min_ttl_seconds):
-        raise httpx.ReadTimeout("mint timeout")
+        raise AssertionError("opaque agent-key minting should not be called")
 
     monkeypatch.setattr("hermes_cli.auth._refresh_access_token", _fake_refresh_access_token)
     monkeypatch.setattr("hermes_cli.auth._mint_agent_key", _fake_mint_agent_key)
 
-    with pytest.raises(httpx.ReadTimeout):
-        resolve_nous_runtime_credentials(min_key_ttl_seconds=300)
+    creds = resolve_nous_runtime_credentials(min_key_ttl_seconds=300)
+    assert creds["api_key"] == "access-1"
 
     state_after_failure = get_provider_auth_state("nous")
     assert state_after_failure is not None
     assert state_after_failure["refresh_token"] == "refresh-1"
     assert state_after_failure["access_token"] == "access-1"
+    assert state_after_failure["agent_key"] == "access-1"
 
 
-def test_mint_retry_uses_latest_rotated_refresh_token(tmp_path, monkeypatch):
+def test_runtime_refresh_uses_rotated_access_jwt_without_mint_retry(tmp_path, monkeypatch):
     hermes_home = tmp_path / "hermes"
     _setup_nous_auth(hermes_home, refresh_token="refresh-old")
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
@@ -393,16 +378,15 @@ def test_mint_retry_uses_latest_rotated_refresh_token(tmp_path, monkeypatch):
 
     def _fake_mint_agent_key(*, client, portal_base_url, access_token, min_ttl_seconds):
         mint_calls["count"] += 1
-        if mint_calls["count"] == 1:
-            raise AuthError("stale access token", provider="nous", code="invalid_token")
-        return _mint_payload(api_key="agent-key")
+        raise AssertionError("opaque agent-key minting should not be called")
 
     monkeypatch.setattr("hermes_cli.auth._refresh_access_token", _fake_refresh_access_token)
     monkeypatch.setattr("hermes_cli.auth._mint_agent_key", _fake_mint_agent_key)
 
     creds = resolve_nous_runtime_credentials(min_key_ttl_seconds=300)
-    assert creds["api_key"] == "agent-key"
-    assert refresh_calls == ["refresh-old", "refresh-1"]
+    assert creds["api_key"] == "access-1"
+    assert refresh_calls == ["refresh-old"]
+    assert mint_calls["count"] == 0
 
 
 # =============================================================================
@@ -593,7 +577,7 @@ def test_persist_nous_credentials_writes_both_pool_and_providers(tmp_path, monke
     """Helper must populate BOTH credential_pool.nous AND providers.nous.
 
     Regression guard: before this helper existed, `hermes auth add nous`
-    wrote only the pool. After the Nous agent_key's 24h TTL expired, the
+    wrote only the pool. After the Nous runtime JWT expired, the
     401-recovery path in run_agent.py called resolve_nous_runtime_credentials
     which reads providers.nous, found it empty, raised AuthError, and the
     agent failed with "Non-retryable client error". Both stores must stay
@@ -620,15 +604,15 @@ def test_persist_nous_credentials_writes_both_pool_and_providers(tmp_path, monke
     singleton = payload["providers"]["nous"]
     assert singleton["access_token"] == "access-tok"
     assert singleton["refresh_token"] == "refresh-tok"
-    assert singleton["agent_key"] == "agent-key-value"
-    assert singleton["agent_key_expires_at"] == "2026-04-18T22:00:00+00:00"
+    assert singleton["agent_key"] == "access-tok"
+    assert singleton["agent_key_expires_at"] == "2026-04-17T22:15:00+00:00"
 
     # credential_pool.nous has exactly one canonical device_code entry
     pool_entries = payload["credential_pool"]["nous"]
     assert len(pool_entries) == 1, pool_entries
     pool_entry = pool_entries[0]
     assert pool_entry["source"] == NOUS_DEVICE_CODE_SOURCE
-    assert pool_entry["agent_key"] == "agent-key-value"
+    assert pool_entry["agent_key"] == "access-tok"
     assert pool_entry["inference_base_url"] == "https://inference.example.com/v1"
 
 
@@ -663,13 +647,13 @@ def test_persist_nous_credentials_allows_recovery_from_401(tmp_path, monkeypatch
         }
 
     def _fake_mint_agent_key(*, client, portal_base_url, access_token, min_ttl_seconds):
-        return _mint_payload(api_key="new-agent-key")
+        raise AssertionError("opaque agent-key minting should not be called")
 
     monkeypatch.setattr("hermes_cli.auth._refresh_access_token", _fake_refresh_access_token)
     monkeypatch.setattr("hermes_cli.auth._mint_agent_key", _fake_mint_agent_key)
 
     creds = resolve_nous_runtime_credentials(min_key_ttl_seconds=300, force_mint=True)
-    assert creds["api_key"] == "new-agent-key"
+    assert creds["api_key"] == "access-new"
 
 
 def test_persist_nous_credentials_idempotent_no_duplicate_pool_entries(tmp_path, monkeypatch):
@@ -703,13 +687,13 @@ def test_persist_nous_credentials_idempotent_no_duplicate_pool_entries(tmp_path,
 
     # providers.nous reflects the latest write (singleton semantics)
     assert payload["providers"]["nous"]["access_token"] == "access-second"
-    assert payload["providers"]["nous"]["agent_key"] == "agent-key-second"
+    assert payload["providers"]["nous"]["agent_key"] == "access-second"
 
-    # credential_pool.nous has exactly one entry, carrying the latest agent_key
+    # credential_pool.nous has exactly one entry, carrying the latest JWT alias
     pool_entries = payload["credential_pool"]["nous"]
     assert len(pool_entries) == 1, pool_entries
     assert pool_entries[0]["source"] == NOUS_DEVICE_CODE_SOURCE
-    assert pool_entries[0]["agent_key"] == "agent-key-second"
+    assert pool_entries[0]["agent_key"] == "access-second"
     # And no stray `manual:device_code` / `manual:dashboard_device_code` rows
     assert not any(
         e["source"].startswith("manual:") for e in pool_entries
@@ -736,7 +720,7 @@ def test_persist_nous_credentials_reloads_pool_after_singleton_write(tmp_path, m
     # Label derived by _seed_from_singletons via label_from_token; we don't
     # assert its exact value, just that the helper returned a real entry.
     assert entry.access_token == "access-tok"
-    assert entry.agent_key == "agent-key-value"
+    assert entry.agent_key == "access-tok"
 
 
 def test_persist_nous_credentials_embeds_custom_label(tmp_path, monkeypatch):
@@ -1246,16 +1230,21 @@ def test_runtime_refresh_uses_newer_shared_token_before_local_stale_token(
     shared_state["expires_at"] = "2099-01-01T00:00:00+00:00"
     auth_mod._write_shared_nous_state(shared_state)
 
-    def _refresh_should_not_happen(**_kwargs):
-        raise AssertionError("stale profile-local refresh token was used")
+    refresh_tokens: list[str] = []
 
-    minted_with: list[str] = []
+    def _fake_refresh_access_token(*, client, portal_base_url, client_id, refresh_token):
+        refresh_tokens.append(refresh_token)
+        return {
+            "access_token": "access-from-shared-refresh",
+            "refresh_token": "refresh-from-shared-refresh",
+            "expires_in": 900,
+            "token_type": "Bearer",
+        }
 
     def _fake_mint_agent_key(*, client, portal_base_url, access_token, min_ttl_seconds):
-        minted_with.append(access_token)
-        return _mint_payload(api_key="agent-key-from-shared-token")
+        raise AssertionError("opaque agent-key minting should not be called")
 
-    monkeypatch.setattr(auth_mod, "_refresh_access_token", _refresh_should_not_happen)
+    monkeypatch.setattr(auth_mod, "_refresh_access_token", _fake_refresh_access_token)
     monkeypatch.setattr(auth_mod, "_mint_agent_key", _fake_mint_agent_key)
 
     creds = auth_mod.resolve_nous_runtime_credentials(
@@ -1263,13 +1252,14 @@ def test_runtime_refresh_uses_newer_shared_token_before_local_stale_token(
         force_mint=True,
     )
 
-    assert creds["api_key"] == "agent-key-from-shared-token"
-    assert minted_with == ["shared-fresh-access"]
+    assert creds["api_key"] == "access-from-shared-refresh"
+    assert refresh_tokens == ["shared-fresh-refresh"]
 
     profile_state = auth_mod.get_provider_auth_state("nous")
     assert profile_state is not None
-    assert profile_state["refresh_token"] == "shared-fresh-refresh"
-    assert profile_state["access_token"] == "shared-fresh-access"
+    assert profile_state["refresh_token"] == "refresh-from-shared-refresh"
+    assert profile_state["access_token"] == "access-from-shared-refresh"
+    assert profile_state["agent_key"] == "access-from-shared-refresh"
 
 
 def test_managed_gateway_access_token_uses_newer_shared_token(

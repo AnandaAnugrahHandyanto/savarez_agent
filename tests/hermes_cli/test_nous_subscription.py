@@ -3,6 +3,16 @@
 from hermes_cli import nous_subscription as ns
 
 
+def _paid_account_status():
+    return ns.NousAccountStatus(
+        available=True,
+        portal_base_url="https://portal.example.com",
+        paid_access=True,
+        has_active_subscription=True,
+        total_usable_credits=10.0,
+    )
+
+
 def test_get_nous_subscription_features_recognizes_direct_exa_backend(monkeypatch):
     env = {"EXA_API_KEY": "exa-test"}
 
@@ -27,6 +37,7 @@ def test_get_nous_subscription_features_prefers_managed_modal_in_auto_mode(monke
     monkeypatch.setattr("tools.tool_backend_helpers.managed_nous_tools_enabled", lambda: True)
     monkeypatch.setattr(ns, "get_env_value", lambda name: "")
     monkeypatch.setattr(ns, "get_nous_auth_status", lambda: {"logged_in": True})
+    monkeypatch.setattr(ns, "get_nous_account_status", lambda: _paid_account_status())
     monkeypatch.setattr(ns, "managed_nous_tools_enabled", lambda: True)
     monkeypatch.setattr(ns, "_toolset_enabled", lambda config, key: key == "terminal")
     monkeypatch.setattr(ns, "_has_agent_browser", lambda: False)
@@ -47,6 +58,7 @@ def test_get_nous_subscription_features_prefers_managed_modal_in_auto_mode(monke
 def test_get_nous_subscription_features_marks_browser_use_as_managed_when_gateway_ready(monkeypatch):
     monkeypatch.setattr(ns, "get_env_value", lambda name: "")
     monkeypatch.setattr(ns, "get_nous_auth_status", lambda: {"logged_in": True})
+    monkeypatch.setattr(ns, "get_nous_account_status", lambda: _paid_account_status())
     monkeypatch.setattr(ns, "managed_nous_tools_enabled", lambda: True)
     monkeypatch.setattr(ns, "_toolset_enabled", lambda config, key: key == "browser")
     monkeypatch.setattr(ns, "_has_agent_browser", lambda: True)

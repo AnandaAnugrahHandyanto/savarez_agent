@@ -275,8 +275,8 @@ def _raise_web_backend_configuration_error() -> None:
     )
     if managed_nous_tools_enabled():
         message += (
-            " With your Nous subscription you can also use the Tool Gateway — "
-            "run `hermes tools` and select Nous Subscription as the web provider."
+            " With Nous paid access you can also use the Tool Gateway — "
+            "run `hermes tools` and select Nous paid access as the web provider."
         )
     raise ValueError(message)
 
@@ -286,7 +286,7 @@ def _firecrawl_backend_help_suffix() -> str:
     if not managed_nous_tools_enabled():
         return ""
     return (
-        ", or use the Nous Tool Gateway via your subscription "
+        ", or use the Nous Tool Gateway via paid access "
         "(FIRECRAWL_GATEWAY_URL or TOOL_GATEWAY_DOMAIN)"
     )
 
