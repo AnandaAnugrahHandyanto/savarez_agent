@@ -258,6 +258,13 @@ class TestExtractImages:
 
 
 class TestExtractMedia:
+    @pytest.fixture(autouse=True)
+    def _mock_isfile(self):
+        # Existing tests use synthetic paths that don't exist on disk.
+        # Patch isfile so the new validation gate doesn't filter them out.
+        with patch("gateway.platforms.base.os.path.isfile", return_value=True):
+            yield
+
     def test_no_media(self):
         media, cleaned = BasePlatformAdapter.extract_media("Just text.")
         assert media == []
@@ -359,6 +366,49 @@ class TestExtractMedia:
         # Both directives stripped from cleaned text
         assert "[[audio_as_voice]]" not in cleaned
         assert "[[as_document]]" not in cleaned
+
+
+# ---------------------------------------------------------------------------
+# extract_media — non-existent path guard (regression for greedy \S+ fallback)
+# ---------------------------------------------------------------------------
+
+class TestExtractMediaNonExistentPath:
+    r"""The \S+ fallback regex matched URLs and instructional text, producing
+    spurious 'File not found' warnings.  Paths that don't exist on disk must
+    be silently dropped from the media list."""
+
+    def test_nonexistent_path_not_in_media(self, tmp_path):
+        content = "MEDIA:/nonexistent/path/audio.ogg"
+        media, _ = BasePlatformAdapter.extract_media(content)
+        assert media == []
+
+    def test_real_file_is_returned(self, tmp_path):
+        real = tmp_path / "speech.ogg"
+        real.write_bytes(b"")
+        content = f"MEDIA:{real}"
+        media, _ = BasePlatformAdapter.extract_media(content)
+        assert len(media) == 1
+        assert media[0][0] == str(real)
+
+    def test_url_like_path_not_in_media(self):
+        # Greedy \S+ formerly matched bare URL tokens
+        content = "MEDIA:https://example.com/audio.ogg"
+        media, _ = BasePlatformAdapter.extract_media(content)
+        assert media == []
+
+    def test_instructional_example_ignored(self):
+        # Agent replies sometimes echo the tag as an example instruction
+        content = "Use MEDIA:/path/to/file.ogg to attach audio."
+        media, _ = BasePlatformAdapter.extract_media(content)
+        assert media == []
+
+    def test_mixed_real_and_nonexistent(self, tmp_path):
+        real = tmp_path / "ok.ogg"
+        real.write_bytes(b"")
+        content = f"MEDIA:/fake/missing.ogg\nMEDIA:{real}"
+        media, _ = BasePlatformAdapter.extract_media(content)
+        assert len(media) == 1
+        assert media[0][0] == str(real)
 
 
 # ---------------------------------------------------------------------------
