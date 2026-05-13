@@ -6662,7 +6662,18 @@ class GatewayRunner:
         _run_generation = self._begin_session_run_generation(_quick_key)
 
         try:
-            _agent_result = await self._handle_message_with_agent(event, source, _quick_key, _run_generation)
+            # Set the active agent profile for this message so all downstream
+            # path getters (SOUL.md, memory, skills, cron jobs) resolve to the
+            # correct per-agent directory.  The profile is looked up from the
+            # registry by source.agent_id (set by adapter _attach_agent_id).
+            _agent_id = getattr(source, "agent_id", None) or "main"
+            _profile = self._agent_registry.get(_agent_id)
+            if _profile is not None:
+                from agent.profile import use_profile
+                with use_profile(_profile):
+                    _agent_result = await self._handle_message_with_agent(event, source, _quick_key, _run_generation)
+            else:
+                _agent_result = await self._handle_message_with_agent(event, source, _quick_key, _run_generation)
             # Goal continuation: after the agent returns a final response
             # for this turn, check any standing /goal — the judge will
             # either mark it done, pause it (budget), or enqueue a
