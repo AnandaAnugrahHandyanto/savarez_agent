@@ -68,7 +68,8 @@ def get_workflow_events(conn: sqlite3.Connection, workflow_id: str, *, limit: in
         "SELECT * FROM workflow_events WHERE workflow_id = ? ORDER BY created_at DESC, id DESC LIMIT ?",
         (workflow_id, limit),
     ).fetchall()
-    return _response({"workflowId": workflow_id, "events": [_serialize_event(row) for row in rows]})
+    events = [_serialize_event(row) for row in rows]
+    return _response({"workflowId": workflow_id, "events": events, "count": len(events)})
 
 
 def get_workflow_artifacts(
@@ -81,7 +82,8 @@ def get_workflow_artifacts(
     _validate_limit(limit)
     _require_workflow(conn, workflow_id)
     artifacts = list_artifacts(conn, workflow_id, kind=kind, limit=limit)
-    return _response({"workflowId": workflow_id, "artifacts": [artifact.to_dict() for artifact in artifacts]})
+    artifact_rows = [artifact.to_dict() for artifact in artifacts]
+    return _response({"workflowId": workflow_id, "artifacts": artifact_rows, "count": len(artifact_rows)})
 
 
 def _response(facts: dict[str, Any]) -> dict[str, Any]:

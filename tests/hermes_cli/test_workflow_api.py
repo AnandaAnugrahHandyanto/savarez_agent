@@ -144,7 +144,9 @@ def test_read_model_helpers_filter_events_and_artifacts(tmp_path):
         artifacts = get_workflow_artifacts(conn, "wf_api", kind="spec")
 
     assert [event["eventType"] for event in events["facts"]["events"]] == ["new"]
+    assert events["facts"]["count"] == 1
     assert [artifact["kind"] for artifact in artifacts["facts"]["artifacts"]] == ["spec"]
+    assert artifacts["facts"]["count"] == 1
 
 
 def test_get_workflow_node_uses_direct_related_record_queries_not_prefiltered_defaults(tmp_path):

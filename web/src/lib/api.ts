@@ -720,11 +720,13 @@ export interface WorkflowNodeFacts {
 export interface WorkflowEventsFacts {
   workflowId: string;
   events: WorkflowEvent[];
+  count: number;
 }
 
 export interface WorkflowArtifactsFacts {
   workflowId: string;
   artifacts: WorkflowArtifact[];
+  count: number;
 }
 
 export interface CronJob {
