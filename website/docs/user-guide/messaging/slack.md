@@ -82,7 +82,8 @@ Navigate to **Features → OAuth & Permissions** in the sidebar. Scroll to **Sco
 
 :::caution Missing scopes = missing features
 Without `channels:history` and `groups:history`, the bot **will not receive messages in channels** —
-it will only work in DMs. These are the most commonly missed scopes.
+it will only work in DMs. Without `files:read`, Hermes can chat but **cannot reliably read user-uploaded attachments**.
+These are the most commonly missed scopes.
 :::
 
 **Optional scopes:**
@@ -346,6 +347,14 @@ slack:
   # but you can set this explicitly for consistency with other platforms)
   require_mention: true
 
+  # Prevent thread auto-engagement: only reply to channel messages that
+  # contain an explicit @mention. With this OFF (default), Slack can
+  # "auto-engage" — remembering past mentions in a thread and following
+  # up on bot-message replies, and resuming active sessions without a
+  # fresh mention. With strict_mention ON, every new channel message
+  # must @mention the bot before Hermes will respond.
+  strict_mention: false
+
   # Custom mention patterns that trigger the bot
   # (in addition to the default @mention detection)
   mention_patterns:
@@ -355,6 +364,10 @@ slack:
   # Text prepended to every outgoing message
   reply_prefix: ""
 ```
+
+:::tip When to use `strict_mention`
+Set this to `true` in busy workspaces where Slack's default "the bot remembers this thread" behavior surprises users — for example, a long tech-support thread where the bot helped at the start and you'd rather it stay silent unless explicitly pinged again. DMs and active interactive sessions are unaffected.
+:::
 
 :::info
 Slack supports both patterns: `@mention` required to start a conversation by default, but you can opt specific channels out via `SLACK_FREE_RESPONSE_CHANNELS` (comma-separated channel IDs) or `slack.free_response_channels` in `config.yaml`. Once the bot has an active session in a thread, subsequent thread replies do not require a mention. In DMs the bot always responds without needing a mention.
@@ -509,6 +522,34 @@ slack:
 
 Keys are Slack channel IDs (find them via channel details → "About" → scroll to bottom). All messages in the matching channel get the prompt injected as an ephemeral system instruction.
 
+## Per-Channel Skill Bindings
+
+Auto-load a skill whenever a new session starts in a specific channel or DM. Unlike per-channel prompts (which are injected on every turn), skill bindings inject the skill content as a user message at **session start** — it becomes part of the conversation history and does not need to be reloaded on subsequent turns.
+
+This is ideal for DMs or channels with a dedicated purpose (flashcards, a domain-specific Q&A bot, a support triage channel, etc.) where you don't want the model's own skill selector to decide whether to load on every short reply.
+
+```yaml
+slack:
+  channel_skill_bindings:
+    # DM channel — always runs in "german-flashcards" mode
+    - id: "D0ATH9TQ0G6"
+      skills:
+        - german-flashcards
+    # Research channel — preload multiple skills in order
+    - id: "C01RESEARCH"
+      skills:
+        - arxiv
+        - writing-plans
+    # Short form: single skill as a string
+    - id: "C02SUPPORT"
+      skill: hubspot-on-demand
+```
+
+Notes:
+- The binding matches by channel ID. For threaded messages in a bound channel, the thread inherits the parent channel's binding.
+- The skill is loaded only at session start (new session or after auto-reset). If you change the binding, run `/new` or wait for the session to auto-reset for it to take effect.
+- Combine with `channel_prompts` for per-channel tone/constraints on top of the skill's instructions.
+
 ## Troubleshooting
 
 | Problem | Solution |
@@ -520,7 +561,8 @@ Keys are Slack channel IDs (find them via channel details → "About" → scroll
 | "Sending messages to this app has been turned off" in DMs | Enable the **Messages Tab** in App Home settings (see Step 5) |
 | "not_authed" or "invalid_auth" errors | Regenerate your Bot Token and App Token, update `.env` |
 | Bot responds but can't post in a channel | Invite the bot to the channel with `/invite @Hermes Agent` |
-| "missing_scope" error | Add the required scope in OAuth & Permissions, then **reinstall** the app |
+| Bot can chat but can't read uploaded images/files | Add `files:read`, then **reinstall** the app. Hermes now surfaces attachment access diagnostics in-chat when Slack returns scope/auth/permission failures. |
+| `missing_scope` error | Add the required scope in OAuth & Permissions, then **reinstall** the app |
 | Socket disconnects frequently | Check your network; Bolt auto-reconnects but unstable connections cause lag |
 | Changed scopes/events but nothing changed | You **must reinstall** the app to your workspace after any scope or event subscription change |
 
