@@ -161,6 +161,13 @@ from agent.context_compressor import ContextCompressor
 from agent.subdirectory_hints import SubdirectoryHintTracker
 from agent.prompt_caching import apply_anthropic_cache_control
 from agent.prompt_builder import build_skills_system_prompt, build_context_files_prompt, build_environment_hints, load_soul_md, TOOL_USE_ENFORCEMENT_GUIDANCE, TOOL_USE_ENFORCEMENT_MODELS, GOOGLE_MODEL_OPERATIONAL_GUIDANCE, OPENAI_MODEL_EXECUTION_GUIDANCE
+from agent.cognitive_core import (
+    build_cognitive_core_prompt,
+    build_turn_routing_hint,
+    get_cognitive_core_config,
+    is_cognitive_core_enabled,
+    route_message as _cognitive_core_route_message,
+)
 from agent.usage_pricing import estimate_usage_cost, normalize_usage
 from agent.codex_responses_adapter import (
     _derive_responses_function_call_id as _codex_derive_responses_function_call_id,
@@ -2082,6 +2089,8 @@ class AIAgent:
         _agent_section = _agent_cfg.get("agent", {})
         if not isinstance(_agent_section, dict):
             _agent_section = {}
+        self._cognitive_core_config = get_cognitive_core_config(_agent_cfg)
+        self._cognitive_core_enabled = is_cognitive_core_enabled(_agent_cfg)
         self._tool_use_enforcement = _agent_section.get("tool_use_enforcement", "auto")
 
         # App-level API retry count (wraps each model API call).  Default 3,
@@ -5842,7 +5851,7 @@ class AIAgent:
 
         # Tool-aware behavioral guidance: only inject when the tools are loaded
         tool_guidance = []
-        if "memory" in self.valid_tool_names:
+        if "memory" in self.valid_tool_names and not getattr(self, "_cognitive_core_enabled", False):
             tool_guidance.append(MEMORY_GUIDANCE)
         if "session_search" in self.valid_tool_names:
             tool_guidance.append(SESSION_SEARCH_GUIDANCE)
@@ -5950,6 +5959,14 @@ class AIAgent:
                     stable_parts.append(_entry.platform_hint)
             except Exception:
                 pass
+
+        if getattr(self, "_cognitive_core_enabled", False):
+            cognitive_core_prompt = build_cognitive_core_prompt(
+                {"agent": {"cognitive_core": getattr(self, "_cognitive_core_config", {})}},
+                valid_tool_names=self.valid_tool_names,
+            )
+            if cognitive_core_prompt:
+                stable_parts.append(cognitive_core_prompt)
 
         # ── Context tier (cwd-dependent, may change between sessions) ─
         context_parts: List[str] = []
@@ -11873,6 +11890,20 @@ class AIAgent:
 
         # Preserve the original user message (no nudge injection).
         original_user_message = persist_user_message if persist_user_message is not None else user_message
+
+        # Cognitive Core routing hint is API-only: it guides the model for this
+        # turn but is stripped from persisted transcripts/history via the
+        # existing persist_user_message override mechanism.
+        if getattr(self, "_cognitive_core_enabled", False):
+            try:
+                _cc_route = _cognitive_core_route_message(user_message)
+                _cc_hint = build_turn_routing_hint(_cc_route)
+                if _cc_hint:
+                    if self._persist_user_message_override is None:
+                        self._persist_user_message_override = original_user_message
+                    user_message = f"{_cc_hint}\n\n{user_message}"
+            except Exception as _cc_err:
+                logger.debug("Cognitive Core routing hint skipped: %s", _cc_err)
 
         # Track memory nudge trigger (turn-based, checked here).
         # Skill trigger is checked AFTER the agent loop completes, based on

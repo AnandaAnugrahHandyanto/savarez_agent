@@ -22,6 +22,7 @@ import run_agent
 from run_agent import AIAgent
 from agent.error_classifier import FailoverReason
 from agent.prompt_builder import DEFAULT_AGENT_IDENTITY
+from agent.cognitive_core import COGNITIVE_CORE_MARKER
 
 
 # ---------------------------------------------------------------------------
@@ -149,6 +150,53 @@ def test_aiagent_reuses_existing_errors_log_handler():
                 handler.close()
         for handler in original_handlers:
             root_logger.addHandler(handler)
+
+
+def test_cognitive_core_prompt_gated_by_env(monkeypatch):
+    monkeypatch.setenv("HERMES_COGNITIVE_CORE", "1")
+    with (
+        patch(
+            "run_agent.get_tool_definitions",
+            return_value=_make_tool_defs("web_search", "memory", "session_search"),
+        ),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI"),
+    ):
+        agent = AIAgent(
+            api_key="dummy",
+            base_url="https://openrouter.ai/api/v1",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+
+    prompt = agent._build_system_prompt()
+    assert COGNITIVE_CORE_MARKER in prompt
+    assert "this policy replaces generic memory guidance" in prompt
+    assert "Do NOT save task progress" not in prompt
+
+
+def test_cognitive_core_prompt_absent_without_flag(monkeypatch):
+    monkeypatch.delenv("HERMES_COGNITIVE_CORE", raising=False)
+    with (
+        patch(
+            "run_agent.get_tool_definitions",
+            return_value=_make_tool_defs("web_search", "memory"),
+        ),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI"),
+    ):
+        agent = AIAgent(
+            api_key="dummy",
+            base_url="https://openrouter.ai/api/v1",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+
+    prompt = agent._build_system_prompt()
+    assert COGNITIVE_CORE_MARKER not in prompt
+    assert "Do NOT save task progress" in prompt
 
 
 class TestProviderModelNormalization:
