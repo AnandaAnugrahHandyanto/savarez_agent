@@ -709,6 +709,27 @@ class EmailAdapter(BasePlatformAdapter):
             logger.error("[Email] Send document failed: %s", e)
             return SendResult(success=False, error=str(e))
 
+
+    async def send_voice(
+        self,
+        chat_id: str,
+        audio_path: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        **kwargs,
+    ) -> SendResult:
+        """Send an audio file as an email attachment (delegate to send_document)."""
+        import os
+        return await self.send_document(
+            chat_id=chat_id,
+            file_path=audio_path,
+            caption=caption,
+            file_name=os.path.basename(audio_path) if audio_path else None,
+            reply_to=reply_to,
+            **kwargs,
+        )
+
     def _send_email_with_attachment(
         self,
         to_addr: str,
