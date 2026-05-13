@@ -250,7 +250,9 @@ ALIASES: Dict[str, str] = {
     "kimi": "kimi-for-coding",
     "kimi-coding": "kimi-for-coding",
     "kimi-coding-cn": "kimi-for-coding",
+    "kimi-cn": "kimi-for-coding",
     "moonshot": "kimi-for-coding",
+    "moonshot-cn": "kimi-for-coding",
 
     # stepfun
     "step": "stepfun",

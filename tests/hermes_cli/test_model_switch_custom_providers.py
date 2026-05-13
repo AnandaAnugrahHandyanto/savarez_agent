@@ -657,3 +657,10 @@ def test_switch_model_preserves_kimi_cn_when_canonicalizing_models_dev_alias(mon
     assert result.success is True
     assert result.target_provider == "kimi-coding-cn"
     assert captured["requested"] == "kimi-coding-cn"
+
+
+def test_kimi_cn_short_aliases_resolve_before_switch_canonicalization():
+    """Short CN aliases must resolve so switch_model can preserve CN routing."""
+
+    assert resolve_provider_full("kimi-cn").id == "kimi-for-coding"
+    assert resolve_provider_full("moonshot-cn").id == "kimi-for-coding"
