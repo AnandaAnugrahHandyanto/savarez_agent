@@ -23,14 +23,293 @@ Public API (signatures preserved from the original 2,400-line version):
 import json
 import asyncio
 import logging
+import os
+import re
+import shlex
+import subprocess
 import threading
 import time
+from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
 
 from tools.registry import discover_builtin_tools, registry
 from toolsets import resolve_toolset, validate_toolset
 
 logger = logging.getLogger(__name__)
+
+
+# =============================================================================
+# Runtime GitHub Governance Guard
+# =============================================================================
+
+_GITHUB_GUARD_TRUE_VALUES = {"1", "true", "yes", "on"}
+_GITHUB_GUARD_FALSE_VALUES = {"0", "false", "no", "off"}
+_GITHUB_GUARD_WRITE_TOOLS = {"write_file", "patch"}
+_GITHUB_GUARD_TERMINAL_MUTATION = re.compile(
+    r"(\bgit\s+(?:apply|commit|push|merge|rebase|reset|checkout\s+-b|switch\s+-c|branch\b|remote\s+add)\b|"
+    r"\b(?:rm|mv|cp|chmod|chown|mkdir|touch|tee|dd)\b|"
+    r"\b(?:npm|pnpm|yarn|pip|pipx|apt|apt-get)\s+(?:install|remove|uninstall|update|upgrade)\b)",
+    re.IGNORECASE,
+)
+_GITHUB_GUARD_REDIRECTION = re.compile(r"(?<![<>=])(?:\d{0,2}>>?|&>|<<?)(?![<>=])")
+_GITHUB_GUARD_OUTPUT_OPTION = re.compile(r"(?:^|\s)--output(?:=|\s|$)")
+_GITHUB_GUARD_READ_ONLY_TERMINAL = re.compile(
+    r"^\s*(?:"
+    r"git\s+(?:status\b|remote\b|branch\s+--show-current\b|rev-parse\b|diff\b|log\b|show\b|ls-files\b).*|"
+    r"(?:pwd|ls|rg|grep|cat|head|tail|stat)\b.*"
+    r")\s*$",
+    re.IGNORECASE,
+)
+_GITHUB_GUARD_SHELL_CHAIN = re.compile(r"&&|\|\||[;&|`]|\$\(|[\r\n]")
+
+
+def _github_guard_load_user_config() -> Dict[str, Any]:
+    """Load user config lazily so normal tool dispatch keeps startup light."""
+    try:
+        from hermes_cli.config import load_config
+
+        config = load_config()
+        return config if isinstance(config, dict) else {}
+    except Exception as exc:
+        logger.debug("GitHub governance guard config load failed: %s", exc)
+        return {}
+
+
+def _github_guard_default_require_branch() -> bool:
+    return True
+
+
+def _github_guard_bool(value: Any, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    normalized = str(value).strip().lower()
+    if normalized in _GITHUB_GUARD_TRUE_VALUES:
+        return True
+    if normalized in _GITHUB_GUARD_FALSE_VALUES:
+        return False
+    return default
+
+
+def _github_guard_list(value: Any) -> list[str]:
+    if value is None or value == "":
+        return []
+    if isinstance(value, (list, tuple, set)):
+        return [str(item) for item in value if str(item).strip()]
+    return [part for part in str(value).split(os.pathsep) if part.strip()]
+
+
+def _github_guard_settings() -> Dict[str, Any]:
+    """Resolve opt-in GitHub governance guard settings from config/env."""
+    config = _github_guard_load_user_config()
+    governance = config.get("governance", {}) if isinstance(config, dict) else {}
+    guard = governance.get("github_project_guard", {}) if isinstance(governance, dict) else {}
+    if not isinstance(guard, dict):
+        guard = {}
+
+    enabled = _github_guard_bool(guard.get("enabled"), default=False)
+    env_enabled = os.environ.get("HERMES_GITHUB_GOVERNANCE_GUARD")
+    if env_enabled is not None:
+        enabled = _github_guard_bool(env_enabled, default=enabled)
+    if _github_guard_bool(os.environ.get("HERMES_DISABLE_GITHUB_GOVERNANCE_GUARD"), default=False):
+        enabled = False
+
+    roots_value = os.environ.get("HERMES_PROJECTS_ROOT") or guard.get("projects_roots") or guard.get("projects_root")
+    root_paths = tuple(Path(root).expanduser().resolve(strict=False) for root in _github_guard_list(roots_value))
+    preflight_command = os.environ.get("HERMES_GITHUB_PREFLIGHT") or guard.get("preflight_command") or guard.get("preflight") or ""
+
+    require_branch = _github_guard_bool(guard.get("require_branch"), default=_github_guard_default_require_branch())
+    env_require_branch = os.environ.get("HERMES_GITHUB_GOVERNANCE_REQUIRE_BRANCH")
+    if env_require_branch is not None:
+        require_branch = _github_guard_bool(env_require_branch, default=require_branch)
+
+    errors: list[str] = []
+    if enabled and not root_paths:
+        errors.append("projects_root/projects_roots is not configured")
+    if enabled and not preflight_command:
+        errors.append("preflight_command is not configured")
+
+    return {
+        "enabled": enabled,
+        "project_roots": root_paths,
+        "preflight_command": preflight_command,
+        "require_branch": require_branch,
+        "errors": errors,
+    }
+
+
+def _github_guard_project_root_for_path(
+    path_value: str | None,
+    settings: Dict[str, Any],
+    base_dir: str | None = None,
+) -> Path | None:
+    """Return the governed project root for a path, or None if outside scope."""
+    if not path_value:
+        return None
+    try:
+        p = Path(str(path_value)).expanduser()
+        if not p.is_absolute():
+            p = Path(base_dir or os.getcwd()) / p
+        resolved = p.resolve(strict=False)
+        for projects_root in settings.get("project_roots", ()):
+            try:
+                rel = resolved.relative_to(projects_root)
+            except ValueError:
+                continue
+            return projects_root / rel.parts[0] if rel.parts else None
+    except Exception:
+        return None
+    return None
+
+
+def _github_guard_project_roots_in_text(text: str, settings: Dict[str, Any]) -> set[Path]:
+    """Find governed project roots embedded inside shell code or quoted strings."""
+    roots: set[Path] = set()
+    for projects_root in settings.get("project_roots", ()):
+        root_text = str(projects_root).rstrip("/")
+        pattern = re.compile(re.escape(root_text) + r"/([^\s'\";|&`$)]+)")
+        for match in pattern.finditer(text):
+            project_root = _github_guard_project_root_for_path(f"{root_text}/{match.group(1)}", settings)
+            if project_root:
+                roots.add(project_root)
+    return roots
+
+
+def _github_guard_paths_for_tool(function_name: str, function_args: Dict[str, Any]) -> list[str]:
+    """Extract candidate filesystem paths from write/patch tool arguments."""
+    if function_name == "write_file":
+        path = function_args.get("path")
+        return [path] if path else []
+    if function_name == "patch":
+        paths: list[str] = []
+        path = function_args.get("path")
+        if path:
+            paths.append(path)
+        if function_args.get("mode") == "patch" and function_args.get("patch"):
+            for match in re.finditer(r"^\*\*\*\s+(?:Update|Add|Delete)\s+File:\s*(.+)$", str(function_args.get("patch")), re.MULTILINE):
+                paths.append(match.group(1).strip())
+        return paths
+    return []
+
+
+def _github_guard_command_parts(command: Any) -> list[str]:
+    if isinstance(command, (list, tuple)):
+        return [str(part) for part in command]
+    try:
+        return shlex.split(str(command), posix=True)
+    except ValueError:
+        return str(command).split()
+
+
+def _github_guard_preflight_prefix_matches(command: str, settings: Dict[str, Any]) -> bool:
+    preflight_parts = _github_guard_command_parts(settings.get("preflight_command") or "")
+    if not preflight_parts:
+        return False
+    command_parts = _github_guard_command_parts(command)
+    return command_parts[: len(preflight_parts)] == preflight_parts
+
+
+def _github_guard_is_preflight_command(command: str, settings: Dict[str, Any]) -> bool:
+    return (
+        _github_guard_preflight_prefix_matches(command, settings)
+        and not _GITHUB_GUARD_SHELL_CHAIN.search(command)
+        and not _GITHUB_GUARD_REDIRECTION.search(command)
+    )
+
+
+def _github_guard_terminal_should_check(command: str) -> bool:
+    if not command.strip():
+        return False
+    if _GITHUB_GUARD_TERMINAL_MUTATION.search(command):
+        return True
+    if _GITHUB_GUARD_REDIRECTION.search(command):
+        return True
+    if _GITHUB_GUARD_OUTPUT_OPTION.search(command):
+        return True
+    if _GITHUB_GUARD_SHELL_CHAIN.search(command):
+        return True
+    if _GITHUB_GUARD_READ_ONLY_TERMINAL.fullmatch(command):
+        return False
+    # Unknown commands in a governed project may write files indirectly
+    # (python scripts, build tools, package managers, etc.), so fail closed
+    # to the preflight check rather than silently bypassing governance.
+    return True
+
+
+def _github_guard_terminal_project_roots(function_args: Dict[str, Any], settings: Dict[str, Any]) -> set[Path]:
+    """Infer governed project roots touched by a terminal command."""
+    command = str(function_args.get("command") or "")
+    if not _github_guard_terminal_should_check(command):
+        return set()
+
+    roots: set[Path] = set()
+    workdir = function_args.get("workdir")
+    workdir_text = str(workdir) if workdir else None
+    wd_root = _github_guard_project_root_for_path(workdir_text, settings) if workdir_text else None
+    if wd_root:
+        roots.add(wd_root)
+    for token in _github_guard_command_parts(command):
+        root = _github_guard_project_root_for_path(token, settings, workdir_text)
+        if root:
+            roots.add(root)
+    roots.update(_github_guard_project_roots_in_text(command, settings))
+    return roots
+
+
+def _github_guard_run_preflight(project_root: Path, settings: Dict[str, Any]) -> str | None:
+    """Return a block message if the configured GitHub governance preflight fails."""
+    command_parts = _github_guard_command_parts(settings.get("preflight_command") or "")
+    if not command_parts:
+        return "GitHub governance blocker: preflight_command is not configured"
+    cmd = [*command_parts, str(project_root)]
+    if settings.get("require_branch", True):
+        cmd.append("--require-branch")
+    try:
+        proc = subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=15)
+    except Exception as exc:
+        return f"GitHub governance blocker: preflight error for {project_root}: {exc}"
+    if proc.returncode == 0:
+        return None
+    output = (proc.stdout or "").strip()
+    return (
+        "GitHub governance blocker: project implementation is blocked until "
+        f"{project_root} passes the configured GitHub repo/remote/auth/branch preflight.\n"
+        f"Preflight output:\n{output}"
+    )
+
+
+def _github_governance_block_message(function_name: str, function_args: Dict[str, Any]) -> str | None:
+    """Runtime guard for project implementation mutations under governed roots."""
+    settings = _github_guard_settings()
+    if not settings.get("enabled"):
+        return None
+
+    command = str(function_args.get("command") or "") if function_name == "terminal" else ""
+    if function_name == "terminal" and _github_guard_preflight_prefix_matches(command, settings):
+        if _github_guard_is_preflight_command(command, settings):
+            return None
+        return "GitHub governance blocker: preflight command prefix is not a direct preflight invocation"
+    if function_name == "terminal" and not _github_guard_terminal_should_check(command):
+        return None
+
+    if settings.get("errors") and function_name in (*_GITHUB_GUARD_WRITE_TOOLS, "terminal"):
+        return "GitHub governance blocker: guard misconfigured: " + "; ".join(settings["errors"])
+
+    project_roots: set[Path] = set()
+    if function_name in _GITHUB_GUARD_WRITE_TOOLS:
+        for path in _github_guard_paths_for_tool(function_name, function_args):
+            project_root = _github_guard_project_root_for_path(path, settings)
+            if project_root:
+                project_roots.add(project_root)
+    elif function_name == "terminal":
+        project_roots = _github_guard_terminal_project_roots(function_args, settings)
+
+    for project_root in sorted(project_roots):
+        block = _github_guard_run_preflight(project_root, settings)
+        if block:
+            return block
+    return None
 
 
 # =============================================================================
@@ -726,6 +1005,10 @@ def handle_function_call(
     try:
         if function_name in _AGENT_LOOP_TOOLS:
             return json.dumps({"error": f"{function_name} must be handled by the agent loop"})
+
+        github_block = _github_governance_block_message(function_name, function_args)
+        if github_block is not None:
+            return json.dumps({"error": github_block}, ensure_ascii=False)
 
         # Check plugin hooks for a block directive (unless caller already
         # checked — e.g. run_agent._invoke_tool passes skip=True to

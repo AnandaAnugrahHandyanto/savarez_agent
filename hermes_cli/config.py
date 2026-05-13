@@ -439,6 +439,19 @@ DEFAULT_CONFIG = {
     "providers": {},
     "fallback_providers": [],
     "credential_pool_strategies": {},
+    "governance": {
+        # Optional runtime guard that verifies configured project roots pass a
+        # GitHub governance preflight before write_file/patch/mutating terminal
+        # tools can change them. Disabled by default so open-source installs are
+        # unaffected unless a deployment explicitly opts in.
+        "github_project_guard": {
+            "enabled": False,
+            "projects_root": "",
+            "projects_roots": [],
+            "preflight_command": "",
+            "require_branch": True,
+        },
+    },
     "toolsets": ["hermes-cli"],
     "agent": {
         "max_turns": 90,
