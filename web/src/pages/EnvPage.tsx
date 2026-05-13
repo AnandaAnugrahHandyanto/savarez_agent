@@ -13,6 +13,8 @@ import {
   Zap,
   ChevronDown,
   ChevronRight,
+  AlertCircle,
+  RotateCw,
 } from "lucide-react";
 import { api } from "@/lib/api";
 import type { EnvVarInfo } from "@/lib/api";
@@ -488,6 +490,7 @@ function ProviderGroupCard({
 
 export default function EnvPage() {
   const [vars, setVars] = useState<Record<string, EnvVarInfo> | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [edits, setEdits] = useState<Record<string, string>>({});
   const [revealed, setRevealed] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState<string | null>(null);
@@ -496,12 +499,21 @@ export default function EnvPage() {
   const { t } = useI18n();
   const { setAfterTitle } = usePageHeader();
 
-  useEffect(() => {
+  const loadEnvVars = useCallback(() => {
+    setLoadError(null);
     api
       .getEnvVars()
       .then(setVars)
-      .catch(() => {});
-  }, []);
+      .catch((e) => {
+        const message = e instanceof Error ? e.message : String(e);
+        setLoadError(message);
+        showToast(`${t.app.nav.keys}: ${message}`, "error");
+      });
+  }, [showToast, t.app.nav.keys]);
+
+  useEffect(() => {
+    loadEnvVars();
+  }, [loadEnvVars]);
 
   // Scroll-to sub-nav in the page header
   const sections = useMemo(() => {
@@ -703,6 +715,30 @@ export default function EnvPage() {
 
     return { providerGroups: groups, nonProviderGrouped: nonProvider };
   }, [vars, showAdvanced, t]);
+
+  if (!vars && loadError) {
+    return (
+      <div className="flex min-h-[18rem] items-center justify-center">
+        <Card className="max-w-xl">
+          <CardHeader>
+            <div className="flex items-center gap-2">
+              <AlertCircle className="h-5 w-5 text-destructive" />
+              <CardTitle className="text-base">
+                {t.config.failedToLoadRaw}
+              </CardTitle>
+            </div>
+            <CardDescription>{loadError}</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <Button outlined prefix={<RotateCw />} onClick={loadEnvVars}>
+              {t.common.retry}
+            </Button>
+          </CardContent>
+        </Card>
+        <Toast toast={toast} />
+      </div>
+    );
+  }
 
   if (!vars) {
     return (

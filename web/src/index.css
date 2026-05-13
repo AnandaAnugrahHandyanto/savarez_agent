@@ -1,4 +1,5 @@
 @import 'tailwindcss';
+@config '../tailwind.config.js';
 @import '@nous-research/ui/styles/globals.css';
 
 /* Scan the published design-system bundle so its utility classes survive
@@ -226,4 +227,3 @@ code { font-size: 0.875rem; }
 :root[style*="--theme-asset-bg:"] .theme-default-filler {
   display: none;
 }
-

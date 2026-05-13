@@ -1,0 +1,10 @@
+{
+  "name": "hermes-agent-ui",
+  "version": "0.1.0",
+  "entry": "src/main.tsx",
+  "build": {
+    "command": "vite build",
+    "outDir": "dist"
+  },
+  "runtime": "react-19-latest"
+}
