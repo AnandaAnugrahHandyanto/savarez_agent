@@ -25,7 +25,7 @@ def configure_paths(monkeypatch, tmp_path):
     monkeypatch.setattr(turn_beacon, "commit_count_since", lambda repo, start_sha: 0)
 
 
-def test_idle_pops_top_slice_posts_and_leaves_running(monkeypatch, tmp_path):
+def test_idle_pops_top_slice_silently_and_leaves_running(monkeypatch, tmp_path):
     configure_paths(monkeypatch, tmp_path)
     turn_beacon.QUEUE_PATH.write_text(yaml.safe_dump({"queue": [
         {"id": "slice-001", "title": "A", "scope": "Do A", "added_by": "chris", "added_at": "2026-05-13T00:00:00Z"},
@@ -41,7 +41,7 @@ def test_idle_pops_top_slice_posts_and_leaves_running(monkeypatch, tmp_path):
     assert state["auto_dispatch"]["slice_id"] == "slice-001"
     assert state["auto_dispatch"]["remaining_queue"] == 1
     assert turn_beacon.AUTO_DISPATCH_COUNT_PATH.read_text().strip() == "1"
-    assert posts == [("slice-001", 1, 1)]
+    assert posts == []
     remaining = yaml.safe_load(turn_beacon.QUEUE_PATH.read_text())["queue"]
     assert [item["id"] for item in remaining] == ["slice-002"]
     written = json.loads(turn_beacon.STATE_PATH.read_text())
@@ -65,14 +65,14 @@ def test_limit_pause_reason_lands_idle_and_keeps_queue(monkeypatch, tmp_path):
     configure_paths(monkeypatch, tmp_path)
     turn_beacon._write_counter(5)
     turn_beacon.QUEUE_PATH.write_text(yaml.safe_dump({"queue": [{"id": "slice-001", "title": "A", "scope": "Do A"}]}), encoding="utf-8")
-    captured = {}
-    monkeypatch.setattr(turn_beacon, "_post_slack", lambda state: captured.update(state) or "https://slack/idle")
+    posts = []
+    monkeypatch.setattr(turn_beacon, "_post_slack", lambda state: posts.append(state) or "https://slack/idle")
 
     state = turn_beacon.mark_finished(turn_id="t1", status="idle_awaiting_prompt", final_response="Done.", messages=[])
 
     assert state["status"] == "idle_awaiting_prompt"
     assert state["auto_dispatch_paused_reason"] == "5 consecutive auto-dispatches reached — human ack required"
-    assert captured["auto_dispatch_paused_reason"] == state["auto_dispatch_paused_reason"]
+    assert posts == []
     assert yaml.safe_load(turn_beacon.QUEUE_PATH.read_text())["queue"][0]["id"] == "slice-001"
 
 
@@ -87,7 +87,7 @@ def test_pause_flag_reason(monkeypatch, tmp_path):
     assert state["auto_dispatch_paused_reason"] == "queue-paused.flag set"
 
 
-def test_empty_queue_posts_empty_reason(monkeypatch, tmp_path):
+def test_empty_queue_is_silent(monkeypatch, tmp_path):
     configure_paths(monkeypatch, tmp_path)
     turn_beacon.QUEUE_PATH.write_text("queue: []\n", encoding="utf-8")
     posts = []
@@ -97,7 +97,7 @@ def test_empty_queue_posts_empty_reason(monkeypatch, tmp_path):
     state = turn_beacon.mark_finished(turn_id="t1", status="idle_awaiting_prompt", final_response="Done.", messages=[])
 
     assert state["auto_dispatch_paused_reason"] == "queue empty"
-    assert posts == ["empty"]
+    assert posts == []
 
 
 def test_locked_queue_does_not_pop(monkeypatch, tmp_path):

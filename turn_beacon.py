@@ -1,8 +1,9 @@
 """End-of-turn beacon for Hazel's Codex/Hermes runtime.
 
-Writes a current-state JSON file on turn start/end and posts exactly one
-Slack notice for terminal idle/blocker states.  The file intentionally contains
-only structured operational metadata, no prompts, credentials, or tool output.
+Writes a current-state JSON file on turn start/end and posts Slack only for
+active blockers, milestone commits, or upward test-threshold crossings.  The
+file intentionally contains only structured operational metadata, no prompts,
+credentials, or tool output.
 """
 from __future__ import annotations
 
@@ -33,6 +34,10 @@ PAUSE_FLAG_PATH = Path(os.environ.get("HERMES_QUEUE_PAUSE_FLAG", str(get_hermes_
 AUTO_DISPATCH_COUNT_PATH = Path(os.environ.get("HERMES_AUTO_DISPATCH_COUNT_PATH", str(get_hermes_home() / "state" / "auto-dispatch-count")))
 AUTO_DISPATCH_LIMIT = int(os.environ.get("HERMES_AUTO_DISPATCH_LIMIT", "5"))
 CHICAGO_TZ_NAME = "America/Chicago"
+MILESTONE_COMMIT_RE = re.compile(r"^(stage [a-c]|complete|ship|integrate|feat\(.*\) Plan.*complete)", re.I)
+TEST_THRESHOLD_START = 175
+TEST_THRESHOLD_STEP = 25
+
 
 
 def _now() -> tuple[dt.datetime, dt.datetime]:
@@ -219,9 +224,9 @@ def _post_auto_dispatch(slice_item: dict[str, Any], remaining: int, count: int) 
 
 
 def _post_queue_empty() -> str | None:
-    text = f":hourglass_flowing_sand: Queue empty — awaiting human top-up to {QUEUE_PATH}"
-    posted = _slack_api("chat.postMessage", {"channel": SLACK_CHANNEL, "text": text, "unfurl_links": False, "unfurl_media": False})
-    return _slack_permalink(SLACK_CHANNEL, posted["ts"])
+    # Queue-empty pings are intentionally silenced. Chris only gets active needs,
+    # milestone commits, and upward 25-multiple test threshold crossings.
+    return None
 
 
 def _append_slack_sidecar(kind: str, permalink: str | None, utc: dt.datetime, extra: dict[str, Any] | None = None) -> None:
@@ -248,10 +253,6 @@ def _maybe_auto_dispatch(state: dict[str, Any], utc: dt.datetime) -> tuple[dict[
         return state, False
     if not QUEUE_PATH.exists():
         state["auto_dispatch_paused_reason"] = "queue empty"
-        try:
-            _append_slack_sidecar("queue_empty", _post_queue_empty(), utc)
-        except Exception as exc:
-            _log_slack_failure(utc, state.get("turn_id"), f"queue-empty Slack post failed: {exc}")
         return state, False
     item, remaining = _pop_next_slice_locked()
     if remaining == -1:
@@ -259,20 +260,13 @@ def _maybe_auto_dispatch(state: dict[str, Any], utc: dt.datetime) -> tuple[dict[
         return state, False
     if item is None:
         state["auto_dispatch_paused_reason"] = "queue empty"
-        try:
-            _append_slack_sidecar("queue_empty", _post_queue_empty(), utc)
-        except Exception as exc:
-            _log_slack_failure(utc, state.get("turn_id"), f"queue-empty Slack post failed: {exc}")
         return state, False
 
     new_count = count + 1
     _write_counter(new_count)
     prompt_path = _write_prompt_temp(item)
     permalink = None
-    try:
-        permalink = _post_auto_dispatch(item, remaining, new_count)
-    except Exception as exc:
-        _log_slack_failure(utc, state.get("turn_id"), f"auto-dispatch Slack post failed: {exc}")
+    # Routine auto-dispatch pings are silenced by policy.
     pid = _spawn_next_turn(prompt_path, item)
     running = dict(state)
     running.update({
@@ -291,7 +285,6 @@ def _maybe_auto_dispatch(state: dict[str, Any], utc: dt.datetime) -> tuple[dict[
         },
         "auto_dispatch_paused_reason": None,
     })
-    _append_slack_sidecar("auto_dispatch", permalink, utc, {"slice_id": item.get("id"), "remaining_queue": remaining})
     return running, True
 
 
@@ -402,6 +395,33 @@ def _slack_permalink(channel: str, ts: str) -> str | None:
     return None
 
 
+def _test_threshold_bucket(passed: int) -> int:
+    if passed < TEST_THRESHOLD_START:
+        return 0
+    return ((passed - TEST_THRESHOLD_START) // TEST_THRESHOLD_STEP) * TEST_THRESHOLD_STEP + TEST_THRESHOLD_START
+
+
+def _crossed_test_threshold(prev_passed: int, current_passed: int) -> int | None:
+    prev_bucket = _test_threshold_bucket(prev_passed)
+    current_bucket = _test_threshold_bucket(current_passed)
+    if current_bucket > prev_bucket:
+        return current_bucket
+    return None
+
+
+def _terminal_post_reasons(state: dict[str, Any], previous: dict[str, Any]) -> list[str]:
+    if state.get("status") == "blocked":
+        return ["active need"]
+    reasons: list[str] = []
+    subject = str(state.get("last_commit_subject") or "")
+    if state.get("last_commit_sha") and state.get("last_commit_sha") != previous.get("last_commit_sha") and MILESTONE_COMMIT_RE.match(subject):
+        reasons.append("milestone commit")
+    threshold = _crossed_test_threshold(int(previous.get("tests_pass", 0) or 0), int(state.get("tests_pass", 0) or 0))
+    if threshold is not None:
+        reasons.append(f"tests crossed {threshold} passed")
+    return reasons
+
+
 def _post_slack(state: dict[str, Any]) -> str | None:
     status = state.get("status")
     if status == "blocked":
@@ -410,14 +430,12 @@ def _post_slack(state: dict[str, Any]) -> str | None:
             f"Blocker: {state.get('blocker') or 'unspecified'}",
         ]
     else:
-        lines = [f":wave: Turn complete — `{status}`"]
+        lines = [":white_check_mark: Hazel allowed milestone/status signal"]
     lines.extend([
         f"Last: `{state.get('last_commit_sha') or 'unknown'}` {state.get('last_commit_subject') or ''}".rstrip(),
         f"Tests: {state.get('tests_pass', 0)}p / {state.get('tests_fail', 0)}f · Tree: {state.get('working_tree') or 'unknown'}",
         "Next intent: " + str(state.get("next_pending_intent") or "Await Chris's next prompt."),
     ])
-    if state.get("auto_dispatch_paused_reason"):
-        lines.append("Auto-dispatch paused: " + str(state.get("auto_dispatch_paused_reason")))
     posted = _slack_api("chat.postMessage", {"channel": SLACK_CHANNEL, "text": "\n".join(lines), "unfurl_links": False, "unfurl_media": False})
     return _slack_permalink(SLACK_CHANNEL, posted["ts"])
 
@@ -458,6 +476,7 @@ def mark_finished(
     messages: list[dict[str, Any]] | None = None,
     user_message: str | None = None,
 ) -> dict[str, Any]:
+    previous = _read_existing()
     repo = _find_repo()
     git = git_snapshot(repo)
     utc, chi = _now()
@@ -482,10 +501,12 @@ def mark_finished(
     _atomic_write_state(state)
     if dispatched:
         return state
-    if status in {"idle_awaiting_prompt", "blocked"}:
+    post_reasons = _terminal_post_reasons(state, previous)
+    if post_reasons:
+        state["slack_post_reasons"] = post_reasons
         try:
             permalink = _post_slack(state)
-            _append_slack_sidecar("terminal", permalink, utc, {"turn_id": turn_id})
+            _append_slack_sidecar("terminal", permalink, utc, {"turn_id": turn_id, "reasons": post_reasons})
         except Exception as exc:
             _log_slack_failure(utc, turn_id, f"Slack post failed: {exc}")
     return state
