@@ -1,0 +1,356 @@
+{
+  "_meta": {
+    "version": "1.0",
+    "total_docs": 10,
+    "total_pairs": 50,
+    "categories": {
+      "excel_pdf": "Excel workbook exported/embedded as PDF — flat table structure lost",
+      "scanned_pdf": "Scanned paper document, no machine-readable text layer",
+      "dwg": "AutoCAD DWG drawing with annotations, schedules, and dimension tables"
+    },
+    "scoring": "0=wrong, 0.5=partial, 1=correct",
+    "instructions": "Place document files in benchmark/docs/ matching each 'filename'. Run benchmark/runner.py, then benchmark/score.py to label answers."
+  },
+  "docs": [
+    {
+      "id": "D01",
+      "category": "excel_pdf",
+      "filename": "d01_budget_report.pdf",
+      "description": "Annual department budget report exported from Excel (multi-sheet)",
+      "source_hint": "Use any multi-department Excel budget saved as PDF",
+      "questions": [
+        {
+          "id": "D01-Q1",
+          "question": "What is the total budget for the Engineering department?",
+          "expected_answer_hint": "Exact dollar figure from Engineering row"
+        },
+        {
+          "id": "D01-Q2",
+          "question": "Which department had the largest budget increase compared to the prior year?",
+          "expected_answer_hint": "Department name + percentage or dollar delta"
+        },
+        {
+          "id": "D01-Q3",
+          "question": "What is the sum of Q3 and Q4 expenses across all departments?",
+          "expected_answer_hint": "Requires summing two columns across multiple rows"
+        },
+        {
+          "id": "D01-Q4",
+          "question": "List all departments with budget over $500,000.",
+          "expected_answer_hint": "List of department names; tests multi-row extraction"
+        },
+        {
+          "id": "D01-Q5",
+          "question": "What was the total headcount cost as a percentage of the overall budget?",
+          "expected_answer_hint": "Ratio or percentage; requires cross-row calculation"
+        }
+      ]
+    },
+    {
+      "id": "D02",
+      "category": "excel_pdf",
+      "filename": "d02_project_tracker.pdf",
+      "description": "Project status tracker exported from Excel (gantt-style table)",
+      "source_hint": "Multi-project status spreadsheet with dates, owners, status columns",
+      "questions": [
+        {
+          "id": "D02-Q1",
+          "question": "Which projects are currently marked as 'At Risk'?",
+          "expected_answer_hint": "List of project names"
+        },
+        {
+          "id": "D02-Q2",
+          "question": "Who is the owner of the longest-running project?",
+          "expected_answer_hint": "Person name + project name + duration"
+        },
+        {
+          "id": "D02-Q3",
+          "question": "How many projects are scheduled to complete in Q4?",
+          "expected_answer_hint": "Integer count"
+        },
+        {
+          "id": "D02-Q4",
+          "question": "What is the total estimated hours for all In-Progress projects?",
+          "expected_answer_hint": "Sum from estimated hours column, In-Progress rows only"
+        },
+        {
+          "id": "D02-Q5",
+          "question": "Which project has the most dependencies listed?",
+          "expected_answer_hint": "Project name + dependency count"
+        }
+      ]
+    },
+    {
+      "id": "D03",
+      "category": "excel_pdf",
+      "filename": "d03_inventory_list.pdf",
+      "description": "Warehouse inventory list from Excel (part numbers, quantities, prices)",
+      "source_hint": "SKU/part number table with unit prices and stock levels",
+      "questions": [
+        {
+          "id": "D03-Q1",
+          "question": "What is the total value of all items currently in stock?",
+          "expected_answer_hint": "Sum of (quantity × unit_price) for all rows"
+        },
+        {
+          "id": "D03-Q2",
+          "question": "Which item has the highest unit price?",
+          "expected_answer_hint": "Item name/SKU + price"
+        },
+        {
+          "id": "D03-Q3",
+          "question": "How many unique suppliers are represented in the inventory?",
+          "expected_answer_hint": "Count of distinct supplier names"
+        },
+        {
+          "id": "D03-Q4",
+          "question": "List all items with fewer than 10 units remaining.",
+          "expected_answer_hint": "List of SKUs/names with their quantities"
+        },
+        {
+          "id": "D03-Q5",
+          "question": "What category of items represents the largest portion of total inventory value?",
+          "expected_answer_hint": "Category name + percentage or dollar value"
+        }
+      ]
+    },
+    {
+      "id": "D04",
+      "category": "excel_pdf",
+      "filename": "d04_financial_statements.pdf",
+      "description": "Multi-page financial statement exported from Excel (P&L + balance sheet)",
+      "source_hint": "Public company annual report or sample financial statement spreadsheet",
+      "questions": [
+        {
+          "id": "D04-Q1",
+          "question": "What was the gross profit margin for the most recent fiscal year?",
+          "expected_answer_hint": "Percentage derived from revenue and COGS rows"
+        },
+        {
+          "id": "D04-Q2",
+          "question": "What is the total long-term debt on the balance sheet?",
+          "expected_answer_hint": "Dollar figure from balance sheet"
+        },
+        {
+          "id": "D04-Q3",
+          "question": "How did operating expenses change year-over-year?",
+          "expected_answer_hint": "Dollar delta and/or percentage change"
+        },
+        {
+          "id": "D04-Q4",
+          "question": "What is the current ratio (current assets / current liabilities)?",
+          "expected_answer_hint": "Computed ratio — tests cross-row arithmetic"
+        },
+        {
+          "id": "D04-Q5",
+          "question": "Which expense line item had the largest absolute increase?",
+          "expected_answer_hint": "Line item name + dollar delta"
+        }
+      ]
+    },
+    {
+      "id": "D05",
+      "category": "scanned_pdf",
+      "filename": "d05_scanned_contract.pdf",
+      "description": "Scanned paper contract with handwritten corrections",
+      "source_hint": "Any multi-page scanned contract or agreement; scan quality ≥ 150 DPI",
+      "questions": [
+        {
+          "id": "D05-Q1",
+          "question": "What are the names of the two contracting parties?",
+          "expected_answer_hint": "Both party names from the header"
+        },
+        {
+          "id": "D05-Q2",
+          "question": "What is the effective date of the agreement?",
+          "expected_answer_hint": "Date in the document"
+        },
+        {
+          "id": "D05-Q3",
+          "question": "What is the total contract value or fee amount?",
+          "expected_answer_hint": "Dollar or currency figure"
+        },
+        {
+          "id": "D05-Q4",
+          "question": "What are the termination conditions described in the contract?",
+          "expected_answer_hint": "Summary of termination clause"
+        },
+        {
+          "id": "D05-Q5",
+          "question": "What jurisdiction's law governs this agreement?",
+          "expected_answer_hint": "State/country from governing law clause"
+        }
+      ]
+    },
+    {
+      "id": "D06",
+      "category": "scanned_pdf",
+      "filename": "d06_scanned_invoice.pdf",
+      "description": "Scanned paper invoice with line items and totals",
+      "source_hint": "Multi-line scanned invoice; ideally with table structure",
+      "questions": [
+        {
+          "id": "D06-Q1",
+          "question": "What is the invoice total including tax?",
+          "expected_answer_hint": "Dollar total from the bottom of the invoice"
+        },
+        {
+          "id": "D06-Q2",
+          "question": "What is the invoice number?",
+          "expected_answer_hint": "Invoice ID/number"
+        },
+        {
+          "id": "D06-Q3",
+          "question": "List all line items and their unit prices.",
+          "expected_answer_hint": "Table of item names + prices"
+        },
+        {
+          "id": "D06-Q4",
+          "question": "What is the payment due date?",
+          "expected_answer_hint": "Date from 'due date' or 'payment terms' field"
+        },
+        {
+          "id": "D06-Q5",
+          "question": "What is the tax rate applied?",
+          "expected_answer_hint": "Percentage from tax line"
+        }
+      ]
+    },
+    {
+      "id": "D07",
+      "category": "dwg",
+      "filename": "d07_floor_plan.dwg",
+      "description": "Architectural floor plan DWG with room labels and area annotations",
+      "source_hint": "Standard architectural floor plan; any format accepted by DeepParser",
+      "questions": [
+        {
+          "id": "D07-Q1",
+          "question": "What is the total floor area of the building in square meters?",
+          "expected_answer_hint": "Numeric area value from annotations"
+        },
+        {
+          "id": "D07-Q2",
+          "question": "How many rooms are labeled on this floor plan?",
+          "expected_answer_hint": "Count of distinct room labels"
+        },
+        {
+          "id": "D07-Q3",
+          "question": "What is the area of the largest room?",
+          "expected_answer_hint": "Room name + area"
+        },
+        {
+          "id": "D07-Q4",
+          "question": "What is the scale of this drawing?",
+          "expected_answer_hint": "Scale ratio from title block (e.g. 1:100)"
+        },
+        {
+          "id": "D07-Q5",
+          "question": "List all rooms with their areas in a table format.",
+          "expected_answer_hint": "Table of room name → area; tests structured extraction from DWG"
+        }
+      ]
+    },
+    {
+      "id": "D08",
+      "category": "dwg",
+      "filename": "d08_structural_plan.dwg",
+      "description": "Structural engineering drawing with member schedules",
+      "source_hint": "Structural drawing with column/beam schedule table or reinforcement schedule",
+      "questions": [
+        {
+          "id": "D08-Q1",
+          "question": "What steel grade is specified for the primary structural members?",
+          "expected_answer_hint": "Material spec (e.g. S355, A36)"
+        },
+        {
+          "id": "D08-Q2",
+          "question": "How many column types are defined in the column schedule?",
+          "expected_answer_hint": "Count from schedule table"
+        },
+        {
+          "id": "D08-Q3",
+          "question": "What is the maximum beam span shown in the drawing?",
+          "expected_answer_hint": "Dimension with units"
+        },
+        {
+          "id": "D08-Q4",
+          "question": "What is the live load specified for the floor system?",
+          "expected_answer_hint": "Load value with units (kPa, psf, etc.)"
+        },
+        {
+          "id": "D08-Q5",
+          "question": "List all beam sections and their designations from the beam schedule.",
+          "expected_answer_hint": "Table of beam mark → section size"
+        }
+      ]
+    },
+    {
+      "id": "D09",
+      "category": "dwg",
+      "filename": "d09_mep_drawing.dwg",
+      "description": "MEP (Mechanical-Electrical-Plumbing) drawing with equipment schedules",
+      "source_hint": "HVAC, electrical, or plumbing drawing with equipment/fixture schedule",
+      "questions": [
+        {
+          "id": "D09-Q1",
+          "question": "What is the total cooling capacity of the HVAC system shown?",
+          "expected_answer_hint": "Capacity value with units (tons, kW, BTU/hr)"
+        },
+        {
+          "id": "D09-Q2",
+          "question": "How many electrical panels are shown and what are their ratings?",
+          "expected_answer_hint": "Panel count + amperage ratings"
+        },
+        {
+          "id": "D09-Q3",
+          "question": "What pipe material is specified for the domestic water supply?",
+          "expected_answer_hint": "Material type from notes or schedule"
+        },
+        {
+          "id": "D09-Q4",
+          "question": "List all mechanical equipment with their model numbers.",
+          "expected_answer_hint": "Equipment schedule: name → model number"
+        },
+        {
+          "id": "D09-Q5",
+          "question": "What is the design supply air temperature for the air handling units?",
+          "expected_answer_hint": "Temperature value from AHU schedule"
+        }
+      ]
+    },
+    {
+      "id": "D10",
+      "category": "excel_pdf",
+      "filename": "d10_bom.pdf",
+      "description": "Bill of Materials exported from Excel with nested component hierarchy",
+      "source_hint": "Multi-level BOM with parent/child part relationships and costs",
+      "questions": [
+        {
+          "id": "D10-Q1",
+          "question": "What is the total material cost of the top-level assembly?",
+          "expected_answer_hint": "Rolled-up cost from BOM"
+        },
+        {
+          "id": "D10-Q2",
+          "question": "Which component has the highest unit cost?",
+          "expected_answer_hint": "Part number/name + cost"
+        },
+        {
+          "id": "D10-Q3",
+          "question": "How many unique part numbers are in this BOM?",
+          "expected_answer_hint": "Count of distinct part numbers"
+        },
+        {
+          "id": "D10-Q4",
+          "question": "What is the lead time for the component with the longest lead time?",
+          "expected_answer_hint": "Part name + lead time in days/weeks"
+        },
+        {
+          "id": "D10-Q5",
+          "question": "List all components sourced from a single supplier.",
+          "expected_answer_hint": "Parts where supplier = sole source; tests filtering"
+        }
+      ]
+    }
+  ]
+}

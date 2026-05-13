@@ -73,3 +73,9 @@ models-dev-upstream/
 dist/
 build/
 *.egg-info/
+
+# Benchmark — raw outputs are gitignored; scored results are committed manually
+benchmark/docs/*
+!benchmark/docs/.gitkeep
+benchmark/results/*.jsonl
+benchmark/results/.gitkeep
