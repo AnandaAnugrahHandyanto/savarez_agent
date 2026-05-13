@@ -567,3 +567,93 @@ def test_custom_providers_uses_live_models_for_multi_model_endpoint(monkeypatch)
         "gateway-model-c",
     ], "Live models must replace the static subset"
     assert gateway_prov["total_models"] == 3
+
+
+
+def test_switch_model_canonicalizes_models_dev_kimi_provider_alias(monkeypatch):
+    """Regression for #25105: persist Hermes' kimi-coding provider id.
+
+    models.dev names the endpoint family ``kimi-for-coding``. Hermes runtime,
+    auth, and config paths use ``kimi-coding``. Explicit /model switches that
+    resolve through models.dev must not persist the models.dev alias.
+    """
+    from types import SimpleNamespace
+
+    captured = {}
+
+    monkeypatch.setattr(
+        "hermes_cli.model_switch.resolve_provider_full",
+        lambda *a, **k: SimpleNamespace(
+            id="kimi-for-coding",
+            name="Kimi / Kimi Coding Plan",
+            base_url="https://api.kimi.com/coding/v1",
+        ),
+    )
+
+    def _runtime(**kwargs):
+        captured.update(kwargs)
+        return {
+            "api_key": "sk-kimi-test",
+            "base_url": "https://api.kimi.com/coding",
+            "api_mode": "anthropic_messages",
+        }
+
+    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", _runtime)
+    monkeypatch.setattr("hermes_cli.models.validate_requested_model", lambda *a, **k: _MOCK_VALIDATION)
+    monkeypatch.setattr("hermes_cli.model_switch.get_model_info", lambda *a, **k: None)
+    monkeypatch.setattr("hermes_cli.model_switch.get_model_capabilities", lambda *a, **k: None)
+
+    result = switch_model(
+        raw_input="kimi-k2.6",
+        current_provider="openrouter",
+        current_model="openai/gpt-5.5",
+        explicit_provider="kimi-for-coding",
+        user_providers={},
+        custom_providers=[],
+    )
+
+    assert result.success is True
+    assert result.target_provider == "kimi-coding"
+    assert captured["requested"] == "kimi-coding"
+
+
+
+def test_switch_model_preserves_kimi_cn_when_canonicalizing_models_dev_alias(monkeypatch):
+    """The kimi-for-coding alias must not collapse China Kimi to global Kimi."""
+    from types import SimpleNamespace
+
+    captured = {}
+    monkeypatch.setattr(
+        "hermes_cli.model_switch.resolve_provider_full",
+        lambda *a, **k: SimpleNamespace(
+            id="kimi-for-coding",
+            name="Kimi / Moonshot (China)",
+            base_url="https://api.moonshot.cn/v1",
+        ),
+    )
+
+    def _runtime(**kwargs):
+        captured.update(kwargs)
+        return {
+            "api_key": "sk-cn-test",
+            "base_url": "https://api.moonshot.cn/v1",
+            "api_mode": "chat_completions",
+        }
+
+    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", _runtime)
+    monkeypatch.setattr("hermes_cli.models.validate_requested_model", lambda *a, **k: _MOCK_VALIDATION)
+    monkeypatch.setattr("hermes_cli.model_switch.get_model_info", lambda *a, **k: None)
+    monkeypatch.setattr("hermes_cli.model_switch.get_model_capabilities", lambda *a, **k: None)
+
+    result = switch_model(
+        raw_input="kimi-k2.6",
+        current_provider="openrouter",
+        current_model="openai/gpt-5.5",
+        explicit_provider="kimi-coding-cn",
+        user_providers={},
+        custom_providers=[],
+    )
+
+    assert result.success is True
+    assert result.target_provider == "kimi-coding-cn"
+    assert captured["requested"] == "kimi-coding-cn"

@@ -705,6 +705,17 @@ def switch_model(
             )
 
         target_provider = pdef.id
+        if target_provider == "kimi-for-coding":
+            # models.dev exposes Kimi endpoints as ``kimi-for-coding``.  Hermes
+            # keeps separate runtime/auth ids for global and China Kimi
+            # providers, so preserve the user-requested region while avoiding
+            # persistence of the models.dev alias.
+            _explicit_provider_key = explicit_provider.strip().lower()
+            target_provider = (
+                "kimi-coding-cn"
+                if _explicit_provider_key in {"kimi-coding-cn", "kimi-cn", "moonshot-cn"}
+                else "kimi-coding"
+            )
 
         # If no model specified, try auto-detect from endpoint
         if not new_model:
