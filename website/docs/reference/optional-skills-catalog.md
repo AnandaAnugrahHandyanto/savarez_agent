@@ -40,7 +40,7 @@ hermes skills uninstall <skill-name>
 |-------|-------------|
 | [**base**](/docs/user-guide/skills/optional/blockchain/blockchain-base) | Query Base (Ethereum L2) blockchain data with USD pricing — wallet balances, token info, transaction details, gas analysis, contract inspection, whale detection, and live network stats. Uses Base RPC + CoinGecko. No API key required. |
 | [**solana**](/docs/user-guide/skills/optional/blockchain/blockchain-solana) | Query Solana blockchain data with USD pricing — wallet balances, token portfolios with values, transaction details, NFTs, whale detection, and live network stats. Uses Solana RPC + CoinGecko. No API key required. |
-| [**xrpl**](/docs/user-guide/skills/optional/blockchain/blockchain-xrpl) | Query XRP Ledger data with USD pricing - account reserves, trust lines, recent transactions, ledger stats, fees, and transaction details. Uses public XRPL JSON-RPC + CoinGecko. No API key required. |
+| [**xrpl**](/docs/user-guide/skills/optional/blockchain/blockchain-xrpl) | Instruction-first XRP Ledger audit playbook for read-only account, trust-line, transaction, fee, reserve, and network checks using public XRPL JSON-RPC. No bundled executable, API key, private key handling, signing, or transaction submission. |
 
 ## communication
 
