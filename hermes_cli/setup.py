@@ -1879,6 +1879,9 @@ def _setup_inkbox():
 
     On a brand-new identity we collect the handle, mailbox local part, and an
     optional phone (provisioned as a *local* number so SMS is supported).
+
+    The final step prompts for / mints a webhook signing key so the gateway
+    can verify HMAC signatures on inbound webhook + tunnel traffic at runtime.
     """
     from inkbox import Inkbox
     from inkbox.exceptions import InkboxAPIError
@@ -1958,15 +1961,82 @@ def _setup_inkbox():
     # ── Final summary ──
     _inkbox_print_agent_summary(identity)
 
-    # Hold for the user — gateway_setup() returns to its curses platform
-    # picker right after this, which fullscreen-clears the terminal and
-    # buries the handle / mailbox / phone / opt-in / reachability info.
-    if is_interactive_stdin():
-        print()
-        try:
-            input(color("  Press Enter to continue...", Colors.DIM))
-        except (KeyboardInterrupt, EOFError):
-            print()
+    # ── Webhook signing key (also the natural pause before gateway_setup()
+    # returns to its curses picker and fullscreen-clears the summary block).
+    _inkbox_setup_signing_key(api_key, base_url)
+
+
+def _inkbox_setup_signing_key(api_key: str, base_url: str) -> None:
+    """Capture or generate the org-level webhook signing key.
+
+    Asks the user whether they already have an Inkbox signing key. If yes,
+    they paste it. If no, we offer to mint one via ``Inkbox.create_signing_key``
+    (which *rotates* any existing key for the org as a side effect — the
+    server returns the plaintext exactly once). The key is persisted to
+    ``INKBOX_SIGNING_KEY`` and ``INKBOX_REQUIRE_SIGNATURE=true`` so the
+    gateway adapter rejects unsigned inbound webhooks at runtime. Declining
+    sets ``INKBOX_REQUIRE_SIGNATURE=false`` — fine for local dev, unsafe
+    once the gateway is reachable from the public internet.
+
+    Args:
+        api_key: str — the just-captured Inkbox API key. Scopes the SDK
+            client used to mint a new signing key.
+        base_url: str — Inkbox API base URL (production or dev override).
+
+    Returns:
+        None — side effects only (writes ``~/.hermes/.env``, prints status).
+    """
+    from inkbox import Inkbox
+
+    print()
+    print(color("  ─── 🔑 Webhook signing key ───", Colors.CYAN))
+    print_info("  Inkbox signs outbound webhooks with an HMAC over the body.")
+    print_info("  Without the matching key, the gateway can't tell real Inkbox")
+    print_info("  traffic apart from anyone who finds your public tunnel URL.")
+
+    has_key = prompt_yes_no("  Do you already have an Inkbox signing key?", False)
+    if has_key:
+        key = prompt(
+            "  Paste your signing key (starts with whsec_)", password=True
+        ).strip()
+        if not key:
+            print_warning("  No key entered — leaving signature verification off.")
+            save_env_value("INKBOX_REQUIRE_SIGNATURE", "false")
+            return
+        save_env_value("INKBOX_SIGNING_KEY", key)
+        save_env_value("INKBOX_REQUIRE_SIGNATURE", "true")
+        print_success("  Saved signing key. Signature verification enabled.")
+        return
+
+    # No existing key — offer to mint one. Warn that this rotates: any other
+    # gateway / consumer holding the previous key will 401 until it gets
+    # the new value.
+    print_info("  Minting a new key here rotates any existing key for your org.")
+    print_info("  Any other gateway using the old key will 401 until updated.")
+    generate = prompt_yes_no("  Generate a new signing key now?", True)
+    if not generate:
+        print_info("  Skipping — gateway will accept unsigned webhooks.")
+        print_info("  Generate later at https://inkbox.ai/console/signing-keys")
+        save_env_value("INKBOX_REQUIRE_SIGNATURE", "false")
+        return
+
+    # Server returns the plaintext key exactly once — save immediately.
+    try:
+        client = Inkbox(api_key=api_key, base_url=base_url)
+        new_key = client.create_signing_key()
+    except Exception as exc:
+        print_error(f"  Failed to create signing key: {exc}")
+        print_info("  Leaving signature verification off — retry later at")
+        print_info("  https://inkbox.ai/console/signing-keys.")
+        save_env_value("INKBOX_REQUIRE_SIGNATURE", "false")
+        return
+
+    save_env_value("INKBOX_SIGNING_KEY", new_key.signing_key)
+    save_env_value("INKBOX_REQUIRE_SIGNATURE", "true")
+    print_success(
+        f"  Generated + saved signing key (created at {new_key.created_at.isoformat()})."
+    )
+    print_info("  Signature verification enabled.")
 
 
 def _inkbox_invalidate_identity_state() -> None:
