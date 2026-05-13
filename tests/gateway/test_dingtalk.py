@@ -10,6 +10,22 @@ import pytest
 from gateway.config import Platform, PlatformConfig
 
 
+def _require_dingtalk_stream_sdk():
+    """Skip SDK-shape tests when the optional DingTalk stream SDK is absent."""
+    from gateway.platforms import dingtalk
+
+    if dingtalk.ChatbotMessage is None:
+        pytest.skip("DingTalk stream SDK is optional and not installed in the baseline CI env")
+
+
+def _require_dingtalk_card_sdk():
+    """Skip AI-card SDK-shape tests when optional DingTalk card models are absent."""
+    from gateway.platforms import dingtalk
+
+    if dingtalk.tea_util_models is None or dingtalk.dingtalk_card_models is None:
+        pytest.skip("DingTalk card SDK is optional and not installed in the baseline CI env")
+
+
 # ---------------------------------------------------------------------------
 # Requirements check
 # ---------------------------------------------------------------------------
@@ -634,6 +650,7 @@ class TestIncomingHandlerProcess:
     @pytest.mark.asyncio
     async def test_process_extracts_session_webhook(self):
         """session_webhook must be populated from callback data."""
+        _require_dingtalk_stream_sdk()
         from gateway.platforms.dingtalk import _IncomingHandler, DingTalkAdapter
 
         adapter = DingTalkAdapter(PlatformConfig(enabled=True))
@@ -667,6 +684,7 @@ class TestIncomingHandlerProcess:
         """If ChatbotMessage.from_dict does not map sessionWebhook (e.g. SDK
         version mismatch), the handler should fall back to extracting it
         directly from the raw data dict."""
+        _require_dingtalk_stream_sdk()
         from gateway.platforms.dingtalk import _IncomingHandler, DingTalkAdapter
 
         adapter = DingTalkAdapter(PlatformConfig(enabled=True))
@@ -695,6 +713,7 @@ class TestIncomingHandlerProcess:
     async def test_process_returns_ack_immediately(self):
         """process() must not block on _on_message — it should return
         the ACK tuple before the message is fully processed."""
+        _require_dingtalk_stream_sdk()
         from gateway.platforms.dingtalk import _IncomingHandler, DingTalkAdapter
 
         processing_started = asyncio.Event()
@@ -797,6 +816,7 @@ class TestCardLifecycle:
 
     @pytest.fixture
     def adapter_with_card(self):
+        _require_dingtalk_card_sdk()
         from gateway.platforms.dingtalk import DingTalkAdapter
         a = DingTalkAdapter(PlatformConfig(
             enabled=True,
@@ -988,6 +1008,7 @@ class TestDingTalkAdapterAICards:
 
     @pytest.mark.asyncio
     async def test_send_uses_ai_card_if_configured(self, config, mock_stream_client, mock_http_client, mock_message):
+        _require_dingtalk_card_sdk()
         from gateway.platforms.dingtalk import DingTalkAdapter
 
         adapter = DingTalkAdapter(config)

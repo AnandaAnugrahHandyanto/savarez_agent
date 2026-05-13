@@ -455,7 +455,11 @@ def test_admit_per_group_require_mention_overrides_global():
 def test_hydrate_bot_identity_populates_self_ids_from_bot_v3_info(monkeypatch):
     import asyncio
 
+    from gateway.platforms import feishu as feishu_mod
     from gateway.platforms.feishu import FeishuAdapter
+
+    if getattr(feishu_mod, "BaseRequest", None) is None:
+        pytest.skip("Feishu SDK is optional and not installed in the baseline CI env")
 
     adapter = object.__new__(FeishuAdapter)
     adapter._bot_open_id = ""

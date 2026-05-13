@@ -3,8 +3,13 @@
 import json
 from unittest.mock import MagicMock, patch
 
-import numpy as np
 import pytest
+
+# numpy lives in the [voice] extra, which was removed from [all] on
+# 2026-05-12 (#24515) in favour of lazy-install. Skip the whole module
+# when numpy is absent so the standard CI install (.[all,dev]) and fresh
+# uv-managed venvs don't fail collection.
+np = pytest.importorskip("numpy")
 
 
 @pytest.fixture(autouse=True)
