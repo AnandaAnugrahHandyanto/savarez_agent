@@ -9359,7 +9359,7 @@ class AIAgent:
         if (getattr(self, "provider", "") or "").lower() in {
             "alibaba", "minimax", "minimax-cn",
             "opencode-go", "opencode-zen",
-            "zai", "bedrock",
+            "zai", "zai-cn", "zai-coding-global", "zai-coding-cn", "bedrock",
             "xiaomi",
         }:
             return True
@@ -9530,6 +9530,10 @@ class AIAgent:
         )
         _is_tokenhub = base_url_host_matches(self._base_url_lower, "tokenhub.tencentmaas.com")
         _is_lmstudio = (self.provider or "").strip().lower() == "lmstudio"
+        _is_zai = (
+            base_url_host_matches(self._base_url_lower, "z.ai")
+            or base_url_host_matches(self._base_url_lower, "open.bigmodel.cn")
+        )
 
         # Temperature: _fixed_temperature_for_model may return OMIT_TEMPERATURE
         # sentinel (temperature omitted entirely), a numeric override, or None.
@@ -9641,6 +9645,7 @@ class AIAgent:
             is_kimi=_is_kimi,
             is_tokenhub=_is_tokenhub,
             is_lmstudio=_is_lmstudio,
+            is_zai=_is_zai,
             is_custom_provider=self.provider == "custom",
             ollama_num_ctx=self._ollama_num_ctx,
             provider_preferences=_prefs or None,
@@ -9693,6 +9698,7 @@ class AIAgent:
             "anthropic/",
             "openai/",
             "x-ai/",
+            "z-ai/",
             "google/gemini-2",
             "qwen/qwen3",
             "tencent/hy3-preview",
