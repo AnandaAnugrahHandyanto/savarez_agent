@@ -145,6 +145,7 @@ runtime_inspect(session_id="20260513_...", agent_name="code-architect", limit=20
 
 Typical events include:
 
+- `model.request` — ordinary LLM call metadata: provider, model, API mode, base URL host, tool count, and API call count. It does not include prompts, messages, API keys, auth headers, or the full base URL.
 - `assign_agent.requested` — the parent session requested a named agent.
 - `assign_agent.resolved` — registry lookup chose a global or project-local agent and resolved runner/model/provider metadata.
 - `assign_agent.dispatched` — Hermes selected `delegate_task` or `cli_runner` execution.
