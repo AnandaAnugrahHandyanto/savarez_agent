@@ -355,13 +355,16 @@ def test_workspace_resolution_failure_also_counts(kanban_home, all_assignees_spa
 # Worker aliveness / crash detection
 # ---------------------------------------------------------------------------
 
-def test_pid_alive_helper():
+def test_pid_alive_helper(monkeypatch):
     # Our own pid is alive.
     assert kb._pid_alive(os.getpid())
     # PID 0 / None / negative.
     assert not kb._pid_alive(0)
     assert not kb._pid_alive(None)
     # A clearly-dead pid (very large, extremely unlikely to exist).
+    import gateway.status as status
+
+    monkeypatch.setattr(status, "_pid_exists", lambda pid: pid == os.getpid())
     assert not kb._pid_alive(2 ** 30)
 
 
@@ -2371,6 +2374,7 @@ def test_build_worker_context_role_history_bounded_to_5(kanban_home):
 
 @pytest.mark.skipif("linux" not in __import__("sys").platform,
                     reason="zombie detection is Linux-specific")
+@pytest.mark.live_system_guard_bypass
 def test_pid_alive_detects_zombie(kanban_home):
     """_pid_alive must return False for a zombie process.
 
@@ -3946,13 +3950,14 @@ def test_repeated_timeouts_trip_the_circuit_breaker(kanban_home, monkeypatch):
         conn.close()
 
 
-def test_detect_crashed_workers_increments_counter(kanban_home):
+def test_detect_crashed_workers_increments_counter(kanban_home, monkeypatch):
     """A single crash increments the consecutive_failures counter."""
     conn = kb.connect()
     try:
         tid = kb.create_task(conn, title="crashy", assignee="worker")
         kb.claim_task(conn, tid)
         kb._set_worker_pid(conn, tid, 99999)  # fake pid — not alive
+        monkeypatch.setattr(kb, "_pid_alive", lambda _pid: False)
 
         kb.detect_crashed_workers(conn)
 
