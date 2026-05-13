@@ -410,7 +410,7 @@ When a background task finishes, the result appears as a panel in your terminal:
 ╰──────────────────────────────────────────────────────────────╯
 ```
 
-If the task fails, you'll see an error notification instead. If `display.bell_on_complete` is enabled in your config, the terminal bell rings when the task finishes.
+If the task fails, you'll see an error notification instead. If `display.bell_on_complete` is enabled in your config, an audible notification (`paplay` on PulseAudio/PipeWire systems, ASCII BEL elsewhere) plays when the task finishes — Wayland terminals like Foot/Kitty/ghostty that swallow `\a` are explicitly covered. The sibling `display.notify_on_interact` flag uses the same two-pronged strategy whenever the agent pauses for clarify/approval/sudo/secret input, so you can alt-tab away during a long run and still hear when the agent needs you.
 
 ### Use Cases
 
