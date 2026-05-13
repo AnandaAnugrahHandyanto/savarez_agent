@@ -325,8 +325,8 @@ def load_cli_config() -> Dict[str, Any]:
             "engine": "auto",  # Browser engine: auto (Chrome), lightpanda, chrome
         },
         "compression": {
-            "enabled": True,      # Auto-compress when approaching context limit
-            "threshold": 0.50,    # Compress at 50% of model's context limit
+            "enabled": True,      # Enable explicit /compress and emergency overflow recovery
+            "threshold": 0.50,    # Continuity warning threshold as fraction of context limit
         },
         "agent": {
             "max_turns": 90,  # Default max tool-calling iterations (shared with subagents)
@@ -10663,7 +10663,7 @@ class HermesCLI:
             # Update history with full conversation
             self.conversation_history = result.get("messages", self.conversation_history) if result else self.conversation_history
 
-            # If auto-compression fired mid-turn, the agent created a new
+            # If explicit/emergency compression fired mid-turn, the agent created a new
             # continuation session and mutated self.agent.session_id. Sync
             # the CLI's session_id so /status, /resume, title generation,
             # and the exit summary all target the live child session rather

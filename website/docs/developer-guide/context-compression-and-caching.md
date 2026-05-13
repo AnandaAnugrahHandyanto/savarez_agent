@@ -46,32 +46,32 @@ Hermes has two separate compression layers that operate independently:
                                    │
                                    ▼
                      ┌──────────────────────────┐
-                     │   Agent ContextCompressor │  Fires at 50% of context (default)
-                     │   (in-loop, real tokens)  │  Normal context management
+                     │   Agent ContextCompressor │  Explicit /compress or overflow recovery
+                     │   (in-loop, real tokens)  │  Lossy summarization path
                      └──────────────────────────┘
 ```
 
 ### 1. Gateway Session Hygiene (85% threshold)
 
-Located in `gateway/run.py` (search for `Session hygiene: auto-compress`). This is a **safety net** that
-runs before the agent processes a message. It prevents API failures when sessions
-grow too large between turns (e.g., overnight accumulation in Telegram/Discord).
+Located in `gateway/run.py` (search for `Session hygiene`). This is a **visibility safety net** that
+runs before the agent processes a message. It warns when sessions grow too large
+between turns (e.g., overnight accumulation in Telegram/Discord) and points the
+user to `/handoff` instead of hidden-compressing history.
 
 - **Threshold**: Fixed at 85% of model context length
 - **Token source**: Prefers actual API-reported tokens from last turn; falls back
   to rough character-based estimate (`estimate_messages_tokens_rough`)
-- **Fires**: Only when `len(history) >= 4` and compression is enabled
-- **Purpose**: Catch sessions that escaped the agent's own compressor
+- **Fires**: Only when `len(history) >= 4` and compression guidance is enabled
+- **Purpose**: Catch sessions that escaped earlier handoff guidance without hidden context loss
 
-The gateway hygiene threshold is intentionally higher than the agent's compressor.
-Setting it at 50% (same as the agent) caused premature compression on every turn
-in long gateway sessions.
+The gateway hygiene threshold is intentionally higher than the normal continuity warning threshold.
+Setting it at 50% caused repeated warnings on every turn in long gateway sessions.
 
 ### 2. Agent ContextCompressor (50% threshold, configurable)
 
-Located in `agent/context_compressor.py`. This is the **primary compression
-system** that runs inside the agent's tool loop with access to accurate,
-API-reported token counts.
+Located in `agent/context_compressor.py`. This is the **lossy summarization
+system** used by explicit `/compress` and emergency provider context-overflow
+recovery. Proactive threshold checks defer to continuity/handoff guidance.
 
 
 ## Configuration

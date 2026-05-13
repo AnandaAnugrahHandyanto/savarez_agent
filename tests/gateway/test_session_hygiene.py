@@ -1,11 +1,12 @@
-"""Tests for gateway session hygiene — auto-compression of large sessions.
+"""Tests for gateway session hygiene warnings for large sessions.
 
 Verifies that the gateway detects pathologically large transcripts and
-triggers auto-compression before running the agent.  (#628)
+defers hidden proactive compression behind visible /handoff guidance.
 
-The hygiene system uses the SAME compression config as the agent:
-  compression.threshold × model context length
-so CLI and messaging platforms behave identically.
+The hygiene system still uses model-aware thresholds to decide when to
+surface the warning, but it must not instantiate the compressor or rewrite
+transcripts unless the user explicitly requests /compress or an emergency
+provider context-overflow recovery fires elsewhere.
 """
 
 import importlib
@@ -387,20 +388,23 @@ async def test_session_hygiene_messages_stay_in_originating_topic(monkeypatch, t
     result = await runner._handle_message(event)
 
     assert result == "ok"
-    # Compression warnings are no longer sent to users — compression
-    # happens silently with server-side logging only.
-    assert len(adapter.sent) == 0
-    assert FakeCompressAgent.last_instance is not None
-    FakeCompressAgent.last_instance.shutdown_memory_provider.assert_called_once()
-    FakeCompressAgent.last_instance.close.assert_called_once()
+    notices = [s for s in adapter.sent if "자동 압축을 보류" in s["content"]]
+    assert len(notices) == 1, adapter.sent
+    assert notices[0]["chat_id"] == "-1001"
+    assert notices[0]["metadata"] == {"thread_id": "17585"}
+    assert "/handoff" in notices[0]["content"]
+    assert "/compress" in notices[0]["content"]
+    assert FakeCompressAgent.last_instance is None
+    runner.session_store.rewrite_transcript.assert_not_called()
 
 
 @pytest.mark.asyncio
-async def test_session_hygiene_warns_user_when_summary_generation_fails(monkeypatch, tmp_path):
-    """When auxiliary compression's summary LLM call fails, the compressor
-    inserts a static fallback and the dropped turns are unrecoverable.
-    Gateway must surface a visible ⚠️ warning to the user, including
-    thread_id metadata so it lands in the originating topic/thread."""
+async def test_session_hygiene_defers_before_summary_generation(monkeypatch, tmp_path):
+    """Gateway hygiene must not invoke summary generation proactively.
+
+    Hidden proactive summaries can drop context. The visible deferral notice
+    should land in the originating topic/thread instead.
+    """
     fake_dotenv = types.ModuleType("dotenv")
     fake_dotenv.load_dotenv = lambda *args, **kwargs: None
     monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
@@ -494,30 +498,24 @@ async def test_session_hygiene_warns_user_when_summary_generation_fails(monkeypa
     result = await runner._handle_message(event)
 
     assert result == "ok"
-    # The compressor reported summary-failure → exactly one warning
-    # message must have been delivered to the user.
     warning_messages = [s for s in adapter.sent if "Context compression summary failed" in s["content"]]
-    assert len(warning_messages) == 1, (
-        f"Expected 1 compression-failure warning, got {len(warning_messages)}: {adapter.sent}"
-    )
-    warn = warning_messages[0]
-    # Warning must include the dropped count and the underlying error.
-    assert "42" in warn["content"]
-    assert "404" in warn["content"]
-    # Warning must land in the originating topic/thread, not the main channel.
-    assert warn["chat_id"] == "-1001"
-    assert warn["metadata"] == {"thread_id": "17585"}
-
-    FakeCompressAgentWithSummaryFailure.last_instance.close.assert_called_once()
+    assert len(warning_messages) == 0, adapter.sent
+    notices = [s for s in adapter.sent if "자동 압축을 보류" in s["content"]]
+    assert len(notices) == 1, adapter.sent
+    notice = notices[0]
+    assert notice["chat_id"] == "-1001"
+    assert notice["metadata"] == {"thread_id": "17585"}
+    assert FakeCompressAgentWithSummaryFailure.last_instance is None
+    runner.session_store.rewrite_transcript.assert_not_called()
 
 
 @pytest.mark.asyncio
-async def test_session_hygiene_informs_user_when_aux_model_fails_but_recovers(monkeypatch, tmp_path):
-    """When the user's configured ``auxiliary.compression.model`` errors out
-    and we recover via the main model, compression succeeds but the user's
-    config is still broken.  Gateway hygiene must surface an ℹ note so the
-    user knows to fix ``auxiliary.compression.model`` — silent recovery
-    hides a misconfig only they can resolve."""
+async def test_session_hygiene_does_not_call_aux_model_proactively(monkeypatch, tmp_path):
+    """Gateway hygiene should not call the auxiliary compression model proactively.
+
+    The warning should be about handoff/explicit compression instead of hidden
+    compression or auxiliary-model fallback.
+    """
     fake_dotenv = types.ModuleType("dotenv")
     fake_dotenv.load_dotenv = lambda *args, **kwargs: None
     monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
@@ -613,38 +611,29 @@ async def test_session_hygiene_informs_user_when_aux_model_fails_but_recovers(mo
     result = await runner._handle_message(event)
 
     assert result == "ok"
-    # No ⚠️ hard-failure warning (that's for dropped turns)
     hard_warnings = [s for s in adapter.sent if "Context compression summary failed" in s["content"]]
     assert len(hard_warnings) == 0, adapter.sent
-    # But an ℹ note about the configured aux model must be delivered.
-    aux_notes = [
-        s for s in adapter.sent
-        if "Configured compression model" in s["content"]
-    ]
-    assert len(aux_notes) == 1, (
-        f"Expected 1 aux-model fallback notice, got {len(aux_notes)}: {adapter.sent}"
-    )
-    note = aux_notes[0]
-    assert "gemini-3-flash-preview" in note["content"]
-    assert "404" in note["content"]
-    assert "auxiliary.compression.model" in note["content"]
-    # Note must land in the originating topic/thread.
+    aux_notes = [s for s in adapter.sent if "Configured compression model" in s["content"]]
+    assert len(aux_notes) == 0, adapter.sent
+    notices = [s for s in adapter.sent if "자동 압축을 보류" in s["content"]]
+    assert len(notices) == 1, adapter.sent
+    note = notices[0]
+    assert "/handoff" in note["content"]
     assert note["chat_id"] == "-1001"
     assert note["metadata"] == {"thread_id": "17585"}
-
-    FakeCompressAgentWithAuxRecovery.last_instance.close.assert_called_once()
+    assert FakeCompressAgentWithAuxRecovery.last_instance is None
+    runner.session_store.rewrite_transcript.assert_not_called()
 
 
 @pytest.mark.asyncio
 async def test_session_hygiene_honors_configurable_hard_message_limit(
     monkeypatch, tmp_path
 ):
-    """compression.hygiene_hard_message_limit overrides the 400-message default.
+    """compression.hygiene_hard_message_limit still controls warning emission.
 
-    Regression for user-reported fix: a gateway session with a small
-    transcript (12 messages) should not hit hygiene compression by default,
-    but WILL when the user lowers the hard-limit to 10.  Verifies the new
-    config key is actually read and applied at the force-compress gate.
+    A gateway session with a small transcript (12 messages) should not hit the
+    default 400-message hard limit, but WILL emit a handoff notice when the
+    user lowers the hard-limit to 10. It must not instantiate compression.
     """
     fake_dotenv = types.ModuleType("dotenv")
     fake_dotenv.load_dotenv = lambda *args, **kwargs: None
@@ -697,8 +686,8 @@ async def test_session_hygiene_honors_configurable_hard_message_limit(
         platform=Platform.TELEGRAM,
         chat_type="private",
     )
-    # 12 messages: below 400 default → no compression without override,
-    # but above the configured limit of 10 → should compress.
+    # 12 messages: below 400 default → no hygiene warning without override,
+    # but above the configured limit of 10 → should emit handoff guidance.
     runner.session_store.load_transcript.return_value = _make_history(12, content_size=40)
     runner.session_store.has_any_sessions.return_value = True
     runner.session_store.rewrite_transcript = MagicMock()
@@ -745,12 +734,10 @@ async def test_session_hygiene_honors_configurable_hard_message_limit(
     result = await runner._handle_message(event)
 
     assert result == "ok"
-    # The compression agent was instantiated → hard-limit fired on the
-    # configured value (10), not the hardcoded 400 default.
-    assert FakeCompressAgent.last_instance is not None, (
-        "Expected hygiene compression to fire when message count (12) "
-        "exceeds configured hygiene_hard_message_limit (10)"
-    )
+    notices = [s for s in adapter.sent if "자동 압축을 보류" in s["content"]]
+    assert len(notices) == 1, adapter.sent
+    assert FakeCompressAgent.last_instance is None
+    runner.session_store.rewrite_transcript.assert_not_called()
 
 
 @pytest.mark.asyncio

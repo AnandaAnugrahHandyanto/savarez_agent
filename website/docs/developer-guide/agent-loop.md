@@ -200,10 +200,10 @@ The fallback system also covers auxiliary tasks independently — vision, compre
 
 ### When Compression Triggers
 
-- **Preflight** (before API call): If conversation exceeds 50% of model's context window
-- **Gateway auto-compression**: If conversation exceeds 85% (more aggressive, runs between turns)
+- **Continuity guidance** (before API call): If conversation exceeds the configured threshold, Hermes prefers visible `/handoff` guidance instead of hidden compression
+- **Gateway hygiene warning**: If conversation exceeds 85% or the hard message-count limit between turns, Hermes warns and points to `/handoff`
 
-### What Happens During Compression
+### What Happens During Explicit or Emergency Compression
 
 1. Memory is flushed to disk first (preventing data loss)
 2. Middle conversation turns are summarized into a compact summary

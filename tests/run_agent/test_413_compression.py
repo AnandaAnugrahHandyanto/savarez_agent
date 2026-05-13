@@ -413,10 +413,10 @@ class TestHTTP413Compression:
 
 
 class TestPreflightCompression:
-    """Preflight compression should compress history before the first API call."""
+    """Preflight compression is gated behind visible continuity handoff policy."""
 
-    def test_preflight_compresses_oversized_history(self, agent):
-        """When loaded history exceeds the model's context threshold, compress before API call."""
+    def test_preflight_defers_automatic_compression_for_oversized_history(self, agent):
+        """Oversized loaded history should not be proactively compressed without user intent."""
         agent.compression_enabled = True
         # Set a small context so the history is "oversized", but large enough
         # that the compressed result (2 short messages) fits in a single pass.
@@ -451,15 +451,7 @@ class TestPreflightCompression:
             )
             result = agent.run_conversation("hello", conversation_history=big_history)
 
-        # Preflight compression is a multi-pass loop (up to 3 passes for very
-        # large sessions, breaking when no further reduction is possible).
-        # First pass must have received the full oversized history.
-        assert mock_compress.call_count >= 1, "Preflight compression never ran"
-        first_call_messages = mock_compress.call_args_list[0].args[0]
-        assert len(first_call_messages) >= 40, (
-            f"First preflight pass should see the full history, got "
-            f"{len(first_call_messages)} messages"
-        )
+        mock_compress.assert_not_called()
         assert result["completed"] is True
         assert result["final_response"] == "After preflight"
         assert any(
@@ -519,10 +511,10 @@ class TestPreflightCompression:
 
 
 class TestToolResultPreflightCompression:
-    """Compression should trigger when tool results push context past the threshold."""
+    """Tool-result proactive compression is gated behind continuity policy."""
 
-    def test_large_tool_results_trigger_compression(self, agent):
-        """When tool results push estimated tokens past threshold, compress before next call."""
+    def test_large_tool_results_defer_automatic_compression(self, agent):
+        """Large tool results should not trigger hidden proactive compression."""
         agent.compression_enabled = True
         agent.context_compressor.context_length = 200_000
         agent.context_compressor.threshold_tokens = 130_000  # below the 135k reported usage
@@ -556,8 +548,9 @@ class TestToolResultPreflightCompression:
             )
             result = agent.run_conversation("hello")
 
-        mock_compress.assert_called_once()
+        mock_compress.assert_not_called()
         assert result["completed"] is True
+        assert result["final_response"] == "Done after compression"
 
     def test_anthropic_prompt_too_long_safety_net(self, agent):
         """Anthropic 'prompt is too long' error triggers compression as safety net."""

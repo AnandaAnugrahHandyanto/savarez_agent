@@ -4,6 +4,7 @@ from agent.context_continuity import (
     ContextContinuityStatus,
     build_handoff_packet,
     recommend_continuity_action,
+    should_defer_automatic_compression,
 )
 from hermes_cli.commands import resolve_command
 
@@ -75,6 +76,34 @@ def test_recommend_continuity_action_prefers_handoff_before_compression():
     assert status.level == "strong_handoff"
     assert status.recommended_action == "handoff"
     assert "새 세션" in status.reason
+
+
+def test_automatic_compression_is_deferred_for_continuity_handoff_policy():
+    status = ContextContinuityStatus(
+        context_tokens=85_000,
+        context_length=100_000,
+        remaining_todos=2,
+        high_risk_task=True,
+    )
+
+    decision = should_defer_automatic_compression(status)
+
+    assert decision.defer is True
+    assert decision.recommended_action == "handoff"
+    assert "/handoff" in decision.reason
+
+
+def test_automatic_compression_is_deferred_even_before_handoff_threshold():
+    status = ContextContinuityStatus(
+        context_tokens=55_000,
+        context_length=100_000,
+    )
+
+    decision = should_defer_automatic_compression(status)
+
+    assert decision.defer is True
+    assert decision.recommended_action == "continue"
+    assert "자동 압축" in decision.reason
 
 
 def test_handoff_command_registered():

@@ -357,13 +357,13 @@ Some messaging adapters also keep per-platform transcript files alongside the da
 
 ### Context Compression
 
-Long conversations are automatically summarized when approaching context limits:
+Long conversations now prefer visible handoff guidance before summarization. Hermes does not hidden-compress proactive threshold crossings; use `/handoff` to move cleanly or `/compress` explicitly if you want summarization:
 
 ```yaml
 # In ~/.hermes/config.yaml
 compression:
   enabled: true
-  threshold: 0.50    # Compress at 50% of context limit by default
+  threshold: 0.50    # Show continuity guidance at 50% of context limit by default
 
 # Summarization model configured under auxiliary:
 auxiliary:
@@ -371,7 +371,7 @@ auxiliary:
     model: ""  # Leave empty to use the main chat model (default). Or pin a cheap fast model, e.g. "google/gemini-3-flash-preview".
 ```
 
-When compression triggers, middle turns are summarized while the first 3 and last 20 turns are always preserved.
+When explicit `/compress` or emergency context-overflow recovery triggers compression, middle turns are summarized while the first 3 and last 20 turns are always preserved.
 
 ## Background Sessions
 

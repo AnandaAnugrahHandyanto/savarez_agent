@@ -36,6 +36,21 @@ class ContextContinuityRecommendation:
     reason: str
 
 
+@dataclass(frozen=True)
+class AutomaticCompressionGate:
+    """Decision for proactive automatic compression.
+
+    This gate intentionally applies only to proactive compression. Explicit
+    user requests such as ``/compress`` and emergency provider-error recovery
+    can still use the compressor as a survival fallback.
+    """
+
+    defer: bool
+    recommended_action: str
+    usage_percent: int
+    reason: str
+
+
 def _usage_percent(context_tokens: int, context_length: int) -> int:
     if context_length <= 0:
         return 0
@@ -95,6 +110,41 @@ def recommend_continuity_action(
         recommended_action="continue",
         usage_percent=pct,
         reason="아직 현재 세션에서 계속 진행해도 됩니다.",
+    )
+
+
+def should_defer_automatic_compression(
+    status: ContextContinuityStatus,
+) -> AutomaticCompressionGate:
+    """Defer proactive automatic compression behind continuity policy.
+
+    Automatic compression is lossy and can hide context loss from the user. For
+    proactive threshold checks, prefer visible checkpoint/handoff guidance and
+    let explicit ``/compress`` or emergency context-overflow recovery remain the
+    only compression paths.
+    """
+
+    recommendation = recommend_continuity_action(status)
+    if recommendation.recommended_action in {"handoff", "handoff_required"}:
+        reason = (
+            f"자동 압축을 보류합니다. {recommendation.reason} "
+            "필요하면 /handoff로 새 세션 이동 인계문을 만드세요."
+        )
+    elif recommendation.recommended_action == "checkpoint":
+        reason = (
+            f"자동 압축을 보류합니다. {recommendation.reason} "
+            "다음 큰 단계 전에 /handoff를 준비하세요."
+        )
+    else:
+        reason = (
+            "자동 압축을 보류합니다. 명시적인 /compress 또는 긴급 context-overflow "
+            "복구가 아니라면 현재 세션을 손실 압축하지 않습니다."
+        )
+    return AutomaticCompressionGate(
+        defer=True,
+        recommended_action=recommendation.recommended_action,
+        usage_percent=recommendation.usage_percent,
+        reason=reason,
     )
 
 
