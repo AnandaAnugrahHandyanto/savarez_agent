@@ -46,12 +46,27 @@ export function openExternalUrl(rawUrl: string, dependencies: OpenDependencies =
       detached: true,
       stdio: 'ignore'
     } satisfies SpawnOptions)
+
+    // Async failure path: spawn returns a ChildProcess synchronously even
+    // when the binary is missing (ENOENT on `xdg-open` / `explorer.exe`),
+    // unreachable (EACCES), or otherwise unusable — the failure surfaces
+    // later as an 'error' event. Without a handler, an unhandled 'error'
+    // on an EventEmitter crashes Node, which would tear down the whole
+    // TUI. Attach a no-op listener BEFORE unref() so the event has a
+    // consumer; we already returned `true` synchronously, so the user
+    // just won't see their browser open — same as if the URL had been
+    // rejected upstream.
+    child.once('error', () => {
+      // Intentional no-op. The TUI keeps running; user gets no browser
+      // pop, which is the failure mode we promised in the doc comment.
+    })
+
     child.unref()
 
     return true
   } catch {
-    // spawn can throw synchronously on unusable PATHs (e.g. WSL without an
-    // explorer.exe shim). Treat it as a no-op rather than crashing the TUI.
+    // spawn can also throw synchronously on argv-validation failures
+    // (e.g. NUL in the path). Treat it as a no-op rather than crashing.
     return false
   }
 }

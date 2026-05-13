@@ -154,10 +154,16 @@ export type Options = {
   /**
    * Called when a click lands on a cell with an OSC 8 hyperlink (or a
    * plain-text URL detected by findPlainTextUrlAt). The host is responsible
-   * for opening the URL — typically via the OS `open` / `xdg-open` /
-   * `start` shell. Without this wired up, links rendered by `<Link>` look
-   * underlined but do nothing on click in any terminal where mouse
-   * tracking is on (Cmd+click is consumed by the TUI, not Terminal.app).
+   * for opening the URL — `child_process.spawn` with an argv array (NOT
+   * shell-mode) to the platform's native opener: `open` on macOS,
+   * `xdg-open` on Linux/BSD, `explorer.exe` on Windows. Avoid
+   * `cmd.exe /c start` — `start` is a cmd builtin that reparses the URL
+   * through cmd's tokenizer (`&` / `|` / `^` / `<` / `>` get split or
+   * reinterpreted), which both breaks plain URLs with `&` in query
+   * strings and undermines any caller-side protocol allowlist. Without
+   * this wired up, links rendered by `<Link>` look underlined but do
+   * nothing on click in any terminal where mouse tracking is on
+   * (Cmd+click is consumed by the TUI, not Terminal.app).
    */
   onHyperlinkClick?: (url: string) => void
 }
@@ -1807,7 +1813,24 @@ export default class Ink {
     // its URL (or clear when the pointer leaves a link), and request a
     // repaint when the value changes. The render-pass overlay paints the
     // highlight; we just track which URL is "hot".
-    const next = this.getHyperlinkAt(col, row)
+    //
+    // IMPORTANT: bypass getHyperlinkAt() here — its plain-text URL fallback
+    // (findPlainTextUrlAt) would return URLs for cells whose `cell.hyperlink`
+    // is undefined, which the overlay (applyHyperlinkHoverHighlight)
+    // wouldn't match. That'd burn re-renders without ever producing an
+    // affordance. Read the OSC 8 hyperlink directly off the cell so the
+    // hover state is a 1:1 fit for what the overlay can paint. The
+    // plain-text URL fallback still works for clicks; hover is a strictly
+    // weaker signal and OK to skip on plain-text URLs.
+    const screen = this.frontFrame.screen
+    const cell = cellAt(screen, col, row)
+    let next = cell?.hyperlink
+
+    // SpacerTail (second half of a wide-char / emoji glyph) stores the
+    // hyperlink on the head cell at col-1. Same logic as getHyperlinkAt.
+    if (!next && cell?.width === CellWidth.SpacerTail && col > 0) {
+      next = cellAt(screen, col - 1, row)?.hyperlink
+    }
 
     if (next !== this.hoveredHyperlink) {
       this.hoveredHyperlink = next

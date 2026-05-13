@@ -1,3 +1,5 @@
+import { EventEmitter } from 'node:events'
+
 import type { ChildProcess } from 'node:child_process'
 
 import { describe, expect, it, vi } from 'vitest'
@@ -60,22 +62,35 @@ describe('openCommand', () => {
 })
 
 describe('openExternalUrl', () => {
+  // Tracks the most recent fake child so tests can inspect its 'error'
+  // handlers and emit on it. Use a loose EventEmitter alias rather than
+  // ChildProcess — the latter's `unref` signature is strictly `() => void`
+  // and doesn't accept `vi.fn()` without a generic.
+  type FakeChild = EventEmitter & { unref: () => void }
+
   function mockSpawn(): {
     spawn: typeof import('node:child_process').spawn
     calls: Array<{ command: string; args: readonly string[] }>
+    lastChild: () => FakeChild | undefined
   } {
     const calls: Array<{ command: string; args: readonly string[] }> = []
+    let lastChild: FakeChild | undefined
+
     const spawn = vi.fn((command: string, args: readonly string[]) => {
       calls.push({ command, args })
 
-      return {
-        unref: vi.fn(),
-        on: vi.fn(),
-        once: vi.fn()
-      } as unknown as ChildProcess
+      // Use a real EventEmitter so .once('error', cb) wires up correctly
+      // and we can synthesize async failures by emitting 'error' from the
+      // test. The cast is the same one Node uses internally — ChildProcess
+      // extends EventEmitter.
+      const child = new EventEmitter() as FakeChild
+      child.unref = () => {}
+      lastChild = child
+
+      return child as unknown as ChildProcess
     }) as unknown as typeof import('node:child_process').spawn
 
-    return { spawn, calls }
+    return { spawn, calls, lastChild: () => lastChild }
   }
 
   it('opens a normal https URL via the platform command', () => {
@@ -155,5 +170,26 @@ describe('openExternalUrl', () => {
     }) as unknown as typeof import('node:child_process').spawn
 
     expect(openExternalUrl('https://example.com/', { spawn, platform: () => 'linux' })).toBe(false)
+  })
+
+  it('does not crash the host when the spawned process emits an async error', () => {
+    // Real-world case: `xdg-open` / `explorer.exe` missing on PATH. spawn()
+    // returns a ChildProcess synchronously, then emits 'error' once the
+    // exec actually fails. Without a registered 'error' listener, Node
+    // re-throws the event as an uncaught exception → TUI dies. We attach
+    // a no-op listener inside openExternalUrl; this test pins that contract.
+    const { spawn, lastChild } = mockSpawn()
+
+    expect(openExternalUrl('https://example.com/', { spawn, platform: () => 'linux' })).toBe(true)
+
+    const child = lastChild()
+    expect(child).toBeDefined()
+    // Must have a listener registered BEFORE we emit, or EventEmitter will
+    // throw synchronously here (which is exactly the crash we're preventing).
+    expect(child!.listenerCount('error')).toBeGreaterThan(0)
+
+    // Emit and assert it doesn't throw. If the listener weren't attached,
+    // this would throw 'Unhandled error' and fail the test.
+    expect(() => child!.emit('error', new Error('ENOENT: xdg-open not found'))).not.toThrow()
   })
 })
