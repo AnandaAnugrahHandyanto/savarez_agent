@@ -2723,7 +2723,7 @@ class FeishuAdapter(BasePlatformAdapter):
             chat_type=self._resolve_source_chat_type(chat_info=chat_info, event_chat_type=chat_type),
             user_id=sender_profile["user_id"],
             user_name=sender_profile["user_name"],
-            thread_id=getattr(message, "thread_id", None) or None,
+            thread_id=getattr(message, "root_id", None) or getattr(message, "message_id", None) or None,
             user_id_alt=sender_profile["user_id_alt"],
         )
         normalized = MessageEvent(
@@ -3916,6 +3916,21 @@ class FeishuAdapter(BasePlatformAdapter):
                 uuid_value=str(uuid.uuid4()),
             )
             request = self._build_reply_message_request(reply_to, body)
+            return await asyncio.to_thread(self._client.im.v1.message.reply, request)
+
+        # When there's no explicit reply_to but metadata carries a thread_id
+        # (e.g. interim/stream/progress messages), reply to the thread root
+        # message so the message lands inside the topic rather than falling
+        # back to message.create() which always goes to the main chat.
+        _thread_id = (metadata or {}).get("thread_id")
+        if _thread_id:
+            body = self._build_reply_message_body(
+                content=payload,
+                msg_type=msg_type,
+                reply_in_thread=True,
+                uuid_value=str(uuid.uuid4()),
+            )
+            request = self._build_reply_message_request(_thread_id, body)
             return await asyncio.to_thread(self._client.im.v1.message.reply, request)
 
         body = self._build_create_message_body(
