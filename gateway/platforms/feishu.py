@@ -116,21 +116,7 @@ try:
 except ImportError:
     FEISHU_AVAILABLE = False
     lark = None  # type: ignore[assignment]
-    GetApplicationRequest = None  # type: ignore[assignment]
-    CreateFileRequest = None  # type: ignore[assignment]
-    CreateFileRequestBody = None  # type: ignore[assignment]
-    CreateImageRequest = None  # type: ignore[assignment]
-    CreateImageRequestBody = None  # type: ignore[assignment]
-    CreateMessageRequest = None  # type: ignore[assignment]
-    CreateMessageRequestBody = None  # type: ignore[assignment]
-    GetChatRequest = None  # type: ignore[assignment]
-    GetMessageRequest = None  # type: ignore[assignment]
-    GetMessageResourceRequest = None  # type: ignore[assignment]
     P2ImMessageMessageReadV1 = None  # type: ignore[assignment]
-    ReplyMessageRequest = None  # type: ignore[assignment]
-    ReplyMessageRequestBody = None  # type: ignore[assignment]
-    UpdateMessageRequest = None  # type: ignore[assignment]
-    UpdateMessageRequestBody = None  # type: ignore[assignment]
     CallBackCard = None  # type: ignore[assignment]
     P2CardActionTriggerResponse = None  # type: ignore[assignment]
     EventDispatcherHandler = None  # type: ignore[assignment]
@@ -144,29 +130,39 @@ except ImportError:
     class HttpMethod:  # type: ignore[no-redef]
         GET = "GET"
 
-    class _FallbackBaseRequestBuilder:
+    class _FallbackSdkBuilder:
         def __init__(self) -> None:
             self._values: Dict[str, Any] = {}
 
-        def http_method(self, value: Any) -> "_FallbackBaseRequestBuilder":
-            self._values["http_method"] = value
-            return self
-
-        def uri(self, value: str) -> "_FallbackBaseRequestBuilder":
-            self._values["uri"] = value
-            return self
-
-        def token_types(self, value: Any) -> "_FallbackBaseRequestBuilder":
-            self._values["token_types"] = value
-            return self
+        def __getattr__(self, name: str):
+            def _setter(value: Any) -> "_FallbackSdkBuilder":
+                self._values[name] = value
+                return self
+            return _setter
 
         def build(self) -> SimpleNamespace:
             return SimpleNamespace(**self._values)
 
-    class BaseRequest:  # type: ignore[no-redef]
+    class _FallbackSdkModel:
         @classmethod
-        def builder(cls) -> _FallbackBaseRequestBuilder:
-            return _FallbackBaseRequestBuilder()
+        def builder(cls) -> _FallbackSdkBuilder:
+            return _FallbackSdkBuilder()
+
+    GetApplicationRequest = _FallbackSdkModel  # type: ignore[assignment]
+    CreateFileRequest = _FallbackSdkModel  # type: ignore[assignment]
+    CreateFileRequestBody = _FallbackSdkModel  # type: ignore[assignment]
+    CreateImageRequest = _FallbackSdkModel  # type: ignore[assignment]
+    CreateImageRequestBody = _FallbackSdkModel  # type: ignore[assignment]
+    CreateMessageRequest = _FallbackSdkModel  # type: ignore[assignment]
+    CreateMessageRequestBody = _FallbackSdkModel  # type: ignore[assignment]
+    GetChatRequest = _FallbackSdkModel  # type: ignore[assignment]
+    GetMessageRequest = _FallbackSdkModel  # type: ignore[assignment]
+    GetMessageResourceRequest = _FallbackSdkModel  # type: ignore[assignment]
+    ReplyMessageRequest = _FallbackSdkModel  # type: ignore[assignment]
+    ReplyMessageRequestBody = _FallbackSdkModel  # type: ignore[assignment]
+    UpdateMessageRequest = _FallbackSdkModel  # type: ignore[assignment]
+    UpdateMessageRequestBody = _FallbackSdkModel  # type: ignore[assignment]
+    BaseRequest = _FallbackSdkModel  # type: ignore[assignment]
 
 FEISHU_WEBSOCKET_AVAILABLE = websockets is not None
 FEISHU_WEBHOOK_AVAILABLE = aiohttp is not None
