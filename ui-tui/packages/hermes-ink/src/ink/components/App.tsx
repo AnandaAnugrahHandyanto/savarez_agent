@@ -395,6 +395,11 @@ export default class App extends PureComponent<Props, State> {
         // Process the input chunk
         this.processInput(chunk)
       }
+
+      if (this.props.stdin.readableEnded) {
+        this.handleExit()
+        return
+      }
     } catch (error) {
       // In Bun, an uncaught throw inside a stream 'readable' handler can
       // permanently wedge the stream: data stays buffered and 'readable'

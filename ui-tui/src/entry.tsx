@@ -86,3 +86,10 @@ const onFrame =
     : undefined
 
 ink.render(<App gw={gw} />, { exitOnCtrlC: false, onFrame })
+
+process.stdin.on('end', () => {
+  stopMemoryMonitor()
+  resetTerminalModes()
+  gw.kill()
+  process.exit(0)
+})
