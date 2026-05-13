@@ -170,6 +170,9 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
     _profile_home = get_subprocess_home()
     if _profile_home:
         sanitized["HOME"] = _profile_home
+        existing_path = sanitized.get("PATH", "")
+        profile_path = f"{_profile_home}/bin:{_profile_home}/.local/bin"
+        sanitized["PATH"] = f"{profile_path}:{existing_path}" if existing_path else profile_path
 
     return sanitized
 
@@ -245,6 +248,8 @@ def _make_run_env(env: dict) -> dict:
     _profile_home = get_subprocess_home()
     if _profile_home:
         run_env["HOME"] = _profile_home
+        profile_path = f"{_profile_home}/bin:{_profile_home}/.local/bin"
+        run_env["PATH"] = f"{profile_path}:{run_env.get('PATH', '')}" if run_env.get("PATH") else profile_path
 
     return run_env
 

@@ -1080,6 +1080,8 @@ def execute_code(
         _profile_home = get_subprocess_home()
         if _profile_home:
             child_env["HOME"] = _profile_home
+            _profile_path = os.pathsep.join([os.path.join(_profile_home, "bin"), os.path.join(_profile_home, ".local", "bin")])
+            child_env["PATH"] = f"{_profile_path}{os.pathsep}{child_env.get('PATH', '')}" if child_env.get("PATH") else _profile_path
 
         # Resolve interpreter + CWD based on execute_code mode.
         #   - strict : today's behavior (sys.executable + tmpdir CWD).

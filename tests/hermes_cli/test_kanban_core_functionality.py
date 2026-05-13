@@ -35,6 +35,10 @@ def kanban_home(tmp_path, monkeypatch):
     home = tmp_path / ".hermes"
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_KANBAN_HOME", str(home))
+    monkeypatch.delenv("HERMES_KANBAN_DB", raising=False)
+    monkeypatch.delenv("HERMES_KANBAN_WORKSPACES_ROOT", raising=False)
+    monkeypatch.delenv("HERMES_KANBAN_BOARD", raising=False)
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     kb.init_db()
     return home

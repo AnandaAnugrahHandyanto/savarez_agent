@@ -70,6 +70,10 @@ def worker_env(monkeypatch, tmp_path):
     home = tmp_path / ".hermes"
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_KANBAN_HOME", str(home))
+    monkeypatch.delenv("HERMES_KANBAN_DB", raising=False)
+    monkeypatch.delenv("HERMES_KANBAN_WORKSPACES_ROOT", raising=False)
+    monkeypatch.delenv("HERMES_KANBAN_BOARD", raising=False)
     monkeypatch.setenv("HERMES_PROFILE", "test-worker")
     from pathlib import Path as _Path
     monkeypatch.setattr(_Path, "home", lambda: tmp_path)

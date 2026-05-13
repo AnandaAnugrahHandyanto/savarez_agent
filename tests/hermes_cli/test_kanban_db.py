@@ -592,6 +592,56 @@ def test_auto_remediate_ignores_human_approval_blocker(
         assert conn.execute("SELECT COUNT(*) AS n FROM tasks").fetchone()["n"] == 1
 
 
+def test_auto_remediate_ignores_auto_created_remediation_tasks_without_findings(
+    kanban_home, all_assignees_spawnable
+):
+    with kb.connect() as conn:
+        remediation = kb.create_task(
+            conn,
+            title="Remediate review findings from t_review: worker-test",
+            body=(
+                "Auto-created from blocked review/QA task t_review.\n\n"
+                "Original review title: worker-test\n"
+                "Blocked reason/findings:\n(no reason supplied)\n\n"
+                "Fix the actionable defects only; do not proceed if the blocker "
+                "is actually waiting on credentials, approval, or a human decision."
+            ),
+            assignee="backend-eng",
+            created_by="kanban-auto-remediation",
+        )
+        kb.claim_task(conn, remediation)
+        kb.block_task(conn, remediation, reason="")
+
+        res = kb.dispatch_once(conn, dry_run=True)
+        assert res.auto_remediated == []
+        assert conn.execute("SELECT COUNT(*) AS n FROM tasks").fetchone()["n"] == 1
+
+
+def test_auto_remediate_ignores_physical_device_blocker_even_if_review_says_missing(
+    kanban_home, all_assignees_spawnable
+):
+    with kb.connect() as conn:
+        review = kb.create_task(
+            title="Re-review remediation for voice capture missing microphone",
+            assignee="reviewer",
+            conn=conn,
+        )
+        kb.claim_task(conn, review)
+        kb.block_task(
+            conn,
+            review,
+            reason=(
+                "Hardware blocker still present: Mac mini exposes no terminal-visible "
+                "microphone/input device; connect/select a USB mic, webcam mic, "
+                "Bluetooth headset, display mic, or virtual input before rerunning."
+            ),
+        )
+
+        res = kb.dispatch_once(conn, dry_run=True)
+        assert res.auto_remediated == []
+        assert conn.execute("SELECT COUNT(*) AS n FROM tasks").fetchone()["n"] == 1
+
+
 # ---------------------------------------------------------------------------
 # Workspace resolution
 # ---------------------------------------------------------------------------

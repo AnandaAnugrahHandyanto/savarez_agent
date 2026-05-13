@@ -2634,7 +2634,8 @@ _HUMAN_BLOCKER_RE = re.compile(
     r"\b("
     r"approval|approve|human|operator|decision|choose|credential|credentials|"
     r"secret|token|api key|password|login|auth|oauth|access|permission|"
-    r"clarify|clarification|user input|which profile|paywall|blocked by user"
+    r"clarify|clarification|user input|which profile|paywall|blocked by user|"
+    r"hardware|physical|device|microphone|mic|input device|connect|select"
     r")\b",
     re.I,
 )
@@ -2646,6 +2647,10 @@ _SECRET_VALUE_RE = re.compile(
 
 
 def _is_review_task(task: Task) -> bool:
+    if str(task.created_by or "") == "kanban-auto-remediation" and str(
+        task.title or ""
+    ).startswith("Remediate review findings from "):
+        return False
     haystack = " ".join(str(x or "") for x in (task.assignee, task.title, task.body))
     return bool(_REVIEW_ASSIGNEE_RE.search(str(task.assignee or "")) or _REVIEW_TITLE_RE.search(haystack))
 
