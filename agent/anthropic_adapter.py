@@ -2234,26 +2234,53 @@ def _relocate_orphaned_tool_search_results(messages: List[Dict[str, Any]]) -> No
 def drop_orphan_server_tool_uses_in_storage(
     messages: List[Dict[str, Any]],
 ) -> int:
-    """Drop any ``server_tool_use`` block whose paired
-    ``tool_search_tool_*_tool_result`` doesn't exist anywhere in the
-    message list.
+    """Drop server-side block orphans in BOTH directions:
+
+    * ``server_tool_use`` whose paired result block
+      (``tool_search_tool_*_tool_result`` OR ``web_search_tool_result``)
+      doesn't exist anywhere in the message list.
+    * ``tool_search_tool_*_tool_result`` / ``web_search_tool_result``
+      whose paired ``server_tool_use`` doesn't exist anywhere in the
+      message list.
 
     Why: relocation handles "result split across messages" — the normal
     Anthropic delivery pattern. But a stream interruption (timeout,
-    cancel, 5xx mid-response) can land the ``server_tool_use`` on disk
-    without the result EVER arriving. Every subsequent API call then
-    400s with:
+    cancel, 5xx mid-response) can land either side of the pair on disk
+    without the other. Every subsequent API call then 400s with:
       ``tool_search_tool_<variant> tool use with id ... was found
-      without a corresponding tool_search_tool_<variant>_tool_result``.
+      without a corresponding tool_search_tool_<variant>_tool_result``
+    or
+      ``unexpected `tool_use_id` found in `web_search_tool_result`
+      blocks: <id>. Each `web_search_tool_result` block must have a
+      corresponding `server_tool_use` block before it``.
     The session is permanently wedged until the orphan is removed.
 
-    Verified against ``session_20260509_145003_c5e465`` where one
-    server_tool_use had no result anywhere — dropping it unwedges the
-    session with no loss of usable data (the unfinished tool search
-    yielded nothing the model could act on anyway).
+    Verified against:
+      * ``session_20260509_145003_c5e465`` — server_tool_use without
+        result (tool_search side).
+      * ``session_20260513_093942_d374cc`` — web_search_tool_result
+        without server_tool_use. The prior version of this function
+        CAUSED that breakage: it tracked only tool_search results, so a
+        healthy web_search server_tool_use looked unpaired and got
+        dropped, leaving the web_search_tool_result orphaned forever.
 
-    Returns the number of orphan use blocks removed.
+    Returns the number of orphan blocks removed (uses + results).
+
+    Extend ``SERVER_TOOL_RESULT_TYPES`` when Anthropic adds new
+    server-side tools that emit a paired result block so the pairing
+    audit stays correct.
     """
+    SERVER_TOOL_RESULT_TYPES = ("tool_search_tool_result", "web_search_tool_result")
+
+    def _is_server_tool_result(t: Any) -> bool:
+        return isinstance(t, str) and (
+            t in SERVER_TOOL_RESULT_TYPES
+            or (t.startswith("tool_search_tool_") and t.endswith("_tool_result"))
+        )
+
+    # Phase 1: collect every server-side use-id and result-id that
+    # actually exists on disk.
+    use_ids: set[str] = set()
     result_ids: set[str] = set()
     for msg in messages:
         if msg.get("role") != "assistant":
@@ -2265,16 +2292,16 @@ def drop_orphan_server_tool_uses_in_storage(
             if not isinstance(block, dict):
                 continue
             t = block.get("type")
-            if not isinstance(t, str):
-                continue
-            if (
-                t == "tool_search_tool_result"
-                or (t.startswith("tool_search_tool_") and t.endswith("_tool_result"))
-            ):
+            if t == "server_tool_use":
+                bid = block.get("id")
+                if isinstance(bid, str):
+                    use_ids.add(bid)
+            elif _is_server_tool_result(t):
                 tu_id = block.get("tool_use_id")
                 if isinstance(tu_id, str):
                     result_ids.add(tu_id)
 
+    # Phase 2: drop orphans in both directions in a single pass.
     dropped = 0
     for msg in messages:
         if msg.get("role") != "assistant":
@@ -2282,19 +2309,29 @@ def drop_orphan_server_tool_uses_in_storage(
         content = msg.get("anthropic_content_blocks")
         if not isinstance(content, list):
             continue
-        keep = []
+        keep: List[Dict[str, Any]] = []
+        msg_dropped = 0
         for block in content:
-            if (
-                isinstance(block, dict)
-                and block.get("type") == "server_tool_use"
-                and isinstance(block.get("id"), str)
-                and block["id"] not in result_ids
-            ):
-                dropped += 1
-                continue
+            if isinstance(block, dict):
+                t = block.get("type")
+                if (
+                    t == "server_tool_use"
+                    and isinstance(block.get("id"), str)
+                    and block["id"] not in result_ids
+                ):
+                    msg_dropped += 1
+                    continue
+                if (
+                    _is_server_tool_result(t)
+                    and isinstance(block.get("tool_use_id"), str)
+                    and block["tool_use_id"] not in use_ids
+                ):
+                    msg_dropped += 1
+                    continue
             keep.append(block)
-        if dropped:
+        if msg_dropped:
             msg["anthropic_content_blocks"] = keep
+            dropped += msg_dropped
     return dropped
 
 
@@ -3098,13 +3135,34 @@ def convert_messages_to_anthropic(
     # owns the matching server_tool_use.
     _relocate_orphaned_tool_search_results(result)
 
-    # Drop ``server_tool_use`` blocks whose paired result NEVER arrived
-    # (stream interruption, timeout, cancel mid-response). Without this,
-    # the assistant message has a use without a result, and every API
-    # call replays the orphan and 400s. Runs after relocation so a
-    # split-but-deliverable pair gets repaired first; only truly
-    # missing results trigger a drop. Operates on the wire-shape
-    # ``msg["content"]`` (lists of blocks).
+    # Drop server-side block orphans in BOTH directions on the
+    # wire-shape ``msg["content"]`` immediately before send:
+    #
+    #   * ``server_tool_use`` whose paired result block never arrived
+    #     (stream interruption / timeout / cancel mid-response).
+    #   * ``web_search_tool_result`` / ``tool_search_tool_*_tool_result``
+    #     whose paired ``server_tool_use`` is missing (compaction cut,
+    #     or a stale on-disk corruption from an earlier Hermes version
+    #     that dropped the wrong side of the pair).
+    #
+    # Without either side of this audit, the assistant message has an
+    # unpaired server-side block and the request 400s with one of:
+    #   * ``tool_search_tool_<variant> tool use with id ... was found
+    #     without a corresponding tool_search_tool_<variant>_tool_result``
+    #   * ``unexpected `tool_use_id` found in `web_search_tool_result`
+    #     blocks: <id>. Each `web_search_tool_result` block must have a
+    #     corresponding `server_tool_use` block before it``
+    # Runs AFTER ``_relocate_orphaned_tool_search_results`` so a
+    # split-but-deliverable pair gets repaired first.
+    _SERVER_RESULT_TYPES_WIRE = ("tool_search_tool_result", "web_search_tool_result")
+
+    def _is_server_tool_result_wire(_t):
+        return isinstance(_t, str) and (
+            _t in _SERVER_RESULT_TYPES_WIRE
+            or (_t.startswith("tool_search_tool_") and _t.endswith("_tool_result"))
+        )
+
+    _use_ids_wire: set = set()
     _result_ids_wire: set = set()
     for _m in result:
         if _m.get("role") != "assistant":
@@ -3116,10 +3174,11 @@ def convert_messages_to_anthropic(
             if not isinstance(_b, dict):
                 continue
             _t = _b.get("type")
-            if isinstance(_t, str) and (
-                _t == "tool_search_tool_result"
-                or (_t.startswith("tool_search_tool_") and _t.endswith("_tool_result"))
-            ):
+            if _t == "server_tool_use":
+                _bid = _b.get("id")
+                if isinstance(_bid, str):
+                    _use_ids_wire.add(_bid)
+            elif _is_server_tool_result_wire(_t):
                 _ru = _b.get("tool_use_id")
                 if isinstance(_ru, str):
                     _result_ids_wire.add(_ru)
@@ -3129,15 +3188,23 @@ def convert_messages_to_anthropic(
         _c = _m.get("content")
         if not isinstance(_c, list):
             continue
-        _kept = [
-            _b for _b in _c
-            if not (
-                isinstance(_b, dict)
-                and _b.get("type") == "server_tool_use"
-                and isinstance(_b.get("id"), str)
-                and _b["id"] not in _result_ids_wire
-            )
-        ]
+        _kept = []
+        for _b in _c:
+            if isinstance(_b, dict):
+                _t = _b.get("type")
+                if (
+                    _t == "server_tool_use"
+                    and isinstance(_b.get("id"), str)
+                    and _b["id"] not in _result_ids_wire
+                ):
+                    continue
+                if (
+                    _is_server_tool_result_wire(_t)
+                    and isinstance(_b.get("tool_use_id"), str)
+                    and _b["tool_use_id"] not in _use_ids_wire
+                ):
+                    continue
+            _kept.append(_b)
         if len(_kept) != len(_c):
             _m["content"] = _kept or [{"type": "text", "text": "(empty)"}]
 

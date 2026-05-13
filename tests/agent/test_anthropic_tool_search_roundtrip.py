@@ -33,6 +33,7 @@ from agent.anthropic_adapter import (
     _normalize_tool_search_result_inner,
     _relocate_orphaned_tool_search_results,
     convert_messages_to_anthropic,
+    drop_orphan_server_tool_uses_in_storage,
 )
 
 
@@ -291,10 +292,46 @@ class TestNormalizeOuterToolSearchResult:
 # ---------------------------------------------------------------------------
 class TestConvertMessagesRoundTrip:
     def _build_assistant_msg(self, server_tool_blocks):
+        # Real Anthropic responses always pair a ``server_tool_use``
+        # with each ``*_tool_result``. The outbound request-build path
+        # drops any unpaired result block (would 400 on Anthropic's
+        # input validator anyway). For each result block in the
+        # fixture, auto-prepend a matching server_tool_use so the
+        # message is shape-correct.
+        synthetic = []
+        for b in server_tool_blocks:
+            if not isinstance(b, dict):
+                synthetic.append(b)
+                continue
+            t = b.get("type")
+            tu_id = b.get("tool_use_id")
+            if (
+                isinstance(t, str)
+                and isinstance(tu_id, str)
+                and (
+                    t == "tool_search_tool_result"
+                    or t == "web_search_tool_result"
+                    or (t.startswith("tool_search_tool_") and t.endswith("_tool_result"))
+                )
+            ):
+                # Pick a placeholder tool name that matches the result
+                # family. Hand-set name so server_tool_use is identifiable.
+                stu_name = (
+                    "web_search"
+                    if t == "web_search_tool_result"
+                    else "tool_search_tool_regex"
+                )
+                synthetic.append({
+                    "type": "server_tool_use",
+                    "id": tu_id,
+                    "name": stu_name,
+                    "input": {},
+                })
+            synthetic.append(b)
         return {
             "role": "assistant",
             "content": "Looking that up for you.",
-            "server_tool_blocks": server_tool_blocks,
+            "server_tool_blocks": synthetic,
             "tool_calls": [],
         }
 
@@ -1257,3 +1294,214 @@ class TestMoveClientToolUseBlocksToEnd:
             if isinstance(b, dict)
         ]
         assert "tool_result" in next_types
+
+
+# ---------------------------------------------------------------------------
+# drop_orphan_server_tool_uses_in_storage — symmetric orphan audit
+# Covers regression where the prior version dropped a healthy
+# ``server_tool_use`` paired with a ``web_search_tool_result`` because
+# only tool_search result types were treated as evidence of pairing
+# (session 20260513_093942_d374cc).
+# ---------------------------------------------------------------------------
+class TestDropOrphanServerToolUsesInStorage:
+    def _stu(self, tu_id: str, name: str = "web_search"):
+        return {"type": "server_tool_use", "id": tu_id, "name": name, "input": {}}
+
+    def _wsr(self, tu_id: str):
+        return {
+            "type": "web_search_tool_result",
+            "tool_use_id": tu_id,
+            "content": [{"type": "web_search_result", "url": "https://x", "title": "t"}],
+        }
+
+    def _tsr(self, tu_id: str, variant: str = "regex"):
+        return {
+            "type": f"tool_search_tool_{variant}_tool_result",
+            "tool_use_id": tu_id,
+            "content": {"type": "tool_search_tool_search_result", "tool_references": []},
+        }
+
+    def _assistant(self, blocks):
+        return {"role": "assistant", "anthropic_content_blocks": blocks}
+
+    def test_keeps_healthy_web_search_pair(self):
+        """REGRESSION GUARD: the prior version dropped the
+        server_tool_use here because it only recognized
+        ``tool_search_*_tool_result`` as a paired result, not
+        ``web_search_tool_result``."""
+        msgs = [
+            {"role": "user", "content": "hi"},
+            self._assistant([
+                self._stu("srvtoolu_OK", name="web_search"),
+                self._wsr("srvtoolu_OK"),
+                {"type": "text", "text": "done"},
+            ]),
+        ]
+        dropped = drop_orphan_server_tool_uses_in_storage(msgs)
+        assert dropped == 0
+        types = [b["type"] for b in msgs[1]["anthropic_content_blocks"]]
+        assert types == ["server_tool_use", "web_search_tool_result", "text"]
+
+    def test_keeps_healthy_tool_search_pair(self):
+        msgs = [
+            self._assistant([
+                self._stu("srvtoolu_TS", name="tool_search_tool_regex"),
+                self._tsr("srvtoolu_TS"),
+            ]),
+        ]
+        dropped = drop_orphan_server_tool_uses_in_storage(msgs)
+        assert dropped == 0
+        types = [b["type"] for b in msgs[0]["anthropic_content_blocks"]]
+        assert "server_tool_use" in types
+        assert "tool_search_tool_regex_tool_result" in types
+
+    def test_drops_orphan_server_tool_use_with_no_result(self):
+        msgs = [
+            self._assistant([
+                self._stu("srvtoolu_LONELY"),
+                {"type": "text", "text": "x"},
+            ]),
+        ]
+        dropped = drop_orphan_server_tool_uses_in_storage(msgs)
+        assert dropped == 1
+        types = [b["type"] for b in msgs[0]["anthropic_content_blocks"]]
+        assert "server_tool_use" not in types
+        assert types == ["text"]
+
+    def test_drops_orphan_web_search_result_with_no_use(self):
+        """The exact shape of session 20260513_093942_d374cc — a
+        web_search_tool_result block sitting in the message list with
+        no matching server_tool_use anywhere. The API 400s on this
+        until it's dropped."""
+        msgs = [
+            self._assistant([
+                {"type": "thinking", "thinking": "...", "signature": "s"},
+                self._wsr("srvtoolu_ORPHAN_WSR"),
+                {"type": "text", "text": "still wrote a reply"},
+            ]),
+        ]
+        dropped = drop_orphan_server_tool_uses_in_storage(msgs)
+        assert dropped == 1
+        types = [b["type"] for b in msgs[0]["anthropic_content_blocks"]]
+        assert "web_search_tool_result" not in types
+        # Other content survives.
+        assert types == ["thinking", "text"]
+
+    def test_drops_orphan_tool_search_result_with_no_use(self):
+        msgs = [
+            self._assistant([
+                self._tsr("srvtoolu_ORPHAN_TSR"),
+            ]),
+        ]
+        dropped = drop_orphan_server_tool_uses_in_storage(msgs)
+        assert dropped == 1
+        # All blocks gone; keep is empty list (function does not inject
+        # placeholder text here — that's only the outbound wire-build path).
+        assert msgs[0]["anthropic_content_blocks"] == []
+
+    def test_mixed_session_drops_only_unpaired_blocks(self):
+        msgs = [
+            self._assistant([
+                # healthy web_search pair
+                self._stu("srvtoolu_GOOD_WS", name="web_search"),
+                self._wsr("srvtoolu_GOOD_WS"),
+                # orphan server_tool_use
+                self._stu("srvtoolu_ORPHAN_USE"),
+                # orphan web_search_tool_result
+                self._wsr("srvtoolu_ORPHAN_RES"),
+                # healthy tool_search pair
+                self._stu("srvtoolu_GOOD_TS", name="tool_search_tool_regex"),
+                self._tsr("srvtoolu_GOOD_TS"),
+                {"type": "text", "text": "tail"},
+            ]),
+        ]
+        dropped = drop_orphan_server_tool_uses_in_storage(msgs)
+        assert dropped == 2  # the use orphan + the result orphan
+        kept_ids = [
+            (b.get("type"), b.get("id") or b.get("tool_use_id"))
+            for b in msgs[0]["anthropic_content_blocks"]
+        ]
+        assert ("server_tool_use", "srvtoolu_GOOD_WS") in kept_ids
+        assert ("web_search_tool_result", "srvtoolu_GOOD_WS") in kept_ids
+        assert ("server_tool_use", "srvtoolu_GOOD_TS") in kept_ids
+        assert ("tool_search_tool_regex_tool_result", "srvtoolu_GOOD_TS") in kept_ids
+        # Orphans are gone.
+        assert ("server_tool_use", "srvtoolu_ORPHAN_USE") not in kept_ids
+        assert ("web_search_tool_result", "srvtoolu_ORPHAN_RES") not in kept_ids
+
+    def test_pair_split_across_messages_is_not_dropped(self):
+        """Relocation handles splits; this sanitizer only fires when a
+        block is unpaired ANYWHERE in the message list."""
+        msgs = [
+            self._assistant([
+                self._stu("srvtoolu_SPLIT", name="web_search"),
+            ]),
+            {"role": "user", "content": "follow-up"},
+            self._assistant([
+                self._wsr("srvtoolu_SPLIT"),
+                {"type": "text", "text": "answer"},
+            ]),
+        ]
+        dropped = drop_orphan_server_tool_uses_in_storage(msgs)
+        assert dropped == 0
+
+    def test_outbound_wire_shape_drops_orphan_web_search_result(self):
+        """End-to-end check: a message persisted with an orphaned
+        ``web_search_tool_result`` in ``anthropic_content_blocks`` must
+        not produce a 400-shaped payload after convert_messages_to_anthropic.
+
+        Reproduces session 20260513_093942_d374cc exactly: the API
+        rejected the very next call with::
+
+            unexpected `tool_use_id` found in `web_search_tool_result`
+            blocks: srvtoolu_01XyDgKcEqDSm8udPKWPNBsP. Each
+            `web_search_tool_result` block must have a corresponding
+            `server_tool_use` block before it.
+        """
+        # Build a session where the persisted assistant message has a
+        # web_search_tool_result but its matching server_tool_use was
+        # (incorrectly) dropped earlier. Use the run_agent path: the
+        # adapter pulls server-side blocks out of ``server_tool_blocks``
+        # on the dict — mimic that.
+        msg = {
+            "role": "assistant",
+            "content": "okay",
+            "server_tool_blocks": [
+                # Note: NO matching server_tool_use. This is the
+                # broken on-disk shape.
+                {
+                    "type": "web_search_tool_result",
+                    "tool_use_id": "srvtoolu_BROKEN",
+                    "content": [
+                        {
+                            "type": "web_search_result",
+                            "url": "https://x",
+                            "title": "t",
+                        }
+                    ],
+                },
+            ],
+            "tool_calls": [],
+        }
+        _, out_msgs = convert_messages_to_anthropic(
+            [{"role": "user", "content": "hi"}, msg]
+        )
+        # No orphan web_search_tool_result anywhere in the outbound payload.
+        for m in out_msgs:
+            content = m.get("content")
+            if not isinstance(content, list):
+                continue
+            wsr_ids = [
+                b.get("tool_use_id")
+                for b in content
+                if isinstance(b, dict) and b.get("type") == "web_search_tool_result"
+            ]
+            stu_ids = [
+                b.get("id")
+                for b in content
+                if isinstance(b, dict) and b.get("type") == "server_tool_use"
+            ]
+            for tid in wsr_ids:
+                assert tid in stu_ids, (
+                    f"orphan web_search_tool_result {tid!r} survived to outbound payload"
+                )
