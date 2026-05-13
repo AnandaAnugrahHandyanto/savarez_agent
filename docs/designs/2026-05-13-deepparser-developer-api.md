@@ -37,7 +37,7 @@ integration work.
 ## Prerequisites (P0 — verify before building)
 
 - **dp_cli interface audit** (Gap 1 — do this first): Document invocation flags, exit codes, stdout JSON schema, stderr error format, concurrency safety (can N instances call DPCLI_BASE_URL in parallel?), output dir behavior. This is the foundation for the subprocess wrapper — do not write FastAPI code without it.
-- Confirm dp_cli supports DWG parsing. If not, benchmark scope = Excel + scanned PDF only.
+- ✅ **DWG support CONFIRMED** (P0 audit 2026-05-14): `beta.deepparser.ai` frontend HTML declares `data-accept-file-types=".pdf,.docx,.ppt,.pptx,.xls,.xlsx,.csv,.doc,.jpg,.jpeg,.png,.txt,.md,.dwg,.dxf"`. DWG + DXF are in the official allow-list. Actual live upload blocked by folder navigation API limitation in this beta account — confirmed from HTML source, not from a completed parse. First successful DWG parse still needed for the HARD GATE at Step 3.
 - Verify `deepparser` is available on PyPI (not name-squatted). Fallback: `deep-parser`.
 - Create Docker Hub org or use existing account for `deepparser/api` image namespace.
 - Set up GitHub Actions secrets for PyPI publish (`PYPI_TOKEN`) and Docker Hub push.
