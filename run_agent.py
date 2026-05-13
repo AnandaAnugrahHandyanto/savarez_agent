@@ -141,6 +141,7 @@ from tools.browser_tool import cleanup_browser
 from agent.memory_manager import StreamingContextScrubber, build_memory_context_block, sanitize_context
 from agent.think_scrubber import StreamingThinkScrubber
 from agent.retry_utils import jittered_backoff
+from agent.redact import redact_sensitive_text
 from agent.error_classifier import classify_api_error, FailoverReason
 from agent.prompt_builder import (
     DEFAULT_AGENT_IDENTITY, PLATFORM_HINTS,
@@ -5150,6 +5151,15 @@ class AIAgent:
                 if msg.get("role") == "assistant" and msg.get("content"):
                     msg = dict(msg)
                     msg["content"] = self._clean_session_content(msg["content"])
+                    # Redact credentials from assistant responses — defence-in-depth
+                    # for any content that may have bypassed _build_assistant_message.
+                    msg["content"] = redact_sensitive_text(msg["content"])
+                elif msg.get("role") == "tool" and isinstance(msg.get("content"), str):
+                    # Redact credentials from tool output — terminal commands
+                    # that echo API keys, tokens, or PATs in their stdout/stderr
+                    # should not persist to session logs.
+                    msg = dict(msg)
+                    msg["content"] = redact_sensitive_text(msg["content"])
                 cleaned.append(msg)
 
             # Guard: never overwrite a larger session log with fewer messages.
@@ -9795,6 +9805,15 @@ class AIAgent:
         if isinstance(_san_content, str) and _san_content:
             _san_content = self._strip_think_blocks(_san_content).strip()
 
+        # Redact credentials (GitHub PATs, API keys, Bearer tokens, etc.)
+        # from assistant content so they never enter conversation history.
+        # This is a defence-in-depth addition to the tool-argument redaction
+        # below: if the LLM accidentally includes a secret in its natural
+        # language response, it gets caught here before persistence.
+        # Ref #19798 — PAT leaked via inline mention in assistant response.
+        if isinstance(_san_content, str) and _san_content:
+            _san_content = redact_sensitive_text(_san_content)
+
         msg = {
             "role": "assistant",
             "content": _san_content,
@@ -9916,6 +9935,14 @@ class AIAgent:
                         "arguments": tool_call.function.arguments
                     },
                 }
+                # Redact credentials (GitHub PATs, API keys, Bearer tokens, etc.)
+                # from tool call arguments so they never enter conversation history.
+                # Tool execution uses the raw API response object, not this dict,
+                # so redacting here is safe and only affects persistence/storage.
+                if isinstance(tc_dict["function"]["arguments"], str):
+                    tc_dict["function"]["arguments"] = redact_sensitive_text(
+                        tc_dict["function"]["arguments"]
+                    )
                 # Preserve extra_content (e.g. Gemini thought_signature) so it
                 # is sent back on subsequent API calls.  Without this, Gemini 3
                 # thinking models reject the request with a 400 error.
