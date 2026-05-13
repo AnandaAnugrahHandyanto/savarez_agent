@@ -6516,10 +6516,32 @@ class HermesCLI:
         if result.warning_message:
             _cprint(f"    ⚠ {result.warning_message}")
         if persist_global:
-            save_config_value("model.default", result.new_model)
-            if result.provider_changed:
-                save_config_value("model.provider", result.target_provider)
-            _cprint("    Saved to config.yaml (--global)")
+            try:
+                from hermes_cli.config import load_config, save_config
+                cfg = load_config() or {}
+                model_cfg = cfg.get("model")
+                if isinstance(model_cfg, dict):
+                    model_cfg = dict(model_cfg)
+                elif isinstance(model_cfg, str) and model_cfg.strip():
+                    model_cfg = {"default": model_cfg.strip()}
+                else:
+                    model_cfg = {}
+                model_cfg["default"] = result.new_model
+                model_cfg["provider"] = result.target_provider
+                if result.base_url:
+                    model_cfg["base_url"] = result.base_url
+                else:
+                    model_cfg.pop("base_url", None)
+                if result.api_mode:
+                    model_cfg["api_mode"] = result.api_mode
+                else:
+                    model_cfg.pop("api_mode", None)
+                cfg["model"] = model_cfg
+                save_config(cfg)
+                _cprint("    Saved to config.yaml (--global)")
+            except Exception as exc:
+                logger.warning("Failed to persist model switch: %s", exc)
+                _cprint("    ⚠ Failed to save to config.yaml (--global)")
         else:
             _cprint("    (session only — add --global to persist)")
 
