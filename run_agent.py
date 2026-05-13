@@ -13084,6 +13084,15 @@ class AIAgent:
                                 "error": "First response truncated due to output length limit"
                             }
                     
+                    # Count every successful response, even when the provider
+                    # omits a usage block.  Some streaming proxies (e.g.
+                    # consolidating SSE shims) drop the final usage chunk,
+                    # which previously left session_api_calls at zero and
+                    # short-circuited /usage's detailed display on the
+                    # gateway side.  Token totals stay gated below.
+                    if response is not None:
+                        self.session_api_calls += 1
+
                     # Track actual token usage from response for context management
                     if hasattr(response, 'usage') and response.usage:
                         canonical_usage = normalize_usage(
@@ -13115,7 +13124,6 @@ class AIAgent:
                         self.session_prompt_tokens += prompt_tokens
                         self.session_completion_tokens += completion_tokens
                         self.session_total_tokens += total_tokens
-                        self.session_api_calls += 1
                         self.session_input_tokens += canonical_usage.input_tokens
                         self.session_output_tokens += canonical_usage.output_tokens
                         self.session_cache_read_tokens += canonical_usage.cache_read_tokens
