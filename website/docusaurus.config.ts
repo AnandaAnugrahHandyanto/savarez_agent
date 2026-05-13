@@ -3,8 +3,8 @@ import type {Config} from '@docusaurus/types';
 import type * as Preset from '@docusaurus/preset-classic';
 
 const config: Config = {
-  title: 'Hermes Agent',
-  tagline: 'The self-improving AI agent',
+  title: 'Jade',
+  tagline: 'Executive Intelligence for Oracule Zero',
   favicon: 'img/favicon.ico',
 
   url: 'https://hermes-agent.nousresearch.com',
@@ -96,9 +96,9 @@ const config: Config = {
       },
     },
     navbar: {
-      title: 'Hermes Agent',
+      title: 'Jade',
       logo: {
-        alt: 'Hermes Agent',
+        alt: 'Jade',
         src: 'img/logo.png',
       },
       items: [
@@ -162,7 +162,7 @@ const config: Config = {
           ],
         },
       ],
-      copyright: `Built by <a href="https://nousresearch.com">Nous Research</a> · MIT License · ${new Date().getFullYear()}`,
+      copyright: `Built by <a href="https://nousresearch.com">Nous Research</a> · Forked for Oracule Zero · MIT License · ${new Date().getFullYear()}`,
     },
     prism: {
       theme: prismThemes.github,

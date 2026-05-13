@@ -50,12 +50,12 @@ export const ko: Translations = {
   },
 
   app: {
-    brand: "Hermes Agent",
-    brandShort: "HA",
+    brand: "Jade",
+    brandShort: "JD",
     closeNavigation: "내비게이션 닫기",
     closeModelTools: "모델 및 도구 닫기",
     footer: {
-      org: "Nous Research",
+      org: "Oracule Zero",
     },
     activeSessionsLabel: "활성 세션:",
     gatewayStatusLabel: "게이트웨이 상태:",
@@ -120,8 +120,8 @@ export const ko: Translations = {
     starting: "시작 중",
     startedInBackground: "백그라운드에서 시작됨 — 진행 상황은 로그를 확인하세요",
     stopped: "중지됨",
-    updateHermes: "Hermes 업데이트",
-    updatingHermes: "Hermes 업데이트 중…",
+    updateHermes: "Jade 업데이트",
+    updatingHermes: "Jade 업데이트 중…",
     waitingForOutput: "출력 대기 중…",
   },
 
@@ -430,7 +430,7 @@ export const ko: Translations = {
   achievements: {
     hero: {
       kicker: "Agentic Gamerscore",
-      title: "Hermes Achievements",
+      title: "Jade Achievements",
       subtitle:
         "실제 세션 기록에서 획득하는 Hermes 컬렉터블 배지입니다. 알려져 있지만 아직 달성되지 않은 업적은 Discovered로 표시되며, Secret 업적은 일치하는 동작이 처음 나타날 때까지 숨겨집니다.",
       scan_subtitle:

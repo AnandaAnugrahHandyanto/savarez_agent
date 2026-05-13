@@ -50,12 +50,12 @@ export const tr: Translations = {
   },
 
   app: {
-    brand: "Hermes Agent",
-    brandShort: "HA",
+    brand: "Jade",
+    brandShort: "JD",
     closeNavigation: "Gezintiyi kapat",
     closeModelTools: "Modeli ve araçları kapat",
     footer: {
-      org: "Nous Research",
+      org: "Oracule Zero",
     },
     activeSessionsLabel: "Aktif Oturumlar:",
     gatewayStatusLabel: "Ağ Geçidi Durumu:",
@@ -120,8 +120,8 @@ export const tr: Translations = {
     starting: "Başlatılıyor",
     startedInBackground: "Arka planda başlatıldı — ilerleme için günlüklere bakın",
     stopped: "Durduruldu",
-    updateHermes: "Hermes'i Güncelle",
-    updatingHermes: "Hermes güncelleniyor…",
+    updateHermes: "Jade'i Güncelle",
+    updatingHermes: "Jade güncelleniyor…",
     waitingForOutput: "Çıktı bekleniyor…",
   },
 
@@ -430,7 +430,7 @@ export const tr: Translations = {
   achievements: {
     hero: {
       kicker: "Agentic Gamerscore",
-      title: "Hermes Achievements",
+      title: "Jade Achievements",
       subtitle:
         "Gerçek oturum geçmişinden kazanılan, koleksiyonluk Hermes rozetleri. Bilinen ama henüz tamamlanmamış başarılar Keşfedildi olarak gösterilir; Gizli başarılar ilk eşleşen davranış görünene kadar saklı kalır.",
       scan_subtitle:
@@ -449,7 +449,7 @@ export const tr: Translations = {
       highest_tier: "En yüksek kademe",
       highest_tier_hint: "Copper → Silver → Gold → Diamond → Olympian",
       latest: "En son",
-      latest_hint_empty: "Hermes'i daha çok çalıştır",
+      latest_hint_empty: "Jade'i daha çok çalıştır",
       none_yet: "Henüz yok",
     },
     state: {

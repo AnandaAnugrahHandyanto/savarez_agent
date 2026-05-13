@@ -50,12 +50,12 @@ export const ru: Translations = {
   },
 
   app: {
-    brand: "Hermes Agent",
-    brandShort: "HA",
+    brand: "Jade",
+    brandShort: "JD",
     closeNavigation: "Закрыть навигацию",
     closeModelTools: "Закрыть модель и инструменты",
     footer: {
-      org: "Nous Research",
+      org: "Oracule Zero",
     },
     activeSessionsLabel: "Активные сессии:",
     gatewayStatusLabel: "Статус шлюза:",
@@ -120,8 +120,8 @@ export const ru: Translations = {
     starting: "Запуск",
     startedInBackground: "Запущено в фоне — следите за журналами",
     stopped: "Остановлено",
-    updateHermes: "Обновить Hermes",
-    updatingHermes: "Обновление Hermes…",
+    updateHermes: "Обновить Jade",
+    updatingHermes: "Обновление Jade…",
     waitingForOutput: "Ожидание вывода…",
   },
 
@@ -430,7 +430,7 @@ export const ru: Translations = {
   achievements: {
     hero: {
       kicker: "Agentic Gamerscore",
-      title: "Hermes Achievements",
+      title: "Jade Achievements",
       subtitle:
         "Коллекционные значки Hermes, полученные на основе реальной истории сессий. Известные, но ещё не полученные достижения отображаются как «Обнаруженные»; «Секретные» достижения остаются скрытыми до появления первого подходящего поведения.",
       scan_subtitle:
@@ -449,7 +449,7 @@ export const ru: Translations = {
       highest_tier: "Высший уровень",
       highest_tier_hint: "Copper → Silver → Gold → Diamond → Olympian",
       latest: "Последнее",
-      latest_hint_empty: "запускайте Hermes чаще",
+      latest_hint_empty: "запускайте Jade чаще",
       none_yet: "Пока нет",
     },
     state: {

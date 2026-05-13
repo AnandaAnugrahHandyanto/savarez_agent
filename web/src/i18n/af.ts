@@ -50,12 +50,12 @@ export const af: Translations = {
   },
 
   app: {
-    brand: "Hermes Agent",
-    brandShort: "HA",
+    brand: "Jade",
+    brandShort: "JD",
     closeNavigation: "Maak navigasie toe",
     closeModelTools: "Maak model en gereedskap toe",
     footer: {
-      org: "Nous Research",
+      org: "Oracule Zero",
     },
     activeSessionsLabel: "Aktiewe Sessies:",
     gatewayStatusLabel: "Gateway-status:",
@@ -120,8 +120,8 @@ export const af: Translations = {
     starting: "Begin",
     startedInBackground: "Begin in agtergrond — kyk logs vir vordering",
     stopped: "Gestop",
-    updateHermes: "Werk Hermes op",
-    updatingHermes: "Besig om Hermes op te werk…",
+    updateHermes: "Werk Jade op",
+    updatingHermes: "Besig om Jade op te werk…",
     waitingForOutput: "Wag vir uitset…",
   },
 
@@ -430,7 +430,7 @@ export const af: Translations = {
   achievements: {
     hero: {
       kicker: "Agentic Gamerscore",
-      title: "Hermes Achievements",
+      title: "Jade Achievements",
       subtitle:
         "Versamelbare Hermes-kentekens wat verdien word uit werklike sessiegeskiedenis. Bekende, onvoltooide prestasies word as Ontdek vertoon; Geheime prestasies bly verborge totdat die eerste ooreenstemmende gedrag verskyn.",
       scan_subtitle:
@@ -449,7 +449,7 @@ export const af: Translations = {
       highest_tier: "Hoogste vlak",
       highest_tier_hint: "Copper → Silver → Gold → Diamond → Olympian",
       latest: "Jongste",
-      latest_hint_empty: "gebruik Hermes meer",
+      latest_hint_empty: "gebruik Jade meer",
       none_yet: "Nog geen",
     },
     state: {

@@ -50,12 +50,12 @@ export const zhHant: Translations = {
   },
 
   app: {
-    brand: "Hermes Agent",
-    brandShort: "HA",
+    brand: "Jade",
+    brandShort: "JD",
     closeNavigation: "關閉導覽",
     closeModelTools: "關閉模型與工具",
     footer: {
-      org: "Nous Research",
+      org: "Oracule Zero",
     },
     activeSessionsLabel: "使用中工作階段：",
     gatewayStatusLabel: "閘道狀態：",
@@ -120,8 +120,8 @@ export const zhHant: Translations = {
     starting: "啟動中",
     startedInBackground: "已於背景啟動 — 請查看日誌以取得進度",
     stopped: "已停止",
-    updateHermes: "更新 Hermes",
-    updatingHermes: "正在更新 Hermes…",
+    updateHermes: "更新 Jade",
+    updatingHermes: "正在更新 Jade…",
     waitingForOutput: "等待輸出…",
   },
 
@@ -430,7 +430,7 @@ export const zhHant: Translations = {
   achievements: {
     hero: {
       kicker: "Agentic Gamerscore",
-      title: "Hermes Achievements",
+      title: "Jade Achievements",
       subtitle:
         "從真實工作階段歷史中獲得的 Hermes 可收集徽章。已知尚未達成的成就會顯示為「已發現」；秘密成就在首次出現相符行為之前保持隱藏。",
       scan_subtitle:
@@ -449,7 +449,7 @@ export const zhHant: Translations = {
       highest_tier: "最高等級",
       highest_tier_hint: "Copper → Silver → Gold → Diamond → Olympian",
       latest: "最新",
-      latest_hint_empty: "多多執行 Hermes",
+      latest_hint_empty: "多多執行 Jade",
       none_yet: "尚無",
     },
     state: {

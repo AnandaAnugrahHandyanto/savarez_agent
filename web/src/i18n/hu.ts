@@ -50,12 +50,12 @@ export const hu: Translations = {
   },
 
   app: {
-    brand: "Hermes Agent",
-    brandShort: "HA",
+    brand: "Jade",
+    brandShort: "JD",
     closeNavigation: "Navigáció bezárása",
     closeModelTools: "Modell és eszközök bezárása",
     footer: {
-      org: "Nous Research",
+      org: "Oracule Zero",
     },
     activeSessionsLabel: "Aktív munkamenetek:",
     gatewayStatusLabel: "Átjáró állapota:",
@@ -120,8 +120,8 @@ export const hu: Translations = {
     starting: "Indul",
     startedInBackground: "Háttérben elindítva — kövesse a naplókat a folyamathoz",
     stopped: "Leállítva",
-    updateHermes: "Hermes frissítése",
-    updatingHermes: "Hermes frissítése…",
+    updateHermes: "Jade frissítése",
+    updatingHermes: "Jade frissítése…",
     waitingForOutput: "Várakozás a kimenetre…",
   },
 
@@ -430,7 +430,7 @@ export const hu: Translations = {
   achievements: {
     hero: {
       kicker: "Agentic Gamerscore",
-      title: "Hermes Achievements",
+      title: "Jade Achievements",
       subtitle:
         "Gyűjthető Hermes-jelvények, valós munkamenet-előzmények alapján szerezve. Az ismert, de még nem szerzett teljesítmények Felfedezettként jelennek meg; a Titkos teljesítmények rejtve maradnak az első egyező viselkedésig.",
       scan_subtitle:

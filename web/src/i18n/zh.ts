@@ -49,12 +49,12 @@ export const zh: Translations = {
   },
 
   app: {
-    brand: "Hermes Agent",
-    brandShort: "HA",
+    brand: "Jade",
+    brandShort: "JD",
     closeNavigation: "关闭导航",
     closeModelTools: "关闭模型与工具",
     footer: {
-      org: "Nous Research",
+      org: "Oracule Zero",
     },
     activeSessionsLabel: "活跃会话：",
     gatewayStatusLabel: "网关状态：",
@@ -119,8 +119,8 @@ export const zh: Translations = {
     starting: "启动中",
     startedInBackground: "已在后台启动 — 请查看日志",
     stopped: "已停止",
-    updateHermes: "更新 Hermes",
-    updatingHermes: "正在更新 Hermes…",
+    updateHermes: "更新 Jade",
+    updatingHermes: "正在更新 Jade…",
     waitingForOutput: "等待输出…",
   },
 
@@ -262,7 +262,7 @@ export const zh: Translations = {
     enableAfterInstall: "安装后启用",
     enableRuntime: "启用",
     forceReinstall: "强制重装（先删除已有目录）",
-    headline: "发现、安装、启用和更新 Hermes 插件（对齐 `hermes plugins` CLI）。",
+    headline: "发现、安装、启用和更新 Jade 插件（对齐 `hermes plugins` CLI）。",
     identifierLabel: "Git 地址或 owner/repo",
     inactive: "未启用",
     installBtn: "从 Git 安装",
@@ -425,7 +425,7 @@ export const zh: Translations = {
   achievements: {
     hero: {
       kicker: "Agentic Gamerscore",
-      title: "Hermes Achievements",
+      title: "Jade Achievements",
       subtitle:
         "从真实会话历史中获得的 Hermes 可收集徽章。已知尚未达成的成就显示为「已发现」；秘密成就在首次出现匹配行为之前保持隐藏。",
       scan_subtitle:
@@ -444,7 +444,7 @@ export const zh: Translations = {
       highest_tier: "最高等级",
       highest_tier_hint: "Copper → Silver → Gold → Diamond → Olympian",
       latest: "最新",
-      latest_hint_empty: "多多运行 Hermes",
+      latest_hint_empty: "多多运行 Jade",
       none_yet: "暂无",
     },
     state: {

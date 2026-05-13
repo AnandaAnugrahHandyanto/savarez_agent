@@ -50,12 +50,12 @@ export const ja: Translations = {
   },
 
   app: {
-    brand: "Hermes Agent",
-    brandShort: "HA",
+    brand: "Jade",
+    brandShort: "JD",
     closeNavigation: "ナビゲーションを閉じる",
     closeModelTools: "モデルとツールを閉じる",
     footer: {
-      org: "Nous Research",
+      org: "Oracule Zero",
     },
     activeSessionsLabel: "アクティブなセッション:",
     gatewayStatusLabel: "ゲートウェイの状態:",
@@ -120,8 +120,8 @@ export const ja: Translations = {
     starting: "起動中",
     startedInBackground: "バックグラウンドで起動しました — 進行状況はログをご確認ください",
     stopped: "停止",
-    updateHermes: "Hermes を更新",
-    updatingHermes: "Hermes を更新しています…",
+    updateHermes: "Jade を更新",
+    updatingHermes: "Jade を更新しています…",
     waitingForOutput: "出力を待機しています…",
   },
 
@@ -430,7 +430,7 @@ export const ja: Translations = {
   achievements: {
     hero: {
       kicker: "Agentic Gamerscore",
-      title: "Hermes Achievements",
+      title: "Jade Achievements",
       subtitle:
         "実際のセッション履歴から獲得できる Hermes のコレクタブル バッジです。既知の未達成の実績は「Discovered」として表示され、Secret 実績は最初の該当する挙動が検出されるまで非表示のままです。",
       scan_subtitle:
@@ -449,7 +449,7 @@ export const ja: Translations = {
       highest_tier: "最高ティア",
       highest_tier_hint: "Copper → Silver → Gold → Diamond → Olympian",
       latest: "最新",
-      latest_hint_empty: "Hermes をもっと使ってみてください",
+      latest_hint_empty: "Jade をもっと使ってみてください",
       none_yet: "まだありません",
     },
     state: {

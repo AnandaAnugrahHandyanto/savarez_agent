@@ -50,12 +50,12 @@ export const pt: Translations = {
   },
 
   app: {
-    brand: "Hermes Agent",
-    brandShort: "HA",
+    brand: "Jade",
+    brandShort: "JD",
     closeNavigation: "Fechar navegação",
     closeModelTools: "Fechar modelo e ferramentas",
     footer: {
-      org: "Nous Research",
+      org: "Oracule Zero",
     },
     activeSessionsLabel: "Sessões ativas:",
     gatewayStatusLabel: "Estado do gateway:",
@@ -120,8 +120,8 @@ export const pt: Translations = {
     starting: "A iniciar",
     startedInBackground: "Iniciado em segundo plano — verifique os registos para acompanhar",
     stopped: "Parado",
-    updateHermes: "Atualizar Hermes",
-    updatingHermes: "A atualizar Hermes…",
+    updateHermes: "Atualizar Jade",
+    updatingHermes: "A atualizar Jade…",
     waitingForOutput: "À espera de saída…",
   },
 
@@ -430,7 +430,7 @@ export const pt: Translations = {
   achievements: {
     hero: {
       kicker: "Agentic Gamerscore",
-      title: "Hermes Achievements",
+      title: "Jade Achievements",
       subtitle:
         "Distintivos colecionáveis do Hermes obtidos a partir do histórico real de sessões. Conquistas conhecidas mas ainda não obtidas aparecem como Descobertas; conquistas Secretas permanecem ocultas até surgir o primeiro comportamento correspondente.",
       scan_subtitle:
@@ -449,7 +449,7 @@ export const pt: Translations = {
       highest_tier: "Nível mais alto",
       highest_tier_hint: "Copper → Silver → Gold → Diamond → Olympian",
       latest: "Mais recente",
-      latest_hint_empty: "execute mais o Hermes",
+      latest_hint_empty: "execute mais o Jade",
       none_yet: "Ainda nenhuma",
     },
     state: {

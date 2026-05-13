@@ -50,12 +50,12 @@ export const ga: Translations = {
   },
 
   app: {
-    brand: "Hermes Agent",
-    brandShort: "HA",
+    brand: "Jade",
+    brandShort: "JD",
     closeNavigation: "Dún an nascleanúint",
     closeModelTools: "Dún an samhail agus na huirlisí",
     footer: {
-      org: "Nous Research",
+      org: "Oracule Zero",
     },
     activeSessionsLabel: "Seisiúin gníomhacha:",
     gatewayStatusLabel: "Stádas an gateway:",
@@ -120,8 +120,8 @@ export const ga: Translations = {
     starting: "Ag tosú",
     startedInBackground: "Tosaithe sa chúlra — seiceáil na logaí le haghaidh dul chun cinn",
     stopped: "Stoptha",
-    updateHermes: "Nuashonraigh Hermes",
-    updatingHermes: "Ag nuashonrú Hermes…",
+    updateHermes: "Nuashonraigh Jade",
+    updatingHermes: "Ag nuashonrú Jade…",
     waitingForOutput: "Ag fanacht le haschur…",
   },
 
@@ -430,7 +430,7 @@ export const ga: Translations = {
   achievements: {
     hero: {
       kicker: "Agentic Gamerscore",
-      title: "Hermes Achievements",
+      title: "Jade Achievements",
       subtitle:
         "Suaitheantais Hermes inbhailithe a thuilltear ó stair fíor-session. Léirítear gnóthachtálacha aitheanta neamhchríochnaithe mar Discovered; fanann gnóthachtálacha Secret i bhfolach go dtí go bhfeictear an chéad iompar comhoiriúnach.",
       scan_subtitle:
@@ -449,7 +449,7 @@ export const ga: Translations = {
       highest_tier: "An leibhéal is airde",
       highest_tier_hint: "Copper → Silver → Gold → Diamond → Olympian",
       latest: "An ceann is déanaí",
-      latest_hint_empty: "rith Hermes níos mó",
+      latest_hint_empty: "rith Jade níos mó",
       none_yet: "Aon cheann fós",
     },
     state: {
