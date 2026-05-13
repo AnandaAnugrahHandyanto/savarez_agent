@@ -13,6 +13,10 @@ import yaml
 
 def _write_auth_store(tmp_path, payload: dict) -> None:
     hermes_home = tmp_path / "hermes"
+    _write_auth_payload(hermes_home, payload)
+
+
+def _write_auth_payload(hermes_home, payload: dict) -> None:
     hermes_home.mkdir(parents=True, exist_ok=True)
     (hermes_home / "auth.json").write_text(json.dumps(payload, indent=2))
 
@@ -35,6 +39,113 @@ def _clear_provider_env(monkeypatch):
         "CLAUDE_CODE_OAUTH_TOKEN",
     ):
         monkeypatch.delenv(key, raising=False)
+
+
+def test_read_credential_pool_profile_stale_codex_shadow_defers_to_global(
+    tmp_path,
+    monkeypatch,
+):
+    root = tmp_path / "hermes"
+    profile_home = root / "profiles" / "coder"
+    monkeypatch.setenv("HERMES_HOME", str(profile_home))
+    _write_auth_payload(
+        root,
+        {
+            "version": 1,
+            "providers": {
+                "openai-codex": {
+                    "access_token": "global-state",
+                    "refresh_token": "global-refresh",
+                },
+            },
+            "credential_pool": {
+                "openai-codex": [
+                    {
+                        "id": "global",
+                        "source": "device_code",
+                        "access_token": "global-token",
+                    }
+                ]
+            },
+        },
+    )
+    _write_auth_payload(
+        profile_home,
+        {
+            "version": 1,
+            "providers": {},
+            "credential_pool": {
+                "openai-codex": [
+                    {
+                        "id": "profile-stale",
+                        "source": "device_code",
+                        "access_token": "profile-stale-token",
+                    }
+                ]
+            },
+        },
+    )
+
+    from hermes_cli.auth import read_credential_pool
+
+    assert read_credential_pool("openai-codex")[0]["access_token"] == "global-token"
+    assert read_credential_pool()["openai-codex"][0]["access_token"] == "global-token"
+
+
+def test_read_credential_pool_profile_state_keeps_profile_codex_pool(
+    tmp_path,
+    monkeypatch,
+):
+    root = tmp_path / "hermes"
+    profile_home = root / "profiles" / "coder"
+    monkeypatch.setenv("HERMES_HOME", str(profile_home))
+    _write_auth_payload(
+        root,
+        {
+            "version": 1,
+            "providers": {
+                "openai-codex": {
+                    "access_token": "global-state",
+                    "refresh_token": "global-refresh",
+                },
+            },
+            "credential_pool": {
+                "openai-codex": [
+                    {
+                        "id": "global",
+                        "source": "device_code",
+                        "access_token": "global-token",
+                    }
+                ]
+            },
+        },
+    )
+    _write_auth_payload(
+        profile_home,
+        {
+            "version": 1,
+            "providers": {
+                "openai-codex": {
+                    "access_token": "profile-state",
+                    "refresh_token": "profile-refresh",
+                },
+            },
+            "credential_pool": {
+                "openai-codex": [
+                    {
+                        "id": "profile",
+                        "source": "device_code",
+                        "access_token": "profile-token",
+                    }
+                ]
+            },
+        },
+    )
+
+    from hermes_cli.auth import read_credential_pool
+
+    assert read_credential_pool("openai-codex")[0]["access_token"] == "profile-token"
+    assert read_credential_pool()["openai-codex"][0]["access_token"] == "profile-token"
 
 
 def test_auth_add_api_key_persists_manual_entry(tmp_path, monkeypatch):
