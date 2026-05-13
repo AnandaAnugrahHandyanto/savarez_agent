@@ -150,6 +150,85 @@ class TestXiaomiMiMoAnthropicPreservesThinking:
         assert kwargs["thinking"]["type"] == "enabled"
         assert kwargs["temperature"] == 1
 
+    def test_mimo_anthropic_tool_use_without_thinking_gets_placeholder(self) -> None:
+        """Anthropic-format assistant turns with tool_use but no thinking must
+        receive a placeholder thinking block on MiMo replay.
+
+        This reproduces akaDRJ's live failure (#24726): 29 assistant tool-use
+        turns in Anthropic content-block form, zero with thinking/reasoning
+        data, causing HTTP 400 on MiMo's /anthropic endpoint.
+        """
+        from agent.anthropic_adapter import convert_messages_to_anthropic
+
+        messages = [
+            {"role": "user", "content": "run a command"},
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "call_abc",
+                        "name": "terminal",
+                        "input": {"command": "echo hello"},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_abc", "content": "hello"},
+            {"role": "user", "content": "result"},
+        ]
+
+        _system, converted = convert_messages_to_anthropic(
+            messages,
+            base_url="https://token-plan-cn.xiaomimimo.com/anthropic",
+            model="mimo-v2.5-pro",
+        )
+
+        assistant_msg = next(m for m in converted if m["role"] == "assistant")
+        blocks = assistant_msg["content"]
+        thinking_blocks = [b for b in blocks if isinstance(b, dict) and b.get("type") == "thinking"]
+        tool_use_blocks = [b for b in blocks if isinstance(b, dict) and b.get("type") == "tool_use"]
+
+        assert len(thinking_blocks) == 1, "Must have exactly one placeholder thinking block"
+        assert thinking_blocks[0]["thinking"] == " "
+        assert "signature" not in thinking_blocks[0]
+        assert len(tool_use_blocks) == 1
+        # Thinking block must come before tool_use (Anthropic protocol)
+        assert blocks.index(thinking_blocks[0]) < blocks.index(tool_use_blocks[0])
+
+    def test_non_mimo_tool_use_without_thinking_no_placeholder(self) -> None:
+        """Generic third-party endpoints should NOT inject thinking placeholders."""
+        from agent.anthropic_adapter import convert_messages_to_anthropic
+
+        messages = [
+            {"role": "user", "content": "run"},
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "call_xyz",
+                        "name": "terminal",
+                        "input": {"command": "ls"},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_xyz", "content": "file.txt"},
+            {"role": "user", "content": "ok"},
+        ]
+
+        _system, converted = convert_messages_to_anthropic(
+            messages,
+            base_url="https://api.minimax.io/anthropic",
+            model="MiniMax-M2.7",
+        )
+
+        assistant_msg = next(m for m in converted if m["role"] == "assistant")
+        thinking_blocks = [
+            b for b in assistant_msg["content"]
+            if isinstance(b, dict) and b.get("type") == "thinking"
+        ]
+        assert thinking_blocks == []
+
 
 class TestLookalikeModelNamesDoNotMatchMiMo:
     """Ensure adjacent model families are not falsely enrolled into MiMo enforcement."""

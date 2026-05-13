@@ -1605,6 +1605,25 @@ def convert_messages_to_anthropic(
             )
             if isinstance(reasoning_content, str) and not _already_has_thinking:
                 blocks.insert(0, {"type": "thinking", "thinking": reasoning_content})
+            elif (
+                (
+                    _is_kimi_family_endpoint(base_url, model)
+                    or _is_deepseek_anthropic_endpoint(base_url)
+                    or _is_xiaomi_mimo_anthropic_endpoint(base_url, model)
+                )
+                and not _already_has_thinking
+                and any(isinstance(b, dict) and b.get("type") == "tool_use" for b in blocks)
+            ):
+                # Strict thinking-replay providers (MiMo, Kimi, DeepSeek)
+                # require every assistant tool-use turn to carry a thinking
+                # block — even when the persisted history has no
+                # reasoning_content at all (e.g. sessions migrated from
+                # another provider or replayed from Anthropic-format dumps
+                # that predate the thinking-replay fix).  Inject a
+                # single-space placeholder so the upstream API does not
+                # reject the replay with HTTP 400.  See PR #24465 review
+                # (akaDRJ live repro from #24726).
+                blocks.insert(0, {"type": "thinking", "thinking": " "})
             # Anthropic rejects empty assistant content
             effective = blocks or content
             if not effective or effective == "":
