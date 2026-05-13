@@ -1,195 +1,253 @@
-<p align="center">
-  <img src="assets/banner.png" alt="Hermes Agent" width="100%">
-</p>
+# `[ HERMES-AGENT-UI ]`
 
-# Hermes Agent ☤
+> EN: The Front-End Singularity for Multi-Agent Orchestration.  
+> CN: 面向多智能体编排的前端奇点控制台。
 
-<p align="center">
-  <a href="https://hermes-agent.nousresearch.com/docs/"><img src="https://img.shields.io/badge/Docs-hermes--agent.nousresearch.com-FFD700?style=for-the-badge" alt="Documentation"></a>
-  <a href="https://discord.gg/NousResearch"><img src="https://img.shields.io/badge/Discord-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Discord"></a>
-  <a href="https://github.com/NousResearch/hermes-agent/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="License: MIT"></a>
-  <a href="https://nousresearch.com"><img src="https://img.shields.io/badge/Built%20by-Nous%20Research-blueviolet?style=for-the-badge" alt="Built by Nous Research"></a>
-  <a href="README.zh-CN.md"><img src="https://img.shields.io/badge/Lang-中文-red?style=for-the-badge" alt="中文"></a>
-</p>
+```text
+UNIT        hermes-agent-ui
+SURFACE     #050505 / #121212
+SIGNAL      #10B981
+DEPLOY      GitHub Flash
+RUNTIME     React 19
+```
 
-**The self-improving AI agent built by [Nous Research](https://nousresearch.com).** It's the only agent with a built-in learning loop — it creates skills from experience, improves them during use, nudges itself to persist knowledge, searches its own past conversations, and builds a deepening model of who you are across sessions. Run it on a $5 VPS, a GPU cluster, or serverless infrastructure that costs nearly nothing when idle. It's not tied to your laptop — talk to it from Telegram while it works on a cloud VM.
+| Stack | EN | CN |
+| --- | --- | --- |
+| React 19 | Native actions. Optimistic mutation. No legacy ceremony. | 原生 Actions。乐观更新。拒绝旧式状态仪式。 |
+| TypeScript | Strict physical model boundary. | 严格物理模型边界。 |
+| Vite | Low-latency build core. | 低延迟构建核心。 |
+| Framer Motion | Optical state transitions. | 光学状态过渡。 |
+| GitHub Flash | Manifest-driven instant execution. | Manifest 驱动的即时云端执行。 |
 
-Use any model you want — [Nous Portal](https://portal.nousresearch.com), [OpenRouter](https://openrouter.ai) (200+ models), [NVIDIA NIM](https://build.nvidia.com) (Nemotron), [Xiaomi MiMo](https://platform.xiaomimimo.com), [z.ai/GLM](https://z.ai), [Kimi/Moonshot](https://platform.moonshot.ai), [MiniMax](https://www.minimax.io), [Hugging Face](https://huggingface.co), OpenAI, or your own endpoint. Switch with `hermes model` — no code changes, no lock-in.
-
-<table>
-<tr><td><b>A real terminal interface</b></td><td>Full TUI with multiline editing, slash-command autocomplete, conversation history, interrupt-and-redirect, and streaming tool output.</td></tr>
-<tr><td><b>Lives where you do</b></td><td>Telegram, Discord, Slack, WhatsApp, Signal, and CLI — all from a single gateway process. Voice memo transcription, cross-platform conversation continuity.</td></tr>
-<tr><td><b>A closed learning loop</b></td><td>Agent-curated memory with periodic nudges. Autonomous skill creation after complex tasks. Skills self-improve during use. FTS5 session search with LLM summarization for cross-session recall. <a href="https://github.com/plastic-labs/honcho">Honcho</a> dialectic user modeling. Compatible with the <a href="https://agentskills.io">agentskills.io</a> open standard.</td></tr>
-<tr><td><b>Scheduled automations</b></td><td>Built-in cron scheduler with delivery to any platform. Daily reports, nightly backups, weekly audits — all in natural language, running unattended.</td></tr>
-<tr><td><b>Delegates and parallelizes</b></td><td>Spawn isolated subagents for parallel workstreams. Write Python scripts that call tools via RPC, collapsing multi-step pipelines into zero-context-cost turns.</td></tr>
-<tr><td><b>Runs anywhere, not just your laptop</b></td><td>Seven terminal backends — local, Docker, SSH, Singularity, Modal, Daytona, and Vercel Sandbox. Daytona and Modal offer serverless persistence — your agent's environment hibernates when idle and wakes on demand, costing nearly nothing between sessions. Run it on a $5 VPS or a GPU cluster.</td></tr>
-<tr><td><b>Research-ready</b></td><td>Batch trajectory generation, Atropos RL environments, trajectory compression for training the next generation of tool-calling models.</td></tr>
-</table>
+![React 19](https://img.shields.io/badge/React-19-050505?style=for-the-badge&logo=react&logoColor=10B981)
+![TypeScript](https://img.shields.io/badge/TypeScript-strict-050505?style=for-the-badge&logo=typescript&logoColor=10B981)
+![Vite](https://img.shields.io/badge/Vite-runtime-050505?style=for-the-badge&logo=vite&logoColor=10B981)
+![Framer Motion](https://img.shields.io/badge/Framer_Motion-optics-050505?style=for-the-badge&logo=framer&logoColor=10B981)
+![GitHub Flash Ready](https://img.shields.io/badge/GitHub_Flash-ready-050505?style=for-the-badge&logo=github&logoColor=10B981)
 
 ---
 
-## Quick Install
+## `01 / ARCHITECTURE ENGRAM`
 
-### Linux, macOS, WSL2, Termux
+> EN: The interface is not a decorative shell. It is the control membrane between human intent, React 19 action semantics, optimistic UI mutation, GitHub Flash execution, and Hermes agentic routing.  
+> CN: 该界面不是装饰性外壳。它是人类意图、React 19 Action 语义、乐观 UI 突变、GitHub Flash 执行与 Hermes 智能体路由之间的控制膜。
+
+```mermaid
+flowchart LR
+  User["User / Operator"] --> Form["React 19 Form Action"]
+  Form --> Action["useActionState<br/>Action Pipeline"]
+  Form --> Optimistic["useOptimistic<br/>Zero-Latency UI Mutation"]
+  Optimistic --> Render["Message Stream Render"]
+  Action --> Flash["GitHub Flash Runtime<br/>flash.json Ignition"]
+  Flash --> Hermes["Hermes Agent Backend"]
+  Hermes --> Orchestrator["Orchestrator Agent"]
+  Orchestrator --> Worker["Worker Agent"]
+  Orchestrator --> Analyst["Analyst Agent"]
+  Worker --> TaskBus["Task State Bus"]
+  Analyst --> TaskBus
+  TaskBus --> Hermes
+  Hermes --> Action
+  Action --> Render
+```
+
+---
+
+## `02 / PHYSICAL MODELS`
+
+> EN: PDM is treated as hardware geometry. UI components render from these surfaces, not from improvised object blobs.  
+> CN: PDM 被视为硬件几何结构。UI 组件从这些结构渲染，而不是从随手拼出的对象块渲染。
+
+### `Agent`
+
+| Field | Type | EN | CN |
+| --- | --- | --- | --- |
+| `id` | `string` | Stable agent identity. | 稳定智能体身份。 |
+| `name` | `string` | Operator-facing call sign. | 面向操作者的呼号。 |
+| `role` | `"orchestrator" \| "worker"` | Routing class. | 路由类别。 |
+| `status` | `"idle" \| "thinking" \| "executing"` | Live execution state. | 实时执行状态。 |
+| `capabilities` | `string[]` | Declared execution affordances. | 已声明执行能力。 |
+
+### `Message`
+
+| Field | Type | EN | CN |
+| --- | --- | --- | --- |
+| `id` | `string` | Stream segment identity. | 消息流片段身份。 |
+| `role` | `"user" \| "agent"` | Emission origin. | 发射来源。 |
+| `content` | `string` | Render payload. | 渲染载荷。 |
+| `metadata.latency` | `number?` | Response timing. | 响应耗时。 |
+| `metadata.tools` | `string[]?` | Tool trace. | 工具轨迹。 |
+
+### `Task`
+
+```json
+{
+  "taskId": "string",
+  "status": "pending | success | failed",
+  "nodes": ["orchestrator", "worker", "analyst"]
+}
+```
+
+---
+
+## `03 / IGNITION SEQUENCE`
+
+> EN: Flash deployment is manifest-locked. The repository must expose `flash.json`; otherwise the cloud runtime has no ignition key.  
+> CN: Flash 部署由 manifest 锁定。仓库必须暴露 `flash.json`；否则云端运行时没有点火钥匙。
+
+```json
+{
+  "name": "hermes-agent-ui",
+  "version": "0.1.0",
+  "entry": "src/main.tsx",
+  "build": { "command": "vite build", "outDir": "dist" },
+  "runtime": "react-19-latest"
+}
+```
+
+### Local / 本地
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
+pnpm install
+pnpm dev
 ```
 
-### Windows (native, PowerShell) — Early Beta
-
-> **Heads up:** Native Windows support is **early beta**. It installs and runs, but hasn't been road-tested as broadly as our Linux/macOS/WSL2 paths. Please [file issues](https://github.com/NousResearch/hermes-agent/issues) when you hit rough edges. For the most battle-tested Windows setup today, run the Linux/macOS one-liner above inside **WSL2**.
-
-Run this in PowerShell:
-
-```powershell
-irm https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.ps1 | iex
-```
-
-The installer handles everything: uv, Python 3.11, Node.js, ripgrep, ffmpeg, **and a portable Git Bash** (MinGit, unpacked to `%LOCALAPPDATA%\hermes\git` — no admin required, completely isolated from any system Git install).  Hermes uses this bundled Git Bash to run shell commands.
-
-If you already have Git installed, the installer detects it and uses that instead.  Otherwise a ~45MB MinGit download is all you need — it won't touch or interfere with any system Git.
-
-> **Android / Termux:** The tested manual path is documented in the [Termux guide](https://hermes-agent.nousresearch.com/docs/getting-started/termux). On Termux, Hermes installs a curated `.[termux]` extra because the full `.[all]` extra currently pulls Android-incompatible voice dependencies.
->
-> **Windows:** Native Windows is supported as an **early beta** — the PowerShell one-liner above installs everything, but expect rough edges and please file issues when you hit them. If you'd rather use WSL2 (our most battle-tested Windows path), the Linux command works there too. Native Windows install lives under `%LOCALAPPDATA%\hermes`; WSL2 installs under `~/.hermes` as on Linux.  The only Hermes feature that currently needs WSL2 specifically is the browser-based dashboard chat pane (it uses a POSIX PTY — classic CLI and gateway both run natively).
-
-After installation:
+Current Hermes workspace layout / 当前 Hermes 工作区结构：
 
 ```bash
-source ~/.bashrc    # reload shell (or: source ~/.zshrc)
-hermes              # start chatting!
+cd web
+pnpm install
+pnpm dev
 ```
 
----
-
-## Getting Started
+Build / 构建：
 
 ```bash
-hermes              # Interactive CLI — start a conversation
-hermes model        # Choose your LLM provider and model
-hermes tools        # Configure which tools are enabled
-hermes config set   # Set individual config values
-hermes gateway      # Start the messaging gateway (Telegram, Discord, etc.)
-hermes setup        # Run the full setup wizard (configures everything at once)
-hermes claw migrate # Migrate from OpenClaw (if coming from OpenClaw)
-hermes update       # Update to the latest version
-hermes doctor       # Diagnose any issues
+cd web
+pnpm build
 ```
 
-📖 **[Full documentation →](https://hermes-agent.nousresearch.com/docs/)**
+---
 
-## CLI vs Messaging Quick Reference
+## `04 / DIRECTORY STRICTURE`
 
-Hermes has two entry points: start the terminal UI with `hermes`, or run the gateway and talk to it from Telegram, Discord, Slack, WhatsApp, Signal, or Email. Once you're in a conversation, many slash commands are shared across both interfaces.
-
-| Action | CLI | Messaging platforms |
-|---------|-----|---------------------|
-| Start chatting | `hermes` | Run `hermes gateway setup` + `hermes gateway start`, then send the bot a message |
-| Start fresh conversation | `/new` or `/reset` | `/new` or `/reset` |
-| Change model | `/model [provider:model]` | `/model [provider:model]` |
-| Set a personality | `/personality [name]` | `/personality [name]` |
-| Retry or undo the last turn | `/retry`, `/undo` | `/retry`, `/undo` |
-| Compress context / check usage | `/compress`, `/usage`, `/insights [--days N]` | `/compress`, `/usage`, `/insights [days]` |
-| Browse skills | `/skills` or `/<skill-name>` | `/<skill-name>` |
-| Interrupt current work | `Ctrl+C` or send a new message | `/stop` or send a new message |
-| Platform-specific status | `/platforms` | `/status`, `/sethome` |
-
-For the full command lists, see the [CLI guide](https://hermes-agent.nousresearch.com/docs/user-guide/cli) and the [Messaging Gateway guide](https://hermes-agent.nousresearch.com/docs/user-guide/messaging).
+```text
+src/
+├── App.tsx
+├── main.tsx
+├── index.css
+├── components/
+│   ├── agent/
+│   │   ├── AgentHub.tsx
+│   │   ├── AgentGrid.tsx
+│   │   └── AgentCard.tsx
+│   ├── ChatConsole.tsx
+│   ├── ThemeSwitcher.tsx
+│   └── LanguageSwitcher.tsx
+├── pages/
+│   ├── EnvPage.tsx
+│   ├── SessionsPage.tsx
+│   └── AnalyticsPage.tsx
+├── themes/
+│   ├── context.tsx
+│   ├── presets.ts
+│   └── types.ts
+├── lib/
+│   ├── api.ts
+│   └── utils.ts
+└── types/
+    └── index.ts
+```
 
 ---
 
-## Documentation
+## `05 / OPERATING DECISIONS`
 
-All documentation lives at **[hermes-agent.nousresearch.com/docs](https://hermes-agent.nousresearch.com/docs/)**:
+> EN: Redux, Zustand, and React Query are not architectural defaults here. React 19 primitives own the interaction loop.  
+> CN: Redux、Zustand、React Query 不是这里的默认架构。交互循环由 React 19 原语接管。
 
-| Section | What's Covered |
-|---------|---------------|
-| [Quickstart](https://hermes-agent.nousresearch.com/docs/getting-started/quickstart) | Install → setup → first conversation in 2 minutes |
-| [CLI Usage](https://hermes-agent.nousresearch.com/docs/user-guide/cli) | Commands, keybindings, personalities, sessions |
-| [Configuration](https://hermes-agent.nousresearch.com/docs/user-guide/configuration) | Config file, providers, models, all options |
-| [Messaging Gateway](https://hermes-agent.nousresearch.com/docs/user-guide/messaging) | Telegram, Discord, Slack, WhatsApp, Signal, Home Assistant |
-| [Security](https://hermes-agent.nousresearch.com/docs/user-guide/security) | Command approval, DM pairing, container isolation |
-| [Tools & Toolsets](https://hermes-agent.nousresearch.com/docs/user-guide/features/tools) | 40+ tools, toolset system, terminal backends |
-| [Skills System](https://hermes-agent.nousresearch.com/docs/user-guide/features/skills) | Procedural memory, Skills Hub, creating skills |
-| [Memory](https://hermes-agent.nousresearch.com/docs/user-guide/features/memory) | Persistent memory, user profiles, best practices |
-| [MCP Integration](https://hermes-agent.nousresearch.com/docs/user-guide/features/mcp) | Connect any MCP server for extended capabilities |
-| [Cron Scheduling](https://hermes-agent.nousresearch.com/docs/user-guide/features/cron) | Scheduled tasks with platform delivery |
-| [Context Files](https://hermes-agent.nousresearch.com/docs/user-guide/features/context-files) | Project context that shapes every conversation |
-| [Architecture](https://hermes-agent.nousresearch.com/docs/developer-guide/architecture) | Project structure, agent loop, key classes |
-| [Contributing](https://hermes-agent.nousresearch.com/docs/developer-guide/contributing) | Development setup, PR process, code style |
-| [CLI Reference](https://hermes-agent.nousresearch.com/docs/reference/cli-commands) | All commands and flags |
-| [Environment Variables](https://hermes-agent.nousresearch.com/docs/reference/environment-variables) | Complete env var reference |
+> EN: Loading state belongs to `useActionState`, not scattered boolean toggles.  
+> CN: 提交态属于 `useActionState`，不属于散落的布尔开关。
+
+> EN: User feedback must render optimistically before the backend returns.  
+> CN: 用户反馈必须在后端返回前以乐观更新方式呈现。
+
+> EN: Visual density is a feature. Empty ornament is a defect.  
+> CN: 视觉密度是功能。空洞装饰是缺陷。
 
 ---
 
-## Migrating from OpenClaw
+## `06 / VISUAL LANGUAGE`
 
-If you're coming from OpenClaw, Hermes can automatically import your settings, memories, skills, and API keys.
+| Token | Value | CN |
+| --- | --- | --- |
+| `background` | `#050505` | 主背景 |
+| `surface` | `#121212` | 面板表面 |
+| `emerald` | `#10B981` | 状态信号 |
+| `slate` | `#1E293B` | 深层结构 |
 
-**During first-time setup:** The setup wizard (`hermes setup`) automatically detects `~/.openclaw` and offers to migrate before configuration begins.
+> EN: Dark-mode first. Bento geometry. Glass overlays. Controlled motion.  
+> CN: 暗色优先。Bento 几何。玻璃拟态覆盖层。受控动效。
 
-**Anytime after install:**
+---
+
+## `07 / OPERATIONS & DEPLOYMENT PIPELINE`
+
+### 1. 本地开发环境
+
+在项目根目录安装依赖：
 
 ```bash
-hermes claw migrate              # Interactive migration (full preset)
-hermes claw migrate --dry-run    # Preview what would be migrated
-hermes claw migrate --preset user-data   # Migrate without secrets
-hermes claw migrate --overwrite  # Overwrite existing conflicts
+pnpm install
 ```
 
-What gets imported:
-- **SOUL.md** — persona file
-- **Memories** — MEMORY.md and USER.md entries
-- **Skills** — user-created skills → `~/.hermes/skills/openclaw-imports/`
-- **Command allowlist** — approval patterns
-- **Messaging settings** — platform configs, allowed users, working directory
-- **API keys** — allowlisted secrets (Telegram, OpenRouter, OpenAI, Anthropic, ElevenLabs)
-- **TTS assets** — workspace audio files
-- **Workspace instructions** — AGENTS.md (with `--workspace-target`)
-
-See `hermes claw migrate --help` for all options, or use the `openclaw-migration` skill for an interactive agent-guided migration with dry-run previews.
-
----
-
-## Contributing
-
-We welcome contributions! See the [Contributing Guide](https://hermes-agent.nousresearch.com/docs/developer-guide/contributing) for development setup, code style, and PR process.
-
-Quick start for contributors — clone and go with `setup-hermes.sh`:
+也可以使用 npm 或 yarn：
 
 ```bash
-git clone https://github.com/NousResearch/hermes-agent.git
-cd hermes-agent
-./setup-hermes.sh     # installs uv, creates venv, installs .[all], symlinks ~/.local/bin/hermes
-./hermes              # auto-detects the venv, no need to `source` first
+npm install
+# 或
+yarn install
 ```
 
-Manual path (equivalent to the above):
+启动 Vite 开发服务器：
 
 ```bash
-curl -LsSf https://astral.sh/uv/install.sh | sh
-uv venv .venv --python 3.11
-source .venv/bin/activate
-uv pip install -e ".[all,dev]"
-scripts/run_tests.sh
+pnpm dev
 ```
 
-> **RL Training (optional):** The RL/Atropos integration (`environments/`) — see [`CONTRIBUTING.md`](https://github.com/NousResearch/hermes-agent/blob/main/CONTRIBUTING.md#development-setup) for the full setup.
+本地前端默认运行在：
 
----
+```text
+http://localhost:5173
+```
 
-## Community
+### 2. 核心服务对接
 
-- 💬 [Discord](https://discord.gg/NousResearch)
-- 📚 [Skills Hub](https://agentskills.io)
-- 🐛 [Issues](https://github.com/NousResearch/hermes-agent/issues)
-- 🔌 [HermesClaw](https://github.com/AaronWong1999/hermesclaw) — Community WeChat bridge: Run Hermes Agent and OpenClaw on the same WeChat account.
+前端界面需要连接 `hermes-agent` 后端服务才能完整工作。
 
----
+在项目根目录创建 `.env.local`：
 
-## License
+```bash
+VITE_HERMES_API_URL=http://localhost:8000
+```
 
-MIT — see [LICENSE](LICENSE).
+> 确保后端 CORS 配置允许来自本地前端源的请求，例如 `http://localhost:5173`。
 
-Built by [Nous Research](https://nousresearch.com).
+### 3. GitHub Flash 部署
+
+项目已包含 `flash.json`，可用于 GitHub Flash 零配置部署。
+
+1. 将本地仓库推送到 GitHub。
+
+```bash
+git push origin main
+```
+
+2. 在 GitHub Flash 控制台选择该仓库。
+
+3. GitHub Flash 会自动解析 `flash.json`，执行构建命令：
+
+```bash
+vite build
+```
+
+构建完成后，Flash 会立即生成可访问的公开 URL。

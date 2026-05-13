@@ -220,7 +220,7 @@ export const haoyuanlinTheme: DashboardTheme = {
     fontMono: `"JetBrains Mono", ${SYSTEM_MONO}`,
     fontDisplay: `"Space Grotesk", "Inter", ${SYSTEM_SANS}`,
     fontUrl:
-      "https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap",
+      "https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Noto+Sans+SC:wght@400;500;700;900&family=Inter:wght@400;700;800;900&family=JetBrains+Mono:wght@400;500;700&display=swap",
     baseSize: "15px",
     lineHeight: "1.65",
     letterSpacing: "0",
@@ -255,7 +255,7 @@ export const haoyuanlinTheme: DashboardTheme = {
     card: {
       border: "3px solid #1A1A1A",
       background: "#F5F0E8",
-      boxShadow: "5px 5px 0 0 #1A1A1A",
+      boxShadow: "4px 4px 0 0 #1A1A1A",
     },
     header: {
       background: "#FAF8F5",
@@ -279,7 +279,7 @@ export const haoyuanlinTheme: DashboardTheme = {
     },
   },
   assets: {
-    bg: "linear-gradient(rgba(26,26,26,0.06) 1px, transparent 1px), linear-gradient(90deg, rgba(26,26,26,0.06) 1px, transparent 1px)",
+    bg: "none",
   },
   customCSS: `
 :root {
@@ -292,6 +292,7 @@ export const haoyuanlinTheme: DashboardTheme = {
   --hy-blue: #2979FF;
   --hy-coral: #FF6B6B;
   --hy-mint: #00E5A0;
+  --hy-pink: #FF4081;
   --hy-purple: #7C4DFF;
 }
 
@@ -313,21 +314,14 @@ body {
   background: var(--hy-paper) !important;
   color: var(--hy-ink) !important;
   text-transform: none !important;
-  font-family: "Inter", system-ui, sans-serif !important;
+  font-family: "Noto Sans SC", Inter, system-ui, sans-serif !important;
 }
 
 /* Body text and generic text nodes inside the tiled shell keep
    their natural case — no global uppercase. */
 #root [data-layout-variant="tiled"] *:not(.font-mono):not(code):not(pre) {
   text-transform: none;
-}
-
-/* Subtle Memphis grid backdrop on the main canvas. */
-#root [data-layout-variant="tiled"] main {
-  background-image:
-    linear-gradient(rgba(26,26,26,0.055) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(26,26,26,0.055) 1px, transparent 1px);
-  background-size: 40px 40px;
+  border-radius: 0 !important;
 }
 
 #root [data-layout-variant="tiled"] header,
@@ -339,6 +333,7 @@ body {
 
 #root [data-layout-variant="tiled"] aside {
   border-right: 3px solid var(--hy-ink) !important;
+  box-shadow: 4px 0 0 0 var(--hy-ink);
 }
 
 #root [data-layout-variant="tiled"] header {
@@ -351,7 +346,7 @@ body {
   background: var(--hy-panel) !important;
   color: var(--hy-ink) !important;
   border: 3px solid var(--hy-ink) !important;
-  box-shadow: 5px 5px 0 0 var(--hy-ink);
+  box-shadow: 4px 4px 0 0 var(--hy-ink);
 }
 
 #root [data-layout-variant="tiled"] [class*="bg-muted"],
@@ -373,7 +368,9 @@ body {
 #root [data-layout-variant="tiled"] a,
 #root [data-layout-variant="tiled"] input,
 #root [data-layout-variant="tiled"] textarea,
-#root [data-layout-variant="tiled"] select {
+#root [data-layout-variant="tiled"] select,
+#root [data-layout-variant="tiled"] article,
+#root [data-layout-variant="tiled"] section {
   border-radius: 0 !important;
 }
 
@@ -383,11 +380,11 @@ body {
   font-family: "JetBrains Mono", monospace;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  border: 2px solid var(--hy-ink);
+  border: 3px solid var(--hy-ink);
   background: var(--hy-panel-hi);
   color: var(--hy-ink);
-  box-shadow: 3px 3px 0 0 var(--hy-ink);
-  transition: transform 0.08s ease, box-shadow 0.08s ease;
+  box-shadow: 4px 4px 0 0 var(--hy-ink);
+  transition: transform 0.06s steps(1), box-shadow 0.06s steps(1);
 }
 
 #root [data-layout-variant="tiled"] button[class*="bg-primary"]:not(:disabled),
@@ -398,13 +395,13 @@ body {
 
 #root [data-layout-variant="tiled"] button:not(:disabled):hover,
 #root [data-layout-variant="tiled"] [role="button"]:not(:disabled):hover {
-  box-shadow: 5px 5px 0 0 var(--hy-ink);
-  transform: translate(-1px, -1px);
+  box-shadow: 8px 8px 0 0 var(--hy-ink);
+  transform: translate(-4px, -4px);
 }
 
 #root [data-layout-variant="tiled"] button:not(:disabled):active,
 #root [data-layout-variant="tiled"] [role="button"]:not(:disabled):active {
-  box-shadow: 1px 1px 0 0 var(--hy-ink);
+  box-shadow: 0 0 0 0 var(--hy-ink);
   transform: translate(2px, 2px);
 }
 
@@ -414,7 +411,8 @@ body {
 #root [data-layout-variant="tiled"] select {
   background: var(--hy-panel-hi) !important;
   color: var(--hy-ink) !important;
-  border: 2px solid var(--hy-ink) !important;
+  border: 3px solid var(--hy-ink) !important;
+  box-shadow: 4px 4px 0 0 var(--hy-ink);
 }
 
 #root [data-layout-variant="tiled"] input:focus-visible,
@@ -446,6 +444,12 @@ body {
 
 #root [data-layout-variant="tiled"] h1 { font-weight: 800 !important; }
 
+#root [data-layout-variant="tiled"] .font-metric,
+#root [data-layout-variant="tiled"] [class*="font-metric"] {
+  font-family: Inter, system-ui, sans-serif !important;
+  font-weight: 900 !important;
+}
+
 /* Muted text: keep ink but at 60% — readable on cream while
    preserving hierarchy. */
 #root [data-layout-variant="tiled"] [class*="text-muted-foreground"] {
@@ -470,8 +474,8 @@ body {
 
 #root [data-layout-variant="tiled"] pre {
   background: var(--hy-panel-hi) !important;
-  border: 2px solid var(--hy-ink) !important;
-  box-shadow: 3px 3px 0 0 var(--hy-ink);
+  border: 3px solid var(--hy-ink) !important;
+  box-shadow: 4px 4px 0 0 var(--hy-ink);
   padding: 0.75rem 1rem;
 }
 

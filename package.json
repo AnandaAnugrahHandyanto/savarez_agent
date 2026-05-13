@@ -1,20 +1,27 @@
 {
-  "name": "hermes-agent",
+  "name": "hermes-agent-ui",
   "version": "1.0.0",
-  "description": "An AI agent with advanced tool-calling capabilities, featuring a flexible toolsets system for organizing and managing tools.",
+  "description": "The Optical Singularity Hub for Hermes Multi-Agent Orchestration.",
   "private": true,
+  "keywords": [
+    "hermes",
+    "multi-agent",
+    "react-19",
+    "github-flash",
+    "haoyuan-web"
+  ],
   "scripts": {
     "postinstall": "echo '✅ Browser tools ready. Run: python run_agent.py --help'"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/NousResearch/Hermes-Agent.git"
+    "url": "git+https://github.com/KDTikkly/hermes-agent.git"
   },
   "license": "MIT",
   "bugs": {
-    "url": "https://github.com/NousResearch/Hermes-Agent/issues"
+    "url": "https://github.com/KDTikkly/hermes-agent/issues"
   },
-  "homepage": "https://github.com/NousResearch/Hermes-Agent#readme",
+  "homepage": "https://github.com/KDTikkly/hermes-agent#readme",
   "dependencies": {
     "@askjo/camofox-browser": "^1.5.2",
     "agent-browser": "^0.26.0"
