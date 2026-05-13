@@ -755,15 +755,13 @@ class TestLSPOptInDefaults:
         # The fallbacks MUST match the canonical defaults in
         # ``DEFAULT_CONFIG["lsp"]`` so users on an older config get
         # the same opt-in behaviour as fresh installs.
-        from agent.lsp import manager as lsp_manager
-        import inspect
+        from agent.lsp.manager import LSPService
 
-        src = inspect.getsource(lsp_manager.LSPService.create_from_config)
-        assert 'lsp_cfg.get("enabled", False)' in src, (
-            "agent/lsp/manager.py:create_from_config must default "
-            "`enabled` to False to match DEFAULT_CONFIG['lsp']"
-        )
-        assert 'lsp_cfg.get("install_strategy", "manual")' in src, (
-            "agent/lsp/manager.py:create_from_config must default "
-            "`install_strategy` to 'manual' to match DEFAULT_CONFIG['lsp']"
-        )
+        with patch("hermes_cli.config.load_config", return_value={}):
+            service = LSPService.create_from_config()
+
+        assert service is not None
+        assert service.is_active() is False
+        status = service.get_status()
+        assert status["enabled"] is False
+        assert status["install_strategy"] == "manual"
