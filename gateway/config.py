@@ -850,11 +850,22 @@ def load_gateway_config() -> GatewayConfig:
                     else:
                         bridged["channel_prompts"] = channel_prompts
                 enabled_was_explicit = "enabled" in platform_cfg
-                if not bridged and not enabled_was_explicit:
+                # `gateway_restart_notification` is a top-level field on
+                # `PlatformConfig` (consumed via `platform_cfg.gateway_restart_notification`
+                # in gateway/run.py, not via `cfg.extra.get(...)`), so it
+                # must land at `plat_data["gateway_restart_notification"]`
+                # rather than be folded into `bridged` → `extra`. Mirrors
+                # the `enabled` handling below.
+                restart_notif_explicit = "gateway_restart_notification" in platform_cfg
+                if not bridged and not enabled_was_explicit and not restart_notif_explicit:
                     continue
                 plat_data, extra = _ensure_platform_extra_dict(platforms_data, plat.value)
                 if enabled_was_explicit:
                     plat_data["enabled"] = platform_cfg["enabled"]
+                if restart_notif_explicit:
+                    plat_data["gateway_restart_notification"] = platform_cfg[
+                        "gateway_restart_notification"
+                    ]
                 if plat == Platform.SLACK and enabled_was_explicit:
                     extra["_enabled_explicit"] = True
                 extra.update(bridged)

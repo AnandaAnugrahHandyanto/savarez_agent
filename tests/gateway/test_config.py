@@ -599,6 +599,71 @@ class TestLoadGatewayConfig:
         import os
         assert os.environ.get("TELEGRAM_PROXY") == "socks5://from-env:1080"
 
+    def test_bridges_gateway_restart_notification_from_config_yaml(
+        self, tmp_path, monkeypatch
+    ):
+        """Setting `gateway_restart_notification: false` under a top-level
+        platform section in `config.yaml` must reach `PlatformConfig` (#24644)."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "telegram:\n"
+            "  gateway_restart_notification: false\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        tg_cfg = config.platforms.get(Platform.TELEGRAM)
+        assert tg_cfg is not None
+        assert tg_cfg.gateway_restart_notification is False
+        # Belt and braces: must NOT be filed under `extra`, since gateway
+        # consumers read `platform_cfg.gateway_restart_notification` (a
+        # top-level dataclass field), not `cfg.extra.get(...)`.
+        assert "gateway_restart_notification" not in tg_cfg.extra
+
+    def test_gateway_restart_notification_defaults_true_when_absent(
+        self, tmp_path, monkeypatch
+    ):
+        """When the key is absent from config.yaml the default (True) holds."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "telegram:\n"
+            "  require_mention: true\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        tg_cfg = config.platforms.get(Platform.TELEGRAM)
+        assert tg_cfg is not None
+        assert tg_cfg.gateway_restart_notification is True
+
+    def test_bridges_gateway_restart_notification_when_only_setting(
+        self, tmp_path, monkeypatch
+    ):
+        """`gateway_restart_notification` alone (no other bridgeable keys, no
+        explicit `enabled`) must still create the platform entry — otherwise
+        the early `continue` on `not bridged and not enabled_was_explicit`
+        would drop the section before the field reaches `from_dict`."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "slack:\n"
+            "  gateway_restart_notification: false\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        slack_cfg = config.platforms.get(Platform.SLACK)
+        assert slack_cfg is not None
+        assert slack_cfg.gateway_restart_notification is False
+
 
 class TestHomeChannelEnvOverrides:
     """Home channel env vars should apply even when the platform was already
