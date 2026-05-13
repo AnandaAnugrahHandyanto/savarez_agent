@@ -2378,6 +2378,7 @@ class AIAgent:
 
         self._subdirectory_hints = SubdirectoryHintTracker(
             working_dir=os.getenv("TERMINAL_CWD") or None,
+            enabled=(platform != "cron"),
         )
         self._user_turn_count = 0
 
