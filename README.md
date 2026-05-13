@@ -14,13 +14,13 @@ A fork of [Nous Research's Hermes Agent](https://github.com/NousResearch/hermes-
 
 ## Quick Install
 
+One command. Installs deps, then walks you through Inkbox self-signup (no account prerequisite), provisions email + phone, and installs the gateway as a background service.
+
 **Linux / macOS / WSL2 / Termux:**
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/inkbox-ai/hermes-agent/inkbox/scripts/install.sh | bash
 ```
-
-One command. Installs deps, then walks you through Inkbox self-signup (no account prerequisite), provisions email + phone, and installs the gateway as a background service.
 
 **Windows (early beta):**
 
