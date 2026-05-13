@@ -428,12 +428,33 @@ def _get_provider_models(provider: str) -> Optional[Dict[str, Any]]:
     return models
 
 
+# Aliases from friendly model names (as they appear in config / user settings)
+# to canonical models.dev IDs.  Used by _find_model_entry when exact and
+# case-insensitive lookups miss.
+_MODEL_ALIASES: Dict[str, str] = {
+    # Kimi / Moonshot
+    "kimi-for-coding": "k2.6",
+    "kimi-for-coding:cloud": "k2.6:cloud",
+}
+
+
 def _find_model_entry(models: Dict[str, Any], model: str) -> Optional[Dict[str, Any]]:
-    """Find a model entry by exact match, then case-insensitive fallback."""
+    """Find a model entry by exact match, then case-insensitive fallback.
+
+    Also consults _MODEL_ALIASES to bridge friendly config names to their
+    canonical models.dev IDs when exact and case-insensitive lookups miss.
+    """
     # Exact match
     entry = models.get(model)
     if isinstance(entry, dict):
         return entry
+
+    # Friendly-name aliases (e.g. "kimi-for-coding" → "k2.6")
+    canonical = _MODEL_ALIASES.get(model) or _MODEL_ALIASES.get(model.lower())
+    if canonical:
+        entry = models.get(canonical)
+        if isinstance(entry, dict):
+            return entry
 
     # Case-insensitive match
     model_lower = model.lower()

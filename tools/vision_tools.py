@@ -473,6 +473,8 @@ def _supports_media_in_tool_results(provider: str, model: str) -> bool:
     # Other vision-capable provider stacks. Conservative default: False.
     # Add explicit entries here as we verify each provider's tool-result
     # multimodal support empirically.
+    if p in {"kimi", "kimi-coding", "kimi-coding-cn", "moonshot"}:
+        return True
     return False
 
 
