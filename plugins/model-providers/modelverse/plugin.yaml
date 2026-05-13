@@ -1,0 +1,5 @@
+name: modelverse-provider
+kind: model-provider
+version: 1.0.0
+description: ModelVerse (UCloud)
+author: Nous Research
