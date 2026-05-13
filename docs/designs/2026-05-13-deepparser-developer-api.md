@@ -119,6 +119,86 @@ Semaphore value is tunable via env var `DP_MAX_CONCURRENT_PARSE` (default: 4).
 - `/ask`: 30s timeout. Returns citations with source filename + page/cell reference.
 - Data retention: raw files deleted after parse completes. Parsed index retained until API key is revoked. Privacy-sensitive users should run the Docker image locally.
 
+## DX Review Decisions (plan-devex-review)
+
+### Developer Persona
+AI startup founder / solo developer building document AI. 30-minute integration tolerance.
+Won't read long docs. Copies from README. Needs pip install + 5 lines to first result.
+
+### TTHW Target: Competitive tier (2-5 minutes)
+Current plan TTHW: ~15 min. Target after DX fixes: 3-4 min.
+Competitive position: Unstructured.io ~8 min, LlamaCloud ~10 min, AWS Textract ~20 min.
+
+### Magical Moment
+`client.demo()` — hosted sample contract PDF, returns citation in <2 min of running code.
+No file upload required for first experience.
+
+### DX Scope Additions (ACCEPTED)
+
+**Discover stage:**
+- `deepparser/` subfolder in repo: README.md, quickstart.md, examples/
+  (basic_parse.py, excel_embedded.py, dwg_query.py, batch_upload.py, citations.py)
+- HN post links to `github.com/ysh145/hermes-agent/tree/main/deepparser`
+
+**Install stage:**
+- `POST /keys` self-serve registration: `{email, intended_use}` → `{api_key, created_at}`
+  No auth required. Immediate key delivery. No human in the loop.
+- API key format: `dp_live_` + 32 random hex chars (self-documenting, greppable)
+- Public base URL locked in plan: `https://api.deepparser.io`
+- `pyproject.toml` long_description = `deepparser/README.md` (PyPI page shows Quick Start)
+
+**Hello World stage:**
+- SDK adds `parse_and_ask(file, question)` convenience method: hides polling loop
+- `client.demo()` method: calls hosted sample doc, returns answer + citation
+- Raw async API preserved for production use: `client.parse()` → job_id, `client.get_status()`
+
+**Error messages (all endpoints):**
+- Every error response: `{code, message, detail (where applicable), doc_url}`
+- `PARSE_FAILED` includes dp_cli stderr in `detail`
+- `UNSUPPORTED_FORMAT` message lists supported formats inline + got format
+- `TIMEOUT` message: "Parse exceeded 120s. Try splitting the document or running the Docker image locally."
+
+**SDK spec additions:**
+- `DeepParserClient(api_key=..., debug=True)` logs HTTP method, URL, status, duration to stderr
+- SDK response handler checks `Deepparser-Deprecation` header → Python `DeprecationWarning`
+
+**Documentation:**
+- 5 README examples: demo(), basic PDF, Excel-embedded, DWG (gated on P0), raw async
+
+**README claims gate:**
+- Default launch messaging: "Parse Excel-embedded PDFs and scanned tables without OCR soup."
+- DWG claim added ONLY after P0 dp_cli DWG audit passes AND 1 local DWG parse confirmed
+
+**Admin dashboard additions (DX measurement):**
+- `api_keys` table adds: `first_parse_at TIMESTAMP` (null until first successful parse)
+- Admin stats adds: `keys_registered`, `keys_activated`, `activation_rate` (activation funnel)
+
+**Versioning:**
+- CHANGELOG.md exists at launch with v1.0.0 entry
+- Semver policy: major = breaking API change, minor = new endpoint, patch = bug fix
+
+### Outside Voice Additions (accepted after cross-model review)
+
+**Sync mode for small files:**
+- `POST /parse?mode=sync` for files <5MB. Returns result inline if done in <10s, falls back to `{status: "QUEUED", job_id: "..."}` automatically.
+- Enables curl users to get first result without a polling loop.
+- `POST /ask?mode=sync` similarly available when job_id is READY.
+
+**POST /keys contract (explicit):**
+- Key delivered IMMEDIATELY. No human review. No email verification gate.
+- Email field stored in SQLite for founder follow-up only, not a verification requirement.
+- TTHW can only be 2-5 min if key delivery is instantaneous.
+
+**client.demo() real-file transition:**
+- README immediately after `client.demo()` example includes "Next: Try With Your Own File" section.
+- Lists supported formats, 50MB limit, and shows the raw `client.parse()` / `client.ask()` pattern.
+
+### DX Scope Added to TODOS.md
+- Webhook callback: `POST /parse` accepts optional `webhook_url`, notifies on completion
+- TypeScript type definitions: `@deepparser/types` npm package
+- `Idempotency-Key` header on `POST /parse` (before billing infrastructure)
+- Interactive playground at deepparser.io/try (browser demo, no install)
+
 ## Developer UX (Section 11)
 
 - `/health` endpoint added to scope: `GET /health` → `{"status":"ok","version":"1.0.0"}`, no auth, used by Fly.io health checks + SDK clients
@@ -253,3 +333,76 @@ If none of 1-3 after 2 weeks: reconsider positioning (law firm direct vs. develo
 | D9 | Log format | Structured JSON logs (python-json-logger) with job_id, api_key_id, duration_ms |
 | D10 | Hosting | Fly.io with persistent volume for SQLite |
 | D11 | Enterprise self-host | Docker image covers it; no separate SKU |
+
+## DX Scorecard
+
+```
++====================================================================+
+|              DX PLAN REVIEW — SCORECARD                            |
++====================================================================+
+| Dimension            | Before | After  | Trend  |
+|----------------------|--------|--------|--------|
+| Getting Started      | 2/10   | 8/10   | ↑↑↑    |
+| API/CLI/SDK          | 5/10   | 8/10   | ↑↑     |
+| Error Messages       | 2/10   | 8/10   | ↑↑↑    |
+| Documentation        | 1/10   | 6/10   | ↑↑↑    |
+| Upgrade Path         | 0/10   | 7/10   | ↑↑↑    |
+| Dev Environment      | 4/10   | 7/10   | ↑↑     |
+| Community            | 4/10   | 4/10   | →      |
+| DX Measurement       | 3/10   | 6/10   | ↑↑     |
++--------------------------------------------------------------------+
+| TTHW                 | ~15min | ~3min  | ↑↑↑    |
+| Competitive Rank     | Red Flag → Competitive                      |
+| Magical Moment       | designed via client.demo() + sync mode      |
+| Product Type         | API/Service + Library/SDK                   |
+| Mode                 | DX EXPANSION                                |
+| Overall DX           | 2/10   | 7/10   | ↑↑↑    |
++====================================================================+
+| DX PRINCIPLE COVERAGE                                              |
+| Zero Friction        | covered (POST /keys instant, sync mode)     |
+| Learn by Doing       | covered (client.demo(), 5 examples)         |
+| Fight Uncertainty    | covered (message+detail+doc_url on errors)  |
+| Opinionated + Escape | covered (parse_and_ask + raw async)         |
+| Code in Context      | covered (examples/ with real use cases)     |
+| Magical Moments      | covered (client.demo() → citation in 2min)  |
++====================================================================+
+```
+
+## DX Implementation Checklist
+
+```
+DX IMPLEMENTATION CHECKLIST
+============================
+[ ] deepparser/ subfolder: README.md, quickstart.md, examples/
+[ ] POST /keys: immediate key delivery, no approval gate
+[ ] API key format: dp_live_ + 32 random hex
+[ ] pip install deepparser works
+[ ] client.demo() — hosted sample, returns citation in <2 min
+[ ] parse_and_ask(file, question) — hides polling loop
+[ ] POST /parse?mode=sync for files <5MB (<10s) — sync fallback
+[ ] "Next: Try With Your Own File" section in README after demo()
+[ ] All errors: {code, message, detail, doc_url}
+[ ] UNSUPPORTED_FORMAT lists supported formats inline
+[ ] TIMEOUT message: split doc / run Docker locally
+[ ] debug=True flag: HTTP request/response to stderr
+[ ] Deprecation header → Python DeprecationWarning in SDK
+[ ] PyPI long_description = deepparser/README.md
+[ ] pyproject.toml keywords include: document-parsing, pdf, dwg, excel, rag
+[ ] CHANGELOG.md exists at v1.0.0 launch
+[ ] Semver policy documented: major=breaking, minor=new endpoint, patch=fix
+[ ] Admin dashboard: keys_registered, keys_activated, activation_rate
+[ ] DWG claim ONLY after P0 audit passes + 1 local DWG parse confirmed
+[ ] GitHub Issues as support channel (link from deepparser/README.md)
+[ ] TTHW target: <5 minutes from HN click to first API response
+```
+
+## Developer Journey Map
+
+| Stage | Developer Does | Friction Points | Status |
+|-------|---------------|-----------------|--------|
+| 1. Discover | Clicks HN link → deepparser/ subfolder | Wrong landing page (Hermes) | FIXED: deepparser/ subfolder |
+| 2. Install | pip install deepparser | No key, no base URL | FIXED: POST /keys instant delivery |
+| 3. Hello World | client.demo() → citation | Polling loop surprise | FIXED: parse_and_ask() + sync mode |
+| 4. Real Usage | Switch to own files | demo() false confidence | FIXED: real-file transition note |
+| 5. Debug | Parse fails → error message | Only code, no cause | FIXED: message+detail+doc_url |
+| 6. Upgrade | v1.0 → v1.1 | Silent breaking change | FIXED: CHANGELOG + DeprecationWarning |
