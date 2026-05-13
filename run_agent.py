@@ -7861,10 +7861,10 @@ class AIAgent:
                 "stream": True,
                 "stream_options": {"include_usage": True},
                 "timeout": _httpx.Timeout(
-                    connect=30.0,
+                    connect=_base_timeout if _provider_timeout_cfg is not None else 30.0,
                     read=_stream_read_timeout,
                     write=_base_timeout,
-                    pool=30.0,
+                    pool=_base_timeout if _provider_timeout_cfg is not None else 30.0,
                 ),
             }
             request_client_holder["client"] = self._create_request_openai_client(
@@ -8443,7 +8443,12 @@ class AIAgent:
                 if request_client is not None:
                     self._close_request_openai_client(request_client, reason="stream_request_complete")
 
-        _stream_stale_timeout_base = float(os.getenv("HERMES_STREAM_STALE_TIMEOUT", 180.0))
+        # Provider-configured stale timeout takes priority over env default.
+        _cfg_stale = get_provider_stale_timeout(self.provider, self.model)
+        if _cfg_stale is not None:
+            _stream_stale_timeout_base = _cfg_stale
+        else:
+            _stream_stale_timeout_base = float(os.getenv("HERMES_STREAM_STALE_TIMEOUT", 180.0))
         # Local providers (Ollama, oMLX, llama-cpp) can take 300+ seconds
         # for prefill on large contexts.  Disable the stale detector unless
         # the user explicitly set HERMES_STREAM_STALE_TIMEOUT.
