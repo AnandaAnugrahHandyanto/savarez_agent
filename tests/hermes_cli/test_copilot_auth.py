@@ -78,32 +78,24 @@ class TestResolveToken:
         assert token == "gho_valid_oauth"
         assert source == "GITHUB_TOKEN"
 
-    def test_gh_cli_fallback(self, monkeypatch):
+    def test_gh_cli_fallback_removed(self, monkeypatch):
+        """gh auth token is no longer used as fallback for Copilot."""
         from hermes_cli.copilot_auth import resolve_copilot_token
         monkeypatch.delenv("COPILOT_GITHUB_TOKEN", raising=False)
         monkeypatch.delenv("GH_TOKEN", raising=False)
         monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+        # Even if gh auth token would return a valid token, it should be ignored
         with patch("hermes_cli.copilot_auth._try_gh_cli_token", return_value="gho_from_cli"):
             token, source = resolve_copilot_token()
-        assert token == "gho_from_cli"
-        assert source == "gh auth token"
-
-    def test_gh_cli_classic_pat_raises(self, monkeypatch):
-        from hermes_cli.copilot_auth import resolve_copilot_token
-        monkeypatch.delenv("COPILOT_GITHUB_TOKEN", raising=False)
-        monkeypatch.delenv("GH_TOKEN", raising=False)
-        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
-        with patch("hermes_cli.copilot_auth._try_gh_cli_token", return_value="ghp_classic"):
-            with pytest.raises(ValueError, match="classic PAT"):
-                resolve_copilot_token()
+        assert token == ""
+        assert source == ""
 
     def test_no_token_returns_empty(self, monkeypatch):
         from hermes_cli.copilot_auth import resolve_copilot_token
         monkeypatch.delenv("COPILOT_GITHUB_TOKEN", raising=False)
         monkeypatch.delenv("GH_TOKEN", raising=False)
         monkeypatch.delenv("GITHUB_TOKEN", raising=False)
-        with patch("hermes_cli.copilot_auth._try_gh_cli_token", return_value=None):
-            token, source = resolve_copilot_token()
+        token, source = resolve_copilot_token()
         assert token == ""
         assert source == ""
 

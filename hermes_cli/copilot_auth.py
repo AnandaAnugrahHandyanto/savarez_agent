@@ -82,15 +82,13 @@ def resolve_copilot_token() -> tuple[str, str]:
                 continue
             return val, env_var
 
-    # 2. Fall back to gh auth token
-    token = _try_gh_cli_token()
-    if token:
-        valid, msg = validate_copilot_token(token)
-        if not valid:
-            raise ValueError(
-                f"Token from `gh auth token` is a classic PAT (ghp_*). {msg}"
-            )
-        return token, "gh auth token"
+    # 2. Do NOT fall back to gh auth token.
+    # gh auth token provides a GitHub API token (repo access), NOT a Copilot
+    # API token. Users with gh installed but without an active Copilot
+    # subscription were getting Copilot models listed as "available" when
+    # they weren't actually usable. Users who want Copilot must explicitly
+    # set COPILOT_GITHUB_TOKEN, GH_TOKEN, or GITHUB_TOKEN, or use the
+    # OAuth device code flow.
 
     return "", ""
 
