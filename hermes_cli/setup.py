@@ -1917,11 +1917,15 @@ def _setup_inkbox():
 
     api_key: str = ""
     identity = None  # AgentIdentity at the end of any branch
+    phone_just_provisioned = False  # gates the SMS-opt-in wait below
 
     if not has_key:
         identity, api_key = _inkbox_self_signup_flow(base_url, Inkbox, InkboxAPIError)
         if identity is None:
             return  # user aborted or signup failed
+        # signup flow only ever builds fresh agents — any phone on the
+        # returned identity was provisioned in this wizard pass.
+        phone_just_provisioned = getattr(identity, "phone_number", None) is not None
     else:
         identity, api_key = _inkbox_api_key_flow(
             base_url,
@@ -1961,6 +1965,15 @@ def _setup_inkbox():
 
     # ── Final summary ──
     _inkbox_print_agent_summary(identity)
+
+    # ── Block until the user has texted START to their new number ──
+    # No-ops unless this wizard pass just provisioned a phone.
+    if phone_just_provisioned:
+        _inkbox_wait_for_sms_opt_in(
+            api_key,
+            base_url,
+            getattr(identity, "phone_number", None),
+        )
 
     # ── Webhook signing key ──
     _inkbox_setup_signing_key(api_key, base_url)
@@ -2047,6 +2060,84 @@ def _inkbox_setup_signing_key(api_key: str, base_url: str) -> None:
         f"  Generated + saved signing key (created at {new_key.created_at.isoformat()})."
     )
     print_info("  Signature verification enabled.")
+
+
+def _inkbox_wait_for_sms_opt_in(api_key: str, base_url: str, phone) -> None:
+    """Block the wizard until the user has texted START to the local number
+    we just provisioned.
+
+    Local A2P numbers gate outbound SMS on each recipient having texted
+    START at least once — without it, the agent's first outbound SMS
+    weeks later fails with ``recipient_not_opted_in`` and the user has
+    no idea why. The caller is responsible for only invoking this when
+    a phone was actually provisioned in the current wizard pass.
+
+    Polls ``client.texts.list`` every 3s for an inbound 'START'. Ctrl+C
+    skips gracefully.
+
+    Args:
+        api_key: str — Inkbox API key for the SDK client.
+        base_url: str — Inkbox API base URL.
+        phone: ``IdentityPhoneNumber`` (or None). Toll-free / None skip.
+
+    Returns:
+        None — side effects only (prints status, blocks via polling).
+    """
+    if phone is None or getattr(phone, "type", None) != "local":
+        return
+    phone_id = getattr(phone, "id", None)
+    if phone_id is None:
+        return
+
+    from inkbox import Inkbox
+    import sys
+    import time
+
+    print()
+    print(color("  ─── ⏳ Waiting for your START text ───", Colors.YELLOW))
+    print_info(f"  Polling every 3s for an inbound 'START' to {phone.number}.")
+    print_info("  Without it the agent can't send you SMS later (carrier rule).")
+    print_info("  Press Ctrl+C to skip — you can text START anytime.")
+
+    spinner_chars = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+    spinner_idx = 0
+    # Poll immediately on the first iteration so a START sent before
+    # we started polling (e.g. user was eager) is caught right away.
+    next_poll_at = time.monotonic()
+    clear_line = "\r" + " " * 60 + "\r"
+
+    try:
+        client = Inkbox(api_key=api_key, base_url=base_url)
+        while True:
+            now = time.monotonic()
+            if now >= next_poll_at:
+                try:
+                    texts = client.texts.list(phone_id, limit=20)
+                except Exception:
+                    # Network blip / API hiccup — keep polling silently.
+                    texts = []
+                for text in texts:
+                    direction = (getattr(text, "direction", "") or "").lower()
+                    body = (getattr(text, "text", "") or "").strip().upper()
+                    if direction == "inbound" and body == "START":
+                        remote = getattr(text, "remote_phone_number", "")
+                        sys.stdout.write(clear_line)
+                        sys.stdout.flush()
+                        print_success(f"  Got it — SMS opt-in confirmed from {remote}")
+                        return
+                next_poll_at = now + 3.0
+
+            # 4x/s spinner refresh so the wizard doesn't look frozen
+            # between the (slower) 3s API polls.
+            sys.stdout.write(f"\r  {spinner_chars[spinner_idx]} Listening for START…  ")
+            sys.stdout.flush()
+            spinner_idx = (spinner_idx + 1) % len(spinner_chars)
+            time.sleep(0.25)
+    except KeyboardInterrupt:
+        sys.stdout.write(clear_line)
+        sys.stdout.flush()
+        print()
+        print_warning(f"  Skipped. Text START to {phone.number} anytime to enable outbound SMS.")
 
 
 def _inkbox_seed_identity_state(identity) -> None:
