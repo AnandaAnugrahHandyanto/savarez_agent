@@ -1078,6 +1078,31 @@ def load_all_jobs(registry: Optional[Dict[str, Any]] = None) -> List[Dict[str, A
     return all_jobs
 
 
+def get_all_due_jobs(registry: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Get due jobs from ALL agent profiles.
+
+    Iterates every profile, switches the ContextVar, and calls
+    ``get_due_jobs()`` (which handles grace windows, fast-forward,
+    and file-locking) inside that profile's context.  Returns the
+    combined list of due jobs with ``agent_id`` already stamped.
+
+    This is the multi-agent equivalent of ``get_due_jobs()``.
+    """
+    all_due: List[Dict[str, Any]] = []
+    for agent_id, profile in registry.items():
+        try:
+            from agent.profile import use_profile
+            with use_profile(profile):
+                due = get_due_jobs()
+                for j in due:
+                    if "agent_id" not in j:
+                        j["agent_id"] = agent_id
+                all_due.extend(due)
+        except Exception as e:
+            logger.warning("Failed to get due jobs for agent '%s': %s", agent_id, e)
+    return all_due
+
+
 # =============================================================================
 # Skill reference rewriting (curator integration)
 # =============================================================================

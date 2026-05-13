@@ -1698,8 +1698,8 @@ def tick(verbose: bool = True, adapters=None, loop=None, registry=None) -> int:
 
     try:
         if registry is not None:
-            from cron.jobs import load_all_jobs
-            all_jobs = load_all_jobs(registry)
+            from cron.jobs import get_all_due_jobs
+            all_jobs = get_all_due_jobs(registry)
         else:
             all_jobs = get_due_jobs()
 
