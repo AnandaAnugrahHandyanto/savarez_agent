@@ -984,6 +984,103 @@ class TestBuildSystemPrompt:
         prompt = agent._build_system_prompt()
         assert MEMORY_GUIDANCE not in prompt
 
+    def test_memory_retrieval_guidance_when_both_tools_loaded(self, agent_with_memory_tool):
+        """MEMORY_RETRIEVAL_GUIDANCE is injected when both memory and session_search are available."""
+        from agent.prompt_builder import MEMORY_RETRIEVAL_GUIDANCE
+
+        # agent_with_memory_tool has memory tool but may not have session_search
+        # Create an agent with both tools
+        tools = _make_tool_defs("memory", "session_search", "read_file")
+        with (
+            patch("run_agent.get_tool_definitions", return_value=tools),
+            patch("run_agent.check_toolset_requirements", return_value={t["function"]["name"] for t in tools}),
+        ):
+            agent_both = AIAgent(
+                base_url="https://openrouter.ai/api/v1",
+                model="test-model",
+                api_key="test-key",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+            prompt = agent_both._build_system_prompt()
+            assert MEMORY_RETRIEVAL_GUIDANCE in prompt
+
+    def test_no_memory_retrieval_guidance_without_both_tools(self, agent):
+        """MEMORY_RETRIEVAL_GUIDANCE is NOT injected without both memory and session_search."""
+        from agent.prompt_builder import MEMORY_RETRIEVAL_GUIDANCE
+
+        prompt = agent._build_system_prompt()
+        assert MEMORY_RETRIEVAL_GUIDANCE not in prompt
+
+    def test_planning_and_self_review_in_all_sessions(self, agent):
+        """PLANNING_AND_SELF_REVIEW_GUIDANCE is universal, not tool-gated."""
+        from agent.prompt_builder import PLANNING_AND_SELF_REVIEW_GUIDANCE
+
+        prompt = agent._build_system_prompt()
+        assert PLANNING_AND_SELF_REVIEW_GUIDANCE in prompt
+
+    def test_autonomous_execution_in_all_sessions(self, agent):
+        """AUTONOMOUS_EXECUTION_GUIDANCE is universal, not tool-gated."""
+        from agent.prompt_builder import AUTONOMOUS_EXECUTION_GUIDANCE
+
+        prompt = agent._build_system_prompt()
+        assert AUTONOMOUS_EXECUTION_GUIDANCE in prompt
+
+    def test_multimodal_verification_with_vision_tools(self):
+        """MULTIMODAL_VERIFICATION_GUIDANCE is injected when vision tools are available."""
+        from agent.prompt_builder import MULTIMODAL_VERIFICATION_GUIDANCE
+
+        tools = _make_tool_defs("browser_vision", "vision_analyze", "read_file")
+        with (
+            patch("run_agent.get_tool_definitions", return_value=tools),
+            patch("run_agent.check_toolset_requirements", return_value={t["function"]["name"] for t in tools}),
+        ):
+            agent = AIAgent(
+                base_url="https://openrouter.ai/api/v1",
+                model="test-model",
+                api_key="test-key",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+            prompt = agent._build_system_prompt()
+            assert MULTIMODAL_VERIFICATION_GUIDANCE in prompt
+
+    def test_no_multimodal_verification_without_vision_tools(self, agent):
+        """MULTIMODAL_VERIFICATION_GUIDANCE is NOT injected without vision tools."""
+        from agent.prompt_builder import MULTIMODAL_VERIFICATION_GUIDANCE
+
+        prompt = agent._build_system_prompt()
+        assert MULTIMODAL_VERIFICATION_GUIDANCE not in prompt
+
+    def test_editing_verification_with_file_edit_tools(self):
+        """EDITING_VERIFICATION_GUIDANCE is injected when patch/write_file are available."""
+        from agent.prompt_builder import EDITING_VERIFICATION_GUIDANCE
+
+        tools = _make_tool_defs("patch", "write_file", "read_file")
+        with (
+            patch("run_agent.get_tool_definitions", return_value=tools),
+            patch("run_agent.check_toolset_requirements", return_value={t["function"]["name"] for t in tools}),
+        ):
+            agent = AIAgent(
+                base_url="https://openrouter.ai/api/v1",
+                model="test-model",
+                api_key="test-key",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+            prompt = agent._build_system_prompt()
+            assert EDITING_VERIFICATION_GUIDANCE in prompt
+
+    def test_no_editing_verification_without_file_tools(self, agent):
+        """EDITING_VERIFICATION_GUIDANCE is NOT injected without file-editing tools."""
+        from agent.prompt_builder import EDITING_VERIFICATION_GUIDANCE
+
+        prompt = agent._build_system_prompt()
+        assert EDITING_VERIFICATION_GUIDANCE not in prompt
+
     def test_includes_datetime(self, agent):
         prompt = agent._build_system_prompt()
         # Should contain current date info like "Conversation started:"

@@ -147,6 +147,11 @@ from agent.prompt_builder import (
     MEMORY_GUIDANCE, SESSION_SEARCH_GUIDANCE, SKILLS_GUIDANCE,
     HERMES_AGENT_HELP_GUIDANCE,
     KANBAN_GUIDANCE,
+    AUTONOMOUS_EXECUTION_GUIDANCE,
+    MULTIMODAL_VERIFICATION_GUIDANCE,
+    MEMORY_RETRIEVAL_GUIDANCE,
+    EDITING_VERIFICATION_GUIDANCE,
+    PLANNING_AND_SELF_REVIEW_GUIDANCE,
     build_nous_subscription_prompt,
 )
 from agent.model_metadata import (
@@ -5953,6 +5958,9 @@ class AIAgent:
             tool_guidance.append(MEMORY_GUIDANCE)
         if "session_search" in self.valid_tool_names:
             tool_guidance.append(SESSION_SEARCH_GUIDANCE)
+        # Memory retrieval: consolidate and recall across sessions
+        if "memory" in self.valid_tool_names and "session_search" in self.valid_tool_names:
+            tool_guidance.append(MEMORY_RETRIEVAL_GUIDANCE)
         if "skill_manage" in self.valid_tool_names:
             tool_guidance.append(SKILLS_GUIDANCE)
         # Kanban worker/orchestrator lifecycle — only present when the
@@ -5961,8 +5969,18 @@ class AIAgent:
         # this block.
         if "kanban_show" in self.valid_tool_names:
             tool_guidance.append(KANBAN_GUIDANCE)
+        # Multimodal verification: gate on vision/visual tools being available
+        if any(t in self.valid_tool_names for t in ("browser_vision", "vision_analyze", "image_gen")):
+            tool_guidance.append(MULTIMODAL_VERIFICATION_GUIDANCE)
+        # Editing verification: gate on file-editing tools being available
+        if any(t in self.valid_tool_names for t in ("patch", "write_file")):
+            tool_guidance.append(EDITING_VERIFICATION_GUIDANCE)
         if tool_guidance:
             stable_parts.append(" ".join(tool_guidance))
+
+        # Universal behavioral guidance (not tool-gated — applies to all sessions)
+        stable_parts.append(PLANNING_AND_SELF_REVIEW_GUIDANCE)
+        stable_parts.append(AUTONOMOUS_EXECUTION_GUIDANCE)
 
         # Computer-use (macOS) — goes in as its own block rather than being
         # merged into tool_guidance because the content is multi-paragraph.
