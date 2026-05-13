@@ -6674,7 +6674,8 @@ class GatewayRunner:
             # correct per-agent directory.  The profile is looked up from the
             # registry by source.agent_id (set by adapter _attach_agent_id).
             _agent_id = getattr(source, "agent_id", None) or "main"
-            _profile = self._agent_registry.get(_agent_id)
+            _registry = getattr(self, "_agent_registry", None)
+            _profile = _registry.get(_agent_id) if _registry is not None else None
             if _profile is not None:
                 from agent.profile import use_profile
                 with use_profile(_profile):
