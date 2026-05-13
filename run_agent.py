@@ -2081,6 +2081,18 @@ class AIAgent:
         except Exception:
             pass
 
+        # Post-response hooks: lightweight response quality gates loaded
+        # from ~/.hermes/hooks/<module>.py.  Each hook can inject a system
+        # prompt addition and/or validate the final response.
+        self._post_response_hooks = []
+        _hooks_cfg = _agent_cfg.get("agent", {}).get("post_response_hooks", [])
+        if _hooks_cfg and isinstance(_hooks_cfg, list):
+            try:
+                from agent.post_response_hooks import load_hooks
+                self._post_response_hooks = load_hooks(_hooks_cfg)
+            except Exception as _hook_err:
+                logger.warning("Failed to load post-response hooks: %s", _hook_err)
+
         # Tool-use enforcement config: "auto" (default — matches hardcoded
         # model list), true (always), false (never), or list of substrings.
         _agent_section = _agent_cfg.get("agent", {})
@@ -5867,6 +5879,13 @@ class AIAgent:
         if "computer_use" in self.valid_tool_names:
             from agent.prompt_builder import COMPUTER_USE_GUIDANCE
             stable_parts.append(COMPUTER_USE_GUIDANCE)
+
+        # Post-response hook prompt additions (pre-response guidance)
+        if self._post_response_hooks:
+            from agent.post_response_hooks import build_system_prompt_additions
+            _hook_additions = build_system_prompt_additions(self._post_response_hooks)
+            if _hook_additions:
+                prompt_parts.append(_hook_additions)
 
         nous_subscription_prompt = build_nous_subscription_prompt(self.valid_tool_names)
         if nous_subscription_prompt:
@@ -11781,6 +11800,7 @@ class AIAgent:
         self._last_content_with_tools = None
         self._last_content_tools_all_housekeeping = False
         self._mute_post_response = False
+        self._hook_nudge_retries = 0
         self._unicode_sanitization_passes = 0
         self._tool_guardrails.reset_for_turn()
         self._tool_guardrail_halt_decision = None
@@ -15169,7 +15189,66 @@ class AIAgent:
                         length_continue_retries = 0
                     
                     final_response = self._strip_think_blocks(final_response).strip()
-                    
+
+                    # Post-response hook check: run each hook's check() on
+                    # the final response.  Each hook returns a HookResult with:
+                    #   - "pass":  deliver normally
+                    #   - "nudge": discard and re-generate with hint (respects
+                    #              max_nudges, configurable per-hook)
+                    #   - "block": replace response with data["message"],
+                    #              no re-generation (PII redaction, safety, format)
+                    # Supports legacy bool-returning hooks (False → nudge).
+                    if self._post_response_hooks and final_response:
+                        from agent.post_response_hooks import run_post_response_checks
+                        _hook_context = {
+                            "user_message": original_user_message,
+                            "messages": messages,
+                            "model": self.model,
+                        }
+                        _hook_result = run_post_response_checks(
+                            self._post_response_hooks, final_response, _hook_context,
+                        )
+                        if _hook_result is not None:
+                            _action = _hook_result.action
+                            _hook_data = _hook_result.data or {}
+                            _max = max(h.max_nudges for h in self._post_response_hooks)
+
+                            if _action == "block":
+                                # Replace response entirely — no re-generation.
+                                block_message = _hook_data.get("message") or "Response blocked by content filter."
+                                logger.info(
+                                    "Post-response hook '%s' blocked response",
+                                    _hook_data.get("hook_name", "unknown"),
+                                )
+                                self._emit_status("⊘ Response blocked by post-response hook")
+                                self._safe_print(f"⚠  Response was replaced by the '{_hook_data.get('hook_name', 'unknown')}' hook")
+                                final_response = block_message
+
+                            elif _action == "nudge" and self._hook_nudge_retries < _max:
+                                self._hook_nudge_retries += 1
+                                _nudge_msg = _hook_data.get("message") or (
+                                    f"Your response did not pass a quality check. Please revise."
+                                )
+                                logger.info(
+                                    "Post-response hook triggered nudge (%d/%d): %s",
+                                    self._hook_nudge_retries, _max, _nudge_msg[:100],
+                                )
+                                self._emit_status(
+                                    f"↻ Post-response hook triggered re-generation "
+                                    f"({self._hook_nudge_retries}/{_max})"
+                                )
+                                messages.append({"role": "assistant", "content": final_response})
+                                messages.append({"role": "user", "content": f"[System: {_nudge_msg}]"})
+                                continue
+
+                            elif _action == "nudge":
+                                # Nudge limit exhausted — deliver as-is with warning.
+                                logger.warning(
+                                    "Post-response hook nudge limit (%d) exhausted — delivering as-is",
+                                    _max,
+                                )
+                                self._emit_status("⚠ Nudge limit exhausted — delivering as-is")
+
                     final_msg = self._build_assistant_message(assistant_message, finish_reason)
 
                     # Pop thinking-only prefill and empty-response retry
