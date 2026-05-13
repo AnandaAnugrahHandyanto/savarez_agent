@@ -2301,7 +2301,28 @@ def drop_orphan_server_tool_uses_in_storage(
                 if isinstance(tu_id, str):
                     result_ids.add(tu_id)
 
-    # Phase 2: drop orphans in both directions in a single pass.
+    # Phase 2a: collect URLs from surviving web_search_tool_result
+    # blocks BEFORE we drop anything. Used in phase 3 to identify stale
+    # citations.
+    def _collect_wsr_urls(block: Dict[str, Any]) -> List[str]:
+        if not isinstance(block, dict) or block.get("type") != "web_search_tool_result":
+            return []
+        inner = block.get("content")
+        out: List[str] = []
+        if isinstance(inner, list):
+            for item in inner:
+                if isinstance(item, dict) and item.get("type") == "web_search_result":
+                    u = item.get("url")
+                    if isinstance(u, str):
+                        out.append(u)
+        return out
+
+    surviving_wsr_urls: set[str] = set()
+    dropped_wsr_urls: set[str] = set()
+
+    # Phase 2b: drop orphans in both directions, recording any
+    # web_search_tool_result URLs we drop so phase 3 can prune their
+    # paired citations.
     dropped = 0
     for msg in messages:
         if msg.get("role") != "assistant":
@@ -2326,12 +2347,67 @@ def drop_orphan_server_tool_uses_in_storage(
                     and isinstance(block.get("tool_use_id"), str)
                     and block["tool_use_id"] not in use_ids
                 ):
+                    if t == "web_search_tool_result":
+                        for u in _collect_wsr_urls(block):
+                            dropped_wsr_urls.add(u)
                     msg_dropped += 1
                     continue
+                if t == "web_search_tool_result":
+                    for u in _collect_wsr_urls(block):
+                        surviving_wsr_urls.add(u)
             keep.append(block)
         if msg_dropped:
             msg["anthropic_content_blocks"] = keep
             dropped += msg_dropped
+
+    # Phase 3: strip web_search_result_location citations whose URL
+    # has no surviving result block anywhere in the message list.
+    # Without this the message keeps text-block citations whose
+    # encrypted_index references a now-missing result, and the next
+    # API call 400s with:
+    #     messages.<N>.content.<i>.citations.<j>: Could not find search
+    #     result for citation index.
+    # The encrypted_index is opaque, so we match on URL instead. A
+    # citation is stale iff its URL appears in NO surviving result
+    # block — runs independently of whether this pass dropped anything,
+    # so it can also rescue sessions corrupted by a prior buggy run
+    # (e.g. session 20260513_093942_d374cc after the original bad
+    # drop_orphan_server_tool_uses_in_storage removed the matching
+    # server_tool_use without touching the result block's citations).
+    # ``dropped_wsr_urls`` / ``surviving_wsr_urls`` were collected in
+    # Phase 2b; ``surviving_wsr_urls`` is the source of truth.
+    if any(
+        isinstance(b, dict) and b.get("type") == "text" and b.get("citations")
+        for m in messages
+        if m.get("role") == "assistant"
+        for b in (m.get("anthropic_content_blocks") or [])
+    ):
+        for msg in messages:
+            if msg.get("role") != "assistant":
+                continue
+            content = msg.get("anthropic_content_blocks")
+            if not isinstance(content, list):
+                continue
+            for block in content:
+                if not isinstance(block, dict) or block.get("type") != "text":
+                    continue
+                cits = block.get("citations")
+                if not isinstance(cits, list) or not cits:
+                    continue
+                kept_cits = [
+                    c for c in cits
+                    if not (
+                        isinstance(c, dict)
+                        and c.get("type") == "web_search_result_location"
+                        and isinstance(c.get("url"), str)
+                        and c["url"] not in surviving_wsr_urls
+                    )
+                ]
+                if len(kept_cits) != len(cits):
+                    # Anthropic accepts citations=[] but not a missing
+                    # field semantics swap; just write the pruned list.
+                    block["citations"] = kept_cits
+
     return dropped
 
 
@@ -3162,6 +3238,19 @@ def convert_messages_to_anthropic(
             or (_t.startswith("tool_search_tool_") and _t.endswith("_tool_result"))
         )
 
+    def _collect_wsr_urls_wire(_b):
+        if not isinstance(_b, dict) or _b.get("type") != "web_search_tool_result":
+            return []
+        inner = _b.get("content")
+        out = []
+        if isinstance(inner, list):
+            for item in inner:
+                if isinstance(item, dict) and item.get("type") == "web_search_result":
+                    u = item.get("url")
+                    if isinstance(u, str):
+                        out.append(u)
+        return out
+
     _use_ids_wire: set = set()
     _result_ids_wire: set = set()
     for _m in result:
@@ -3182,6 +3271,9 @@ def convert_messages_to_anthropic(
                 _ru = _b.get("tool_use_id")
                 if isinstance(_ru, str):
                     _result_ids_wire.add(_ru)
+
+    _surviving_wsr_urls: set = set()
+    _dropped_wsr_urls: set = set()
     for _m in result:
         if _m.get("role") != "assistant":
             continue
@@ -3203,10 +3295,49 @@ def convert_messages_to_anthropic(
                     and isinstance(_b.get("tool_use_id"), str)
                     and _b["tool_use_id"] not in _use_ids_wire
                 ):
+                    if _t == "web_search_tool_result":
+                        for _u in _collect_wsr_urls_wire(_b):
+                            _dropped_wsr_urls.add(_u)
                     continue
+                if _t == "web_search_tool_result":
+                    for _u in _collect_wsr_urls_wire(_b):
+                        _surviving_wsr_urls.add(_u)
             _kept.append(_b)
         if len(_kept) != len(_c):
             _m["content"] = _kept or [{"type": "text", "text": "(empty)"}]
+
+    # Strip web_search_result_location citations whose URL has no
+    # surviving result block anywhere in the message list (mirrors the
+    # storage-time Phase 3 in
+    # drop_orphan_server_tool_uses_in_storage). Without this, Anthropic
+    # rejects the request with:
+    #     messages.<N>.content.<i>.citations.<j>: Could not find search
+    #     result for citation index.
+    # Runs independently of whether this pass dropped anything, so it
+    # also rescues sessions corrupted by a prior buggy persist.
+    for _m in result:
+        if _m.get("role") != "assistant":
+            continue
+        _c = _m.get("content")
+        if not isinstance(_c, list):
+            continue
+        for _b in _c:
+            if not isinstance(_b, dict) or _b.get("type") != "text":
+                continue
+            _cits = _b.get("citations")
+            if not isinstance(_cits, list) or not _cits:
+                continue
+            _kept_cits = [
+                _ci for _ci in _cits
+                if not (
+                    isinstance(_ci, dict)
+                    and _ci.get("type") == "web_search_result_location"
+                    and isinstance(_ci.get("url"), str)
+                    and _ci["url"] not in _surviving_wsr_urls
+                )
+            ]
+            if len(_kept_cits) != len(_cits):
+                _b["citations"] = _kept_cits
 
     # Defense-in-depth: canonicalize tool_search_tool_*_tool_result block
     # types to the bare ``tool_search_tool_result`` form. The capture-time

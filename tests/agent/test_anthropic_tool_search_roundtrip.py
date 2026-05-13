@@ -1505,3 +1505,169 @@ class TestDropOrphanServerToolUsesInStorage:
                 assert tid in stu_ids, (
                     f"orphan web_search_tool_result {tid!r} survived to outbound payload"
                 )
+
+
+class TestStaleCitationPruning:
+    """When drop_orphan_server_tool_uses_in_storage removes a
+    ``web_search_tool_result`` block, any text-block citation whose
+    ``encrypted_index`` referenced that block becomes stale. Anthropic
+    rejects the next request with::
+
+        messages.<N>.content.<i>.citations.<j>: Could not find search
+        result for citation index.
+
+    We can't match on encrypted_index directly (opaque), so we match on
+    URL: a citation is stale iff its URL exists in a dropped result
+    block AND not in any surviving result block.
+
+    Regression for session 20260513_093942_d374cc, second 400 (the
+    first was the orphan ``web_search_tool_result`` itself; this
+    follow-on emerged after that was dropped).
+    """
+
+    def _wsr(self, tu_id, urls):
+        return {
+            "type": "web_search_tool_result",
+            "tool_use_id": tu_id,
+            "content": [
+                {"type": "web_search_result", "url": u, "title": "t"}
+                for u in urls
+            ],
+        }
+
+    def _text_with_citations(self, text, citation_urls):
+        return {
+            "type": "text",
+            "text": text,
+            "citations": [
+                {
+                    "type": "web_search_result_location",
+                    "url": u,
+                    "cited_text": "...",
+                    "encrypted_index": "OPAQUE",
+                    "title": "t",
+                }
+                for u in citation_urls
+            ],
+        }
+
+    def test_strips_citation_when_only_result_block_is_orphaned(self):
+        """The exact shape of session 20260513_093942_d374cc after the
+        initial orphan-block drop: a text block with a
+        ``web_search_result_location`` citation whose URL was in the
+        now-dropped result block."""
+        msgs = [
+            {
+                "role": "assistant",
+                "anthropic_content_blocks": [
+                    # Orphan web_search_tool_result (no matching server_tool_use anywhere).
+                    self._wsr("srvtoolu_ORPHAN", ["https://example.org/a"]),
+                    self._text_with_citations("see [a]", ["https://example.org/a"]),
+                ],
+            },
+        ]
+        drop_orphan_server_tool_uses_in_storage(msgs)
+        block_types = [b["type"] for b in msgs[0]["anthropic_content_blocks"]]
+        # Orphan result block dropped.
+        assert "web_search_tool_result" not in block_types
+        # Text block survives with citation pruned.
+        text = next(b for b in msgs[0]["anthropic_content_blocks"] if b["type"] == "text")
+        assert text["citations"] == []
+
+    def test_keeps_citation_when_url_has_surviving_result_block(self):
+        """If the same URL appears in another (surviving) result block,
+        the citation must survive — the encrypted_index may still
+        resolve there, and even if it doesn't Anthropic is more
+        permissive about URL/index mismatches than about hard misses."""
+        msgs = [
+            {
+                "role": "assistant",
+                "anthropic_content_blocks": [
+                    # Healthy pair.
+                    {"type": "server_tool_use", "id": "srvtoolu_GOOD",
+                     "name": "web_search", "input": {}},
+                    self._wsr("srvtoolu_GOOD", ["https://example.org/a"]),
+                    # Orphan pair (no matching server_tool_use).
+                    self._wsr("srvtoolu_ORPHAN", ["https://example.org/a"]),
+                    self._text_with_citations("see [a]", ["https://example.org/a"]),
+                ],
+            },
+        ]
+        drop_orphan_server_tool_uses_in_storage(msgs)
+        text = next(b for b in msgs[0]["anthropic_content_blocks"] if b["type"] == "text")
+        # Citation kept — URL still has a surviving result block.
+        assert len(text["citations"]) == 1
+        assert text["citations"][0]["url"] == "https://example.org/a"
+
+    def test_mixed_citations_only_stale_ones_drop(self):
+        msgs = [
+            {
+                "role": "assistant",
+                "anthropic_content_blocks": [
+                    # Healthy pair carrying URL B.
+                    {"type": "server_tool_use", "id": "srvtoolu_B",
+                     "name": "web_search", "input": {}},
+                    self._wsr("srvtoolu_B", ["https://b.example.org"]),
+                    # Orphan result carrying URL A.
+                    self._wsr("srvtoolu_ORPHAN", ["https://a.example.org"]),
+                    # Text cites both A (stale) and B (healthy).
+                    self._text_with_citations(
+                        "see [a] and [b]",
+                        ["https://a.example.org", "https://b.example.org"],
+                    ),
+                ],
+            },
+        ]
+        drop_orphan_server_tool_uses_in_storage(msgs)
+        text = next(b for b in msgs[0]["anthropic_content_blocks"] if b["type"] == "text")
+        urls = [c["url"] for c in text["citations"]]
+        assert urls == ["https://b.example.org"]
+
+    def test_wire_path_strips_stale_citations_end_to_end(self):
+        """End-to-end: convert_messages_to_anthropic must produce a
+        payload that wouldn't 400 — orphan result block dropped AND
+        the stale citation pruned from the surviving text block."""
+        msg = {
+            "role": "assistant",
+            "content": "summary",
+            "server_tool_blocks": [
+                # Orphan web_search_tool_result — no matching server_tool_use.
+                {
+                    "type": "web_search_tool_result",
+                    "tool_use_id": "srvtoolu_ORPHAN_WIRE",
+                    "content": [
+                        {"type": "web_search_result",
+                         "url": "https://gone.example.org", "title": "t"}
+                    ],
+                },
+                # Text with citation pointing at the orphan's URL.
+                {
+                    "type": "text",
+                    "text": "see [a]",
+                    "citations": [{
+                        "type": "web_search_result_location",
+                        "url": "https://gone.example.org",
+                        "cited_text": "...",
+                        "encrypted_index": "OPAQUE",
+                        "title": "t",
+                    }],
+                },
+            ],
+            "tool_calls": [],
+        }
+        _, out = convert_messages_to_anthropic(
+            [{"role": "user", "content": "hi"}, msg]
+        )
+        # Orphan result block gone; remaining text block has no stale citation.
+        for m in out:
+            content = m.get("content")
+            if not isinstance(content, list):
+                continue
+            for b in content:
+                if isinstance(b, dict) and b.get("type") == "web_search_tool_result":
+                    raise AssertionError("orphan web_search_tool_result survived")
+                if isinstance(b, dict) and b.get("type") == "text":
+                    for c in b.get("citations") or []:
+                        assert c.get("url") != "https://gone.example.org", (
+                            "stale citation survived"
+                        )
