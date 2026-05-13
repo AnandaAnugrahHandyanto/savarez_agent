@@ -8543,6 +8543,35 @@ class AIAgent:
         auth resolution and client construction — no duplicated provider→key
         mappings.
         """
+        # Circuit-breaker: prevent tight fallback-switch loops when every
+        # provider fails back-to-back.  Two protections: throttle (>=2s
+        # between activations) + breaker (>=5 activations in 60s -> return
+        # False, exhausting the chain cleanly).
+        import time as _cb_time
+        if not hasattr(self, "_fallback_activations"):
+            self._fallback_activations = []
+        _now = _cb_time.monotonic()
+        self._fallback_activations = [t for t in self._fallback_activations if _now - t < 60.0]
+        if len(self._fallback_activations) >= 5:
+            try:
+                self._emit_status(
+                    "🛑 Circuit-breaker tripped: 5 fallback activations in 60s. "
+                    "Aborting to prevent retry storm."
+                )
+            except Exception:
+                pass
+            return False
+        if self._fallback_activations:
+            _elapsed = _now - self._fallback_activations[-1]
+            if _elapsed < 2.0:
+                _wait = 2.0 - _elapsed
+                try:
+                    self._emit_status(f"⏸️ Circuit-breaker: sleeping {_wait:.1f}s before fallback switch")
+                except Exception:
+                    pass
+                _cb_time.sleep(_wait)
+        self._fallback_activations.append(_cb_time.monotonic())
+
         if reason in {FailoverReason.rate_limit, FailoverReason.billing}:
             # Only start cooldown when leaving the primary provider.  If we're
             # already on a fallback and chain-switching, the primary wasn't the
