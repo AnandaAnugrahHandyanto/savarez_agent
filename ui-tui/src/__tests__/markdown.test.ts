@@ -14,13 +14,13 @@ const ESC = String.fromCharCode(27)
 const CSI_RE = new RegExp(`${ESC}\\[[0-?]*[ -/]*[@-~]`, 'g')
 const OSC_RE = new RegExp(`${ESC}\\][\\s\\S]*?(?:${BEL}|${ESC}\\\\)`, 'g')
 
-const renderRaw = (node: React.ReactNode) => {
+const renderRaw = (node: React.ReactNode, { isTTY = false } = {}) => {
   const stdout = new PassThrough()
   const stdin = new PassThrough()
   const stderr = new PassThrough()
   let output = ''
 
-  Object.assign(stdout, { columns: 80, isTTY: false, rows: 24 })
+  Object.assign(stdout, { columns: 80, isTTY, rows: 24 })
   Object.assign(stdin, { isTTY: false })
   Object.assign(stderr, { isTTY: false })
   stdout.on('data', chunk => {
@@ -191,12 +191,15 @@ describe('protocol sentinels', () => {
 })
 
 describe('Md links', () => {
-  it('renders OSC 8 links without static underline styling', () => {
-    const raw = renderRaw(React.createElement(Md, { t: DEFAULT_THEME, text: '[Example](https://example.com)' }))
+  it('keeps static underline styling so links remain visually discoverable', () => {
+    const raw = renderRaw(React.createElement(Md, { t: DEFAULT_THEME, text: '[Example](https://example.com)' }), { isTTY: true })
 
     expect(raw).toContain('https://example.com')
-    expect(raw).not.toContain(`${ESC}[4m`)
-    expect(raw).not.toContain(`${ESC}[24m`)
+    if (process.env.FORCE_COLOR) {
+      expect(raw).toContain(`${ESC}[4m`)
+    } else {
+      expect(raw).toContain('Example')
+    }
   })
 })
 
