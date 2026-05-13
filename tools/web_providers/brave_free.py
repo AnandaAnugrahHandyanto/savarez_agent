@@ -106,8 +106,20 @@ class BraveFreeSearchProvider(WebSearchProvider):
             logger.warning("Brave Search response parse error: %s", exc)
             return {"success": False, "error": "Could not parse Brave Search response as JSON"}
 
-        raw_results = (data.get("web") or {}).get("results", []) or []
-        truncated = raw_results[:limit]
+        # Brave's documented happy path is ``{"web": {"results": [...]}}``,
+        # but a non-2xx body that slips past raise_for_status (e.g. an
+        # error envelope, an HTML error page parsed by a permissive JSON
+        # decoder, or a corporate proxy injecting plaintext) can put a
+        # non-dict value at ``web`` or non-dict items in ``results`` —
+        # both would AttributeError on ``.get(...)`` and abort the tool
+        # with no graceful failure. Coerce defensively.
+        web_block = data.get("web") if isinstance(data, dict) else None
+        if not isinstance(web_block, dict):
+            web_block = {}
+        raw_results = web_block.get("results")
+        if not isinstance(raw_results, list):
+            raw_results = []
+        truncated = [r for r in raw_results[:limit] if isinstance(r, dict)]
 
         web_results = [
             {
