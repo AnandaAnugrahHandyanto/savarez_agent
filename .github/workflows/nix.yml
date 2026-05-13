@@ -24,7 +24,10 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - uses: ./.github/actions/nix-setup
         with:
-          cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          # Do not expose cache-push credentials to pull_request jobs. Fork PRs
+          # do not receive secrets anyway, but this also keeps same-repo PR
+          # execution on the read-only Cachix path.
+          cachix-auth-token: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && secrets.CACHIX_AUTH_TOKEN || '' }}
 
       - name: Resolve head SHA
         if: github.event_name == 'pull_request'
