@@ -914,16 +914,53 @@ def test_blocked_verifier_failure_routes_remediation_and_rereview(kanban_home):
         assert rereview.assignee == "verifier"
 
 
-def test_negative_human_auth_blocker_does_not_auto_route(kanban_home):
+def test_negative_human_approval_blocker_does_not_auto_route(kanban_home):
     with kb.connect() as conn:
         review = kb.create_task(conn, title="QA deployment verification", assignee="qa")
         kb.claim_task(conn, review)
         kb.complete_task(
             conn,
             review,
-            summary="verdict: blocked - need human approval and credentials for prod deploy",
+            summary="verdict: blocked - need human approval for prod deploy",
             metadata={"verdict": "blocked"},
         )
+
+        assert kb.get_task(conn, review).status == "blocked"
+        assert kb.auto_remediate_blocked_reviews(conn) == []
+        assert conn.execute("SELECT COUNT(*) AS n FROM tasks").fetchone()["n"] == 1
+
+
+def test_negative_auth_tooling_blocker_routes_ops_repair(kanban_home):
+    with kb.connect() as conn:
+        review = kb.create_task(conn, title="QA deployment verification", assignee="qa")
+        kb.claim_task(conn, review)
+        kb.complete_task(
+            conn,
+            review,
+            summary="verdict: blocked - OAuth session expired for verifier profile",
+            metadata={"verdict": "blocked"},
+        )
+
+        assert kb.get_task(conn, review).status == "blocked"
+        routed = kb.auto_remediate_blocked_reviews(conn)
+        assert len(routed) == 1
+        rem = kb.get_task(conn, routed[0][1])
+        rereview = kb.get_task(conn, routed[0][2])
+        assert rem.assignee == "backend-eng"
+        assert "auth/profile/session/tooling" in (rem.body or "")
+        assert rereview.assignee == "qa"
+
+
+def test_blocked_review_with_no_reason_does_not_cascade(kanban_home):
+    with kb.connect() as conn:
+        review = kb.create_task(
+            conn,
+            title="Remediate review findings from t_example: Review API",
+            body="Fix the actionable defects only; complete with tests run.",
+            assignee="backend-eng",
+        )
+        kb.claim_task(conn, review)
+        kb.block_task(conn, review, reason="")
 
         assert kb.get_task(conn, review).status == "blocked"
         assert kb.auto_remediate_blocked_reviews(conn) == []
