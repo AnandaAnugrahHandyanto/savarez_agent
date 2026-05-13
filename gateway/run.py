@@ -375,7 +375,7 @@ _ensure_ssl_certs()
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 # Resolve Hermes home directory (respects HERMES_HOME override)
-from hermes_constants import get_hermes_home
+from hermes_constants import get_hermes_home, is_container
 from utils import atomic_json_write, atomic_yaml_write, base_url_host_matches, is_truthy_value
 _hermes_home = get_hermes_home()
 
@@ -8737,12 +8737,13 @@ class GatewayRunner:
             logger.debug("Failed to write restart dedup marker: %s", e)
 
         active_agents = self._running_agent_count()
-        # When running under a service manager (systemd/launchd), use the
+        # When running under a service manager or a container, use the
         # service restart path: exit with code 75 so the service manager
-        # restarts us.  The detached subprocess approach (setsid + bash)
-        # doesn't work under systemd because KillMode=mixed kills all
-        # processes in the cgroup, including the detached helper.
-        _under_service = bool(os.environ.get("INVOCATION_ID"))  # systemd sets this
+        # or container restart policy restarts us.  The detached subprocess
+        # approach (setsid + bash) doesn't work under systemd because
+        # KillMode=mixed kills all processes in the cgroup, and it doesn't
+        # survive a Docker PID 1 exit either.
+        _under_service = bool(os.environ.get("INVOCATION_ID")) or is_container()
         if _under_service:
             self.request_restart(detached=False, via_service=True)
         else:
