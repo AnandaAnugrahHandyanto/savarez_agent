@@ -2347,3 +2347,64 @@ def test_resolve_runtime_provider_strips_kimi_coding_v1_for_anthropic_messages(m
 
     assert resolved["api_mode"] == "anthropic_messages"
     assert resolved["base_url"] == "https://api.kimi.com/coding"
+
+
+def test_resolve_runtime_provider_strips_persisted_kimi_coding_v1(monkeypatch):
+    """Persisted model.base_url must get the same Anthropic SDK normalization."""
+
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "kimi-coding")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "kimi-coding",
+            "default": "kimi-k2.6",
+            "base_url": "https://api.kimi.com/coding/v1",
+            "api_mode": "anthropic_messages",
+        },
+    )
+    monkeypatch.setattr(rp, "_resolve_named_custom_runtime", lambda **k: None)
+    monkeypatch.setattr(rp, "_resolve_explicit_runtime", lambda **k: None)
+    monkeypatch.setattr(rp, "load_pool", lambda provider: None)
+    monkeypatch.setattr(
+        rp,
+        "resolve_api_key_provider_credentials",
+        lambda provider: {
+            "api_key": "sk-kimi-test",
+            "base_url": "https://api.kimi.com/coding/v1",
+            "source": "env",
+        },
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="kimi-coding")
+
+    assert resolved["api_mode"] == "anthropic_messages"
+    assert resolved["base_url"] == "https://api.kimi.com/coding"
+
+
+def test_pool_entry_strips_kimi_coding_v1_for_anthropic_messages(monkeypatch):
+    """Pool-supplied Kimi catalog URLs must also avoid /coding/v1/v1/messages."""
+
+    class _Entry:
+        runtime_api_key = "sk-kimi-test"
+        runtime_base_url = "https://api.kimi.com/coding/v1"
+        source = "pool:kimi-coding"
+
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "kimi-coding",
+            "default": "kimi-k2.6",
+            "api_mode": "anthropic_messages",
+        },
+    )
+
+    resolved = rp._resolve_runtime_from_pool_entry(
+        provider="kimi-coding",
+        entry=_Entry(),
+        requested_provider="kimi-coding",
+    )
+
+    assert resolved["api_mode"] == "anthropic_messages"
+    assert resolved["base_url"] == "https://api.kimi.com/coding"

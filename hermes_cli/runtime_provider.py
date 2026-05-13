@@ -176,6 +176,23 @@ def _parse_api_mode(raw: Any) -> Optional[str]:
     return None
 
 
+def _normalize_kimi_anthropic_base_url(base_url: str, api_mode: str) -> str:
+    """Normalize Kimi Code catalog URLs for Anthropic Messages runtime calls."""
+    base_url = (base_url or "").strip().rstrip("/")
+    if (
+        api_mode == "anthropic_messages"
+        and base_url_host_matches(base_url, "api.kimi.com")
+        and base_url.lower().endswith("/coding/v1")
+    ):
+        # Kimi Code exposes /models on the OpenAI-compatible /coding/v1
+        # surface, but Anthropic SDK clients append /v1/messages to the
+        # configured base_url. Strip the catalog suffix for runtime calls
+        # so requests target /coding/v1/messages rather than
+        # /coding/v1/v1/messages.
+        return base_url[:-3]
+    return base_url
+
+
 def _resolve_runtime_from_pool_entry(
     *,
     provider: str,
@@ -292,6 +309,7 @@ def _resolve_runtime_from_pool_entry(
     # https://opencode.ai/zen/go/v1/messages instead of .../v1/v1/messages).
     if api_mode == "anthropic_messages" and provider in {"opencode-zen", "opencode-go"}:
         base_url = re.sub(r"/v1/?$", "", base_url)
+    base_url = _normalize_kimi_anthropic_base_url(base_url, api_mode)
 
     return {
         "provider": provider,
@@ -896,17 +914,7 @@ def _resolve_explicit_runtime(
                 if detected:
                     api_mode = detected
 
-        if (
-            api_mode == "anthropic_messages"
-            and base_url_host_matches(base_url, "api.kimi.com")
-            and base_url.rstrip("/").lower().endswith("/coding/v1")
-        ):
-            # Kimi Code exposes /models on the OpenAI-compatible /coding/v1
-            # surface, but Anthropic SDK clients append /v1/messages to the
-            # configured base_url.  Strip the catalog suffix for runtime calls
-            # so requests target /coding/v1/messages rather than
-            # /coding/v1/v1/messages.
-            base_url = base_url.rstrip("/")[:-3]
+        base_url = _normalize_kimi_anthropic_base_url(base_url, api_mode)
 
         return {
             "provider": provider,
@@ -1347,6 +1355,7 @@ def resolve_runtime_provider(
         # Strip trailing /v1 for OpenCode Anthropic models (see comment above).
         if api_mode == "anthropic_messages" and provider in {"opencode-zen", "opencode-go"}:
             base_url = re.sub(r"/v1/?$", "", base_url)
+        base_url = _normalize_kimi_anthropic_base_url(base_url, api_mode)
         return {
             "provider": provider,
             "api_mode": api_mode,
