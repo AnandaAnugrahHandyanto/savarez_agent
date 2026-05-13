@@ -39,6 +39,7 @@ import logging
 import mimetypes
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import urlsplit
 
 logger = logging.getLogger(__name__)
 
@@ -205,6 +206,14 @@ def _guess_mime(path: Path, raw: Optional[bytes] = None) -> str:
     }.get(suffix, "image/jpeg")
 
 
+def _is_http_url(value: str) -> bool:
+    try:
+        parsed = urlsplit(str(value or ""))
+    except Exception:
+        return False
+    return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
+
+
 def _file_to_data_url(path: Path) -> Optional[str]:
     """Encode a local image as a base64 data URL at its native size.
 
@@ -238,7 +247,7 @@ def build_native_content_parts(
        {"type": "image_url", "image_url": {"url": "data:image/png;base64,..."}},
        ...]
 
-    The local path of each successfully attached image is appended to the
+    The path or URL of each successfully attached image is appended to the
     text part as ``[Image attached at: <path>]``. The model still sees the
     pixels via the ``image_url`` part (full native vision); the path note
     just gives it a string handle so MCP/skill tools that take an image
@@ -254,25 +263,36 @@ def build_native_content_parts(
 
     Returns (content_parts, skipped_paths). Skipped paths are files that
     couldn't be read from disk and are NOT advertised in the path hints.
+    HTTP(S) URLs are passed through directly for providers that can fetch
+    remote image URLs.
     """
     skipped: List[str] = []
     image_parts: List[Dict[str, Any]] = []
     attached_paths: List[str] = []
 
     for raw_path in image_paths:
-        p = Path(raw_path)
+        raw_path_str = str(raw_path)
+        if _is_http_url(raw_path_str):
+            image_parts.append({
+                "type": "image_url",
+                "image_url": {"url": raw_path_str},
+            })
+            attached_paths.append(raw_path_str)
+            continue
+
+        p = Path(raw_path_str)
         if not p.exists() or not p.is_file():
-            skipped.append(str(raw_path))
+            skipped.append(raw_path_str)
             continue
         data_url = _file_to_data_url(p)
         if not data_url:
-            skipped.append(str(raw_path))
+            skipped.append(raw_path_str)
             continue
         image_parts.append({
             "type": "image_url",
             "image_url": {"url": data_url},
         })
-        attached_paths.append(str(raw_path))
+        attached_paths.append(raw_path_str)
 
     text = (user_text or "").strip()
 

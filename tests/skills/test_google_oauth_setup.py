@@ -132,6 +132,24 @@ def setup_module(monkeypatch, tmp_path):
     return module
 
 
+class TestAccountPaths:
+    def test_default_account_uses_legacy_paths(self, setup_module):
+        token, client_secret, pending = setup_module._account_paths("primary")
+        assert token.name == "google_token.json"
+        assert client_secret.name == "google_client_secret.json"
+        assert pending.name == "google_oauth_pending.json"
+
+    def test_named_account_uses_isolated_paths(self, setup_module):
+        token, client_secret, pending = setup_module._account_paths("spam")
+        assert token.name == "google_spam_token.json"
+        assert client_secret.name == "google_spam_client_secret.json"
+        assert pending.name == "google_spam_oauth_pending.json"
+
+    def test_rejects_unsafe_account_name(self, setup_module):
+        with pytest.raises(ValueError):
+            setup_module._account_paths("../spam")
+
+
 class TestGetAuthUrl:
     def test_persists_state_and_code_verifier_for_later_exchange(self, setup_module, capsys):
         setup_module.get_auth_url()
