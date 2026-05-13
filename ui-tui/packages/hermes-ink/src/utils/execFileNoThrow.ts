@@ -55,10 +55,26 @@ export function execFileNoThrow(
       resolve({ stdout, stderr, code: timedOut ? 124 : (code ?? 0) })
     })
 
+    // Properly handle stdin drain to avoid losing data when buffer is full
     if (options.input) {
-      child.stdin?.write(options.input)
+      const writeData = () => {
+        if (child.stdin?.writableEnded) return
+        const canContinue = child.stdin?.write(options.input, () => {
+          child.stdin?.end()
+        })
+        // If buffer full, wait for drain before ending
+        if (canContinue === false) {
+          child.stdin?.once('drain', () => child.stdin?.end())
+        }
+      }
+      // Wait for stdin to be ready before writing
+      if (child.stdin?.writable) {
+        child.stdin.once('ready', writeData)
+      } else {
+        child.stdin?.end()
+      }
+    } else {
+      child.stdin?.end()
     }
-
-    child.stdin?.end()
   })
 }
