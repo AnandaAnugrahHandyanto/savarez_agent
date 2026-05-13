@@ -136,7 +136,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("yolo", "Toggle YOLO mode with optional duration/expiry",
                "Configuration",
                args_hint="[<duration>|until <time>|off|status]",
-               subcommands=("off", "status")),
+               subcommands=("until", "off", "status")),
     CommandDef("reasoning", "Manage reasoning effort and display", "Configuration",
                args_hint="[level|show|hide]",
                subcommands=("none", "minimal", "low", "medium", "high", "xhigh", "show", "hide", "on", "off")),
