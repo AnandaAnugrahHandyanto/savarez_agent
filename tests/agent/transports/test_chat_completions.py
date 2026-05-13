@@ -72,6 +72,62 @@ class TestChatCompletionsBuildKwargs:
         kw = transport.build_kwargs(model="gpt-4o", messages=msgs, tools=tools)
         assert kw["tools"] == tools
 
+    def test_openai_native_tools_enable_strict_mode(self, transport):
+        msgs = [{"role": "user", "content": "Hi"}]
+        tools = [{
+            "type": "function",
+            "function": {
+                "name": "read_file",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string"},
+                        "offset": {"type": "integer"},
+                    },
+                    "required": ["path"],
+                },
+            },
+        }]
+        kw = transport.build_kwargs(
+            model="gpt-4o",
+            messages=msgs,
+            tools=tools,
+            provider_name="openai",
+            base_url="https://api.openai.com/v1",
+        )
+        fn = kw["tools"][0]["function"]
+        assert fn["strict"] is True
+        assert fn["parameters"]["additionalProperties"] is False
+        assert fn["parameters"]["required"] == ["path", "offset"]
+
+    def test_openrouter_tools_do_not_force_openai_strict_mode(self, transport):
+        msgs = [{"role": "user", "content": "Hi"}]
+        tools = [{
+            "type": "function",
+            "function": {
+                "name": "browser_cdp",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "params": {
+                            "type": "object",
+                            "properties": {},
+                            "additionalProperties": True,
+                        },
+                    },
+                },
+            },
+        }]
+        kw = transport.build_kwargs(
+            model="openai/gpt-4o",
+            messages=msgs,
+            tools=tools,
+            provider_name="openrouter",
+            base_url="https://openrouter.ai/api/v1",
+            is_openrouter=True,
+        )
+        assert "strict" not in kw["tools"][0]["function"]
+
     def test_openrouter_provider_prefs(self, transport):
         from providers import get_provider_profile
         profile = get_provider_profile("openrouter")

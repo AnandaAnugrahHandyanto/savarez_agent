@@ -180,6 +180,56 @@ class TestCodexBuildKwargs:
         # "minimal" should be clamped to "low" for xAI as well
         assert kw.get("reasoning", {}).get("effort") == "low"
 
+    def test_openai_native_responses_tools_enable_strict_mode(self, transport):
+        messages = [{"role": "user", "content": "Hi"}]
+        tools = [{
+            "type": "function",
+            "function": {
+                "name": "read_file",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string"},
+                        "offset": {"type": "integer"},
+                    },
+                    "required": ["path"],
+                },
+            },
+        }]
+        kw = transport.build_kwargs(
+            model="gpt-5.4",
+            messages=messages,
+            tools=tools,
+            provider="openai",
+            base_url="https://api.openai.com/v1/responses",
+        )
+        assert kw["tools"][0]["strict"] is True
+        assert kw["tools"][0]["parameters"]["required"] == ["path", "offset"]
+
+    def test_github_responses_tools_remain_non_strict(self, transport):
+        messages = [{"role": "user", "content": "Hi"}]
+        tools = [{
+            "type": "function",
+            "function": {
+                "name": "read_file",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string"},
+                    },
+                },
+            },
+        }]
+        kw = transport.build_kwargs(
+            model="gpt-5.4",
+            messages=messages,
+            tools=tools,
+            provider="copilot",
+            base_url="https://models.github.ai/inference",
+            is_github_responses=True,
+        )
+        assert kw["tools"][0]["strict"] is False
+
 
 class TestCodexValidateResponse:
 

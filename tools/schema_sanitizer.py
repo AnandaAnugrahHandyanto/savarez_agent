@@ -55,6 +55,29 @@ def sanitize_tool_schemas(tools: list[dict]) -> list[dict]:
     return sanitized
 
 
+def make_openai_strict_tools(tools: list[dict] | None) -> list[dict] | None:
+    """Return tools with ``function.strict=true`` where OpenAI strict mode fits.
+
+    OpenAI strict function calling requires a narrower schema subset than the
+    broad compatibility sanitizer above. In particular, each object must be
+    closed with ``additionalProperties: false`` and every declared property must
+    be listed in ``required``. Formerly-optional properties are made nullable so
+    the model can still emit ``null`` where callers previously omitted them.
+
+    Some Hermes tools intentionally accept free-form maps via
+    ``additionalProperties: true`` (for example arbitrary CDP params). Those
+    schemas cannot be converted losslessly, so this helper leaves those tools as
+    ``strict: false`` instead of changing their behavior.
+    """
+    if not tools:
+        return tools
+
+    strictified: list[dict] = []
+    for tool in tools:
+        strictified.append(_strictify_single_tool(tool))
+    return strictified
+
+
 def _sanitize_single_tool(tool: dict) -> dict:
     """Deep-copy and sanitize a single OpenAI-format tool entry."""
     out = copy.deepcopy(tool)
@@ -91,6 +114,144 @@ def _sanitize_single_tool(tool: dict) -> dict:
         fn["parameters"], path=fn.get("name", "<tool>")
     )
     return out
+
+
+def _strictify_single_tool(tool: dict) -> dict:
+    """Deep-copy a tool and enable OpenAI strict mode when compatible."""
+    out = copy.deepcopy(tool)
+    fn = out.get("function") if isinstance(out, dict) else None
+    if not isinstance(fn, dict):
+        return out
+
+    params = fn.get("parameters")
+    if not isinstance(params, dict):
+        fn["parameters"] = {"type": "object", "properties": {}}
+        fn["strict"] = True
+        return out
+
+    if _schema_has_openai_strict_incompatibility(params):
+        fn["strict"] = False
+        return out
+
+    fn["parameters"] = _make_schema_openai_strict(params)
+    fn["strict"] = True
+    return out
+
+
+def _schema_has_openai_strict_incompatibility(node: Any) -> bool:
+    """Return True when a schema node cannot be losslessly strictified."""
+    if isinstance(node, list):
+        return any(_schema_has_openai_strict_incompatibility(item) for item in node)
+    if not isinstance(node, dict):
+        return False
+
+    node_type = node.get("type")
+    has_object_shape = node_type == "object" or isinstance(node.get("properties"), dict)
+    if has_object_shape and "additionalProperties" in node:
+        addl = node.get("additionalProperties")
+        if addl is not False:
+            return True
+
+    for key, value in node.items():
+        if key in {"properties", "$defs", "definitions"} and isinstance(value, dict):
+            if any(_schema_has_openai_strict_incompatibility(v) for v in value.values()):
+                return True
+        elif key in {"items", "additionalProperties"}:
+            if isinstance(value, dict) and _schema_has_openai_strict_incompatibility(value):
+                return True
+        elif key in {"anyOf", "oneOf", "allOf"} and isinstance(value, list):
+            if any(_schema_has_openai_strict_incompatibility(v) for v in value):
+                return True
+    return False
+
+
+def _make_schema_openai_strict(node: Any) -> Any:
+    """Convert a sanitized JSON-Schema fragment to OpenAI's strict subset."""
+    if isinstance(node, list):
+        return [_make_schema_openai_strict(item) for item in node]
+    if not isinstance(node, dict):
+        return node
+
+    out = copy.deepcopy(node)
+
+    if isinstance(out.get("properties"), dict):
+        out["properties"] = {
+            key: _make_schema_openai_strict(value)
+            for key, value in out["properties"].items()
+        }
+    for key in ("$defs", "definitions"):
+        if isinstance(out.get(key), dict):
+            out[key] = {
+                sub_key: _make_schema_openai_strict(sub_value)
+                for sub_key, sub_value in out[key].items()
+            }
+    if isinstance(out.get("items"), dict):
+        out["items"] = _make_schema_openai_strict(out["items"])
+    for key in ("anyOf", "oneOf", "allOf"):
+        if isinstance(out.get(key), list):
+            out[key] = [_make_schema_openai_strict(item) for item in out[key]]
+
+    has_object_shape = out.get("type") == "object" or isinstance(out.get("properties"), dict)
+    if has_object_shape:
+        out.setdefault("type", "object")
+        props = out.get("properties")
+        if not isinstance(props, dict):
+            props = {}
+            out["properties"] = props
+
+        original_required = set(out.get("required") or [])
+        strict_props: dict[str, Any] = {}
+        for prop_name, prop_schema in props.items():
+            strict_prop = prop_schema
+            if prop_name not in original_required:
+                strict_prop = _make_nullable_schema(strict_prop)
+            strict_props[prop_name] = strict_prop
+        out["properties"] = strict_props
+        out["required"] = list(strict_props.keys()) if strict_props else []
+        out["additionalProperties"] = False
+
+    return out
+
+
+def _schema_allows_null(schema: Any) -> bool:
+    """Return True when the schema already accepts null."""
+    if not isinstance(schema, dict):
+        return False
+    if schema.get("nullable") is True:
+        return True
+    schema_type = schema.get("type")
+    if schema_type == "null":
+        return True
+    if isinstance(schema_type, list) and "null" in schema_type:
+        return True
+    for key in ("anyOf", "oneOf"):
+        variants = schema.get(key)
+        if isinstance(variants, list):
+            for item in variants:
+                if isinstance(item, dict) and item.get("type") == "null":
+                    return True
+    return False
+
+
+def _make_nullable_schema(schema: Any) -> Any:
+    """Wrap a property schema so null is accepted without discarding metadata."""
+    if not isinstance(schema, dict) or _schema_allows_null(schema):
+        return schema
+
+    out = copy.deepcopy(schema)
+    schema_type = out.get("type")
+    if isinstance(schema_type, str) and schema_type != "null":
+        out["type"] = [schema_type, "null"]
+        out.pop("nullable", None)
+        return out
+
+    for key in ("anyOf", "oneOf"):
+        variants = out.get(key)
+        if isinstance(variants, list):
+            out[key] = list(variants) + [{"type": "null"}]
+            return out
+
+    return {"anyOf": [out, {"type": "null"}]}
 
 
 _TOP_LEVEL_FORBIDDEN_KEYS = ("allOf", "anyOf", "oneOf", "enum", "not")

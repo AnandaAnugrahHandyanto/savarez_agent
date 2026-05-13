@@ -18,6 +18,8 @@ import uuid
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
 
+from tools.schema_sanitizer import make_openai_strict_tools
+
 from agent.prompt_builder import DEFAULT_AGENT_IDENTITY
 
 logger = logging.getLogger(__name__)
@@ -202,13 +204,20 @@ def _derive_responses_function_call_id(
 # Schema conversion
 # ---------------------------------------------------------------------------
 
-def _responses_tools(tools: Optional[List[Dict[str, Any]]] = None) -> Optional[List[Dict[str, Any]]]:
+def _responses_tools(
+    tools: Optional[List[Dict[str, Any]]] = None,
+    *,
+    strict: bool = False,
+) -> Optional[List[Dict[str, Any]]]:
     """Convert chat-completions tool schemas to Responses function-tool schemas."""
     if not tools:
         return None
 
+    strict_ready_tools = make_openai_strict_tools(tools) if strict else None
+    source_tools = strict_ready_tools if strict_ready_tools is not None else tools
+
     converted: List[Dict[str, Any]] = []
-    for item in tools:
+    for item in source_tools:
         fn = item.get("function", {}) if isinstance(item, dict) else {}
         name = fn.get("name")
         if not isinstance(name, str) or not name.strip():
@@ -217,7 +226,7 @@ def _responses_tools(tools: Optional[List[Dict[str, Any]]] = None) -> Optional[L
             "type": "function",
             "name": name,
             "description": fn.get("description", ""),
-            "strict": False,
+            "strict": bool(fn.get("strict", False)),
             "parameters": fn.get("parameters", {"type": "object", "properties": {}}),
         })
     return converted or None

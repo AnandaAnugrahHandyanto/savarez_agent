@@ -8935,6 +8935,8 @@ class AIAgent:
                 session_id=getattr(self, "session_id", None),
                 max_tokens=self.max_tokens,
                 request_overrides=self.request_overrides,
+                provider=self.provider,
+                base_url=self.base_url,
                 is_github_responses=is_github_responses,
                 is_codex_backend=is_codex_backend,
                 is_xai_responses=is_xai_responses,

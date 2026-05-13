@@ -17,6 +17,7 @@ from agent.moonshot_schema import is_moonshot_model, sanitize_moonshot_tools
 from agent.prompt_builder import DEVELOPER_ROLE_MODELS
 from agent.transports.base import ProviderTransport
 from agent.transports.types import NormalizedResponse, ToolCall, Usage
+from tools.schema_sanitizer import make_openai_strict_tools
 
 
 def _build_gemini_thinking_config(model: str, reasoning_config: dict | None) -> dict | None:
@@ -97,6 +98,16 @@ def _is_gemini_openai_compat_base_url(base_url: Any) -> bool:
     if "generativelanguage.googleapis.com" not in normalized:
         return False
     return normalized.endswith("/openai")
+
+
+def _is_openai_native_strict_route(*, provider_name: Any = None, profile_name: Any = None, base_url: Any = None) -> bool:
+    """Return True when this request targets OpenAI-native chat-completions."""
+    provider = str(provider_name or profile_name or "").strip().lower()
+    if provider in {"openai", "openai-chatgpt"}:
+        return True
+
+    normalized = str(base_url or "").strip().rstrip("/").lower()
+    return "api.openai.com" in normalized
 
 
 class ChatCompletionsTransport(ProviderTransport):
@@ -249,6 +260,11 @@ class ChatCompletionsTransport(ProviderTransport):
             # etc.) compatible, in addition to direct moonshot.ai endpoints.
             if is_moonshot_model(model):
                 tools = sanitize_moonshot_tools(tools)
+            if _is_openai_native_strict_route(
+                provider_name=params.get("provider_name"),
+                base_url=params.get("base_url"),
+            ):
+                tools = make_openai_strict_tools(tools)
             api_kwargs["tools"] = tools
 
         # max_tokens resolution — priority: ephemeral > user > provider default
@@ -437,6 +453,11 @@ class ChatCompletionsTransport(ProviderTransport):
         if tools:
             if is_moonshot_model(model):
                 tools = sanitize_moonshot_tools(tools)
+            if _is_openai_native_strict_route(
+                profile_name=getattr(profile, "name", None),
+                base_url=params.get("base_url"),
+            ):
+                tools = make_openai_strict_tools(tools)
             api_kwargs["tools"] = tools
 
         # max_tokens resolution — priority: ephemeral > user > profile default

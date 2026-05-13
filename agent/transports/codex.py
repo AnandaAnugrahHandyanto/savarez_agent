@@ -11,6 +11,22 @@ from agent.transports.base import ProviderTransport
 from agent.transports.types import NormalizedResponse, ToolCall
 
 
+def _is_openai_native_responses_route(
+    *,
+    provider: Any = None,
+    base_url: Any = None,
+    is_codex_backend: bool = False,
+) -> bool:
+    """Return True for Hermes' OpenAI-native Responses/Codex routes."""
+    if is_codex_backend:
+        return True
+    provider_name = str(provider or "").strip().lower()
+    if provider_name in {"openai", "openai-codex", "openai-chatgpt"}:
+        return True
+    normalized = str(base_url or "").strip().rstrip("/").lower()
+    return "api.openai.com" in normalized or "chatgpt.com/backend-api/codex" in normalized
+
+
 class ResponsesApiTransport(ProviderTransport):
     """Transport for api_mode='codex_responses'.
 
@@ -75,6 +91,11 @@ class ResponsesApiTransport(ProviderTransport):
         is_github_responses = params.get("is_github_responses", False)
         is_codex_backend = params.get("is_codex_backend", False)
         is_xai_responses = params.get("is_xai_responses", False)
+        use_openai_strict_tools = _is_openai_native_responses_route(
+            provider=params.get("provider"),
+            base_url=params.get("base_url"),
+            is_codex_backend=is_codex_backend,
+        )
 
         # Resolve reasoning effort
         reasoning_effort = "medium"
@@ -93,7 +114,7 @@ class ResponsesApiTransport(ProviderTransport):
             "model": model,
             "instructions": instructions,
             "input": _chat_messages_to_responses_input(payload_messages),
-            "tools": _responses_tools(tools),
+            "tools": _responses_tools(tools, strict=use_openai_strict_tools),
             "tool_choice": "auto",
             "parallel_tool_calls": True,
             "store": False,

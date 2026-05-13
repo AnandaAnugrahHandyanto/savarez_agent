@@ -9,7 +9,11 @@ from __future__ import annotations
 
 import copy
 
-from tools.schema_sanitizer import sanitize_tool_schemas, strip_pattern_and_format
+from tools.schema_sanitizer import (
+    make_openai_strict_tools,
+    sanitize_tool_schemas,
+    strip_pattern_and_format,
+)
 
 
 def _tool(name: str, parameters: dict) -> dict:
@@ -203,6 +207,47 @@ def test_empty_tools_list_returns_empty():
 
 def test_none_tools_returns_none():
     assert sanitize_tool_schemas(None) is None
+
+
+def test_make_openai_strict_tools_closes_objects_and_requires_all_fields():
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {
+            "path": {"type": "string"},
+            "offset": {"type": "integer"},
+            "meta": {
+                "type": "object",
+                "properties": {
+                    "line": {"type": "integer"},
+                },
+            },
+        },
+        "required": ["path"],
+    })]
+    out = make_openai_strict_tools(tools)
+    params = out[0]["function"]["parameters"]
+    assert out[0]["function"]["strict"] is True
+    assert params["additionalProperties"] is False
+    assert params["required"] == ["path", "offset", "meta"]
+    assert params["properties"]["offset"]["type"] == ["integer", "null"]
+    assert params["properties"]["meta"]["additionalProperties"] is False
+    assert params["properties"]["meta"]["required"] == ["line"]
+
+
+def test_make_openai_strict_tools_opts_out_for_freeform_object_maps():
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {
+            "params": {
+                "type": "object",
+                "properties": {},
+                "additionalProperties": True,
+            },
+        },
+    })]
+    out = make_openai_strict_tools(tools)
+    assert out[0]["function"]["strict"] is False
+    assert out[0]["function"]["parameters"]["properties"]["params"]["additionalProperties"] is True
 
 
 # ─────────────────────────────────────────────────────────────────────────
