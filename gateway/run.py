@@ -6135,6 +6135,15 @@ class GatewayRunner:
                     return await self._handle_goal_command(event)
                 return "Agent is running — use /goal status / pause / clear mid-run, or /stop before setting a new goal."
 
+            # /supergoal status is safe mid-run, but creating a new
+            # supergoal queues an orchestrator kickoff turn and should not
+            # race the active agent.
+            if _cmd_def_inner and _cmd_def_inner.name == "supergoal":
+                _sg_arg = (event.get_command_args() or "").strip().lower()
+                if not _sg_arg or _sg_arg == "status":
+                    return await self._handle_supergoal_command(event)
+                return "Agent is running — use /supergoal status mid-run, or /stop before creating a new supergoal."
+
             # Session-level toggles that are safe to run mid-agent —
             # /yolo can unblock a pending approval prompt, /verbose cycles
             # the tool-progress display mode for the ongoing stream.
@@ -6435,6 +6444,9 @@ class GatewayRunner:
 
         if canonical == "kanban":
             return await self._handle_kanban_command(event)
+
+        if canonical == "supergoal":
+            return await self._handle_supergoal_command(event)
 
         if canonical == "retry":
             return await self._handle_retry_command(event)
@@ -9360,6 +9372,59 @@ class GatewayRunner:
             return None, None
         max_turns = self._goal_max_turns_from_config()
         return GoalManager(session_id=sid, default_max_turns=max_turns), session_entry
+
+    async def _handle_supergoal_command(self, event: "MessageEvent") -> str:
+        """Handle /supergoal for gateway platforms.
+
+        Creates a Kanban-backed control-plane task and queues a synthetic
+        kickoff message so the current Hermes session starts orchestrating
+        immediately.
+        """
+        args = (event.get_command_args() or "").strip()
+        lower = args.lower()
+
+        try:
+            from hermes_cli.supergoal import create_supergoal, format_created, status_line
+        except Exception as exc:
+            return f"Supergoals unavailable: {exc}"
+
+        if not args or lower == "status":
+            return status_line()
+
+        if lower in ("clear", "pause", "resume"):
+            return "/supergoal currently supports: /supergoal <objective> and /supergoal status"
+
+        created_by = "gateway"
+        try:
+            if event.source and getattr(event.source, "user_id", None):
+                created_by = str(event.source.user_id)
+        except Exception:
+            pass
+
+        try:
+            result = create_supergoal(args, source=event.source, created_by=created_by)
+        except ValueError as exc:
+            return f"Invalid supergoal: {exc}"
+        except Exception as exc:
+            logger.warning("supergoal create failed: %s", exc, exc_info=True)
+            return f"Failed to create supergoal: {exc}"
+
+        adapter = self.adapters.get(event.source.platform) if event.source else None
+        _quick_key = self._session_key_for_source(event.source) if event.source else None
+        if adapter and _quick_key:
+            try:
+                kickoff_event = MessageEvent(
+                    text=result.kickoff_prompt,
+                    message_type=MessageType.TEXT,
+                    source=event.source,
+                    message_id=event.message_id,
+                    channel_prompt=event.channel_prompt,
+                )
+                self._enqueue_fifo(_quick_key, kickoff_event, adapter)
+            except Exception as exc:
+                logger.debug("supergoal kickoff enqueue failed: %s", exc)
+
+        return format_created(result)
 
     async def _handle_goal_command(self, event: "MessageEvent") -> str:
         """Handle /goal for gateway platforms.

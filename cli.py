@@ -7482,6 +7482,8 @@ class HermesCLI:
             self._handle_curator_command(cmd_original)
         elif canonical == "kanban":
             self._handle_kanban_command(cmd_original)
+        elif canonical == "supergoal":
+            self._handle_supergoal_command(cmd_original)
         elif canonical == "skills":
             with self._busy_command(self._slow_command_status(cmd_original)):
                 self._handle_skills_command(cmd_original)
@@ -8132,6 +8134,41 @@ class HermesCLI:
         mgr = GoalManager(session_id=sid, default_max_turns=max_turns)
         self._goal_manager = mgr
         return mgr
+
+    def _handle_supergoal_command(self, cmd: str) -> None:
+        """Create a Kanban-backed supergoal and queue orchestrator kickoff."""
+        parts = (cmd or "").strip().split(None, 1)
+        arg = parts[1].strip() if len(parts) > 1 else ""
+        lower = arg.lower()
+
+        try:
+            from hermes_cli.supergoal import create_supergoal, format_created, status_line
+        except Exception as exc:
+            _cprint(f"  Supergoals unavailable: {exc}")
+            return
+
+        if not arg or lower == "status":
+            _cprint(f"  {status_line()}")
+            return
+
+        if lower in ("clear", "pause", "resume"):
+            _cprint("  /supergoal currently supports: /supergoal <objective> and /supergoal status")
+            return
+
+        try:
+            result = create_supergoal(arg, created_by="cli")
+        except ValueError as exc:
+            _cprint(f"  Invalid supergoal: {exc}")
+            return
+        except Exception as exc:
+            _cprint(f"  Failed to create supergoal: {exc}")
+            return
+
+        _cprint("  " + format_created(result).replace("\n", "\n  "))
+        try:
+            self._pending_input.put(result.kickoff_prompt)
+        except Exception:
+            pass
 
     def _handle_goal_command(self, cmd: str) -> None:
         """Dispatch /goal subcommands: set / status / pause / resume / clear."""

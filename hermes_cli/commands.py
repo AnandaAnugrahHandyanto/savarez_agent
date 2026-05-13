@@ -104,6 +104,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                args_hint="<prompt>"),
     CommandDef("goal", "Set a standing goal Hermes works on across turns until achieved", "Session",
                args_hint="[text | pause | resume | clear | status]"),
+    CommandDef("supergoal", "Create a Kanban-backed orchestrated goal with worker/review flow", "Session",
+               aliases=("sg",), args_hint="[text | status]"),
     CommandDef("status", "Show session info", "Session"),
     CommandDef("whoami", "Show your slash command access (admin / user)", "Info"),
     CommandDef("profile", "Show active profile name and home directory", "Info"),
