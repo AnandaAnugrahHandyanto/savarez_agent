@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Validation Contract Handoff Status - 2026-05-13</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #172026;
+      --muted: #5d6972;
+      --line: #d6dde3;
+      --paper: #fbfcfd;
+      --accent: #246b64;
+      --warn: #8a5a00;
+      --risk: #a3322a;
+    }
+
+    body {
+      margin: 0;
+      background: var(--paper);
+      color: var(--ink);
+      font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    main {
+      max-width: 980px;
+      margin: 0 auto;
+      padding: 32px 20px 48px;
+    }
+
+    h1, h2 {
+      line-height: 1.2;
+      margin: 0;
+    }
+
+    h1 {
+      font-size: 30px;
+      margin-bottom: 6px;
+    }
+
+    h2 {
+      font-size: 18px;
+      margin-top: 28px;
+      padding-top: 18px;
+      border-top: 1px solid var(--line);
+    }
+
+    p {
+      margin: 10px 0;
+    }
+
+    a {
+      color: var(--accent);
+    }
+
+    code {
+      background: #edf1f4;
+      border: 1px solid #dce3e8;
+      border-radius: 4px;
+      padding: 1px 4px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 0.92em;
+    }
+
+    ul {
+      margin: 10px 0 0 20px;
+      padding: 0;
+    }
+
+    li {
+      margin: 6px 0;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 12px;
+      background: white;
+    }
+
+    th, td {
+      border: 1px solid var(--line);
+      padding: 9px 10px;
+      text-align: left;
+      vertical-align: top;
+    }
+
+    th {
+      background: #eef3f2;
+      font-weight: 650;
+    }
+
+    .meta {
+      color: var(--muted);
+      margin-bottom: 20px;
+    }
+
+    .status {
+      display: inline-block;
+      border: 1px solid #b9d3ce;
+      background: #eef8f6;
+      border-radius: 4px;
+      color: var(--accent);
+      padding: 3px 8px;
+      font-weight: 650;
+    }
+
+    .warning {
+      color: var(--warn);
+      font-weight: 650;
+    }
+
+    .risk {
+      color: var(--risk);
+      font-weight: 650;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Validation Contract Handoff Status</h1>
+    <p class="meta">Generated 2026-05-13 13:30 PDT from branch <code>codex/validation-handoff-status</code>.</p>
+
+    <p><span class="status">Coordination artifact</span></p>
+    <p>
+      This report reconciles the validation-contract handoff state without editing the files owned by
+      <a href="https://github.com/NousResearch/hermes-agent/pull/25209">PR #25209</a>.
+      It is intentionally separate from the wrapper implementation so maintainers can review merge
+      risk and handoff evidence independently.
+    </p>
+
+    <h2>Current Finding</h2>
+    <p>
+      PR #25209 is open, but its branch is stale relative to <code>origin/main</code> as of
+      2026-05-13 13:30 PDT. A direct comparison of <code>origin/main..origin/pr-25209</code>
+      shows validation-contract files plus unrelated setup/provider files, which means maintainers
+      should refresh or rebase the PR before merge review.
+    </p>
+
+    <h2>PR #25209 Scope</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Field</th>
+          <th>Value</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Title</td>
+          <td>docs: add validation contract wrapper</td>
+        </tr>
+        <tr>
+          <td>Head branch</td>
+          <td><code>codex/validation-contract-docs</code></td>
+        </tr>
+        <tr>
+          <td>Original validation-contract files</td>
+          <td>
+            <code>AGENTS.md</code>,
+            <code>scripts/run_tests.sh</code>,
+            <code>scripts/validate_pr.sh</code>,
+            <code>tests/test_validation_contract.py</code>,
+            <code>website/docs/developer-guide/validation-contract.md</code>,
+            <code>website/sidebars.ts</code>
+          </td>
+        </tr>
+        <tr>
+          <td>Reported validation</td>
+          <td><code>scripts/validate_pr.sh --scope scripts</code>, <code>git diff --check</code>, Gemini CLI secondary review</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h2>Reconciliation Notes</h2>
+    <ul>
+      <li><span class="warning">Do not duplicate #25209:</span> this artifact does not change the wrapper, runner, website sidebar, or validation-contract guide.</li>
+      <li><span class="risk">Merge risk:</span> #25209 now compares against current main with unrelated setup/provider changes because its base is behind.</li>
+      <li>Maintainer action: update #25209 onto current <code>origin/main</code>, then re-run its stated validation command.</li>
+      <li>Handoff action: use this report as status evidence only; it should not replace the validation contract proposed in #25209.</li>
+    </ul>
+
+    <h2>Local Validation</h2>
+    <p>
+      This status artifact is covered by <code>tests/test_validation_handoff_status_artifact.py</code>,
+      which checks that the report names PR #25209, records the non-overlap guarantee, and keeps the
+      stale-branch warning visible.
+    </p>
+  </main>
+</body>
+</html>
