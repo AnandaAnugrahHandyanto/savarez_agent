@@ -4363,15 +4363,46 @@ class AIAgent:
                     # reconstruct auth from scratch -- producing the spurious
                     # "No LLM provider configured" warning at end of turn.
                     _parent_runtime = self._current_main_runtime()
+
+                    # Background reviews are auxiliary work.  By default they
+                    # inherit the parent runtime to preserve OAuth/session-scoped
+                    # credentials, but allow operators to route them to a cheaper
+                    # configured auxiliary curator model so skill/memory review
+                    # does not burn the primary provider's budget.
+                    _review_model = self.model
+                    _review_provider = self.provider
+                    _review_api_mode = _parent_runtime.get("api_mode") or None
+                    _review_base_url = _parent_runtime.get("base_url") or None
+                    _review_api_key = _parent_runtime.get("api_key") or None
+                    try:
+                        from hermes_cli.config import load_config as _load_config
+
+                        _cfg = _load_config() or {}
+                        _curator_cfg = (
+                            (_cfg.get("auxiliary") or {}).get("curator") or {}
+                        )
+                        _aux_provider = (_curator_cfg.get("provider") or "").strip()
+                        if _aux_provider and _aux_provider != "auto":
+                            _review_provider = _aux_provider
+                            _review_model = (_curator_cfg.get("model") or _review_model).strip()
+                            _review_base_url = (_curator_cfg.get("base_url") or "").strip() or None
+                            _review_api_key = (_curator_cfg.get("api_key") or "").strip() or None
+                            # Let the provider resolver select the correct API
+                            # mode for the auxiliary backend rather than reusing
+                            # the parent's Codex/Responses mode.
+                            _review_api_mode = None
+                    except Exception:
+                        pass
+
                     review_agent = AIAgent(
-                        model=self.model,
+                        model=_review_model,
                         max_iterations=16,
                         quiet_mode=True,
                         platform=self.platform,
-                        provider=self.provider,
-                        api_mode=_parent_runtime.get("api_mode") or None,
-                        base_url=_parent_runtime.get("base_url") or None,
-                        api_key=_parent_runtime.get("api_key") or None,
+                        provider=_review_provider,
+                        api_mode=_review_api_mode,
+                        base_url=_review_base_url,
+                        api_key=_review_api_key,
                         credential_pool=getattr(self, "_credential_pool", None),
                         parent_session_id=self.session_id,
                         enabled_toolsets=["memory", "skills"],

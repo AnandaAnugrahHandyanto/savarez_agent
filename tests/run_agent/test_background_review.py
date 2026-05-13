@@ -129,6 +129,66 @@ def test_background_review_installs_auto_deny_approval_callback(monkeypatch):
     )
 
 
+def test_background_review_uses_configured_auxiliary_curator_runtime(monkeypatch):
+    """Background reviews may be routed to a cheaper curator model.
+
+    The parent runtime remains the fallback for OAuth/session-scoped setups, but
+    when ``auxiliary.curator.provider`` is explicitly configured the review fork
+    should use that provider/model and let provider resolution pick a fresh API
+    mode instead of reusing the parent's Codex/Responses mode.
+    """
+    captured_kwargs: dict = {}
+
+    class FakeReviewAgent:
+        def __init__(self, **kwargs):
+            captured_kwargs.update(kwargs)
+            self._session_messages = []
+
+        def run_conversation(self, **kwargs):
+            pass
+
+        def shutdown_memory_provider(self):
+            pass
+
+        def close(self):
+            pass
+
+    def fake_load_config():
+        return {
+            "auxiliary": {
+                "curator": {
+                    "provider": "openrouter",
+                    "model": "google/gemini-flash-preview",
+                    "base_url": "https://openrouter.ai/api/v1",
+                    "api_key": "curator-key",
+                }
+            }
+        }
+
+    monkeypatch.setattr(run_agent_module, "AIAgent", FakeReviewAgent)
+    monkeypatch.setattr(run_agent_module.threading, "Thread", ImmediateThread)
+    monkeypatch.setattr("hermes_cli.config.load_config", fake_load_config)
+
+    agent = _bare_agent()
+    agent.model = "gpt-5.5"
+    agent.provider = "openai-codex"
+    agent.api_mode = "codex_responses"
+    agent.base_url = "https://chatgpt.com/backend-api/codex"
+    agent.api_key = "parent-key"
+
+    AIAgent._spawn_background_review(
+        agent,
+        messages_snapshot=[{"role": "user", "content": "hi"}],
+        review_memory=True,
+    )
+
+    assert captured_kwargs["provider"] == "openrouter"
+    assert captured_kwargs["model"] == "google/gemini-flash-preview"
+    assert captured_kwargs["base_url"] == "https://openrouter.ai/api/v1"
+    assert captured_kwargs["api_key"] == "curator-key"
+    assert captured_kwargs["api_mode"] is None
+
+
 def test_background_review_summary_is_attributed_to_self_improvement_loop(monkeypatch):
     """The CLI/gateway emission must identify the self-improvement loop.
 
