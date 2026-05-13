@@ -74,7 +74,97 @@ GITHUB_TOKEN=$GITHUB_TOKEN \
 **三层数据读取优先级：**
 1. GitHub API（实时，有 token 时优先）
 2. 本地 CSV（`~/.hermes/proposals/proposals.csv`，无网络时使用）
-3. 同源静态文件 `public/data/proposals.json`（CSP 阻塞跨域时的 fallback）
+- `project_proposal_mapping.csv` 同步维护
+- 写入前全部字段自动校验，校验失败则中断，不写入
+
+### 初始化脚本
+
+首次使用或目录损坏时，运行初始化脚本（会自动检测是否已初始化）：
+
+```bash
+python3 scripts/init_proposals_dir.py
+```
+
+**检测逻辑：**
+- 根目录不存在 → 自动初始化
+- 子目录/文件缺失 → 补建缺失项
+- CSV 文件为空 → 重建
+- CSV 文件已有数据行（>1行）→ 拒绝初始化，退出（防止覆盖已有数据）
+
+### Data Management CLI
+
+**所有项目和提案的增删改必须通过 `proposal_manager_cli.py` 脚本进行，禁止直接写入 CSV。**
+
+```bash
+python3 scripts/proposal_manager_cli.py <command> [options]
+```
+
+#### 项目管理
+
+```bash
+# 新增项目（自动生成ID）
+python3 scripts/proposal_manager_cli.py project add --name "项目名" --git-repo "https://github.com/owner/repo"
+
+# 列出项目
+python3 scripts/proposal_manager_cli.py project list --fields id,name,proposal_count
+
+# 获取单个项目
+python3 scripts/proposal_manager_cli.py project get PRJ-20260417-001 --json
+
+# 更新项目
+python3 scripts/proposal_manager_cli.py project update PRJ-20260417-001 --name "新名称"
+
+# 删除项目（需确认无活跃提案，或用 --force 强制）
+python3 scripts/proposal_manager_cli.py project delete PRJ-20260513-001 --force
+```
+
+#### 提案管理
+
+```bash
+# 新增提案（自动生成ID）
+python3 scripts/proposal_manager_cli.py proposal add --title "提案标题" --project-id PRJ-20260417-001
+
+# 列出提案（支持过滤）
+python3 scripts/proposal_manager_cli.py proposal list --fields id,title,status,project_name
+python3 scripts/proposal_manager_cli.py proposal list --status active
+python3 scripts/proposal_manager_cli.py proposal list --project-id PRJ-20260417-001
+
+# 获取单个提案
+python3 scripts/proposal_manager_cli.py proposal get P-20260513-001 --json
+
+# 更新提案
+python3 scripts/proposal_manager_cli.py proposal update P-20260513-001 --status "in_dev"
+python3 scripts/proposal_manager_cli.py proposal update P-20260513-001 --status "accepted" --acceptance "accepted"
+
+# 删除提案（软删除，直接移除）
+python3 scripts/proposal_manager_cli.py proposal delete P-20260513-001
+
+# 归档提案（软删除，标记为 archived）
+python3 scripts/proposal_manager_cli.py proposal archive P-20260513-001
+```
+
+#### 校验规则（自动执行）
+
+| 字段 | 校验内容 |
+|------|---------|
+| `id` | 格式 `PRJ-YYYYMMDD-XXX` 或 `P-YYYYMMDD-XXX`，自动判重 |
+| `project_id` | 外键必须已存在于 `projects.csv` |
+| `status` | 必须在有效枚举值内 |
+| `git_repo` | 必须以 `http://` `https://` 或 `git@` 开头（可空） |
+| `deployment_url` | 同上（可空） |
+| `prd_confirmation` | 枚举：`pending`, `confirmed`, `timeout-approved`, `rejected`, 空 |
+| `tech_expectations` | 同上 |
+| `acceptance` | 枚举：`pending`, `accepted`, `rejected`, 空 |
+| `game_type` | 枚举：休闲/策略/卡牌/RPG/消除/塔防/模拟/动作/射击 |
+| 必填 | `id`, `title`, `project_id`, `status` 不能为空 |
+
+#### 数据写入规范
+
+- 新增时自动填充 `last_update` 为当天日期
+- 新增提案时自动继承所属项目的 `git_repo`
+- 新增/删除提案时自动更新对应项目的 `proposal_count`
+- `project_proposal_mapping.csv` 同步维护
+- 写入前全部字段自动校验，校验失败则中断，不写入
 
 **URL 路径拼接注意：** GitHub Pages 部署在子路径 `/prj-proposals-manager/`（末尾有斜杠）。`window.location.pathname` 返回 `/prj-proposals-manager/`。拼接 data URL 时必须 strip 末尾斜杠：`pathname.replace(/\/$/, '')` 得到 `/prj-proposals-manager`，再拼 `${origin}${basePath}/data/proposals.json` = `https://yeluo45.github.io/prj-proposals-manager/data/proposals.json`。
 
