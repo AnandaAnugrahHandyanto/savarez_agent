@@ -3088,19 +3088,9 @@ def run_setup_wizard(args):
         for key, label, func in SETUP_SECTIONS:
             if key == section:
                 print()
-                print(
-                    color(
-                        "┌─────────────────────────────────────────────────────────┐",
-                        Colors.MAGENTA,
-                    )
-                )
+                print(color("┌─────────────────────────────────────────────────────────┐", Colors.MAGENTA))
                 print(color(f"│     ⚕ Hermes Setup — {label:<34s} │", Colors.MAGENTA))
-                print(
-                    color(
-                        "└─────────────────────────────────────────────────────────┘",
-                        Colors.MAGENTA,
-                    )
-                )
+                print(color("└─────────────────────────────────────────────────────────┘", Colors.MAGENTA))
                 func(config)
                 save_config(config)
                 print()
@@ -3122,39 +3112,12 @@ def run_setup_wizard(args):
     )
 
     print()
-    print(
-        color(
-            "┌─────────────────────────────────────────────────────────┐",
-            Colors.MAGENTA,
-        )
-    )
-    print(
-        color(
-            "│             ⚕ Hermes Agent Setup Wizard                │", Colors.MAGENTA
-        )
-    )
-    print(
-        color(
-            "├─────────────────────────────────────────────────────────┤",
-            Colors.MAGENTA,
-        )
-    )
-    print(
-        color(
-            "│  Let's configure your Hermes Agent installation.       │", Colors.MAGENTA
-        )
-    )
-    print(
-        color(
-            "│  Press Ctrl+C at any time to exit.                     │", Colors.MAGENTA
-        )
-    )
-    print(
-        color(
-            "└─────────────────────────────────────────────────────────┘",
-            Colors.MAGENTA,
-        )
-    )
+    print(color("┌─────────────────────────────────────────────────────────┐", Colors.MAGENTA))
+    print(color("│             ⚕ Hermes Agent Setup Wizard                 │", Colors.MAGENTA))
+    print(color("├─────────────────────────────────────────────────────────┤", Colors.MAGENTA))
+    print(color("│  Let's configure your Hermes Agent installation.        │", Colors.MAGENTA))
+    print(color("│  Press Ctrl+C at any time to exit.                      │", Colors.MAGENTA))
+    print(color("└─────────────────────────────────────────────────────────┘", Colors.MAGENTA))
 
     migration_ran = False
 
