@@ -99,3 +99,41 @@ class TestXiaomiMiMoReasoningReplayPadding:
         agent._copy_reasoning_content_for_api(source_msg, api_msg)
 
         assert "reasoning_content" not in api_msg
+
+
+class TestLookalikeModelsNotDetectedAsMiMo:
+    """Adjacent model families must NOT trigger MiMo's reasoning enforcement."""
+
+    @pytest.mark.parametrize(
+        "provider,model,base_url",
+        [
+            ("openrouter", "minimax-text-01", ""),
+            ("openrouter", "MiniMax-M2.7", ""),
+            ("openrouter", "mistralai/mistral-medium", ""),
+            ("openrouter", "microsoft/phi-4", ""),
+            ("custom", "phi-4-mimo-style", ""),
+        ],
+    )
+    def test_lookalike_not_mimo(
+        self, provider: str, model: str, base_url: str
+    ) -> None:
+        agent = _agent(provider=provider, model=model, base_url=base_url)
+        assert agent._needs_xiaomi_tool_reasoning() is False
+
+
+class TestDeepNamespacedMiMoModels:
+    """Deep-namespaced model names must still be detected as MiMo."""
+
+    @pytest.mark.parametrize(
+        "provider,model,base_url",
+        [
+            ("custom", "vendor/sub/mimo-v3", ""),
+            ("custom", "a/b/c/xiaomi-mimo-v2.5-pro", ""),
+            ("custom", "openrouter/xiaomi/mimo-v2.5-pro", ""),
+        ],
+    )
+    def test_deep_namespace_detected(
+        self, provider: str, model: str, base_url: str
+    ) -> None:
+        agent = _agent(provider=provider, model=model, base_url=base_url)
+        assert agent._needs_xiaomi_tool_reasoning() is True

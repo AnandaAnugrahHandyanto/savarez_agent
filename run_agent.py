@@ -9961,6 +9961,10 @@ class AIAgent:
             provider in {"xiaomi", "mimo", "xiaomi-mimo"}
             or model_leaf.startswith(("mimo-", "mimo_", "xiaomi-mimo-", "xiaomi_mimo_"))
             or base_url_host_matches(self.base_url, "xiaomimimo.com")
+            # Defence-in-depth: catch deeper-namespaced model names like
+            # ``vendor/sub/mimo-v3`` (see PR #24465 review).
+            or "/mimo-" in model
+            or "/xiaomi-mimo-" in model
         )
 
     def _needs_kimi_tool_reasoning(self) -> bool:

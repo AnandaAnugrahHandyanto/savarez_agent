@@ -481,9 +481,17 @@ def _model_name_is_xiaomi_mimo(model: str | None) -> bool:
     m = model.strip().lower()
     if not m:
         return False
+    # Check bare prefixes after stripping the deepest namespace component.
     if "/" in m:
-        m = m.rsplit("/", 1)[-1]
-    return m.startswith(_XIAOMI_MIMO_MODEL_PREFIXES)
+        leaf = m.rsplit("/", 1)[-1]
+    else:
+        leaf = m
+    if leaf.startswith(_XIAOMI_MIMO_MODEL_PREFIXES):
+        return True
+    # Defence-in-depth: catch deeper-namespaced forms like
+    # ``vendor/sub/mimo-v3`` that a single rsplit may not cover when
+    # the provider layer inserts its own prefix.
+    return "/mimo-" in m or "/xiaomi-mimo-" in m
 
 
 def _is_xiaomi_mimo_anthropic_endpoint(base_url: str | None, model: str | None = None) -> bool:

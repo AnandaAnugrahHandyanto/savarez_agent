@@ -149,3 +149,50 @@ class TestXiaomiMiMoAnthropicPreservesThinking:
 
         assert kwargs["thinking"]["type"] == "enabled"
         assert kwargs["temperature"] == 1
+
+
+class TestLookalikeModelNamesDoNotMatchMiMo:
+    """Ensure adjacent model families are not falsely enrolled into MiMo enforcement."""
+
+    @pytest.mark.parametrize(
+        "model",
+        [
+            "minimax-text-01",
+            "MiniMax-M2.7",
+            "mistralai/mistral-medium",
+            "microsoft/phi-4",
+            "phi-4-mimo-style",
+            "openrouter/mistralai/mistral-medium",
+        ],
+    )
+    def test_lookalike_models_are_not_mimo(self, model: str) -> None:
+        from agent.anthropic_adapter import _model_name_is_xiaomi_mimo
+
+        assert _model_name_is_xiaomi_mimo(model) is False, (
+            f"{model!r} should NOT be detected as Xiaomi MiMo"
+        )
+
+    def test_mimowave_is_not_mimo(self) -> None:
+        """mimowave-7b does not match any MiMo prefix (no dash after 'mimo')."""
+        from agent.anthropic_adapter import _model_name_is_xiaomi_mimo
+
+        assert _model_name_is_xiaomi_mimo("mimowave-7b") is False
+
+
+class TestDeepNamespacedModelNames:
+    """Deep-namespaced model names like vendor/sub/mimo-v3 must still match."""
+
+    @pytest.mark.parametrize(
+        "model",
+        [
+            "vendor/sub/mimo-v3",
+            "a/b/c/xiaomi-mimo-v2.5-pro",
+            "openrouter/xiaomi/mimo-v2.5-pro",
+        ],
+    )
+    def test_deep_namespace_matches(self, model: str) -> None:
+        from agent.anthropic_adapter import _model_name_is_xiaomi_mimo
+
+        assert _model_name_is_xiaomi_mimo(model) is True, (
+            f"{model!r} should be detected as Xiaomi MiMo"
+        )
