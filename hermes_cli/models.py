@@ -274,6 +274,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "kimi-k2-0905-preview",
     ],
     "minimax": [
+        "MiniMax-M2.7-highspeed",
         "MiniMax-M2.7",
         "MiniMax-M2.5",
         "MiniMax-M2.1",
@@ -284,6 +285,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "MiniMax-M2.7-highspeed",
     ],
     "minimax-cn": [
+        "MiniMax-M2.7-highspeed",
         "MiniMax-M2.7",
         "MiniMax-M2.5",
         "MiniMax-M2.1",
