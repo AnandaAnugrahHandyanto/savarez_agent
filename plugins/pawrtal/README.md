@@ -34,11 +34,25 @@ hermes plugins enable pawrtal
 ```text
 /pawrtal list
 /pawrtal use h3retik
+/pawrtal spawn h3retik
+/pawrtal vanish h3retik
 /pawrtal status
 /pawrtal update
 ```
 
 Start the desktop companion:
+
+```bash
+pawrtal spawn h3retik
+```
+
+Hide it again:
+
+```bash
+pawrtal vanish h3retik
+```
+
+You can also start the desktop renderer directly:
 
 ```bash
 pawrtal desktop hermes

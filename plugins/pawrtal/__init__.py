@@ -179,19 +179,18 @@ def pawrtal_status(params: dict[str, Any] | None = None, **kwargs: Any) -> str:
     return path.read_text(encoding="utf-8")
 
 
-def pawrtal_update(params: dict[str, Any] | None = None, **kwargs: Any) -> str:
-    del params, kwargs
+def _run_pawrtal(args: list[str]) -> str:
     binary = shutil.which("pawrtal")
     if not binary:
         return json.dumps(
             {
                 "ok": False,
-                "error": "pawrtal CLI was not found on PATH. Install it first, then run /pawrtal update again.",
+                "error": "pawrtal CLI was not found on PATH. Install Pawrtal first, then try again.",
             },
             indent=2,
         )
 
-    command = [binary, "update", "hermes"]
+    command = [binary, *args]
     try:
         proc = subprocess.run(command, capture_output=True, text=True, timeout=120, check=False)
     except subprocess.TimeoutExpired:
@@ -199,7 +198,7 @@ def pawrtal_update(params: dict[str, Any] | None = None, **kwargs: Any) -> str:
             {
                 "ok": False,
                 "command": " ".join(command),
-                "error": "Timed out while updating the Hermes plugin.",
+                "error": "Timed out while running Pawrtal.",
             },
             indent=2,
         )
@@ -211,11 +210,43 @@ def pawrtal_update(params: dict[str, Any] | None = None, **kwargs: Any) -> str:
             "command": " ".join(command),
             "stdout": proc.stdout.strip(),
             "stderr": proc.stderr.strip(),
-            "restartRequired": ok,
-            "message": "Restart Hermes to load changed plugin code." if ok else "Update failed.",
+            "message": "Done." if ok else "Pawrtal command failed.",
         },
         indent=2,
     )
+
+
+def pawrtal_update(params: dict[str, Any] | None = None, **kwargs: Any) -> str:
+    del params, kwargs
+    result = json.loads(_run_pawrtal(["update", "hermes"]))
+    if result.get("ok"):
+        result["restartRequired"] = True
+        result["message"] = "Restart Hermes to load changed plugin code."
+    return json.dumps(result, indent=2)
+
+
+def pawrtal_spawn(params: dict[str, Any] | None = None, **kwargs: Any) -> str:
+    del kwargs
+    params = params or {}
+    session = params.get("session") or "current"
+    pet_id = params.get("pet_id")
+    args = ["spawn"]
+    if pet_id:
+        args.append(str(pet_id))
+    args.extend(["--target", "hermes", "--session", str(session)])
+    return _run_pawrtal(args)
+
+
+def pawrtal_vanish(params: dict[str, Any] | None = None, **kwargs: Any) -> str:
+    del kwargs
+    params = params or {}
+    session = params.get("session") or "current"
+    pet_id = params.get("pet_id")
+    args = ["vanish"]
+    if pet_id:
+        args.append(str(pet_id))
+    args.extend(["--target", "hermes", "--session", str(session)])
+    return _run_pawrtal(args)
 
 
 def _slash_help() -> str:
@@ -223,6 +254,8 @@ def _slash_help() -> str:
         "Usage:\n"
         "  /pawrtal list\n"
         "  /pawrtal use <pet_id> [session]\n"
+        "  /pawrtal spawn [pet_id] [session]\n"
+        "  /pawrtal vanish [pet_id] [session]\n"
         "  /pawrtal status [session]\n"
         "  /pawrtal update\n"
     )
@@ -244,6 +277,10 @@ def pawrtal_slash(raw_args: str) -> str:
         if len(parts) < 2:
             return _slash_help()
         return pawrtal_use({"pet_id": parts[1], "session": parts[2] if len(parts) > 2 else "current"})
+    if command == "spawn":
+        return pawrtal_spawn({"pet_id": parts[1] if len(parts) > 1 else None, "session": parts[2] if len(parts) > 2 else "current"})
+    if command == "vanish":
+        return pawrtal_vanish({"pet_id": parts[1] if len(parts) > 1 else None, "session": parts[2] if len(parts) > 2 else "current"})
     if command == "status":
         return pawrtal_status({"session": parts[1] if len(parts) > 1 else "current"})
     if command == "update":
@@ -407,6 +444,32 @@ PAWRTAL_UPDATE_SCHEMA = {
     },
 }
 
+PAWRTAL_SPAWN_SCHEMA = {
+    "name": "pawrtal_spawn",
+    "description": "Spawn the Pawrtal desktop companion for this Hermes session.",
+    "parameters": {
+    "type": "object",
+    "properties": {
+        "pet_id": {"type": "string", "description": "Optional Pawrtal companion id to activate before spawning."},
+        "session": {"type": "string", "description": "Hermes session id. Defaults to current."},
+    },
+    "required": [],
+    },
+}
+
+PAWRTAL_VANISH_SCHEMA = {
+    "name": "pawrtal_vanish",
+    "description": "Vanish the Pawrtal desktop companion for this Hermes session.",
+    "parameters": {
+    "type": "object",
+    "properties": {
+        "pet_id": {"type": "string", "description": "Optional companion id to vanish if it is active."},
+        "session": {"type": "string", "description": "Hermes session id. Defaults to current."},
+    },
+    "required": [],
+    },
+}
+
 
 def register(ctx) -> None:
     _start_relay(ctx)
@@ -435,6 +498,22 @@ def register(ctx) -> None:
         emoji="🐾",
     )
     ctx.register_tool(
+        name="pawrtal_spawn",
+        toolset="pawrtal",
+        schema=PAWRTAL_SPAWN_SCHEMA,
+        handler=pawrtal_spawn,
+        description="Spawn the Pawrtal desktop companion for this Hermes session.",
+        emoji="🐾",
+    )
+    ctx.register_tool(
+        name="pawrtal_vanish",
+        toolset="pawrtal",
+        schema=PAWRTAL_VANISH_SCHEMA,
+        handler=pawrtal_vanish,
+        description="Vanish the Pawrtal desktop companion for this Hermes session.",
+        emoji="🐾",
+    )
+    ctx.register_tool(
         name="pawrtal_update",
         toolset="pawrtal",
         schema=PAWRTAL_UPDATE_SCHEMA,
@@ -446,7 +525,7 @@ def register(ctx) -> None:
         "pawrtal",
         handler=pawrtal_slash,
         description="Manage Pawrtal companions for this session.",
-        args_hint="list | use <pet_id> [session] | status [session] | update",
+        args_hint="list | use <pet_id> [session] | spawn [pet_id] [session] | vanish [pet_id] [session] | status [session] | update",
     )
     ctx.register_hook("pre_llm_call", on_pre_llm_call)
     ctx.register_hook("post_llm_call", on_post_llm_call)
