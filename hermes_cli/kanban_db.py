@@ -3015,11 +3015,19 @@ _DEFECT_BLOCKER_RE = re.compile(
     r")\b",
     re.I,
 )
-_HUMAN_BLOCKER_RE = re.compile(
+_OPS_REPAIR_BLOCKER_RE = re.compile(
     r"\b("
-    r"approval|approve|human|operator|decision|choose|credential|credentials|"
-    r"secret|token|api key|password|login|auth|oauth|access|permission|"
-    r"clarify|clarification|user input|which profile|paywall|blocked by user"
+    r"auth(?:entication|orization)?|oauth|login|credential|credentials|"
+    r"profile|session|tooling|tool|path|spawn|file not found|command not found|"
+    r"permission denied|access denied|missing executable|no path"
+    r")\b",
+    re.I,
+)
+_HUMAN_DECISION_BLOCKER_RE = re.compile(
+    r"\b("
+    r"approval|approve|human|operator|decision|choose|clarify|clarification|"
+    r"user input|which profile|paywall|blocked by user|new credential|new credentials|"
+    r"manual login|manual oauth|manual approval"
     r")\b",
     re.I,
 )
@@ -3038,14 +3046,21 @@ def _is_review_task(task: Task) -> bool:
 def _is_actionable_review_blocker(task: Task, reason: str) -> bool:
     if not _is_review_task(task):
         return False
-    text = " ".join(str(x or "") for x in (task.title, task.body, reason))
-    has_defect = bool(_DEFECT_BLOCKER_RE.search(text))
-    has_human = bool(_HUMAN_BLOCKER_RE.search(reason or ""))
-    # Human/credential/approval blockers must not auto-reroute unless the
-    # same reason also names a concrete defect signal. This keeps genuine
-    # approval waits parked for a human while still handling "tests failed"
-    # / "needs changes" review blocks without an operator.
-    return has_defect and not has_human
+    reason_text = str(reason or "")
+    if not reason_text.strip():
+        return False
+    has_defect = bool(_DEFECT_BLOCKER_RE.search(reason_text))
+    has_ops_repair = bool(_OPS_REPAIR_BLOCKER_RE.search(reason_text))
+    has_human_decision = bool(_HUMAN_DECISION_BLOCKER_RE.search(reason_text))
+    # Only route blockers grounded in the current blocked reason. Auto-created
+    # remediation tasks contain generic "review finding" language in their
+    # title/body, so including those fields here can turn an empty blocker into
+    # an infinite remediation cascade.
+    #
+    # Auth/profile/session/tooling failures are repairable ops work, not a
+    # terminal human blocker. Keep true human approval/decision waits parked;
+    # the remediation worker can escalate only if safe recovery mechanisms fail.
+    return (has_defect or has_ops_repair) and not has_human_decision
 
 
 def _sanitize_blocker_text(text: Optional[str], *, max_chars: int = 1200) -> str:
@@ -3116,9 +3131,11 @@ def auto_remediate_blocked_reviews(
 ) -> list[tuple[str, str, str]]:
     """Route actionable blocked review/QA findings into fix + re-review tasks.
 
-    Human-only blockers (approval, credentials, access, explicit decisions) are
-    intentionally left alone. Idempotency keys and an ``auto_remediated`` event
-    make dispatcher retries safe and prevent remediation/re-review loops.
+    Human approval/decision blockers are intentionally left alone. Auth,
+    profile, session, PATH/spawn, and other tooling failures are treated as
+    repairable ops defects and routed with safe redacted diagnostics. Idempotency
+    keys and an ``auto_remediated`` event make dispatcher retries safe and
+    prevent remediation/re-review loops.
     Returns ``(review_id, remediation_id, rereview_id)`` tuples. In dry-run mode
     ids are empty strings because no rows are created.
     """
@@ -3146,9 +3163,11 @@ def auto_remediate_blocked_reviews(
             f"Auto-created from blocked review/QA task {review.id}.\n\n"
             f"Original review title: {review.title}\n"
             f"Blocked reason/findings:\n{safe_reason}\n\n"
-            "Fix the actionable defects only; do not proceed if the blocker is actually "
-            "waiting on credentials, approval, or a human decision. Complete with tests run "
-            "and changed files so the follow-up re-review has enough context."
+            "Fix the actionable defects or repair the auth/profile/session/tooling failure "
+            "using safe non-secret diagnostics. If recovery requires a new credential, "
+            "approval, or human decision that cannot be obtained by existing mechanisms, "
+            "block with exactly that requested action. Complete with tests run and changed "
+            "files so the follow-up re-review has enough context."
         )
         rem_id = create_task(
             conn,
