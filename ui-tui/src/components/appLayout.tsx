@@ -169,6 +169,13 @@ const ComposerPane = memo(function ComposerPane({
 }: Pick<AppLayoutProps, 'actions' | 'composer' | 'status'>) {
   const ui = useStore($uiState)
   const isBlocked = useStore($isBlocked)
+  const goodVibesFreezeRef = useRef<number | undefined>(undefined)
+
+  if (!isBlocked) {
+    goodVibesFreezeRef.current = undefined
+  }
+
+  const heartTick = isBlocked ? (goodVibesFreezeRef.current ??= status.goodVibesTick) : status.goodVibesTick
   const sh = (composer.inputBuf[0] ?? composer.input).startsWith('!')
   const promptText = sh ? '$' : ui.theme.brand.prompt
   const promptWidth = composerPromptWidth(promptText)
@@ -246,7 +253,7 @@ const ComposerPane = memo(function ComposerPane({
         <Box height={1} onMouseDown={captureInputDrag} onMouseDrag={dragFromSpacer} onMouseUp={endInputDrag} />
       )}
 
-      <StatusRulePane at="top" composer={composer} status={status} />
+      <StatusRulePane at="top" composer={composer} pauseStatusChrome={isBlocked} status={status} />
 
       <Box flexDirection="column" marginTop={ui.statusBar === 'top' ? 0 : 1} position="relative">
         <FloatingOverlays
@@ -308,7 +315,7 @@ const ComposerPane = memo(function ComposerPane({
               </Box>
 
               <Box position="absolute" right={0}>
-                <GoodVibesHeart t={ui.theme} tick={status.goodVibesTick} />
+                <GoodVibesHeart t={ui.theme} tick={heartTick} />
               </Box>
             </Box>
           </>
@@ -317,7 +324,7 @@ const ComposerPane = memo(function ComposerPane({
 
       {!composer.empty && !ui.sid && <Text color={ui.theme.color.muted}>⚕ {ui.status}</Text>}
 
-      <StatusRulePane at="bottom" composer={composer} status={status} />
+      <StatusRulePane at="bottom" composer={composer} pauseStatusChrome={isBlocked} status={status} />
     </NoSelect>
   )
 })
@@ -340,8 +347,9 @@ const AgentsOverlayPane = memo(function AgentsOverlayPane() {
 const StatusRulePane = memo(function StatusRulePane({
   at,
   composer,
-  status
-}: Pick<AppLayoutProps, 'composer' | 'status'> & { at: 'bottom' | 'top' }) {
+  status,
+  pauseStatusChrome
+}: Pick<AppLayoutProps, 'composer' | 'status'> & { at: 'bottom' | 'top'; pauseStatusChrome?: boolean }) {
   const ui = useStore($uiState)
 
   if (ui.statusBar !== at) {
@@ -358,6 +366,7 @@ const StatusRulePane = memo(function StatusRulePane({
         model={ui.info?.model ?? ''}
         modelFast={ui.info?.fast || ui.info?.service_tier === 'priority'}
         modelReasoningEffort={ui.info?.reasoning_effort}
+        pauseStatusChrome={pauseStatusChrome}
         sessionStartedAt={status.sessionStartedAt}
         showCost={ui.showCost}
         status={ui.status}

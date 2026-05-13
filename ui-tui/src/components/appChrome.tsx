@@ -211,15 +211,20 @@ function SpawnHud({ t }: { t: Theme }) {
   )
 }
 
-function SessionDuration({ startedAt }: { startedAt: number }) {
+function SessionDuration({ animate: sessionClockLive = true, startedAt }: { animate?: boolean; startedAt: number }) {
   const [now, setNow] = useState(() => Date.now())
 
   useEffect(() => {
     setNow(Date.now())
+
+    if (!sessionClockLive) {
+      return
+    }
+
     const id = setInterval(() => setNow(Date.now()), 1000)
 
     return () => clearInterval(id)
-  }, [startedAt])
+  }, [sessionClockLive, startedAt])
 
   return fmtDuration(now - startedAt)
 }
@@ -285,7 +290,8 @@ export function StatusRule({
   showCost,
   turnStartedAt,
   voiceLabel,
-  t
+  t,
+  pauseStatusChrome = false
 }: StatusRuleProps) {
   const pct = usage.context_percent
   const barColor = ctxBarColor(pct, t)
@@ -305,7 +311,11 @@ export function StatusRule({
         <Text color={t.color.border} wrap="truncate-end">
           {'─ '}
           {busy ? (
-            <FaceTicker color={statusColor} startedAt={turnStartedAt} />
+            pauseStatusChrome ? (
+              <Text color={statusColor}>{status}</Text>
+            ) : (
+              <FaceTicker color={statusColor} startedAt={turnStartedAt} />
+            )
           ) : (
             <Text color={statusColor}>{status}</Text>
           )}
@@ -320,7 +330,7 @@ export function StatusRule({
           {sessionStartedAt ? (
             <Text color={t.color.muted}>
               {' │ '}
-              <SessionDuration startedAt={sessionStartedAt} />
+              <SessionDuration animate={!pauseStatusChrome} startedAt={sessionStartedAt} />
             </Text>
           ) : null}
           {typeof usage.compressions === 'number' && usage.compressions > 0 ? (
@@ -461,6 +471,8 @@ interface StatusRuleProps {
   model: string
   modelFast?: boolean
   modelReasoningEffort?: string
+  /** When true (blocking overlay open), freeze FaceTicker + session clock to reduce stdout churn vs prompts. */
+  pauseStatusChrome?: boolean
   sessionStartedAt?: null | number
   showCost: boolean
   status: string

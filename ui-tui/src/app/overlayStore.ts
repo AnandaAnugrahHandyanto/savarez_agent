@@ -18,6 +18,9 @@ const buildOverlayState = (): OverlayState => ({
 
 export const $overlayState = atom<OverlayState>(buildOverlayState())
 
+/** Increments on every overlay mutation for tests and optional subscribers (cross-backend render sequencing). */
+export const $overlayRevision = atom(0)
+
 export const $isBlocked = computed(
   $overlayState,
   ({ agents, approval, clarify, confirm, modelPicker, pager, picker, secret, skillsHub, sudo }) =>
@@ -26,11 +29,19 @@ export const $isBlocked = computed(
 
 export const getOverlayState = () => $overlayState.get()
 
-export const patchOverlayState = (next: Partial<OverlayState> | ((state: OverlayState) => OverlayState)) =>
-  $overlayState.set(typeof next === 'function' ? next($overlayState.get()) : { ...$overlayState.get(), ...next })
+export const patchOverlayState = (next: Partial<OverlayState> | ((state: OverlayState) => OverlayState)) => {
+  const prev = $overlayState.get()
+  const merged = typeof next === 'function' ? next(prev) : { ...prev, ...next }
+
+  $overlayState.set(merged)
+  $overlayRevision.set($overlayRevision.get() + 1)
+}
 
 /** Full reset — used by session/turn teardown and tests. */
-export const resetOverlayState = () => $overlayState.set(buildOverlayState())
+export const resetOverlayState = () => {
+  $overlayState.set(buildOverlayState())
+  $overlayRevision.set($overlayRevision.get() + 1)
+}
 
 /**
  * Soft reset: drop FLOW-scoped overlays (approval / clarify / confirm / sudo
@@ -40,12 +51,15 @@ export const resetOverlayState = () => $overlayState.set(buildOverlayState())
  * every turn completion / interrupt; the old "reset everything" behaviour
  * silently closed /agents the moment delegation finished.
  */
-export const resetFlowOverlays = () =>
+export const resetFlowOverlays = () => {
+  const prev = $overlayState.get()
   $overlayState.set({
     ...buildOverlayState(),
-    agents: $overlayState.get().agents,
-    agentsInitialHistoryIndex: $overlayState.get().agentsInitialHistoryIndex,
-    modelPicker: $overlayState.get().modelPicker,
-    picker: $overlayState.get().picker,
-    skillsHub: $overlayState.get().skillsHub
+    agents: prev.agents,
+    agentsInitialHistoryIndex: prev.agentsInitialHistoryIndex,
+    modelPicker: prev.modelPicker,
+    picker: prev.picker,
+    skillsHub: prev.skillsHub
   })
+  $overlayRevision.set($overlayRevision.get() + 1)
+}
