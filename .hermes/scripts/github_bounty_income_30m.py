@@ -13,6 +13,7 @@ import os
 import re
 import shutil
 import subprocess
+import urllib.request
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -23,6 +24,7 @@ HERMES_HOME = Path(os.environ.get("HERMES_HOME", ".hermes")).resolve()
 REPORT_DIR = HERMES_HOME / "reports" / "bounty-candidates"
 WORKSPACE = HERMES_HOME / "bounty-workspace"
 WATCHLIST_FILE = HERMES_HOME / "config" / "bounty-watchlist.json"
+ALGORA_BOUNTIES_URL = "https://algora.io/bounties"
 
 LANGUAGES = ("Python", "TypeScript", "Rust", "Go")
 LIMIT_PER_QUERY = int(os.environ.get("BOUNTY_SCOUT_LIMIT_PER_QUERY", "18"))
@@ -134,6 +136,15 @@ class WatchResult:
     next_command: str
 
 
+@dataclass
+class SourceResult:
+    id: str
+    url: str
+    status: str
+    highlights: list[str]
+    reason: str = ""
+
+
 def run_json(args: list[str]) -> Any:
     completed = subprocess.run(args, text=True, capture_output=True, check=False)
     if completed.returncode != 0:
@@ -148,16 +159,69 @@ def run_json(args: list[str]) -> Any:
 
 
 def load_watchlist() -> list[dict[str, Any]]:
-    if not WATCHLIST_FILE.exists():
-        return []
-    try:
-        data = json.loads(WATCHLIST_FILE.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return []
+    data = load_watch_config()
     items = data.get("watchlist") if isinstance(data, dict) else None
     if not isinstance(items, list):
         return []
     return [item for item in items if isinstance(item, dict)]
+
+
+def load_watch_sources() -> list[dict[str, Any]]:
+    data = load_watch_config()
+    sources = data.get("sources") if isinstance(data, dict) else None
+    if not isinstance(sources, list):
+        return [{"id": "algora-public-bounties", "url": ALGORA_BOUNTIES_URL}]
+    return [source for source in sources if isinstance(source, dict)]
+
+
+def load_watch_config() -> dict[str, Any]:
+    if not WATCHLIST_FILE.exists():
+        return {}
+    try:
+        data = json.loads(WATCHLIST_FILE.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def strip_html(text: str) -> str:
+    text = re.sub(r"<script\b.*?</script>", " ", text, flags=re.I | re.S)
+    text = re.sub(r"<style\b.*?</style>", " ", text, flags=re.I | re.S)
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = text.replace("&amp;", "&").replace("&nbsp;", " ").replace("&#x27;", "'")
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def inspect_sources() -> list[SourceResult]:
+    results: list[SourceResult] = []
+    for source in load_watch_sources():
+        url = str(source.get("url") or "").strip()
+        source_id = str(source.get("id") or url or "source")
+        if not url:
+            continue
+        try:
+            request = urllib.request.Request(url, headers={"User-Agent": "Hermes-Bounty-Scout/1.0"})
+            with urllib.request.urlopen(request, timeout=25) as response:
+                html = response.read().decode("utf-8", errors="replace")
+        except Exception as exc:
+            results.append(SourceResult(source_id, url, "unavailable", [], f"{type(exc).__name__}: {exc}"))
+            continue
+
+        visible = strip_html(html)
+        highlights: list[str] = []
+        for pattern in (
+            r"Twenty \(YC S23\)\s+\$2,500\s+IMAP",
+            r"Kyo\s+#390\s+\$500\s+gRPC Support",
+            r"Isaac\s+#45\s+\$850\s+\[ISAAC-497\][^.]+?(?=Fund GitHub issues|Did you know|$)",
+        ):
+            match = re.search(pattern, visible, flags=re.I)
+            if match:
+                highlights.append(match.group(0).strip())
+        if not highlights:
+            money_matches = re.findall(r"[^.]{0,40}\$\s?[\d,]+[^.]{0,80}", visible)
+            highlights = [item.strip() for item in money_matches[:5]]
+        results.append(SourceResult(source_id, url, "ok", highlights[:8]))
+    return results
 
 
 def notify() -> None:
@@ -545,10 +609,25 @@ def render(
     take: Candidate | None,
     cloned: Path | None,
     watch_results: list[WatchResult],
+    source_results: list[SourceResult],
 ) -> str:
     now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     gate = take.gate if take else ("WATCH" if any(c.gate == "WATCH" for c in candidates) else "SKIP")
     lines = report_header(now, gate, take)
+
+    if source_results:
+        lines.extend(["", "## Public Bounty Sources"])
+        for result in source_results:
+            lines.extend(
+                [
+                    f"- Source: `{result.id}`",
+                    f"  - URL: {result.url}",
+                    f"  - Status: `{result.status}`",
+                    f"  - Highlights: {', '.join(result.highlights) if result.highlights else 'none'}",
+                ]
+            )
+            if result.reason:
+                lines.append(f"  - Reason: {result.reason}")
 
     if watch_results:
         lines.extend(["", "## Manual Watchlist"])
@@ -662,8 +741,9 @@ def main() -> int:
     ranked = sorted(enriched, key=lambda c: c.score, reverse=True)
     take = next((candidate for candidate in ranked if candidate.gate == "TAKE"), None)
     cloned = maybe_clone(take)
+    source_results = inspect_sources()
     watch_results = inspect_watchlist()
-    report = render(ranked, take, cloned, watch_results)
+    report = render(ranked, take, cloned, watch_results, source_results)
     report_path = REPORT_DIR / f"{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}-github-bounty-income-30m.md"
     report_path.write_text(report, encoding="utf-8")
 
