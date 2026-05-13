@@ -136,6 +136,13 @@ VALID_HOOKS: Set[str] = {
     "transform_llm_output",
     "pre_llm_call",
     "post_llm_call",
+    # Fired immediately before context compression mutates/discards older
+    # messages.  Shell hooks can use this to run durable handoff/recap
+    # automation before the transcript is compacted.
+    "pre_context_compress",
+    # Fired after a compression pass completes and the continuation session id
+    # has been created (when applicable).  Observer hook; return values ignored.
+    "post_context_compress",
     "pre_api_request",
     "post_api_request",
     "on_session_start",

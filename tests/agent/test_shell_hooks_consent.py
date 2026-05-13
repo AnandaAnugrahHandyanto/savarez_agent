@@ -311,3 +311,34 @@ class TestHooksAutoAcceptParsing:
             {"hooks_auto_accept": "false"}, accept_hooks_arg=True,
         ) is True
 
+
+# ── Context-compression hook events ───────────────────────────────────────
+
+
+def test_context_compression_hook_events_are_valid(tmp_path):
+    """Regression guard for /chores-style compaction backstops.
+
+    Users can configure shell hooks for these events only if they are in
+    VALID_HOOKS; otherwise the config parser skips them as unknown.
+    """
+    from hermes_cli import plugins
+
+    script = _write_hook_script(tmp_path)
+    plugins._plugin_manager = plugins.PluginManager()
+
+    registered = shell_hooks.register_from_config(
+        {
+            "hooks_auto_accept": True,
+            "hooks": {
+                "pre_context_compress": [{"command": str(script)}],
+                "post_context_compress": [{"command": str(script)}],
+            },
+        },
+        accept_hooks=False,
+    )
+
+    assert {spec.event for spec in registered} == {
+        "pre_context_compress",
+        "post_context_compress",
+    }
+

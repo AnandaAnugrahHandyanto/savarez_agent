@@ -10269,6 +10269,34 @@ class AIAgent:
             focus_topic,
         )
 
+        # Plugin/shell hook: pre_context_compress
+        # Fired before compression mutates/discards older messages. This gives
+        # operators a deterministic place to run durable handoff/recap scripts
+        # (for example Richard's /chores backstop) before compaction rotates the
+        # session. Return values are intentionally ignored; hook failures must
+        # not block compression or strand the agent over context.
+        try:
+            from hermes_cli.plugins import invoke_hook as _invoke_hook
+            try:
+                from hermes_cli.profiles import get_active_profile_name as _get_active_profile_name
+                _active_profile = _get_active_profile_name() or ""
+            except Exception:
+                _active_profile = os.environ.get("HERMES_PROFILE") or ""
+            _invoke_hook(
+                "pre_context_compress",
+                session_id=self.session_id,
+                message_count=_pre_msg_count,
+                approx_tokens=approx_tokens,
+                model=self.model,
+                platform=getattr(self, "platform", None) or "",
+                profile=_active_profile,
+                task_id=task_id,
+                focus_topic=focus_topic or "",
+                cwd=str(Path.cwd()),
+            )
+        except Exception as exc:
+            logger.warning("pre_context_compress hook failed: %s", exc)
+
         # Notify external memory provider before compression discards context
         if self._memory_manager:
             try:
@@ -10388,6 +10416,33 @@ class AIAgent:
                 )
         except Exception as _me_err:
             logger.debug("memory manager on_session_switch (compression): %s", _me_err)
+
+        # Plugin/shell hook: post_context_compress
+        # Fired after the continuation session has been established, so hooks
+        # can record the parent/child session mapping. Observer-only.
+        try:
+            from hermes_cli.plugins import invoke_hook as _invoke_hook
+            try:
+                from hermes_cli.profiles import get_active_profile_name as _get_active_profile_name
+                _active_profile = _get_active_profile_name() or ""
+            except Exception:
+                _active_profile = os.environ.get("HERMES_PROFILE") or ""
+            _invoke_hook(
+                "post_context_compress",
+                session_id=self.session_id,
+                parent_session_id=locals().get("old_session_id") or "",
+                original_message_count=_pre_msg_count,
+                compressed_message_count=len(compressed),
+                approx_tokens=approx_tokens,
+                model=self.model,
+                platform=getattr(self, "platform", None) or "",
+                profile=_active_profile,
+                task_id=task_id,
+                focus_topic=focus_topic or "",
+                cwd=str(Path.cwd()),
+            )
+        except Exception as exc:
+            logger.warning("post_context_compress hook failed: %s", exc)
 
         # Warn on repeated compressions (quality degrades with each pass)
         _cc = self.context_compressor.compression_count

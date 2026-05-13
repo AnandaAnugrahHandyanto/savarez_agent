@@ -377,6 +377,8 @@ def register(ctx):
 | [`post_tool_call`](#post_tool_call) | After any tool returns | ignored |
 | [`pre_llm_call`](#pre_llm_call) | Once per turn, before the tool-calling loop | `{"context": str}` to prepend context to the user message |
 | [`post_llm_call`](#post_llm_call) | Once per turn, after the tool-calling loop | ignored |
+| [`pre_context_compress`](#pre_context_compress) | Immediately before context compression mutates/discards older messages | ignored |
+| [`post_context_compress`](#post_context_compress) | After context compression completes and the continuation session is established | ignored |
 | [`on_session_start`](#on_session_start) | New session created (first turn only) | ignored |
 | [`on_session_end`](#on_session_end) | Session ends | ignored |
 | [`on_session_finalize`](#on_session_finalize) | CLI/gateway tears down an active session (flush, save, stats) | ignored |
@@ -643,6 +645,43 @@ def log_response_length(session_id, assistant_response, model, **kwargs):
 def register(ctx):
     ctx.register_hook("post_llm_call", log_response_length)
 ```
+
+---
+
+### `pre_context_compress`
+
+Fires **immediately before** Hermes runs context compression and may summarize/discard older messages. This is the right hook for durable handoff/recap automation that must happen before compaction.
+
+**Callback signature:**
+
+```python
+def my_callback(session_id: str, message_count: int, approx_tokens: int | None,
+                model: str, platform: str, task_id: str, focus_topic: str,
+                cwd: str, **kwargs):
+```
+
+**Return value:** Ignored.
+
+**Use cases:** Handoff/recap backstops, pre-compaction audit logs, session lineage diagnostics.
+
+---
+
+### `post_context_compress`
+
+Fires **after** context compression completes and after the continuation session id has been established when session storage is available.
+
+**Callback signature:**
+
+```python
+def my_callback(session_id: str, parent_session_id: str,
+                original_message_count: int, compressed_message_count: int,
+                approx_tokens: int | None, model: str, platform: str,
+                task_id: str, focus_topic: str, cwd: str, **kwargs):
+```
+
+**Return value:** Ignored.
+
+**Use cases:** Recording parent/child session mappings after compression, post-compaction audit logs, cleanup of temporary pre-compaction artifacts.
 
 ---
 
