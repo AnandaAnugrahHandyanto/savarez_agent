@@ -337,7 +337,7 @@ def _parse_target_ref(platform_name: str, target_ref: str):
         if target_ref.strip().isdigit():
             return f"group:{target_ref.strip()}", None, True
         return None, None, False
-    # TrueConf user IDs are email addresses (user@domain.trueconf.com)
+    # TrueConf user IDs looks like email addresses (user@domain.example.com)
     if platform_name == "trueconf" and "@" in target_ref and "." in target_ref:
         return target_ref.strip(), None, True
     if platform_name in _PHONE_PLATFORMS:
