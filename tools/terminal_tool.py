@@ -56,6 +56,23 @@ logger = logging.getLogger(__name__)
 # long-running subprocesses immediately instead of blocking until timeout.
 # ---------------------------------------------------------------------------
 from tools.interrupt import is_interrupted, _interrupt_event  # noqa: F401 — re-exported
+try:
+    from agent.file_safety import get_terminal_read_block_error
+except ImportError:
+    # Some tests intentionally replace the agent package while loading this file
+    # directly from a worktree. Fall back to the sibling source file so safety
+    # guards still run against the code being tested instead of a stale editable
+    # install from another checkout.
+    _file_safety_path = Path(__file__).resolve().parents[1] / "agent" / "file_safety.py"
+    _file_safety_spec = importlib.util.spec_from_file_location(
+        "_hermes_file_safety_fallback",
+        _file_safety_path,
+    )
+    if _file_safety_spec is None or _file_safety_spec.loader is None:
+        raise
+    _file_safety_module = importlib.util.module_from_spec(_file_safety_spec)
+    _file_safety_spec.loader.exec_module(_file_safety_module)
+    get_terminal_read_block_error = _file_safety_module.get_terminal_read_block_error
 # display_hermes_home imported lazily at call site (stale-module safety during hermes update)
 
 
@@ -1713,6 +1730,20 @@ def terminal_tool(
         cwd = overrides.get("cwd") or config["cwd"]
         default_timeout = config["timeout"]
         effective_timeout = timeout or default_timeout
+
+        with _env_lock:
+            existing_env = _active_environments.get(effective_task_id)
+        secret_read_error = get_terminal_read_block_error(
+            command,
+            cwd=workdir or getattr(existing_env, "cwd", None) or cwd,
+        )
+        if secret_read_error:
+            return json.dumps({
+                "output": "",
+                "exit_code": -1,
+                "error": secret_read_error,
+                "status": "error",
+            }, ensure_ascii=False)
 
         # Reject foreground commands where the model explicitly requests
         # a timeout above FOREGROUND_MAX_TIMEOUT — nudge it toward background.

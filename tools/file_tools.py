@@ -8,7 +8,26 @@ import os
 import threading
 from pathlib import Path
 
-from agent.file_safety import get_read_block_error
+try:
+    from agent.file_safety import get_read_block_error, get_search_block_error
+except ImportError:
+    # Some tests intentionally replace the agent package while loading this file
+    # directly from a worktree. Fall back to the sibling source file so safety
+    # guards still run against the code being tested instead of a stale editable
+    # install from another checkout.
+    import importlib.util as _importlib_util
+
+    _file_safety_path = Path(__file__).resolve().parents[1] / "agent" / "file_safety.py"
+    _file_safety_spec = _importlib_util.spec_from_file_location(
+        "_hermes_file_safety_fallback",
+        _file_safety_path,
+    )
+    if _file_safety_spec is None or _file_safety_spec.loader is None:
+        raise
+    _file_safety_module = _importlib_util.module_from_spec(_file_safety_spec)
+    _file_safety_spec.loader.exec_module(_file_safety_module)
+    get_read_block_error = _file_safety_module.get_read_block_error
+    get_search_block_error = _file_safety_module.get_search_block_error
 from tools.binary_extensions import has_binary_extension
 from tools.file_operations import (
     ShellFileOperations,
@@ -473,9 +492,10 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
                 ),
             })
 
-        # ── Hermes internal path guard ────────────────────────────────
-        # Prevent prompt injection via catalog or hub metadata files.
-        block_error = get_read_block_error(path)
+        # ── Sensitive read guard ──────────────────────────────────────
+        # Prevent prompt injection from reading credential stores. Check the
+        # same task-resolved path that the eventual file I/O will use.
+        block_error = get_read_block_error(str(_resolved))
         if block_error:
             return json.dumps({"error": block_error})
 
@@ -950,6 +970,14 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
     """Search for content or files."""
     try:
         offset, limit = normalize_search_pagination(offset, limit)
+
+        # Block explicit attempts to search credential stores. Content search can
+        # expose the same secrets as read_file, so apply the shared read guard to
+        # the same task-resolved root that the eventual search will use.
+        _resolved = _resolve_path_for_task(path, task_id)
+        block_error = get_search_block_error(str(_resolved))
+        if block_error:
+            return json.dumps({"error": block_error})
 
         # Track searches to detect *consecutive* repeated search loops.
         # Include pagination args so users can page through truncated
