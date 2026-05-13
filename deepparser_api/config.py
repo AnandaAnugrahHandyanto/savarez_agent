@@ -32,6 +32,17 @@ KEYS_PER_IP_MAX = 5
 # --- admin ---
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "")
 
+# --- trusted proxies ---
+# Space-separated list of trusted reverse-proxy CIDRs/IPs whose X-Forwarded-For header
+# will be trusted for rate-limiting. Empty by default (trust only client.host).
+# Set to the Fly.io private network range when deploying behind Fly.io:
+#   TRUSTED_PROXY_CIDRS="fdaa::/16"
+# Or for a local nginx: TRUSTED_PROXY_CIDRS="127.0.0.1"
+_raw_proxy_cidrs = os.environ.get("TRUSTED_PROXY_CIDRS", "")
+TRUSTED_PROXY_CIDRS: frozenset[str] = frozenset(
+    c.strip() for c in _raw_proxy_cidrs.split() if c.strip()
+)
+
 # --- supported formats ---
 SUPPORTED_EXTENSIONS = {
     "pdf", "docx", "doc", "ppt", "pptx",

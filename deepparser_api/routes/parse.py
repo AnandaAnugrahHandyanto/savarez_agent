@@ -90,14 +90,19 @@ async def submit_parse(
     stored_path = os.path.join(UPLOAD_DIR, stored_name)
     await asyncio.to_thread(Path(stored_path).write_bytes, content)
 
-    async with db.connect() as conn:
-        await conn.execute(
-            """INSERT INTO parse_jobs
-               (id, api_key_id, status, filename_original, filename_stored)
-               VALUES (?, ?, 'QUEUED', ?, ?)""",
-            (job_id, key_row["id"], file.filename, stored_name),
-        )
-        await conn.commit()
+    try:
+        async with db.connect() as conn:
+            await conn.execute(
+                """INSERT INTO parse_jobs
+                   (id, api_key_id, status, filename_original, filename_stored)
+                   VALUES (?, ?, 'QUEUED', ?, ?)""",
+                (job_id, key_row["id"], file.filename, stored_name),
+            )
+            await conn.commit()
+    except Exception:
+        # DB failure after file write — clean up the orphaned file before re-raising.
+        await asyncio.to_thread(Path(stored_path).unlink, missing_ok=True)
+        raise
 
     task = asyncio.create_task(
         run_parse_task(job_id, key_row["id"], stored_path)

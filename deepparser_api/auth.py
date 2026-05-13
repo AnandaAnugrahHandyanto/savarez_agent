@@ -15,6 +15,7 @@ from .config import (
     AUTH_FAIL_WINDOW_SECS,
     KEYS_PER_IP_MAX,
     KEYS_PER_IP_WINDOW_SECS,
+    TRUSTED_PROXY_CIDRS,
 )
 
 # In-memory rate-limit stores.  { ip: [(timestamp, ...), ...] }
@@ -23,10 +24,16 @@ _key_registrations: dict[str, list[float]] = defaultdict(list)
 
 
 def _client_ip(request: Request) -> str:
-    forwarded = request.headers.get("X-Forwarded-For")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
-    return request.client.host if request.client else "unknown"
+    client_host = request.client.host if request.client else "unknown"
+    # Only trust X-Forwarded-For when the request arrives from a configured trusted proxy.
+    # Default is empty (no trusted proxies), so client.host is always used directly.
+    # Set TRUSTED_PROXY_CIDRS env var to your reverse proxy IP when deploying behind
+    # Fly.io (fdaa::/16) or nginx (127.0.0.1) to enable proper IP extraction.
+    if TRUSTED_PROXY_CIDRS and client_host in TRUSTED_PROXY_CIDRS:
+        forwarded = request.headers.get("X-Forwarded-For")
+        if forwarded:
+            return forwarded.split(",")[0].strip()
+    return client_host
 
 
 def _check_rate_limit(

@@ -9,9 +9,13 @@ primary_region = "sjc"
   dockerfile = "Dockerfile.deepparser"
 
 [env]
-  DB_PATH    = "/data/deepparser.db"
-  UPLOAD_DIR = "/data/uploads"
-  DPCLI_BIN  = "dp"
+  DB_PATH              = "/data/deepparser.db"
+  UPLOAD_DIR           = "/data/uploads"
+  DPCLI_BIN            = "dp"
+  # Fly.io routes requests through its internal network (fdaa::/16).
+  # This tells auth.py to trust X-Forwarded-For only from Fly.io proxy IPs,
+  # so rate limiting uses the real client IP instead of the Fly.io relay address.
+  TRUSTED_PROXY_CIDRS  = "fdaa:0:0:0:0:0:0:0/16"
 
 # Single machine required: SQLite does not support concurrent writers.
 # If you need horizontal scale, migrate to Turso / LibSQL first.
