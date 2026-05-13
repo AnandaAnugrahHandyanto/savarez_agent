@@ -10,7 +10,7 @@ platforms: [linux, macos, windows]
 metadata:
   hermes:
     category: customer-service
-    tags: [customer-service, support, wechat, wecom, llm-wiki, knowledge-base, safety, handoff, 多少钱, 怎么用, 能不能, 支不支持, 怎么安装, 出错了, 打不开, 退款, 发货, 优惠, 订单, 发票, 售后, 人工]
+    tags: [customer-service, support, wechat, wecom, llm-wiki, knowledge-base, safety, handoff, pricing, usage, capability, troubleshooting, refund, order, invoice, discount, human-handoff, chinese-support]
     related_skills: [llm-wiki]
   clawdbot:
     emoji: "💬"
