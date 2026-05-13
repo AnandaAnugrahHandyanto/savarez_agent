@@ -761,6 +761,17 @@ class DiscordAdapter(BasePlatformAdapter):
                     except asyncio.TimeoutError:
                         pass
 
+                # DEBUG: Log every incoming message to diagnose guild message issue
+                logger.info(
+                    "[%s] on_message: channel=%s guild=%s author=%s(%s) dm=%s",
+                    self.name,
+                    getattr(message.channel, "id", "?"),
+                    getattr(getattr(message, "guild", None), "id", None),
+                    getattr(message.author, "name", "?"),
+                    getattr(message.author, "id", "?"),
+                    isinstance(message.channel, discord.DMChannel),
+                )
+
                 # Dedup: Discord RESUME replays events after reconnects (#4777)
                 if adapter_self._dedup.is_duplicate(str(message.id)):
                     return
@@ -823,8 +834,15 @@ class DiscordAdapter(BasePlatformAdapter):
                         m.bot and m != self._client.user
                         for m in message.mentions
                     )
+                    # DEBUG: log mention filtering
+                    _mention_names = [f"{m.name}(bot={m.bot})" for m in message.mentions]
+                    logger.info(
+                        "[%s] mention filter: self=%s other_bots=%s mentions=%s",
+                        self.name, _self_mentioned, _other_bots_mentioned, _mention_names,
+                    )
                     # If other bots are mentioned but we're not → not for us
                     if _other_bots_mentioned and not _self_mentioned:
+                        logger.info("[%s] DROPPED: other bots mentioned, not us", self.name)
                         return
                     # If humans are mentioned but we're not → not for us
                     # (preserves old DISCORD_IGNORE_NO_MENTION=true behavior)
@@ -843,8 +861,10 @@ class DiscordAdapter(BasePlatformAdapter):
                         if _parent_id:
                             _channel_ids.add(_parent_id)
                         if "*" not in _free_channels and not (_channel_ids & _free_channels):
+                            logger.info("[%s] DROPPED: no mention + not free channel", self.name)
                             return
 
+                logger.info("[%s] → PASSING to _handle_message", self.name)
                 await self._handle_message(message)
 
             @self._client.event
@@ -4576,7 +4596,75 @@ class DiscordAdapter(BasePlatformAdapter):
             )
 
             if require_mention and not is_free_channel and not in_bot_thread:
+                # Fallback: if Discord didn't parse @mentions (mentions=[]),
+                # scan raw content for <@bot_id>, <@!bot_id>, or <@&role_id> patterns.
+                if (not message.mentions and self._client.user
+                        and raw_content):
+                    import re
+                    bot_id_str = str(self._client.user.id)
+                    logger.info(
+                        "[%s] require_mention fallback: bot_id=%s bot_name=%s raw_content=%r",
+                        self.name, bot_id_str, self._client.user.name,
+                        raw_content[:200],
+                    )
+                    # Direct user mention: <@ID> or <@!ID>
+                    if (f"<@{bot_id_str}>" in raw_content
+                            or f"<@!{bot_id_str}>" in raw_content
+                            or re.search(rf'\b@{re.escape(self._client.user.name)}\b', raw_content, re.IGNORECASE)):
+                        mention_prefix = True
+                        logger.info(
+                            "[%s] require_mention: fallback mention detected in raw content (mentions was empty)",
+                            self.name,
+                        )
+                    # Role mention: <@&ROLE_ID> — check if bot has that role in guild
+                    else:
+                        role_match = re.search(r'<@&(\d+)>', raw_content)
+                        if role_match:
+                            try:
+                                role_id = int(role_match.group(1))
+                                guild = message.guild
+                                if guild:
+                                    member = guild.get_member(self._client.user.id) or await guild.fetch_member(self._client.user.id)
+                                    if member:
+                                        bot_role_ids = {r.id for r in member.roles}
+                                        if role_id in bot_role_ids:
+                                            mention_prefix = True
+                                            logger.info(
+                                                "[%s] require_mention: fallback detected role mention <@&%s> that belongs to bot",
+                                                self.name, role_id,
+                                            )
+                                        else:
+                                            logger.info(
+                                                "[%s] require_mention: role <@&%s> does NOT belong to bot (bot roles: %s)",
+                                                self.name, role_id, bot_role_ids,
+                                            )
+                                    else:
+                                        logger.info(
+                                            "[%s] require_mention: could not fetch guild member for bot",
+                                            self.name,
+                                        )
+                                else:
+                                    logger.info(
+                                        "[%s] require_mention: role mention but no guild on message",
+                                        self.name,
+                                    )
+                            except Exception as e:
+                                logger.info(
+                                    "[%s] require_mention: role check error: %s",
+                                    self.name, e,
+                                )
+                        else:
+                            logger.info(
+                                "[%s] require_mention: fallback scan did NOT match — raw content lacks bot id/name/role",
+                                self.name,
+                            )
+                logger.info(
+                    "[%s] require_mention check: client_user=%s mentions=%s mention_prefix=%s",
+                    self.name, getattr(self._client, 'user', None),
+                    [str(m) for m in message.mentions], mention_prefix,
+                )
                 if self._client.user not in message.mentions and not mention_prefix:
+                    logger.info("[%s] DROPPED in _handle_message: require_mention satisfied, silently returning", self.name)
                     return
         # Auto-thread: when enabled, automatically create a thread for every
         # @mention in a text channel so each conversation is isolated (like Slack).
