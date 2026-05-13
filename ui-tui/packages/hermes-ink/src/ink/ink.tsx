@@ -1909,9 +1909,13 @@ export default class Ink {
   }
 
   /**
-   * Optional callback fired when clicking an OSC 8 hyperlink in fullscreen
-   * mode. Set from the host via the `onHyperlinkClick` Render/Ink option,
-   * or directly on the instance for late-bound test scenarios.
+   * Optional callback fired when clicking a cell that has an associated URL
+   * in fullscreen mode. `url` may be either an OSC 8 hyperlink (from a
+   * `<Link>` render or external OSC 8 escape that landed in the buffer) or
+   * a plain-text URL detected on the clicked row by findPlainTextUrlAt
+   * (App.tsx routes both into the same callback). Set from the host via
+   * the `onHyperlinkClick` Render/Ink option, or directly on the instance
+   * for late-bound test scenarios.
    */
   onHyperlinkClick: ((url: string) => void) | undefined
 

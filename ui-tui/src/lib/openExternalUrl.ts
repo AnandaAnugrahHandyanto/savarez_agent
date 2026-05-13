@@ -20,7 +20,15 @@ import { platform } from 'node:os'
  *   containing shell metacharacters (`;`, `&`, backticks) cannot be
  *   interpreted as a command.
  *
- * Returns `true` if the spawn was attempted, `false` if the URL was rejected.
+ * Returns `true` if the spawn was attempted, `false` if the open could
+ * not proceed — covers (a) URL rejected by `parseSafeUrl` (non-http(s),
+ * malformed, etc.), (b) no known opener for the current platform
+ * (`openCommand` returned null), or (c) `spawn()` threw synchronously
+ * before the child was created. Async failures after spawn (`'error'`
+ * event because the binary couldn't exec) still return `true` because
+ * the spawn was attempted — the no-op error listener absorbs the event
+ * so the TUI doesn't crash, and the user just doesn't see their browser
+ * pop.
  */
 export function openExternalUrl(rawUrl: string, dependencies: OpenDependencies = {}): boolean {
   const url = parseSafeUrl(rawUrl)

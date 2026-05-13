@@ -7,7 +7,11 @@ import { cellAtIndex, CellWidth, type Screen, setCellStyleId, type StylePool } f
  * itself when the pointer is over it. Same overlay machinery as
  * applySearchHighlight — post-layout, pure SGR, picked up by the diff.
  *
- * Returns true if any cell was highlighted (caller forces full-frame damage).
+ * Returns true if any cell was highlighted. The caller decides whether to
+ * promote that into a full-frame damage request — for hover specifically,
+ * full damage is only useful on enter/leave/change transitions (so the
+ * previous frame's inverted cells get re-emitted), not on every steady-state
+ * frame the pointer sits on the link.
  */
 export function applyHyperlinkHoverHighlight(
   screen: Screen,
