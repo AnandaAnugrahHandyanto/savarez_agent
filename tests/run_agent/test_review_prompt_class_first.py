@@ -130,7 +130,7 @@ def test_combined_review_prompt_has_memory_section():
     """Memory half must still cover user facts and preferences."""
     prompt = AIAgent._COMBINED_REVIEW_PROMPT
     assert "**Memory**" in prompt
-    assert "memory tool" in prompt
+    assert "built-in memory" in prompt
 
 
 def test_combined_review_prompt_skills_biased_toward_active_updates():
@@ -232,4 +232,4 @@ def test_memory_review_prompt_still_focused_on_user_facts():
     # The memory-only prompt should NOT drift into skill territory
     assert "skills_list" not in prompt
     assert "SURVEY" not in prompt
-    assert "memory tool" in prompt
+    assert "built-in memory" in prompt
