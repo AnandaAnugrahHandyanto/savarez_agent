@@ -175,6 +175,9 @@ def cron_create(args):
         script=getattr(args, "script", None),
         workdir=getattr(args, "workdir", None),
         no_agent=getattr(args, "no_agent", False) or None,
+        model=getattr(args, "model", None),
+        provider=getattr(args, "provider", None),
+        base_url=getattr(args, "base_url", None),
     )
     if not result.get("success"):
         print(color(f"Failed to create job: {result.get('error', 'unknown error')}", Colors.RED))
@@ -231,6 +234,9 @@ def cron_edit(args):
         script=getattr(args, "script", None),
         workdir=getattr(args, "workdir", None),
         no_agent=getattr(args, "no_agent", None),
+        model=getattr(args, "model", None),
+        provider=getattr(args, "provider", None),
+        base_url=getattr(args, "base_url", None),
     )
     if not result.get("success"):
         print(color(f"Failed to update job: {result.get('error', 'unknown error')}", Colors.RED))
@@ -250,6 +256,57 @@ def cron_edit(args):
         print("  Mode: no-agent (script stdout delivered directly)")
     if updated.get("workdir"):
         print(f"  Workdir: {updated['workdir']}")
+    if updated.get("model"):
+        print(f"  Model: {updated['model']}")
+    if updated.get("provider"):
+        print(f"  Provider: {updated['provider']}")
+    if updated.get("base_url"):
+        print(f"  Base URL: {updated['base_url']}")
+    return 0
+
+
+def cron_show(args):
+    from cron.jobs import get_job
+
+    job = get_job(args.job_id)
+    if not job:
+        print(color(f"Job not found: {args.job_id}", Colors.RED))
+        return 1
+
+    repeat_info = job.get("repeat") or {}
+    repeat_times = repeat_info.get("times")
+    repeat_completed = repeat_info.get("completed", 0)
+    repeat_str = f"{repeat_completed}/{repeat_times}" if repeat_times else f"{repeat_completed}/∞"
+
+    skills = job.get("skills") or ([job["skill"]] if job.get("skill") else [])
+    state = job.get("state", "scheduled" if job.get("enabled", True) else "paused")
+
+    print()
+    print(color(f"Job {job.get('id', '?')}", Colors.CYAN))
+    fields = [
+        ("Name", job.get("name") or "(unnamed)"),
+        ("Schedule", job.get("schedule_display") or "?"),
+        ("State", state),
+        ("Skills", ", ".join(skills) if skills else "(none)"),
+        ("Deliver", job.get("deliver", "local")),
+        ("Repeat", repeat_str),
+        ("Model", job.get("model") or "(default)"),
+        ("Provider", job.get("provider") or "(default)"),
+        ("Base URL", job.get("base_url") or "(default)"),
+        ("Script", job.get("script") or "(none)"),
+        ("No-agent", "yes" if job.get("no_agent") else "no"),
+        ("Workdir", job.get("workdir") or "(none)"),
+        ("Next run", job.get("next_run_at") or "(none)"),
+        ("Last run", job.get("last_run_at") or "(never)"),
+        ("Last status", job.get("last_status") or "(none)"),
+    ]
+    for label, value in fields:
+        print(f"  {label:<12} {value}")
+    prompt = job.get("prompt") or ""
+    if prompt:
+        preview = prompt if len(prompt) <= 200 else prompt[:200] + "…"
+        print(f"  {'Prompt':<12} {preview}")
+    print()
     return 0
 
 
@@ -289,6 +346,9 @@ def cron_command(args):
 
     if subcmd == "edit":
         return cron_edit(args)
+
+    if subcmd == "show":
+        return cron_show(args)
 
     if subcmd == "pause":
         return _job_action("pause", args.job_id, "Paused")

@@ -9864,6 +9864,19 @@ def main():
         "--workdir",
         help="Absolute path for the job to run from. Injects AGENTS.md / CLAUDE.md / .cursorrules from that directory and uses it as the cwd for terminal/file/code_exec tools. Omit to preserve old behaviour (no project context files).",
     )
+    cron_create.add_argument(
+        "--model",
+        help="Per-job model override (e.g. claude-opus-4-7). Omit to use the current default.",
+    )
+    cron_create.add_argument(
+        "--provider",
+        help="Per-job provider override (e.g. anthropic, openrouter, custom:<name>).",
+    )
+    cron_create.add_argument(
+        "--base-url",
+        dest="base_url",
+        help="Per-job base URL for OpenAI-compatible endpoints.",
+    )
 
     # cron edit
     cron_edit = cron_subparsers.add_parser(
@@ -9928,6 +9941,25 @@ def main():
         "--workdir",
         help="Absolute path for the job to run from (injects AGENTS.md etc. and sets terminal cwd). Pass empty string to clear.",
     )
+    cron_edit.add_argument(
+        "--model",
+        help="Set per-job model override. Pass empty string to clear.",
+    )
+    cron_edit.add_argument(
+        "--provider",
+        help="Set per-job provider. Pass empty string to clear.",
+    )
+    cron_edit.add_argument(
+        "--base-url",
+        dest="base_url",
+        help="Set per-job base URL. Pass empty string to clear.",
+    )
+
+    # cron show
+    cron_show_p = cron_subparsers.add_parser(
+        "show", help="Show full details of a scheduled job"
+    )
+    cron_show_p.add_argument("job_id", help="Job ID to show")
 
     # lifecycle actions
     cron_pause = cron_subparsers.add_parser("pause", help="Pause a scheduled job")
