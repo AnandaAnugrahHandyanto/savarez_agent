@@ -9146,10 +9146,19 @@ class GatewayRunner:
                 else:
                     cfg = {}
                 model_cfg = cfg.setdefault("model", {})
+                if not isinstance(model_cfg, dict):
+                    model_cfg = {"default": str(model_cfg)} if model_cfg else {}
+                    cfg["model"] = model_cfg
                 model_cfg["default"] = result.new_model
                 model_cfg["provider"] = result.target_provider
                 if result.base_url:
                     model_cfg["base_url"] = result.base_url
+                else:
+                    model_cfg.pop("base_url", None)
+                if result.api_mode:
+                    model_cfg["api_mode"] = result.api_mode
+                else:
+                    model_cfg.pop("api_mode", None)
                 from hermes_cli.config import save_config
                 save_config(cfg)
             except Exception as e:
