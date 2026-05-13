@@ -186,6 +186,7 @@ const sidebars: SidebarsConfig = {
         'guides/delegation-patterns',
         'guides/github-pr-review-agent',
         'guides/webhook-github-pr-review',
+        'guides/vercel-supabase-deployments',
         'guides/migrate-from-openclaw',
         'guides/aws-bedrock',
         'guides/azure-foundry',
