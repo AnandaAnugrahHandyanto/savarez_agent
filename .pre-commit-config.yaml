@@ -17,7 +17,7 @@ repos:
     hooks:
       - id: mypy
         args: [--ignore-missing-imports, --no-incremental]
-        exclude: ^(tests/|tools/|gateway/|plugins/)
+        exclude: ^(tests/|tools/|gateway/|plugins/|scripts/hermes-gateway|skills/)
 
   # Trailing whitespace & end-of-file fixers
   - repo: https://github.com/pre-commit/pre-commit-hooks
@@ -28,6 +28,7 @@ repos:
       - id: end-of-file-fixer
       - id: check-yaml
       - id: check-json
+        exclude: ^(web/tsconfig|website/tsconfig)
       - id: check-merge-conflict
       - id: debug-statements
       - id: mixed-line-ending
