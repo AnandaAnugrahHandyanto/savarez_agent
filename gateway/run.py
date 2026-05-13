@@ -2856,10 +2856,13 @@ class GatewayRunner:
         for agent in active_agents.values():
             try:
                 from hermes_cli.plugins import invoke_hook as _invoke_hook
+                _profile = getattr(agent, "_profile", None)
+                _agent_id = _profile.id if _profile else None
                 _invoke_hook(
                     "on_session_finalize",
                     session_id=getattr(agent, "session_id", None),
                     platform="gateway",
+                    agent_id=_agent_id,
                 )
             except Exception:
                 pass
@@ -3970,10 +3973,12 @@ class GatewayRunner:
                             from hermes_cli.plugins import invoke_hook as _invoke_hook
                             _parts = key.split(":")
                             _platform = _parts[2] if len(_parts) > 2 else ""
+                            _agent_id = _parts[1] if len(_parts) > 1 else None
                             _invoke_hook(
                                 "on_session_finalize",
                                 session_id=entry.session_id,
                                 platform=_platform,
+                                agent_id=_agent_id,
                             )
                         except Exception:
                             pass
@@ -5695,11 +5700,13 @@ class GatewayRunner:
         if not is_internal:
             try:
                 from hermes_cli.plugins import invoke_hook as _invoke_hook
+                _agent_id = getattr(getattr(event, "source", None), "agent_id", None)
                 _hook_results = _invoke_hook(
                     "pre_gateway_dispatch",
                     event=event,
                     gateway=self,
                     session_store=self.session_store,
+                    agent_id=_agent_id,
                 )
             except Exception as _hook_exc:
                 logger.warning("pre_gateway_dispatch invocation failed: %s", _hook_exc)
@@ -8150,7 +8157,8 @@ class GatewayRunner:
             from hermes_cli.plugins import invoke_hook as _invoke_hook
             _old_sid = old_entry.session_id if old_entry else None
             _invoke_hook("on_session_finalize", session_id=_old_sid,
-                         platform=source.platform.value if source.platform else "")
+                         platform=source.platform.value if source.platform else "",
+                         agent_id=getattr(source, "agent_id", None))
         except Exception:
             pass
 
@@ -8220,7 +8228,8 @@ class GatewayRunner:
             from hermes_cli.plugins import invoke_hook as _invoke_hook
             _new_sid = new_entry.session_id if new_entry else None
             _invoke_hook("on_session_reset", session_id=_new_sid,
-                         platform=source.platform.value if source.platform else "")
+                         platform=source.platform.value if source.platform else "",
+                         agent_id=getattr(source, "agent_id", None))
         except Exception:
             pass
 

@@ -1591,6 +1591,7 @@ class BasePlatformAdapter(ABC):
                 event=event,
                 gateway=self._gateway_ref,
                 route_match=route_match,
+                agent_id=None,
             )
             for r in results or []:
                 if isinstance(r, str) and r.strip():
