@@ -9,11 +9,14 @@ Token type support (per GitHub docs):
   ghu_          GitHub App token      ✓  (via environment variable)
   ghp_          Classic PAT           ✗  NOT SUPPORTED
 
-Credential search order (matching Copilot CLI behaviour):
+Credential search order (explicit configuration only):
   1. COPILOT_GITHUB_TOKEN env var
   2. GH_TOKEN env var
   3. GITHUB_TOKEN env var
-  4. gh auth token  CLI fallback
+
+Note: gh auth token fallback was removed because a GitHub API token (from gh)
+does NOT grant Copilot API access. Users without a Copilot subscription who
+have gh installed were seeing Copilot as "authenticated" when it wasn't.
 """
 
 from __future__ import annotations
@@ -82,16 +85,14 @@ def resolve_copilot_token() -> tuple[str, str]:
                 continue
             return val, env_var
 
-    # 2. Fall back to gh auth token
-    token = _try_gh_cli_token()
-    if token:
-        valid, msg = validate_copilot_token(token)
-        if not valid:
-            raise ValueError(
-                f"Token from `gh auth token` is a classic PAT (ghp_*). {msg}"
-            )
-        return token, "gh auth token"
-
+    # Do NOT fall back to gh auth token.
+    # gh auth token provides a GitHub API token (repo access), NOT a Copilot
+    # API token. Users with gh installed but without an active Copilot
+    # subscription were getting Copilot models listed as "available" when
+    # they weren't actually usable. Copilot should only appear as
+    # authenticated when the user has explicitly configured it via
+    # COPILOT_GITHUB_TOKEN / GH_TOKEN / GITHUB_TOKEN env vars or the
+    # OAuth device code flow.
     return "", ""
 
 
