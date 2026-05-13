@@ -39,21 +39,21 @@ def test_bundled_plugins_discovered():
     assert plugins_dir.is_dir(), f"Missing {plugins_dir}"
 
     child_dirs = [c for c in plugins_dir.iterdir() if c.is_dir()]
-    assert len(child_dirs) >= 28, f"Expected at least 28 provider plugins, found {len(child_dirs)}"
+    assert len(child_dirs) >= 29, f"Expected at least 29 provider plugins, found {len(child_dirs)}"
 
     for child in child_dirs:
         assert (child / "__init__.py").exists(), f"{child.name} missing __init__.py"
         assert (child / "plugin.yaml").exists(), f"{child.name} missing plugin.yaml"
 
 
-def test_all_34_profiles_register():
-    """After discovery, the registry must contain exactly 34 distinct profiles."""
+def test_all_35_profiles_register():
+    """After discovery, the registry must contain exactly 35 distinct profiles."""
     _clear_provider_caches()
     from providers import list_providers
 
     profiles = list_providers()
     names = sorted(p.name for p in profiles)
-    assert len(names) == 34, f"Expected 34 profiles, got {len(names)}: {names}"
+    assert len(names) == 35, f"Expected 35 profiles, got {len(names)}: {names}"
 
     # Spot-check representative providers from different categories
     for required in (

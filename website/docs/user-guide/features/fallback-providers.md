@@ -74,6 +74,7 @@ Both `provider` and `model` are **required**. If either is missing, the fallback
 | Kilo Code | `kilocode` | `KILOCODE_API_KEY` |
 | Xiaomi MiMo | `xiaomi` | `XIAOMI_API_KEY` |
 | Arcee AI | `arcee` | `ARCEEAI_API_KEY` |
+| Auriko | `auriko` | `AURIKO_API_KEY` (optional: `AURIKO_BASE_URL`) |
 | GMI Cloud | `gmi` | `GMI_API_KEY` |
 | Alibaba / DashScope | `alibaba` | `DASHSCOPE_API_KEY` |
 | Alibaba Coding Plan | `alibaba-coding-plan` | `ALIBABA_CODING_PLAN_API_KEY` (falls back to `DASHSCOPE_API_KEY`) |

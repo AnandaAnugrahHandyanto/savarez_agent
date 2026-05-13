@@ -1,0 +1,5 @@
+name: auriko-provider
+kind: model-provider
+version: 1.0.0
+description: Auriko — multi-LLM inference gateway
+author: Nous Research
