@@ -230,6 +230,68 @@ Paths support `~` expansion and `${VAR}` environment variable substitution.
 
 All four skills appear in your skill index. If you create a new skill called `my-custom-workflow` locally, it shadows the external version.
 
+### Version-Controlled External Skills Repositories
+
+For users who develop and maintain their own skill library, a common pattern is to keep skills in a dedicated Git repository with its own dependency management, and symlink them into `~/.hermes/skills/`.
+
+#### Directory Layout
+
+```
+~/Documents/GitHub/my-skills/          # External repo (Git-backed, single source of truth)
+├── .git/
+├── pyproject.toml                     # Own uv-managed venv + dependencies
+├── skills/
+│   ├── my-workflow/
+│   │   ├── SKILL.md
+│   │   └── references/
+│   └── another-skill/
+│       └── SKILL.md
+
+~/.hermes/skills/                      # Hermes skill directory
+├── my-workflow → ~/Documents/GitHub/my-skills/skills/my-workflow/   (symlink)
+└── another-skill → ~/Documents/GitHub/my-skills/skills/another-skill/ (symlink)
+```
+
+#### Why this pattern
+
+- **Git cleanliness**: User skills live in a dedicated repo with a clean `.gitignore` — no need to filter out hundreds of bundled skill directories from version control.
+- **Dependency isolation**: Skills that need Python packages (for scripts, tools, or reference code) can declare them in `pyproject.toml` with their own `uv`-managed virtual environment, rather than polluting the global Hermes installation.
+- **Single source of truth**: The external repo is the authoritative copy. Symlinks ensure that edits made via `skill_manage` are written back to `~/.hermes/skills/`, which resolves through the symlink to the repo — keeping everything in sync.
+- **Multi-machine portability**: Clone the skills repo, run `uv sync`, run a setup script to create symlinks, and your entire skill library is available on any machine.
+
+#### How it works with Hermes
+
+Skills discovered via symlinks in `~/.hermes/skills/` are treated identically to locally-installed skills:
+
+- They appear in the system prompt index, `skills_list`, `skill_view`, and as `/skill-name` slash commands
+- `skill_manage` (create, patch, edit, delete) works on them — writes are resolved through the symlink back to the external repo
+- No additional config is required: Hermes scans `~/.hermes/skills/` and follows symlinks automatically
+
+#### Alternative: using `external_dirs`
+
+If you prefer not to use symlinks, configure `external_dirs` in `~/.hermes/config.yaml` to point at your repo's skills directory:
+
+```yaml
+skills:
+  external_dirs:
+    - ~/Documents/GitHub/my-skills/skills
+```
+
+However, `external_dirs` are **read-only** for skill discovery — `skill_manage` always writes new skills to `~/.hermes/skills/`. The symlink approach provides the same discovery benefits while also supporting agent-initiated edits.
+
+#### Setting up symlinks
+
+A simple script or one-liner creates the symlinks:
+
+```bash
+# Link every skill directory from your repo into ~/.hermes/skills/
+for dir in ~/Documents/GitHub/my-skills/skills/*/; do
+  ln -s "$(realpath "$dir")" ~/.hermes/skills/$(basename "$dir")
+done
+```
+
+Run this whenever you clone the repo to a new machine, or add it to your dotfiles.
+
 ## Agent-Managed Skills (skill_manage tool)
 
 The agent can create, update, and delete its own skills via the `skill_manage` tool. This is the agent's **procedural memory** — when it figures out a non-trivial workflow, it saves the approach as a skill for future reuse.
