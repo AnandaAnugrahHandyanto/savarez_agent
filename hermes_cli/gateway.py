@@ -2948,9 +2948,7 @@ def launchd_start():
         print("✓ Service started")
         return
 
-    if refresh_launchd_plist_if_needed():
-        print("✓ Service started")
-        return
+    refresh_launchd_plist_if_needed()
     try:
         subprocess.run(["launchctl", "kickstart", f"{_launchd_domain()}/{label}"], check=True, timeout=30)
     except subprocess.CalledProcessError as e:
