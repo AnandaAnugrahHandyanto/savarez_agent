@@ -49,7 +49,7 @@ name: my-skill
 description: Brief description (shown in skill search results)
 version: 1.0.0
 author: Your Name
-license: MIT
+license: PolyForm Noncommercial License 1.0.0
 platforms: [macos, linux]          # Optional — restrict to specific OS platforms
                                    #   Valid: macos, linux, windows
                                    #   Omit to load on all platforms (default)

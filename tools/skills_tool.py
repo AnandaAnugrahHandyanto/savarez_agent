@@ -30,7 +30,7 @@ SKILL.md Format (YAML Frontmatter, agentskills.io compatible):
     name: skill-name              # Required, max 64 chars
     description: Brief description # Required, max 1024 chars
     version: 1.0.0                # Optional
-    license: MIT                  # Optional (agentskills.io)
+    license: PolyForm Noncommercial License 1.0.0  # Optional (agentskills.io)
     platforms: [macos]            # Optional — restrict to specific OS platforms
                                   #   Valid: macos, linux, windows
                                   #   Omit to load on all platforms (default)

@@ -162,7 +162,7 @@ const config: Config = {
           ],
         },
       ],
-      copyright: `Built by <a href="https://nousresearch.com">Nous Research</a> · MIT License · ${new Date().getFullYear()}`,
+      copyright: `Built by <a href="https://nousresearch.com">Nous Research</a> · PolyForm Noncommercial License 1.0.0 · ${new Date().getFullYear()}`,
     },
     prism: {
       theme: prismThemes.github,

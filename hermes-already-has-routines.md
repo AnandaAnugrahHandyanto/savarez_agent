@@ -62,7 +62,7 @@ Every use case in their blog post — backlog triage, docs drift, deploy verific
 | **Infrastructure** | Anthropic's servers | **Your infrastructure** — VPS, home server, laptop |
 | **Data residency** | Anthropic's cloud | **Your machines** |
 | **Cost** | Pro/Max/Team/Enterprise subscription | Your API key, your rates |
-| **Open source** | No | **Yes** — MIT license |
+| **Source available** | No | **Yes**: free for noncommercial use, commercial license required |
 
 ---
 
@@ -124,7 +124,7 @@ A nightly backlog triage on Sonnet costs roughly $0.02-0.05. A monitoring check 
 
 ## Get Started
 
-Hermes Agent is open source and free. The automation infrastructure — cron scheduler, webhook platform, skill system, multi-platform delivery — is built in.
+Hermes Agent is source available and free for noncommercial use. Commercial use requires a separate license. The automation infrastructure — cron scheduler, webhook platform, skill system, multi-platform delivery — is built in.
 
 ```bash
 pip install hermes-agent

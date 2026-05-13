@@ -7,7 +7,7 @@
 <p align="center">
   <a href="https://hermes-agent.nousresearch.com/docs/"><img src="https://img.shields.io/badge/Docs-hermes--agent.nousresearch.com-FFD700?style=for-the-badge" alt="Documentation"></a>
   <a href="https://discord.gg/NousResearch"><img src="https://img.shields.io/badge/Discord-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Discord"></a>
-  <a href="https://github.com/NousResearch/hermes-agent/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="License: MIT"></a>
+  <a href="https://github.com/NousResearch/hermes-agent/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-PolyForm%20Noncommercial-orange?style=for-the-badge" alt="License: PolyForm Noncommercial"></a>
   <a href="https://nousresearch.com"><img src="https://img.shields.io/badge/Built%20by-Nous%20Research-blueviolet?style=for-the-badge" alt="Built by Nous Research"></a>
   <a href="README.md"><img src="https://img.shields.io/badge/Lang-English-lightgrey?style=for-the-badge" alt="English"></a>
 </p>
@@ -181,6 +181,10 @@ python -m pytest tests/ -q
 
 ## 许可证
 
-MIT — 详见 [LICENSE](LICENSE)。
+Hermes Agent 采用 [PolyForm Noncommercial License 1.0.0](LICENSE) 授权。
+
+个人、研究、评估、教育、爱好项目以及其他非商业用途可以依照该许可证使用。商业用途需要从 Nous Research 获得单独的书面商业授权。详见 [COMMERCIAL-LICENSE.md](COMMERCIAL-LICENSE.md)。
+
+早期版本曾采用 MIT License 发布。已经根据 MIT License 获得的早期副本，其权利仍由当时的 MIT 条款管理。新的许可证适用于后续副本、版本和贡献。
 
 由 [Nous Research](https://nousresearch.com) 构建。

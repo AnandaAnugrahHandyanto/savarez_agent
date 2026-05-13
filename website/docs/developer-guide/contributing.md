@@ -243,4 +243,4 @@ fix(security): prevent shell injection in sudo password piping
 
 ## License
 
-By contributing, you agree that your contributions will be licensed under the [MIT License](https://github.com/NousResearch/hermes-agent/blob/main/LICENSE).
+By contributing, you agree that your contributions will be licensed under the current project license in [LICENSE](https://github.com/NousResearch/hermes-agent/blob/main/LICENSE), unless a separate written agreement with Nous Research says otherwise.

@@ -63,7 +63,7 @@ name: my-skill-name               # lowercase, hyphens, ≤64 chars (MAX_NAME_LE
 description: Use when <trigger>. <one-line behavior>.
 version: 1.0.0
 author: Hermes Agent
-license: MIT
+license: PolyForm Noncommercial License 1.0.0
 metadata:
   hermes:
     tags: [short, descriptive, tags]

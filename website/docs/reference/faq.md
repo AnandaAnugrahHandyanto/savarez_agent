@@ -108,7 +108,7 @@ Hermes auto-detects local endpoints and relaxes streaming timeouts (read timeout
 
 ### How much does it cost?
 
-Hermes Agent itself is **free and open-source** (MIT license). You pay only for the LLM API usage from your chosen provider. Local models are completely free to run.
+Hermes Agent itself is **free for noncommercial use** under the PolyForm Noncommercial License 1.0.0. Commercial use requires a separate written license from Nous Research. You pay separately for LLM API usage from your chosen provider. Local models are free to run on your own hardware.
 
 ### Can multiple people use one instance?
 

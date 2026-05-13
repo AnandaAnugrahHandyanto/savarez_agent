@@ -341,7 +341,13 @@ def _try_resolve_from_custom_pool(
         if entry is None:
             return None
         pool_api_key = getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "")
-        if not pool_api_key:
+        pool_api_key = str(pool_api_key or "").strip()
+        # Some older custom-provider pool entries stored literal env refs
+        # like "env:GOOGLE_API_KEY" as the credential. That string is not
+        # accepted by upstream APIs and shadows the correctly resolved
+        # key_env value from config.yaml. Ignore it so the caller can fall
+        # back to the config/env key.
+        if not pool_api_key or pool_api_key.startswith("env:"):
             return None
         return {
             "provider": provider_label,

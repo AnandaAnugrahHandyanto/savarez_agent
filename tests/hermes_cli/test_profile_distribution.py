@@ -96,7 +96,7 @@ class TestManifestParsing:
             "description: Telem monitor\n"
             "hermes_requires: '>=0.12.0'\n"
             "author: Kyle\n"
-            "license: MIT\n"
+            "license: PolyForm Noncommercial License 1.0.0\n"
             "env_requires:\n"
             "  - name: OPENAI_API_KEY\n"
             "    description: OpenAI key\n"
@@ -111,7 +111,7 @@ class TestManifestParsing:
         assert m.name == "telem"
         assert m.version == "1.2.3"
         assert m.author == "Kyle"
-        assert m.license == "MIT"
+        assert m.license == "PolyForm Noncommercial License 1.0.0"
         assert len(m.env_requires) == 2
         assert m.env_requires[0].name == "OPENAI_API_KEY"
         assert m.env_requires[0].required is True
