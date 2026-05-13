@@ -2115,6 +2115,12 @@ class AIAgent:
         compression_enabled = str(_compression_cfg.get("enabled", True)).lower() in {"true", "1", "yes"}
         compression_target_ratio = float(_compression_cfg.get("target_ratio", 0.20))
         compression_protect_last = int(_compression_cfg.get("protect_last_n", 20))
+        try:
+            self._compression_preflight_max_passes = int(_compression_cfg.get("preflight_max_passes", 3))
+            if self._compression_preflight_max_passes < 0:
+                self._compression_preflight_max_passes = 0
+        except (TypeError, ValueError):
+            self._compression_preflight_max_passes = 3
 
         # Read optional explicit context_length override for the auxiliary
         # compression model. Custom endpoints often cannot report this via
@@ -11988,7 +11994,7 @@ class AIAgent:
                 )
                 # May need multiple passes for very large sessions with small
                 # context windows (each pass summarises the middle N turns).
-                for _pass in range(3):
+                for _pass in range(self._compression_preflight_max_passes):
                     _orig_len = len(messages)
                     messages, active_system_prompt = self._compress_context(
                         messages, system_message, approx_tokens=_preflight_tokens,
