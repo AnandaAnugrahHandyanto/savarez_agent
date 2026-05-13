@@ -467,6 +467,23 @@ def _is_deepseek_anthropic_endpoint(base_url: str | None) -> bool:
     return "/anthropic" in normalized.rstrip("/").lower()
 
 
+def _is_xiaomi_mimo_anthropic_endpoint(base_url: str | None) -> bool:
+    """Return True for Xiaomi MiMo's Anthropic-compatible endpoint.
+
+    Xiaomi MiMo's ``/anthropic`` route speaks the Anthropic Messages protocol
+    but, when thinking mode is enabled, requires unsigned ``thinking`` blocks
+    synthesised from ``reasoning_content`` to round-trip on subsequent requests.
+    The match is pinned to the ``/anthropic`` path so a future OpenAI-compatible
+    Xiaomi base URL is not misclassified. See hermes-agent#24884.
+    """
+    if not base_url_host_matches(base_url or "", "xiaomimimo.com"):
+        return False
+    normalized = _normalize_base_url_text(base_url)
+    if not normalized:
+        return False
+    return "/anthropic" in normalized.rstrip("/").lower()
+
+
 def _requires_bearer_auth(base_url: str | None) -> bool:
     """Return True for Anthropic-compatible providers that require Bearer auth.
 
@@ -1745,15 +1762,17 @@ def convert_messages_to_anthropic(
     #    cache markers can interfere with signature validation.
     _THINKING_TYPES = frozenset(("thinking", "redacted_thinking"))
     _is_third_party = _is_third_party_anthropic_endpoint(base_url)
-    # Kimi /coding and DeepSeek /anthropic share a contract: both speak the
-    # Anthropic Messages protocol upstream but require that thinking blocks
-    # synthesised from reasoning_content round-trip on subsequent turns when
-    # thinking is enabled.  Signed Anthropic blocks still have to be stripped
-    # (neither endpoint can validate Anthropic's signatures); unsigned blocks
-    # are preserved.  See hermes-agent#13848 (Kimi) and #16748 (DeepSeek).
+    # Kimi /coding, DeepSeek /anthropic, and Xiaomi MiMo /anthropic share a
+    # contract: all speak the Anthropic Messages protocol upstream but require
+    # that thinking blocks synthesised from reasoning_content round-trip on
+    # subsequent turns when thinking is enabled. Signed Anthropic blocks still
+    # have to be stripped (none of these endpoints can validate Anthropic's
+    # signatures); unsigned blocks are preserved. See hermes-agent#13848 (Kimi),
+    # #16748 (DeepSeek), and #24884 (Xiaomi MiMo).
     _preserve_unsigned_thinking = (
         _is_kimi_family_endpoint(base_url, model)
         or _is_deepseek_anthropic_endpoint(base_url)
+        or _is_xiaomi_mimo_anthropic_endpoint(base_url)
     )
 
     last_assistant_idx = None
