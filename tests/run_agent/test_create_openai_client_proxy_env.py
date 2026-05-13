@@ -18,11 +18,28 @@ This test pins that the constructed ``httpx.Client`` mounts an ``HTTPProxy``
 pool when a proxy env var is set, AND that the socket-level keepalive
 transport is still installed on the no-proxy default path.
 """
+import os
 from unittest.mock import patch
 
 import httpx
 
 from run_agent import AIAgent, _get_proxy_from_env, _get_proxy_for_base_url
+from utils import configure_extra_ca_bundle
+
+
+def _clear_ca_env(monkeypatch):
+    for key in (
+        "HERMES_EXTRA_CA_CERTS",
+        "NODE_EXTRA_CA_CERTS",
+        "HERMES_CA_BUNDLE",
+        "SSL_CERT_FILE",
+        "REQUESTS_CA_BUNDLE",
+        "_HERMES_CA_BASE_BUNDLE",
+    ):
+        if key in os.environ:
+            monkeypatch.delenv(key, raising=False)
+        else:
+            monkeypatch.setenv(key, "")
 
 
 def _make_agent():
@@ -83,6 +100,7 @@ def test_create_openai_client_routes_via_proxy_when_env_set(mock_openai, monkeyp
     transport suppressed httpx's env-proxy auto-detection, so requests bypassed
     the proxy entirely.
     """
+    _clear_ca_env(monkeypatch)
     for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY",
                 "https_proxy", "http_proxy", "all_proxy"):
         monkeypatch.delenv(key, raising=False)
@@ -119,6 +137,7 @@ def test_create_openai_client_routes_via_proxy_when_env_set(mock_openai, monkeyp
 def test_create_openai_client_no_proxy_when_env_unset(mock_openai, monkeypatch):
     """Without proxy env vars, the keepalive transport must still be installed
     and no HTTPProxy mount should exist."""
+    _clear_ca_env(monkeypatch)
     for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY",
                 "https_proxy", "http_proxy", "all_proxy"):
         monkeypatch.delenv(key, raising=False)
@@ -192,6 +211,7 @@ def test_get_proxy_for_base_url_returns_none_when_proxy_unset(monkeypatch):
 def test_create_openai_client_bypasses_proxy_for_no_proxy_host(mock_openai, monkeypatch):
     """E2E: with HTTPS_PROXY + NO_PROXY=localhost, a local base_url gets a
     keepalive client with NO HTTPProxy mount."""
+    _clear_ca_env(monkeypatch)
     for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY",
                 "https_proxy", "http_proxy", "all_proxy",
                 "NO_PROXY", "no_proxy"):
@@ -218,3 +238,59 @@ def test_create_openai_client_bypasses_proxy_for_no_proxy_host(mock_openai, monk
         "NO_PROXY host must not route through HTTPProxy; pools were %r" % (pool_types,)
     )
     http_client.close()
+
+
+def test_extra_ca_bundle_merges_even_when_ssl_cert_file_preconfigured(monkeypatch, tmp_path):
+    """Gateway startup order: SSL_CERT_FILE pre-set, HERMES_EXTRA_CA_CERTS loaded later.
+
+    Hermes must merge the extra CA instead of treating an existing SSL_CERT_FILE
+    as final. The generated bundle must contain both base and extra certs.
+    """
+    _clear_ca_env(monkeypatch)
+    base_ca = tmp_path / "base-ca.pem"
+    base_ca.write_text("BASE-CA-CONTENT")
+    extra_ca = tmp_path / "extra-ca.pem"
+    extra_ca.write_text("EXTRA-CA-CONTENT")
+    bundle_path = tmp_path / "merged-bundle.pem"
+
+    monkeypatch.setenv("SSL_CERT_FILE", str(base_ca))
+    monkeypatch.setenv("HERMES_EXTRA_CA_CERTS", str(extra_ca))
+    monkeypatch.setenv("HERMES_CA_BUNDLE", str(bundle_path))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    result = configure_extra_ca_bundle()
+
+    assert result == str(bundle_path)
+    merged = bundle_path.read_text()
+    assert "BASE-CA-CONTENT" in merged
+    assert "EXTRA-CA-CONTENT" in merged
+    assert os.environ["SSL_CERT_FILE"] == str(bundle_path)
+    assert os.environ["REQUESTS_CA_BUNDLE"] == str(bundle_path)
+
+
+def test_extra_ca_bundle_is_idempotent_when_ssl_cert_file_is_generated_bundle(monkeypatch, tmp_path):
+    """Repeated calls must not duplicate extra CA contents."""
+    _clear_ca_env(monkeypatch)
+    base_ca = tmp_path / "base-ca.pem"
+    base_ca.write_text("BASE-CA-CONTENT")
+    extra_ca = tmp_path / "extra-ca.pem"
+    extra_ca.write_text("EXTRA-CA-CONTENT")
+    bundle_path = tmp_path / "merged-bundle.pem"
+
+    monkeypatch.setenv("SSL_CERT_FILE", str(base_ca))
+    monkeypatch.setenv("HERMES_EXTRA_CA_CERTS", str(extra_ca))
+    monkeypatch.setenv("HERMES_CA_BUNDLE", str(bundle_path))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    first_result = configure_extra_ca_bundle()
+    first_content = bundle_path.read_text()
+
+    second_result = configure_extra_ca_bundle()
+    second_content = bundle_path.read_text()
+
+    assert first_result == str(bundle_path)
+    assert second_result == str(bundle_path)
+    assert first_content == second_content
+    assert first_content.count("EXTRA-CA-CONTENT") == 1, (
+        "Extra CA content must not be duplicated on repeated calls"
+    )

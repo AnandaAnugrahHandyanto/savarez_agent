@@ -295,6 +295,8 @@ _PROXY_ENV_KEYS = (
     "https_proxy", "http_proxy", "all_proxy",
 )
 
+_TLS_CA_ENV_KEYS = ("SSL_CERT_FILE", "REQUESTS_CA_BUNDLE")
+
 
 def normalize_proxy_url(proxy_url: str | None) -> str | None:
     """Normalize proxy URLs for httpx/aiohttp compatibility.
@@ -318,6 +320,129 @@ def normalize_proxy_env_vars() -> None:
         normalized = normalize_proxy_url(value)
         if normalized and normalized != value:
             os.environ[key] = normalized
+    configure_extra_ca_bundle()
+
+
+# ─── Extra CA Bundle ──────────────────────────────────────────────────────────
+
+
+def configure_extra_ca_bundle() -> "str | None":
+    """Build a merged CA bundle that includes user-provided extra CA certs.
+
+    Reads extra CA paths from ``HERMES_EXTRA_CA_CERTS`` and
+    ``NODE_EXTRA_CA_CERTS`` (both ``os.pathsep``-separated path lists).
+
+    When extra CA files are configured this helper:
+
+    * determines the base CA bundle from ``SSL_CERT_FILE``,
+      ``REQUESTS_CA_BUNDLE``, ``certifi.where()`` or Python's default
+      ``ssl.get_default_verify_paths().cafile``
+    * writes a merged bundle to ``HERMES_CA_BUNDLE`` (or
+      ``$HERMES_HOME/hermes-ca-bundle.pem``)
+    * sets ``SSL_CERT_FILE`` and ``REQUESTS_CA_BUNDLE`` to point at the
+      merged bundle
+    * records the original base bundle in ``_HERMES_CA_BASE_BUNDLE`` so
+      repeated calls are idempotent
+
+    Returns the merged bundle path, or ``None`` when no extra CA files
+    are configured (or when ``HERMES_DISABLE_EXTRA_CA_AUTO`` is truthy).
+    """
+    if env_var_enabled("HERMES_DISABLE_EXTRA_CA_AUTO"):
+        return None
+
+    # Collect extra CA paths
+    extra_ca_raw = os.getenv("HERMES_EXTRA_CA_CERTS", "")
+    node_extra_ca_raw = os.getenv("NODE_EXTRA_CA_CERTS", "")
+
+    extra_paths: "list[Path]" = []
+    for raw in (extra_ca_raw, node_extra_ca_raw):
+        if not raw or not raw.strip():
+            continue
+        for part in raw.split(os.pathsep):
+            part = part.strip()
+            if not part:
+                continue
+            p = Path(part)
+            if p not in extra_paths:
+                extra_paths.append(p)
+
+    if not extra_paths:
+        # No extra CA certs — return existing bundle if set, else None
+        for key in _TLS_CA_ENV_KEYS:
+            val = os.getenv(key, "")
+            if val and Path(val).exists():
+                return val
+        return None
+
+    # Determine base CA bundle
+    base_bundle = os.getenv("_HERMES_CA_BASE_BUNDLE", "")
+    if not base_bundle or not Path(base_bundle).exists():
+        for key in _TLS_CA_ENV_KEYS:
+            val = os.getenv(key, "")
+            if val and Path(val).exists():
+                base_bundle = val
+                break
+        if not base_bundle or not Path(base_bundle).exists():
+            try:
+                import certifi
+                base_bundle = certifi.where()
+            except Exception:
+                base_bundle = ""
+        if not base_bundle or not Path(base_bundle).exists():
+            import ssl
+            base_bundle = ssl.get_default_verify_paths().cafile or ""
+        if not base_bundle or not Path(base_bundle).exists():
+            return None
+
+    # Determine output path
+    output_env = os.getenv("HERMES_CA_BUNDLE", "")
+    if output_env:
+        bundle_path = Path(output_env)
+    else:
+        try:
+            from hermes_constants import get_hermes_home
+            hermes_home = get_hermes_home()
+        except Exception:
+            hermes_home = Path.home() / ".hermes"
+        bundle_path = Path(hermes_home) / "hermes-ca-bundle.pem"
+
+    # Read extra cert contents
+    extra_certs: "list[str]" = []
+    for p in extra_paths:
+        if not p.exists():
+            continue
+        try:
+            extra_certs.append(p.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+
+    if not extra_certs:
+        # All extra paths were missing/unreadable
+        for key in _TLS_CA_ENV_KEYS:
+            val = os.getenv(key, "")
+            if val and Path(val).exists():
+                return val
+        return None
+
+    # Build merged bundle
+    try:
+        base_content = Path(base_bundle).read_text(encoding="utf-8")
+    except Exception:
+        base_content = ""
+
+    merged = base_content
+    for cert in extra_certs:
+        if cert not in merged:
+            merged = merged.rstrip("\n") + "\n" + cert
+
+    bundle_path.parent.mkdir(parents=True, exist_ok=True)
+    bundle_path.write_text(merged, encoding="utf-8")
+
+    os.environ["_HERMES_CA_BASE_BUNDLE"] = str(Path(base_bundle).resolve())
+    os.environ["SSL_CERT_FILE"] = str(bundle_path.resolve())
+    os.environ["REQUESTS_CA_BUNDLE"] = str(bundle_path.resolve())
+
+    return str(bundle_path.resolve())
 
 
 # ─── URL Parsing Helpers ──────────────────────────────────────────────────────
