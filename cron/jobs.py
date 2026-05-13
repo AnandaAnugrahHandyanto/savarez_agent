@@ -660,6 +660,36 @@ def create_job(
         "agent_id": agent_id,
     }
 
+    # If agent_id points to a non-main profile, ensure we save the job into
+    # that profile's cron directory rather than the current ContextVar dir.
+    # This fixes the case where create_job(agent_id='xxx') is called from a
+    # script or gateway handler whose ContextVar still points to main.
+    _current_profile = None
+    try:
+        from agent.profile import get_active_profile
+        _current_profile = get_active_profile()
+    except Exception:
+        pass
+
+    if agent_id != "main" and (_current_profile is None or _current_profile.id != agent_id):
+        try:
+            from agent.profile import load_agent_registry, use_profile
+            from gateway.config import load_gateway_config
+            _registry = load_agent_registry(load_gateway_config())
+            _target_profile = _registry.get(agent_id)
+            if _target_profile is not None:
+                with use_profile(_target_profile):
+                    jobs = load_jobs()
+                    jobs.append(job)
+                    save_jobs(jobs)
+                    return job
+        except Exception as e:
+            logger.warning(
+                "create_job: failed to save job '%s' into agent '%s' profile, "
+                "falling back to current profile: %s",
+                job_id, agent_id, e,
+            )
+
     jobs = load_jobs()
     jobs.append(job)
     save_jobs(jobs)
