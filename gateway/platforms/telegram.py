@@ -1663,6 +1663,71 @@ class TelegramAdapter(BasePlatformAdapter):
             )
             return False
 
+    # ── Native draft streaming (Bot API 9.5+) ─────────────────────────
+
+    def supports_draft_streaming(
+        self,
+        chat_type: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        """Telegram supports sendMessageDraft for private chats only.
+
+        Bot API 9.5 (March 2026) opened ``sendMessageDraft`` to all bots
+        unconditionally for private (DM) chats.  Groups, supergroups, and
+        channels still rely on the edit-based path.
+
+        We additionally require ``self._bot`` to expose ``send_message_draft``
+        (added to python-telegram-bot in 22.6); older PTB installs gracefully
+        fall back to the edit path even on DMs.
+        """
+        if not self._bot or not hasattr(self._bot, "send_message_draft"):
+            return False
+        return (chat_type or "").lower() in {"dm", "private"}
+
+    async def send_draft(
+        self,
+        chat_id: str,
+        draft_id: int,
+        content: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Stream a partial message via Telegram's native sendMessageDraft.
+
+        The Bot API animates the preview when the same ``draft_id`` is reused
+        across consecutive calls in the same chat.  When the response
+        finishes, the caller sends the final text via the normal ``send``
+        path; the draft preview clears naturally on the client.
+        """
+        if not self._bot:
+            return SendResult(success=False, error="not_connected")
+        if not hasattr(self._bot, "send_message_draft"):
+            return SendResult(success=False, error="api_unavailable")
+
+        # Trim to the same UTF-16 budget the platform enforces on regular sends.
+        text = content if len(content) <= self.MAX_MESSAGE_LENGTH else \
+            self.truncate_message(content, self.MAX_MESSAGE_LENGTH, len_fn=utf16_len)[0]
+
+        kwargs: Dict[str, Any] = {
+            "chat_id": int(chat_id),
+            "draft_id": int(draft_id),
+            "text": text,
+        }
+        thread_id = self._metadata_thread_id(metadata)
+        if thread_id is not None:
+            kwargs["message_thread_id"] = thread_id
+
+        try:
+            ok = await self._bot.send_message_draft(**kwargs)
+            if ok:
+                return SendResult(success=True, message_id=None)
+            return SendResult(success=False, error="draft_rejected")
+        except Exception as e:
+            logger.debug(
+                "[%s] sendMessageDraft failed (chat=%s draft_id=%s): %s",
+                self.name, chat_id, draft_id, e,
+            )
+            return SendResult(success=False, error=str(e))
+
     async def send_update_prompt(
         self, chat_id: str, prompt: str, default: str = "",
         session_key: str = "",

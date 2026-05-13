@@ -52,6 +52,18 @@ class StreamConsumerConfig:
     # openclaw/openclaw#72038.  Default 0 = always edit in place (legacy
     # behavior).  The gateway enables this selectively per-platform.
     fresh_final_after_seconds: float = 0.0
+    # Streaming transport selection:
+    #   "auto"  — prefer native draft streaming (e.g. Telegram sendMessageDraft)
+    #             when the adapter + chat supports it; fall back to edit.
+    #   "draft" — explicitly request native draft streaming; fall back to
+    #             edit when unsupported.
+    #   "edit"  — progressive editMessageText (legacy behavior).
+    #   "off"   — handled by the gateway before the consumer is even built.
+    transport: str = "auto"
+    # Hint for the consumer about the originating chat type (e.g. "dm",
+    # "group", "supergroup", "forum").  Used to gate native draft streaming,
+    # which is platform-specific (Telegram drafts are DM-only).
+    chat_type: str = ""
 
 
 class GatewayStreamConsumer:
@@ -134,6 +146,13 @@ class GatewayStreamConsumer:
 
         # Think-block filter state (mirrors CLI's _stream_delta tag suppression)
         self._in_think_block = False
+
+        # Native draft-streaming state.  Resolved at the start of run() based
+        # on cfg.transport, cfg.chat_type, and the adapter's
+        # supports_draft_streaming() probe.  When active, the consumer emits
+        # animated draft frames via native_stream.NativeStreamProvider
+        # instead of progressive edits via adapter.edit_message.
+        self._native_stream_provider = None  # type: Optional[Any]
         self._think_buffer = ""
 
     @property
@@ -302,6 +321,9 @@ class GatewayStreamConsumer:
         # Platform message length limit — leave room for cursor + formatting
         _raw_limit = getattr(self.adapter, "MAX_MESSAGE_LENGTH", 4096)
         _safe_limit = max(500, _raw_limit - len(self.cfg.cursor) - 100)
+
+        # Resolve native draft streaming once per run.
+        self._resolve_native_stream()
 
         try:
             while True:
@@ -699,6 +721,36 @@ class GatewayStreamConsumer:
         err_lower = err.lower()
         return "flood" in err_lower or "retry after" in err_lower or "rate" in err_lower
 
+    def _resolve_native_stream(self) -> None:
+        """Resolve whether this run should use native draft streaming.
+
+        Delegates to ``NativeStreamProvider.resolve()`` which handles all
+        transport/chat_type/adapter checks.  When resolved, the provider
+        is stored in ``self._native_stream_provider`` and intercepted by
+        ``_send_or_edit()`` for mid-stream frames.
+        """
+        try:
+            from gateway.platforms.native_stream import NativeStreamProvider
+        except ImportError:
+            logger.debug("native_stream module not available, using edit transport")
+            return
+
+        transport = getattr(self.cfg, "transport", "auto")
+        chat_type = getattr(self.cfg, "chat_type", "")
+
+        provider = NativeStreamProvider.resolve(
+            adapter=self.adapter,
+            transport=transport,
+            chat_type=chat_type,
+            metadata=self.metadata,
+        )
+        if provider:
+            self._native_stream_provider = provider
+            logger.debug(
+                "Stream consumer using native-draft transport (chat=%s)",
+                self.chat_id,
+            )
+
     async def _flush_segment_tail_on_edit_failure(self) -> None:
         """Deliver un-sent tail content before a segment-break reset.
 
@@ -893,6 +945,36 @@ class GatewayStreamConsumer:
                 and self.cfg.cursor in text
                 and len(_visible_stripped) < _MIN_NEW_MSG_CHARS):
             return True  # too short for a standalone message — accumulate more
+        # ── Native draft streaming intercept ────────────────────────────
+        # Route mid-stream frames through the native provider when active.
+        # The final answer is delivered via the regular sendMessage path
+        # below — drafts have no message_id, so the regular send clears
+        # the draft naturally on the client and gives the user a real
+        # message in their history.
+        # Skip when:
+        #   * finalize=True (final answer; needs to be a real message)
+        #   * an edit path is already established (message_id is set)
+        if (
+            self._native_stream_provider
+            and not self._native_stream_provider.disabled
+            and not finalize
+            and self._message_id is None
+        ):
+            if text == self._last_sent_text:
+                return True
+            ok = await self._native_stream_provider.send_frame(
+                chat_id=self.chat_id,
+                text=text,
+                metadata=self.metadata,
+            )
+            if ok:
+                # Drafts put something on screen but DO NOT set
+                # _already_sent — that flag gates the gateway's fallback
+                # final-send path and we still need that to fire so the
+                # user gets a real message (drafts have no message_id).
+                return True
+            # Failure already disabled provider; fall through to edit.
+
         try:
             if self._message_id is not None:
                 if self._edit_supported:
