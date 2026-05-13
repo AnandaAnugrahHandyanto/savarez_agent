@@ -4,22 +4,29 @@ import sqlite3
 
 import pytest
 
-from hermes_cli.workflow import WorkflowArtifact
+from hermes_cli.workflow import WorkflowArtifact, WorkflowGate
 from hermes_cli.workflow.store import (
     add_artifact,
     add_event,
+    add_gate,
     connect,
     create_workflow,
     get_workflow,
     list_artifacts,
     list_events,
+    list_gates,
     list_workflows,
+    resolve_gate,
     save_dag,
 )
 
 
 def test_public_workflow_package_exports_artifact_record():
     assert WorkflowArtifact.__name__ == "WorkflowArtifact"
+
+
+def test_public_workflow_package_exports_gate_record():
+    assert WorkflowGate.__name__ == "WorkflowGate"
 
 
 def test_connect_initializes_schema_version_and_tables(tmp_path):
@@ -133,6 +140,119 @@ def test_add_and_list_events_preserves_actor_node_and_structured_data(tmp_path):
         "createdAt": 2.0,
     }
     assert [event.id for event in events] == ["evt_created", "evt_reviewed"]
+
+
+def test_add_and_resolve_gates_preserves_required_actor_verdict_and_metadata(tmp_path):
+    artifact_path = tmp_path / "spec.md"
+    artifact_path.write_text("# Spec\n", encoding="utf-8")
+    with connect(tmp_path / "workflow.db") as conn:
+        create_workflow(conn, workflow_id="wf_gates", title="Gates")
+        add_artifact(conn, workflow_id="wf_gates", artifact_id="art_spec", kind="spec", path=artifact_path)
+        gate = add_gate(
+            conn,
+            gate_id="gate_spec",
+            workflow_id="wf_gates",
+            node_id="spec-review",
+            gate_type="spec_review",
+            level=2,
+            status="pending",
+            required_actor="reviewer",
+            artifact_id="art_spec",
+            reason="Spec needs approval",
+            metadata={"policy": "required"},
+        )
+        resolved = resolve_gate(
+            conn,
+            gate_id="gate_spec",
+            status="approved",
+            verdict="approved",
+            resolved_by="reviewer-profile",
+            reason="Looks good",
+            metadata={"evidence": ["tests"]},
+            now=7.0,
+        )
+        gates = list_gates(conn, "wf_gates")
+
+    assert gate.status == "pending"
+    assert resolved.to_dict() == {
+        "id": "gate_spec",
+        "workflowId": "wf_gates",
+        "nodeId": "spec-review",
+        "gateType": "spec_review",
+        "level": 2,
+        "status": "approved",
+        "verdict": "approved",
+        "requiredActor": "reviewer",
+        "resolvedBy": "reviewer-profile",
+        "resolvedAt": 7.0,
+        "artifactId": "art_spec",
+        "reason": "Looks good",
+        "metadata": {"policy": "required", "evidence": ["tests"]},
+    }
+    assert [item.id for item in gates] == ["gate_spec"]
+
+
+def test_resolve_gate_merges_metadata_and_preserves_reason_when_omitted(tmp_path):
+    with connect(tmp_path / "workflow.db") as conn:
+        create_workflow(conn, workflow_id="wf_gate_merge", title="Gate merge")
+        add_gate(
+            conn,
+            gate_id="gate_merge",
+            workflow_id="wf_gate_merge",
+            gate_type="dag_review",
+            level=1,
+            required_actor="reviewer",
+            reason="Initial gate reason",
+            metadata={"policy": "required", "attempts": 1},
+        )
+
+        resolved = resolve_gate(
+            conn,
+            gate_id="gate_merge",
+            status="approved",
+            verdict="approved",
+            resolved_by="reviewer-profile",
+            metadata={"evidence": ["tests"], "attempts": 2},
+            now=8.0,
+        )
+
+    assert resolved.reason == "Initial gate reason"
+    assert resolved.metadata == {"policy": "required", "attempts": 2, "evidence": ["tests"]}
+
+
+def test_add_gate_rejects_unknown_artifact_reference(tmp_path):
+    with connect(tmp_path / "workflow.db") as conn:
+        create_workflow(conn, workflow_id="wf_gate_artifact", title="Gate artifact")
+
+        with pytest.raises(ValueError, match="artifact not found: art_missing"):
+            add_gate(
+                conn,
+                workflow_id="wf_gate_artifact",
+                gate_type="dag_review",
+                level=1,
+                required_actor="human",
+                artifact_id="art_missing",
+            )
+
+
+def test_gate_helpers_reject_unknown_workflow_and_gate(tmp_path):
+    with connect(tmp_path / "workflow.db") as conn:
+        with pytest.raises(ValueError, match="workflow not found: wf_missing"):
+            add_gate(conn, workflow_id="wf_missing", gate_type="dag_review", level=1, required_actor="human")
+        with pytest.raises(ValueError, match="gate not found: gate_missing"):
+            resolve_gate(conn, gate_id="gate_missing", status="approved", verdict="approved", resolved_by="human")
+
+
+def test_delete_workflow_cascades_gates(tmp_path):
+    with connect(tmp_path / "workflow.db") as conn:
+        create_workflow(conn, workflow_id="wf_delete_gates", title="Delete gates")
+        add_gate(conn, workflow_id="wf_delete_gates", gate_type="dag_review", level=1, required_actor="human")
+        conn.execute("DELETE FROM workflows WHERE id = ?", ("wf_delete_gates",))
+        conn.commit()
+
+        gates = list_gates(conn, "wf_delete_gates")
+
+    assert gates == []
 
 
 def test_add_and_list_artifacts_records_auditable_file_metadata(tmp_path):

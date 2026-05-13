@@ -90,6 +90,40 @@ class WorkflowRecord:
 
 
 @dataclass(frozen=True)
+class WorkflowGate:
+    id: str
+    workflow_id: str
+    node_id: str | None
+    gate_type: str
+    level: int
+    status: str
+    verdict: str | None
+    required_actor: str
+    resolved_by: str | None
+    resolved_at: float | None
+    artifact_id: str | None
+    reason: str | None
+    metadata: dict[str, Any]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "workflowId": self.workflow_id,
+            "nodeId": self.node_id,
+            "gateType": self.gate_type,
+            "level": self.level,
+            "status": self.status,
+            "verdict": self.verdict,
+            "requiredActor": self.required_actor,
+            "resolvedBy": self.resolved_by,
+            "resolvedAt": self.resolved_at,
+            "artifactId": self.artifact_id,
+            "reason": self.reason,
+            "metadata": self.metadata,
+        }
+
+
+@dataclass(frozen=True)
 class WorkflowArtifact:
     id: str
     workflow_id: str
@@ -354,6 +388,114 @@ def list_workflows(conn: sqlite3.Connection, *, board: str | None = None, status
     return [_workflow_from_row(row) for row in rows]
 
 
+def add_gate(
+    conn: sqlite3.Connection,
+    *,
+    workflow_id: str,
+    gate_type: str,
+    level: int,
+    required_actor: str,
+    status: str = "pending",
+    node_id: str | None = None,
+    verdict: str | None = None,
+    resolved_by: str | None = None,
+    resolved_at: float | None = None,
+    artifact_id: str | None = None,
+    reason: str | None = None,
+    metadata: dict[str, Any] | None = None,
+    gate_id: str | None = None,
+) -> WorkflowGate:
+    """Create a workflow gate record."""
+
+    if get_workflow(conn, workflow_id) is None:
+        raise ValueError(f"workflow not found: {workflow_id}")
+    if not gate_type.strip():
+        raise ValueError("gate_type must be non-empty")
+    if level < 1:
+        raise ValueError("gate level must be positive")
+    if not required_actor.strip():
+        raise ValueError("required_actor must be non-empty")
+    if artifact_id is not None:
+        artifact = conn.execute(
+            "SELECT 1 FROM workflow_artifacts WHERE id = ? AND workflow_id = ?",
+            (artifact_id, workflow_id),
+        ).fetchone()
+        if artifact is None:
+            raise ValueError(f"artifact not found: {artifact_id}")
+    gid = gate_id or f"gate_{secrets.token_hex(8)}"
+    conn.execute(
+        """
+        INSERT INTO workflow_gates (
+          id, workflow_id, node_id, gate_type, level, status, verdict,
+          required_actor, resolved_by, resolved_at, artifact_id, reason,
+          metadata_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            gid,
+            workflow_id,
+            node_id,
+            gate_type.strip(),
+            level,
+            status,
+            verdict,
+            required_actor.strip(),
+            resolved_by,
+            resolved_at,
+            artifact_id,
+            reason,
+            _json(metadata or {}),
+        ),
+    )
+    conn.commit()
+    return _gate_from_row(conn.execute("SELECT * FROM workflow_gates WHERE id = ?", (gid,)).fetchone())
+
+
+def list_gates(conn: sqlite3.Connection, workflow_id: str, *, status: str | None = None, limit: int = 100) -> list[WorkflowGate]:
+    clauses = ["workflow_id = ?"]
+    params: list[Any] = [workflow_id]
+    if status:
+        clauses.append("status = ?")
+        params.append(status)
+    rows = conn.execute(
+        f"SELECT * FROM workflow_gates WHERE {' AND '.join(clauses)} ORDER BY level ASC, id ASC LIMIT ?",
+        (*params, limit),
+    ).fetchall()
+    return [_gate_from_row(row) for row in rows]
+
+
+def resolve_gate(
+    conn: sqlite3.Connection,
+    *,
+    gate_id: str,
+    status: str,
+    verdict: str | None,
+    resolved_by: str,
+    reason: str | None = None,
+    metadata: dict[str, Any] | None = None,
+    now: float | None = None,
+) -> WorkflowGate:
+    """Resolve an existing workflow gate."""
+
+    existing = conn.execute("SELECT * FROM workflow_gates WHERE id = ?", (gate_id,)).fetchone()
+    if existing is None:
+        raise ValueError(f"gate not found: {gate_id}")
+    resolved_at = time.time() if now is None else now
+    existing_metadata = _loads(existing["metadata_json"], {})
+    merged_metadata = {**existing_metadata, **metadata} if metadata is not None else existing_metadata
+    resolved_reason = existing["reason"] if reason is None else reason
+    conn.execute(
+        """
+        UPDATE workflow_gates
+        SET status = ?, verdict = ?, resolved_by = ?, resolved_at = ?, reason = ?, metadata_json = ?
+        WHERE id = ?
+        """,
+        (status, verdict, resolved_by, resolved_at, resolved_reason, _json(merged_metadata), gate_id),
+    )
+    conn.commit()
+    return _gate_from_row(conn.execute("SELECT * FROM workflow_gates WHERE id = ?", (gate_id,)).fetchone())
+
+
 def add_artifact(
     conn: sqlite3.Connection,
     *,
@@ -531,6 +673,24 @@ def _workflow_from_row(row: sqlite3.Row) -> WorkflowRecord:
         created_at=row["created_at"],
         updated_at=row["updated_at"],
         created_by=row["created_by"],
+        metadata=_loads(row["metadata_json"], {}),
+    )
+
+
+def _gate_from_row(row: sqlite3.Row) -> WorkflowGate:
+    return WorkflowGate(
+        id=row["id"],
+        workflow_id=row["workflow_id"],
+        node_id=row["node_id"],
+        gate_type=row["gate_type"],
+        level=row["level"],
+        status=row["status"],
+        verdict=row["verdict"],
+        required_actor=row["required_actor"],
+        resolved_by=row["resolved_by"],
+        resolved_at=row["resolved_at"],
+        artifact_id=row["artifact_id"],
+        reason=row["reason"],
         metadata=_loads(row["metadata_json"], {}),
     )
 
