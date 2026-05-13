@@ -23,7 +23,7 @@ export default function Link(t0: Props) {
 
     if ($[0] !== content || $[1] !== url) {
       t1 = (
-        <Text>
+        <Text underline>
           <ink-link href={url}>{content}</ink-link>
         </Text>
       )

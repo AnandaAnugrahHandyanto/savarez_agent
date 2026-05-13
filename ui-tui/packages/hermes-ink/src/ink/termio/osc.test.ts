@@ -2,7 +2,16 @@ import { describe, expect, it } from 'vitest'
 
 import { env, supportsOsc52Clipboard } from '../../utils/env.js'
 
-import { shouldEmitClipboardSequence, shouldUseNativeClipboard } from './osc.js'
+import { setPointerShape, shouldEmitClipboardSequence, shouldUseNativeClipboard } from './osc.js'
+
+const ESC = String.fromCharCode(27)
+
+describe('setPointerShape', () => {
+  it('emits OSC 22 using CSS pointer-shape names', () => {
+    expect(setPointerShape('pointer')).toBe(`${ESC}]22;pointer${String.fromCharCode(7)}`)
+    expect(setPointerShape('default')).toBe(`${ESC}]22;default${String.fromCharCode(7)}`)
+  })
+})
 
 describe('shouldEmitClipboardSequence', () => {
   it('suppresses local multiplexer clipboard OSC by default', () => {
