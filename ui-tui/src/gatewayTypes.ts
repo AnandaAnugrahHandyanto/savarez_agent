@@ -57,6 +57,7 @@ export interface ConfigDisplayConfig {
   details_mode?: string
   inline_diffs?: boolean
   mouse_tracking?: boolean | null | number | string
+  notify_on_interact?: boolean
   sections?: Record<string, string>
   show_cost?: boolean
   show_reasoning?: boolean

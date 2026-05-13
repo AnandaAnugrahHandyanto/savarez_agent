@@ -9,6 +9,7 @@ import type {
   GatewaySkin,
   SessionMostRecentResponse
 } from '../gatewayTypes.js'
+import { ringBell } from '../lib/notify.js'
 import { rpcErrorMessage } from '../lib/rpc.js'
 import { topLevelSubagents } from '../lib/subagentTree.js'
 import { formatToolCall, stripAnsi } from '../lib/text.js'
@@ -57,7 +58,13 @@ const pushTool = pushUnique(8)
 export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev: GatewayEvent) => void {
   const { rpc } = ctx.gateway
   const { STARTUP_RESUME_ID, newSession, resumeById, setCatalog } = ctx.session
-  const { bellOnComplete, stdout, sys } = ctx.system
+  const { bellOnComplete, notifyOnInteract, stdout, sys } = ctx.system
+
+  const ringInteractBell = () => {
+    if (notifyOnInteract) {
+      ringBell({ stdout })
+    }
+  }
   const { appendMessage, panel, setHistoryItems } = ctx.transcript
   const { setInput } = ctx.composer
   const { submitRef } = ctx.submission
@@ -521,6 +528,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           clarify: { choices: ev.payload.choices, question: ev.payload.question, requestId: ev.payload.request_id }
         })
         setStatus('waiting for input…')
+        ringInteractBell()
 
         return
       case 'approval.request': {
@@ -528,6 +536,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
         patchOverlayState({ approval: { command: String(ev.payload.command ?? ''), description } })
         setStatus('approval needed')
+        ringInteractBell()
 
         return
       }
@@ -535,6 +544,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       case 'sudo.request':
         patchOverlayState({ sudo: { requestId: ev.payload.request_id } })
         setStatus('sudo password needed')
+        ringInteractBell()
 
         return
 
@@ -543,6 +553,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           secret: { envVar: ev.payload.env_var, prompt: ev.payload.prompt, requestId: ev.payload.request_id }
         })
         setStatus('secret input needed')
+        ringInteractBell()
 
         return
 
@@ -667,8 +678,11 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           const msgs: Msg[] = finalMessages.length ? finalMessages : [{ role: 'assistant', text: finalText }]
           msgs.forEach(appendMessage)
 
-          if (bellOnComplete && stdout?.isTTY) {
-            stdout.write('\x07')
+          if (bellOnComplete) {
+            // ringBell pairs ASCII BEL with paplay so Wayland-native
+            // terminals (Foot/Kitty/ghostty) get an audible cue
+            // even when the bell sequence is silently dropped.
+            ringBell({ stdout })
           }
         }
 

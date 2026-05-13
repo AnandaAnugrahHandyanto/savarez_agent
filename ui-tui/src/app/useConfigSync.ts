@@ -110,21 +110,32 @@ const _voiceRecordKeyFromConfig = (cfg: ConfigFullResponse | null): ParsedVoiceR
 export async function hydrateFullConfig(
   gw: GatewayClient,
   setBell: (v: boolean) => void,
-  setVoiceRecordKey?: (v: ParsedVoiceRecordKey) => void
+  setVoiceRecordKey?: (v: ParsedVoiceRecordKey) => void,
+  setNotifyOnInteract?: (v: boolean) => void
 ): Promise<ConfigFullResponse | null> {
   const cfg = await quietRpc<ConfigFullResponse>(gw, 'config.get', { key: 'full' })
-  applyDisplay(cfg, setBell, setVoiceRecordKey)
+  applyDisplay(cfg, setBell, setVoiceRecordKey, setNotifyOnInteract)
   return cfg
 }
 
 export const applyDisplay = (
   cfg: ConfigFullResponse | null,
   setBell: (v: boolean) => void,
-  setVoiceRecordKey?: (v: ParsedVoiceRecordKey) => void
+  setVoiceRecordKey?: (v: ParsedVoiceRecordKey) => void,
+  setNotifyOnInteract?: (v: boolean) => void
 ) => {
   const d = cfg?.config?.display ?? {}
 
   setBell(!!d.bell_on_complete)
+
+  // notify_on_interact is a sibling of bell_on_complete — same on/off
+  // semantics, same default (off).  Pushed through an optional setter
+  // so back-compat call sites that only care about the bell don't
+  // have to thread a second callback.
+  if (setNotifyOnInteract) {
+    setNotifyOnInteract(!!d.notify_on_interact)
+  }
+
   // Only push the voice record key when the RPC actually returned a
   // config payload. ``quietRpc()`` collapses failures to ``null``; if we
   // reset the cached shortcut on every null we would clobber a custom
@@ -154,6 +165,7 @@ export const applyDisplay = (
 export function useConfigSync({
   gw,
   setBellOnComplete,
+  setNotifyOnInteract,
   setVoiceEnabled,
   setVoiceRecordKey,
   sid
@@ -173,8 +185,8 @@ export function useConfigSync({
     quietRpc<ConfigMtimeResponse>(gw, 'config.get', { key: 'mtime' }).then(r => {
       mtimeRef.current = Number(r?.mtime ?? 0)
     })
-    void hydrateFullConfig(gw, setBellOnComplete, setVoiceRecordKey)
-  }, [gw, setBellOnComplete, setVoiceEnabled, setVoiceRecordKey, sid])
+    void hydrateFullConfig(gw, setBellOnComplete, setVoiceRecordKey, setNotifyOnInteract)
+  }, [gw, setBellOnComplete, setNotifyOnInteract, setVoiceEnabled, setVoiceRecordKey, sid])
 
   useEffect(() => {
     if (!sid) {
@@ -202,17 +214,18 @@ export function useConfigSync({
         quietRpc<ReloadMcpResponse>(gw, 'reload.mcp', { session_id: sid, confirm: true }).then(
           r => r && turnController.pushActivity('MCP reloaded after config change')
         )
-        void hydrateFullConfig(gw, setBellOnComplete, setVoiceRecordKey)
+        void hydrateFullConfig(gw, setBellOnComplete, setVoiceRecordKey, setNotifyOnInteract)
       })
     }, MTIME_POLL_MS)
 
     return () => clearInterval(id)
-  }, [gw, setBellOnComplete, setVoiceRecordKey, sid])
+  }, [gw, setBellOnComplete, setNotifyOnInteract, setVoiceRecordKey, sid])
 }
 
 export interface UseConfigSyncOptions {
   gw: GatewayClient
   setBellOnComplete: (v: boolean) => void
+  setNotifyOnInteract?: (v: boolean) => void
   setVoiceEnabled: (v: boolean) => void
   setVoiceRecordKey?: (v: ParsedVoiceRecordKey) => void
   sid: null | string

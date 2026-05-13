@@ -109,6 +109,7 @@ export function useMainApp(gw: GatewayClient) {
   const [turnStartedAt, setTurnStartedAt] = useState<null | number>(null)
   const [goodVibesTick, setGoodVibesTick] = useState(0)
   const [bellOnComplete, setBellOnComplete] = useState(false)
+  const [notifyOnInteract, setNotifyOnInteract] = useState(false)
 
   const ui = useStore($uiState)
   const overlay = useStore($overlayState)
@@ -401,7 +402,14 @@ export function useMainApp(gw: GatewayClient) {
     }
   }, [ui.busy])
 
-  useConfigSync({ gw, setBellOnComplete, setVoiceEnabled, setVoiceRecordKey, sid: ui.sid })
+  useConfigSync({
+    gw,
+    setBellOnComplete,
+    setNotifyOnInteract,
+    setVoiceEnabled,
+    setVoiceRecordKey,
+    sid: ui.sid
+  })
 
   // Tab title: `⚠` waiting on approval/sudo/secret/clarify, `⏳` busy, `✓` idle.
   const model = ui.info?.model?.replace(/^.*\//, '') ?? ''
@@ -569,7 +577,7 @@ export function useMainApp(gw: GatewayClient) {
           setCatalog
         },
         submission: { submitRef },
-        system: { bellOnComplete, stdout, sys },
+        system: { bellOnComplete, notifyOnInteract, stdout, sys },
         transcript: { appendMessage, panel, setHistoryItems },
         voice: {
           setProcessing: setVoiceProcessing,
@@ -583,6 +591,7 @@ export function useMainApp(gw: GatewayClient) {
       clearSelection,
       composerActions.setInput,
       gateway,
+      notifyOnInteract,
       panel,
       session.newSession,
       session.resetSession,
