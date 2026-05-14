@@ -3590,11 +3590,16 @@ class DiscordAdapter(BasePlatformAdapter):
         unwanted cross-replies.
         """
         configured = self.config.extra.get("thread_require_mention")
+        if configured is None:
+            configured = self.config.extra.get("strict_mention")
         if configured is not None:
             if isinstance(configured, str):
                 return configured.lower() not in ("false", "0", "no", "off")
             return bool(configured)
-        return os.getenv("DISCORD_THREAD_REQUIRE_MENTION", "false").lower() in ("true", "1", "yes", "on")
+        env_value = os.getenv("DISCORD_THREAD_REQUIRE_MENTION")
+        if env_value is None:
+            env_value = os.getenv("DISCORD_STRICT_MENTION", "false")
+        return env_value.lower() in ("true", "1", "yes", "on")
 
     def _thread_parent_channel(self, channel: Any) -> Any:
         """Return the parent text channel when invoked from a thread."""
