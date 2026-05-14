@@ -1419,8 +1419,16 @@ copy_config_templates() {
             touch "$HERMES_HOME/.env"
             log_success "Created ~/.hermes/.env"
         fi
+        # Restrict to owner-only read/write — the file holds API keys and
+        # platform tokens that must never be world- or group-readable.
+        # The default umask on many Linux distros (022) produces 0644 for
+        # cp/touch; use an explicit chmod so this is safe regardless of umask.
+        chmod 0600 "$HERMES_HOME/.env" 2>/dev/null || true
     else
         log_info "~/.hermes/.env already exists, keeping it"
+        # Tighten permissions on pre-existing files too — users who installed
+        # an earlier version may have 0664 on disk.
+        chmod 0600 "$HERMES_HOME/.env" 2>/dev/null || true
     fi
     configure_browser_env_from_system_browser
 
