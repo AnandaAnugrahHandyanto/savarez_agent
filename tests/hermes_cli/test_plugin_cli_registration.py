@@ -8,6 +8,7 @@ Covers:
   - Honcho register_cli() builds correct argparse tree
 """
 
+import argparse
 import sys
 from unittest.mock import MagicMock
 
