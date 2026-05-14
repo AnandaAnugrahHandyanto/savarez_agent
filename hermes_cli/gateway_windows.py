@@ -195,11 +195,46 @@ def get_startup_entry_path() -> Path:
 # Script rendering
 # ---------------------------------------------------------------------------
 
+_DOCKER_TERMINAL_ENV_KEYS = (
+    "TERMINAL_DOCKER_IMAGE",
+    "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE",
+    "TERMINAL_DOCKER_VOLUMES",
+    "TERMINAL_DOCKER_ENV",
+)
+
+
+def _gateway_terminal_env_overlay(config: dict | None) -> dict[str, str]:
+    """Return terminal env vars that Windows gateway launchers must pin.
+
+    The gateway loads dotenv/config again inside its long-lived process. On
+    Windows service startup, stale Docker env inherited from the user/session can
+    otherwise override ``terminal.backend: local`` and route terminal tools back
+    into Docker after a restart. Bake the configured backend into the generated
+    launcher/direct-spawn environment and explicitly clear Docker-only vars when
+    the backend is not Docker.
+    """
+    terminal_cfg = (config or {}).get("terminal")
+    if not isinstance(terminal_cfg, dict):
+        terminal_cfg = {}
+
+    backend = str(terminal_cfg.get("backend") or os.environ.get("TERMINAL_ENV") or "").strip()
+    overlay: dict[str, str] = {}
+    if backend:
+        overlay["TERMINAL_ENV"] = backend
+
+    if backend.lower() != "docker":
+        for key in _DOCKER_TERMINAL_ENV_KEYS:
+            overlay[key] = ""
+
+    return overlay
+
+
 def _build_gateway_cmd_script(
     python_path: str,
     working_dir: str,
     hermes_home: str,
     profile_arg: str,
+    terminal_env_overlay: dict[str, str] | None = None,
 ) -> str:
     """Build the ``gateway.cmd`` wrapper content (CRLF-terminated).
 
@@ -221,6 +256,12 @@ def _build_gateway_cmd_script(
     # if someone imports hermes_constants-based logic during startup.
     venv_dir = str(Path(python_path).resolve().parent.parent)
     lines.append(f'set "VIRTUAL_ENV={venv_dir}"')
+    for key, value in (terminal_env_overlay or {}).items():
+        if "\r" in key or "\n" in key or "=" in key:
+            raise ValueError(f"invalid environment variable name: {key!r}")
+        if "\r" in value or "\n" in value:
+            raise ValueError(f"invalid environment variable value for {key!r}")
+        lines.append(f'set "{key}={value}"')
 
     prog_args = [python_path, "-m", "hermes_cli.main"]
     if profile_arg:
@@ -246,7 +287,7 @@ def _write_task_script() -> Path:
     """Generate and write the gateway.cmd wrapper. Return its absolute path."""
     _assert_windows()
     # Local imports to avoid circular-init at module load time.
-    from hermes_cli.config import get_hermes_home
+    from hermes_cli.config import get_hermes_home, load_config
     from hermes_cli.gateway import (
         PROJECT_ROOT,
         _profile_arg,
@@ -257,8 +298,15 @@ def _write_task_script() -> Path:
     working_dir = str(PROJECT_ROOT)
     hermes_home = str(Path(get_hermes_home()).resolve())
     profile_arg = _profile_arg(hermes_home)
+    terminal_env_overlay = _gateway_terminal_env_overlay(load_config())
 
-    content = _build_gateway_cmd_script(python_path, working_dir, hermes_home, profile_arg)
+    content = _build_gateway_cmd_script(
+        python_path,
+        working_dir,
+        hermes_home,
+        profile_arg,
+        terminal_env_overlay=terminal_env_overlay,
+    )
     script_path = get_task_script_path()
     script_path.write_text(content, encoding="utf-8", newline="")
     return script_path
@@ -352,7 +400,7 @@ def _build_gateway_argv() -> tuple[list[str], str, dict[str, str]]:
     layer in between.
     """
     _assert_windows()
-    from hermes_cli.config import get_hermes_home
+    from hermes_cli.config import get_hermes_home, load_config
     from hermes_cli.gateway import (
         PROJECT_ROOT,
         _profile_arg,
@@ -375,6 +423,7 @@ def _build_gateway_argv() -> tuple[list[str], str, dict[str, str]]:
         "HERMES_GATEWAY_DETACHED": "1",
         "VIRTUAL_ENV": str(Path(python_exe).resolve().parent.parent),
     }
+    env_overlay.update(_gateway_terminal_env_overlay(load_config()))
     return argv, working_dir, env_overlay
 
 
