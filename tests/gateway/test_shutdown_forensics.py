@@ -80,6 +80,27 @@ class TestSnapshotShutdownContext:
         ctx = sf.snapshot_shutdown_context(signal.SIGTERM)
         assert ctx["under_systemd"] is False
 
+    def test_under_systemd_false_on_macos_when_ppid_is_one(self, monkeypatch):
+        monkeypatch.delenv("INVOCATION_ID", raising=False)
+        monkeypatch.setattr(sf.sys, "platform", "darwin")
+        monkeypatch.setattr(os, "getppid", lambda: 1)
+        ctx = sf.snapshot_shutdown_context(signal.SIGTERM)
+        assert ctx["under_systemd"] is False
+
+    def test_under_systemd_true_on_linux_when_ppid_is_one(self, monkeypatch):
+        monkeypatch.delenv("INVOCATION_ID", raising=False)
+        monkeypatch.setattr(sf.sys, "platform", "linux")
+        monkeypatch.setattr(os, "getppid", lambda: 1)
+        ctx = sf.snapshot_shutdown_context(signal.SIGTERM)
+        assert ctx["under_systemd"] is True
+
+    def test_under_systemd_invocation_id_overrides_platform(self, monkeypatch):
+        monkeypatch.setenv("INVOCATION_ID", "abc123")
+        monkeypatch.setattr(sf.sys, "platform", "darwin")
+        monkeypatch.setattr(os, "getppid", lambda: 999)
+        ctx = sf.snapshot_shutdown_context(signal.SIGTERM)
+        assert ctx["under_systemd"] is True
+
     def test_completes_quickly(self):
         """Snapshot must NOT block — it runs inside the asyncio signal handler."""
         start = time.monotonic()
