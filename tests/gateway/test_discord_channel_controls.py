@@ -77,21 +77,33 @@ class FakeThread:
 def adapter(monkeypatch):
     monkeypatch.setattr(discord_platform.discord, "DMChannel", FakeDMChannel, raising=False)
     monkeypatch.setattr(discord_platform.discord, "Thread", FakeThread, raising=False)
+    for env_name in (
+        "DISCORD_ALLOWED_CHANNELS",
+        "DISCORD_ALLOWED_USERS",
+        "DISCORD_ALLOWED_ROLES",
+        "DISCORD_MENTION_ROLE_IDS",
+        "DISCORD_FREE_RESPONSE_CHANNELS",
+        "DISCORD_IGNORED_CHANNELS",
+        "DISCORD_NO_THREAD_CHANNELS",
+        "DISCORD_AUTO_THREAD",
+    ):
+        monkeypatch.delenv(env_name, raising=False)
 
     config = PlatformConfig(enabled=True, token="fake-token")
     adapter = DiscordAdapter(config)
-    adapter._client = SimpleNamespace(user=SimpleNamespace(id=999))
+    adapter._client = SimpleNamespace(user=SimpleNamespace(id=999, name="hermes"))
     adapter._text_batch_delay_seconds = 0  # disable batching for tests
     adapter.handle_message = AsyncMock()
     return adapter
 
 
-def make_message(*, channel, content: str, mentions=None):
+def make_message(*, channel, content: str, mentions=None, role_mentions=None):
     author = SimpleNamespace(id=42, display_name="TestUser", name="TestUser")
     return SimpleNamespace(
         id=123,
         content=content,
         mentions=list(mentions or []),
+        role_mentions=list(role_mentions or []),
         attachments=[],
         reference=None,
         created_at=datetime.now(timezone.utc),
@@ -198,6 +210,54 @@ async def test_dms_unaffected_by_ignored_channels(adapter, monkeypatch):
     await adapter._handle_message(message)
 
     adapter.handle_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_managed_bot_role_mention_satisfies_require_mention(adapter, monkeypatch):
+    """The bot's integration-managed role mention should wake the bot like a direct user mention."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.delenv("DISCORD_IGNORED_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+
+    bot_role = SimpleNamespace(
+        id=1234,
+        name="hermes",
+        managed=True,
+        tags=SimpleNamespace(bot_id=adapter._client.user.id),
+    )
+    message = make_message(
+        channel=FakeTextChannel(channel_id=700),
+        content=f"<@&{bot_role.id}> hello",
+        role_mentions=[bot_role],
+    )
+
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.text == "hello"
+
+
+@pytest.mark.asyncio
+async def test_explicit_role_mention_env_satisfies_require_mention(adapter, monkeypatch):
+    """DISCORD_MENTION_ROLE_IDS can explicitly allow a role mention as a wake mention."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_MENTION_ROLE_IDS", "5678")
+    monkeypatch.delenv("DISCORD_IGNORED_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+
+    role = SimpleNamespace(id=5678, name="not-hermes", managed=False, tags=None)
+    message = make_message(
+        channel=FakeTextChannel(channel_id=700),
+        content=f"<@&{role.id}> hello",
+        role_mentions=[role],
+    )
+
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.text == "hello"
 
 
 # ── no_thread_channels ───────────────────────────────────────────────

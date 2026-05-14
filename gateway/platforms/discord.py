@@ -4139,6 +4139,116 @@ class DiscordAdapter(BasePlatformAdapter):
                     raise Exception(f"HTTP {resp.status}")
                 return await resp.read()
 
+    @staticmethod
+    def _sanitize_attachment_filename(name: Optional[str]) -> str:
+        """Return a basename-safe attachment filename without stripping Unicode."""
+        if not name:
+            return ""
+        safe_name = str(name).replace("\x00", "").strip()
+        # Defend against path traversal while preserving human-readable Unicode
+        # and normal filename punctuation. Discord filenames should not contain
+        # paths, but mocks or malformed payloads can.
+        safe_name = os.path.basename(safe_name.replace("\\", "/"))
+        safe_name = "".join(ch for ch in safe_name if ch.isprintable())
+        if safe_name in {"", ".", ".."}:
+            return ""
+        return safe_name
+
+    def _document_filename_for_attachment(self, att, fallback_ext: str = "") -> str:
+        """Choose the best human filename for a Discord document attachment."""
+        title = self._sanitize_attachment_filename(getattr(att, "title", None))
+        filename = self._sanitize_attachment_filename(getattr(att, "filename", None))
+        chosen = title or filename or "document"
+        if fallback_ext and not os.path.splitext(chosen)[1]:
+            chosen = f"{chosen}{fallback_ext}"
+        return chosen
+
+    def _document_extension_for_attachment(self, att) -> str:
+        """Extract a supported document extension from title or filename."""
+        for candidate in (
+            self._document_filename_for_attachment(att),
+            self._sanitize_attachment_filename(getattr(att, "filename", None)),
+        ):
+            _, ext = os.path.splitext(candidate)
+            ext = ext.lower()
+            if ext in SUPPORTED_DOCUMENT_TYPES:
+                return ext
+        return ""
+
+    def _message_mentions_self(self, message: DiscordMessage) -> bool:
+        """Return True for direct bot mentions or accepted role mentions."""
+        user = self._client.user if self._client else None
+        if user is None:
+            return False
+
+        # Normal Discord bot/user mentions populate message.mentions and use
+        # content like <@123> or <@!123>.
+        if user in getattr(message, "mentions", []):
+            return True
+
+        # Some servers expose the bot's integration-managed role with the same
+        # display name as the bot. In the UI, @hermes can then resolve to a role
+        # mention (<@&role_id>) instead of the bot user mention. Treat that
+        # managed bot role as a wake mention so users do not have to distinguish
+        # the two autocomplete entries.
+        user_id = str(getattr(user, "id", ""))
+        user_name = (getattr(user, "name", "") or "").casefold()
+        for role in getattr(message, "role_mentions", []) or []:
+            role_tags = getattr(role, "tags", None)
+            role_bot_id = getattr(role_tags, "bot_id", None)
+            role_name = (getattr(role, "name", "") or "").casefold()
+            if role_bot_id is not None and str(role_bot_id) == user_id:
+                return True
+            if getattr(role, "managed", False) and user_name and role_name == user_name:
+                return True
+
+        # Optional explicit escape hatch for deployments whose Discord library
+        # does not expose Role.tags.bot_id or role_mentions reliably.
+        raw_role_ids = os.getenv("DISCORD_MENTION_ROLE_IDS", "").strip()
+        if raw_role_ids:
+            allowed_role_ids = {
+                part.strip()
+                for part in raw_role_ids.split(",")
+                if part.strip()
+            }
+            role_mentions = getattr(message, "role_mentions", []) or []
+            if any(str(getattr(role, "id", "")) in allowed_role_ids for role in role_mentions):
+                return True
+
+        return False
+
+    def _strip_self_mentions(self, content: str, message: DiscordMessage) -> str:
+        """Remove direct bot mentions and accepted managed-role mentions from message content."""
+        user = self._client.user if self._client else None
+        normalized = content
+        if user is not None:
+            normalized = normalized.replace(f"<@{user.id}>", "")
+            normalized = normalized.replace(f"<@!{user.id}>", "")
+            user_id = str(getattr(user, "id", ""))
+            user_name = (getattr(user, "name", "") or "").casefold()
+            explicit_role_ids = {
+                part.strip()
+                for part in os.getenv("DISCORD_MENTION_ROLE_IDS", "").split(",")
+                if part.strip()
+            }
+            for role in getattr(message, "role_mentions", []) or []:
+                role_tags = getattr(role, "tags", None)
+                role_bot_id = getattr(role_tags, "bot_id", None)
+                role_name = (getattr(role, "name", "") or "").casefold()
+                is_managed_self_role = (
+                    getattr(role, "managed", False)
+                    and user_name
+                    and role_name == user_name
+                )
+                is_self_role = (
+                    (role_bot_id is not None and str(role_bot_id) == user_id)
+                    or is_managed_self_role
+                    or (str(getattr(role, "id", "")) in explicit_role_ids)
+                )
+                if is_self_role:
+                    normalized = normalized.replace(f"<@&{role.id}>", "")
+        return normalized.strip()
+
     async def _handle_message(self, message: DiscordMessage) -> None:
         """Handle incoming Discord messages."""
         # In server channels (not DMs), require the bot to be @mentioned
@@ -4166,11 +4276,9 @@ class DiscordAdapter(BasePlatformAdapter):
         # can clobber message.content, breaking /command detection in channels.
         raw_content = message.content.strip()
         normalized_content = raw_content
-        mention_prefix = False
-        if self._client.user and self._client.user in message.mentions:
-            mention_prefix = True
-            normalized_content = normalized_content.replace(f"<@{self._client.user.id}>", "").strip()
-            normalized_content = normalized_content.replace(f"<@!{self._client.user.id}>", "").strip()
+        mention_prefix = self._message_mentions_self(message)
+        if mention_prefix:
+            normalized_content = self._strip_self_mentions(normalized_content, message)
             message.content = normalized_content
         if not isinstance(message.channel, discord.DMChannel):
             channel_ids = {str(message.channel.id)}
@@ -4213,7 +4321,7 @@ class DiscordAdapter(BasePlatformAdapter):
             in_bot_thread = is_thread and thread_id in self._threads
 
             if require_mention and not is_free_channel and not in_bot_thread:
-                if self._client.user not in message.mentions and not mention_prefix:
+                if not mention_prefix:
                     return
         # Auto-thread: when enabled, automatically create a thread for every
         # @mention in a text channel so each conversation is isolated (like Slack).
@@ -4250,10 +4358,7 @@ class DiscordAdapter(BasePlatformAdapter):
                     elif att.content_type.startswith("audio/"):
                         msg_type = MessageType.AUDIO
                     else:
-                        doc_ext = ""
-                        if att.filename:
-                            _, doc_ext = os.path.splitext(att.filename)
-                            doc_ext = doc_ext.lower()
+                        doc_ext = self._document_extension_for_attachment(att)
                         if doc_ext in SUPPORTED_DOCUMENT_TYPES:
                             msg_type = MessageType.DOCUMENT
                     break
@@ -4332,13 +4437,11 @@ class DiscordAdapter(BasePlatformAdapter):
                     media_types.append(content_type)
             else:
                 # Document attachments: download, cache, and optionally inject text
-                ext = ""
-                if att.filename:
-                    _, ext = os.path.splitext(att.filename)
-                    ext = ext.lower()
+                ext = self._document_extension_for_attachment(att)
                 if not ext and content_type:
                     mime_to_ext = {v: k for k, v in SUPPORTED_DOCUMENT_TYPES.items()}
                     ext = mime_to_ext.get(content_type, "")
+                document_filename = self._document_filename_for_attachment(att, ext)
                 if ext not in SUPPORTED_DOCUMENT_TYPES:
                     logger.warning(
                         "[Discord] Unsupported document type '%s' (%s), skipping",
@@ -4349,14 +4452,12 @@ class DiscordAdapter(BasePlatformAdapter):
                     if att.size and att.size > MAX_DOC_BYTES:
                         logger.warning(
                             "[Discord] Document too large (%s bytes), skipping: %s",
-                            att.size, att.filename,
+                            att.size, document_filename,
                         )
                     else:
                         try:
                             raw_bytes = await self._cache_discord_document(att, ext)
-                            cached_path = cache_document_from_bytes(
-                                raw_bytes, att.filename or f"document{ext}"
-                            )
+                            cached_path = cache_document_from_bytes(raw_bytes, document_filename)
                             doc_mime = SUPPORTED_DOCUMENT_TYPES[ext]
                             media_urls.append(cached_path)
                             media_types.append(doc_mime)
@@ -4366,9 +4467,7 @@ class DiscordAdapter(BasePlatformAdapter):
                             if ext in {".md", ".txt", ".log"} and len(raw_bytes) <= MAX_TEXT_INJECT_BYTES:
                                 try:
                                     text_content = raw_bytes.decode("utf-8")
-                                    display_name = att.filename or f"document{ext}"
-                                    display_name = re.sub(r'[^\w.\- ]', '_', display_name)
-                                    injection = f"[Content of {display_name}]:\n{text_content}"
+                                    injection = f"[Content of {document_filename}]:\n{text_content}"
                                     if pending_text_injection:
                                         pending_text_injection = f"{pending_text_injection}\n\n{injection}"
                                     else:
@@ -4378,7 +4477,7 @@ class DiscordAdapter(BasePlatformAdapter):
                         except Exception as e:
                             logger.warning(
                                 "[Discord] Failed to cache document %s: %s",
-                                att.filename, e, exc_info=True,
+                                document_filename, e, exc_info=True,
                             )
 
         # Use normalized_content (saved before auto-threading) instead of message.content,
