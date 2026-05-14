@@ -2195,6 +2195,9 @@ class AIAgent:
             if not isinstance(_custom_providers, list):
                 _custom_providers = []
 
+        # Persist for later use (e.g. auxiliary compression context resolution)
+        self._custom_providers = _custom_providers
+
         # Check custom_providers per-model context_length
         if _config_context_length is None and _custom_providers:
             try:
@@ -3237,6 +3240,7 @@ class AIAgent:
                 # provider-specific paths (e.g. Bedrock static table, OpenRouter API)
                 # are invoked for the correct client, not inherited from the main model.
                 provider=(_aux_cfg_provider if _aux_cfg_provider and _aux_cfg_provider != "auto" else getattr(self, "provider", "")),
+                custom_providers=getattr(self, "_custom_providers", None),
             )
 
             # Hard floor: the auxiliary compression model must have at least
