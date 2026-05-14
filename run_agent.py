@@ -2770,6 +2770,27 @@ class AIAgent:
         self._fallback_activated = False
         self._fallback_index = 0
 
+        # Reset stale per-turn model recovery state. These counters/flags are
+        # turn-scoped and can leak from the pre-switch flow into the first
+        # post-switch API call if a session resumes quickly. Clearing them in-band
+        # prevents hard-retry loops (empty-response, prefill, and tool-call
+        # nudges) from carrying stale outcomes across explicit /model switches.
+        self._empty_content_retries = 0
+        self._invalid_tool_retries = 0
+        self._invalid_json_retries = 0
+        self._incomplete_scratchpad_retries = 0
+        self._codex_incomplete_retries = 0
+        self._thinking_prefill_retries = 0
+        self._post_tool_empty_retried = False
+        self._last_content_with_tools = None
+        self._last_content_tools_all_housekeeping = False
+        self._mute_post_response = False
+        self._vision_supported = True
+        self._unicode_sanitization_passes = 0
+        self._tool_guardrail_halt_decision = None
+        if hasattr(self, "_tool_guardrails"):
+            self._tool_guardrails.reset_for_turn()
+
         # When the user deliberately swaps primary providers (e.g. openrouter
         # → anthropic), drop any fallback entries that target the OLD primary
         # or the NEW one.  The chain was seeded from config at agent init for
