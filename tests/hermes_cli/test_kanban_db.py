@@ -80,6 +80,40 @@ def test_workspace_kind_validation(kanban_home):
         kb.create_task(conn, title="bad ws", workspace_kind="cloud")
 
 
+
+
+def test_create_task_records_security_provenance_and_context(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="inspect hostile page",
+            body="Summarize the linked page",
+            assignee="researcher",
+            input_trust="hostile",
+            source_kind="web",
+            source_uri="https://example.invalid/prompt-injection",
+            allowed_toolsets=["web", "file", "web"],
+        )
+        task = kb.get_task(conn, tid)
+        ctx = kb.build_worker_context(conn, tid)
+
+    assert task.input_trust == "hostile"
+    assert task.source_kind == "web"
+    assert task.source_uri == "https://example.invalid/prompt-injection"
+    assert task.allowed_toolsets == ["web", "file"]
+    assert "## Security / provenance" in ctx
+    assert "Input trust: hostile" in ctx
+    assert "Allowed toolsets: web, file" in ctx
+    assert "attacker-controlled" in ctx
+
+
+def test_create_task_rejects_bad_trust_and_toolset(kanban_home):
+    with kb.connect() as conn:
+        with pytest.raises(ValueError, match="input_trust"):
+            kb.create_task(conn, title="bad", input_trust="internet")
+        with pytest.raises(ValueError, match="unknown toolset"):
+            kb.create_task(conn, title="bad", allowed_toolsets=["not-a-toolset"])
+
 # ---------------------------------------------------------------------------
 # Links + dependency resolution
 # ---------------------------------------------------------------------------
@@ -1075,6 +1109,7 @@ class TestSharedBoardPaths:
             claim_lock=None,
             claim_expires=None,
             tenant=None,
+            allowed_toolsets=["file", "web"],
         )
         kb._default_spawn(task, str(tmp_path / "ws"))
 
@@ -1084,6 +1119,8 @@ class TestSharedBoardPaths:
             default_home / "kanban" / "workspaces"
         )
         assert env["HERMES_KANBAN_TASK"] == "t_dispatch_env"
+        assert "--toolsets" in captured["cmd"]
+        assert captured["cmd"][captured["cmd"].index("--toolsets") + 1] == "file,web"
 
 
 # ---------------------------------------------------------------------------

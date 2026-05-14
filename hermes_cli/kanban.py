@@ -70,6 +70,10 @@ def _task_to_dict(t: kb.Task) -> dict[str, Any]:
         "completed_at": t.completed_at,
         "result": t.result,
         "skills": list(t.skills) if t.skills else [],
+        "input_trust": t.input_trust,
+        "source_kind": t.source_kind,
+        "source_uri": t.source_uri,
+        "allowed_toolsets": list(t.allowed_toolsets) if t.allowed_toolsets else [],
         "max_retries": t.max_retries,
     }
 
@@ -285,6 +289,20 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                                "(repeatable). Appended to the built-in "
                                "kanban-worker skill. Example: "
                                "--skill translation --skill github-code-review")
+    p_create.add_argument("--input-trust", default="trusted",
+                          choices=sorted(kb.VALID_INPUT_TRUST_LEVELS),
+                          help="Provenance trust label for the task body/source "
+                               "(trusted, untrusted, hostile). Non-trusted tasks "
+                               "show hostile-input guidance in worker context.")
+    p_create.add_argument("--source-kind", default=None,
+                          help="Optional provenance type, e.g. web, issue, email, doc, user")
+    p_create.add_argument("--source-uri", default=None,
+                          help="Optional source URL/path/id for auditability")
+    p_create.add_argument("--allowed-toolset", action="append", default=[],
+                          dest="allowed_toolsets",
+                          help="Restrict spawned worker to this toolset (repeatable). "
+                               "If omitted, profile defaults apply. Example: "
+                               "--allowed-toolset file --allowed-toolset web")
     p_create.add_argument("--max-retries", type=int, default=None,
                           metavar="N",
                           help="Per-task override for the consecutive-failure "
@@ -1076,6 +1094,10 @@ def _cmd_create(args: argparse.Namespace) -> int:
             idempotency_key=getattr(args, "idempotency_key", None),
             max_runtime_seconds=max_runtime,
             skills=getattr(args, "skills", None) or None,
+            input_trust=getattr(args, "input_trust", "trusted"),
+            source_kind=getattr(args, "source_kind", None),
+            source_uri=getattr(args, "source_uri", None),
+            allowed_toolsets=getattr(args, "allowed_toolsets", None) or None,
             max_retries=max_retries,
         )
         task = kb.get_task(conn, task_id)
@@ -1204,6 +1226,14 @@ def _cmd_show(args: argparse.Namespace) -> int:
           (f" @ {task.workspace_path}" if task.workspace_path else ""))
     if task.skills:
         print(f"  skills:    {', '.join(task.skills)}")
+    if task.input_trust != "trusted" or task.source_kind or task.source_uri or task.allowed_toolsets:
+        print(f"  trust:     {task.input_trust}")
+        if task.source_kind:
+            print(f"  source:    {task.source_kind}" + (f" {task.source_uri}" if task.source_uri else ""))
+        elif task.source_uri:
+            print(f"  source:    {task.source_uri}")
+        if task.allowed_toolsets is not None:
+            print("  toolsets:  " + (", ".join(task.allowed_toolsets) or "(none)"))
     # Effective retry threshold. Show the per-task override if set,
     # otherwise the dispatcher's resolved value from config (or the
     # default if config doesn't set it either). Helps operators see
