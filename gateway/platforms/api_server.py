@@ -799,6 +799,7 @@ class APIServerAdapter(BasePlatformAdapter):
         self,
         ephemeral_system_prompt: Optional[str] = None,
         session_id: Optional[str] = None,
+        requested_model: Optional[str] = None,
         stream_delta_callback=None,
         tool_progress_callback=None,
         tool_start_callback=None,
@@ -826,7 +827,8 @@ class APIServerAdapter(BasePlatformAdapter):
 
         runtime_kwargs = _resolve_runtime_agent_kwargs()
         reasoning_config = GatewayRunner._load_reasoning_config()
-        model = _resolve_gateway_model()
+        runtime_model = runtime_kwargs.pop("model", None)
+        model = requested_model or runtime_model or _resolve_gateway_model()
 
         user_config = _load_gateway_config()
         enabled_toolsets = sorted(_get_platform_tools(user_config, "api_server"))
@@ -857,6 +859,17 @@ class APIServerAdapter(BasePlatformAdapter):
             gateway_session_key=gateway_session_key,
         )
         return agent
+
+    def _resolve_request_model(self, body: Dict[str, Any]):
+        raw_model = body.get("model")
+        if not isinstance(raw_model, str):
+            return self._model_name, None
+        model = raw_model.strip()
+        if not model:
+            return self._model_name, None
+        if model == self._model_name:
+            return model, None
+        return model, model
 
     # ------------------------------------------------------------------
     # HTTP Handlers
@@ -1082,7 +1095,7 @@ class APIServerAdapter(BasePlatformAdapter):
             # history already set from request body above
 
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:29]}"
-        model_name = body.get("model", self._model_name)
+        model_name, requested_model = self._resolve_request_model(body)
         created = int(time.time())
 
         if stream:
@@ -1167,6 +1180,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_complete_callback=_on_tool_complete,
                 agent_ref=agent_ref,
                 gateway_session_key=gateway_session_key,
+                requested_model=requested_model,
             ))
             # Ensure SSE drain loops can terminate without relying on polling
             # agent_task.done(), which can race with queue timeout checks.
@@ -1186,6 +1200,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 ephemeral_system_prompt=system_prompt,
                 session_id=session_id,
                 gateway_session_key=gateway_session_key,
+                requested_model=requested_model,
             )
 
         idempotency_key = request.headers.get("Idempotency-Key")
@@ -2690,6 +2705,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_complete_callback=None,
         agent_ref: Optional[list] = None,
         gateway_session_key: Optional[str] = None,
+        requested_model: Optional[str] = None,
     ) -> tuple:
         """
         Create an agent and run a conversation in a thread executor.
@@ -2713,6 +2729,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_start_callback=tool_start_callback,
                 tool_complete_callback=tool_complete_callback,
                 gateway_session_key=gateway_session_key,
+                requested_model=requested_model,
             )
             if agent_ref is not None:
                 agent_ref[0] = agent
