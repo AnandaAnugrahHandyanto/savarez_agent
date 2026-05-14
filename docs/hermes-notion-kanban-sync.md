@@ -32,7 +32,16 @@ For targeted verification or repair, constrain a run to one or more linked Herme
 python -m hermes_cli.notion_kanban_sync --apply --hermes-task-id t_abc12345 --max-creates 0
 ```
 
-No hard deletes are performed. Legacy Notion statuses are not mass-rewritten unless `--status-migration` is explicitly passed after reviewing a dry-run report. Hermes `archived` maps to an explicit Notion `Status=Archived` select option and `Hermes Status=archived`; the sync may create the Archived option on the Task Board if it is missing.
+For a schema-safe lifecycle cleanup without mutating Hermes tasks, use the migration-only path:
+
+```bash
+python -m hermes_cli.notion_kanban_sync --dry-run --status-migration-only --prune-status-options --max-creates 0
+python -m hermes_cli.notion_kanban_sync --apply --status-migration-only --prune-status-options --max-creates 0
+```
+
+`--status-migration-only` rewrites only Notion `Status` select values to canonical Hermes lifecycle values. `--prune-status-options` removes unused legacy select options after pages are migrated so the Task Board presents only `Triage`, `Todo`, `Ready`, `Running`, `Blocked`, `Done`, and `Archived`.
+
+No hard deletes are performed. Legacy Notion statuses are not mass-rewritten unless `--status-migration` or `--status-migration-only` is explicitly passed after reviewing a dry-run report. Every apply run writes a timestamped `backup-*.json` export containing the affected Notion page ids, old `Status` values, legacy `Hermes Status` values, and schema snapshot before writes. Hermes `archived` maps to an explicit Notion `Status=Archived` select option; the retired `Hermes Status` rich_text field is renamed to `Legacy Hermes Status` when possible, or `Retired Hermes Status` if a legacy archive field already exists, and is no longer written by normal sync.
 
 ## Permanent timer
 

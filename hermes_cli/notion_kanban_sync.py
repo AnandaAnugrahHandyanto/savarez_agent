@@ -34,7 +34,7 @@ TASK_BOARD_DATABASE_ID = "8e85701f-81a6-490f-a859-5c0bc9e52827"
 NOTION_READ_VERSION = "2025-09-03"
 NOTION_WRITE_VERSION = "2022-06-28"
 REPORT_SUBDIR = "hermes-notion-sync"
-CANONICAL_NOTION_STATUSES = ("Triage", "Todo", "Ready", "Running", "Done", "Archived")
+CANONICAL_NOTION_STATUSES = ("Triage", "Todo", "Ready", "Running", "Blocked", "Done", "Archived")
 
 NOTION_TO_CANONICAL = {
     "triage": "Triage",
@@ -43,10 +43,14 @@ NOTION_TO_CANONICAL = {
     "not started": "Todo",
     "ready": "Ready",
     "ready for creation": "Ready",
+    "asset ready": "Ready",
     "running": "Running",
+    "active": "Running",
     "in progress": "Running",
     "in review": "Running",
-    "blocked": "Triage",
+    "reviewable": "Running",
+    "needs review": "Running",
+    "blocked": "Blocked",
     "done": "Done",
     "completed": "Done",
     "complete": "Done",
@@ -60,7 +64,7 @@ HERMES_TO_NOTION = {
     "todo": "Todo",
     "ready": "Ready",
     "running": "Running",
-    "blocked": "Triage",
+    "blocked": "Blocked",
     "done": "Done",
     "archived": "Archived",
 }
@@ -70,6 +74,7 @@ NOTION_TO_HERMES = {
     "Todo": "todo",
     "Ready": "ready",
     "Running": "running",
+    "Blocked": "blocked",
     "Done": "done",
     "Archived": "archived",
 }
@@ -263,7 +268,7 @@ class NotionClient:
             version=NOTION_WRITE_VERSION,
         )
 
-    def ensure_properties(self, *, dry_run: bool) -> dict[str, Any]:
+    def ensure_properties(self, *, dry_run: bool, prune_status_options: bool = False) -> dict[str, Any]:
         db = self.retrieve_database()
         props = db.get("properties", {})
         updates: dict[str, Any] = {}
@@ -271,15 +276,24 @@ class NotionClient:
         status = props.get("Status", {})
         if status.get("type") != "select":
             raise RuntimeError("Notion Task Board Status property is not a select")
-        existing = {opt.get("name") for opt in status.get("select", {}).get("options", [])}
+        existing_options = status.get("select", {}).get("options", [])
+        existing = {opt.get("name") for opt in existing_options}
         missing_statuses = [name for name in CANONICAL_NOTION_STATUSES if name not in existing]
-        if missing_statuses:
-            options = status.get("select", {}).get("options", []) + [{"name": name} for name in missing_statuses]
+        extra_statuses = [name for name in existing if name and name not in CANONICAL_NOTION_STATUSES]
+        if prune_status_options and (missing_statuses or extra_statuses):
+            by_name = {opt.get("name"): opt for opt in existing_options}
+            options = []
+            for name in CANONICAL_NOTION_STATUSES:
+                opt = dict(by_name.get(name) or {"name": name})
+                opt["name"] = name
+                options.append(opt)
+            updates["Status"] = {"select": {"options": options}}
+        elif missing_statuses:
+            options = existing_options + [{"name": name} for name in missing_statuses]
             updates["Status"] = {"select": {"options": options}}
 
         desired = {
             "Hermes Task ID": {"rich_text": {}},
-            "Hermes Status": {"rich_text": {}},
             "Last Synced At": {"date": {}},
             "Sync Source": {"rich_text": {}},
             "Sync Error": {"rich_text": {}},
@@ -288,6 +302,19 @@ class NotionClient:
             if name not in props:
                 updates[name] = spec
 
+        retired = []
+        if "Hermes Status" in props:
+            if "Legacy Hermes Status" not in props:
+                retired_name = "Legacy Hermes Status"
+            else:
+                retired_name = "Retired Hermes Status"
+                suffix = 2
+                while retired_name in props:
+                    retired_name = f"Retired Hermes Status {suffix}"
+                    suffix += 1
+            updates["Hermes Status"] = {"name": retired_name}
+            retired.append(f"Hermes Status -> {retired_name}")
+
         if updates and not dry_run:
             self._request(
                 "PATCH",
@@ -295,7 +322,7 @@ class NotionClient:
                 version=NOTION_WRITE_VERSION,
                 payload={"properties": updates},
             )
-        return {"missing_statuses": missing_statuses, "properties_added": [k for k in updates if k != "Status"]}
+        return {"missing_statuses": missing_statuses, "extra_statuses": extra_statuses, "properties_added": [k for k in updates if k not in {"Status", "Hermes Status"}], "retired_properties": retired}
 
     def query_tasks(self, *, page_size: int = 100, since: str | None = None, limit: int | None = None) -> list[dict[str, Any]]:
         payload: dict[str, Any] = {"page_size": min(max(page_size, 1), 100)}
@@ -356,7 +383,11 @@ def parse_notion_task(page: dict[str, Any]) -> NotionTask:
         source=_rich_text_prop(props.get("Source")) or None,
         last_edited_time=page.get("last_edited_time"),
         hermes_task_id=_rich_text_prop(props.get("Hermes Task ID")) or None,
-        hermes_status=_rich_text_prop(props.get("Hermes Status")) or None,
+        hermes_status=(
+            _rich_text_prop(props.get("Legacy Hermes Status"))
+            or _rich_text_prop(props.get("Hermes Status"))
+            or None
+        ),
     )
 
 
@@ -441,7 +472,6 @@ def notion_properties_for_sync(
     *,
     status: str | None = None,
     hermes_task_id: str | None = None,
-    hermes_status: str | None = None,
     sync_source: str = "sync-engine",
     sync_error: str = "",
 ) -> dict[str, Any]:
@@ -454,8 +484,6 @@ def notion_properties_for_sync(
         props["Status"] = {"select": {"name": status}}
     if hermes_task_id:
         props["Hermes Task ID"] = {"rich_text": [{"text": {"content": hermes_task_id}}]}
-    if hermes_status:
-        props["Hermes Status"] = {"rich_text": [{"text": {"content": hermes_status}}]}
     return props
 
 
@@ -508,6 +536,35 @@ def write_report(root: Path, name: str, payload: dict[str, Any]) -> Path:
     return path
 
 
+def _schema_snapshot(db: dict[str, Any]) -> dict[str, Any]:
+    snapshot: dict[str, Any] = {}
+    for name, prop in db.get("properties", {}).items():
+        entry: dict[str, Any] = {"type": prop.get("type")}
+        if prop.get("type") == "select":
+            entry["options"] = [opt.get("name") for opt in prop.get("select", {}).get("options", [])]
+        snapshot[name] = entry
+    return snapshot
+
+
+def _page_backup_records(pages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    records = []
+    for page in pages:
+        props = page.get("properties", {})
+        task = parse_notion_task(page)
+        records.append({
+            "page_id": task.page_id,
+            "url": task.url,
+            "title": task.title,
+            "status": task.status,
+            "canonical_status": task.canonical_status,
+            "hermes_task_id": task.hermes_task_id,
+            "hermes_status_old": _rich_text_prop(props.get("Hermes Status")) or None,
+            "legacy_hermes_status": _rich_text_prop(props.get("Legacy Hermes Status")) or None,
+            "last_edited_time": task.last_edited_time,
+        })
+    return records
+
+
 class NotionKanbanSync:
     def __init__(
         self,
@@ -530,15 +587,14 @@ class NotionKanbanSync:
         limit: int | None = None,
         since: str | None = None,
         status_migration: bool = False,
+        status_migration_only: bool = False,
+        prune_status_options: bool = False,
         max_creates: int | None = None,
         hermes_task_ids: set[str] | None = None,
         quiet: bool = False,
     ) -> tuple[SyncStats, Path]:
         stats = SyncStats()
-        ensure = self.notion.ensure_properties(dry_run=dry_run)
-        if ensure.get("missing_statuses") or ensure.get("properties_added"):
-            stats.changed = True
-
+        db_schema = self.notion.retrieve_database()
         raw_pages = self.notion.query_tasks(limit=limit, since=since)
         notion_tasks = [parse_notion_task(page) for page in raw_pages if not page.get("archived")]
         if hermes_task_ids:
@@ -551,6 +607,50 @@ class NotionKanbanSync:
             for task in notion_tasks
             if (task.status or "") != task.canonical_status
         ))
+
+        backup_path = None
+        if not dry_run:
+            backup_name = f"backup-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}.json"
+            backup_path = write_report(self.report_dir, backup_name, {
+                "generated_at": _now_iso(),
+                "database_id": self.notion.database_id,
+                "schema": _schema_snapshot(db_schema),
+                "pages": _page_backup_records(raw_pages),
+            })
+
+        ensure = self.notion.ensure_properties(dry_run=dry_run, prune_status_options=prune_status_options)
+        if ensure.get("missing_statuses") or ensure.get("properties_added") or ensure.get("retired_properties") or (prune_status_options and ensure.get("extra_statuses")):
+            stats.changed = True
+
+        if status_migration_only:
+            for notion_task in notion_tasks:
+                if notion_task.status == notion_task.canonical_status:
+                    continue
+                if dry_run:
+                    stats.notion_pages_would_update += 1
+                else:
+                    self.notion.update_page_properties(
+                        notion_task.page_id,
+                        notion_properties_for_sync(status=notion_task.canonical_status, hermes_task_id=notion_task.hermes_task_id),
+                    )
+                    stats.notion_pages_updated += 1
+                stats.changed = True
+            report_payload = {
+                "generated_at": _now_iso(),
+                "dry_run": dry_run,
+                "status_migration_only": True,
+                "board": self.board or kanban_db.get_current_board(),
+                "database_id": self.notion.database_id,
+                "ensure": ensure,
+                "schema": _schema_snapshot(db_schema),
+                "backup_path": str(backup_path) if backup_path else None,
+                "stats": asdict(stats),
+            }
+            report_name = f"{'dry-run' if dry_run else 'sync'}-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}.json"
+            report_path = write_report(self.report_dir, report_name, report_payload)
+            if not quiet or dry_run or stats.changed or stats.errors:
+                print(json.dumps({"report": str(report_path), "stats": asdict(stats)}, indent=2, sort_keys=True))
+            return stats, report_path
 
         profiles = valid_profiles()
         with kanban_db.connect(board=self.board) as conn:
@@ -598,6 +698,8 @@ class NotionKanbanSync:
             "board": self.board or kanban_db.get_current_board(),
             "database_id": self.notion.database_id,
             "ensure": ensure,
+            "schema": _schema_snapshot(db_schema),
+            "backup_path": str(backup_path) if backup_path else None,
             "stats": asdict(stats),
         }
         report_name = f"{'dry-run' if dry_run else 'sync'}-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}.json"
@@ -656,7 +758,6 @@ class NotionKanbanSync:
                     notion_properties_for_sync(
                         status=notion_task.canonical_status if status_migration else None,
                         hermes_task_id=task_id,
-                        hermes_status=hermes_status,
                     ),
                 )
                 by_task_id[task_id] = kanban_db.get_task(conn, task_id)  # type: ignore[assignment]
@@ -690,7 +791,7 @@ class NotionKanbanSync:
                 stats.comments_would_append += 1
             else:
                 add_kanban_comment(conn, existing.id, msg)
-                self.notion.update_page_properties(notion_task.page_id, notion_properties_for_sync(sync_error=msg, hermes_task_id=existing.id, hermes_status=existing.status))
+                self.notion.update_page_properties(notion_task.page_id, notion_properties_for_sync(sync_error=msg, hermes_task_id=existing.id))
                 now = _now_iso()
                 self.state.setdefault("pages", {})[notion_task.page_id] = {"last_synced_at": now, "hermes_task_id": existing.id}
                 self.state.setdefault("tasks", {})[existing.id] = {"last_synced_at": now, "notion_page_id": notion_task.page_id}
@@ -725,7 +826,6 @@ class NotionKanbanSync:
                         notion_task.page_id,
                         notion_properties_for_sync(
                             hermes_task_id=existing.id,
-                            hermes_status=target_hermes_status,
                             status=notion_task.canonical_status if status_migration and notion_task.status != notion_task.canonical_status else None,
                         ),
                     )
@@ -737,7 +837,7 @@ class NotionKanbanSync:
             if dry_run:
                 stats.notion_pages_would_update += 1
             else:
-                self.notion.update_page_properties(notion_task.page_id, notion_properties_for_sync(status=notion_task.canonical_status, hermes_task_id=existing.id, hermes_status=existing.status))
+                self.notion.update_page_properties(notion_task.page_id, notion_properties_for_sync(status=notion_task.canonical_status, hermes_task_id=existing.id))
                 now = _now_iso()
                 self.state.setdefault("pages", {})[notion_task.page_id] = {"last_synced_at": now, "hermes_task_id": existing.id}
                 self.state.setdefault("tasks", {})[existing.id] = {"last_synced_at": now, "notion_page_id": notion_task.page_id}
@@ -757,7 +857,6 @@ class NotionKanbanSync:
         if (
             notion_task.canonical_status == desired
             and notion_task.hermes_task_id == task.id
-            and notion_task.hermes_status == task.status
         ):
             return
         state_task = self.state.setdefault("tasks", {}).get(task.id, {})
@@ -770,7 +869,7 @@ class NotionKanbanSync:
         else:
             self.notion.update_page_properties(
                 notion_task.page_id,
-                notion_properties_for_sync(status=desired, hermes_task_id=task.id, hermes_status=task.status),
+                notion_properties_for_sync(status=desired, hermes_task_id=task.id),
             )
             self.notion.append_activity(notion_task.page_id, f"Hermes sync: {task.id} moved to {task.status} at {_now_iso()}.")
             stats.hermes_to_notion_updates += 1
@@ -789,6 +888,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--limit", type=int, default=None, help="limit Notion pages processed (useful for safe samples)")
     parser.add_argument("--since", default=None, help="only query Notion rows edited on/after this ISO timestamp")
     parser.add_argument("--status-migration", action="store_true", help="rewrite legacy Notion statuses to canonical select values")
+    parser.add_argument("--status-migration-only", action="store_true", help="only rewrite Notion Status select values; do not create or mutate Hermes tasks")
+    parser.add_argument("--prune-status-options", action="store_true", help="replace Notion Status select options with only canonical Hermes lifecycle values")
     parser.add_argument("--max-creates", type=int, default=None, help="cap new Hermes tasks per apply run; useful for cron-safe batched backfill")
     parser.add_argument("--hermes-task-id", action="append", default=[], help="only process Notion rows linked to this Hermes task id; repeat for a limited targeted apply")
     parser.add_argument("--report-dir", default=None)
@@ -814,7 +915,9 @@ def main(argv: list[str] | None = None) -> int:
             dry_run=dry_run,
             limit=args.limit,
             since=args.since,
-            status_migration=args.status_migration,
+            status_migration=args.status_migration or args.status_migration_only,
+            status_migration_only=args.status_migration_only,
+            prune_status_options=args.prune_status_options,
             max_creates=args.max_creates,
             hermes_task_ids=set(args.hermes_task_id) or None,
             quiet=args.quiet,

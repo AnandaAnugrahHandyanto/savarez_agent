@@ -5,6 +5,7 @@ from pathlib import Path
 
 from hermes_cli import kanban_db
 from hermes_cli.notion_kanban_sync import (
+    CANONICAL_NOTION_STATUSES,
     NotionKanbanSync,
     NotionTask,
     hermes_status_to_notion,
@@ -31,8 +32,12 @@ def test_legacy_notion_statuses_normalize_to_canonical_lifecycle():
     assert normalize_notion_status("Not Started") == "Todo"
     assert normalize_notion_status("To Do") == "Todo"
     assert normalize_notion_status("Ready for Creation") == "Ready"
+    assert normalize_notion_status("Asset Ready") == "Ready"
     assert normalize_notion_status("In Progress") == "Running"
-    assert normalize_notion_status("Blocked") == "Triage"
+    assert normalize_notion_status("In Review") == "Running"
+    assert normalize_notion_status("Reviewable") == "Running"
+    assert normalize_notion_status("Needs Review") == "Running"
+    assert normalize_notion_status("Blocked") == "Blocked"
     assert normalize_notion_status("Completed") == "Done"
     assert normalize_notion_status("Cancelled") == "Done"
     assert normalize_notion_status("weird custom status") == "Triage"
@@ -43,10 +48,11 @@ def test_canonical_notion_statuses_map_to_hermes_runtime_statuses():
     assert notion_status_to_hermes("Todo") == "todo"
     assert notion_status_to_hermes("Ready") == "ready"
     assert notion_status_to_hermes("Running") == "running"
+    assert notion_status_to_hermes("Blocked") == "blocked"
     assert notion_status_to_hermes("Done") == "done"
     assert notion_status_to_hermes("Archived") == "archived"
     assert normalize_notion_status("Archived") == "Archived"
-    assert hermes_status_to_notion("blocked") == "Triage"
+    assert hermes_status_to_notion("blocked") == "Blocked"
     assert hermes_status_to_notion("archived") == "Archived"
 
 
@@ -113,12 +119,82 @@ def test_set_kanban_status_appends_a_sync_event(tmp_path):
 
 
 def test_notion_properties_for_sync_never_hard_deletes_or_overwrites_notes():
-    props = notion_properties_for_sync(status="Running", hermes_task_id="t_1234", hermes_status="running")
+    props = notion_properties_for_sync(status="Running", hermes_task_id="t_1234")
 
     assert props["Status"] == {"select": {"name": "Running"}}
     assert props["Hermes Task ID"]["rich_text"][0]["text"]["content"] == "t_1234"
+    assert "Hermes Status" not in props
     assert "Notes" not in props
     assert "Blockers" not in props
+
+
+def test_notion_properties_for_sync_uses_only_canonical_status_for_lifecycle():
+    props = notion_properties_for_sync(status="Archived", hermes_task_id="t_1234")
+
+    assert props["Status"] == {"select": {"name": "Archived"}}
+    assert props["Hermes Task ID"]["rich_text"][0]["text"]["content"] == "t_1234"
+    assert "Hermes Status" not in props
+    assert "Legacy Hermes Status" not in props
+
+
+def test_ensure_properties_renames_hermes_status_to_legacy_and_does_not_recreate_it():
+    notion = _SchemaFakeNotion(
+        properties={
+            "Status": {
+                "type": "select",
+                "select": {"options": [{"name": "Todo"}, {"name": "Done"}]},
+            },
+            "Hermes Status": {"type": "rich_text", "rich_text": {}},
+        }
+    )
+
+    result = notion.ensure_properties(dry_run=False)
+
+    assert result["missing_statuses"] == [
+        status for status in CANONICAL_NOTION_STATUSES if status not in {"Todo", "Done"}
+    ]
+    assert "Hermes Status" not in result["properties_added"]
+    assert notion.schema_updates["Hermes Status"] == {"name": "Legacy Hermes Status"}
+    assert "Legacy Hermes Status" not in notion.schema_updates
+
+
+def test_ensure_properties_retires_duplicate_hermes_status_when_legacy_already_exists():
+    notion = _SchemaFakeNotion(
+        properties={
+            "Status": {
+                "type": "select",
+                "select": {"options": [{"name": status} for status in CANONICAL_NOTION_STATUSES]},
+            },
+            "Hermes Task ID": {"type": "rich_text", "rich_text": {}},
+            "Last Synced At": {"type": "date", "date": {}},
+            "Sync Source": {"type": "rich_text", "rich_text": {}},
+            "Sync Error": {"type": "rich_text", "rich_text": {}},
+            "Hermes Status": {"type": "rich_text", "rich_text": {}},
+            "Legacy Hermes Status": {"type": "rich_text", "rich_text": {}},
+        }
+    )
+
+    result = notion.ensure_properties(dry_run=False)
+
+    assert result["retired_properties"] == ["Hermes Status -> Retired Hermes Status"]
+    assert notion.schema_updates == {"Hermes Status": {"name": "Retired Hermes Status"}}
+
+
+class _SchemaFakeNotion:
+    database_id = "db-test"
+
+    def __init__(self, properties):
+        self.properties = properties
+        self.schema_updates = None
+
+    def retrieve_database(self):
+        return {"properties": self.properties}
+
+    def _request(self, method, url, *, version, payload=None):
+        self.schema_updates = payload["properties"]
+        return {}
+
+    ensure_properties = __import__("hermes_cli.notion_kanban_sync", fromlist=["NotionClient"]).NotionClient.ensure_properties
 
 
 class _FakeNotion:
@@ -128,8 +204,11 @@ class _FakeNotion:
         self.pages = pages
         self.updated = []
 
-    def ensure_properties(self, *, dry_run: bool):
-        return {"missing_statuses": [], "properties_added": []}
+    def ensure_properties(self, *, dry_run: bool, prune_status_options: bool = False):
+        return {"missing_statuses": [], "extra_statuses": [], "properties_added": [], "retired_properties": []}
+
+    def retrieve_database(self):
+        return {"properties": {"Status": {"type": "select", "select": {"options": []}}}}
 
     def query_tasks(self, *, limit=None, since=None):
         return self.pages[:limit] if limit else self.pages
@@ -237,10 +316,10 @@ def test_archived_hermes_task_updates_notion_status_and_stale_diagnostic(tmp_pat
     page_id, props = notion.updated[-1]
     assert page_id == "page-archived"
     assert props["Status"] == {"select": {"name": "Archived"}}
-    assert props["Hermes Status"]["rich_text"][0]["text"]["content"] == "archived"
+    assert "Hermes Status" not in props
 
 
-def test_stale_hermes_status_updates_even_when_notion_status_is_already_desired(tmp_path, monkeypatch):
+def test_stale_legacy_hermes_status_does_not_trigger_active_sync_output(tmp_path, monkeypatch):
     db = tmp_path / "kanban.db"
     state_path = tmp_path / "state.json"
     monkeypatch.setenv("HERMES_KANBAN_DB", str(db))
@@ -264,12 +343,8 @@ def test_stale_hermes_status_updates_even_when_notion_status_is_already_desired(
 
     stats, _ = sync.run_once(dry_run=False, quiet=True)
 
-    assert stats.hermes_to_notion_updates == 1
-    page_id, props = notion.updated[-1]
-    assert page_id == "page-running"
-    assert "Status" in props
-    assert props["Status"] == {"select": {"name": "Running"}}
-    assert props["Hermes Status"]["rich_text"][0]["text"]["content"] == "running"
+    assert stats.hermes_to_notion_updates == 0
+    assert notion.updated == []
 
 
 def test_run_once_can_limit_apply_to_specific_hermes_task_ids(tmp_path, monkeypatch):
