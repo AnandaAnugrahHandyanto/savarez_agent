@@ -174,6 +174,14 @@ def _parse_elements_from_tree(markdown: str) -> List[UIElement]:
     return elements
 
 
+def _parse_screenshot_size(text: str) -> Tuple[int, int]:
+    """Parse screenshot dimensions from cua-driver summary text."""
+    m = re.search(r'\b(\d+)x(\d+)\s+(?:png|jpe?g)\b', text, re.IGNORECASE)
+    if not m:
+        return 0, 0
+    return int(m.group(1)), int(m.group(2))
+
+
 def _split_tree_text(full_text: str) -> Tuple[str, str]:
     """Split get_window_state text into (summary_line, tree_markdown)."""
     lines = full_text.split("\n", 1)
@@ -434,13 +442,15 @@ class CuaDriverBackend(ComputerUseBackend):
         window_title = ""
 
         if mode == "vision":
-            # screenshot tool: just the PNG, no AX walk.
+            # screenshot tool: just the image, no AX walk.
             sc_out = self._session.call_tool(
                 "screenshot",
                 {"window_id": self._active_window_id, "format": "jpeg", "quality": 85},
             )
             if sc_out["images"]:
                 png_b64 = sc_out["images"][0]
+                sc_text = sc_out["data"] if isinstance(sc_out["data"], str) else ""
+                width, height = _parse_screenshot_size(sc_text)
         else:
             # get_window_state: AX tree + optional screenshot.
             gws_out = self._session.call_tool(
@@ -450,13 +460,24 @@ class CuaDriverBackend(ComputerUseBackend):
             text = gws_out["data"] if isinstance(gws_out["data"], str) else ""
             summary, tree = _split_tree_text(text)
 
-            # Parse element count from summary e.g. "✅ AppName — 42 elements, turn 3..."
-            m = re.search(r'(\d+)\s+elements?', summary)
-            if tree and not gws_out["images"]:
-                # ax mode — no screenshot
-                elements = _parse_elements_from_tree(tree)
-            elif gws_out["images"]:
+            if gws_out["images"]:
                 png_b64 = gws_out["images"][0]
+                width, height = _parse_screenshot_size(summary)
+            elif mode == "som":
+                # cua-driver's persistent capture_mode may be `ax`, which makes
+                # get_window_state omit images even for a Hermes `mode="som"`
+                # request. Add the window screenshot explicitly without
+                # mutating driver config.
+                sc_out = self._session.call_tool(
+                    "screenshot",
+                    {"window_id": self._active_window_id, "format": "png"},
+                )
+                if sc_out["images"]:
+                    png_b64 = sc_out["images"][0]
+                    sc_text = sc_out["data"] if isinstance(sc_out["data"], str) else ""
+                    width, height = _parse_screenshot_size(sc_text)
+
+            if tree:
                 elements = _parse_elements_from_tree(tree)
 
             # Extract window title from the AX tree first AXWindow line.
