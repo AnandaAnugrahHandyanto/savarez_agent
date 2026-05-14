@@ -35,13 +35,14 @@ hermes config set memory.provider nowledge-mem
 - injects Working Memory into the system prompt
 - prefetches relevant memories before each turn
 - mirrors Hermes user-profile writes into Nowledge Mem
-- captures cleaned Hermes session transcripts as Mem threads when the session actually ends
+- captures cleaned Hermes transcript turns as Mem thread messages while the conversation runs, with a final delta flush when the session actually ends
 - exposes native tools for search, save, update, delete, and thread lookup
 
 Durable saves still happen through the native `nmem_` tools. In addition,
-the provider captures cleaned Hermes session transcripts at real session
-boundaries such as clean exit, `/new`, `/reset`, and gateway session expiry.
-The first flush imports the transcript; later flushes in the same live Hermes
+the provider captures cleaned Hermes transcript turns as Mem threads while the
+conversation runs, then performs a final delta flush at real session boundaries
+such as clean exit, `/new`, `/reset`, and gateway session expiry. The first
+write for each Hermes `session_id` imports a thread; later writes for that same
 session append only the delta. Transcript payloads use the Mem API directly so
 long sessions are not squeezed into shell arguments.
 

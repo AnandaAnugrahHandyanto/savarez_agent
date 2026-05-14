@@ -32,7 +32,7 @@ class FakeClient:
     def working_memory(self):
         return {"content": "Focus: ship plugin quality"}
 
-    def search(self, query="", *, limit=10, filter_labels=None, mode=None):
+    def search(self, query="", *, limit=10, filter_labels=None, mode=None, min_importance=None):
         return {
             "memories": [
                 {
@@ -389,6 +389,115 @@ def test_on_session_end_imports_clean_messages_then_appends_delta(monkeypatch, t
     ]
 
 
+def test_session_switch_resets_new_session_delta_before_sync_turn(monkeypatch, tmp_path):
+    monkeypatch.setattr(provider_module, "NowledgeMemClient", FakeClient)
+    provider = NowledgeMemProvider()
+    provider.initialize("session-old", hermes_home=str(tmp_path), platform="cli")
+
+    provider.sync_turn("old question", "old answer", session_id="session-old")
+    provider.on_session_switch(
+        "session-new",
+        parent_session_id="session-old",
+        reset=True,
+        reason="new_session",
+    )
+    provider.sync_turn("new question", "new answer", session_id="session-new")
+
+    assert provider._client.import_calls == [
+        {
+            "thread_id": "session-old",
+            "messages": [
+                {"role": "user", "content": "old question"},
+                {"role": "assistant", "content": "old answer"},
+            ],
+            "title": "old question",
+            "source": "hermes",
+        },
+        {
+            "thread_id": "session-new",
+            "messages": [
+                {"role": "user", "content": "new question"},
+                {"role": "assistant", "content": "new answer"},
+            ],
+            "title": "new question",
+            "source": "hermes",
+        },
+    ]
+    assert provider._client.append_calls == []
+    assert provider._session_id == "session-new"
+    assert provider._saved_message_count == 2
+
+
+def test_session_switch_preserves_per_session_delta_when_resuming(monkeypatch, tmp_path):
+    monkeypatch.setattr(provider_module, "NowledgeMemClient", FakeClient)
+    provider = NowledgeMemProvider()
+    provider.initialize("session-a", hermes_home=str(tmp_path), platform="cli")
+
+    provider.sync_turn("a1", "a2", session_id="session-a")
+    provider.on_session_switch("session-b", parent_session_id="session-a", reset=True)
+    provider.sync_turn("b1", "b2", session_id="session-b")
+    provider.on_session_switch("session-a", parent_session_id="session-b", reset=False)
+    provider.sync_turn("a3", "a4", session_id="session-a")
+
+    assert provider._client.import_calls[0]["thread_id"] == "session-a"
+    assert provider._client.import_calls[1]["thread_id"] == "session-b"
+    assert provider._client.append_calls == [
+        {
+            "thread_id": "session-a",
+            "messages": [
+                {"role": "user", "content": "a3"},
+                {"role": "assistant", "content": "a4"},
+            ],
+        }
+    ]
+    assert provider._saved_message_counts["session-a"] == 4
+    assert provider._saved_message_counts["session-b"] == 2
+
+
+def test_session_switch_without_reset_does_not_reuse_previous_session_count(monkeypatch, tmp_path):
+    monkeypatch.setattr(provider_module, "NowledgeMemClient", FakeClient)
+    provider = NowledgeMemProvider()
+    provider.initialize("session-old", hermes_home=str(tmp_path), platform="cli")
+
+    provider.sync_turn("old question", "old answer", session_id="session-old")
+    provider.on_session_switch(
+        "session-branch",
+        parent_session_id="session-old",
+        reset=False,
+        reason="branch",
+    )
+    provider.sync_turn("branch question", "branch answer", session_id="session-branch")
+
+    assert [call["thread_id"] for call in provider._client.import_calls] == [
+        "session-old",
+        "session-branch",
+    ]
+    assert provider._client.append_calls == []
+    assert provider._saved_message_counts["session-branch"] == 2
+    assert "session-branch" in provider._delta_only_sessions
+
+
+def test_session_end_skips_full_flush_when_only_delta_count_is_known(monkeypatch, tmp_path):
+    monkeypatch.setattr(provider_module, "NowledgeMemClient", FakeClient)
+    provider = NowledgeMemProvider()
+    provider.initialize("session-old", hermes_home=str(tmp_path), platform="cli")
+
+    provider.sync_turn("old question", "old answer", session_id="session-old")
+    provider.on_session_switch("session-branch", parent_session_id="session-old", reset=False)
+    provider.sync_turn("branch question", "branch answer", session_id="session-branch")
+
+    provider.on_session_end(
+        [
+            {"role": "user", "content": "old question"},
+            {"role": "assistant", "content": "old answer"},
+            {"role": "user", "content": "branch question"},
+            {"role": "assistant", "content": "branch answer"},
+        ]
+    )
+
+    assert provider._client.append_calls == []
+
+
 def test_on_session_end_failed_import_does_not_advance_count(monkeypatch, tmp_path):
     monkeypatch.setattr(provider_module, "NowledgeMemClient", FakeClient)
     provider = NowledgeMemProvider()
@@ -411,7 +520,7 @@ def test_on_session_end_failed_append_does_not_advance_count(monkeypatch, tmp_pa
     monkeypatch.setattr(provider_module, "NowledgeMemClient", FakeClient)
     provider = NowledgeMemProvider()
     provider.initialize("session-3", hermes_home=str(tmp_path), platform="cli")
-    provider._saved_message_count = 2
+    provider._set_saved_message_count("session-3", 2)
     provider._client.fail_append = True
 
     provider.on_session_end(

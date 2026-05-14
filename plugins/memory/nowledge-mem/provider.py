@@ -17,7 +17,7 @@ import logging
 import os
 import threading
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 from agent.memory_provider import MemoryProvider
 
@@ -59,7 +59,7 @@ topic, use nmem_update rather than create a duplicate."""
 
 _SEARCH = {
     "name": "nmem_search",
-    "description": "Search stored memories. Supports label filtering and deep search mode.",
+    "description": "Search stored memories. Supports label filtering, minimum-importance filtering, and deep search mode.",
     "parameters": {
         "type": "object",
         "properties": {
@@ -72,6 +72,10 @@ _SEARCH = {
             "mode": {
                 "type": "string",
                 "description": "'normal' (fast, default) or 'deep' (graph-enhanced).",
+            },
+            "min_importance": {
+                "type": "number",
+                "description": "Minimum importance threshold, 0.0-1.0. Filters out lower-priority memories.",
             },
         },
         "required": ["query"],
@@ -221,6 +225,8 @@ class NowledgeMemProvider(MemoryProvider):
         self._resolved_space: str | None = None
         self._session_id = ""
         self._saved_message_count = 0
+        self._saved_message_counts: Dict[str, int] = {}
+        self._delta_only_sessions: Set[str] = set()
 
     @property
     def name(self) -> str:
@@ -257,8 +263,7 @@ class NowledgeMemProvider(MemoryProvider):
             timeout = 30
         self._resolved_space = self._resolve_space(config, kwargs)
         self._client = NowledgeMemClient(timeout=timeout, space=self._resolved_space)
-        self._session_id = session_id or ""
-        self._saved_message_count = 0
+        self._activate_session(session_id or "", reset=True)
 
         if not self._client.health():
             logger.warning("Nowledge Mem not reachable via nmem CLI")
@@ -341,18 +346,58 @@ class NowledgeMemProvider(MemoryProvider):
         if not user_content and not assistant_content:
             return
 
+        self._activate_session(active_session_id)
+        cleaned_messages = self._clean_session_messages(
+            [
+                {"role": "user", "content": user_content},
+                {"role": "assistant", "content": assistant_content},
+            ]
+        )
+        self._write_thread_messages(cleaned_messages, title_messages=cleaned_messages)
+
+    def on_session_switch(
+        self,
+        new_session_id: str,
+        *,
+        parent_session_id: str = "",
+        reset: bool = False,
+        **kwargs: Any,
+    ) -> None:
+        if self._cron_skipped:
+            return
+        self._activate_session(new_session_id, reset=reset)
+
+    def _activate_session(self, session_id: str, *, reset: bool = False) -> None:
+        session_id = (session_id or "").strip()
+        if not session_id:
+            return
         previous_session_id = self._session_id
-        self._session_id = active_session_id
-        try:
-            cleaned_messages = self._clean_session_messages(
-                [
-                    {"role": "user", "content": user_content},
-                    {"role": "assistant", "content": assistant_content},
-                ]
-            )
-            self._write_thread_messages(cleaned_messages, title_messages=cleaned_messages)
-        finally:
-            self._session_id = previous_session_id or active_session_id
+        if reset:
+            count = 0
+            self._delta_only_sessions.discard(session_id)
+        elif session_id in self._saved_message_counts:
+            count = self._get_saved_message_count(session_id)
+        elif session_id == previous_session_id:
+            count = int(self._saved_message_count or 0)
+        else:
+            count = 0
+            self._delta_only_sessions.add(session_id)
+        self._saved_message_counts[session_id] = count
+        self._session_id = session_id
+        self._saved_message_count = count
+
+    def _get_saved_message_count(self, session_id: str) -> int:
+        if session_id in self._saved_message_counts:
+            return int(self._saved_message_counts.get(session_id) or 0)
+        if session_id == self._session_id:
+            return int(self._saved_message_count or 0)
+        return 0
+
+    def _set_saved_message_count(self, session_id: str, count: int) -> None:
+        count = max(0, int(count or 0))
+        self._saved_message_counts[session_id] = count
+        if session_id == self._session_id:
+            self._saved_message_count = count
 
     def on_pre_compress(self, messages: List[Dict[str, Any]]) -> str:
         if self._cron_skipped or not self._client:
@@ -373,10 +418,17 @@ class NowledgeMemProvider(MemoryProvider):
         cleaned_messages = self._clean_session_messages(messages)
         if not cleaned_messages:
             return
+        if session_id in self._delta_only_sessions:
+            logger.debug(
+                "Skipping Nowledge Mem session-end flush for %s: only per-turn deltas are tracked",
+                session_id,
+            )
+            return
 
-        saved_count = int(self._saved_message_count or 0)
+        saved_count = self._get_saved_message_count(session_id)
         if saved_count > len(cleaned_messages):
             saved_count = 0
+            self._set_saved_message_count(session_id, 0)
 
         if saved_count <= 0:
             self._write_thread_messages(cleaned_messages, title_messages=cleaned_messages)
@@ -399,7 +451,8 @@ class NowledgeMemProvider(MemoryProvider):
         if not session_id:
             return
 
-        if self._saved_message_count <= 0:
+        saved_count = self._get_saved_message_count(session_id)
+        if saved_count <= 0:
             title = self._build_thread_title(title_messages or messages)
             try:
                 result = self._client.import_thread(
@@ -410,8 +463,9 @@ class NowledgeMemProvider(MemoryProvider):
                 )
                 if not self._response_succeeded(result):
                     if self._thread_already_exists(result):
+                        self._delta_only_sessions.add(session_id)
                         self._append_existing_thread(session_id, messages)
-                        self._saved_message_count += len(messages)
+                        self._set_saved_message_count(session_id, saved_count + len(messages))
                         return
                     logger.warning(
                         "Nowledge Mem session import did not succeed for %s: %s",
@@ -426,7 +480,7 @@ class NowledgeMemProvider(MemoryProvider):
                     error,
                 )
                 return
-            self._saved_message_count += len(messages)
+            self._set_saved_message_count(session_id, saved_count + len(messages))
             return
 
         try:
@@ -438,7 +492,7 @@ class NowledgeMemProvider(MemoryProvider):
                 error,
             )
             return
-        self._saved_message_count += len(messages)
+        self._set_saved_message_count(session_id, saved_count + len(messages))
 
     def _append_existing_thread(self, session_id: str, messages: List[Dict[str, str]]) -> None:
         assert self._client is not None
@@ -472,6 +526,7 @@ class NowledgeMemProvider(MemoryProvider):
                 limit=args.get("limit", 10),
                 filter_labels=self._parse_csv(args.get("filter_labels")),
                 mode=args.get("mode"),
+                min_importance=args.get("min_importance"),
             )
         if tool_name == "nmem_save":
             return client.save(
@@ -555,6 +610,8 @@ class NowledgeMemProvider(MemoryProvider):
         self._resolved_space = None
         self._session_id = ""
         self._saved_message_count = 0
+        self._saved_message_counts.clear()
+        self._delta_only_sessions.clear()
 
     @staticmethod
     def _parse_csv(value: Any) -> Optional[List[str]]:
