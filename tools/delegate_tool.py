@@ -1619,10 +1619,14 @@ def _run_single_child(
 
         if interrupted:
             status = "interrupted"
+        elif completed:
+            # The child loop is authoritative: a normal completion can
+            # legitimately produce an empty final response (for example when
+            # the child only wrote files or intentionally stayed silent).
+            status = "completed"
         elif summary:
-            # A summary means the subagent produced usable output.
-            # exit_reason ("completed" vs "max_iterations") already
-            # tells the parent *how* the task ended.
+            # Defensive fallback for older result payloads that predate the
+            # explicit completed flag but still returned usable output.
             status = "completed"
         else:
             status = "failed"
@@ -2118,6 +2122,25 @@ def delegate_task(
                     # interrupt signal; we just can't wait forever.
                     for f in pending:
                         idx = futures[f]
+                        child = _child_by_index.get(idx)
+                        if not f.done():
+                            # Fabricating an interrupted result is not enough:
+                            # the worker thread may still be inside the child
+                            # agent loop making API calls. Signal the child so
+                            # it exits at the next interrupt boundary.
+                            try:
+                                interrupt = getattr(child, "interrupt", None)
+                                if callable(interrupt):
+                                    interrupt()
+                                elif child is not None and hasattr(child, "_interrupt_requested"):
+                                    child._interrupt_requested = True
+                            except Exception:
+                                logger.debug(
+                                    "Failed to interrupt pending subagent %s",
+                                    idx,
+                                    exc_info=True,
+                                )
+                            f.cancel()
                         if f.done():
                             try:
                                 entry = f.result()
@@ -2130,7 +2153,7 @@ def delegate_task(
                                     "api_calls": 0,
                                     "duration_seconds": 0,
                                     "_child_role": getattr(
-                                        _child_by_index.get(idx), "_delegate_role", None
+                                        child, "_delegate_role", None
                                     ),
                                 }
                         else:
@@ -2141,9 +2164,7 @@ def delegate_task(
                                 "error": "Parent agent interrupted — child did not finish in time",
                                 "api_calls": 0,
                                 "duration_seconds": 0,
-                                "_child_role": getattr(
-                                    _child_by_index.get(idx), "_delegate_role", None
-                                ),
+                                "_child_role": getattr(child, "_delegate_role", None),
                             }
                         results.append(entry)
                         completed_count += 1
