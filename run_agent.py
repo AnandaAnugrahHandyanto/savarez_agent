@@ -2112,6 +2112,12 @@ class AIAgent:
                 compression_threshold = _model_cthresh
         except Exception:
             pass
+        compression_threshold_tokens = _compression_cfg.get("threshold_tokens")
+        if compression_threshold_tokens is not None:
+            try:
+                compression_threshold_tokens = int(compression_threshold_tokens)
+            except (TypeError, ValueError):
+                compression_threshold_tokens = None
         compression_enabled = str(_compression_cfg.get("enabled", True)).lower() in {"true", "1", "yes"}
         compression_target_ratio = float(_compression_cfg.get("target_ratio", 0.20))
         compression_protect_last = int(_compression_cfg.get("protect_last_n", 20))
@@ -2326,6 +2332,17 @@ class AIAgent:
                 provider=self.provider,
                 api_mode=self.api_mode,
             )
+            # Apply absolute token threshold if configured — takes the lower of
+            # the ratio-based threshold and the absolute cap, so compression
+            # never fires later than the user's preferred token count.
+            if compression_threshold_tokens is not None and compression_threshold_tokens > 0:
+                _cc = self.context_compressor
+                _abs_cap = min(compression_threshold_tokens, _cc.context_length)
+                if _abs_cap < _cc.threshold_tokens:
+                    _cc.threshold_tokens = _abs_cap
+                    # Keep threshold_percent in sync for future update_model() calls
+                    if _cc.context_length:
+                        _cc.threshold_percent = _abs_cap / _cc.context_length
         self.compression_enabled = compression_enabled
 
         # Reject models whose context window is below the minimum required
@@ -2445,7 +2462,11 @@ class AIAgent:
 
         if not self.quiet_mode:
             if compression_enabled:
-                print(f"📊 Context limit: {self.context_compressor.context_length:,} tokens (compress at {int(compression_threshold*100)}% = {self.context_compressor.threshold_tokens:,})")
+                _cc = self.context_compressor
+                _cap_note = ""
+                if compression_threshold_tokens is not None and compression_threshold_tokens > 0:
+                    _cap_note = f" (capped at {compression_threshold_tokens:,} tokens)"
+                print(f"📊 Context limit: {_cc.context_length:,} tokens (compress at {_cc.threshold_tokens:,}{_cap_note})")
             else:
                 print(f"📊 Context limit: {self.context_compressor.context_length:,} tokens (auto-compression disabled)")
 
@@ -4048,6 +4069,19 @@ class AIAgent:
         "skill that governs that task needs to carry the lesson.\n\n"
         "If you notice two existing skills that overlap, note it in your "
         "reply — the background curator handles consolidation at scale.\n\n"
+        "Consolidation discipline (important): when updating a skill, "
+        "consolidate into STRUCTURE, not into ABSTRACTION. Preserve distinct "
+        "scenarios as separate entries in references/ rather than collapsing "
+        "them into a single over-generalized rule in SKILL.md. Each reference "
+        "entry should retain its own applicability conditions — the specific "
+        "context, preconditions, and constraints under which that scenario "
+        "applies. A SKILL.md with an index pointing to five well-scoped "
+        "reference entries is more useful than one SKILL.md paragraph that "
+        "averages over those five cases.\n\n"
+        "When writing or patching SKILL.md, preserve applicability conditions: "
+        "include the scope and the 'why', not just the 'what'. Bad: 'Use "
+        "docker-compose (hyphenated).' Good: 'Use docker-compose (hyphenated) "
+        "because this system runs Docker Compose v1, not the v2 plugin.'\n\n"
         "Do NOT capture (these become persistent self-imposed constraints "
         "that bite you later when the environment changes):\n"
         "  • Environment-dependent failures: missing binaries, fresh-install "
@@ -4125,6 +4159,15 @@ class AIAgent:
         "should carry user-preference lessons when relevant.\n\n"
         "If you notice overlapping existing skills, mention it — the "
         "background curator handles consolidation.\n\n"
+        "Consolidation discipline (important): when updating a skill, "
+        "consolidate into STRUCTURE, not into ABSTRACTION. Preserve distinct "
+        "scenarios as separate entries in references/ rather than collapsing "
+        "them into a single over-generalized rule in SKILL.md. Each reference "
+        "entry should retain its own applicability conditions — the specific "
+        "context, preconditions, and constraints under which that scenario "
+        "applies.\n\n"
+        "When writing or patching SKILL.md, preserve applicability conditions: "
+        "include the scope and the 'why', not just the 'what'.\n\n"
         "Do NOT capture as skills (these become persistent self-imposed "
         "constraints that bite you later when the environment changes):\n"
         "  • Environment-dependent failures: missing binaries, fresh-install "
@@ -4290,6 +4333,7 @@ class AIAgent:
                         credential_pool=getattr(self, "_credential_pool", None),
                         parent_session_id=self.session_id,
                         enabled_toolsets=["memory", "skills"],
+                        skip_memory=True,
                     )
                     review_agent._memory_write_origin = "background_review"
                     review_agent._memory_write_context = "background_review"
