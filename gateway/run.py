@@ -1700,6 +1700,87 @@ class GatewayRunner:
             thread_sessions_per_user=getattr(config, "thread_sessions_per_user", False),
         )
 
+    def _mirror_discord_mcp_bridge_response_now(
+        self,
+        *,
+        source: SessionSource,
+        event: MessageEvent,
+        response: str,
+    ) -> bool:
+        """Mirror a confirmed Discord final response into a matched bridge record."""
+        if getattr(source, "platform", None) != Platform.DISCORD:
+            return False
+        response = str(response or "").strip()
+        if not response:
+            return False
+        try:
+            from gateway.mcp_bridge import mirror_task_result, resolve_task_id_from_text
+
+            task_id = resolve_task_id_from_text(getattr(event, "text", "") or "")
+            if not task_id:
+                return False
+            return bool(mirror_task_result(task_id, response, platform="discord"))
+        except Exception as exc:
+            logger.debug("Discord MCP bridge result mirror failed: %s", exc, exc_info=True)
+            return False
+
+    def _register_discord_mcp_bridge_mirror(
+        self,
+        *,
+        source: SessionSource,
+        event: MessageEvent,
+        response: str,
+        run_generation: int | None,
+    ) -> bool:
+        """Register a Discord-only bridge mirror after normal response delivery."""
+        if getattr(source, "platform", None) != Platform.DISCORD:
+            return False
+        response = str(response or "").strip()
+        if not response:
+            return False
+        try:
+            from gateway.mcp_bridge import resolve_task_id_from_text
+
+            task_id = resolve_task_id_from_text(getattr(event, "text", "") or "")
+        except Exception as exc:
+            logger.debug("Discord MCP bridge task resolution failed: %s", exc, exc_info=True)
+            return False
+        if not task_id:
+            return False
+
+        adapter = self.adapters.get(Platform.DISCORD)
+        if not adapter or not hasattr(adapter, "register_post_delivery_callback"):
+            return False
+        try:
+            session_key = self._session_key_for_source(source)
+        except Exception:
+            session_key = None
+        if not session_key:
+            return False
+
+        def _mirror_after_delivery() -> None:
+            try:
+                from gateway.mcp_bridge import mirror_task_result
+
+                mirror_task_result(task_id, response, platform="discord")
+            except Exception as exc:
+                logger.debug(
+                    "Discord MCP bridge post-delivery mirror failed: %s",
+                    exc,
+                    exc_info=True,
+                )
+
+        try:
+            adapter.register_post_delivery_callback(
+                session_key,
+                _mirror_after_delivery,
+                generation=run_generation,
+            )
+            return True
+        except Exception as exc:
+            logger.debug("Discord MCP bridge mirror registration failed: %s", exc, exc_info=True)
+            return False
+
     def _telegram_topic_mode_enabled(self, source: SessionSource) -> bool:
         """Return whether Telegram DM topic mode is active for this chat."""
         if source.platform != Platform.TELEGRAM or source.chat_type != "dm":
@@ -7941,6 +8022,11 @@ class GatewayRunner:
                         await self._deliver_media_from_response(
                             response, event, _media_adapter,
                         )
+                    self._mirror_discord_mcp_bridge_response_now(
+                        source=source,
+                        event=event,
+                        response=response,
+                    )
                 # Streaming already delivered the body text, but the footer was
                 # intentionally held back (see the `not already_sent` gate above).
                 # Send it now as a small trailing message so Telegram/Discord/etc.
@@ -7958,6 +8044,12 @@ class GatewayRunner:
                         logger.debug("trailing footer send failed: %s", _e)
                 return None
 
+            self._register_discord_mcp_bridge_mirror(
+                source=source,
+                event=event,
+                response=response,
+                run_generation=run_generation,
+            )
             return response
             
         except Exception as e:
