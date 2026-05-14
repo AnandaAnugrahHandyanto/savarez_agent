@@ -217,6 +217,7 @@ class TestDDGSSearchOnlyErrors:
         monkeypatch.setattr(web_tools, "_load_web_config", lambda: {"backend": "ddgs"})
         monkeypatch.setattr(web_tools, "_ddgs_package_importable", lambda: True)
         monkeypatch.setattr(web_tools, "_is_tool_gateway_ready", lambda: False)
+        monkeypatch.setattr(web_tools, "is_safe_url", lambda _url: True)
         monkeypatch.setattr("tools.interrupt.is_interrupted", lambda: False, raising=False)
 
         result_str = asyncio.get_event_loop().run_until_complete(
@@ -235,6 +236,7 @@ class TestDDGSSearchOnlyErrors:
         monkeypatch.setattr(web_tools, "_ddgs_package_importable", lambda: True)
         monkeypatch.setattr(web_tools, "_is_tool_gateway_ready", lambda: False)
         monkeypatch.setattr(web_tools, "check_firecrawl_api_key", lambda: False)
+        monkeypatch.setattr(web_tools, "is_safe_url", lambda _url: True)
         monkeypatch.setattr("tools.interrupt.is_interrupted", lambda: False, raising=False)
 
         result_str = asyncio.get_event_loop().run_until_complete(
