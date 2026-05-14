@@ -115,3 +115,17 @@ os.execv({sys.executable!r}, [{sys.executable!r}, *sys.argv[1:]])
     assert result.returncode != 0
     assert "git diff --check" in result.stdout
     assert "trailing whitespace" in result.stdout
+
+
+def test_tests_workflow_fetches_check_sh_default_base_before_validation():
+    workflow = REPO_ROOT / ".github" / "workflows" / "tests.yml"
+    lines = workflow.read_text(encoding="utf-8").splitlines()
+
+    fetch_line = next(
+        i
+        for i, line in enumerate(lines)
+        if "git fetch" in line and "refs/remotes/origin/main" in line
+    )
+    check_line = next(i for i, line in enumerate(lines) if "scripts/check.sh" in line)
+
+    assert fetch_line < check_line
