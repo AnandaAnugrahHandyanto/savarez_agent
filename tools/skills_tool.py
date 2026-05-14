@@ -32,7 +32,7 @@ SKILL.md Format (YAML Frontmatter, agentskills.io compatible):
     version: 1.0.0                # Optional
     license: MIT                  # Optional (agentskills.io)
     platforms: [macos]            # Optional — restrict to specific OS platforms
-                                  #   Valid: macos, linux, windows
+                                  #   Valid: macos, linux, windows, wsl
                                   #   Omit to load on all platforms (default)
     prerequisites:                # Optional — legacy runtime requirements
       env_vars: [API_KEY]         #   Legacy env var names are normalized into
@@ -69,7 +69,7 @@ Usage:
 import json
 import logging
 
-from hermes_constants import get_hermes_home, display_hermes_home
+from hermes_constants import get_hermes_home, display_hermes_home, get_runtime_platform
 import os
 import re
 from enum import Enum
@@ -92,13 +92,6 @@ SKILLS_DIR = HERMES_HOME / "skills"
 MAX_NAME_LENGTH = 64
 MAX_DESCRIPTION_LENGTH = 1024
 
-# Platform identifiers for the 'platforms' frontmatter field.
-# Maps user-friendly names to sys.platform prefixes.
-_PLATFORM_MAP = {
-    "macos": "darwin",
-    "linux": "linux",
-    "windows": "win32",
-}
 _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _EXCLUDED_SKILL_DIRS = frozenset((".git", ".github", ".hub", ".archive"))
 _REMOTE_ENV_BACKENDS = frozenset(
@@ -583,6 +576,12 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
                 frontmatter, body = _parse_frontmatter(content)
 
                 if not skill_matches_platform(frontmatter):
+                    logger.debug(
+                        "Skill excluded by platform: path=%s platforms=%s runtime=%s",
+                        skill_md,
+                        frontmatter.get("platforms"),
+                        get_runtime_platform(),
+                    )
                     continue
 
                 name = frontmatter.get("name", skill_dir.name)[:MAX_NAME_LENGTH]
@@ -780,6 +779,13 @@ def _serve_plugin_skill(
         pass
 
     if not skill_matches_platform(parsed_frontmatter):
+        logger.debug(
+            "Plugin skill excluded by platform: name=%s:%s platforms=%s runtime=%s",
+            namespace,
+            bare,
+            parsed_frontmatter.get("platforms"),
+            get_runtime_platform(),
+        )
         return json.dumps(
             {
                 "success": False,
@@ -1060,6 +1066,13 @@ def skill_view(
             parsed_frontmatter = {}
 
         if not skill_matches_platform(parsed_frontmatter):
+            logger.debug(
+                "Skill excluded by platform: name=%s path=%s platforms=%s runtime=%s",
+                name,
+                skill_md,
+                parsed_frontmatter.get("platforms"),
+                get_runtime_platform(),
+            )
             return json.dumps(
                 {
                     "success": False,
@@ -1530,4 +1543,3 @@ registry.register(
     check_fn=check_skills_requirements,
     emoji="📚",
 )
-

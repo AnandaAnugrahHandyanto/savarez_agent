@@ -5,7 +5,9 @@ without risk of circular imports.
 """
 
 import os
+import sys
 from pathlib import Path
+from typing import Literal
 
 
 _profile_fallback_warned: bool = False
@@ -238,6 +240,26 @@ def is_wsl() -> bool:
     except Exception:
         _wsl_detected = False
     return _wsl_detected
+
+
+RuntimePlatform = Literal["windows", "macos", "linux", "wsl"]
+
+
+def get_runtime_platform() -> RuntimePlatform:
+    """Return Hermes' canonical host runtime platform key.
+
+    WSL is intentionally distinct from native Linux so skills and tools can
+    opt into either environment explicitly.
+    """
+    if sys.platform == "win32":
+        return "windows"
+    if sys.platform == "darwin":
+        return "macos"
+    if sys.platform.startswith("linux"):
+        return "wsl" if is_wsl() else "linux"
+    # Hermes only supports the canonical keys above. Unknown Unix-like hosts
+    # use Linux as the closest conservative fallback for existing behavior.
+    return "linux"
 
 
 _container_detected: bool | None = None

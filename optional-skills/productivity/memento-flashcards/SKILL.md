@@ -8,7 +8,7 @@ description: >-
 version: 1.0.0
 author: Memento AI
 license: MIT
-platforms: [macos, linux]
+platforms: [macos, linux, wsl]
 metadata:
   hermes:
     tags: [Education, Flashcards, Spaced Repetition, Learning, Quiz, YouTube]

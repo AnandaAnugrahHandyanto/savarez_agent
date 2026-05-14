@@ -12,7 +12,7 @@ import threading
 from collections import OrderedDict
 from pathlib import Path
 
-from hermes_constants import get_hermes_home, get_skills_dir, is_wsl
+from hermes_constants import get_hermes_home, get_runtime_platform, get_skills_dir, is_wsl
 from typing import Optional
 
 from agent.skill_utils import (
@@ -938,6 +938,12 @@ def _parse_skill_file(skill_file: Path) -> tuple[bool, dict, str]:
         frontmatter, _ = parse_frontmatter(raw)
 
         if not skill_matches_platform(frontmatter):
+            logger.debug(
+                "Skill excluded by platform: path=%s platforms=%s runtime=%s",
+                skill_file,
+                frontmatter.get("platforms"),
+                get_runtime_platform(),
+            )
             return False, frontmatter, ""
 
         return True, frontmatter, extract_skill_description(frontmatter)
@@ -1010,12 +1016,14 @@ def build_skills_system_prompt(
         or get_session_env("HERMES_SESSION_PLATFORM")
         or ""
     )
+    _runtime_platform = get_runtime_platform()
     disabled = get_disabled_skill_names()
     cache_key = (
         str(skills_dir.resolve()),
         tuple(str(d) for d in external_dirs),
         tuple(sorted(str(t) for t in (available_tools or set()))),
         tuple(sorted(str(ts) for ts in (available_toolsets or set()))),
+        _runtime_platform,
         _platform_hint,
         tuple(sorted(disabled)),
     )
@@ -1041,6 +1049,12 @@ def build_skills_system_prompt(
             frontmatter_name = entry.get("frontmatter_name") or skill_name
             platforms = entry.get("platforms") or []
             if not skill_matches_platform({"platforms": platforms}):
+                logger.debug(
+                    "Skill excluded by platform: name=%s platforms=%s runtime=%s",
+                    frontmatter_name,
+                    platforms,
+                    _runtime_platform,
+                )
                 continue
             if frontmatter_name in disabled or skill_name in disabled:
                 continue

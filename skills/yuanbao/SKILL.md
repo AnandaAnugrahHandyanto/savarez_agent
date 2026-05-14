@@ -2,7 +2,7 @@
 name: yuanbao
 description: "Yuanbao (元宝) groups: @mention users, query info/members."
 version: 1.0.0
-platforms: [linux, macos, windows]
+platforms: [linux, wsl, macos, windows]
 metadata:
   hermes:
     tags: [yuanbao, mention, at, group, members, 元宝, 派, 艾特]

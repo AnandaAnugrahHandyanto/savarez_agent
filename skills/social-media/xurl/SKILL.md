@@ -4,7 +4,7 @@ description: "X/Twitter via xurl CLI: post, search, DM, media, v2 API."
 version: 1.1.1
 author: xdevplatform + openclaw + Hermes Agent
 license: MIT
-platforms: [linux, macos]
+platforms: [linux, wsl, macos]
 prerequisites:
   commands: [xurl]
 metadata:

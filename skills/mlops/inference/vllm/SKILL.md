@@ -5,7 +5,7 @@ version: 1.0.0
 author: Orchestra Research
 license: MIT
 dependencies: [vllm, torch, transformers]
-platforms: [linux, macos]
+platforms: [linux, wsl, macos]
 metadata:
   hermes:
     tags: [vLLM, Inference Serving, PagedAttention, Continuous Batching, High Throughput, Production, OpenAI API, Quantization, Tensor Parallelism]

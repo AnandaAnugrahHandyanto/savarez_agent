@@ -4,7 +4,7 @@ description: "Generate images, video, and audio with ComfyUI — install, launch
 version: 5.0.0
 author: [kshitijk4poor, alt-glitch]
 license: MIT
-platforms: [macos, linux, windows]
+platforms: [macos, linux, wsl, windows]
 compatibility: "Requires ComfyUI (local, Comfy Desktop, or Comfy Cloud) and comfy-cli (auto-installed via pipx/uvx by the setup script)."
 prerequisites:
   commands: ["python3"]

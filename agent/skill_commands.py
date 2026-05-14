@@ -11,7 +11,7 @@ import re
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from hermes_constants import display_hermes_home
+from hermes_constants import display_hermes_home, get_runtime_platform
 from agent.skill_preprocessing import (
     expand_inline_shell as _expand_inline_shell,
     load_skills_config as _load_skills_config,
@@ -268,6 +268,12 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
                     frontmatter, body = _parse_frontmatter(content)
                     # Skip skills incompatible with the current OS platform
                     if not skill_matches_platform(frontmatter):
+                        logger.debug(
+                            "Skill command excluded by platform: path=%s platforms=%s runtime=%s",
+                            skill_md,
+                            frontmatter.get("platforms"),
+                            get_runtime_platform(),
+                        )
                         continue
                     name = frontmatter.get('name', skill_md.parent.name)
                     if name in seen_names:

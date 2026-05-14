@@ -60,7 +60,7 @@ The agent only loads the full skill content when it actually needs it.
 name: my-skill
 description: Brief description of what this skill does
 version: 1.0.0
-platforms: [macos, linux]     # Optional — restrict to specific OS platforms
+platforms: [macos, linux, wsl] # Optional — restrict to specific OS platforms
 metadata:
   hermes:
     tags: [python, automation]
@@ -97,15 +97,18 @@ Skills can restrict themselves to specific operating systems using the `platform
 | Value | Matches |
 |-------|---------|
 | `macos` | macOS (Darwin) |
-| `linux` | Linux |
+| `linux` | Native Linux |
+| `wsl` | Windows Subsystem for Linux |
 | `windows` | Windows |
 
 ```yaml
 platforms: [macos]            # macOS only (e.g., iMessage, Apple Reminders, FindMy)
-platforms: [macos, linux]     # macOS and Linux
+platforms: [macos, linux]     # macOS and native Linux
+platforms: [linux, wsl]       # native Linux and WSL
 ```
 
 When set, the skill is automatically hidden from the system prompt, `skills_list()`, and slash commands on incompatible platforms. If omitted, the skill loads on all platforms.
+`linux` and `wsl` are exact, separate keys; include both when a skill supports both environments.
 
 ### Conditional Activation (Fallback Skills)
 

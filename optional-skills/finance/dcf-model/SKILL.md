@@ -4,7 +4,7 @@ description: Build institutional-quality DCF valuation models in Excel — reven
 version: 1.0.0
 author: Anthropic (adapted by Nous Research)
 license: Apache-2.0
-platforms: [linux, macos, windows]
+platforms: [linux, wsl, macos, windows]
 metadata:
   hermes:
     tags: [finance, valuation, dcf, excel, openpyxl, modeling, investment-banking]

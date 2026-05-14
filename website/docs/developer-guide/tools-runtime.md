@@ -111,7 +111,7 @@ The main entry point is `model_tools.get_tool_definitions(enabled_toolsets, disa
 
 3. **If neither** — include all known toolsets.
 
-4. **Registry filtering** — the resolved tool name set is passed to `registry.get_definitions()`, which applies `check_fn` filtering and returns OpenAI-format schemas.
+4. **Registry filtering** — the resolved tool name set is passed to `registry.get_definitions()`, which applies runtime-platform filtering and `check_fn` filtering, then returns OpenAI-format schemas. Tools with no `platforms` metadata are universal; tools with `platforms` are exposed only on exact runtime keys: `windows`, `macos`, `linux`, or `wsl`.
 
 5. **Dynamic schema patching** — after filtering, `execute_code` and `browser_navigate` schemas are dynamically adjusted to only reference tools that actually passed filtering (prevents model hallucination of unavailable tools).
 

@@ -17,6 +17,7 @@ These tests pin:
 from __future__ import annotations
 
 import pytest
+from unittest.mock import patch
 
 import model_tools
 
@@ -51,6 +52,13 @@ class TestQuietModeCacheIsolation:
         assert first is not second
         cached = next(iter(model_tools._tool_defs_cache.values()))
         assert second is not cached
+
+    def test_cache_key_includes_runtime_platform(self):
+        with patch("hermes_constants.get_runtime_platform", return_value="linux"):
+            model_tools.get_tool_definitions(quiet_mode=True)
+        with patch("hermes_constants.get_runtime_platform", return_value="wsl"):
+            model_tools.get_tool_definitions(quiet_mode=True)
+        assert len(model_tools._tool_defs_cache) == 2
 
     def test_caller_mutation_does_not_poison_cache(self):
         """Simulate run_agent appending LCM tool schemas to the returned

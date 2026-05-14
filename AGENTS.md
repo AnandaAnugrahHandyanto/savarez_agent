@@ -567,7 +567,8 @@ niche skills belong in `optional-skills/`.
 ### SKILL.md frontmatter
 
 Standard fields: `name`, `description`, `version`, `author`, `license`,
-`platforms` (OS-gating list: `[macos]`, `[linux, macos]`, ...),
+`platforms` (OS-gating list: `[macos]`, `[linux, wsl, macos]`, ...; valid
+keys are `windows`, `macos`, `linux`, `wsl`, and `linux` does not imply WSL),
 `metadata.hermes.tags`, `metadata.hermes.category`,
 `metadata.hermes.related_skills`, `metadata.hermes.config` (config.yaml
 settings the skill needs — stored under `skills.config.<key>`, prompted

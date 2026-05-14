@@ -302,11 +302,17 @@ def get_tool_definitions(
             cfg_fp = (cfg_stat.st_mtime_ns, cfg_stat.st_size)
         except (FileNotFoundError, OSError, ImportError):
             cfg_fp = None
+        try:
+            from hermes_constants import get_runtime_platform
+            runtime_platform = get_runtime_platform()
+        except Exception:
+            runtime_platform = None
         cache_key = (
             frozenset(enabled_toolsets) if enabled_toolsets is not None else None,
             frozenset(disabled_toolsets) if disabled_toolsets else None,
             registry._generation,
             cfg_fp,
+            runtime_platform,
         )
         cached = _tool_defs_cache.get(cache_key)
         if cached is not None:

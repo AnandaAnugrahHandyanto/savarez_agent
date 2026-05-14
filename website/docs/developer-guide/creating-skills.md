@@ -50,8 +50,8 @@ description: Brief description (shown in skill search results)
 version: 1.0.0
 author: Your Name
 license: MIT
-platforms: [macos, linux]          # Optional — restrict to specific OS platforms
-                                   #   Valid: macos, linux, windows
+platforms: [macos, linux, wsl]     # Optional — restrict to specific OS platforms
+                                   #   Valid: macos, linux, windows, wsl
                                    #   Omit to load on all platforms (default)
 metadata:
   hermes:
@@ -99,11 +99,14 @@ Skills can restrict themselves to specific operating systems using the `platform
 
 ```yaml
 platforms: [macos]            # macOS only (e.g., iMessage, Apple Reminders)
-platforms: [macos, linux]     # macOS and Linux
+platforms: [macos, linux]     # macOS and native Linux
+platforms: [linux, wsl]       # native Linux and WSL
 platforms: [windows]          # Windows only
+platforms: [wsl]              # WSL only
 ```
 
 When set, the skill is automatically hidden from the system prompt, `skills_list()`, and slash commands on incompatible platforms. If omitted or empty, the skill loads on all platforms (backward compatible).
+`linux` and `wsl` are exact, separate keys; include both when a skill supports both native Linux and WSL.
 
 ### Conditional Skill Activation
 

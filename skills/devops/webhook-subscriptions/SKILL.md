@@ -2,7 +2,7 @@
 name: webhook-subscriptions
 description: "Webhook subscriptions: event-driven agent runs."
 version: 1.1.0
-platforms: [linux, macos, windows]
+platforms: [linux, wsl, macos, windows]
 metadata:
   hermes:
     tags: [webhook, events, automation, integrations, notifications, push]

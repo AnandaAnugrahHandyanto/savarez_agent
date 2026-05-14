@@ -8,23 +8,15 @@ tool registration or provider resolution.
 import logging
 import os
 import re
-import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from hermes_constants import get_config_path, get_skills_dir
+from hermes_constants import get_config_path, get_runtime_platform, get_skills_dir
 
 logger = logging.getLogger(__name__)
 
-# ── Platform mapping ──────────────────────────────────────────────────────
-
-PLATFORM_MAP = {
-    "macos": "darwin",
-    "linux": "linux",
-    "windows": "win32",
-}
-
 EXCLUDED_SKILL_DIRS = frozenset((".git", ".github", ".hub", ".archive"))
+VALID_RUNTIME_PLATFORMS = frozenset(("windows", "macos", "linux", "wsl"))
 
 # ── Lazy YAML loader ─────────────────────────────────────────────────────
 
@@ -90,13 +82,13 @@ def parse_frontmatter(content: str) -> Tuple[Dict[str, Any], str]:
 
 
 def skill_matches_platform(frontmatter: Dict[str, Any]) -> bool:
-    """Return True when the skill is compatible with the current OS.
+    """Return True when the skill is compatible with the current runtime.
 
     Skills declare platform requirements via a top-level ``platforms`` list
     in their YAML frontmatter::
 
         platforms: [macos]          # macOS only
-        platforms: [macos, linux]   # macOS and Linux
+        platforms: [linux, wsl]     # native Linux and WSL
 
     If the field is absent or empty the skill is compatible with **all**
     platforms (backward-compatible default).
@@ -106,13 +98,22 @@ def skill_matches_platform(frontmatter: Dict[str, Any]) -> bool:
         return True
     if not isinstance(platforms, list):
         platforms = [platforms]
-    current = sys.platform
-    for platform in platforms:
-        normalized = str(platform).lower().strip()
-        mapped = PLATFORM_MAP.get(normalized, normalized)
-        if current.startswith(mapped):
-            return True
-    return False
+    normalized_platforms = {
+        str(platform).lower().strip()
+        for platform in platforms
+        if str(platform).strip()
+    }
+    if not normalized_platforms:
+        return True
+    current = get_runtime_platform()
+    matches = current in normalized_platforms
+    if not matches:
+        logger.debug(
+            "Skill excluded by platform: required=%s current=%s",
+            sorted(normalized_platforms),
+            current,
+        )
+    return matches
 
 
 # ── Disabled skills ───────────────────────────────────────────────────────

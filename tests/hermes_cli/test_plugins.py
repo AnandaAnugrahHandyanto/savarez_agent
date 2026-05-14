@@ -557,6 +557,7 @@ class TestPluginContext:
             '        toolset="plugin_tool_plugin",\n'
             '        schema={"name": "plugin_echo", "description": "Echo", "parameters": {"type": "object", "properties": {}}},\n'
             '        handler=lambda args, **kw: "echo",\n'
+            '        platforms=["wsl"],\n'
             '    )\n'
         )
         hermes_home = tmp_path / "hermes_test"
@@ -572,6 +573,7 @@ class TestPluginContext:
 
         from tools.registry import registry
         assert "plugin_echo" in registry._tools
+        assert registry.get_entry("plugin_echo").platforms == ("wsl",)
 
 
 # ── TestPluginToolVisibility ───────────────────────────────────────────────

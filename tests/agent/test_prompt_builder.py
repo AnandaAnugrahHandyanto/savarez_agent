@@ -200,8 +200,7 @@ class TestParseSkillFile:
         )
         from unittest.mock import patch
 
-        with patch("agent.skill_utils.sys") as mock_sys:
-            mock_sys.platform = "linux"
+        with patch("agent.skill_utils.get_runtime_platform", return_value="linux"):
             is_compat, _, _ = _parse_skill_file(skill_file)
         assert is_compat is False
 
@@ -299,8 +298,7 @@ class TestBuildSkillsSystemPrompt:
 
         from unittest.mock import patch
 
-        with patch("agent.skill_utils.sys") as mock_sys:
-            mock_sys.platform = "linux"
+        with patch("agent.skill_utils.get_runtime_platform", return_value="linux"):
             result = build_skills_system_prompt()
 
         assert "web-search" in result
@@ -318,12 +316,69 @@ class TestBuildSkillsSystemPrompt:
 
         from unittest.mock import patch
 
-        with patch("agent.skill_utils.sys") as mock_sys:
-            mock_sys.platform = "darwin"
+        with patch("agent.skill_utils.get_runtime_platform", return_value="macos"):
             result = build_skills_system_prompt()
 
         assert "imessage" in result
         assert "Send iMessages" in result
+
+    def test_wsl_requires_explicit_platform(self, monkeypatch, tmp_path):
+        """WSL must not inherit native Linux-only skills implicitly."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skills_dir = tmp_path / "skills" / "dev"
+        linux_skill = skills_dir / "linux-only"
+        wsl_skill = skills_dir / "wsl-ready"
+        linux_skill.mkdir(parents=True)
+        wsl_skill.mkdir()
+        (linux_skill / "SKILL.md").write_text(
+            "---\nname: linux-only\ndescription: Linux only\nplatforms: [linux]\n---\n"
+        )
+        (wsl_skill / "SKILL.md").write_text(
+            "---\nname: wsl-ready\ndescription: WSL ready\nplatforms: [linux, wsl]\n---\n"
+        )
+
+        from unittest.mock import patch
+
+        with (
+            patch("agent.skill_utils.get_runtime_platform", return_value="wsl"),
+            patch("agent.prompt_builder.get_runtime_platform", return_value="wsl"),
+        ):
+            result = build_skills_system_prompt()
+
+        assert "wsl-ready" in result
+        assert "linux-only" not in result
+
+    def test_skills_prompt_cache_is_runtime_platform_scoped(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skill_root = tmp_path / "skills" / "dev"
+        linux_skill = skill_root / "linux-only"
+        wsl_skill = skill_root / "wsl-only"
+        linux_skill.mkdir(parents=True)
+        wsl_skill.mkdir()
+        (linux_skill / "SKILL.md").write_text(
+            "---\nname: linux-only\ndescription: Linux only\nplatforms: [linux]\n---\n"
+        )
+        (wsl_skill / "SKILL.md").write_text(
+            "---\nname: wsl-only\ndescription: WSL only\nplatforms: [wsl]\n---\n"
+        )
+
+        from unittest.mock import patch
+
+        with (
+            patch("agent.skill_utils.get_runtime_platform", return_value="linux"),
+            patch("agent.prompt_builder.get_runtime_platform", return_value="linux"),
+        ):
+            linux_result = build_skills_system_prompt()
+        with (
+            patch("agent.skill_utils.get_runtime_platform", return_value="wsl"),
+            patch("agent.prompt_builder.get_runtime_platform", return_value="wsl"),
+        ):
+            wsl_result = build_skills_system_prompt()
+
+        assert "linux-only" in linux_result
+        assert "wsl-only" not in linux_result
+        assert "wsl-only" in wsl_result
+        assert "linux-only" not in wsl_result
 
     def test_excludes_disabled_skills(self, monkeypatch, tmp_path):
         """Skills in the user's disabled list should not appear in the system prompt."""
@@ -1186,6 +1241,4 @@ class TestOpenAIModelExecutionGuidance:
 # =========================================================================
 # Budget warning history stripping
 # =========================================================================
-
-
 

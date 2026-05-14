@@ -6,7 +6,7 @@ author: here.now
 license: MIT
 prerequisites:
   commands: [curl, file, jq]
-platforms: [macos, linux]
+platforms: [macos, linux, wsl]
 metadata:
   hermes:
     tags: [here.now, herenow, publish, deploy, hosting, static-site, web, share, URL, drive, storage]

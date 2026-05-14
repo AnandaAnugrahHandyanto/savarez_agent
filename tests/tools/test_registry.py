@@ -111,6 +111,53 @@ class TestGetDefinitions:
         assert len(defs) == 2
         assert calls["count"] == 1
 
+    def test_platform_restricted_tool_included_on_matching_runtime(self):
+        reg = ToolRegistry()
+        reg.register(
+            name="wsl_tool",
+            toolset="s",
+            schema=_make_schema("wsl_tool"),
+            handler=_dummy_handler,
+            platforms=["wsl"],
+        )
+        with patch("tools.registry.get_runtime_platform", return_value="wsl"):
+            defs = reg.get_definitions({"wsl_tool"})
+        assert [d["function"]["name"] for d in defs] == ["wsl_tool"]
+
+    def test_platform_restricted_tool_excluded_on_other_runtime(self):
+        reg = ToolRegistry()
+        reg.register(
+            name="linux_tool",
+            toolset="s",
+            schema=_make_schema("linux_tool"),
+            handler=_dummy_handler,
+            platforms=["linux"],
+        )
+        with patch("tools.registry.get_runtime_platform", return_value="wsl"):
+            defs = reg.get_definitions({"linux_tool"})
+        assert defs == []
+
+    def test_platform_excluded_tool_does_not_run_check_fn(self):
+        reg = ToolRegistry()
+        calls = {"count": 0}
+
+        def check():
+            calls["count"] += 1
+            return True
+
+        reg.register(
+            name="linux_tool",
+            toolset="s",
+            schema=_make_schema("linux_tool"),
+            handler=_dummy_handler,
+            check_fn=check,
+            platforms=["linux"],
+        )
+        with patch("tools.registry.get_runtime_platform", return_value="wsl"):
+            defs = reg.get_definitions({"linux_tool"})
+        assert defs == []
+        assert calls["count"] == 0
+
 
 class TestUnknownToolDispatch:
     def test_returns_error_json(self):

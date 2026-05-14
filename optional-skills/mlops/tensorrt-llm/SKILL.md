@@ -5,7 +5,7 @@ version: 1.0.0
 author: Orchestra Research
 license: MIT
 dependencies: [tensorrt-llm, torch]
-platforms: [linux, macos]
+platforms: [linux, wsl, macos]
 metadata:
   hermes:
     tags: [Inference Serving, TensorRT-LLM, NVIDIA, Inference Optimization, High Throughput, Low Latency, Production, FP8, INT4, In-Flight Batching, Multi-GPU]

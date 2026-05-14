@@ -10,6 +10,7 @@ import hermes_constants
 from hermes_constants import (
     VALID_REASONING_EFFORTS,
     get_default_hermes_root,
+    get_runtime_platform,
     is_container,
     parse_reasoning_effort,
 )
@@ -117,6 +118,26 @@ class TestIsContainer:
         # Even if we make os.path.exists return False, cached value wins
         monkeypatch.setattr(os.path, "exists", lambda p: False)
         assert is_container() is True
+
+
+class TestGetRuntimePlatform:
+    def test_windows(self, monkeypatch):
+        monkeypatch.setattr(hermes_constants.sys, "platform", "win32")
+        assert get_runtime_platform() == "windows"
+
+    def test_macos(self, monkeypatch):
+        monkeypatch.setattr(hermes_constants.sys, "platform", "darwin")
+        assert get_runtime_platform() == "macos"
+
+    def test_native_linux(self, monkeypatch):
+        monkeypatch.setattr(hermes_constants.sys, "platform", "linux")
+        monkeypatch.setattr(hermes_constants, "is_wsl", lambda: False)
+        assert get_runtime_platform() == "linux"
+
+    def test_wsl(self, monkeypatch):
+        monkeypatch.setattr(hermes_constants.sys, "platform", "linux")
+        monkeypatch.setattr(hermes_constants, "is_wsl", lambda: True)
+        assert get_runtime_platform() == "wsl"
 
 
 class TestParseReasoningEffort:

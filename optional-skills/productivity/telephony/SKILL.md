@@ -4,7 +4,7 @@ description: Give Hermes phone capabilities without core tool changes. Provision
 version: 1.0.0
 author: Nous Research
 license: MIT
-platforms: [linux, macos, windows]
+platforms: [linux, wsl, macos, windows]
 metadata:
   hermes:
     tags: [telephony, phone, sms, mms, voice, twilio, bland.ai, vapi, calling, texting]

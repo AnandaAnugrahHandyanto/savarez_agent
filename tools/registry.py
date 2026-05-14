@@ -23,6 +23,8 @@ import time
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Set
 
+from hermes_constants import get_runtime_platform
+
 logger = logging.getLogger(__name__)
 
 
@@ -80,12 +82,13 @@ class ToolEntry:
     __slots__ = (
         "name", "toolset", "schema", "handler", "check_fn",
         "requires_env", "is_async", "description", "emoji",
-        "max_result_size_chars", "dynamic_schema_overrides",
+        "max_result_size_chars", "dynamic_schema_overrides", "platforms",
     )
 
     def __init__(self, name, toolset, schema, handler, check_fn,
                  requires_env, is_async, description, emoji,
-                 max_result_size_chars=None, dynamic_schema_overrides=None):
+                 max_result_size_chars=None, dynamic_schema_overrides=None,
+                 platforms=None):
         self.name = name
         self.toolset = toolset
         self.schema = schema
@@ -104,6 +107,24 @@ class ToolEntry:
         # on every get_definitions() call; results are merged shallow on top
         # of the base schema before the {"type": "function", ...} wrap.
         self.dynamic_schema_overrides = dynamic_schema_overrides
+        self.platforms = _normalize_platforms(platforms)
+
+
+def _normalize_platforms(platforms) -> tuple[str, ...]:
+    """Normalize optional runtime platform restrictions."""
+    if not platforms:
+        return ()
+    if isinstance(platforms, str):
+        platforms = [platforms]
+    try:
+        values = {
+            str(platform).lower().strip()
+            for platform in platforms
+            if str(platform).strip()
+        }
+    except TypeError:
+        values = {str(platforms).lower().strip()}
+    return tuple(sorted(v for v in values if v))
 
 
 # ---------------------------------------------------------------------------
@@ -244,6 +265,7 @@ class ToolRegistry:
         emoji: str = "",
         max_result_size_chars: int | float | None = None,
         dynamic_schema_overrides: Callable = None,
+        platforms: list | str | None = None,
     ):
         """Register a tool.  Called at module-import time by each tool file."""
         with self._lock:
@@ -282,6 +304,7 @@ class ToolRegistry:
                 emoji=emoji,
                 max_result_size_chars=max_result_size_chars,
                 dynamic_schema_overrides=dynamic_schema_overrides,
+                platforms=platforms,
             )
             if check_fn and toolset not in self._toolset_checks:
                 self._toolset_checks[toolset] = check_fn
@@ -334,9 +357,19 @@ class ToolRegistry:
         # TTL clock.
         check_results: Dict[Callable, bool] = {}
         entries_by_name = {entry.name: entry for entry in self._snapshot_entries()}
+        runtime_platform = get_runtime_platform()
+        logger.debug("Runtime platform for tool filtering: %s", runtime_platform)
         for name in sorted(tool_names):
             entry = entries_by_name.get(name)
             if not entry:
+                continue
+            if entry.platforms and runtime_platform not in entry.platforms:
+                logger.debug(
+                    "Tool excluded by platform: name=%s platforms=%s runtime=%s",
+                    name,
+                    list(entry.platforms),
+                    runtime_platform,
+                )
                 continue
             if entry.check_fn:
                 if entry.check_fn not in check_results:

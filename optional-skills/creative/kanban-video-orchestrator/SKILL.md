@@ -4,7 +4,7 @@ description: Plan, set up, and monitor a multi-agent video production pipeline b
 version: 1.0.0
 author: [SHL0MS, alt-glitch]
 license: MIT
-platforms: [linux, macos, windows]
+platforms: [linux, wsl, macos, windows]
 metadata:
   hermes:
     tags: [video, kanban, multi-agent, orchestration, production-pipeline]

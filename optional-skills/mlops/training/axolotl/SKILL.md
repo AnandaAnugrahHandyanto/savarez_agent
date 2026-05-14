@@ -5,7 +5,7 @@ version: 1.0.0
 author: Orchestra Research
 license: MIT
 dependencies: [axolotl, torch, transformers, datasets, peft, accelerate, deepspeed]
-platforms: [linux, macos]
+platforms: [linux, wsl, macos]
 metadata:
   hermes:
     tags: [Fine-Tuning, Axolotl, LLM, LoRA, QLoRA, DPO, KTO, ORPO, GRPO, YAML, HuggingFace, DeepSpeed, Multimodal]

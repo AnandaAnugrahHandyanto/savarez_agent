@@ -106,6 +106,9 @@ registry.register(
         units=args.get("units", "metric")),
     check_fn=check_weather_requirements,
     requires_env=["WEATHER_API_KEY"],
+    # Optional: restrict exposure to exact runtime platform keys.
+    # Omit or pass [] for universal availability.
+    # platforms=["linux", "wsl"],
 )
 ```
 
@@ -115,6 +118,7 @@ registry.register(
 - Handlers **MUST** return a JSON string (via `json.dumps()`), never raw dicts
 - Errors **MUST** be returned as `{"error": "message"}`, never raised as exceptions
 - The `check_fn` is called when building tool definitions — if it returns `False`, the tool is silently excluded
+- Optional `platforms` uses exact runtime keys: `windows`, `macos`, `linux`, `wsl`; `linux` does not imply `wsl`
 - The `handler` receives `(args: dict, **kwargs)` where `args` is the LLM's tool call arguments
 :::
 

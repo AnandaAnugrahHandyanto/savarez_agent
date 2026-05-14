@@ -4,7 +4,7 @@ description: Search personal knowledge bases, notes, docs, and meeting transcrip
 version: 1.0.0
 author: Hermes Agent + Teknium
 license: MIT
-platforms: [macos, linux]
+platforms: [macos, linux, wsl]
 metadata:
   hermes:
     tags: [Search, Knowledge-Base, RAG, Notes, MCP, Local-AI]

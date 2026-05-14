@@ -65,9 +65,8 @@ class TestScanSkillCommands:
         """macOS-only skills should not register slash commands on Linux."""
         with (
             patch("tools.skills_tool.SKILLS_DIR", tmp_path),
-            patch("agent.skill_utils.sys") as mock_sys,
+            patch("agent.skill_utils.get_runtime_platform", return_value="linux"),
         ):
-            mock_sys.platform = "linux"
             _make_skill(tmp_path, "imessage", frontmatter_extra="platforms: [macos]\n")
             _make_skill(tmp_path, "web-search")
             result = scan_skill_commands()
@@ -78,9 +77,8 @@ class TestScanSkillCommands:
         """macOS-only skills should register slash commands on macOS."""
         with (
             patch("tools.skills_tool.SKILLS_DIR", tmp_path),
-            patch("agent.skill_utils.sys") as mock_sys,
+            patch("agent.skill_utils.get_runtime_platform", return_value="macos"),
         ):
-            mock_sys.platform = "darwin"
             _make_skill(tmp_path, "imessage", frontmatter_extra="platforms: [macos]\n")
             result = scan_skill_commands()
         assert "/imessage" in result
@@ -89,12 +87,23 @@ class TestScanSkillCommands:
         """Skills without platforms field should register on any platform."""
         with (
             patch("tools.skills_tool.SKILLS_DIR", tmp_path),
-            patch("agent.skill_utils.sys") as mock_sys,
+            patch("agent.skill_utils.get_runtime_platform", return_value="windows"),
         ):
-            mock_sys.platform = "win32"
             _make_skill(tmp_path, "generic-tool")
             result = scan_skill_commands()
         assert "/generic-tool" in result
+
+    def test_wsl_requires_explicit_platform(self, tmp_path):
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch("agent.skill_utils.get_runtime_platform", return_value="wsl"),
+            patch("agent.skill_commands.get_runtime_platform", return_value="wsl"),
+        ):
+            _make_skill(tmp_path, "linux-only", frontmatter_extra="platforms: [linux]\n")
+            _make_skill(tmp_path, "wsl-ready", frontmatter_extra="platforms: [linux, wsl]\n")
+            result = scan_skill_commands()
+        assert "/wsl-ready" in result
+        assert "/linux-only" not in result
 
     def test_excludes_disabled_skills(self, tmp_path):
         """Disabled skills should not register slash commands."""
