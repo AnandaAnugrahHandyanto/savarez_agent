@@ -118,14 +118,32 @@ def _safe_isinstance(obj: Any, maybe_type: Any) -> bool:
         return False
 
 
+def _is_localhost_base_url(base_url: Optional[str]) -> bool:
+    try:
+        return base_url_hostname(base_url or "").lower().rstrip(".") in {"localhost", "127.0.0.1", "::1"}
+    except Exception:
+        return False
+
+
 def _build_openai_client_kwargs(base_url: Optional[str], extra: Dict[str, Any] = None) -> Dict[str, Any]:
     """Build OpenAI kwargs and disable env-derived proxy config for localhost."""
     kwargs: Dict[str, Any] = dict(extra or {})
     try:
-        hostname = base_url_hostname(base_url or "").lower().rstrip(".")
-        if hostname in {"localhost", "127.0.0.1", "::1"} and "http_client" not in kwargs:
+        if _is_localhost_base_url(base_url) and "http_client" not in kwargs:
             import httpx
             kwargs["http_client"] = httpx.Client(trust_env=False)
+    except Exception:
+        pass
+    return kwargs
+
+
+def _build_async_openai_client_kwargs(base_url: Optional[str], extra: Dict[str, Any] = None) -> Dict[str, Any]:
+    """Build AsyncOpenAI kwargs and disable env-derived proxy config for localhost."""
+    kwargs: Dict[str, Any] = dict(extra or {})
+    try:
+        if _is_localhost_base_url(base_url) and "http_client" not in kwargs:
+            import httpx
+            kwargs["http_client"] = httpx.AsyncClient(trust_env=False)
     except Exception:
         pass
     return kwargs
@@ -2624,11 +2642,12 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
     except ImportError:
         pass
 
+    sync_base_url = str(sync_client.base_url)
     async_kwargs = {
         "api_key": sync_client.api_key,
-        "base_url": str(sync_client.base_url),
+        "base_url": sync_base_url,
     }
-    sync_base_url = str(sync_client.base_url)
+    async_kwargs = _build_async_openai_client_kwargs(sync_base_url, async_kwargs)
     if base_url_host_matches(sync_base_url, "openrouter.ai"):
         async_kwargs["default_headers"] = build_or_headers()
     elif base_url_host_matches(sync_base_url, "api.githubcopilot.com"):
