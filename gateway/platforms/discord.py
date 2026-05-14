@@ -3441,6 +3441,7 @@ class DiscordAdapter(BasePlatformAdapter):
             source=source,
             raw_message=interaction,
             channel_prompt=self._resolve_channel_prompt(channel_id, parent_id or None),
+            channel_model=self._resolve_channel_model(channel_id, parent_id or None),
         )
 
     # ------------------------------------------------------------------
@@ -3518,6 +3519,7 @@ class DiscordAdapter(BasePlatformAdapter):
         _parent_id = str(getattr(_parent_channel, "id", "") or "")
         _skills = self._resolve_channel_skills(thread_id, _parent_id or None)
         _channel_prompt = self._resolve_channel_prompt(thread_id, _parent_id or None)
+        _channel_model = self._resolve_channel_model(thread_id, _parent_id or None)
         event = MessageEvent(
             text=text,
             message_type=MessageType.TEXT,
@@ -3525,6 +3527,7 @@ class DiscordAdapter(BasePlatformAdapter):
             raw_message=interaction,
             auto_skill=_skills,
             channel_prompt=_channel_prompt,
+            channel_model=_channel_model,
         )
         await self.handle_message(event)
 
@@ -3544,6 +3547,11 @@ class DiscordAdapter(BasePlatformAdapter):
         """Resolve a Discord per-channel prompt, preferring the exact channel over its parent."""
         from gateway.platforms.base import resolve_channel_prompt
         return resolve_channel_prompt(self.config.extra, channel_id, parent_id)
+
+    def _resolve_channel_model(self, channel_id: str, parent_id: str | None = None) -> str | None:
+        """Resolve a Discord per-channel model override, preferring the exact channel over its parent."""
+        from gateway.platforms.base import resolve_channel_model
+        return resolve_channel_model(self.config.extra, channel_id, parent_id)
 
     def _discord_require_mention(self) -> bool:
         """Return whether Discord channel messages require a bot mention."""
@@ -4514,6 +4522,7 @@ class DiscordAdapter(BasePlatformAdapter):
         _chan_id = str(getattr(_chan, "id", ""))
         _skills = self._resolve_channel_skills(_chan_id, _parent_id or None)
         _channel_prompt = self._resolve_channel_prompt(_chan_id, _parent_id or None)
+        _channel_model = self._resolve_channel_model(_chan_id, _parent_id or None)
 
         reply_to_id = None
         reply_to_text = None
@@ -4535,6 +4544,7 @@ class DiscordAdapter(BasePlatformAdapter):
             timestamp=message.created_at,
             auto_skill=_skills,
             channel_prompt=_channel_prompt,
+            channel_model=_channel_model,
         )
 
         # Track thread participation so the bot won't require @mention for
