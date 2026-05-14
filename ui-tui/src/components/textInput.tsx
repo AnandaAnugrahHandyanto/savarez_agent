@@ -2,6 +2,7 @@ import type { InputEvent, Key } from '@hermes/ink'
 import * as Ink from '@hermes/ink'
 import { type MutableRefObject, useEffect, useMemo, useRef, useState } from 'react'
 
+import { emitKeyDebug } from '../app/keyDebugStore.js'
 import { setInputSelection } from '../app/inputSelectionStore.js'
 import { readClipboardText, writeClipboardText } from '../lib/clipboard.js'
 import { cursorLayout, offsetFromPosition } from '../lib/inputMetrics.js'
@@ -724,6 +725,7 @@ export function TextInput({
   useInput(
     (inp: string, k: Key, event: InputEvent) => {
       const eventRaw = event.keypress.raw
+      emitKeyDebug('composer', inp, k as unknown as Record<string, unknown>, eventRaw)
 
       // Configured voice shortcut wins over composer-level defaults like
       // paste/copy so users who bind voice to ctrl+v / alt+v / cmd+v
@@ -780,9 +782,12 @@ export function TextInput({
       }
 
       if (k.return) {
+        const action = returnKeyAction(k)
+
+        emitKeyDebug('composer.return', inp, k as unknown as Record<string, unknown>, eventRaw, `action=${action}`)
         flushParentChange()
 
-        if (returnKeyAction(k) === 'submit') {
+        if (action === 'submit') {
           cbSubmit.current?.(vRef.current)
         } else {
           commit(ins(vRef.current, curRef.current, '\n'), curRef.current + 1)
