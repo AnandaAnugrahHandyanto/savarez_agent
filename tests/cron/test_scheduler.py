@@ -151,6 +151,37 @@ class TestResolveDeliveryTarget:
             "thread_id": "topic-7",
         }
 
+    def test_discord_delivery_target_parses_thread_query_options(self):
+        job = {
+            "deliver": "discord:parent-42?thread_name=Daily+Digest+%Y&into_history=true&auto_archive_duration=10080",
+        }
+
+        target = _resolve_delivery_target(job)
+
+        assert target == {
+            "platform": "discord",
+            "chat_id": "parent-42",
+            "thread_id": None,
+            "thread_name": "Daily Digest 2026",
+            "into_history": True,
+            "auto_archive_duration": 10080,
+        }
+
+    def test_discord_delivery_target_parses_title_alias_and_false_history(self):
+        job = {
+            "deliver": "discord:4242:9999?title=Fallback+Title&into_history=false",
+        }
+
+        target = _resolve_delivery_target(job)
+
+        assert target == {
+            "platform": "discord",
+            "chat_id": "4242",
+            "thread_id": "9999",
+            "thread_name": "Fallback Title",
+            "into_history": False,
+        }
+
     def test_explicit_telegram_topic_target_with_thread_id(self):
         """deliver: 'telegram:chat_id:thread_id' parses correctly."""
         job = {
@@ -441,10 +472,10 @@ class TestRoutingIntents:
 
 
 class TestDeliverResultWrapping:
-    """Verify that cron deliveries are wrapped with header/footer and no longer mirrored."""
+    """Verify that cron deliveries stay clean while history keeps breadcrumbs."""
 
-    def test_delivery_wraps_content_with_header_and_footer(self):
-        """Delivered content should include task name header and agent-invisible note."""
+    def test_delivery_sends_body_only_even_when_wrap_response_enabled(self):
+        """Visible delivery should not include cron metadata noise."""
         from gateway.config import Platform
 
         pconfig = MagicMock()
@@ -464,11 +495,10 @@ class TestDeliverResultWrapping:
 
         send_mock.assert_called_once()
         sent_content = send_mock.call_args.kwargs.get("content") or send_mock.call_args[0][-1]
-        assert "Cronjob Response: daily-report" in sent_content
-        assert "(job_id: test-job)" in sent_content
-        assert "-------------" in sent_content
-        assert "Here is today's summary." in sent_content
-        assert "To stop or manage this job" in sent_content
+        assert sent_content == "Here is today's summary."
+        assert "Cronjob Response" not in sent_content
+        assert "job_id" not in sent_content
+        assert "To stop or manage this job" not in sent_content
 
     def test_delivery_uses_job_id_when_no_name(self):
         """When a job has no name, the wrapper should fall back to job id."""
@@ -489,7 +519,8 @@ class TestDeliverResultWrapping:
             _deliver_result(job, "Output.")
 
         sent_content = send_mock.call_args.kwargs.get("content") or send_mock.call_args[0][-1]
-        assert "Cronjob Response: abc-123" in sent_content
+        assert sent_content == "Output."
+        assert "Cronjob Response" not in sent_content
 
     def test_delivery_skips_wrapping_when_config_disabled(self):
         """When cron.wrap_response is false, deliver raw content without header/footer."""
@@ -640,6 +671,75 @@ class TestDeliverResultWrapping:
         assert adapter.send_image_file.call_args[1]["image_path"] == "/tmp/chart.png"
         adapter.send_voice.assert_not_called()
 
+    def test_live_discord_delivery_creates_thread_and_routes_text_and_media(self):
+        """A Discord delivery target with thread_name should create a thread first,
+        then route both text and MEDIA attachments to the created thread."""
+        from concurrent.futures import Future
+        from gateway.config import Platform
+
+        adapter = AsyncMock()
+        adapter.create_delivery_thread.return_value = {
+            "success": True,
+            "thread_id": "thread-999",
+            "thread_name": "Daily Digest",
+            "seed_message": "Daily Digest <@123>",
+        }
+        adapter.send.return_value = MagicMock(success=True)
+        adapter.send_image_file.return_value = MagicMock(success=True)
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.DISCORD: pconfig}
+
+        loop = MagicMock()
+        loop.is_running.return_value = True
+
+        results = [
+            adapter.create_delivery_thread.return_value,
+            MagicMock(success=True),
+            MagicMock(success=True),
+        ]
+
+        def fake_run_coro(coro, _loop):
+            future = Future()
+            future.set_result(results.pop(0))
+            if hasattr(coro, "close"):
+                coro.close()
+            return future
+
+        job = {
+            "id": "digest-job",
+            "deliver": "discord:parent-42?thread_name=Daily+Digest&into_history=false&auto_archive_duration=10080",
+        }
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro):
+            error = _deliver_result(
+                job,
+                "Digest body\nMEDIA:/tmp/digest.png",
+                adapters={Platform.DISCORD: adapter},
+                loop=loop,
+            )
+
+        assert error is None
+        adapter.create_delivery_thread.assert_called_once_with(
+            chat_id="parent-42",
+            name="Daily Digest",
+            auto_archive_duration=10080,
+        )
+        adapter.send.assert_called_once_with(
+            "parent-42",
+            "Digest body",
+            metadata={"thread_id": "thread-999"},
+        )
+        adapter.send_image_file.assert_called_once_with(
+            chat_id="parent-42",
+            image_path="/tmp/digest.png",
+            metadata={"thread_id": "thread-999"},
+        )
+
     def test_live_adapter_media_only_no_text(self):
         """When content is ONLY a MEDIA tag with no text, media should still be sent."""
         from gateway.config import Platform
@@ -727,7 +827,7 @@ class TestDeliverResultWrapping:
         assert "Report" in text_sent
 
     def test_no_mirror_to_session_call(self):
-        """Cron deliveries should NOT mirror into the gateway session."""
+        """Cron deliveries should not mirror unless into_history is explicitly requested."""
         from gateway.config import Platform
 
         pconfig = MagicMock()
@@ -746,6 +846,40 @@ class TestDeliverResultWrapping:
             _deliver_result(job, "Hello!")
 
         mirror_mock.assert_not_called()
+
+    def test_into_history_mirrors_wrapped_cron_breadcrumbs(self):
+        from gateway.config import Platform
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": True}}), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})), \
+             patch("gateway.mirror.mirror_to_session") as mirror_mock:
+            job = {
+                "id": "history-job",
+                "name": "History Job",
+                "deliver": "telegram:123?into_history=true",
+                "cron_session_id": "cron_123",
+            }
+            _deliver_result(job, "Hello history")
+
+        mirror_mock.assert_called_once()
+        assert mirror_mock.call_args.args[0:2] == ("telegram", "123")
+        mirrored_text = mirror_mock.call_args.args[2]
+        assert "Cronjob Response: History Job" in mirrored_text
+        assert "(job_id: history-job, cron_session_id: cron_123)" in mirrored_text
+        assert "Hello history" in mirrored_text
+        assert mirror_mock.call_args.kwargs["source_label"] == "cron"
+        assert mirror_mock.call_args.kwargs["thread_id"] is None
+        assert mirror_mock.call_args.kwargs["extra_fields"] == {
+            "cron_job_id": "history-job",
+            "cron_session_id": "cron_123",
+            "into_history": True,
+        }
 
     def test_origin_delivery_preserves_thread_id(self):
         """Origin delivery should forward thread_id to the send helper."""

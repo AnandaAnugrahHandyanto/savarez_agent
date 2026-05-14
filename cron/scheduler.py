@@ -29,6 +29,7 @@ except ImportError:
         msvcrt = None
 from pathlib import Path
 from typing import List, Optional
+from urllib.parse import parse_qs
 
 # Add parent directory to path for imports BEFORE repo-level imports.
 # Without this, standalone invocations (e.g. after `hermes update` reloads
@@ -256,6 +257,47 @@ def _iter_home_target_platforms():
         pass
 
 
+def _parse_delivery_options(target_ref: str) -> tuple[str, dict]:
+    """Split a platform target ref into its raw target and query-string options."""
+    raw_target, _, query = (target_ref or "").partition("?")
+    if not query:
+        return raw_target, {}
+
+    parsed = parse_qs(query, keep_blank_values=True)
+    options: dict = {}
+
+    def _first(name: str) -> Optional[str]:
+        values = parsed.get(name) or []
+        for value in values:
+            text = str(value or "").strip()
+            if text:
+                return text
+        return None
+
+    def _truthy(name: str) -> Optional[bool]:
+        value = _first(name)
+        if value is None:
+            return None
+        return value.lower() in {"1", "true", "yes", "on"}
+
+    thread_name = _first("thread_name") or _first("title")
+    if thread_name:
+        options["thread_name"] = _hermes_now().strftime(thread_name)
+
+    into_history = _truthy("into_history")
+    if into_history is not None:
+        options["into_history"] = into_history
+
+    auto_archive_duration = _first("auto_archive_duration")
+    if auto_archive_duration:
+        try:
+            options["auto_archive_duration"] = int(auto_archive_duration)
+        except Exception:
+            logger.warning("Invalid auto_archive_duration query value %r", auto_archive_duration)
+
+    return raw_target, options
+
+
 def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[dict]:
     """Resolve one concrete auto-delivery target for a cron job."""
 
@@ -291,6 +333,7 @@ def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[d
     if ":" in deliver_value:
         platform_name, rest = deliver_value.split(":", 1)
         platform_key = platform_name.lower()
+        rest, delivery_options = _parse_delivery_options(rest)
 
         from tools.send_message_tool import _parse_target_ref
 
@@ -319,6 +362,7 @@ def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[d
             "platform": platform_name,
             "chat_id": chat_id,
             "thread_id": thread_id,
+            **delivery_options,
         }
 
     platform_name = deliver_value
@@ -413,7 +457,14 @@ def _resolve_delivery_targets(job: dict) -> List[dict]:
     for part in parts:
         target = _resolve_single_delivery_target(job, part)
         if target:
-            key = (target["platform"].lower(), str(target["chat_id"]), target.get("thread_id"))
+            key = (
+                target["platform"].lower(),
+                str(target["chat_id"]),
+                target.get("thread_id"),
+                target.get("thread_name"),
+                target.get("into_history"),
+                target.get("auto_archive_duration"),
+            )
             if key not in seen:
                 seen.add(key)
                 targets.append(target)
@@ -511,22 +562,28 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     except Exception:
         pass
 
+    delivery_content = content
+
+    # Extract MEDIA: tags so attachments are forwarded as files, not raw text.
+    # Visible platform delivery intentionally stays body-only; when wrapping is
+    # enabled, the cron header/footer is mirrored into history for agent
+    # continuity instead of being shown to the user.
+    from gateway.platforms.base import BasePlatformAdapter
+    media_files, cleaned_delivery_content = BasePlatformAdapter.extract_media(delivery_content)
+    cleaned_mirror_body = cleaned_delivery_content.strip()
     if wrap_response:
         task_name = job.get("name", job["id"])
         job_id = job.get("id", "")
-        delivery_content = (
+        cron_session_id = job.get("cron_session_id") or job.get("session_id")
+        mirror_text = (
             f"Cronjob Response: {task_name}\n"
-            f"(job_id: {job_id})\n"
+            f"(job_id: {job_id}{f', cron_session_id: {cron_session_id}' if cron_session_id else ''})\n"
             f"-------------\n\n"
-            f"{content}\n\n"
+            f"{cleaned_mirror_body}\n\n"
             f"To stop or manage this job, send me a new message (e.g. \"stop reminder {task_name}\")."
         )
     else:
-        delivery_content = content
-
-    # Extract MEDIA: tags so attachments are forwarded as files, not raw text
-    from gateway.platforms.base import BasePlatformAdapter
-    media_files, cleaned_delivery_content = BasePlatformAdapter.extract_media(delivery_content)
+        mirror_text = cleaned_mirror_body
 
     try:
         config = load_gateway_config()
@@ -574,13 +631,113 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
             delivery_errors.append(msg)
             continue
 
+        def _mirror_into_history() -> None:
+            if not target.get("into_history"):
+                return
+            mirror_text_for_history = str(mirror_text or "").strip()
+            if not mirror_text_for_history:
+                return
+            try:
+                from gateway.mirror import mirror_to_session
+
+                extra_fields = {
+                    "cron_job_id": job.get("id", ""),
+                    "into_history": True,
+                }
+                cron_session_id = job.get("cron_session_id") or job.get("session_id")
+                if cron_session_id:
+                    extra_fields["cron_session_id"] = cron_session_id
+                mirror_chat_id = str(thread_id) if platform_name.lower() == "discord" and thread_id else str(chat_id)
+                mirror_to_session(
+                    platform_name.lower(),
+                    mirror_chat_id,
+                    mirror_text_for_history,
+                    source_label="cron",
+                    thread_id=str(thread_id) if thread_id else None,
+                    extra_fields=extra_fields,
+                    create_session_if_missing=True,
+                    source_overrides={
+                        "chat_type": "thread" if thread_id else "channel",
+                        "chat_name": str(target.get("thread_name") or ""),
+                        "parent_chat_id": str(chat_id) if thread_id else None,
+                    },
+                )
+            except Exception as mirror_exc:
+                logger.debug(
+                    "Job '%s': failed to mirror cron delivery: %s",
+                    job.get("id", "?"), mirror_exc,
+                )
+
         # Prefer the live adapter when the gateway is running — this supports E2EE
         # rooms (e.g. Matrix) where the standalone HTTP path cannot encrypt.
         runtime_adapter = (adapters or {}).get(platform)
         delivered = False
         if runtime_adapter is not None and loop is not None and getattr(loop, "is_running", lambda: False)():
-            send_metadata = {"thread_id": thread_id} if thread_id else None
             try:
+                if (
+                    platform_name.lower() == "discord"
+                    and not thread_id
+                    and target.get("thread_name")
+                    and hasattr(runtime_adapter, "create_delivery_thread")
+                ):
+                    future = asyncio.run_coroutine_threadsafe(
+                        runtime_adapter.create_delivery_thread(
+                            chat_id=str(chat_id),
+                            name=str(target["thread_name"]),
+                            auto_archive_duration=target.get("auto_archive_duration", 1440),
+                        ),
+                        loop,
+                    )
+                    try:
+                        thread_result = future.result(timeout=60)
+                    except TimeoutError:
+                        future.cancel()
+                        raise
+                    if isinstance(thread_result, dict) and thread_result.get("success", True):
+                        created_thread_id = thread_result.get("thread_id")
+                        if created_thread_id:
+                            thread_id = str(created_thread_id)
+                            target["thread_id"] = thread_id
+                            target["chat_id"] = str(chat_id)
+                        seed_message = str(thread_result.get("seed_message") or "").strip()
+                        if target.get("into_history") and thread_id and seed_message:
+                            try:
+                                from gateway.mirror import mirror_to_session
+
+                                extra_fields = {
+                                    "cron_job_id": job.get("id", ""),
+                                    "into_history": True,
+                                    "thread_seed": True,
+                                }
+                                cron_session_id = job.get("cron_session_id") or job.get("session_id")
+                                if cron_session_id:
+                                    extra_fields["cron_session_id"] = cron_session_id
+                                mirror_to_session(
+                                    "discord",
+                                    str(thread_id),
+                                    seed_message,
+                                    source_label="cron-thread-seed",
+                                    thread_id=str(thread_id),
+                                    extra_fields=extra_fields,
+                                    create_session_if_missing=True,
+                                    source_overrides={
+                                        "chat_type": "thread",
+                                        "chat_name": str(thread_result.get("thread_name") or target.get("thread_name") or ""),
+                                    },
+                                )
+                            except Exception as mirror_exc:
+                                logger.debug(
+                                    "Job '%s': failed to mirror Discord thread seed: %s",
+                                    job.get("id", "?"), mirror_exc,
+                                )
+                    else:
+                        err = thread_result.get("error", "unknown") if isinstance(thread_result, dict) else "unknown"
+                        logger.warning(
+                            "Job '%s': failed to create Discord delivery thread for %s:%s (%s); sending to parent",
+                            job["id"], platform_name, chat_id, err,
+                        )
+
+                send_metadata = {"thread_id": thread_id} if thread_id else None
                 # Send cleaned text (MEDIA tags stripped) — not the raw content
                 text_to_send = cleaned_delivery_content.strip()
                 adapter_ok = True
@@ -616,6 +773,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
 
                 if adapter_ok:
                     logger.info("Job '%s': delivered to %s:%s via live adapter", job["id"], platform_name, chat_id)
+                    _mirror_into_history()
                     delivered = True
             except Exception as e:
                 logger.warning(
@@ -650,6 +808,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 continue
 
             logger.info("Job '%s': delivered to %s:%s", job["id"], platform_name, chat_id)
+            _mirror_into_history()
 
     if delivery_errors:
         return "; ".join(delivery_errors)
