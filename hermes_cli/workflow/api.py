@@ -6,9 +6,12 @@ import json
 import sqlite3
 from typing import Any
 
+from .dag import normalize_dag
 from .materialize import materialize_workflow
+from .policy import DEFAULT_POLICY
 from .store import (
     add_event,
+    create_workflow,
     get_inbox_item,
     get_workflow,
     list_artifacts,
@@ -16,6 +19,7 @@ from .store import (
     list_inbox_items,
     list_workflows,
     resolve_gate,
+    save_dag,
     update_inbox_item,
     update_workflow_status,
 )
@@ -63,6 +67,68 @@ def update_inbox_item_triage(
     if item is None:
         raise ValueError(f"workflow inbox item not found: {inbox_item_id}")
     return _response({"inboxItem": item.to_dict()})
+
+
+def promote_inbox_item_to_workflow(
+    conn: sqlite3.Connection,
+    inbox_item_id: str,
+    *,
+    workflow_id: str,
+    title: str,
+    description: str = "",
+    board: str = "default",
+    scale: str = "medium",
+    draft_dag: dict[str, Any],
+    workspace_path: str | None = None,
+    actor_id: str = "webui",
+    now: float | None = None,
+) -> dict[str, Any]:
+    item = get_inbox_item(conn, inbox_item_id)
+    if item is None:
+        raise ValueError(f"workflow inbox item not found: {inbox_item_id}")
+    normalized = normalize_dag(draft_dag, policy=DEFAULT_POLICY)
+    if not normalized.ok or normalized.dag is None:
+        first = normalized.errors[0].message if normalized.errors else "unknown validation error"
+        raise ValueError(f"workflow draft DAG is invalid: {first}")
+    if normalized.dag.get("workflow_id") != workflow_id:
+        raise ValueError("workflow draft DAG workflow_id must match promoted workflow")
+
+    resolved_workspace_path = workspace_path if workspace_path is not None else item.workspace_path
+    workflow = create_workflow(
+        conn,
+        workflow_id=workflow_id,
+        title=title,
+        description=description,
+        workspace_path=resolved_workspace_path,
+        board=board,
+        scale=scale,
+        status="dag_draft",
+        created_by=actor_id,
+        metadata={"sourceInboxItemId": inbox_item_id},
+        now=now,
+    )
+    save_dag(conn, workflow_id=workflow_id, normalized_dag=normalized.dag, now=now)
+    updated_item = update_inbox_item(
+        conn,
+        inbox_item_id,
+        status="promoted",
+        assigned_workflow_id=workflow_id,
+        metadata={"promotedBy": actor_id},
+        now=now,
+    )
+    if updated_item is None:
+        raise ValueError(f"workflow inbox item not found: {inbox_item_id}")
+    add_event(
+        conn,
+        workflow_id=workflow_id,
+        event_type="inbox_promoted",
+        actor_type="human" if actor_id == "webui" else "agent",
+        actor_id=actor_id,
+        message=f"Inbox item {inbox_item_id} promoted to draft workflow",
+        data={"inboxItemId": inbox_item_id},
+        now=now,
+    )
+    return _response({"workflow": workflow.to_dict(), "inboxItem": updated_item.to_dict(), "dag": normalized.dag})
 
 
 def list_workflow_summaries(

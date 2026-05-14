@@ -14,6 +14,7 @@ from hermes_cli.workflow import (
     list_workflow_summaries,
     approve_workflow_for_materialization,
     materialize_workflow_to_kanban,
+    promote_inbox_item_to_workflow,
     resolve_workflow_gate_control,
     update_inbox_item_triage,
 )
@@ -74,6 +75,7 @@ def test_public_workflow_package_exports_read_model_api():
     assert callable(approve_workflow_for_materialization)
     assert callable(resolve_workflow_gate_control)
     assert callable(materialize_workflow_to_kanban)
+    assert callable(promote_inbox_item_to_workflow)
     assert callable(update_inbox_item_triage)
 
 
@@ -163,6 +165,95 @@ def test_update_inbox_item_triage_returns_updated_item_payload(tmp_path):
     assert item["assignedWorkflowId"] == "wf_update"
     assert item["updatedAt"] == 8.0
     assert item["metadata"] == {"labels": ["workflow-system"], "triagedBy": "planner"}
+
+
+def test_promote_inbox_item_to_workflow_creates_draft_workflow_and_assigns_intake(tmp_path):
+    draft_dag = {
+        "schema_version": 1,
+        "workflow_id": "wf_promoted",
+        "name": "Promoted workflow",
+        "scale": "medium",
+        "nodes": [
+            {
+                "id": "shape-plan",
+                "title": "Shape the implementation plan",
+                "role": "planner",
+                "profile": "planner",
+                "scope": {"summary": "Turn the rough request into a concrete workflow plan."},
+            },
+            {
+                "id": "build-slice",
+                "title": "Build the first slice",
+                "role": "engineer",
+                "profile": "engineer",
+                "parents": ["shape-plan"],
+                "definition_of_done": ["Targeted tests pass."],
+                "scope": {"summary": "Implement the first independently useful slice."},
+            },
+        ],
+    }
+    with connect(tmp_path / "workflow.db") as conn:
+        create_inbox_item(
+            conn,
+            inbox_item_id="inbox_promote",
+            title="Rough workflow idea",
+            body="Build the workflow system inbox promotion path.",
+            source="webui_chat",
+            status="triaged",
+            classification="decomposition_worthy",
+            workspace_path=str(tmp_path),
+            metadata={"labels": ["workflow-system"]},
+            now=2.0,
+        )
+
+        payload = promote_inbox_item_to_workflow(
+            conn,
+            "inbox_promote",
+            workflow_id="wf_promoted",
+            title="Promoted workflow",
+            description="Drafted from inbox item inbox_promote.",
+            board="core",
+            scale="medium",
+            draft_dag=draft_dag,
+            actor_id="webui",
+            now=8.0,
+        )
+        dag_payload = get_workflow_dag(conn, "wf_promoted")
+        events_payload = get_workflow_events(conn, "wf_promoted")
+
+    workflow = payload["facts"]["workflow"]
+    inbox_item = payload["facts"]["inboxItem"]
+    assert payload["insights"] is None
+    assert workflow["id"] == "wf_promoted"
+    assert workflow["status"] == "dag_draft"
+    assert workflow["title"] == "Promoted workflow"
+    assert workflow["workspacePath"] == str(tmp_path)
+    assert workflow["metadata"] == {"sourceInboxItemId": "inbox_promote"}
+    assert inbox_item["status"] == "promoted"
+    assert inbox_item["assignedWorkflowId"] == "wf_promoted"
+    assert inbox_item["metadata"] == {"labels": ["workflow-system"], "promotedBy": "webui"}
+    assert {node["id"] for node in dag_payload["facts"]["nodes"]} == {"shape-plan", "build-slice"}
+    assert dag_payload["facts"]["edges"] == [{"source": "shape-plan", "target": "build-slice", "kind": "depends_on"}]
+    assert events_payload["facts"]["events"][0]["eventType"] == "inbox_promoted"
+    assert events_payload["facts"]["events"][0]["data"] == {"inboxItemId": "inbox_promote"}
+
+
+def test_promote_inbox_item_to_workflow_rejects_invalid_draft_dag_without_assigning_inbox(tmp_path):
+    with connect(tmp_path / "workflow.db") as conn:
+        create_inbox_item(conn, inbox_item_id="inbox_bad_dag", title="Bad DAG", status="triaged", now=1.0)
+
+        with pytest.raises(ValueError, match="workflow draft DAG is invalid"):
+            promote_inbox_item_to_workflow(
+                conn,
+                "inbox_bad_dag",
+                workflow_id="wf_bad_dag",
+                title="Bad DAG workflow",
+                draft_dag={"schema_version": 1, "workflow_id": "wf_bad_dag", "scale": "medium", "nodes": []},
+            )
+        item = get_inbox_item_detail(conn, "inbox_bad_dag")["facts"]["inboxItem"]
+
+    assert item["status"] == "triaged"
+    assert item["assignedWorkflowId"] is None
 
 
 def test_list_workflow_summaries_returns_facts_insights_shape_and_filters(tmp_path):

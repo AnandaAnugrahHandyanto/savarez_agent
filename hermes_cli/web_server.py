@@ -59,6 +59,7 @@ from hermes_cli.workflow import (
     list_inbox_item_summaries as workflow_list_inbox_item_summaries,
     list_workflow_summaries as workflow_list_workflow_summaries,
     materialize_workflow_to_kanban as workflow_materialize_workflow_to_kanban,
+    promote_inbox_item_to_workflow as workflow_promote_inbox_item_to_workflow,
     resolve_workflow_gate_control as workflow_resolve_workflow_gate_control,
     update_inbox_item_triage as workflow_update_inbox_item_triage,
 )
@@ -707,6 +708,42 @@ async def create_workflow_inbox_endpoint(request: Request):
             return {"facts": {"inboxItem": item.to_dict()}, "insights": None}
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/api/workflows/inbox/{inbox_item_id}/promote")
+async def promote_workflow_inbox_item_endpoint(inbox_item_id: str, request: Request):
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    draft_dag = payload.get("draftDag")
+    if not isinstance(draft_dag, dict):
+        raise HTTPException(status_code=400, detail="draftDag must be an object")
+    workflow_id = str(payload.get("workflowId") or "").strip()
+    title = str(payload.get("title") or "").strip()
+    if not workflow_id:
+        raise HTTPException(status_code=400, detail="workflowId is required")
+    if not title:
+        raise HTTPException(status_code=400, detail="title is required")
+    try:
+        with workflow_connect() as conn:
+            return workflow_promote_inbox_item_to_workflow(
+                conn,
+                inbox_item_id,
+                workflow_id=workflow_id,
+                title=title,
+                description=str(payload.get("description") or ""),
+                board=str(payload.get("board") or "default"),
+                scale=str(payload.get("scale") or "medium"),
+                draft_dag=draft_dag,
+                workspace_path=payload.get("workspacePath"),
+                actor_id=payload.get("actorId") or "webui",
+            )
+    except ValueError as exc:
+        message = str(exc)
+        if message.startswith("workflow inbox item not found:"):
+            raise HTTPException(status_code=404, detail=message)
+        raise HTTPException(status_code=400, detail=message)
 
 
 @app.get("/api/workflows/inbox/{inbox_item_id}")
