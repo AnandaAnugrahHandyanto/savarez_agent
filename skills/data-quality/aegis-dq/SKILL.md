@@ -20,16 +20,42 @@ Runs structured data quality rules against your warehouses and uses LLMs to diag
 Use Aegis DQ when you need to:
 - Validate data in a warehouse against business rules (nulls, ranges, referential integrity, custom SQL)
 - Understand *why* a data quality check failed, not just *that* it failed
+- Load a pipeline manifest and run it with a single prompt
 - Search past diagnoses across runs
+- Compare two validation runs to spot regressions
 - Run validation on a schedule and get a conversational summary
 
 ## Prerequisites
 
+**1. Install Aegis and scaffold a project**
+
 ```bash
 pip install aegis-dq
+aegis init my-project --name my-pipeline
+cd my-project
 ```
 
-Set warehouse environment variables for any system you want to validate:
+This creates `aegis.yaml` (project-wide LLM + warehouse config), a starter `pipelines/my-pipeline/pipeline.yaml`, and `rules.yaml`.
+
+**2. Configure Hermes**
+
+Add Aegis to `~/.hermes/config.yaml`:
+
+```yaml
+model:
+  default: claude-haiku-4-5-20251001
+  provider: anthropic
+
+mcp_servers:
+  aegis:
+    command: aegis
+    args: [mcp]
+    env:
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY}"
+      DUCKDB_PATH: /data/prod.duckdb
+```
+
+**3. Set warehouse env vars**
 
 | Warehouse | Required env vars |
 |---|---|
@@ -39,25 +65,57 @@ Set warehouse environment variables for any system you want to validate:
 | Databricks | `DATABRICKS_HOST`, `DATABRICKS_HTTP_PATH`, `DATABRICKS_TOKEN` |
 | Postgres / Redshift | `POSTGRES_DSN` |
 
-Set `ANTHROPIC_API_KEY` (or `OPENAI_API_KEY`) for LLM diagnosis. Omit to run offline.
+Set `ANTHROPIC_API_KEY` (or `OPENAI_API_KEY`, or `AWS_DEFAULT_REGION` for Bedrock) for LLM diagnosis. Omit to run offline with `no_llm: true`.
 
 ## Available Tools
 
-The Aegis MCP server exposes these tools:
+The Aegis MCP server exposes 9 tools:
 
+- **`load_pipeline`** — Load a `pipeline.yaml` manifest and return its config, connection params, and goal as context. Use before `run_validation` so Hermes understands the pipeline without re-explanation.
 - **`run_validation`** — Run a rules YAML file against a warehouse. Returns pass/fail per rule, LLM diagnosis, root cause, and remediation SQL.
-- **`list_runs`** — List recent run IDs from the audit trail.
+- **`list_runs`** — List recent run IDs from the audit trail, newest first.
 - **`get_run_report`** — Get the full report for a past run by ID.
-- **`get_trajectory`** — Get the node-by-node LLM decision log for a run.
+- **`get_trajectory`** — Get the node-by-node LLM decision log for a run — every prompt, response, cost, and latency.
 - **`search_decisions`** — Full-text search across all past LLM decisions.
+- **`compare_reports`** — Diff two runs side by side — regressions, fixes, pass-rate delta.
+- **`summarize_reports`** — Compact summary of one or more runs — pass rate, top failures, cost.
+- **`check_consistency`** — Detect flapping rules and rule-set drift between two runs.
+
+## Pipeline Manifests
+
+The best way to use Aegis with Hermes is a **pipeline manifest** — a single YAML file that captures your rules, warehouse, and goal. Define it once; invoke it with two words.
+
+```yaml
+# pipelines/orders-dq/pipeline.yaml
+name: orders-dq
+description: Daily order data quality checks
+rules: ./rules.yaml
+goal: |
+  For every failure explain the business impact, the likely root
+  cause, and a concrete remediation step. Group by severity.
+```
+
+Hermes calls `load_pipeline` → reads the manifest → calls `run_validation` with the right params. You never re-explain the context.
 
 ## Example Prompts
 
-- "Run my rules.yaml against BigQuery and tell me what failed."
-- "Show me the last 10 validation runs."
-- "What was the root cause in yesterday's run?"
-- "Search the audit trail for anything about null order IDs."
+**Pipeline manifest (recommended)**
+- "Load the pipeline at my-project/pipelines/orders-dq/pipeline.yaml and run it."
+- "Load the fraud pipeline and run it, then send me a severity summary."
+
+**Direct validation**
+- "Run /home/user/rules/orders.yaml against BigQuery and tell me what failed."
 - "Run rules.yaml against Athena offline — no LLM, just pass/fail."
+
+**Audit trail**
+- "Show me the last 10 validation runs."
+- "What was the root cause of the CTR filing failures in yesterday's run?"
+- "Search the audit trail for anything about null order IDs."
+- "Compare today's run with yesterday's — what newly failed?"
+- "Have we ever seen OFAC sanction hits before?"
+
+**Scheduling**
+- "Run the fraud-aml pipeline every morning at 8am and alert me in Slack if anything is CRITICAL."
 
 ## Running a Validation
 
@@ -88,6 +146,7 @@ run_validation(
 - If `connection_params` is omitted and required env vars are missing, the tool returns a clear error listing which variables to set.
 - `no_llm: true` skips all LLM calls — useful for fast checks or when no API key is configured.
 - Rules that reference tables not present in the warehouse return a clear SQL error.
+- `load_pipeline` resolves all paths relative to the manifest file, so manifests are portable across machines.
 
 ## Links
 
