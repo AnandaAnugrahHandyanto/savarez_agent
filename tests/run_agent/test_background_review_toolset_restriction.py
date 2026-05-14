@@ -17,6 +17,8 @@ def _make_agent_stub(agent_cls):
     agent.provider = "openai"
     agent.session_id = "sess-123"
     agent.quiet_mode = True
+    agent.pass_session_id = True
+    agent._cached_system_prompt = "cached parent prompt"
     agent._memory_store = None
     agent._memory_enabled = True
     agent._user_profile_enabled = False
@@ -50,6 +52,9 @@ def test_background_review_agent_uses_restricted_toolsets():
 
     def _capture_init(self, *args, **kwargs):
         captured["enabled_toolsets"] = kwargs.get("enabled_toolsets")
+        captured["session_id"] = kwargs.get("session_id")
+        captured["pass_session_id"] = kwargs.get("pass_session_id")
+        captured["cached_system_prompt"] = kwargs.get("cached_system_prompt")
         raise RuntimeError("stop after capturing init args")
 
     with patch.object(run_agent.AIAgent, "__init__", _capture_init), \
@@ -62,6 +67,9 @@ def test_background_review_agent_uses_restricted_toolsets():
 
     assert "enabled_toolsets" in captured, "AIAgent.__init__ was not called"
     assert sorted(captured["enabled_toolsets"]) == ["memory", "skills"]
+    assert captured["session_id"] == "sess-123"
+    assert captured["pass_session_id"] is True
+    assert captured["cached_system_prompt"] == "cached parent prompt"
 
 
 def test_background_review_agent_tools_are_limited():

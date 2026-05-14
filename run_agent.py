@@ -1184,6 +1184,7 @@ class AIAgent:
         checkpoint_max_total_size_mb: int = 500,
         checkpoint_max_file_size_mb: int = 10,
         pass_session_id: bool = False,
+        cached_system_prompt: Optional[str] = None,
     ):
         """
         Initialize the AI Agent.
@@ -1212,6 +1213,7 @@ class AIAgent:
                 openrouter/pareto-code router. Only applied when model == "openrouter/pareto-code".
                 None or empty = let OpenRouter pick the strongest available coder.
             session_id (str): Pre-generated session ID for logging (optional, auto-generated if not provided)
+            cached_system_prompt (str): Prebuilt system prompt that should be reused verbatim.
             tool_progress_callback (callable): Callback function(tool_name, args_preview) for progress notifications
             clarify_callback (callable): Callback function(question, choices) -> str for interactive user questions.
                 Provided by the platform layer (CLI or gateway). If None, the clarify tool returns an error.
@@ -1918,7 +1920,7 @@ class AIAgent:
         self._memory_write_context = "foreground"
         
         # Cached system prompt -- built once per session, only rebuilt on compression
-        self._cached_system_prompt: Optional[str] = None
+        self._cached_system_prompt: Optional[str] = cached_system_prompt
         
         # Filesystem checkpoint manager (transparent — not a tool)
         from tools.checkpoint_manager import CheckpointManager
@@ -4267,6 +4269,7 @@ class AIAgent:
                     # reconstruct auth from scratch -- producing the spurious
                     # "No LLM provider configured" warning at end of turn.
                     _parent_runtime = self._current_main_runtime()
+                    review_system_prompt = self._cached_system_prompt or self._build_system_prompt()
                     review_agent = AIAgent(
                         model=self.model,
                         max_iterations=16,
@@ -4278,6 +4281,9 @@ class AIAgent:
                         api_key=_parent_runtime.get("api_key") or None,
                         credential_pool=getattr(self, "_credential_pool", None),
                         parent_session_id=self.session_id,
+                        session_id=self.session_id,
+                        pass_session_id=self.pass_session_id,
+                        cached_system_prompt=review_system_prompt,
                         enabled_toolsets=["memory", "skills"],
                     )
                     review_agent._memory_write_origin = "background_review"
