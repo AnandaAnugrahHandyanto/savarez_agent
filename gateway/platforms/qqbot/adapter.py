@@ -531,7 +531,7 @@ class QQAdapter(BasePlatformAdapter):
                         RATE_LIMIT_DELAY,
                     )
                     if backoff_idx >= MAX_RECONNECT_ATTEMPTS:
-                        return
+                        backoff_idx = len(RECONNECT_BACKOFF) - 1  # cap, keep retrying
                     await asyncio.sleep(RATE_LIMIT_DELAY)
                     if await self._reconnect(backoff_idx):
                         backoff_idx = 0
@@ -583,8 +583,8 @@ class QQAdapter(BasePlatformAdapter):
                 else:
                     backoff_idx += 1
                     if backoff_idx >= MAX_RECONNECT_ATTEMPTS:
-                        logger.error("[%s] Max reconnect attempts reached (QQCloseError)", self._log_tag)
-                        return
+                        backoff_idx = len(RECONNECT_BACKOFF) - 1  # cap, keep retrying
+                        logger.warning("[%s] Max reconnect attempts reached — continuing with max backoff", self._log_tag)
 
             except Exception as exc:
                 if not self._running:
@@ -594,8 +594,8 @@ class QQAdapter(BasePlatformAdapter):
                 self._fail_pending("Connection interrupted")
 
                 if backoff_idx >= MAX_RECONNECT_ATTEMPTS:
-                    logger.error("[%s] Max reconnect attempts reached", self._log_tag)
-                    return
+                    backoff_idx = len(RECONNECT_BACKOFF) - 1  # cap, keep retrying
+                    logger.warning("[%s] Max reconnect attempts reached — continuing with max backoff", self._log_tag)
 
                 if await self._reconnect(backoff_idx):
                     backoff_idx = 0
@@ -2263,8 +2263,16 @@ class QQAdapter(BasePlatformAdapter):
         and before the reconnect completes.  This method polls is_connected
         for up to _RECONNECT_WAIT_SECONDS.
 
+        If the listen task has exited (not running), fail fast instead of
+        waiting the full duration.
+
         Returns True if reconnected, False if still disconnected.
         """
+        # Check if listen task has exited — if so, don't wait at all
+        if self._listen_task is not None and self._listen_task.done():
+            logger.warning("[%s] Listen loop has exited — failing send() fast", self._log_tag)
+            return False
+
         logger.info("[%s] Not connected — waiting for reconnection (up to %.0fs)",
                     self._log_tag, self._RECONNECT_WAIT_SECONDS)
         waited = 0.0
@@ -2274,6 +2282,10 @@ class QQAdapter(BasePlatformAdapter):
             if self.is_connected:
                 logger.info("[%s] Reconnected after %.1fs", self._log_tag, waited)
                 return True
+            # Re-check listen task health on each poll
+            if self._listen_task is not None and self._listen_task.done():
+                logger.warning("[%s] Listen loop exited during wait — failing fast", self._log_tag)
+                return False
         logger.warning("[%s] Still not connected after %.0fs", self._log_tag, self._RECONNECT_WAIT_SECONDS)
         return False
 
