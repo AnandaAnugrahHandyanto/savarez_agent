@@ -247,7 +247,7 @@ FAL_MODELS: Dict[str, Dict[str, Any]] = {
         },
         "supports": {
             "prompt", "image_size", "quality", "num_images", "output_format",
-            "sync_mode",
+            "sync_mode", "image",
             # openai_api_key (BYOK) intentionally omitted — all users go
             # through the shared FAL billing path.
         },
@@ -661,6 +661,7 @@ def image_generate_tool(
     num_images: Optional[int] = None,
     output_format: Optional[str] = None,
     seed: Optional[int] = None,
+    reference_image_path: Optional[str] = None,
 ) -> str:
     """Generate an image from a text prompt using the configured FAL model.
 
@@ -668,6 +669,11 @@ def image_generate_tool(
     remaining kwargs are overrides for direct Python callers and are filtered
     per-model via the ``supports`` whitelist (unsupported overrides are
     silently dropped so legacy callers don't break when switching models).
+
+    Args:
+        reference_image_path: Optional absolute path to a local reference image
+            file. When provided, supported backends (e.g., GPT Image 2) will use
+            it for style transfer, subject likeness, or composition guidance.
 
     Returns a JSON string with ``{"success": bool, "image": url | None,
     "error": str, "error_type": str}``.
@@ -684,6 +690,7 @@ def image_generate_tool(
             "num_images": num_images,
             "output_format": output_format,
             "seed": seed,
+            "reference_image_path": reference_image_path,
         },
         "error": None,
         "success": False,
@@ -696,6 +703,23 @@ def image_generate_tool(
     try:
         if not prompt or not isinstance(prompt, str) or len(prompt.strip()) == 0:
             raise ValueError("Prompt is required and must be a non-empty string")
+
+        # Validate reference image path if provided
+        if reference_image_path:
+            if not isinstance(reference_image_path, str):
+                raise ValueError("reference_image_path must be a string")
+            ref_path = reference_image_path.strip()
+            if not ref_path:
+                raise ValueError("reference_image_path must be a non-empty string")
+            if not os.path.isfile(ref_path):
+                raise ValueError(f"Reference image file not found: {ref_path}")
+            # Validate it's an image file by extension
+            valid_extensions = {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.tiff'}
+            ext = os.path.splitext(ref_path)[1].lower()
+            if ext not in valid_extensions:
+                raise ValueError(f"Reference image must be a valid image file. Supported: {', '.join(sorted(valid_extensions))}")
+        else:
+            ref_path = None
 
         if not (fal_key_is_configured() or _resolve_managed_fal_gateway()):
             message = "FAL_KEY environment variable not set"
@@ -724,6 +748,24 @@ def image_generate_tool(
         arguments = _build_fal_payload(
             model_id, prompt, aspect_lc, seed=seed, overrides=overrides,
         )
+
+        # Add reference image if provided and supported by the model
+        if ref_path:
+            # Check if the model supports image input
+            model_supports_image = "image" in meta.get("supports", set()) or \
+                                   "reference_image" in meta.get("supports", set()) or \
+                                   "input_image" in meta.get("supports", set())
+            
+            if model_supports_image:
+                # For models that support image input, add the reference image
+                # FAL accepts either a URL or a local file path (it will upload automatically)
+                arguments["image"] = ref_path
+                logger.info("Using reference image: %s", ref_path)
+            else:
+                logger.warning(
+                    "Model %s does not support reference images; ignoring reference_image_path",
+                    model_id,
+                )
 
         logger.info(
             "Generating image with %s (%s) — prompt: %s",
@@ -915,6 +957,10 @@ IMAGE_GENERATE_SCHEMA = {
                 "description": "The aspect ratio of the generated image. 'landscape' is 16:9 wide, 'portrait' is 16:9 tall, 'square' is 1:1.",
                 "default": DEFAULT_ASPECT_RATIO,
             },
+            "reference_image_path": {
+                "type": "string",
+                "description": "Optional absolute path to a local reference image file. When provided, the image generation API will use it for style transfer, subject likeness, or composition guidance. Only supported by certain backends (e.g., GPT Image 2).",
+            },
         },
         "required": ["prompt"],
     },
@@ -1040,6 +1086,7 @@ def _handle_image_generate(args, **kw):
     if not prompt:
         return tool_error("prompt is required for image generation")
     aspect_ratio = args.get("aspect_ratio", DEFAULT_ASPECT_RATIO)
+    reference_image_path = args.get("reference_image_path")
 
     # Route to a plugin-registered provider if one is active (and it's
     # not the in-tree FAL path).
@@ -1050,6 +1097,7 @@ def _handle_image_generate(args, **kw):
     return image_generate_tool(
         prompt=prompt,
         aspect_ratio=aspect_ratio,
+        reference_image_path=reference_image_path,
     )
 
 
