@@ -1,20 +1,22 @@
 # Hermes Achievements Implementation Spec (Detailed)
 
-This document is implementation-facing detail to execute the performance refactor later.
+Status: **Implemented on branch `perf/hermes-achievements-snapshot`** —
+not yet merged or published. See
+`achievements-performance-implementation-plan.md` for per-task status.
 
 Decision scope: keep only Achievements tab flow; remove `/overview` + top-banner slot integration.
 
 ---
 
-## A) Current Behavior Summary
+## A) Pre-refactor Behavior Summary
 
 - `evaluate_all()` performs:
   - full `scan_sessions()`
   - `SessionDB.list_sessions_rich(...)`
   - `db.get_messages(session_id)` for each session
   - text/tool regex analysis + aggregation + evaluation
-- `/overview` and `/achievements` both currently call `evaluate_all()` directly.
-- slot calls (`sessions:top`, `analytics:top`) currently invoke `/overview`.
+- `/overview` and `/achievements` both called `evaluate_all()` directly.
+- slot calls (`sessions:top`, `analytics:top`) invoked `/overview`.
 
 Consequence: repeated full recomputes and contention.
 
@@ -73,7 +75,7 @@ State fields:
 ### 3) `build_snapshot()`
 Responsibilities:
 - execute current compute logic once
-- on first run, perform full scan and materialize per-session contributions
+- on first run, perform full scan and materialize per-session stats
 - on subsequent runs, process only changed/new sessions via checkpoint fingerprints
 - produce shape consumed by `/achievements`
 
@@ -88,8 +90,8 @@ Output:
 
 | Endpoint | Cache fresh | Cache stale | No cache | Force rescan |
 |---|---|---|---|---|
-| `/achievements` | return cached | return stale + trigger bg refresh | blocking bootstrap scan | n/a |
-| `/rescan` | trigger refresh | trigger refresh | trigger refresh | yes |
+| `/achievements` | return cached | return stale + trigger bg refresh | return pending payload + trigger bg bootstrap scan | n/a |
+| `/rescan` | synchronous forced refresh | synchronous forced refresh | synchronous forced refresh | yes |
 | `/scan-status` | status only | status only | status only | status only |
 
 Notes:
@@ -135,21 +137,20 @@ Suggested checkpoint shape:
   "sessions": {
     "<session_id>": {
       "fingerprint": {
-        "updated_at": 0,
-        "message_count": 0,
-        "hash": "optional"
+        "started_at": 0,
+        "last_active": 0,
+        "model": "model-name",
+        "title": "session title"
       },
-      "contribution": {
-        "metrics": {}
-      }
+      "stats": {}
     }
   }
 }
 ```
 
 Notes:
-- fingerprint mismatch => recompute that session contribution only.
-- unchanged fingerprint => reuse stored contribution.
+- fingerprint mismatch => recompute that session's stats only.
+- unchanged fingerprint => reuse stored stats.
 
 ---
 
@@ -168,7 +169,8 @@ Notes:
 - If refresh fails and prior snapshot exists:
   - return prior snapshot with `is_stale=true` and error metadata
 - If refresh fails and no prior snapshot:
-  - return explicit error response (current behavior equivalent)
+  - return a structurally valid pending payload while `/scan-status` exposes
+    the failure in `last_error`
 - `scan-status` should always return last known state/error.
 
 ---
@@ -185,13 +187,18 @@ Notes:
 
 ## I) Validation Checklist
 
-- [ ] `/overview` route removed
-- [ ] manifest has no `sessions:top`/`analytics:top` slots
-- [ ] frontend has no `api("/overview")` calls
-- [ ] repeated Achievements navigation does not create multiple heavy scans
-- [ ] average warm load times meet SLOs
-- [ ] unlock totals match pre-refactor baseline for same history
-- [ ] no schema regression in `/achievements` response
+- [x] `/overview` route removed (guarded by `tests/test_plugin_perf.py`)
+- [x] manifest has no `sessions:top`/`analytics:top` slots
+- [x] frontend has no `api("/overview")` calls
+- [x] repeated Achievements navigation does not create multiple heavy scans
+  (single-flight test in `tests/test_plugin_perf.py`)
+- [ ] average warm load times meet SLOs — *manual benchmark required, use
+  `scripts/benchmark_api.py`*
+- [ ] unlock totals match pre-refactor baseline for same history — *manual
+  spot-check required before merge*
+- [x] no schema regression in `/achievements` response — payload still
+  includes the legacy keys (`achievements`, `*_count`, `error`) plus the new
+  metadata (`generated_at`, `is_stale`, `scan_meta`).
 
 ---
 
@@ -214,6 +221,7 @@ Notes:
 
 Record:
 - dataset size (sessions/messages/tool calls)
-- pre/post `/achievements` timings (cold/warm)
+- pre/post `/achievements` timings (cache-busted/first-hit and warm; capture
+  true cold-cache separately by clearing/restarting outside the script)
 - whether single-flight dedupe triggered under repeated tab open
 - any behavioral diffs in unlock counts

@@ -1,6 +1,9 @@
 # Hermes Achievements Performance Spec (Post-Hackathon)
 
-Status: Draft (no code changes yet)
+Status: **Implementation in progress on branch
+`perf/hermes-achievements-snapshot`** — see
+`achievements-performance-implementation-plan.md` for per-task status. The
+shipped plugin on `main` is unchanged until that branch is merged.
 Owner: hermes-achievements plugin
 Scope: `dashboard/plugin_api.py` + `dashboard/dist/index.js` request behavior
 Decision: **Drop `/overview` and top-banner slots**; keep only Achievements tab data path.
@@ -9,7 +12,7 @@ Decision: **Drop `/overview` and top-banner slots**; keep only Achievements tab 
 
 ## 1) Problem Statement
 
-Current plugin endpoints `/achievements` and `/overview` both execute a full history recomputation (`evaluate_all()`), which performs a full SessionDB scan each request.
+Pre-refactor plugin endpoints `/achievements` and `/overview` both executed a full history recomputation (`evaluate_all()`), which performed a full SessionDB scan each request.
 
 Observed on this machine/repo:
 - ~83 sessions
@@ -50,9 +53,9 @@ Returns full payload used by the tab:
 - `total_count`
 - `error`
 
-### `POST /api/plugins/hermes-achievements/rescan` (optional)
-Manual refresh trigger.
-Prefer async trigger + immediate status response.
+### `POST /api/plugins/hermes-achievements/rescan`
+Manual forced refresh trigger. Current implementation runs synchronously and
+returns the completed snapshot when the scan succeeds.
 
 ### `GET /api/plugins/hermes-achievements/scan-status` (optional new)
 Reports scan state for UX/ops.
@@ -84,8 +87,10 @@ Remove:
 Rules:
 1. FRESH -> serve immediately.
 2. STALE + not scanning -> serve stale snapshot immediately and launch background refresh.
-3. SCANNING -> do not start another scan; join single-flight in-flight job.
-4. No snapshot yet -> allow one blocking bootstrap scan.
+3. SCANNING -> do not start another scan; serve the current partial/stale
+   snapshot and keep polling via `scan_meta.mode` / `is_stale`.
+4. No snapshot yet -> return a pending payload immediately and launch one
+   background bootstrap scan.
 
 ---
 
@@ -104,11 +109,11 @@ Rules:
   - `~/.hermes/plugins/hermes-achievements/scan_checkpoint.json`
 - Checkpoint stores, per session:
   - `session_id`
-  - fingerprint (`updated_at`, message_count, or hash)
-  - cached per-session contribution used for aggregate recomposition
+  - fingerprint (`started_at`, `last_active`, model, title)
+  - cached per-session stats used for aggregate recomposition
 - Scan policy:
   - First run: full scan and materialize snapshot + checkpoint.
-  - Next runs: process only new/changed sessions, reuse unchanged contributions.
+  - Next runs: process only new/changed sessions, reuse unchanged stats.
 - Full rebuild only on:
   - schema/version change
   - checkpoint corruption
@@ -171,4 +176,4 @@ Plugin state directory:
 Files:
 - `state.json` (existing): unlock tracking
 - `scan_snapshot.json` (new): latest materialized achievements payload
-- `scan_checkpoint.json` (new): per-session fingerprints + contributions for incremental refresh
+- `scan_checkpoint.json` (new): per-session fingerprints + cached stats for incremental refresh

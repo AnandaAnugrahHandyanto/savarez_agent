@@ -238,17 +238,34 @@ def _cache_is_fresh(now: int) -> bool:
 def _is_snapshot_stale(snapshot: Optional[Dict[str, Any]], now: Optional[int] = None) -> bool:
     if not isinstance(snapshot, dict):
         return True
-    ts = int(snapshot.get("generated_at") or 0)
+    ts = _snapshot_generated_at(snapshot)
     current = int(now or time.time())
     if ts <= 0:
         return True
+    # Partial payloads (no scan finished yet or background thread still
+    # publishing intermediate results) carry generated_at = now but are
+    # not authoritative. The UI must keep polling, so mark them stale
+    # regardless of age.
+    scan_meta = snapshot.get("scan_meta")
+    mode = scan_meta.get("mode") if isinstance(scan_meta, dict) else None
+    if mode in ("pending", "in_progress"):
+        return True
     return (current - ts) > SNAPSHOT_TTL_SECONDS
+
+
+def _snapshot_generated_at(snapshot: Optional[Dict[str, Any]]) -> int:
+    if not isinstance(snapshot, dict):
+        return 0
+    try:
+        return int(snapshot.get("generated_at") or 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 def _scan_status_payload(now: Optional[int] = None) -> Dict[str, Any]:
     current = int(now or time.time())
     snap = _SNAPSHOT_CACHE if isinstance(_SNAPSHOT_CACHE, dict) else None
-    generated_at = int((snap or {}).get("generated_at") or 0) if snap else 0
+    generated_at = _snapshot_generated_at(snap) if snap else 0
     return {
         "state": _SCAN_STATUS.get("state", "idle"),
         "started_at": _SCAN_STATUS.get("started_at"),
@@ -970,9 +987,9 @@ def evaluate_all(force: bool = False) -> Dict[str, Any]:
     if _SNAPSHOT_CACHE is None:
         persisted = load_snapshot()
         if isinstance(persisted, dict):
-            generated_at = int(persisted.get("generated_at") or 0)
+            generated_at = _snapshot_generated_at(persisted)
             _SNAPSHOT_CACHE = persisted
-            _SNAPSHOT_CACHE_AT = generated_at or now
+            _SNAPSHOT_CACHE_AT = generated_at if generated_at > 0 else 0
 
     if force:
         # Manual /rescan — block the caller, synchronous scan path.
@@ -1000,9 +1017,12 @@ def evaluate_all(force: bool = False) -> Dict[str, Any]:
 async def achievements():
     data = evaluate_all()
     payload = {k: data[k] for k in ["achievements", "unlocked_count", "discovered_count", "secret_count", "total_count", "error", "generated_at"] if k in data}
+    if "generated_at" in payload:
+        payload["generated_at"] = _snapshot_generated_at(data)
     payload["is_stale"] = _is_snapshot_stale(data)
+    scan_meta = data.get("scan_meta")
     payload["scan_meta"] = {
-        **(data.get("scan_meta") or {}),
+        **(scan_meta if isinstance(scan_meta, dict) else {}),
         "status": _scan_status_payload(),
     }
     return payload
