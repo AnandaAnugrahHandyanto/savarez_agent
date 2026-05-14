@@ -28,6 +28,26 @@ from tools.registry import tool_error
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Dialectic noise filter
+# ---------------------------------------------------------------------------
+# The deriver (memory-formation agent) sometimes returns housekeeping strings
+# instead of actionable context when session history is sparse — e.g. after
+# only a few greeting messages.  These patterns are derived from the deriver's
+# own prompt wording ("if nothing is worth saving, just say 'Nothing to save.'").
+# Matching is done on a lowercased, stripped copy; exact-phrase prefixes keep
+# false-positive risk low.  The bare `startswith("nothing")` guard is
+# intentionally excluded to avoid discarding legitimate responses like
+# "Nothing in the user's history suggests X, but they did mention Y…".
+_DERIVER_NOISE_PHRASES = (
+    "nothing to save",
+    "no new information",
+    "no information",
+    "no relevant information",
+    "nothing relevant",
+    "nothing notable",
+)
+
 
 # ---------------------------------------------------------------------------
 # Tool schemas (moved from tools/honcho_tools.py)
@@ -673,15 +693,11 @@ class HonchoMemoryProvider(MemoryProvider):
             dialectic_result = ""
 
         if dialectic_result and dialectic_result.strip():
-            # Discard deriver-style non-responses that slip through on sparse context.
-            _dr = dialectic_result.strip().lower()
-            _is_deriver_noise = (
-                _dr.startswith("nothing to save")
-                or _dr.startswith("no new information")
-                or _dr.startswith("no information")
-                or (_dr.startswith("nothing") and len(_dr) < 120)
+            normalized = dialectic_result.strip().lower()
+            is_deriver_noise = any(
+                normalized.startswith(phrase) for phrase in _DERIVER_NOISE_PHRASES
             )
-            if not _is_deriver_noise:
+            if not is_deriver_noise:
                 parts.append(f"## Honcho Contextual Analysis\n{dialectic_result.strip()}")
 
         if not parts:
