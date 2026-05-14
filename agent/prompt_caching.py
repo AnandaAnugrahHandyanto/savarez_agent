@@ -18,7 +18,6 @@ Two layouts:
 Pure functions -- no class state, no AIAgent dependency.
 """
 
-import copy
 from typing import Any, Dict, List, Optional
 
 
@@ -56,6 +55,17 @@ def _build_marker(ttl: str) -> Dict[str, str]:
     return marker
 
 
+def _copy_message_for_cache_marking(message: Dict[str, Any]) -> Dict[str, Any]:
+    """Copy only the mutable message shells that cache marking may edit."""
+    copied = message.copy()
+    content = copied.get("content")
+    if isinstance(content, list):
+        copied["content"] = [part.copy() if isinstance(part, dict) else part for part in content]
+    elif isinstance(content, dict):
+        copied["content"] = content.copy()
+    return copied
+
+
 def apply_anthropic_cache_control(
     api_messages: List[Dict[str, Any]],
     cache_ttl: str = "5m",
@@ -67,12 +77,16 @@ def apply_anthropic_cache_control(
     messages, all at the same TTL.
 
     Returns:
-        Shallow copy of messages with cache_control breakpoints injected.
+        Copy of messages with cache_control breakpoints injected without
+        deep-copying immutable payload strings.
     """
     if not api_messages:
         return []
 
-    messages = [msg.copy() if isinstance(msg, dict) else msg for msg in api_messages]
+    messages = [
+        _copy_message_for_cache_marking(msg) if isinstance(msg, dict) else msg
+        for msg in api_messages
+    ]
 
     marker = _build_marker(cache_ttl)
 
@@ -154,12 +168,16 @@ def apply_anthropic_cache_control_long_lived(
     not isolated, so the prefix invalidates per-session).
 
     Returns:
-        Shallow copy of messages with cache_control breakpoints injected.
+        Copy of messages with cache_control breakpoints injected without
+        deep-copying immutable payload strings.
     """
     if not api_messages:
         return []
 
-    messages = [msg.copy() if isinstance(msg, dict) else msg for msg in api_messages]
+    messages = [
+        _copy_message_for_cache_marking(msg) if isinstance(msg, dict) else msg
+        for msg in api_messages
+    ]
 
     long_marker = _build_marker(long_lived_ttl)
     rolling_marker = _build_marker(rolling_ttl)
