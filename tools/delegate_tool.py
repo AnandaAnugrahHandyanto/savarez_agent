@@ -2843,6 +2843,8 @@ DELEGATE_TASK_SCHEMA = {
     # redirect HERMES_HOME.
     "description": (
         "Spawn one or more subagents in isolated contexts. "
+        "Only the child's final response or summary is returned; "
+        "intermediate tool output is not a guaranteed verbatim relay. "
         "Description is rebuilt at every get_definitions() call to reflect "
         "the user's current delegation limits."
     ),
@@ -2940,7 +2942,7 @@ DELEGATE_TASK_SCHEMA = {
             "acp_command": {
                 "type": "string",
                 "description": (
-                    "Override ACP command for child agents (e.g. 'claude', 'copilot'). "
+                    "Override ACP command for child agents (e.g. 'copilot'). "
                     "When set, children use ACP subprocess transport instead of inheriting "
                     "the parent's transport. Use this for non-Hermes ACP subprocesses "
                     "or advanced transport overrides. "
