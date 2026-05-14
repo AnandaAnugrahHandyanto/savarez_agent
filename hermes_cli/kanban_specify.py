@@ -52,6 +52,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from hermes_cli import kanban_db as kb
+from hermes_cli import triage_routing
 
 logger = logging.getLogger(__name__)
 
@@ -335,6 +336,7 @@ def specify_task(
     new_body: Optional[str]
     assignee_suggestion: Optional[str] = None
     labels: list[str] = []
+    final_assignee: Optional[str] = None
     if parsed is None:
         # Fall back: treat the whole reply as the body, leave title as-is.
         # Worst case the user edits afterward — still better than stranding
@@ -366,6 +368,16 @@ def specify_task(
             parsed.get("assignee_suggestion")
         )
         labels = _normalize_labels(parsed.get("labels"))
+        try:
+            routing_rules = triage_routing.load_routing_rules()
+            final_assignee = triage_routing.route(
+                labels, assignee_suggestion, routing_rules
+            )
+        except (ValueError, OSError) as exc:
+            logger.warning(
+                "routing failed (%s); falling back to LLM suggestion", exc
+            )
+            final_assignee = assignee_suggestion
 
     with kb.connect() as conn:
         ok = kb.specify_triage_task(
@@ -373,7 +385,7 @@ def specify_task(
             task_id,
             title=new_title,
             body=new_body,
-            assignee_suggestion=assignee_suggestion,
+            assignee_suggestion=final_assignee,
             labels=labels,
             author=author or _profile_author(),
         )

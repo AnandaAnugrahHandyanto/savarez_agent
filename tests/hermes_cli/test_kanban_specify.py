@@ -483,49 +483,6 @@ def test_specify_task_off_roster_suggestion_is_dropped(kanban_home):
     assert task.assignee in (None, "")
 
 
-def test_specify_task_labels_fallback_when_column_missing(kanban_home):
-    """When the ``tasks.labels`` column doesn't exist yet (the parallel
-    schema migration hasn't landed), labels must still be recorded —
-    we fall back to the 'specified' event payload so they're not lost."""
-    # Sanity: confirm the column is not present in the freshly-initialised
-    # test DB. This is the precondition for the fallback path.
-    with kb.connect() as conn:
-        cols = {row["name"] for row in conn.execute("PRAGMA table_info(tasks)")}
-    assert "labels" not in cols, (
-        "this test requires the labels column to be absent — once the "
-        "parallel migration lands, update this test to assert the labels "
-        "column path instead"
-    )
-
-    with kb.connect() as conn:
-        tid = kb.create_task(conn, title="rough", triage=True)
-
-    content = jsonlib.dumps({
-        "title": "Refined",
-        "body": "spec body",
-        "assignee_suggestion": None,
-        "labels": ["long-running", "parallel-fan-out"],
-    })
-    p, _ = _patch_aux_client(content)
-    with p:
-        outcome = spec.specify_task(tid)
-
-    assert outcome.ok is True
-    # Outcome carries the cleaned labels regardless of where they're stored.
-    assert outcome.labels == ["long-running", "parallel-fan-out"]
-
-    # When ``labels`` column is missing, the labels live on the
-    # ``specified`` event payload.
-    with kb.connect() as conn:
-        events = kb.list_events(conn, tid)
-    spec_ev = next(e for e in events if e.kind == "specified")
-    assert spec_ev.payload is not None
-    assert spec_ev.payload.get("labels") == ["long-running", "parallel-fan-out"]
-    # And the change is reflected in changed_fields so audit comments
-    # surface "labels" as an updated field.
-    assert "labels" in (spec_ev.payload.get("changed_fields") or [])
-
-
 def test_specify_task_falls_back_body_only_clears_assignee_and_labels(kanban_home):
     """When JSON parsing fails entirely, we still promote the task but
     we don't invent an assignee suggestion or labels from prose."""
