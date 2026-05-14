@@ -9310,13 +9310,11 @@ class GatewayRunner:
         from hermes_constants import display_hermes_home
 
         args = event.get_command_args().strip().lower()
-        config_path = _hermes_home / 'config.yaml'
 
         try:
             config = _load_gateway_config()
             personalities = cfg_get(config, "agent", "personalities", default={})
         except Exception:
-            config = {}
             personalities = {}
 
         if not personalities:
@@ -9346,10 +9344,13 @@ class GatewayRunner:
 
         if args in {"none", "default", "neutral"}:
             try:
-                if "agent" not in config or not isinstance(config.get("agent"), dict):
-                    config["agent"] = {}
-                config["agent"]["system_prompt"] = ""
-                atomic_yaml_write(config_path, config)
+                # Per-key comment-preserving write. Previously this read the
+                # full config and called atomic_yaml_write(config, ...) which
+                # silently clobbered comments, reordered keys, and escaped
+                # Unicode in ~/.hermes/config.yaml on every personality change.
+                from cli import save_config_value
+                save_config_value("agent.system_prompt", "")
+                save_config_value("display.personality", "")
             except Exception as e:
                 return t("gateway.personality.save_failed", error=str(e))
             self._ephemeral_system_prompt = ""
@@ -9357,12 +9358,14 @@ class GatewayRunner:
         elif args in personalities:
             new_prompt = _resolve_prompt(personalities[args])
 
-            # Write to config.yaml, same pattern as CLI save_config_value.
+            # Write to config.yaml via the same comment-preserving helper
+            # the CLI uses. Mirrors agent.system_prompt + display.personality
+            # so `/personality` listings, TUI status bar, and gateway agree
+            # on which persona is active.
             try:
-                if "agent" not in config or not isinstance(config.get("agent"), dict):
-                    config["agent"] = {}
-                config["agent"]["system_prompt"] = new_prompt
-                atomic_yaml_write(config_path, config)
+                from cli import save_config_value
+                save_config_value("agent.system_prompt", new_prompt)
+                save_config_value("display.personality", args)
             except Exception as e:
                 return t("gateway.personality.save_failed", error=str(e))
 
