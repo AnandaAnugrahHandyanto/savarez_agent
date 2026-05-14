@@ -2,7 +2,7 @@
 name: getxapi
 description: X/Twitter via getxapi.com third-party API — search, post, reply, user lookup, media. Simpler than official v2.
 version: 1.0.0
-author: community
+author: Ayush Sahay Chaudhary
 license: MIT
 metadata:
   hermes:
