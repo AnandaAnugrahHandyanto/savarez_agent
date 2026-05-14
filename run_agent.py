@@ -4213,6 +4213,23 @@ class AIAgent:
                 actions.append(f"{label} updated")
         return actions
 
+    @staticmethod
+    def _silent_teardown(agent: "AIAgent") -> None:
+        """Shut down *agent* and suppress all exceptions.
+
+        Extracted so the success path (inside ``redirect_stdout``) and the
+        exception-path ``finally`` block share identical teardown logic with
+        no risk of drift.
+        """
+        try:
+            agent.shutdown_memory_provider()
+        except Exception:
+            pass
+        try:
+            agent.close()
+        except Exception:
+            pass
+
     def _spawn_background_review(
         self,
         messages_snapshot: List[Dict],
@@ -4315,15 +4332,13 @@ class AIAgent:
                     # Tear down memory providers while stdout is still
                     # redirected so background thread teardown (Honcho flush,
                     # Hindsight sync, etc.) stays silent.  The finally block
-                    # below is a safety net for the exception path.
-                    try:
-                        review_agent.shutdown_memory_provider()
-                    except Exception:
-                        pass
-                    try:
-                        review_agent.close()
-                    except Exception:
-                        pass
+                    # below is a safety net for the exception path only.
+                    # Note: redirect_stdout reassigns sys.stdout for this
+                    # thread; threads already running in Honcho/Hindsight
+                    # that hold references to the original fd are not covered
+                    # here — those are silenced by shutdown() joining them.
+                    _silent_teardown(review_agent)
+                    review_agent = None  # prevent double-teardown in finally
 
                 # Scan the review agent's messages for successful tool actions
                 # and surface a compact summary to the user. Tool messages
@@ -4354,24 +4369,14 @@ class AIAgent:
                 logger.warning("Background memory/skill review failed: %s", e)
                 self._emit_auxiliary_failure("background review", e)
             finally:
-                # Safety-net cleanup for the exception path.  Normal
-                # completion already shut down inside redirect_stdout above.
-                # Re-open devnull here so any teardown output (Honcho flush,
-                # Hindsight sync, background thread joins) stays silent even
-                # on the exception path where redirect_stdout already exited.
+                # Safety-net for the exception path — review_agent is None
+                # when the success path already called _silent_teardown().
                 if review_agent is not None:
                     try:
                         with open(os.devnull, "w", encoding="utf-8") as _fn, \
                              contextlib.redirect_stdout(_fn), \
                              contextlib.redirect_stderr(_fn):
-                            try:
-                                review_agent.shutdown_memory_provider()
-                            except Exception:
-                                pass
-                            try:
-                                review_agent.close()
-                            except Exception:
-                                pass
+                            _silent_teardown(review_agent)
                     except Exception:
                         pass
                 # Clear the approval callback on this bg-review thread so a
