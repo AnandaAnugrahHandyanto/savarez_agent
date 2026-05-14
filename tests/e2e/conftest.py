@@ -67,6 +67,14 @@ def _ensure_discord_mock():
     discord_mod.Thread = type("Thread", (), {})
     discord_mod.ForumChannel = type("ForumChannel", (), {})
     discord_mod.Interaction = object
+    # Discord exception classes that the adapter catches in except clauses.
+    # These must be real BaseException subclasses, not MagicMock, otherwise
+    # Python 3.11+ raises TypeError when the code tries to catch them.
+    discord_mod.Forbidden = type("Forbidden", (Exception,), {})
+    discord_mod.HTTPException = type("HTTPException", (Exception,), {})
+    discord_mod.NotFound = type("NotFound", (discord_mod.HTTPException,), {})
+    discord_mod.DiscordException = type("DiscordException", (Exception,), {})
+    discord_mod.InvalidArgument = type("InvalidArgument", (Exception,), {})
     discord_mod.app_commands = SimpleNamespace(
         describe=lambda **kwargs: (lambda fn: fn),
         choices=lambda **kwargs: (lambda fn: fn),
