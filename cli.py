@@ -305,6 +305,7 @@ def load_cli_config() -> Dict[str, Any]:
             "default": "",
             "base_url": "",
             "provider": "auto",
+            "default_headers": {},
         },
         "terminal": {
             "env_type": "local",
@@ -2047,6 +2048,24 @@ def _collect_query_images(query: str | None, image_arg: str | None = None) -> tu
     return message, deduped
 
 
+_OSC8_PATTERN = re.compile(r"\x1b]8;[^\x1b]*\x1b\\")
+
+
+def _strip_osc8_sequences(text: str) -> str:
+    """Remove OSC-8 hyperlink escape sequences from ANSI text.
+
+    Rich emits ``\\x1b]8;...\\x1b\\\\`` (OSC-8 open) and ``\\x1b]8;;\\x1b\\\\``
+    (OSC-8 close) when rendering ``[link=...]`` markup.  prompt_toolkit's
+    ``ANSI`` formatter doesn't understand these — it strips the ``\\x1b``
+    control characters but leaves the URL/content as visible garbage.
+
+    Stripping them is safe because the ChatConsole wrapper is used only
+    inside the TUI (prompt_toolkit Application), where clickable hyperlinks
+    aren't supported anyway.
+    """
+    return _OSC8_PATTERN.sub("", text)
+
+
 class ChatConsole:
     """Rich Console adapter for prompt_toolkit's patch_stdout context.
 
@@ -2073,6 +2092,10 @@ class ChatConsole:
         self._inner.width = shutil.get_terminal_size((80, 24)).columns
         self._inner.print(*args, **kwargs)
         output = self._buffer.getvalue()
+        # Strip OSC-8 hyperlink escapes (Rich's [link=...] markup) because
+        # prompt_toolkit's ANSI formatter can't render them — they'd show
+        # as visible garbage text (see #25939).
+        output = _strip_osc8_sequences(output)
         for line in output.rstrip("\n").split("\n"):
             _cprint(line)
 
