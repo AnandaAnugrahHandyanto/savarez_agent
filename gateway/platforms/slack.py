@@ -2812,11 +2812,15 @@ class SlackAdapter(BasePlatformAdapter):
                     msg_text = msg_text.replace(f"<@{bot_uid}>", "").strip()
 
                 prefix = "[thread parent] " if is_parent else ""
-                display_user = msg_user or "unknown"
-                # Prefer the bot's own name when the message is a bot post.
-                if is_bot and not display_user:
-                    display_user = msg.get("username") or "bot"
-                name = await self._resolve_user_name(display_user, chat_id=channel_id)
+                # Bot posts can omit ``user`` and only provide ``username``.
+                # In that case there is no Slack user id to resolve, so use the
+                # bot's own display name directly instead of calling users.info
+                # with a sentinel like "unknown".
+                if is_bot and not msg_user:
+                    name = msg.get("username") or "bot"
+                else:
+                    display_user = msg_user or "unknown"
+                    name = await self._resolve_user_name(display_user, chat_id=channel_id)
                 context_parts.append(f"{prefix}{name}: {msg_text}")
                 if is_parent:
                     parent_text = msg_text

@@ -424,6 +424,7 @@ class TestSlackThreadContext:
         )
 
         assert "[thread parent]" in context
+        assert "[thread parent] cron:" in context
         assert "メール要約: 本日の新着3件" in context
 
     @pytest.mark.asyncio
@@ -496,7 +497,7 @@ class TestSlackThreadContext:
                 {"ts": "2000.3", "user": "U2", "text": "Current"},
             ]
         })
-        adapter._user_name_cache = {"U2": "Bob"}
+        adapter._user_name_cache = {"U2": "Bob", "U_BOT_T1": "ForeignBot"}
 
         context = await adapter._fetch_thread_context(
             channel_id="C2", thread_ts="2000.0", current_ts="2000.3", team_id="T2"
