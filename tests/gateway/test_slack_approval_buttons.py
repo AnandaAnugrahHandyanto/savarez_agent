@@ -237,6 +237,63 @@ class TestSlackApprovalAction:
         assert "Denied by alice" in update_kwargs["text"]
 
 
+class TestHazelReviewAction:
+    """Test Hazel custom review-card button handling."""
+
+    @pytest.mark.asyncio
+    async def test_hazel_button_ack_is_first_and_work_is_backgrounded(self):
+        adapter = _make_adapter()
+        order = []
+
+        async def ack():
+            order.append("ack")
+
+        async def fake_process(body, action):
+            order.append("process_started")
+
+        def fake_create_task(coro):
+            order.append("create_task")
+            coro.close()
+            task = MagicMock()
+            task.add_done_callback = MagicMock()
+            return task
+
+        adapter._process_hazel_review_action = fake_process
+
+        with patch("gateway.platforms.slack.asyncio.create_task", side_effect=fake_create_task):
+            await adapter._handle_hazel_review_action(
+                ack,
+                {"message": {"ts": "1.2"}, "channel": {"id": "C1"}, "user": {"id": "U0B2APJ3H2T"}},
+                {"action_id": "hazel_like_close"},
+            )
+
+        assert order == ["ack", "create_task"]
+
+    @pytest.mark.asyncio
+    async def test_hazel_like_close_routes_as_synthetic_thread_reply(self):
+        adapter = _make_adapter()
+        adapter._handle_slack_message = AsyncMock()
+
+        await adapter._process_hazel_review_action(
+            {
+                "message": {"ts": "123.000", "team": "T1"},
+                "channel": {"id": "C1", "type": "channel"},
+                "user": {"id": "U0B2APJ3H2T", "name": "Chris"},
+                "team": {"id": "T1"},
+            },
+            {"action_id": "hazel_like_close", "action_ts": "123.456"},
+        )
+
+        adapter._handle_slack_message.assert_awaited_once()
+        event = adapter._handle_slack_message.call_args[0][0]
+        assert event["text"] == "approve like + close"
+        assert event["channel"] == "C1"
+        assert event["thread_ts"] == "123.000"
+        assert event["ts"] == "123.456"
+        assert event["user"] == "U0B2APJ3H2T"
+        assert event["parent_user_id"] == "U_BOT"
+
+
 # ===========================================================================
 # _fetch_thread_context
 # ===========================================================================

@@ -681,6 +681,23 @@ class SlackAdapter(BasePlatformAdapter):
             ):
                 self._app.action(_action_id)(self._handle_slash_confirm_action)
 
+            # Hazel's normal approval flow runs in the same conversation.
+            for _action_id in (
+                "hazel_approve",
+                "hazel_amend",
+                "hazel_new_variant",
+                "hazel_reject",
+                "hazel_escalate",
+                "hazel_confirm_hide",
+                "hazel_not_spam_draft_reply",
+                "hazel_close",
+                "hazel_like_close",
+                "hazel_like_comment_close",
+                "hazel_gs6_silence_flag",
+                "hazel_gs6_stage_side_question",
+            ):
+                self._app.action(_action_id)(self._handle_hazel_review_action)
+
             # Start Socket Mode handler in background
             self._handler = AsyncSocketModeHandler(self._app, app_token, proxy=proxy_url)
             _apply_slack_proxy(self._handler.client, proxy_url)
@@ -2480,6 +2497,86 @@ class SlackAdapter(BasePlatformAdapter):
             )
         except Exception as exc:
             logger.error("Failed to resolve slash-confirm from Slack button: %s", exc, exc_info=True)
+
+    async def _handle_hazel_review_action(self, ack, body, action) -> None:
+        """Handle a Hazel review-card button click from Block Kit."""
+        await ack()
+
+        task = asyncio.create_task(self._process_hazel_review_action(body, action))
+        task.add_done_callback(self._log_hazel_review_action_task_result)
+
+    def _log_hazel_review_action_task_result(self, task: "asyncio.Task[Any]") -> None:
+        try:
+            task.result()
+        except asyncio.CancelledError:
+            logger.warning("[Slack] Hazel review action task was cancelled")
+        except Exception as exc:
+            logger.error("[Slack] Hazel review action task failed: %s", exc, exc_info=True)
+
+    async def _process_hazel_review_action(self, body: Dict[str, Any], action: Dict[str, Any]) -> None:
+        action_id = action.get("action_id", "")
+        action_text = {
+            "hazel_approve": "approve",
+            "hazel_amend": "amend",
+            "hazel_new_variant": "new variant",
+            "hazel_reject": "reject",
+            "hazel_escalate": "escalate",
+            "hazel_confirm_hide": "confirm hide + close",
+            "hazel_not_spam_draft_reply": "not spam, draft a reply",
+            "hazel_close": "just close",
+            "hazel_like_close": "approve like + close",
+            "hazel_like_comment_close": "approve like + comment + close",
+            "hazel_gs6_silence_flag": "confirm silence",
+            "hazel_gs6_stage_side_question": "approve draft for side question",
+        }.get(action_id, action_id or "hazel button clicked")
+
+        message = body.get("message") or {}
+        channel = body.get("channel") or {}
+        container = body.get("container") or {}
+        user = body.get("user") or {}
+        team = body.get("team") or {}
+
+        channel_id = channel.get("id") or container.get("channel_id") or ""
+        parent_ts = message.get("thread_ts") or message.get("ts") or container.get("message_ts") or ""
+        action_ts = action.get("action_ts") or f"{time.time():.6f}"
+        user_id = user.get("id") or ""
+        team_id = team.get("id") or body.get("team_id") or message.get("team") or ""
+        bot_uid = self._team_bot_user_ids.get(team_id, self._bot_user_id)
+
+        if not channel_id or not parent_ts or not user_id:
+            logger.warning(
+                "[Slack] Hazel review action missing routing fields: action=%s channel=%s thread=%s user=%s",
+                action_id,
+                channel_id,
+                parent_ts,
+                user_id,
+            )
+            return
+
+        synthetic_event = {
+            "type": "message",
+            "text": action_text,
+            "user": user_id,
+            "channel": channel_id,
+            "ts": action_ts,
+            "thread_ts": parent_ts,
+            "parent_user_id": bot_uid,
+            "channel_type": channel.get("type") or "channel",
+            "team": team_id,
+        }
+
+        try:
+            await self._handle_slack_message(synthetic_event)
+        except Exception as exc:
+            logger.error("[Slack] Failed to process Hazel review action %s: %s", action_id, exc, exc_info=True)
+            try:
+                await self._get_client(channel_id).chat_postMessage(
+                    channel=channel_id,
+                    thread_ts=parent_ts,
+                    text=f"Hazel button action failed after Slack acknowledged it: {exc}",
+                )
+            except Exception:
+                logger.exception("[Slack] Failed to post Hazel review action failure notice")
 
     async def _handle_approval_action(self, ack, body, action) -> None:
         """Handle an approval button click from Block Kit."""
