@@ -73,6 +73,10 @@ Speech-to-text supports six providers: local faster-whisper (free, runs on-devic
 
 - **[API Server](/docs/user-guide/features/api-server)** — Expose Hermes as an OpenAI-compatible HTTP endpoint. Any frontend that speaks the OpenAI format — Open WebUI, LobeChat, LibreChat, NextChat, ChatBox — can connect and use Hermes as a backend with its full toolset.
 
+## Agent Control Planes
+
+- **[Paperclip](/docs/integrations/paperclip)** — Local-only evaluation workflow for sending signed Paperclip routine/issue events into Hermes webhooks. Use this for sandbox smoke tests, not production PR review or Slack/CI enforcement.
+
 ## Memory & Personalization
 
 - **[Built-in Memory](/docs/user-guide/features/memory)** — Persistent, curated memory via `MEMORY.md` and `USER.md` files. The agent maintains bounded stores of personal notes and user profile data that survive across sessions.

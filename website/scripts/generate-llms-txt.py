@@ -104,6 +104,7 @@ SECTIONS: list[tuple[str, list[tuple[str, str, str | None]]]] = [
     ("Integrations", [
         ("integrations/index", "Integrations Overview", None),
         ("integrations/providers", "Providers", None),
+        ("integrations/paperclip", "Paperclip", None),
         ("user-guide/features/mcp", "MCP (Model Context Protocol)", None),
         ("user-guide/features/acp", "ACP (Agent Context Protocol)", None),
         ("user-guide/features/api-server", "API Server", None),
