@@ -41,13 +41,18 @@ def _make_message(*, author=None, content="hello", mentions=None, is_dm=False):
 class TestDiscordBotFilter(unittest.TestCase):
     """Test the DISCORD_ALLOW_BOTS filtering logic."""
 
-    def _run_filter(self, message, allow_bots="none", client_user=None):
+    def _run_filter(self, message, allow_bots="none", client_user=None, agent_user_ids=None):
         """Simulate the on_message filter logic and return whether message was accepted."""
         # Replicate the exact filter logic from discord.py on_message
         if message.author == client_user:
             return False  # own messages always ignored
 
-        if getattr(message.author, "bot", False):
+        agent_ids = {str(s) for s in (agent_user_ids or [])}
+        author_id = str(getattr(message.author, "id", ""))
+        is_bot_author = bool(getattr(message.author, "bot", False))
+        is_agent_user = (not is_bot_author) and (author_id in agent_ids)
+
+        if is_bot_author or is_agent_user:
             allow = allow_bots.lower().strip()
             if allow == "none":
                 return False
@@ -55,7 +60,7 @@ class TestDiscordBotFilter(unittest.TestCase):
                 if not client_user or client_user not in message.mentions:
                     return False
             # "all" falls through
-        
+
         return True  # message accepted
 
     def test_own_messages_always_ignored(self):
@@ -111,6 +116,55 @@ class TestDiscordBotFilter(unittest.TestCase):
         self.assertTrue(self._run_filter(msg, "All"))
         self.assertFalse(self._run_filter(msg, "NONE"))
         self.assertFalse(self._run_filter(msg, "None"))
+
+    def test_agent_user_id_treated_as_bot_under_none(self):
+        """User-OAuth peer agent (author.bot=False) listed in DISCORD_AGENT_USER_IDS
+        is rejected under allow_bots=none."""
+        peer = _make_author(bot=False)
+        peer.id = 1503473217581350993
+        msg = _make_message(author=peer)
+        self.assertFalse(
+            self._run_filter(msg, "none", agent_user_ids=["1503473217581350993"])
+        )
+
+    def test_agent_user_id_rejected_without_mention_under_mentions(self):
+        """Peer agent posting plain words on shared channel is rejected when
+        allow_bots=mentions and we are not @-mentioned."""
+        our_user = _make_author(is_self=True)
+        peer = _make_author(bot=False)
+        peer.id = 1503473217581350993
+        msg = _make_message(author=peer, mentions=[])
+        self.assertFalse(
+            self._run_filter(
+                msg, "mentions", our_user, agent_user_ids=["1503473217581350993"]
+            )
+        )
+
+    def test_agent_user_id_accepted_with_mention_under_mentions(self):
+        """Peer agent that explicitly @-mentions us is accepted under
+        allow_bots=mentions."""
+        our_user = _make_author(is_self=True)
+        peer = _make_author(bot=False)
+        peer.id = 1503473217581350993
+        msg = _make_message(author=peer, mentions=[our_user])
+        self.assertTrue(
+            self._run_filter(
+                msg, "mentions", our_user, agent_user_ids=["1503473217581350993"]
+            )
+        )
+
+    def test_agent_user_id_not_in_list_treated_as_human(self):
+        """Non-listed user is treated as a regular human and falls through
+        the bot filter regardless of allow_bots policy."""
+        random_user = _make_author(bot=False)
+        random_user.id = 42
+        msg = _make_message(author=random_user)
+        self.assertTrue(
+            self._run_filter(msg, "none", agent_user_ids=["1503473217581350993"])
+        )
+        self.assertTrue(
+            self._run_filter(msg, "mentions", agent_user_ids=["1503473217581350993"])
+        )
 
 
 if __name__ == "__main__":
