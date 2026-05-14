@@ -141,3 +141,25 @@ class TestRepairToolCallArguments:
         parsed = json.loads(result)
         assert "line" in parsed["msg"]
 
+
+    # -- Stage 5: concatenated JSON objects (#25333) --
+
+    def test_concatenated_json_objects_extracts_first(self):
+        """Gemini-3-Flash-Preview emits parallel tool calls as }{ without delimiter."""
+        raw = '{"entity": "Don Bowman", "relationship": "works_at", "target": "Agilicus"}{"entity": "Alice", "relationship": "knows", "target": "Bob"}'
+        result = _repair_tool_call_arguments(raw, "yantrikdb_relate")
+        parsed = json.loads(result)
+        assert parsed == {"entity": "Don Bowman", "relationship": "works_at", "target": "Agilicus"}
+
+    def test_concatenated_json_objects_with_nested_braces(self):
+        """Concatenated objects where values contain braces."""
+        raw = '{"query": "SELECT * FROM t WHERE a = {1}"}{"query": "SELECT 1"}'
+        result = _repair_tool_call_arguments(raw, "sql_tool")
+        parsed = json.loads(result)
+        assert parsed == {"query": "SELECT * FROM t WHERE a = {1}"}
+
+    def test_single_valid_json_not_affected_by_concat_pass(self):
+        """Normal single object must pass through unchanged."""
+        raw = '{"entity": "Don Bowman"}'
+        result = _repair_tool_call_arguments(raw, "t")
+        assert json.loads(result) == {"entity": "Don Bowman"}

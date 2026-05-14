@@ -862,6 +862,30 @@ def _repair_tool_call_arguments(raw_args: str, tool_name: str = "?") -> str:
     except (json.JSONDecodeError, TypeError, ValueError):
         pass
 
+
+    # Repair pass 5: split concatenated JSON objects (e.g. `{...}{...}`).
+    # Gemini-3-Flash-Preview emits parallel tool calls as multiple JSON
+    # objects glued together without any delimiter.  The streaming
+    # reassembler assigns one tool_call per object, but the raw arguments
+    # string can still contain the concatenation.  Extract the first
+    # complete object. (#25333)
+    if raw_stripped.startswith("{"):
+        try:
+            decoder = json.JSONDecoder()
+            first_obj, end_idx = decoder.raw_decode(raw_stripped)
+            # Only treat as concatenation if there's meaningful trailing content
+            tail = raw_stripped[end_idx:].strip()
+            if tail and tail.startswith("{"):
+                first_json = json.dumps(first_obj, separators=(",", ":"))
+                logger.warning(
+                    "Extracted first object from concatenated tool_call arguments "
+                    "for %s (split at position %d): %s",
+                    tool_name, end_idx, raw_stripped[:80],
+                )
+                return first_json
+        except (json.JSONDecodeError, TypeError, ValueError):
+            pass
+
     # Last resort: replace with empty object so the API request doesn't
     # crash the entire session.
     logger.warning(
