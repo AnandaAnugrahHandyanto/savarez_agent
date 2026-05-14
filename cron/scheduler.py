@@ -61,6 +61,10 @@ def _resolve_cron_enabled_toolsets(job: dict, cfg: dict) -> list[str] | None:
     Precedence:
     1. Per-job ``enabled_toolsets`` (set via ``cronjob`` tool on create/update).
        Keeps the agent's job-scoped toolset override intact — #6130.
+       WARNING: the per-job value is NOT trusted blindly — it is intersected
+       with the platform toolset so that ``agent.disabled_toolsets`` from
+       config.yaml is always honoured. An LLM can inject a job-scoped override
+       to re-enable disabled tools, which is a security risk (#25752).
     2. Per-platform ``hermes tools`` config for the ``cron`` platform.
        Mirrors gateway behavior (``_get_platform_tools(cfg, platform_key)``)
        so users can gate cron toolsets globally without recreating every job.
@@ -73,17 +77,25 @@ def _resolve_cron_enabled_toolsets(job: dict, cfg: dict) -> list[str] | None:
     surprise $4.63 run).
     """
     per_job = job.get("enabled_toolsets")
-    if per_job:
-        return per_job
     try:
         from hermes_cli.tools_config import _get_platform_tools  # lazy: avoid heavy import at cron module load
-        return sorted(_get_platform_tools(cfg or {}, "cron"))
+        platform_toolsets = _get_platform_tools(cfg or {}, "cron")
     except Exception as exc:
         logger.warning(
             "Cron toolset resolution failed, falling back to full default toolset: %s",
             exc,
         )
         return None
+
+    if per_job:
+        # Intersect: keep per-job override but honour disabled_toolsets from
+        # config.yaml.  An LLM can set any per-job value but should never be
+        # able to re-enable tools the operator has globally disabled.
+        # _get_platform_tools already applied disabled_toolsets; intersect
+        # with the per-job list so agents can still narrow toolsets (not widen).
+        return sorted(set(per_job) & platform_toolsets)
+
+    return sorted(platform_toolsets)
 
 # Valid delivery platforms — used to validate user-supplied platform names
 # in cron delivery targets, preventing env var enumeration via crafted names.
