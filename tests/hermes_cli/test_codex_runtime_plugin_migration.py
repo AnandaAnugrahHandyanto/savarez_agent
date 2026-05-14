@@ -150,6 +150,74 @@ class TestTomlValueFormatter:
     def test_empty_inline_table(self):
         assert _format_toml_value({}) == "{}"
 
+    def test_string_with_newline_escaped(self):
+        """TOML basic strings don't allow literal newlines — a path or
+        env var containing a newline must use \\n. Otherwise codex would
+        refuse to load the config."""
+        out = _format_toml_value("line one\nline two")
+        assert "\n" not in out  # no raw newline in output
+        assert "\\n" in out
+
+    def test_string_with_tab_escaped(self):
+        out = _format_toml_value("col1\tcol2")
+        assert "\t" not in out
+        assert "\\t" in out
+
+    def test_string_with_other_controls_escaped(self):
+        for raw, expected in [
+            ("\r", "\\r"),
+            ("\f", "\\f"),
+            ("\b", "\\b"),
+        ]:
+            out = _format_toml_value(f"x{raw}y")
+            assert raw not in out, f"{raw!r} should be escaped"
+            assert expected in out, f"{expected!r} should be in output"
+
+    def test_windows_path_escaped_correctly(self):
+        out = _format_toml_value(r"C:\Users\Alice\.codex")
+        # Each backslash should be doubled
+        assert out == r'"C:\\Users\\Alice\\.codex"'
+
+    def test_atomic_write_no_temp_leak_on_success(self, tmp_path):
+        """The atomic-write path uses tempfile.mkstemp + rename. On
+        success the temp file should not be left behind."""
+        migrate({"mcp_servers": {"x": {"command": "y"}}},
+                codex_home=tmp_path,
+                discover_plugins=False,
+                expose_hermes_tools=False,
+                default_permission_profile=None)
+        # config.toml should exist
+        assert (tmp_path / "config.toml").exists()
+        # And no .config.toml.* temp files left behind
+        leftover = [p.name for p in tmp_path.iterdir()
+                    if p.name.startswith(".config.toml.")]
+        assert leftover == [], f"temp file leaked after migration: {leftover}"
+
+    def test_atomic_write_cleanup_on_rename_failure(self, tmp_path, monkeypatch):
+        """If rename fails partway through (out of disk, permissions,
+        crash), the temp file must be cleaned up. Otherwise repeated
+        failed migrations would pile up .config.toml.* files."""
+        from pathlib import Path as _Path
+        original_replace = _Path.replace
+
+        def failing_replace(self, target):
+            raise OSError("simulated disk full")
+
+        monkeypatch.setattr(_Path, "replace", failing_replace)
+        report = migrate(
+            {"mcp_servers": {"x": {"command": "y"}}},
+            codex_home=tmp_path,
+            discover_plugins=False,
+            expose_hermes_tools=False,
+            default_permission_profile=None,
+        )
+        # Error surfaced
+        assert any("simulated disk full" in e for e in report.errors)
+        # And no leaked temp file
+        leftover = [p.name for p in tmp_path.iterdir()
+                    if p.name.startswith(".config.toml.")]
+        assert leftover == [], f"temp files leaked: {leftover}"
+
     def test_unsupported_type_raises(self):
         with pytest.raises(ValueError):
             _format_toml_value(object())

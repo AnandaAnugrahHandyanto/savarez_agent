@@ -206,8 +206,24 @@ def _format_toml_value(value: Any) -> str:
     if isinstance(value, (int, float)):
         return repr(value)
     if isinstance(value, str):
-        # Use double-quoted TOML string with backslash escaping
-        escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+        # Escape per TOML basic-string rules. Order matters: backslash
+        # first so the other escapes don't get re-escaped.
+        # Control characters (newline, tab, etc.) must use \-escapes
+        # because TOML basic strings don't allow literal control chars
+        # — passing them through would produce invalid TOML that codex
+        # would refuse to load. Paths usually don't contain control
+        # chars but env-var passthrough (HERMES_HOME, PYTHONPATH) could
+        # in pathological cases.
+        escaped = (
+            value
+            .replace("\\", "\\\\")
+            .replace('"', '\\"')
+            .replace("\b", "\\b")
+            .replace("\t", "\\t")
+            .replace("\n", "\\n")
+            .replace("\f", "\\f")
+            .replace("\r", "\\r")
+        )
         return f'"{escaped}"'
     if isinstance(value, list):
         items = ", ".join(_format_toml_value(v) for v in value)
@@ -555,7 +571,27 @@ def migrate(
 
     try:
         codex_home.mkdir(parents=True, exist_ok=True)
-        target.write_text(new_text, encoding="utf-8")
+        # Atomic write: write to a temp file in the same directory then
+        # rename. Same-directory rename is atomic on POSIX and ReplaceFile
+        # on Windows. Avoids leaving a half-written config.toml that
+        # codex would refuse to load if we crash mid-write.
+        import tempfile
+        tmp_fd, tmp_path_str = tempfile.mkstemp(
+            prefix=".config.toml.", dir=str(codex_home)
+        )
+        tmp_path = Path(tmp_path_str)
+        try:
+            with os.fdopen(tmp_fd, "w", encoding="utf-8") as fh:
+                fh.write(new_text)
+            tmp_path.replace(target)
+        except Exception:
+            # Clean up the temp file if the rename didn't happen.
+            try:
+                if tmp_path.exists():
+                    tmp_path.unlink()
+            except Exception:
+                pass
+            raise
         report.written = True
     except Exception as exc:
         report.errors.append(f"could not write {target}: {exc}")
