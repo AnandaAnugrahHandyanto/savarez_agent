@@ -6,6 +6,7 @@ Handles: hermes gateway [run|start|stop|restart|status|install|uninstall|setup]
 
 import asyncio
 import os
+import plistlib
 import shutil
 import signal
 import subprocess
@@ -2836,7 +2837,61 @@ def launchd_plist_is_current() -> bool:
 
     installed = plist_path.read_text(encoding="utf-8")
     expected = generate_launchd_plist()
-    return _normalize_launchd_plist_for_comparison(installed) == _normalize_launchd_plist_for_comparison(expected)
+    if _normalize_launchd_plist_for_comparison(installed) == _normalize_launchd_plist_for_comparison(expected):
+        return True
+    return _launchd_custom_wrapper_is_current(installed)
+
+
+def _launchd_custom_wrapper_is_current(installed: str) -> bool:
+    """Accept a profile-local launchd wrapper that delegates to the current gateway.
+
+    Some production profiles intentionally use a small wrapper script as the
+    launchd ProgramArguments entry so secrets can be loaded from an external
+    store before `hermes gateway run --replace` starts. Treat that as current
+    when the wrapper lives under the active profile and still delegates to the
+    current Hermes checkout/profile rather than overwriting it with the vanilla
+    generated plist on the next status/start check.
+    """
+    try:
+        data = plistlib.loads(installed.encode("utf-8"))
+    except Exception:
+        return False
+    if not isinstance(data, dict):
+        return False
+
+    prog_args = data.get("ProgramArguments")
+    if not isinstance(prog_args, list) or len(prog_args) != 1 or not isinstance(prog_args[0], str):
+        return False
+
+    hermes_home = get_hermes_home().resolve()
+    wrapper = Path(prog_args[0])
+    try:
+        wrapper_resolved = wrapper.resolve()
+    except OSError:
+        return False
+    scripts_dir = hermes_home / "scripts"
+    if scripts_dir not in wrapper_resolved.parents:
+        return False
+    if not wrapper_resolved.is_file():
+        return False
+
+    env = data.get("EnvironmentVariables") or {}
+    if isinstance(env, dict) and env.get("HERMES_HOME") not in {None, str(hermes_home)}:
+        return False
+    working_dir = data.get("WorkingDirectory")
+    if working_dir and str(Path(str(working_dir)).resolve()) != str(PROJECT_ROOT):
+        return False
+
+    try:
+        wrapper_text = wrapper_resolved.read_text(encoding="utf-8")
+    except OSError:
+        return False
+
+    required_fragments = ["hermes_cli.main", "gateway", "run", "--replace"]
+    profile_arg = _profile_arg(hermes_home)
+    if profile_arg:
+        required_fragments.extend(profile_arg.split())
+    return all(fragment in wrapper_text for fragment in required_fragments)
 
 
 def refresh_launchd_plist_if_needed() -> bool:

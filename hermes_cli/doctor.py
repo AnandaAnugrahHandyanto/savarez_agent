@@ -1446,6 +1446,14 @@ def run_doctor(args):
                 "Authorization": f"Bearer {key}",
                 "User-Agent": _HERMES_USER_AGENT,
             }
+            # Gemini's native API does not accept OpenAI-style Bearer auth for
+            # the models endpoint. Use the documented API-key header so doctor
+            # does not report valid GOOGLE_API_KEY/GEMINI_API_KEY values as invalid.
+            if pname.lower() == "gemini":
+                headers = {
+                    "x-goog-api-key": key,
+                    "User-Agent": _HERMES_USER_AGENT,
+                }
             if base_url_host_matches(base, "api.kimi.com"):
                 headers["User-Agent"] = "claude-code/0.1.0"
             r = httpx.get(url, headers=headers, timeout=10)

@@ -224,6 +224,73 @@ class TestLaunchdPlistCurrentness:
 
         assert gateway_cli.launchd_plist_is_current() is True
 
+    def test_launchd_plist_is_current_accepts_profile_local_wrapper(self, tmp_path, monkeypatch):
+        """Profile-local launchd wrappers are current when they delegate to gateway run.
+
+        Production profiles may use a wrapper script to load external secrets
+        before starting the standard gateway. Status/start checks should not
+        treat those wrappers as stale and overwrite them with the vanilla plist.
+        """
+        hermes_home = tmp_path / "profile"
+        scripts_dir = hermes_home / "scripts"
+        scripts_dir.mkdir(parents=True)
+        wrapper = scripts_dir / "run-gateway-with-1password-env.sh"
+        wrapper.write_text(
+            "#!/bin/sh\n"
+            "exec /venv/bin/python -m hermes_cli.main gateway run --replace\n",
+            encoding="utf-8",
+        )
+        wrapper.chmod(0o755)
+
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        plist_path.write_text(
+            f"""<?xml version=\"1.0\" encoding=\"UTF-8\"?>
+<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">
+<plist version=\"1.0\">
+<dict>
+  <key>Label</key><string>ai.hermes.gateway-test</string>
+  <key>ProgramArguments</key><array><string>{wrapper}</string></array>
+  <key>WorkingDirectory</key><string>{gateway_cli.PROJECT_ROOT}</string>
+  <key>EnvironmentVariables</key><dict><key>HERMES_HOME</key><string>{hermes_home}</string></dict>
+</dict>
+</plist>
+""",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: hermes_home)
+
+        assert gateway_cli.launchd_plist_is_current() is True
+
+    def test_launchd_plist_is_current_rejects_wrapper_not_delegating_to_gateway(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / "profile"
+        scripts_dir = hermes_home / "scripts"
+        scripts_dir.mkdir(parents=True)
+        wrapper = scripts_dir / "run-gateway-with-1password-env.sh"
+        wrapper.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        wrapper.chmod(0o755)
+
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        plist_path.write_text(
+            f"""<?xml version=\"1.0\" encoding=\"UTF-8\"?>
+<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">
+<plist version=\"1.0\">
+<dict>
+  <key>ProgramArguments</key><array><string>{wrapper}</string></array>
+  <key>WorkingDirectory</key><string>{gateway_cli.PROJECT_ROOT}</string>
+  <key>EnvironmentVariables</key><dict><key>HERMES_HOME</key><string>{hermes_home}</string></dict>
+</dict>
+</plist>
+""",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: hermes_home)
+
+        assert gateway_cli.launchd_plist_is_current() is False
+
 
 # ---------------------------------------------------------------------------
 # cmd_update — macOS launchd detection
