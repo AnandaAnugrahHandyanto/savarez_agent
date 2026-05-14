@@ -3902,6 +3902,55 @@ def _resolve_hermes_argv() -> list[str]:
     return [sys.executable, "-m", "hermes_cli.main"]
 
 
+def _read_dispatch_override(profile_name: str) -> Optional[str]:
+    """Read ``dispatch_command_override`` from the profile's config.yaml.
+
+    Returns the override string if it is a non-empty str, or ``None`` if:
+    - the profile directory does not exist
+    - config.yaml is absent or unreadable
+    - the key is missing, empty, or not a string
+
+    In all error cases we emit a warning to stderr and return ``None`` so
+    ``_default_spawn`` falls back to the default hermes spawn.  We never
+    raise — the dispatcher tick must not crash due to a malformed config.
+    """
+    try:
+        from hermes_cli.profiles import get_profile_dir  # noqa: PLC0415
+        profile_dir = get_profile_dir(profile_name)
+        config_path = profile_dir / "config.yaml"
+        if not config_path.exists():
+            return None
+        import yaml as _yaml  # noqa: PLC0415
+        with config_path.open("r", encoding="utf-8") as _f:
+            raw = _yaml.safe_load(_f) or {}
+        val = raw.get("dispatch_command_override")
+        if val is None:
+            return None
+        if not isinstance(val, str):
+            print(
+                f"[kanban] WARNING: dispatch_command_override in {config_path} "
+                f"must be a string, got {type(val).__name__!r} — ignoring",
+                file=sys.stderr,
+            )
+            return None
+        val = val.strip()
+        if not val:
+            print(
+                f"[kanban] WARNING: dispatch_command_override in {config_path} "
+                "is empty — ignoring",
+                file=sys.stderr,
+            )
+            return None
+        return val
+    except Exception as _exc:
+        print(
+            f"[kanban] WARNING: could not read dispatch_command_override "
+            f"for profile {profile_name!r}: {_exc} — falling back to default spawn",
+            file=sys.stderr,
+        )
+        return None
+
+
 def _default_spawn(
     task: Task,
     workspace: str,
@@ -3975,6 +4024,59 @@ def _default_spawn(
     # what the tool reads — set it explicitly here so comments are
     # attributed correctly regardless of how the child loads config.
     env["HERMES_PROFILE"] = profile_arg
+
+    # ---------------------------------------------------------------------------
+    # dispatch_command_override — if the profile's config.yaml defines this key,
+    # skip the default hermes spawn and run the override command instead.
+    #
+    # The override string may contain the placeholders:
+    #   ${HERMES_KANBAN_TASK}   — substituted with task.id
+    #   ${HERMES_KANBAN_BOARD}  — substituted with the resolved board slug
+    #   ${HERMES_REPO_ROOT}     — defaults to /home/josep/.local/share/hermes-agent
+    #
+    # Safety: if the override value is missing, empty, or not a string, we log
+    # a warning to stderr and fall through to the default spawn — we never crash.
+    # ---------------------------------------------------------------------------
+    _override_cmd = _read_dispatch_override(profile_arg)
+    if _override_cmd is not None:
+        import shlex as _shlex  # noqa: PLC0415
+        import string as _string  # noqa: PLC0415
+        _override_env = dict(env)
+        _override_env.setdefault("HERMES_REPO_ROOT",
+            os.environ.get("HERMES_REPO_ROOT", "/home/josep/.local/share/hermes-agent"))
+        try:
+            expanded = _string.Template(_override_cmd).safe_substitute(_override_env)
+            override_argv = _shlex.split(expanded)
+        except Exception as _exc:
+            print(
+                f"[kanban] WARNING: dispatch_command_override for profile {profile_arg!r} "
+                f"could not be parsed: {_exc} — falling back to default spawn",
+                file=sys.stderr,
+            )
+            override_argv = None
+        if override_argv:
+            log_dir = worker_logs_dir(board=board)
+            log_dir.mkdir(parents=True, exist_ok=True)
+            log_path = log_dir / f"{task.id}.log"
+            _rotate_worker_log(log_path, DEFAULT_LOG_ROTATE_BYTES)
+            log_f = open(log_path, "ab")
+            try:
+                proc = subprocess.Popen(  # noqa: S603
+                    override_argv,
+                    cwd=workspace if os.path.isdir(workspace) else None,
+                    stdin=subprocess.DEVNULL,
+                    stdout=log_f,
+                    stderr=subprocess.STDOUT,
+                    env=_override_env,
+                    start_new_session=True,
+                )
+            except FileNotFoundError:
+                log_f.close()
+                raise RuntimeError(
+                    f"dispatch_command_override executable not found: {override_argv[0]!r}. "
+                    "Check the profile's config.yaml dispatch_command_override setting."
+                )
+            return proc.pid
 
     cmd = [
         *_resolve_hermes_argv(),
