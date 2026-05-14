@@ -6084,6 +6084,7 @@ class AIAgent:
         manipulation are always caught.
         """
         # --- Role allowlist: drop messages with roles the API won't accept ---
+        # --- Internal metadata: strip Hermes-internal keys (prefixed _) before API call ---
         filtered = []
         for msg in messages:
             role = msg.get("role")
@@ -6093,6 +6094,11 @@ class AIAgent:
                     role,
                 )
                 continue
+            # Strip Hermes-internal metadata keys (e.g. _empty_recovery_synthetic,
+            # _empty_terminal_sentinel) that strict providers like Fireworks reject.
+            internal_keys = [k for k in msg if k.startswith("_")]
+            if internal_keys:
+                msg = {k: v for k, v in msg.items() if not k.startswith("_")}
             filtered.append(msg)
         messages = filtered
 
@@ -9698,6 +9704,9 @@ class AIAgent:
             opts = self._lmstudio_reasoning_options_cached()
             # "off-only" (or absent) means no real reasoning capability.
             return any(opt and opt != "off" for opt in opts)
+        if base_url_host_matches(self._base_url_lower, "api.fireworks.ai"):
+            _fw_model = (self.model or "").lower()
+            return _fw_model.startswith("deepseek") or "/deepseek" in _fw_model
         if "openrouter" not in self._base_url_lower:
             return False
         if "api.mistral.ai" in self._base_url_lower:
@@ -10021,11 +10030,16 @@ class AIAgent:
         assistant tool-call turn; omitting it causes HTTP 400 when the
         message is replayed in a subsequent API request (#15250).
         """
+        # If thinking is explicitly disabled, no echo-back padding needed.
+        rc = getattr(self, "reasoning_config", None)
+        if rc and isinstance(rc, dict) and rc.get("enabled") is False:
+            return False
         provider = (self.provider or "").lower()
         model = (self.model or "").lower()
         return (
             provider == "deepseek"
-            or "deepseek" in model
+            or model.startswith("deepseek")
+            or "/deepseek" in model
             or base_url_host_matches(self.base_url, "api.deepseek.com")
         )
 
