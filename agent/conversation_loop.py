@@ -431,6 +431,16 @@ def run_conversation(
         and len(messages) > agent.context_compressor.protect_first_n
                             + agent.context_compressor.protect_last_n + 1
     ):
+        if agent._interrupt_requested:
+            return {
+                "final_response": "",
+                "messages": messages,
+                "api_calls": 0,
+                "interrupted": True,
+                "interrupt_message": agent._interrupt_message,
+                "completed": False,
+            }
+
         # Include tool schema tokens — with many tools these can add
         # 20-30K+ tokens that the old sys+msg estimate missed entirely.
         _preflight_tokens = estimate_request_tokens_rough(

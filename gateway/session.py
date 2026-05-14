@@ -490,6 +490,8 @@ class SessionEntry:
     resume_pending: bool = False
     resume_reason: Optional[str] = None  # e.g. "restart_timeout"
     last_resume_marked_at: Optional[datetime] = None
+    auto_continue_tool_tail_key: Optional[str] = None
+    auto_continue_tool_tail_ack_at: Optional[datetime] = None
 
     def to_dict(self) -> Dict[str, Any]:
         result = {
@@ -515,6 +517,12 @@ class SessionEntry:
             "last_resume_marked_at": (
                 self.last_resume_marked_at.isoformat()
                 if self.last_resume_marked_at
+                else None
+            ),
+            "auto_continue_tool_tail_key": self.auto_continue_tool_tail_key,
+            "auto_continue_tool_tail_ack_at": (
+                self.auto_continue_tool_tail_ack_at.isoformat()
+                if self.auto_continue_tool_tail_ack_at
                 else None
             ),
             "is_fresh_reset": self.is_fresh_reset,
@@ -547,6 +555,14 @@ class SessionEntry:
             except (TypeError, ValueError):
                 last_resume_marked_at = None
 
+        auto_continue_tool_tail_ack_at = None
+        _actta = data.get("auto_continue_tool_tail_ack_at")
+        if _actta:
+            try:
+                auto_continue_tool_tail_ack_at = datetime.fromisoformat(_actta)
+            except (TypeError, ValueError):
+                auto_continue_tool_tail_ack_at = None
+
         return cls(
             session_key=data["session_key"],
             session_id=data["session_id"],
@@ -569,6 +585,8 @@ class SessionEntry:
             resume_pending=data.get("resume_pending", False),
             resume_reason=data.get("resume_reason"),
             last_resume_marked_at=last_resume_marked_at,
+            auto_continue_tool_tail_key=data.get("auto_continue_tool_tail_key"),
+            auto_continue_tool_tail_ack_at=auto_continue_tool_tail_ack_at,
             is_fresh_reset=data.get("is_fresh_reset", False),
             was_auto_reset=data.get("was_auto_reset", False),
             auto_reset_reason=data.get("auto_reset_reason"),
@@ -1031,6 +1049,24 @@ class SessionStore:
             entry.resume_pending = False
             entry.resume_reason = None
             entry.last_resume_marked_at = None
+            self._save()
+            return True
+
+    def mark_auto_continue_tool_tail_ack(
+        self,
+        session_key: str,
+        tail_key: str,
+    ) -> bool:
+        """Record that an inferred trailing tool batch reached the model."""
+        if not tail_key:
+            return False
+        with self._lock:
+            self._ensure_loaded_locked()
+            entry = self._entries.get(session_key)
+            if entry is None:
+                return False
+            entry.auto_continue_tool_tail_key = tail_key
+            entry.auto_continue_tool_tail_ack_at = _now()
             self._save()
             return True
 
