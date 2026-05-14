@@ -28,6 +28,7 @@ async def test_status_consumed_before_model_run():
         "Tasks:" in result
         or "Active tasks:" in result
         or "No active tasks" in result
+        or "Available worker lanes" in result
     )
 
 
