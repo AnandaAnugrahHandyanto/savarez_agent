@@ -1222,6 +1222,8 @@ class HindsightMemoryProvider(MemoryProvider):
         if self._mode == "local_embedded":
             def _start_daemon():
                 import traceback
+                self._config = _load_config()  # reload from disk on every daemon start
+                self._client = None  # force client rebuild with new config
                 log_dir = get_hermes_home() / "logs"
                 log_dir.mkdir(parents=True, exist_ok=True)
                 log_path = log_dir / "hindsight-embed.log"
