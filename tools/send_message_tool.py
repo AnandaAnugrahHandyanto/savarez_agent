@@ -130,8 +130,8 @@ SEND_MESSAGE_SCHEMA = {
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["send", "list"],
-                "description": "Action to perform. 'send' (default) sends a message. 'list' returns all available channels/contacts across connected platforms."
+                "enum": ["send", "list", "edit"],
+                "description": "Action to perform. 'send' (default) sends a message. 'list' returns all available channels/contacts across connected platforms. 'edit' edits an existing message in-place."
             },
             "target": {
                 "type": "string",
@@ -140,6 +140,10 @@ SEND_MESSAGE_SCHEMA = {
             "message": {
                 "type": "string",
                 "description": "The message text to send. To send an image or file, include MEDIA:<local_path> (e.g. 'MEDIA:/tmp/hermes/cache/img_xxx.jpg') in the message — the platform will deliver it as a native media attachment."
+            },
+            "message_id": {
+                "type": "string",
+                "description": "ID of the message to edit. Required when action is 'edit'."
             }
         },
         "required": []
@@ -154,6 +158,9 @@ def send_message_tool(args, **kw):
     if action == "list":
         return _handle_list()
 
+    if action == "edit":
+        return _handle_edit(args)
+
     return _handle_send(args)
 
 
@@ -164,6 +171,111 @@ def _handle_list():
         return json.dumps({"targets": format_directory_for_display()})
     except Exception as e:
         return json.dumps(_error(f"Failed to load channel directory: {e}"))
+
+
+def _handle_edit(args):
+    """Edit a previously sent message in-place."""
+    target = args.get("target", "")
+    message = args.get("message", "")
+    message_id = args.get("message_id", "")
+    if not target or not message or not message_id:
+        return tool_error("'target', 'message', and 'message_id' are required when action='edit'")
+
+    parts = target.split(":", 1)
+    platform_name = parts[0].strip().lower()
+    target_ref = parts[1].strip() if len(parts) > 1 else None
+    chat_id = None
+
+    if target_ref:
+        chat_id, thread_id, is_explicit = _parse_target_ref(platform_name, target_ref)
+    else:
+        is_explicit = False
+
+    if target_ref and not is_explicit:
+        try:
+            from gateway.channel_directory import resolve_channel_name
+            resolved = resolve_channel_name(platform_name, target_ref)
+            if resolved:
+                chat_id, thread_id, _ = _parse_target_ref(platform_name, resolved)
+            else:
+                return json.dumps({
+                    "error": f"Could not resolve '{target_ref}' on {platform_name}. "
+                    f"Use send_message(action='list') to see available targets."
+                })
+        except Exception:
+            return json.dumps({
+                "error": f"Could not resolve '{target_ref}' on {platform_name}. "
+                f"Try using a numeric channel ID instead."
+            })
+
+    from tools.interrupt import is_interrupted
+    if is_interrupted():
+        return tool_error("Interrupted")
+
+    try:
+        from gateway.config import load_gateway_config, Platform
+        config = load_gateway_config()
+    except Exception as e:
+        return json.dumps(_error(f"Failed to load gateway config: {e}"))
+
+    try:
+        platform = Platform(platform_name)
+    except (ValueError, KeyError):
+        return tool_error(f"Unknown platform: {platform_name}")
+
+    pconfig = config.platforms.get(platform)
+    if not pconfig or not pconfig.enabled:
+        if platform_name == "weixin":
+            wx_token = os.getenv("WEIXIN_TOKEN", "").strip()
+            wx_account = os.getenv("WEIXIN_ACCOUNT_ID", "").strip()
+            if wx_token and wx_account:
+                from gateway.config import PlatformConfig
+                pconfig = PlatformConfig(
+                    enabled=True,
+                    token=wx_token,
+                    extra={
+                        "account_id": wx_account,
+                        "base_url": os.getenv("WEIXIN_BASE_URL", "").strip(),
+                        "cdn_base_url": os.getenv("WEIXIN_CDN_BASE_URL", "").strip(),
+                    },
+                )
+            else:
+                return tool_error(f"Platform '{platform_name}' is not configured. Set up credentials in ~/.hermes/config.yaml or environment variables.")
+        else:
+            return tool_error(f"Platform '{platform_name}' is not configured. Set up credentials in ~/.hermes/config.yaml or environment variables.")
+
+    if not chat_id:
+        home = config.get_home_channel(platform)
+        if not home and platform_name == "weixin":
+            wx_home = os.getenv("WEIXIN_HOME_CHANNEL", "").strip()
+            if wx_home:
+                from gateway.config import HomeChannel
+                home = HomeChannel(platform=platform, chat_id=wx_home, name="Weixin Home")
+        if home:
+            chat_id = home.chat_id
+        else:
+            return json.dumps({
+                "error": f"No home channel set for {platform_name} to determine where to send the message. "
+                f"Either specify a channel directly with '{platform_name}:CHANNEL_NAME', "
+                f"or set a home channel via: hermes config set {platform_name.upper()}_HOME_CHANNEL <channel_id>"
+            })
+
+    try:
+        from model_tools import _run_async
+        result = _run_async(
+            _edit_to_platform(
+                platform,
+                pconfig,
+                chat_id,
+                message_id,
+                message,
+            )
+        )
+        if isinstance(result, dict) and "error" in result:
+            result["error"] = _sanitize_error_text(result["error"])
+        return json.dumps(result)
+    except Exception as e:
+        return json.dumps(_error(f"Edit failed: {e}"))
 
 
 def _handle_send(args):
@@ -523,6 +635,31 @@ async def _send_via_adapter(
             f"register a standalone_sender_fn on its PlatformEntry."
         )
     }
+
+
+async def _edit_to_platform(
+    platform,
+    pconfig,
+    chat_id: str,
+    message_id: str,
+    message: str,
+):
+    """Edit a message on the target platform."""
+    from gateway.platforms.base import BasePlatformAdapter
+
+    adapter = BasePlatformAdapter.get_adapter(platform, pconfig)
+    if adapter is None:
+        return _error(f"No adapter available for {platform.value}")
+
+    result = await adapter.edit_message(chat_id, message_id, message)
+    if result.success:
+        return {
+            "success": True,
+            "platform": platform.value,
+            "chat_id": chat_id,
+            "message_id": result.message_id or message_id,
+        }
+    return _error(result.error or "Edit not supported on this platform")
 
 
 async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None, force_document=False):
