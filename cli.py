@@ -328,6 +328,10 @@ def load_cli_config() -> Dict[str, Any]:
             "enabled": True,      # Auto-compress when approaching context limit
             "threshold": 0.50,    # Compress at 50% of model's context limit
         },
+        "orchestration": {
+            "status_queries_enabled": False,
+            "frontdesk_live_enabled": False,
+        },
         "agent": {
             "max_turns": 90,  # Default max tool-calling iterations (shared with subagents)
             "verbose": False,
@@ -9067,6 +9071,36 @@ class HermesCLI:
         frontdesk_active = bool(getattr(self, "frontdesk_mode_enabled", False))
         return _classify(text, frontdesk_mode_active=frontdesk_active)
 
+    def _handle_frontdesk_live_input(
+        self,
+        text: str,
+        *,
+        main_in_flight: bool = False,
+    ):
+        """Consume an opt-in frontdesk control input before queue/model paths."""
+        def _cancel_active(_payload: str) -> None:
+            agent = getattr(self, "agent", None)
+            if agent is not None and hasattr(agent, "interrupt"):
+                agent.interrupt(_payload)
+
+        def _steer_active(_payload: str):
+            agent = getattr(self, "agent", None)
+            if agent is not None and hasattr(agent, "steer"):
+                return agent.steer(_payload)
+            return False
+
+        from agent.frontdesk_live import handle_frontdesk_live_input
+
+        return handle_frontdesk_live_input(
+            self,
+            text,
+            session_key=getattr(self, "session_id", None),
+            source_surface="cli",
+            main_in_flight=main_in_flight,
+            steer_callback=_steer_active if main_in_flight else None,
+            cancel_callback=_cancel_active if main_in_flight else None,
+        )
+
     def _handle_fast_command(self, cmd: str):
         """Handle /fast — toggle fast mode (OpenAI Priority Processing / Anthropic Fast Mode)."""
         if not self._fast_command_available():
@@ -10768,6 +10802,17 @@ class HermesCLI:
         # leave it False, which is correct — those aren't user interrupts.
         self._last_turn_interrupted = False
 
+        if images is None and isinstance(message, str):
+            frontdesk_result = self._handle_frontdesk_live_input(
+                message,
+                main_in_flight=bool(getattr(self, "_agent_running", False)),
+            )
+            if frontdesk_result is not None:
+                response = frontdesk_result.message
+                if response:
+                    _cprint(response)
+                return response
+
         # Refresh provider credentials if needed (handles key rotation transparently)
         if not self._ensure_runtime_credentials():
             return None
@@ -11937,6 +11982,16 @@ class HermesCLI:
                 event.app.invalidate()
                 # Bundle text + images as a tuple when images are present
                 payload = (text, images) if images else text
+                if not images and text:
+                    frontdesk_result = self._handle_frontdesk_live_input(
+                        text,
+                        main_in_flight=bool(self._agent_running),
+                    )
+                    if frontdesk_result is not None:
+                        if frontdesk_result.message:
+                            _cprint(f"  {_ACCENT}{frontdesk_result.message}{_RST}")
+                        event.app.current_buffer.reset(append_to_history=True)
+                        return
                 if self._agent_running and not (text and _looks_like_slash_command(text)):
                     _effective_mode = self.busy_input_mode
                     if _effective_mode == "steer":
@@ -13607,6 +13662,16 @@ class HermesCLI:
                             if app.is_running:
                                 app.exit()
                         continue
+
+                    if not submit_images and isinstance(user_input, str):
+                        frontdesk_result = self._handle_frontdesk_live_input(
+                            user_input,
+                            main_in_flight=False,
+                        )
+                        if frontdesk_result is not None:
+                            if frontdesk_result.message:
+                                _cprint(frontdesk_result.message)
+                            continue
                     
                     # Expand paste references back to full content
                     _paste_ref_re = re.compile(r'\[Pasted text #\d+: \d+ lines \u2192 (.+?)\]')

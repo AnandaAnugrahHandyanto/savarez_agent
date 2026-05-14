@@ -448,6 +448,9 @@ DEFAULT_CONFIG = {
         # a normal agent turn.  Mutation/worker dispatch/follow-up attachment
         # remain separate gated phases.
         "status_queries_enabled": False,
+        # Full live pre-dispatch frontdesk gate. Off by default because it can
+        # consume natural-language inputs before the main model sees them.
+        "frontdesk_live_enabled": False,
     },
 
     "agent": {

@@ -1217,6 +1217,7 @@ class GatewayRunner:
     # blow up on attribute access.
     _running_agents_ts: Dict[str, float] = {}
     _busy_input_mode: str = "interrupt"
+    frontdesk_live_enabled: bool = False
     _restart_drain_timeout: float = DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
     _exit_code: Optional[int] = None
     _draining: bool = False
@@ -1248,6 +1249,7 @@ class GatewayRunner:
         self._provider_routing = self._load_provider_routing()
         self._fallback_model = self._load_fallback_model()
         self._orchestration_status_queries_enabled = self._load_orchestration_status_queries_enabled()
+        self.frontdesk_live_enabled = self._load_frontdesk_live_enabled()
 
         # Wire process registry into session store for reset protection
         from tools.process_registry import process_registry
@@ -2455,6 +2457,26 @@ class GatewayRunner:
         return False
 
     @staticmethod
+    def _load_frontdesk_live_enabled() -> bool:
+        """Load the opt-in live frontdesk pre-dispatch gate."""
+        raw = os.getenv("HERMES_FRONTDESK_LIVE", "").strip()
+        if raw:
+            return is_truthy_value(raw, default=False)
+        try:
+            import yaml as _y
+            cfg_path = _hermes_home / "config.yaml"
+            if cfg_path.exists():
+                with open(cfg_path, encoding="utf-8") as _f:
+                    cfg = _y.safe_load(_f) or {}
+                return is_truthy_value(
+                    cfg_get(cfg, "orchestration", "frontdesk_live_enabled"),
+                    default=False,
+                )
+        except Exception:
+            pass
+        return False
+
+    @staticmethod
     def _load_restart_drain_timeout() -> float:
         """Load graceful gateway restart/stop drain timeout in seconds."""
         raw = os.getenv("HERMES_RESTART_DRAIN_TIMEOUT", "").strip()
@@ -2614,6 +2636,31 @@ class GatewayRunner:
             return False  # let default path handle it
 
         running_agent = self._running_agents.get(session_key)
+
+        frontdesk_reply = await self._maybe_handle_frontdesk_live_input(
+            event,
+            session_key=session_key,
+            main_in_flight=running_agent is not None and running_agent is not _AGENT_PENDING_SENTINEL,
+        )
+        if frontdesk_reply is not None:
+            reply_anchor = self._reply_anchor_for_event(event)
+            thread_meta = self._thread_metadata_for_source(event.source, reply_anchor)
+            try:
+                await adapter._send_with_retry(
+                    chat_id=event.source.chat_id,
+                    content=frontdesk_reply,
+                    reply_to=(
+                        reply_anchor
+                        if event.source.platform == Platform.TELEGRAM
+                        and event.source.chat_type == "dm"
+                        and event.source.thread_id
+                        else (None if event.source.platform == Platform.TELEGRAM and event.source.thread_id else event.message_id)
+                    ),
+                    metadata=thread_meta,
+                )
+            except Exception as e:
+                logger.debug("Failed to send frontdesk control reply: %s", e)
+            return True
 
         # Steer mode: inject mid-run via running_agent.steer() instead of
         # queueing + interrupting.  If the agent isn't running yet
@@ -6017,6 +6064,17 @@ class GatewayRunner:
         if orchestration_status_reply is not None:
             return orchestration_status_reply
 
+        frontdesk_live_reply = await self._maybe_handle_frontdesk_live_input(
+            event,
+            session_key=_quick_key,
+            main_in_flight=(
+                (running_agent := self._running_agents.get(_quick_key)) is not None
+                and running_agent is not _AGENT_PENDING_SENTINEL
+            ),
+        )
+        if frontdesk_live_reply is not None:
+            return frontdesk_live_reply
+
         # PRIORITY handling when an agent is already running for this session.
         # Default behavior is to interrupt immediately so user text/stop messages
         # are handled with minimal latency.
@@ -8620,6 +8678,47 @@ class GatewayRunner:
         except Exception as exc:
             logger.warning("Failed to format orchestration status for %s: %s", session_key, exc)
             return "Orchestration status is temporarily unavailable."
+
+    async def _maybe_handle_frontdesk_live_input(
+        self,
+        event: MessageEvent,
+        *,
+        session_key: str,
+        main_in_flight: bool = False,
+    ) -> Optional[str]:
+        """Consume opt-in frontdesk control input before queue/model dispatch."""
+        if bool(getattr(event, "internal", False)):
+            return None
+        if event.message_type != MessageType.TEXT:
+            return None
+        if event.get_command():
+            return None
+
+        running_agent = self._running_agents.get(session_key)
+
+        def _cancel_active(payload: str) -> None:
+            if running_agent and running_agent is not _AGENT_PENDING_SENTINEL and hasattr(running_agent, "interrupt"):
+                running_agent.interrupt(payload)
+
+        def _steer_active(payload: str):
+            if running_agent and running_agent is not _AGENT_PENDING_SENTINEL and hasattr(running_agent, "steer"):
+                return running_agent.steer(payload)
+            return False
+
+        from agent.frontdesk_live import handle_frontdesk_live_input
+
+        result = handle_frontdesk_live_input(
+            self,
+            event.text or "",
+            session_key=session_key,
+            source_surface="gateway",
+            main_in_flight=main_in_flight,
+            steer_callback=_steer_active if main_in_flight else None,
+            cancel_callback=_cancel_active if main_in_flight else None,
+        )
+        if result is None:
+            return None
+        return result.message
 
     def _format_session_scoped_orchestration_overview(self, session_key: str) -> str:
         """Format an orchestration overview without leaking cross-session workers.

@@ -96,17 +96,56 @@ def test_frontdesk_steer_calls_callback_when_main_is_in_flight():
     runtime = OrchestrationRuntime.create()
     steers = []
 
+    def accept(text: str) -> bool:
+        steers.append(text)
+        return True
+
     result = runtime.handle_frontdesk_input(
         "also update the config file",
         frontdesk_mode_active=True,
         main_in_flight=True,
-        steer_callback=steers.append,
+        steer_callback=accept,
     )
 
     assert result.decision.intent is Intent.STEER
     assert result.action == "steered"
     assert steers == ["also update the config file"]
     assert result.message.startswith("control: steered")
+
+
+def test_frontdesk_steer_false_callback_falls_back_to_main():
+    runtime = OrchestrationRuntime.create()
+    steers = []
+
+    result = runtime.handle_frontdesk_input(
+        "also update the config file",
+        frontdesk_mode_active=True,
+        main_in_flight=True,
+        steer_callback=lambda text: steers.append(text) and False,
+    )
+
+    assert result.decision.intent is Intent.STEER
+    assert result.action == "main"
+    assert result.message != "control: steered active main turn"
+    assert steers == ["also update the config file"]
+
+
+def test_frontdesk_steer_raising_callback_falls_back_to_main():
+    runtime = OrchestrationRuntime.create()
+
+    def reject(_text: str) -> bool:
+        raise RuntimeError("not ready")
+
+    result = runtime.handle_frontdesk_input(
+        "also update the config file",
+        frontdesk_mode_active=True,
+        main_in_flight=True,
+        steer_callback=reject,
+    )
+
+    assert result.decision.intent is Intent.STEER
+    assert result.action == "main"
+    assert result.message != "control: steered active main turn"
 
 
 def test_frontdesk_steer_without_running_main_falls_back_to_main():
