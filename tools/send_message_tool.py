@@ -337,6 +337,8 @@ def _parse_target_ref(platform_name: str, target_ref: str):
         match = _WEIXIN_TARGET_RE.fullmatch(target_ref)
         if match:
             return match.group(1), None, True
+    if platform_name == "dingtalk" and target_ref.startswith("cid"):
+        return target_ref, None, True
     if platform_name == "yuanbao":
         match = _YUANBAO_TARGET_RE.fullmatch(target_ref)
         if match:
@@ -462,14 +464,29 @@ async def _send_via_adapter(
         if adapter is not None:
             try:
                 metadata = {"thread_id": thread_id} if thread_id else None
-                result = await adapter.send(chat_id=chat_id, content=chunk, metadata=metadata)
+                last_result = None
+                if chunk:
+                    result = await adapter.send(chat_id=chat_id, content=chunk, metadata=metadata)
+                    if not result.success:
+                        return {"error": f"Adapter send failed: {result.error}"}
+                    last_result = result
+                for media_item in media_files or []:
+                    media_path = media_item[0] if isinstance(media_item, tuple) else media_item
+                    result = await adapter.send_document(
+                        chat_id=chat_id,
+                        file_path=media_path,
+                        metadata=metadata,
+                    )
+                    if not result.success:
+                        return {"error": f"Adapter media send failed: {result.error}"}
+                    last_result = result
             except asyncio.CancelledError:
                 raise
             except Exception as e:
                 return {"error": f"Plugin platform send failed: {e}"}
-            if result.success:
-                return {"success": True, "message_id": result.message_id}
-            return {"error": f"Adapter send failed: {result.error}"}
+            if last_result is not None:
+                return {"success": True, "message_id": last_result.message_id}
+            return {"success": True}
 
     platform_name = platform.value if hasattr(platform, "value") else str(platform)
     entry = None
@@ -534,13 +551,6 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     except ImportError:
         _telegram_available = False
 
-    # Feishu adapter import is optional (requires lark-oapi)
-    try:
-        from gateway.platforms.feishu import FeishuAdapter
-        _feishu_available = True
-    except ImportError:
-        _feishu_available = False
-
     media_files = media_files or []
 
     if platform == Platform.SLACK and message:
@@ -556,8 +566,13 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
         Platform.DISCORD: DiscordAdapter.MAX_MESSAGE_LENGTH,
         Platform.SLACK: SlackAdapter.MAX_MESSAGE_LENGTH,
     }
-    if _feishu_available:
-        _MAX_LENGTHS[Platform.FEISHU] = FeishuAdapter.MAX_MESSAGE_LENGTH
+    if platform == Platform.FEISHU:
+        try:
+            from gateway.platforms.feishu import FeishuAdapter
+
+            _MAX_LENGTHS[Platform.FEISHU] = FeishuAdapter.MAX_MESSAGE_LENGTH
+        except ImportError:
+            pass
 
     # Check plugin registry for max_message_length
     if platform not in _MAX_LENGTHS:
@@ -685,11 +700,30 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             last_result = result
         return last_result
 
+    # --- DingTalk: native file support via running gateway adapter ---
+    if platform == Platform.DINGTALK and media_files:
+        last_result = None
+        for i, chunk in enumerate(chunks):
+            is_last = (i == len(chunks) - 1)
+            result = await _send_via_adapter(
+                platform,
+                pconfig,
+                chat_id,
+                chunk,
+                thread_id=thread_id,
+                media_files=media_files if is_last else None,
+                force_document=force_document,
+            )
+            if isinstance(result, dict) and result.get("error"):
+                return result
+            last_result = result
+        return last_result
+
     # --- Non-media platforms ---
     if media_files and not message.strip():
         return {
             "error": (
-                f"send_message MEDIA delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao and feishu; "
+                f"send_message MEDIA delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao, feishu and dingtalk; "
                 f"target {platform.value} had only media attachments"
             )
         }
@@ -697,7 +731,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     if media_files:
         warning = (
             f"MEDIA attachments were omitted for {platform.value}; "
-            "native send_message media delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao and feishu"
+            "native send_message media delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao, feishu and dingtalk"
         )
 
     last_result = None
