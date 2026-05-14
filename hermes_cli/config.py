@@ -440,6 +440,15 @@ DEFAULT_CONFIG = {
     "fallback_providers": [],
     "credential_pool_strategies": {},
     "toolsets": ["hermes-cli"],
+    "bmad": {
+        "enabled": True,
+        "auto_detect": True,
+        "expose_in_skill_index": False,
+        "expose_slash_commands": True,
+        "max_indexed_skills": 80,
+        "allowed_roots": [],
+        "disabled_skills": [],
+    },
     "agent": {
         "max_turns": 90,
         # Inactivity timeout for gateway agent execution (seconds).

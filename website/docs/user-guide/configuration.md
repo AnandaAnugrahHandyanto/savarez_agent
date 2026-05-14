@@ -481,6 +481,20 @@ hermes config set skills.config.myplugin.path ~/myplugin-data
 
 For details on declaring config settings in your own skills, see [Creating Skills — Config Settings](/docs/developer-guide/creating-skills#config-settings-configyaml).
 
+### BMAD adapter
+
+The `bmad` section controls project-local BMAD-METHOD discovery. BMAD remains project-scoped: these settings do not make BMAD global behavior.
+
+| Key | Default | Description |
+| --- | --- | --- |
+| `enabled` | `true` | Enables the adapter. BMAD still requires a detected `_bmad/` project. |
+| `auto_detect` | `true` | Detect `_bmad/` from the current working directory. |
+| `expose_in_skill_index` | `false` | Reserved for future prompt-index exposure. Keep this off until project-aware prompt-cache semantics are proven. |
+| `expose_slash_commands` | `true` | Allows project BMAD slash commands when that phase is enabled. |
+| `max_indexed_skills` | `80` | Caps BMAD skills returned from project discovery surfaces. |
+| `allowed_roots` | `[]` | Optional list of workspace roots where BMAD discovery is allowed. Empty means no root restriction. |
+| `disabled_skills` | `[]` | BMAD skill names or identifiers to hide from list, view, prompt index, and slash commands. |
+
 ### Guard on agent-created skill writes
 
 When the agent uses `skill_manage` to create, edit, patch, or delete a skill, Hermes can optionally scan the new/updated content for dangerous keyword patterns (credential harvesting, obvious prompt injection, exfil instructions). The scanner is **off by default** — real agent workflows that legitimately touch `~/.ssh/` or mention `$OPENAI_API_KEY` were tripping the heuristic too often. Turn it back on if you want the scanner to prompt you before the agent's skill writes land:

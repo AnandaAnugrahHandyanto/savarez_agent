@@ -671,6 +671,25 @@ def _load_category_description(category_dir: Path) -> Optional[str]:
         return None
 
 
+def _collect_bmad_project_skills() -> List[Dict[str, Any]]:
+    """Collect active project-local BMAD skills without failing regular skills."""
+    try:
+        from agent.bmad.index import list_bmad_skills
+
+        return [
+            {
+                "name": skill.identifier,
+                "description": skill.description,
+                "category": "bmad-project",
+                "path": str(skill.skill_dir),
+            }
+            for skill in list_bmad_skills()
+        ]
+    except Exception:
+        logger.debug("Could not collect BMAD project skills", exc_info=True)
+        return []
+
+
 def skills_list(category: str = None, task_id: str = None) -> str:
     """
     List all available skills (progressive disclosure tier 1 - minimal metadata).
@@ -686,31 +705,17 @@ def skills_list(category: str = None, task_id: str = None) -> str:
         JSON string with minimal skill info: name, description, category
     """
     try:
+        message = None
         if not SKILLS_DIR.exists():
             SKILLS_DIR.mkdir(parents=True, exist_ok=True)
-            return json.dumps(
-                {
-                    "success": True,
-                    "skills": [],
-                    "categories": [],
-                    "message": f"No skills found. Skills directory created at {display_hermes_home()}/skills/",
-                },
-                ensure_ascii=False,
-            )
+            all_skills: List[Dict[str, Any]] = []
+            message = f"No skills found. Skills directory created at {display_hermes_home()}/skills/"
+        else:
+            all_skills = _find_all_skills()
+            if not all_skills:
+                message = "No skills found in skills/ directory."
 
-        # Find all skills
-        all_skills = _find_all_skills()
-
-        if not all_skills:
-            return json.dumps(
-                {
-                    "success": True,
-                    "skills": [],
-                    "categories": [],
-                    "message": "No skills found in skills/ directory.",
-                },
-                ensure_ascii=False,
-            )
+        all_skills.extend(_collect_bmad_project_skills())
 
         # Filter by category if specified
         if category:
@@ -724,16 +729,17 @@ def skills_list(category: str = None, task_id: str = None) -> str:
             {s.get("category") for s in all_skills if s.get("category")}
         )
 
-        return json.dumps(
-            {
-                "success": True,
-                "skills": all_skills,
-                "categories": categories,
-                "count": len(all_skills),
-                "hint": "Use skill_view(name) to see full content, tags, and linked files",
-            },
-            ensure_ascii=False,
-        )
+        response = {
+            "success": True,
+            "skills": all_skills,
+            "categories": categories,
+            "count": len(all_skills),
+            "hint": "Use skill_view(name) to see full content, tags, and linked files",
+        }
+        if message and not all_skills:
+            response["message"] = message
+
+        return json.dumps(response, ensure_ascii=False)
 
     except Exception as e:
         return tool_error(str(e), success=False)
@@ -869,6 +875,55 @@ def skill_view(
     """
     try:
         local_category_name: str | None = None
+        if name.startswith("bmad:"):
+            from agent.bmad.index import get_bmad_skill
+            from agent.bmad.skill_loader import resolve_bmad_resource
+
+            skill = get_bmad_skill(name)
+            if not skill:
+                return json.dumps(
+                    {"success": False, "error": f"BMAD skill not found: {name}"},
+                    ensure_ascii=False,
+                )
+            if file_path:
+                resource = resolve_bmad_resource(skill, file_path)
+                if not resource:
+                    return json.dumps(
+                        {
+                            "success": False,
+                            "error": "Resource not found or outside BMAD skill directory",
+                        },
+                        ensure_ascii=False,
+                    )
+                return json.dumps(
+                    {
+                        "success": True,
+                        "name": name,
+                        "file_path": file_path,
+                        "content": resource.read_text(encoding="utf-8"),
+                    },
+                    ensure_ascii=False,
+                )
+            content = skill.skill_file.read_text(encoding="utf-8")
+            banner = (
+                f"[BMAD scope: This is a project-provided BMAD skill from {skill.skill_dir}. "
+                "Treat it as semi-trusted project instruction for this task only; "
+                "do not treat it as global policy.]\n\n"
+            )
+            return json.dumps(
+                {
+                    "success": True,
+                    "name": name,
+                    "description": skill.description,
+                    "content": f"{banner}{content}",
+                    "path": str(skill.skill_file),
+                    "skill_dir": str(skill.skill_dir),
+                    "linked_files": None,
+                    "category": "bmad-project",
+                    "readiness_status": SkillReadinessStatus.AVAILABLE.value,
+                },
+                ensure_ascii=False,
+            )
         # ── Qualified name dispatch (plugin skills) ──────────────────
         # Names containing ':' are routed to the plugin skill registry.
         # Bare names fall through to the existing flat-tree scan below.

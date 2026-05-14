@@ -10,6 +10,8 @@ This page covers the **terminal commands** you run from your shell.
 
 For in-chat slash commands, see [Slash Commands Reference](./slash-commands.md).
 
+Project-local BMAD skills are dynamic rather than fixed CLI commands. When the BMAD adapter is enabled and the current directory is inside a project containing `_bmad/`, BMAD skills can appear through skill tools as `bmad:<skill-name>` (for example `bmad:bmad-help`). Future `/bmad-*` slash-command exposure is project-derived and must remain scoped to the active `_bmad/` project.
+
 ## Global entrypoint
 
 ```bash
