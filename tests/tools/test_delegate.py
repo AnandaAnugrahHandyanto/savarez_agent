@@ -48,6 +48,8 @@ def _make_mock_parent(depth=0):
     parent.providers_ignored = None
     parent.providers_order = None
     parent.provider_sort = None
+    parent.acp_command = None
+    parent.acp_args = []
     parent._session_db = None
     parent._delegate_depth = depth
     parent._active_children = []
@@ -368,6 +370,70 @@ class TestDelegateTask(unittest.TestCase):
             self.assertEqual(kwargs["api_key"], parent.api_key)
             self.assertEqual(kwargs["provider"], parent.provider)
             self.assertEqual(kwargs["api_mode"], parent.api_mode)
+
+    @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
+    def test_child_normalizes_stale_inherited_base_url(self, mock_resolve):
+        parent = _make_mock_parent(depth=0)
+        parent.base_url = "https://wrong-provider.example/v1"
+        parent.api_key = "wrong-key"
+        parent.provider = "openai-codex"
+        parent.api_mode = "codex_responses"
+        parent.model = "gpt-5.5"
+        mock_resolve.return_value = {
+            "provider": "openai-codex",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key": "codex-key",
+            "api_mode": "codex_responses",
+        }
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.run_conversation.return_value = {
+                "final_response": "ok",
+                "completed": True,
+                "api_calls": 1,
+            }
+            MockAgent.return_value = mock_child
+
+            delegate_task(goal="Test runtime normalization", parent_agent=parent)
+
+            _, kwargs = MockAgent.call_args
+            self.assertEqual(kwargs["provider"], "openai-codex")
+            self.assertEqual(kwargs["model"], "gpt-5.5")
+            self.assertEqual(kwargs["base_url"], "https://chatgpt.com/backend-api/codex")
+            self.assertEqual(kwargs["api_key"], "codex-key")
+            self.assertEqual(kwargs["api_mode"], "codex_responses")
+            mock_resolve.assert_called_with(
+                requested="openai-codex",
+                target_model="gpt-5.5",
+            )
+
+    @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
+    def test_explicit_delegation_base_url_is_not_normalized(self, mock_resolve):
+        parent = _make_mock_parent(depth=0)
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            MockAgent.return_value = MagicMock()
+            _build_child_agent(
+                task_index=0,
+                goal="Use explicit endpoint",
+                context=None,
+                toolsets=None,
+                model="custom-model",
+                max_iterations=50,
+                task_count=1,
+                parent_agent=parent,
+                override_provider="openai-codex",
+                override_base_url="http://localhost:1234/v1",
+                override_api_key="local-key",
+                override_api_mode="chat_completions",
+            )
+
+            _, kwargs = MockAgent.call_args
+            self.assertEqual(kwargs["base_url"], "http://localhost:1234/v1")
+            self.assertEqual(kwargs["api_key"], "local-key")
+            self.assertEqual(kwargs["api_mode"], "chat_completions")
+            mock_resolve.assert_not_called()
 
     def test_child_inherits_parent_print_fn(self):
         parent = _make_mock_parent(depth=0)
