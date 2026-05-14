@@ -3,6 +3,8 @@
 import json
 import threading
 
+import pytest
+
 from agent.control_plane import Intent, Recommendation
 from agent.orchestration_runtime import OrchestrationRuntime
 from agent.task_registry import STATUS_CANCELLED, STATUS_RUNNING
@@ -81,6 +83,122 @@ def test_frontdesk_worker_completion_retains_result_for_review():
     assert "raw_process" not in task.result
     assert task.result["review_status"] == "pending_review"
     json.dumps(task.to_dict(), allow_nan=False)
+
+
+@pytest.mark.parametrize(
+    "followup_text",
+    [
+        "중국집은 없나",
+        "빠니니를 파는 곳도 찾아보고 있어야지",
+        "이 조건도 넣어줘",
+    ],
+)
+def test_korean_followup_attaches_to_active_worker_task(followup_text):
+    runtime = OrchestrationRuntime.create()
+    entered = threading.Event()
+    release = threading.Event()
+
+    def runner(spec: WorkerSpec, token: CancelToken):  # noqa: ARG001
+        entered.set()
+        release.wait(2.0)
+        token.raise_if_cancelled()
+        return "done"
+
+    lane = ThreadWorkerLane(runner=runner, name="thread")
+    runtime.worker_registry.register(lane)
+    started = runtime.handle_frontdesk_input(
+        "워커 레인에 배당해서 이 회귀를 조사해줘",
+        frontdesk_mode_active=True,
+        session_key="s1",
+        source_surface="gateway",
+    )
+    assert started.action == "worker_started"
+    assert started.task_id is not None
+    assert started.worker_id is not None
+    assert entered.wait(2.0)
+
+    try:
+        result = runtime.handle_frontdesk_input(
+            followup_text,
+            frontdesk_mode_active=True,
+            session_key="s1",
+            source_surface="gateway",
+        )
+
+        assert result.action == "followup_attached"
+        assert result.task_id == started.task_id
+        assert result.worker_id == started.worker_id
+        assert result.message.startswith("control: follow-up attached")
+        task = runtime.task_registry.get_task(started.task_id)
+        assert task is not None
+        assert [item.text for item in task.pending_followups] == [followup_text]
+        assert task.pending_followups[0].session_key == "s1"
+        assert task.pending_followups[0].task_hint == started.task_id
+        assert [item.text for item in lane.followups(started.worker_id)] == [followup_text]
+    finally:
+        runtime.worker_registry.cancel(started.worker_id)
+        release.set()
+        runtime.worker_registry.wait(started.worker_id, timeout=2.0)
+
+
+def test_followup_does_not_swallow_stop_or_status():
+    runtime = OrchestrationRuntime.create()
+    entered = threading.Event()
+    release = threading.Event()
+
+    def runner(spec: WorkerSpec, token: CancelToken):  # noqa: ARG001
+        entered.set()
+        release.wait(2.0)
+        token.raise_if_cancelled()
+        return "done"
+
+    runtime.worker_registry.register(ThreadWorkerLane(runner=runner, name="thread"))
+    started = runtime.handle_frontdesk_input(
+        "워커 레인에 배당해서 이 회귀를 조사해줘",
+        frontdesk_mode_active=True,
+        session_key="s1",
+    )
+    assert started.task_id is not None
+    assert started.worker_id is not None
+    assert entered.wait(2.0)
+
+    status = runtime.handle_frontdesk_input(
+        "지금 뭐 하고 있어?",
+        frontdesk_mode_active=True,
+        session_key="s1",
+    )
+    assert status.action == "status"
+    task = runtime.task_registry.get_task(started.task_id)
+    assert task is not None
+    assert task.pending_followups == []
+
+    stopped = runtime.handle_frontdesk_input(
+        "멈춰",
+        frontdesk_mode_active=True,
+        session_key="s1",
+    )
+    assert stopped.action == "stopped"
+    assert stopped.cancelled_tasks == 1
+    assert task.pending_followups == []
+    release.set()
+    assert runtime.worker_registry.wait(started.worker_id, timeout=2.0)
+
+
+def test_followup_without_active_worker_falls_through_honestly():
+    runtime = OrchestrationRuntime.create()
+    runtime.worker_registry.register(ThreadWorkerLane(runner=lambda spec, token: "ok", name="thread"))
+
+    result = runtime.handle_frontdesk_input(
+        "이 조건도 넣어줘",
+        frontdesk_mode_active=True,
+        session_key="s1",
+    )
+
+    assert result.action == "main"
+    assert result.message == "route: main"
+    assert result.task_id is None
+    assert result.worker_id is None
+    assert runtime.task_registry.list_tasks(session_key="s1") == []
 
 
 def test_frontdesk_status_returns_local_overview_without_starting_worker():

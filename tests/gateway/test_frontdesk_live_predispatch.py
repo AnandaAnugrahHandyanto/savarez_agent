@@ -1,10 +1,16 @@
+import threading
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from agent.orchestration_runtime import get_orchestration_runtime
+from agent.orchestration_runtime import (
+    OrchestrationRuntime,
+    get_orchestration_runtime,
+    set_orchestration_runtime,
+)
 from agent.task_registry import STATUS_CANCELLED
+from agent.worker_lanes import CancelToken, ThreadWorkerLane, WorkerSpec
 from gateway.platforms.base import MessageType, build_session_key
 from tests.gateway.test_busy_session_ack import _make_adapter, _make_event, _make_runner
 
@@ -128,6 +134,57 @@ async def test_gateway_pending_sentinel_does_not_consume_korean_followup():
     assert result is None
     run_agent.assert_not_called()
     assert sk in adapter._pending_messages
+
+
+@pytest.mark.asyncio
+async def test_gateway_korean_followup_attaches_to_active_worker_task():
+    from gateway.run import GatewayRunner
+
+    runner, _sentinel = _make_runner()
+    runner.frontdesk_live_enabled = True
+    adapter = _make_adapter()
+    event = _make_event(text="중국집은 없나")
+    sk = build_session_key(event.source)
+    runner.adapters[event.source.platform] = adapter
+
+    runtime = OrchestrationRuntime.create()
+    entered = threading.Event()
+    release = threading.Event()
+
+    def worker(spec: WorkerSpec, token: CancelToken):  # noqa: ARG001
+        entered.set()
+        release.wait(2.0)
+        token.raise_if_cancelled()
+        return "done"
+
+    lane = ThreadWorkerLane(runner=worker, name="thread")
+    runtime.worker_registry.register(lane)
+    set_orchestration_runtime(runner, runtime)
+    started = runtime.handle_frontdesk_input(
+        "워커 레인에 배당해서 이 회귀를 조사해줘",
+        frontdesk_mode_active=True,
+        session_key=sk,
+        source_surface="gateway",
+    )
+    assert started.worker_id is not None
+    assert started.task_id is not None
+    assert entered.wait(2.0)
+
+    try:
+        with patch.object(GatewayRunner, "_run_agent", autospec=True) as run_agent:
+            result = await GatewayRunner._handle_message(runner, event)
+
+        run_agent.assert_not_called()
+        assert isinstance(result, str)
+        assert "follow-up attached" in result
+        task = runtime.task_registry.get_task(started.task_id)
+        assert task is not None
+        assert [item.text for item in task.pending_followups] == ["중국집은 없나"]
+        assert [item.text for item in lane.followups(started.worker_id)] == ["중국집은 없나"]
+    finally:
+        runtime.worker_registry.cancel(started.worker_id)
+        release.set()
+        runtime.worker_registry.wait(started.worker_id, timeout=2.0)
 
 
 @pytest.mark.asyncio
