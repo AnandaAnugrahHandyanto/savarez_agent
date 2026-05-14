@@ -775,17 +775,50 @@ async def get_action_status(name: str, lines: int = 200):
 @app.get("/api/sessions")
 async def get_sessions(limit: int = 20, offset: int = 0):
     try:
+        # Avoid accidental oversized dashboard refreshes. The web UI only needs
+        # small pages; detail endpoints are used when the user opens a session.
+        limit = max(1, min(int(limit), 100))
+        offset = max(0, int(offset))
         from hermes_state import SessionDB
         db = SessionDB()
         try:
-            sessions = db.list_sessions_rich(limit=limit, offset=offset)
+            # Session list rows are rendered as lightweight summaries in the
+            # dashboard.  ``SessionDB.list_sessions_rich`` intentionally returns
+            # the full session row for CLI/admin callers, including large fields
+            # such as ``system_prompt`` and ``model_config``.  Returning those
+            # blobs here makes a 20-row dashboard refresh hundreds of KB on
+            # long-running installs with many cron sessions, which in turn
+            # causes sluggish mobile/remote UX.  Keep this API response aligned
+            # with the frontend ``SessionInfo`` contract: summary metadata only;
+            # full message/history data remains available via the detail
+            # endpoints.
+            raw_sessions = db.list_sessions_rich(limit=limit, offset=offset)
             total = db.session_count()
             now = time.time()
-            for s in sessions:
+            summary_keys = {
+                "id",
+                "source",
+                "model",
+                "title",
+                "started_at",
+                "ended_at",
+                "last_active",
+                "message_count",
+                "tool_call_count",
+                "input_tokens",
+                "output_tokens",
+                "preview",
+                "parent_session_id",
+                "_lineage_root_id",
+            }
+            sessions = []
+            for raw in raw_sessions:
+                s = {key: raw.get(key) for key in summary_keys if key in raw}
                 s["is_active"] = (
                     s.get("ended_at") is None
                     and (now - s.get("last_active", s.get("started_at", 0))) < 300
                 )
+                sessions.append(s)
             return {"sessions": sessions, "total": total, "limit": limit, "offset": offset}
         finally:
             db.close()
