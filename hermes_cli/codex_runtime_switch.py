@@ -172,6 +172,53 @@ def apply(
                 codex_version=None,
             )
 
+    msg_lines = [
+        f"openai_runtime: {current} → {new_value}",
+    ]
+    mig_report = None
+    if new_value == "codex_app_server":
+        ok, ver = _check_binary_cached()
+        if ok:
+            msg_lines.append(f"codex CLI: {ver}")
+        # Auto-migrate Hermes' MCP servers + Codex's installed curated
+        # plugins into ~/.codex/config.toml so the spawned codex subprocess
+        # sees the same tool surface AND can call back into Hermes for
+        # browser/web/delegate_task/vision/memory tools (#7 fix).
+        # If migration cannot leave Codex with a valid config.toml, do not
+        # persist the runtime switch. That avoids trapping the user in a
+        # codex_app_server startup loop.
+        try:
+            from hermes_cli.codex_runtime_plugin_migration import migrate
+            mig_report = migrate(config)
+        except Exception as exc:
+            logger.exception("codex app-server config migration failed")
+            return CodexRuntimeStatus(
+                success=False,
+                new_value=None,
+                old_value=current,
+                message=(
+                    "Cannot enable codex_app_server runtime: "
+                    f"Codex config migration failed: {exc}\n"
+                    "Runtime setting was not changed. Use `/codex-runtime auto` "
+                    "to stay on the default runtime, then run "
+                    "`hermes codex-runtime repair-config` if needed."
+                ),
+            )
+        if mig_report.validation_error or not mig_report.written:
+            return CodexRuntimeStatus(
+                success=False,
+                new_value=None,
+                old_value=current,
+                message=(
+                    "Cannot enable codex_app_server runtime: Hermes could not "
+                    "write a valid Codex config.toml.\n"
+                    + "\n".join(f"  - {err}" for err in mig_report.errors)
+                    + "\nRuntime setting was not changed. Use `/codex-runtime auto` "
+                    "to stay on the default runtime, then run "
+                    "`hermes codex-runtime repair-config`."
+                ),
+            )
+
     set_runtime(config, new_value)
     if persist_callback is not None:
         try:
@@ -185,21 +232,8 @@ def apply(
                 message=f"updated config in memory but persist failed: {exc}",
             )
 
-    msg_lines = [
-        f"openai_runtime: {current} → {new_value}",
-    ]
     if new_value == "codex_app_server":
-        ok, ver = _check_binary_cached()
-        if ok:
-            msg_lines.append(f"codex CLI: {ver}")
-        # Auto-migrate Hermes' MCP servers + Codex's installed curated
-        # plugins into ~/.codex/config.toml so the spawned codex subprocess
-        # sees the same tool surface AND can call back into Hermes for
-        # browser/web/delegate_task/vision/memory tools (#7 fix).
-        # Failures are non-fatal — the runtime change still proceeds.
-        try:
-            from hermes_cli.codex_runtime_plugin_migration import migrate
-            mig_report = migrate(config)
+        if mig_report is not None:
             # Tools/MCP servers (excluding the hermes-tools callback,
             # which is internal plumbing — surface separately).
             user_servers = [
@@ -228,6 +262,16 @@ def apply(
                     f"Default sandbox: {mig_report.wrote_permissions_default} "
                     f"(no approval prompt on every write)"
                 )
+            if mig_report.agents_path:
+                status = (
+                    "installed"
+                    if mig_report.wrote_agents_file
+                    else "already present"
+                )
+                msg_lines.append(
+                    f"Codex AGENTS.md discipline block {status}: "
+                    f"{mig_report.agents_path}"
+                )
             if "hermes-tools" in mig_report.migrated:
                 msg_lines.append(
                     "Hermes tool callback registered: codex can now use "
@@ -241,10 +285,8 @@ def apply(
                     "agent loop context.)"
                 )
             msg_lines.append(f"  (config: {mig_report.target_path})")
-            for err in mig_report.errors:
-                msg_lines.append(f"⚠ MCP migration: {err}")
-        except Exception as exc:
-            msg_lines.append(f"⚠ MCP migration skipped: {exc}")
+            if mig_report.backup_path:
+                msg_lines.append(f"  (backup: {mig_report.backup_path})")
         msg_lines.append(
             "OpenAI/Codex turns now run through `codex app-server` "
             "(terminal/file ops/patching inside Codex; "

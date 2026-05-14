@@ -232,6 +232,35 @@ class TestRunConversationCodexPath:
             agent.run_conversation("hi")
         assert not client_mock.chat.completions.create.called
 
+    def test_session_uses_isolated_codex_home(self, monkeypatch, tmp_path):
+        hermes_home = tmp_path / "hermes-home"
+        captured = {}
+
+        def fake_init(self, **kwargs):
+            captured.update(kwargs)
+
+        def fake_run_turn(self, user_input: str, **kwargs):
+            return TurnResult(
+                final_text="ok",
+                projected_messages=[{"role": "assistant", "content": "ok"}],
+                thread_id="th",
+                turn_id="t",
+            )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("HERMES_CODEX_HOME", raising=False)
+        monkeypatch.delenv("CODEX_HOME", raising=False)
+        monkeypatch.setattr(CodexAppServerSession, "__init__", fake_init)
+        monkeypatch.setattr(CodexAppServerSession, "ensure_started",
+                            lambda self: "th")
+        monkeypatch.setattr(CodexAppServerSession, "run_turn", fake_run_turn)
+
+        agent = _make_codex_agent()
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            agent.run_conversation("hi")
+
+        assert captured["codex_home"] == str(hermes_home / "codex-runtime")
+
 
 class TestReviewForkApiModeDowngrade:
     """When the parent agent runs on codex_app_server, the background
@@ -320,6 +349,7 @@ class TestErrorHandling:
         assert result["partial"] is True
         assert "subprocess died" in result["error"]
         assert "codex-runtime auto" in result["final_response"]
+        assert agent.api_mode == "codex_responses"
 
     def test_interrupted_turn_marked_partial(self, monkeypatch):
         def interrupted_turn(self, user_input, **kwargs):

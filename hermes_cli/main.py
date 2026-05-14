@@ -9353,6 +9353,30 @@ def cmd_logs(args):
     )
 
 
+def cmd_codex_runtime(args):
+    """Codex app-server runtime maintenance commands."""
+    action = getattr(args, "codex_runtime_action", None)
+    if action == "repair-config":
+        from pathlib import Path
+
+        from hermes_cli.codex_runtime_plugin_migration import repair_config
+
+        codex_home_raw = getattr(args, "codex_home", None)
+        codex_home = Path(codex_home_raw).expanduser() if codex_home_raw else None
+        report = repair_config(
+            codex_home=codex_home,
+            dry_run=bool(getattr(args, "dry_run", False)),
+        )
+        print(report.summary())
+        if report.errors:
+            sys.exit(1)
+        return
+    print(
+        "Usage: hermes codex-runtime repair-config "
+        "[--codex-home PATH] [--dry-run]"
+    )
+
+
 def _build_provider_choices() -> list[str]:
     """Build the --provider choices list from CANONICAL_PROVIDERS + 'auto'."""
     try:
@@ -9380,7 +9404,7 @@ def _build_provider_choices() -> list[str]:
 # to parse.
 _BUILTIN_SUBCOMMANDS = frozenset(
     {
-        "acp", "auth", "backup", "checkpoints", "claw", "completion",
+        "acp", "auth", "backup", "checkpoints", "claw", "codex-runtime", "completion",
         "computer-use",
         "config", "cron", "curator", "dashboard", "debug", "doctor",
         "dump", "fallback", "gateway", "hooks", "import", "insights",
@@ -9543,6 +9567,36 @@ def main():
         help="Disable TLS verification for Nous login (testing only)",
     )
     model_parser.set_defaults(func=cmd_model)
+
+    # =========================================================================
+    # codex-runtime command — repair Codex app-server integration state
+    # =========================================================================
+    codex_runtime_parser = subparsers.add_parser(
+        "codex-runtime",
+        help="Manage Codex app-server runtime integration",
+    )
+    codex_runtime_sub = codex_runtime_parser.add_subparsers(
+        dest="codex_runtime_action"
+    )
+    codex_repair = codex_runtime_sub.add_parser(
+        "repair-config",
+        help="Repair duplicate tables in Codex config.toml",
+    )
+    codex_repair.add_argument(
+        "--codex-home",
+        metavar="PATH",
+        help=(
+            "Codex home to repair (default: HERMES_CODEX_HOME, CODEX_HOME, "
+            "or ~/.hermes/codex-runtime)"
+        ),
+    )
+    codex_repair.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Report changes without writing config.toml",
+    )
+    codex_runtime_parser.set_defaults(func=cmd_codex_runtime)
+    codex_repair.set_defaults(func=cmd_codex_runtime)
 
     # =========================================================================
     # fallback command — manage the fallback provider chain

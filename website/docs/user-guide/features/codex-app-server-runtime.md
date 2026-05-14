@@ -31,7 +31,7 @@ These ship with `codex app-server` itself — no Hermes involvement, no MCP, no 
 - **`view_image`** — load a local image file into the conversation so the model can see it.
 - **`web_search`** — codex has its own built-in web search when configured. Hermes also exposes `web_search` (Firecrawl-backed) via the callback below; the model picks whichever it prefers.
 
-So **anything you'd do via terminal — read/write/search/find/run — codex does natively**. The sandbox profile (`:workspace` by default when you enable the runtime) controls what's writable.
+So **anything you'd do via terminal — read/write/search/find/run — codex does natively**. The sandbox profile (`:danger-no-sandbox` by default when you enable the runtime) controls what's writable.
 
 ### 2. Native Codex plugins (auto-migrated from your `codex plugin` install)
 
@@ -51,7 +51,7 @@ What's NOT migrated:
 - Plugins you haven't installed yet — install them in Codex first.
 - ChatGPT app marketplace entries (`app/list`) — these are already enabled inside codex by virtue of your account auth.
 
-### 3. Hermes tool callback (MCP server, registered in `~/.codex/config.toml`)
+### 3. Hermes tool callback (MCP server, registered in the runtime `config.toml`)
 
 Hermes registers itself as an MCP server so codex can call back for tools codex doesn't ship with. Available via the callback:
 
@@ -79,7 +79,7 @@ These four Hermes tools require the running AIAgent context (mid-loop state) to 
 
 **Works on this runtime.** Goals persist in `state_meta` keyed by session id, the continuation prompt feeds back as a normal user message through `run_conversation()`, and codex executes the next turn natively. The goal judge runs via the auxiliary client (configured via `auxiliary.goal_judge` in config.yaml), independent of which runtime is active. The judge's "blocked, needs user input" verdict is a clean escape if codex stalls on approvals.
 
-**One thing to be aware of:** each continuation prompt is a fresh codex turn, which means codex re-evaluates command approval policy from scratch. If you're doing a long-running goal with lots of writes, expect more approval prompts than you'd see on a single in-session task. Set `default_permissions = ":workspace"` (which Hermes does automatically when you enable the runtime) so simple workspace writes don't require prompting.
+**One thing to be aware of:** each continuation prompt is a fresh codex turn, which means codex re-evaluates command approval policy from scratch. Hermes writes `approval_policy = "never"`, `sandbox_mode = "danger-full-access"`, and `default_permissions = ":danger-no-sandbox"` when you enable the runtime, so Codex turns run without sandbox approval prompts unless you change the Codex config.
 
 ### Kanban (multi-agent worktree dispatch)
 
@@ -135,18 +135,18 @@ The kanban tools are gated by `HERMES_KANBAN_TASK` env var the dispatcher sets �
    npm i -g @openai/codex
    codex --version   # 0.130.0 or newer
    ```
-2. **Codex OAuth login.** The codex subprocess reads `~/.codex/auth.json`. Two ways to populate it:
+2. **Codex OAuth login.** The codex subprocess reads `<runtime-codex-home>/auth.json`. By default Hermes uses `~/.hermes/codex-runtime` so it cannot corrupt global `~/.codex/config.toml`:
    ```bash
-   codex login                  # writes tokens to ~/.codex/auth.json
+   CODEX_HOME=~/.hermes/codex-runtime codex login
    ```
-   Hermes' own `hermes auth login codex` writes to `~/.hermes/auth.json` — that's a separate session. **Run `codex login` separately** if you haven't.
+   Hermes' own `hermes auth login codex` writes to `~/.hermes/auth.json` — that's a separate session. **Run `codex login` separately** for the runtime home if you haven't.
 
 3. **(Optional) Install the Codex plugins you want.** When you enable the runtime, Hermes auto-migrates whichever curated plugins you've already installed via Codex CLI:
    ```bash
    codex plugin marketplace add openai-curated
    # then via codex's TUI, install Linear / GitHub / Gmail / etc.
    ```
-   Hermes will discover them and write `[plugins."<name>@openai-curated"]` entries to `~/.codex/config.toml` automatically.
+   Hermes will discover them and write `[plugins."<name>@openai-curated"]` entries to the runtime `config.toml` automatically.
 
 ## Enabling
 
@@ -159,10 +159,10 @@ In a Hermes session:
 That command:
 - Verifies the `codex` CLI is installed (blocks with an install hint if not).
 - Persists `model.openai_runtime: codex_app_server` to your config.yaml.
-- Migrates user MCP servers from `~/.hermes/config.yaml` to `~/.codex/config.toml`.
+- Migrates user MCP servers from `~/.hermes/config.yaml` to the isolated Codex runtime `config.toml`.
 - **Discovers and migrates installed native Codex plugins** (Linear, GitHub, Gmail, Calendar, Canva, etc.) by querying Codex's `plugin/list` RPC.
 - **Registers Hermes' own tools as an MCP server** so the codex subprocess can call back for tools codex doesn't ship with.
-- **Writes `default_permissions = ":workspace"`** so the sandbox allows writes within the workspace without prompting for every operation.
+- **Writes `approval_policy = "never"`, `sandbox_mode = "danger-full-access"`, and `default_permissions = ":danger-no-sandbox"`** so the runtime has full filesystem access without prompting for every operation.
 - Tells you what was migrated. Takes effect on the **next** session — the current cached agent keeps the prior runtime so prompt caches stay valid.
 
 Synonyms: `/codex-runtime on`, `/codex-runtime off`, `/codex-runtime auto`.
@@ -229,13 +229,15 @@ For `apply_patch` (file edit) approvals, Hermes shows a summary of what changed 
 
 Codex has three built-in permission profiles:
 - `:read-only` — no writes; every shell command requires approval
-- `:workspace` — writes within the current workspace allowed without prompts (Hermes' default when you enable the runtime)
-- `:danger-no-sandbox` — no sandbox at all (don't use this unless you understand it)
+- `:workspace` — writes within the current workspace allowed without prompts
+- `:danger-no-sandbox` — no sandbox at all (Hermes' default when you enable the runtime)
 
-You can override the default in `~/.codex/config.toml` outside Hermes' managed block:
+You can override the default in the runtime `config.toml` outside Hermes' managed block:
 
 ```toml
 default_permissions = ":read-only"
+sandbox_mode = "workspace-write"
+approval_policy = "on-request"
 ```
 
 (Hermes will preserve your override on re-migration as long as it lives outside the `# managed by hermes-agent` markers.)
@@ -269,13 +271,15 @@ auxiliary:
 
 The self-improvement review fork inherits the main runtime via `_current_main_runtime()` and Hermes downgrades it from `codex_app_server` to `codex_responses` automatically (so the fork can actually call `memory` and `skill_manage` — Hermes' own agent-loop tools). That fork still uses your subscription auth unless you've routed aux tasks elsewhere.
 
-## Editing `~/.codex/config.toml` safely
+## Editing Runtime `config.toml` Safely
 
 Hermes wraps everything it manages between two marker comments:
 
 ```toml
 # managed by hermes-agent — `hermes codex-runtime migrate` regenerates this section
-default_permissions = ":workspace"
+approval_policy = "never"
+sandbox_mode = "danger-full-access"
+default_permissions = ":danger-no-sandbox"
 [mcp_servers.filesystem]
 ...
 [plugins."github@openai-curated"]
@@ -286,7 +290,7 @@ default_permissions = ":workspace"
 Anything **outside** that block is yours. Re-running migration (via `/codex-runtime codex_app_server` or whenever you toggle the runtime on) replaces the managed block in place but preserves user content above and below it verbatim. This means you can:
 
 - Add your own MCP servers Hermes doesn't know about
-- Override `default_permissions` to `:read-only` if you prefer to be prompted
+- Override `approval_policy`, `sandbox_mode`, or `default_permissions` if you prefer to be prompted
 - Configure codex-only options (model, providers, otel, etc.)
 - Add user-defined permission profiles in `[permissions.<name>]` tables
 
@@ -294,25 +298,23 @@ Anything you add **inside** the managed block will get clobbered on the next mig
 
 ## Multi-profile / multi-tenant setups
 
-By default, Hermes points the codex subprocess at `~/.codex/` regardless of which Hermes profile is active. This means `hermes -p work` and `hermes -p personal` share the same Codex auth, plugins, and config. For most users this is the right behavior — it matches what running `codex` CLI directly would do.
+By default, Hermes points the codex subprocess at `~/.hermes/codex-runtime` (or `<HERMES_HOME>/codex-runtime` when profile-scoped). This keeps Hermes' managed `config.toml` away from global `~/.codex/config.toml`.
 
-If you want per-profile Codex isolation (separate auth, separate installed plugins, separate config), set `CODEX_HOME` explicitly per profile. The cleanest way is to point at a directory under your `HERMES_HOME`:
+If you want a different runtime directory, set `HERMES_CODEX_HOME` explicitly per profile. If you intentionally want to share your normal Codex CLI state, set `CODEX_HOME` and leave `HERMES_CODEX_HOME` unset:
 
 ```bash
 # Inside the work profile, you might wrap hermes:
-CODEX_HOME=~/.hermes/profiles/work/codex hermes chat
+HERMES_CODEX_HOME=~/.hermes/profiles/work/codex hermes chat
 ```
 
-You'll need to re-run `codex login` once with that `CODEX_HOME` set so the OAuth tokens land in the profile-scoped location. After that, `hermes -p work` will operate on isolated Codex state.
-
-We don't auto-scope this because moving an existing user's `~/.codex/` would silently invalidate their Codex CLI auth — anyone who already ran `codex login` would have to re-authenticate. Opt-in feels safer than surprising users.
+You'll need to re-run `codex login` once with that runtime home set so the OAuth tokens land in the profile-scoped location. After that, `hermes -p work` will operate on isolated Codex state.
 
 ## HOME environment variable passthrough
 
 Hermes does NOT rewrite `HOME` when spawning the codex app-server subprocess (we use `os.environ.copy()` and only overlay `CODEX_HOME` and `RUST_LOG`). This means:
 
 - Commands codex runs via its `shell` tool see the real user `HOME` and find `~/.gitconfig`, `~/.gh/`, `~/.aws/`, `~/.npmrc`, etc. correctly.
-- Codex's internal state stays isolated through `CODEX_HOME` (which points at `~/.codex/` by default).
+- Codex's internal state stays isolated through `CODEX_HOME` in the subprocess, resolved from `HERMES_CODEX_HOME`, `CODEX_HOME`, or `~/.hermes/codex-runtime`.
 
 This matches the boundary OpenClaw arrived at after some early experimentation: isolate Codex's state, leave the user's home alone. (Cf. openclaw/openclaw#81562.)
 
@@ -347,7 +349,7 @@ What's NOT migrated:
 
 ## Hermes tool callback (the new MCP server)
 
-Codex's built-in toolset covers shell/file ops/patches but doesn't have web search, browser automation, vision, image generation, etc. To keep those usable in a codex turn, Hermes registers itself as an MCP server in `~/.codex/config.toml`:
+Codex's built-in toolset covers shell/file ops/patches but doesn't have web search, browser automation, vision, image generation, etc. To keep those usable in a codex turn, Hermes registers itself as an MCP server in the runtime `config.toml`:
 
 ```toml
 [mcp_servers.hermes-tools]
@@ -372,7 +374,7 @@ Switch back at any time:
 /codex-runtime auto
 ```
 
-Effective on the next session. The Codex managed block stays in `~/.codex/config.toml` so you can re-enable later without losing config — or remove it manually if you prefer.
+Effective on the next session. The Codex managed block stays in the runtime `config.toml` so you can re-enable later without losing config — or remove it manually if you prefer.
 
 ## Limitations
 

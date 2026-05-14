@@ -1498,7 +1498,7 @@ class AIAgent:
         # both live under ~/.hermes/logs/.  Idempotent, so gateway mode
         # (which creates a new AIAgent per message) won't duplicate handlers.
         from hermes_logging import setup_logging, setup_verbose_logging
-        setup_logging(hermes_home=_hermes_home)
+        setup_logging(hermes_home=get_hermes_home())
 
         if self.verbose_logging:
             setup_verbose_logging()
@@ -15700,6 +15700,9 @@ class AIAgent:
         # shutdown (see _cleanup hook).
         if not hasattr(self, "_codex_session") or self._codex_session is None:
             cwd = getattr(self, "session_cwd", None) or os.getcwd()
+            from hermes_cli.codex_runtime_home import resolve_codex_runtime_home
+
+            codex_home = str(resolve_codex_runtime_home())
             # Approval callback: defer to Hermes' standard prompt flow if a
             # CLI thread has installed one. Gateway / cron contexts get the
             # codex-side fail-closed default.
@@ -15710,6 +15713,7 @@ class AIAgent:
                 approval_callback = None
             self._codex_session = CodexAppServerSession(
                 cwd=cwd,
+                codex_home=codex_home,
                 approval_callback=approval_callback,
             )
 
@@ -15721,6 +15725,11 @@ class AIAgent:
             turn = self._codex_session.run_turn(user_input=user_message)
         except Exception as exc:
             logger.exception("codex app-server turn failed")
+            # Avoid retrying the same broken app-server path indefinitely in
+            # this cached agent. The persisted config is left alone so the
+            # user stays in control; `/codex-runtime auto` is still the
+            # explicit permanent rollback.
+            self.api_mode = "codex_responses"
             # Crash → unconditionally drop the session so the next turn
             # respawns from scratch instead of reusing a dead client.
             try:

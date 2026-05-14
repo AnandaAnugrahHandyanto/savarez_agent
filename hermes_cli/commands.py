@@ -223,8 +223,14 @@ def _build_command_lookup() -> dict[str, CommandDef]:
     lookup: dict[str, CommandDef] = {}
     for cmd in COMMAND_REGISTRY:
         lookup[cmd.name] = cmd
+        underscored_name = cmd.name.replace("-", "_")
+        if underscored_name != cmd.name:
+            lookup[underscored_name] = cmd
         for alias in cmd.aliases:
             lookup[alias] = cmd
+            underscored_alias = alias.replace("-", "_")
+            if underscored_alias != alias:
+                lookup[underscored_alias] = cmd
     return lookup
 
 

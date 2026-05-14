@@ -1,5 +1,5 @@
 """Migrate Hermes' MCP server config and Codex's installed curated plugins
-to the format Codex expects in ~/.codex/config.toml.
+to the format Codex expects in its app-server runtime config.toml.
 
 When the user enables the codex_app_server runtime, the codex subprocess
 runs its own MCP client and its own plugin runtime (Linear, Atlassian,
@@ -8,15 +8,15 @@ be useful, the user's choices need to be visible to codex too. This
 module:
 
   1. Reads Hermes' YAML and writes equivalent [mcp_servers.<name>]
-     entries to ~/.codex/config.toml.
+     entries to the resolved Codex runtime config.toml.
   2. Queries codex's `plugin/list` for the openai-curated marketplace
      and writes [plugins."<name>@<marketplace>"] entries for any plugin
      the user has installed=true on their codex CLI. (This is what
      OpenClaw calls "migrate native codex plugins" — the YouTube-video-
      worthy bit Pash highlighted: Canva, GitHub, Calendar, Gmail
      pre-configured.)
-  3. Writes a [permissions] default profile so users on this runtime
-     don't get an approval prompt on every write attempt.
+  3. Writes Codex's no-sandbox / never-approve defaults so Hermes-managed
+     Codex sessions inherit the same YOLO posture as Hermes approvals.mode=off.
 
 What translates (MCP servers):
   Hermes mcp_servers.<n>.command/args/env  → codex stdio transport
@@ -28,19 +28,27 @@ What does NOT translate (warned + skipped):
   Hermes-specific keys (sampling, etc.) — codex's MCP client has no
   equivalent. Listed in the per-server skipped[] field of the report.
 
-What's NOT migrated (intentional):
-  AGENTS.md — codex respects this file natively in its cwd. Hermes' own
-  AGENTS.md (project-level) is already in the worktree, so codex picks
-  it up without translation. No code needed.
+AGENTS.md handling:
+  Codex respects AGENTS.md natively in its cwd. Hermes also writes the
+  reusable codex-coding-discipline block into the resolved Codex runtime
+  home so the same operating contract is available as both a Hermes skill
+  template and a Codex instruction file.
 """
 
 from __future__ import annotations
 
 import logging
 import os
+import re
+import shutil
+import tempfile
+import tomllib
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
+
+from hermes_cli.codex_runtime_home import resolve_codex_runtime_home
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +62,10 @@ MIGRATION_END_MARKER = (
     "# end hermes-agent managed section"
 )
 
+_TOML_TABLE_RE = re.compile(r"^\s*\[(?!\[)(?P<name>[^\]]+)\]\s*(?:#.*)?$")
+AGENTS_MARKER = "<!-- BEGIN HERMES CODEX CODING DISCIPLINE -->"
+AGENTS_END_MARKER = "<!-- END HERMES CODEX CODING DISCIPLINE -->"
+
 
 @dataclass
 class MigrationReport:
@@ -65,7 +77,11 @@ class MigrationReport:
     migrated_plugins: list[str] = field(default_factory=list)
     plugin_query_error: Optional[str] = None
     wrote_permissions_default: Optional[str] = None
+    agents_path: Optional[Path] = None
+    wrote_agents_file: bool = False
     errors: list[str] = field(default_factory=list)
+    backup_path: Optional[Path] = None
+    validation_error: Optional[str] = None
     written: bool = False
     dry_run: bool = False
 
@@ -75,6 +91,8 @@ class MigrationReport:
             lines.append(f"(dry run) Would write {self.target_path}")
         elif self.written:
             lines.append(f"Wrote {self.target_path}")
+        if self.backup_path:
+            lines.append(f"Backup: {self.backup_path}")
         if self.migrated:
             lines.append(f"Migrated {len(self.migrated)} MCP server(s):")
             for name in self.migrated:
@@ -98,9 +116,57 @@ class MigrationReport:
                 f"Wrote default_permissions = "
                 f"{self.wrote_permissions_default!r}"
             )
+        if self.wrote_agents_file and self.agents_path:
+            lines.append(f"Wrote Codex AGENTS.md instructions: {self.agents_path}")
         for err in self.errors:
-            lines.append(f"⚠ {err}")
+            lines.append(f"⚠ {redact_secrets(err)}")
         return "\n".join(lines)
+
+
+@dataclass
+class RepairReport:
+    """Outcome of a repair pass for an existing Codex config.toml."""
+
+    target_path: Optional[Path] = None
+    corrections: list[str] = field(default_factory=list)
+    errors: list[str] = field(default_factory=list)
+    backup_path: Optional[Path] = None
+    written: bool = False
+    dry_run: bool = False
+
+    def summary(self) -> str:
+        lines: list[str] = []
+        if self.dry_run and self.corrections:
+            lines.append(f"(dry run) Would repair {self.target_path}")
+        elif self.written:
+            lines.append(f"Repaired {self.target_path}")
+        else:
+            lines.append(f"No repair needed for {self.target_path}")
+        if self.backup_path:
+            lines.append(f"Backup: {self.backup_path}")
+        if self.corrections:
+            lines.append("Corrections:")
+            for item in self.corrections:
+                lines.append(f"  - {redact_secrets(item)}")
+        for err in self.errors:
+            lines.append(f"⚠ {redact_secrets(err)}")
+        return "\n".join(lines)
+
+
+def redact_secrets(text: Any) -> str:
+    """Redact likely secret values from user-facing logs and reports."""
+    s = str(text)
+    s = re.sub(
+        r'(?i)([A-Za-z0-9_.-]*(?:API_KEY|TOKEN|SECRET|PASSWORD|AUTH|BEARER|KEY)[A-Za-z0-9_.-]*\s*=\s*)"[^"]*"',
+        r'\1"[REDACTED_SECRET]"',
+        s,
+    )
+    s = re.sub(
+        r"(?i)(Bearer\s+)[A-Za-z0-9._~+/=-]+",
+        r"\1[REDACTED_SECRET]",
+        s,
+    )
+    return s
 
 
 # Hermes keys that codex's MCP schema doesn't support — dropped during
@@ -243,43 +309,266 @@ def _quote_key(key: str) -> str:
     escaped = key.replace("\\", "\\\\").replace('"', '\\"')
     return f'"{escaped}"'
 
+
+def _codex_home_from_env() -> Path:
+    return resolve_codex_runtime_home()
+
+
+def _is_start_marker(line: str) -> bool:
+    stripped = line.strip()
+    lowered = stripped.lower()
+    return (
+        stripped == MIGRATION_MARKER
+        or "begin hermes-agent managed section" in lowered
+        or "managed by hermes-agent" in lowered
+    )
+
+
+def _is_end_marker(line: str) -> bool:
+    return "end hermes-agent managed section" in line.strip().lower()
+
+
+def _table_name(line: str) -> Optional[str]:
+    match = _TOML_TABLE_RE.match(line)
+    if not match:
+        return None
+    return match.group("name").strip()
+
+
+def _iter_table_blocks(toml_text: str) -> list[tuple[Optional[str], list[str]]]:
+    """Split TOML into root/table blocks without parsing it.
+
+    This deliberately works on invalid TOML so repair can remove duplicate
+    table declarations before handing the text to tomllib.
+    """
+    blocks: list[tuple[Optional[str], list[str]]] = []
+    current_name: Optional[str] = None
+    current_lines: list[str] = []
+    for line in toml_text.splitlines(keepends=True):
+        name = _table_name(line)
+        if name is not None:
+            if current_lines:
+                blocks.append((current_name, current_lines))
+            current_name = name
+            current_lines = [line]
+            continue
+        current_lines.append(line)
+    if current_lines:
+        blocks.append((current_name, current_lines))
+    return blocks
+
+
+def _remove_table_blocks(
+    toml_text: str,
+    table_names: set[str],
+) -> tuple[str, list[str]]:
+    if not table_names:
+        return toml_text, []
+    out: list[str] = []
+    removed: list[str] = []
+    for name, block in _iter_table_blocks(toml_text):
+        if name in table_names:
+            removed.append(f"replaced existing [{name}] table")
+            continue
+        out.extend(block)
+    return "".join(out), removed
+
+
+def _dedupe_known_table_blocks(toml_text: str) -> tuple[str, list[str]]:
+    """Remove duplicate table blocks that commonly break Codex config.
+
+    The first occurrence wins. That is the least surprising repair for a
+    user-edited config, and the next migration pass can regenerate Hermes'
+    managed tables from source config.
+    """
+    prefixes = (
+        "plugins.",
+        "mcp_servers.",
+        "projects.",
+        "features",
+        "features.",
+        "permissions",
+        "permissions.",
+    )
+    seen: set[str] = set()
+    out: list[str] = []
+    corrections: list[str] = []
+    for name, block in _iter_table_blocks(toml_text):
+        should_track = bool(name) and any(
+            name == prefix.rstrip(".") or name.startswith(prefix)
+            for prefix in prefixes
+        )
+        if should_track and name in seen:
+            corrections.append(f"removed duplicate [{name}] table")
+            continue
+        if should_track and name:
+            seen.add(name)
+        out.extend(block)
+    return "".join(out), corrections
+
+
+def _remove_root_key_lines(toml_text: str, key: str) -> tuple[str, list[str]]:
+    pattern = re.compile(rf"^\s*{re.escape(key)}\s*=")
+    out: list[str] = []
+    removed = 0
+    in_root = True
+    for line in toml_text.splitlines(keepends=True):
+        if _table_name(line) is not None:
+            in_root = False
+        if in_root and pattern.match(line):
+            removed += 1
+            continue
+        out.append(line)
+    corrections = [f"replaced existing {key} key"] if removed else []
+    return "".join(out), corrections
+
+
+def _set_root_key(toml_text: str, key: str, value: Any) -> str:
+    """Insert a TOML root key before the first table declaration."""
+    line = f"{key} = {_format_toml_value(value)}\n"
+    lines = toml_text.splitlines(keepends=True)
+    first_table = next(
+        (idx for idx, existing in enumerate(lines) if _table_name(existing) is not None),
+        len(lines),
+    )
+    root = lines[:first_table]
+    rest = lines[first_table:]
+    while root and not root[-1].strip():
+        root.pop()
+    if root:
+        root.append(line)
+        root.append("\n")
+    else:
+        root = [line, "\n"]
+    return "".join(root + rest)
+
+
+def _managed_table_names(managed_block: str) -> set[str]:
+    return {
+        name
+        for name, _block in _iter_table_blocks(managed_block)
+        if name is not None
+    }
+
+
+def _validate_toml_text(text: str, path: Path) -> Optional[str]:
+    try:
+        tomllib.loads(text)
+    except Exception as exc:
+        return f"{path}: {exc}"
+    return None
+
+
+def _backup_existing_config(target: Path) -> Optional[Path]:
+    if not target.exists():
+        return None
+    backup_dir = target.parent / "backups"
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+    backup = backup_dir / f"config.toml.hermes.{stamp}.bak"
+    shutil.copy2(target, backup)
+    return backup
+
+
+def _atomic_write_validated_toml(
+    target: Path,
+    text: str,
+    *,
+    backup: bool = True,
+) -> Optional[Path]:
+    validation_error = _validate_toml_text(text, target)
+    if validation_error:
+        raise ValueError(validation_error)
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    backup_path = _backup_existing_config(target) if backup else None
+    tmp_fd, tmp_path_str = tempfile.mkstemp(
+        prefix=".config.toml.", dir=str(target.parent)
+    )
+    tmp_path = Path(tmp_path_str)
+    try:
+        with os.fdopen(tmp_fd, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        tmp_validation_error = _validate_toml_text(
+            tmp_path.read_text(encoding="utf-8"),
+            tmp_path,
+        )
+        if tmp_validation_error:
+            raise ValueError(tmp_validation_error)
+        tmp_path.replace(target)
+        return backup_path
+    except Exception:
+        try:
+            if tmp_path.exists():
+                tmp_path.unlink()
+        except Exception:
+            pass
+        raise
+
+
+def _load_codex_agents_block() -> str:
+    """Load the reusable AGENTS.md block shipped by the optional skill."""
+    from hermes_constants import get_optional_skills_dir
+
+    skill_root = (
+        get_optional_skills_dir(Path(__file__).parent.parent / "optional-skills")
+        / "software-development"
+        / "codex-coding-discipline"
+    )
+    template = skill_root / "templates" / "AGENTS.md"
+    return template.read_text(encoding="utf-8").strip() + "\n"
+
+
+def _apply_agents_block(existing: str, block: str) -> tuple[str, str]:
+    """Insert or replace the managed Codex coding discipline AGENTS block."""
+    pattern = re.compile(
+        rf"{re.escape(AGENTS_MARKER)}.*?{re.escape(AGENTS_END_MARKER)}\n?",
+        flags=re.DOTALL,
+    )
+    if pattern.search(existing):
+        return pattern.sub(block, existing), "updated"
+    if not existing.strip():
+        return block, "created"
+    return existing.rstrip() + "\n\n" + block, "appended"
+
+
+def _write_codex_agents_file(codex_home: Path) -> tuple[Path, bool, Optional[str]]:
+    """Install the reusable AGENTS.md block into the Codex runtime home."""
+    target = codex_home / "AGENTS.md"
+    try:
+        block = _load_codex_agents_block()
+        existing = target.read_text(encoding="utf-8") if target.exists() else ""
+        new_text, _action = _apply_agents_block(existing, block)
+        if new_text == existing:
+            return target, False, None
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(new_text, encoding="utf-8")
+        return target, True, None
+    except Exception as exc:
+        return target, False, redact_secrets(str(exc))
+
 def render_codex_toml_section(
     servers: dict[str, dict],
     plugins: Optional[list[dict]] = None,
     default_permission_profile: Optional[str] = None,
 ) -> str:
     """Render the managed [mcp_servers.<n>] / [plugins.<id>] / [permissions]
-    block for ~/.codex/config.toml.
+    block for the resolved Codex runtime config.toml.
 
     Args:
         servers: dict of MCP server name → translated codex inline-table
         plugins: optional list of {name, marketplace, enabled} for native
             Codex plugins to enable. (E.g. the Linear / Atlassian / Asana
             curated plugins, or per-account ChatGPT apps.)
-        default_permission_profile: when set, write `[permissions] default`
-            so the user doesn't get an approval prompt on every write
-            attempt. Common values: "workspace-write", "read-only",
-            "full-access".
+        default_permission_profile: deprecated for this renderer. Root-level
+            TOML keys must be written before the first table, so migrate()
+            writes default_permissions separately.
     """
     out = [MIGRATION_MARKER]
-    if not servers and not plugins and not default_permission_profile:
-        out.append("# (no MCP servers, plugins, or permissions configured by Hermes)")
+    if not servers and not plugins:
+        out.append("# (no MCP servers or plugins configured by Hermes)")
         out.append(MIGRATION_END_MARKER)
         return "\n".join(out) + "\n"
-
-    if default_permission_profile:
-        # Codex's config schema: `default_permissions` is a top-level
-        # string referencing a profile name. Built-in profile names start
-        # with ":" (":workspace-write", ":read-only", ":full-access"). The
-        # [permissions] table is for *user-defined* named profiles with
-        # structured fields — not what we want.
-        normalized = (
-            default_permission_profile
-            if default_permission_profile.startswith(":")
-            else f":{default_permission_profile}"
-        )
-        out.append("")
-        out.append(f"default_permissions = {_format_toml_value(normalized)}")
 
     if servers:
         for name in sorted(servers.keys()):
@@ -323,12 +612,12 @@ def _strip_existing_managed_block(toml_text: str) -> str:
     saw_end_marker = False
     for line in lines:
         line_stripped_nl = line.rstrip("\n")
-        if line_stripped_nl == MIGRATION_MARKER:
+        if _is_start_marker(line_stripped_nl):
             in_managed = True
             saw_end_marker = False
             continue
         if in_managed:
-            if line_stripped_nl == MIGRATION_END_MARKER:
+            if _is_end_marker(line_stripped_nl):
                 in_managed = False
                 saw_end_marker = True
                 continue
@@ -476,37 +765,49 @@ def migrate(
     codex_home: Optional[Path] = None,
     dry_run: bool = False,
     discover_plugins: bool = True,
-    default_permission_profile: Optional[str] = ":workspace",
+    default_permission_profile: Optional[str] = ":danger-no-sandbox",
+    default_approval_policy: Optional[str] = "never",
+    default_sandbox_mode: Optional[str] = "danger-full-access",
     expose_hermes_tools: bool = True,
+    install_agents_instructions: bool = True,
 ) -> MigrationReport:
     """Translate Hermes mcp_servers config + Codex curated plugins into
-    ~/.codex/config.toml.
+    Hermes' Codex runtime config.toml.
 
     Args:
         hermes_config: full ~/.hermes/config.yaml dict
-        codex_home: override CODEX_HOME (defaults to ~/.codex)
+        codex_home: override runtime Codex home. Defaults to
+            HERMES_CODEX_HOME, CODEX_HOME, or ~/.hermes/codex-runtime.
         dry_run: skip the actual write; report what would happen
         discover_plugins: when True (default), query `plugin/list` against
             the live codex CLI to migrate any installed curated plugins
             into [plugins."<name>@<marketplace>"] entries. Set False to
             skip the subprocess spawn (for tests or restricted environments).
-        default_permission_profile: when set (default ":workspace"), write
+        default_permission_profile: when set (default ":danger-no-sandbox"), write
             top-level `default_permissions = "<name>"` so users on this
-            runtime don't get an approval prompt on every write attempt.
+            runtime get full filesystem access without approval prompts.
             Built-in codex profile names are ":workspace", ":read-only",
             ":danger-no-sandbox" (note the leading ":"). Also accepts a
             user-defined profile name (no leading ":") that the user has
             configured in their own [permissions.<name>] table. Set None
             to leave permissions unset and let codex use its compiled-in
             default (which is read-only).
+        default_approval_policy: when set (default "never"), write
+            `approval_policy = "<value>"` at the TOML root.
+        default_sandbox_mode: when set (default "danger-full-access"), write
+            `sandbox_mode = "<value>"` at the TOML root.
         expose_hermes_tools: when True (default), register Hermes' own
             tool surface (web_search, browser_*, delegate_task, vision,
-            memory, skills, etc.) as an MCP server in ~/.codex/config.toml
+            memory, skills, etc.) as an MCP server in the runtime config.toml
             so the codex subprocess can call back into Hermes for tools
             codex doesn't have built in. Set False to opt out.
+        install_agents_instructions: when True (default), install the
+            reusable Codex coding-discipline AGENTS.md block into the resolved
+            Codex runtime home. The same block is shipped as the
+            codex-coding-discipline optional Hermes skill template.
     """
     report = MigrationReport(dry_run=dry_run)
-    codex_home = codex_home or Path.home() / ".codex"
+    codex_home = codex_home or _codex_home_from_env()
     target = codex_home / "config.toml"
     report.target_path = target
 
@@ -536,7 +837,7 @@ def migrate(
     if discover_plugins and not dry_run:
         plugins, plugin_err = _query_codex_plugins(codex_home=codex_home)
         if plugin_err:
-            report.plugin_query_error = plugin_err
+            report.plugin_query_error = redact_secrets(plugin_err)
         for p in plugins:
             report.migrated_plugins.append(f"{p['name']}@{p['marketplace']}")
 
@@ -558,19 +859,39 @@ def migrate(
 
     # Build the new managed block
     managed_block = render_codex_toml_section(
-        translated, plugins=plugins,
-        default_permission_profile=default_permission_profile,
+        translated,
+        plugins=plugins,
+        default_permission_profile=None,
     )
+    managed_table_names = _managed_table_names(managed_block)
 
     # Read existing codex config if any, strip the prior managed block,
-    # append the new one.
+    # remove any user/outdated tables Hermes is about to manage, append the
+    # new managed table block, then write root-level defaults before the
+    # first table so TOML semantics stay correct.
     if target.exists():
         try:
             existing = target.read_text(encoding="utf-8")
         except Exception as exc:
-            report.errors.append(f"could not read {target}: {exc}")
+            report.errors.append(redact_secrets(f"could not read {target}: {exc}"))
             return report
         without_managed = _strip_existing_managed_block(existing)
+        without_managed, dedupe_corrections = _dedupe_known_table_blocks(
+            without_managed
+        )
+        if dedupe_corrections:
+            logger.info(
+                "repaired duplicate Codex config tables during migration: %s",
+                ", ".join(dedupe_corrections),
+            )
+        without_managed, replaced_tables = _remove_table_blocks(
+            without_managed, managed_table_names
+        )
+        if replaced_tables:
+            logger.info(
+                "replaced Codex config tables during migration: %s",
+                ", ".join(replaced_tables),
+            )
         # Ensure exactly one blank line between user content and managed block
         if without_managed and not without_managed.endswith("\n"):
             without_managed += "\n"
@@ -582,33 +903,79 @@ def migrate(
     else:
         new_text = managed_block
 
+    if default_permission_profile:
+        normalized = (
+            default_permission_profile
+            if default_permission_profile.startswith(":")
+            else f":{default_permission_profile}"
+        )
+        new_text, _ = _remove_root_key_lines(new_text, "default_permissions")
+        new_text = _set_root_key(new_text, "default_permissions", normalized)
+    if default_sandbox_mode:
+        new_text, _ = _remove_root_key_lines(new_text, "sandbox_mode")
+        new_text = _set_root_key(new_text, "sandbox_mode", default_sandbox_mode)
+    if default_approval_policy:
+        new_text, _ = _remove_root_key_lines(new_text, "approval_policy")
+        new_text = _set_root_key(new_text, "approval_policy", default_approval_policy)
+
     if dry_run:
         return report
 
     try:
-        codex_home.mkdir(parents=True, exist_ok=True)
-        # Atomic write: write to a temp file in the same directory then
-        # rename. Same-directory rename is atomic on POSIX and ReplaceFile
-        # on Windows. Avoids leaving a half-written config.toml that
-        # codex would refuse to load if we crash mid-write.
-        import tempfile
-        tmp_fd, tmp_path_str = tempfile.mkstemp(
-            prefix=".config.toml.", dir=str(codex_home)
-        )
-        tmp_path = Path(tmp_path_str)
-        try:
-            with os.fdopen(tmp_fd, "w", encoding="utf-8") as fh:
-                fh.write(new_text)
-            tmp_path.replace(target)
-        except Exception:
-            # Clean up the temp file if the rename didn't happen.
-            try:
-                if tmp_path.exists():
-                    tmp_path.unlink()
-            except Exception:
-                pass
-            raise
+        report.backup_path = _atomic_write_validated_toml(target, new_text)
         report.written = True
     except Exception as exc:
-        report.errors.append(f"could not write {target}: {exc}")
+        report.validation_error = redact_secrets(str(exc))
+        report.errors.append(redact_secrets(f"could not write {target}: {exc}"))
+        return report
+
+    if install_agents_instructions:
+        agents_path, wrote_agents, agents_error = _write_codex_agents_file(codex_home)
+        report.agents_path = agents_path
+        report.wrote_agents_file = wrote_agents
+        if agents_error:
+            report.errors.append(
+                f"could not write Codex AGENTS.md instructions at {agents_path}: {agents_error}"
+            )
+    return report
+
+
+def repair_config(
+    *,
+    codex_home: Optional[Path] = None,
+    dry_run: bool = False,
+) -> RepairReport:
+    """Repair common Codex config.toml duplicate-table failures."""
+    codex_home = codex_home or _codex_home_from_env()
+    target = codex_home / "config.toml"
+    report = RepairReport(target_path=target, dry_run=dry_run)
+    if not target.exists():
+        report.errors.append(f"{target} does not exist")
+        return report
+
+    try:
+        original = target.read_text(encoding="utf-8")
+    except Exception as exc:
+        report.errors.append(redact_secrets(f"could not read {target}: {exc}"))
+        return report
+
+    repaired, corrections = _dedupe_known_table_blocks(original)
+    report.corrections.extend(corrections)
+
+    validation_error = _validate_toml_text(repaired, target)
+    if validation_error:
+        report.errors.append(redact_secrets(validation_error))
+        return report
+
+    if repaired == original:
+        return report
+
+    if dry_run:
+        return report
+
+    try:
+        report.backup_path = _atomic_write_validated_toml(target, repaired)
+        report.written = True
+    except Exception as exc:
+        report.errors.append(redact_secrets(f"could not write {target}: {exc}"))
     return report

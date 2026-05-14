@@ -2,17 +2,24 @@
 
 from __future__ import annotations
 
+import tomllib
 from pathlib import Path
 
 import pytest
 
 from hermes_cli.codex_runtime_plugin_migration import (
+    AGENTS_END_MARKER,
+    AGENTS_MARKER,
     MIGRATION_MARKER,
     MigrationReport,
+    _apply_agents_block,
     _format_toml_value,
     _strip_existing_managed_block,
     _translate_one_server,
+    _write_codex_agents_file,
     migrate,
+    redact_secrets,
+    repair_config,
     render_codex_toml_section,
 )
 
@@ -307,6 +314,21 @@ class TestStripExistingManagedBlock:
 # ---- end-to-end migrate(, expose_hermes_tools=False) ----
 
 class TestMigrate:
+    def test_default_target_is_hermes_isolated_codex_home(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / "hermes-home"
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("HERMES_CODEX_HOME", raising=False)
+        monkeypatch.delenv("CODEX_HOME", raising=False)
+
+        report = migrate({"mcp_servers": {"x": {"command": "y"}}},
+                         discover_plugins=False,
+                         expose_hermes_tools=False,
+                         default_permission_profile=None)
+
+        assert report.target_path == hermes_home / "codex-runtime" / "config.toml"
+        assert report.written
+        assert report.target_path.exists()
+
     def test_no_servers_no_plugins_no_perms_writes_placeholder(self, tmp_path):
         report = migrate({}, codex_home=tmp_path,
                          discover_plugins=False,
@@ -326,8 +348,10 @@ class TestMigrate:
         # Codex's schema: top-level `default_permissions` keying a built-in
         # profile name (prefixed with ":"). NOT a [permissions] section
         # (which is for *user-defined* profiles with structured fields).
-        assert 'default_permissions = ":workspace"' in text
-        assert report.wrote_permissions_default == ":workspace"
+        assert 'default_permissions = ":danger-no-sandbox"' in text
+        assert 'approval_policy = "never"' in text
+        assert 'sandbox_mode = "danger-full-access"' in text
+        assert report.wrote_permissions_default == ":danger-no-sandbox"
 
     def test_explicit_none_permissions_skips_block(self, tmp_path):
         report = migrate({"mcp_servers": {"x": {"command": "y"}}},
@@ -513,6 +537,50 @@ class TestMigrate:
         assert "[mcp_servers.hermes-tools]" not in text
         assert "hermes_tools_mcp_server" not in text
 
+    def test_migration_installs_codex_agents_instructions(self, tmp_path):
+        report = migrate({}, codex_home=tmp_path,
+                         discover_plugins=False,
+                         default_permission_profile=None,
+                         expose_hermes_tools=False)
+
+        agents = tmp_path / "AGENTS.md"
+        assert report.agents_path == agents
+        assert report.wrote_agents_file is True
+        text = agents.read_text(encoding="utf-8")
+        assert AGENTS_MARKER in text
+        assert AGENTS_END_MARKER in text
+        assert "Delegation Contract" in text
+
+    def test_migration_can_skip_codex_agents_instructions(self, tmp_path):
+        report = migrate({}, codex_home=tmp_path,
+                         discover_plugins=False,
+                         default_permission_profile=None,
+                         expose_hermes_tools=False,
+                         install_agents_instructions=False)
+
+        assert report.agents_path is None
+        assert not (tmp_path / "AGENTS.md").exists()
+
+    def test_agents_block_replaces_existing_managed_block(self, tmp_path):
+        first_path, first_wrote, first_error = _write_codex_agents_file(tmp_path)
+        second_path, second_wrote, second_error = _write_codex_agents_file(tmp_path)
+
+        assert first_path == second_path == tmp_path / "AGENTS.md"
+        assert first_wrote is True
+        assert second_wrote is False
+        assert first_error is None
+        assert second_error is None
+        text = first_path.read_text(encoding="utf-8")
+        assert text.count(AGENTS_MARKER) == 1
+
+    def test_apply_agents_block_preserves_user_content(self):
+        block = f"{AGENTS_MARKER}\nmanaged\n{AGENTS_END_MARKER}\n"
+        new_text, action = _apply_agents_block("Keep me.\n", block)
+
+        assert action == "appended"
+        assert new_text.startswith("Keep me.")
+        assert block in new_text
+
     def test_dry_run_doesnt_write(self, tmp_path):
         report = migrate({"mcp_servers": {"x": {"command": "y"}}},
                          codex_home=tmp_path, dry_run=True, expose_hermes_tools=False)
@@ -604,6 +672,85 @@ class TestMigrate:
         # And our managed block is still there with the new content
         assert "[mcp_servers.hermes-mcp]" in final
 
+    def test_existing_plugin_table_is_replaced_not_duplicated(self, tmp_path, monkeypatch):
+        from hermes_cli import codex_runtime_plugin_migration as crpm
+
+        target = tmp_path / "config.toml"
+        target.write_text(
+            'model = "gpt-5.5"\n\n'
+            '[plugins."github@openai-curated"]\n'
+            "enabled = true\n"
+        )
+        monkeypatch.setattr(crpm, "_query_codex_plugins",
+                            lambda codex_home=None, timeout=8.0: (
+                                [{"name": "github", "marketplace": "openai-curated", "enabled": True}],
+                                None,
+                            ))
+
+        report = migrate({}, codex_home=tmp_path, discover_plugins=True,
+                         default_permission_profile=None, expose_hermes_tools=False)
+
+        assert report.written
+        text = target.read_text()
+        assert text.count('[plugins."github@openai-curated"]') == 1
+        tomllib.loads(text)
+
+    def test_existing_hermes_tools_table_is_replaced_not_duplicated(self, tmp_path):
+        target = tmp_path / "config.toml"
+        target.write_text(
+            "[mcp_servers.hermes-tools]\n"
+            'command = "old-python"\n'
+        )
+
+        report = migrate({}, codex_home=tmp_path, discover_plugins=False,
+                         default_permission_profile=None, expose_hermes_tools=True)
+
+        assert report.written
+        text = target.read_text()
+        assert text.count("[mcp_servers.hermes-tools]") == 1
+        assert "hermes_tools_mcp_server" in text
+        tomllib.loads(text)
+
+    def test_old_managed_section_variant_is_replaced_cleanly(self, tmp_path):
+        target = tmp_path / "config.toml"
+        target.write_text(
+            'model = "gpt-5.5"\n\n'
+            "# begin hermes-agent managed section\n"
+            "[mcp_servers.old]\n"
+            'command = "old"\n'
+            "# end hermes-agent managed section\n"
+        )
+
+        migrate({"mcp_servers": {"new": {"command": "newcmd"}}},
+                codex_home=tmp_path, discover_plugins=False,
+                default_permission_profile=None, expose_hermes_tools=False)
+
+        text = target.read_text()
+        assert "mcp_servers.old" not in text
+        assert "[mcp_servers.new]" in text
+        assert text.count("managed") == 2
+        tomllib.loads(text)
+
+    def test_invalid_generated_toml_does_not_overwrite_original(self, tmp_path, monkeypatch):
+        from hermes_cli import codex_runtime_plugin_migration as crpm
+
+        target = tmp_path / "config.toml"
+        original = 'model = "gpt-5.5"\n'
+        target.write_text(original)
+        monkeypatch.setattr(
+            crpm,
+            "render_codex_toml_section",
+            lambda *a, **kw: "[mcp_servers.broken]\ncommand = \n",
+        )
+
+        report = migrate({"mcp_servers": {"broken": {"command": "x"}}},
+                         codex_home=tmp_path, discover_plugins=False,
+                         default_permission_profile=None, expose_hermes_tools=False)
+
+        assert not report.written
+        assert report.validation_error
+        assert target.read_text() == original
+
     def test_skipped_keys_reported(self, tmp_path):
         report = migrate({
             "mcp_servers": {
@@ -635,3 +782,49 @@ class TestMigrate:
         assert "Migrated 2 MCP server(s)" in summary
         assert "- a" in summary
         assert "- b" in summary
+
+
+class TestRepairConfig:
+    def test_repair_duplicate_plugin_table(self, tmp_path):
+        target = tmp_path / "config.toml"
+        target.write_text(
+            'model = "gpt-5.5"\n\n'
+            '[plugins."github@openai-curated"]\n'
+            "enabled = true\n\n"
+            '[plugins."github@openai-curated"]\n'
+            "enabled = true\n"
+        )
+
+        report = repair_config(codex_home=tmp_path)
+
+        assert report.written
+        assert report.backup_path and report.backup_path.exists()
+        assert any("github@openai-curated" in c for c in report.corrections)
+        text = target.read_text()
+        assert text.count('[plugins."github@openai-curated"]') == 1
+        tomllib.loads(text)
+
+    def test_repair_duplicate_features_table(self, tmp_path):
+        target = tmp_path / "config.toml"
+        target.write_text(
+            "[features]\n"
+            "experimental = true\n\n"
+            "[features]\n"
+            "experimental = true\n"
+        )
+
+        report = repair_config(codex_home=tmp_path)
+
+        assert report.written
+        assert any("[features]" in c for c in report.corrections)
+        text = target.read_text()
+        assert text.count("[features]") == 1
+        tomllib.loads(text)
+
+    def test_redacts_secret_values_in_reports(self):
+        text = redact_secrets(
+            'env = { AGENTMAIL_API_KEY = "real-secret", Authorization = "Bearer abc123" }'
+        )
+        assert "real-secret" not in text
+        assert "abc123" not in text
+        assert "[REDACTED_SECRET]" in text

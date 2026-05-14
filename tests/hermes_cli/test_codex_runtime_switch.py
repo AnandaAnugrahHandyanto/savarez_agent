@@ -115,7 +115,17 @@ class TestApply:
             persisted.update(c)
 
         with patch.object(crs, "check_codex_binary_ok",
-                          return_value=(True, "0.130.0")):
+                          return_value=(True, "0.130.0")), \
+             patch("hermes_cli.codex_runtime_plugin_migration.migrate") as mig:
+            mig.return_value.migrated = ["hermes-tools"]
+            mig.return_value.migrated_plugins = []
+            mig.return_value.plugin_query_error = None
+            mig.return_value.wrote_permissions_default = ":danger-no-sandbox"
+            mig.return_value.errors = []
+            mig.return_value.validation_error = None
+            mig.return_value.written = True
+            mig.return_value.backup_path = None
+            mig.return_value.target_path = "/fake/.codex/config.toml"
             r = crs.apply(cfg, "codex_app_server", persist_callback=persist)
         assert r.success
         assert r.new_value == "codex_app_server"
@@ -163,8 +173,11 @@ class TestApply:
             mig.return_value.migrated = ["filesystem", "hermes-tools"]
             mig.return_value.migrated_plugins = []
             mig.return_value.plugin_query_error = None
-            mig.return_value.wrote_permissions_default = ":workspace"
+            mig.return_value.wrote_permissions_default = ":danger-no-sandbox"
             mig.return_value.errors = []
+            mig.return_value.validation_error = None
+            mig.return_value.written = True
+            mig.return_value.backup_path = None
             mig.return_value.target_path = "/fake/.codex/config.toml"
             r = crs.apply(cfg, "codex_app_server")
         assert r.success
@@ -173,7 +186,7 @@ class TestApply:
         assert "Migrated 1 MCP server" in r.message
         assert "filesystem" in r.message
         # Permissions default surfaces
-        assert "Default sandbox: :workspace" in r.message
+        assert "Default sandbox: :danger-no-sandbox" in r.message
         # Hermes tool callback announcement
         assert "via MCP" in r.message
 
@@ -188,19 +201,38 @@ class TestApply:
         assert r.success
         assert not mig.called  # disabling does not migrate
 
-    def test_migration_failure_does_not_block_enable(self):
-        """If MCP migration raises, the runtime change still proceeds —
-        users can manually re-run migration later."""
+    def test_migration_failure_blocks_enable(self):
+        """If MCP migration raises, keep the prior runtime to avoid an
+        app-server startup loop."""
         cfg = {"mcp_servers": {"x": {"command": "y"}}}
         with patch.object(crs, "check_codex_binary_ok",
                           return_value=(True, "0.130.0")), \
              patch("hermes_cli.codex_runtime_plugin_migration.migrate",
                    side_effect=RuntimeError("disk full")):
             r = crs.apply(cfg, "codex_app_server")
-        assert r.success  # change still applied
-        assert r.new_value == "codex_app_server"
-        assert "MCP migration skipped" in r.message
+        assert not r.success
+        assert r.new_value is None
+        assert cfg.get("model", {}).get("openai_runtime") in (None, "")
+        assert "Runtime setting was not changed" in r.message
         assert "disk full" in r.message
+
+    def test_invalid_migration_report_blocks_enable(self):
+        cfg = {"mcp_servers": {"x": {"command": "y"}}}
+        with patch.object(crs, "check_codex_binary_ok",
+                          return_value=(True, "0.130.0")), \
+             patch("hermes_cli.codex_runtime_plugin_migration.migrate") as mig:
+            mig.return_value.migrated = []
+            mig.return_value.migrated_plugins = []
+            mig.return_value.plugin_query_error = None
+            mig.return_value.wrote_permissions_default = None
+            mig.return_value.errors = ["could not write config.toml"]
+            mig.return_value.validation_error = "duplicate key"
+            mig.return_value.written = False
+            r = crs.apply(cfg, "codex_app_server")
+
+        assert not r.success
+        assert cfg.get("model", {}).get("openai_runtime") in (None, "")
+        assert "repair-config" in r.message
 
     def test_binary_check_cached_within_apply(self):
         """check_codex_binary_ok is invoked at most once per apply() call.
@@ -213,7 +245,16 @@ class TestApply:
         cfg = {}
         with patch.object(crs, "check_codex_binary_ok",
                           return_value=(True, "0.130.0")) as bin_check, \
-             patch("hermes_cli.codex_runtime_plugin_migration.migrate"):
+             patch("hermes_cli.codex_runtime_plugin_migration.migrate") as mig:
+            mig.return_value.migrated = []
+            mig.return_value.migrated_plugins = []
+            mig.return_value.plugin_query_error = None
+            mig.return_value.wrote_permissions_default = None
+            mig.return_value.errors = []
+            mig.return_value.validation_error = None
+            mig.return_value.written = True
+            mig.return_value.backup_path = None
+            mig.return_value.target_path = "/fake/.codex/config.toml"
             r = crs.apply(cfg, "codex_app_server")
         assert r.success
         assert bin_check.call_count == 1, (
