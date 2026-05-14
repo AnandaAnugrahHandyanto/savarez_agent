@@ -793,6 +793,11 @@ def _run_chrome_fallback_command(
                 _si = subprocess.STARTUPINFO()
                 _si.dwFlags |= subprocess.STARTF_USESTDHANDLES
                 _popen_extra["startupinfo"] = _si
+            # W2-T14 DEFERRED: per-call subprocess spawn is expensive (audit finding).
+            # Pool not implemented because agent-browser is invoked stdin=DEVNULL
+            # fire-and-forget — no IPC protocol exists to memoize a long-lived worker.
+            # Follow-up options: (1) add daemon mode to agent-browser binary,
+            # (2) warm Chromium user-data-dir pool. See .claude/plan/post-audit-sprint.md.
             proc = subprocess.Popen(
                 full, stdout=stdout_fd, stderr=stderr_fd,
                 stdin=subprocess.DEVNULL, env=browser_env,
@@ -1923,6 +1928,7 @@ def _run_browser_command(
                 _si = subprocess.STARTUPINFO()
                 _si.dwFlags |= subprocess.STARTF_USESTDHANDLES
                 _popen_extra["startupinfo"] = _si
+            # W2-T14 DEFERRED: see comment at the first Popen site above.
             proc = subprocess.Popen(
                 cmd_parts,
                 stdout=stdout_fd,
