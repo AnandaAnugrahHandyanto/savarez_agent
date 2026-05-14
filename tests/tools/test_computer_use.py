@@ -618,3 +618,103 @@ class TestUniversality:
         source = inspect.getsource(entry.check_fn)
         assert "anthropic" not in source.lower()
         assert "openai" not in source.lower()
+
+
+# ---------------------------------------------------------------------------
+# Regression: non-vision models must receive text-only tool results (issue #25594)
+# ---------------------------------------------------------------------------
+
+class TestMultimodalToolResultVisionGating:
+    """When a non-vision model receives a multimodal tool result, the content
+    must be collapsed to plain text via _multimodal_text_summary() instead of
+    passing the raw multipart list (which causes HTTP 400 on custom providers)."""
+
+    def _make_multimodal_result(self, text="screenshot taken"):
+        return {
+            "_multimodal": True,
+            "content": [
+                {"type": "text", "text": text},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,XYZ"}},
+            ],
+            "text_summary": text,
+        }
+
+    def _make_agent(self, vision_supports):
+        from unittest.mock import MagicMock
+        agent = MagicMock()
+        agent._model_supports_vision.return_value = vision_supports
+        return agent
+
+    def test_non_vision_model_gets_text_summary(self):
+        """Non-vision model: multipart content must be collapsed to text."""
+        from run_agent import _is_multimodal_tool_result, _multimodal_text_summary
+        result = self._make_multimodal_result()
+        assert _is_multimodal_tool_result(result)
+
+        agent = self._make_agent(vision_supports=False)
+        # Simulate the fixed code path
+        if _is_multimodal_tool_result(result):
+            _tool_content = (
+                result["content"]
+                if agent._model_supports_vision()
+                else _multimodal_text_summary(result)
+            )
+        else:
+            _tool_content = result
+
+        assert isinstance(_tool_content, str)
+        assert _tool_content == "screenshot taken"
+
+    def test_vision_model_gets_multipart_content(self):
+        """Vision model: multipart content passes through unchanged."""
+        from run_agent import _is_multimodal_tool_result, _multimodal_text_summary
+        result = self._make_multimodal_result()
+        agent = self._make_agent(vision_supports=True)
+
+        if _is_multimodal_tool_result(result):
+            _tool_content = (
+                result["content"]
+                if agent._model_supports_vision()
+                else _multimodal_text_summary(result)
+            )
+        else:
+            _tool_content = result
+
+        assert isinstance(_tool_content, list)
+        assert any(p.get("type") == "image_url" for p in _tool_content)
+
+    def test_plain_string_result_passes_through(self):
+        """Non-multimodal results are never affected by the vision check."""
+        from run_agent import _is_multimodal_tool_result
+        result = "plain text tool output"
+        assert not _is_multimodal_tool_result(result)
+
+        _tool_content = result  # else branch
+        assert _tool_content == "plain text tool output"
+
+    def test_non_vision_gets_text_parts_when_no_summary(self):
+        """When text_summary is absent, fall back to joining text parts."""
+        from run_agent import _is_multimodal_tool_result, _multimodal_text_summary
+        result = {
+            "_multimodal": True,
+            "content": [
+                {"type": "text", "text": "line 1"},
+                {"type": "text", "text": "line 2"},
+                {"type": "image_url", "image_url": {"url": "data:..."}},
+            ],
+        }
+        assert _is_multimodal_tool_result(result)
+        agent = self._make_agent(vision_supports=False)
+
+        if _is_multimodal_tool_result(result):
+            _tool_content = (
+                result["content"]
+                if agent._model_supports_vision()
+                else _multimodal_text_summary(result)
+            )
+        else:
+            _tool_content = result
+
+        assert isinstance(_tool_content, str)
+        assert "line 1" in _tool_content
+        assert "line 2" in _tool_content

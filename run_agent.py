@@ -11096,14 +11096,18 @@ class AIAgent:
             # rather than a raw Python dict.  The Anthropic adapter already
             # accepts content lists; vision-capable OpenAI-compatible servers
             # (mlx-vlm, GPT-4o, …) accept image_url in tool messages natively.
-            # Text-only servers that reject images are handled by the adaptive
-            # _vision_supported recovery in the API retry loop.
+            # Non-vision models (including custom providers unknown to
+            # models.dev) receive a plain-text summary to avoid HTTP 400
+            # errors like "'text' is not set" from OpenAI-compatible APIs.
             # String results pass through unchanged.
-            _tool_content = (
-                function_result["content"]
-                if _is_multimodal_tool_result(function_result)
-                else function_result
-            )
+            if _is_multimodal_tool_result(function_result):
+                _tool_content = (
+                    function_result["content"]
+                    if self._model_supports_vision()
+                    else _multimodal_text_summary(function_result)
+                )
+            else:
+                _tool_content = function_result
             tool_msg = {
                 "role": "tool",
                 "name": name,
@@ -11517,12 +11521,16 @@ class AIAgent:
                     function_result += subdir_hints
 
             # Unwrap _multimodal dicts to an OpenAI-style content list
-            # (see parallel path for rationale). String results pass through.
-            _tool_content = (
-                function_result["content"]
-                if _is_multimodal_tool_result(function_result)
-                else function_result
-            )
+            # (see parallel path for rationale). Non-vision models receive
+            # a plain-text summary. String results pass through unchanged.
+            if _is_multimodal_tool_result(function_result):
+                _tool_content = (
+                    function_result["content"]
+                    if self._model_supports_vision()
+                    else _multimodal_text_summary(function_result)
+                )
+            else:
+                _tool_content = function_result
             tool_msg = {
                 "role": "tool",
                 "name": function_name,
