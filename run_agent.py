@@ -8508,6 +8508,32 @@ class AIAgent:
             raise result["error"]
         return result["response"]
 
+    def get_display_model_name(self) -> str:
+        """Return the model label shown in the UI.
+
+        Prefer the provider-resolved model when available so the status bar
+        and gateway stay aligned with the backend that actually served the
+        request.
+        """
+        return (
+            getattr(self, "_resolved_model", None)
+            or getattr(self, "_resolved_context_model", None)
+            or getattr(self, "model", None)
+            or "unknown"
+        )
+
+    def get_display_context_length(self) -> int:
+        """Return the context window shown in the UI.
+
+        Prefer the resolved model's real context length when we have it.
+        Otherwise fall back to the live compressor window.
+        """
+        resolved_context_length = getattr(self, "_resolved_context_length", None)
+        if resolved_context_length is not None:
+            return resolved_context_length or 0
+        compressor = getattr(self, "context_compressor", None)
+        return getattr(compressor, "context_length", 0) or 0
+
     # ── Provider fallback ──────────────────────────────────────────────────
 
     def _try_activate_fallback(self, reason: "FailoverReason | None" = None) -> bool:
