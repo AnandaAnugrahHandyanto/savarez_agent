@@ -61,6 +61,7 @@ from hermes_cli.workflow import (
     materialize_workflow_to_kanban as workflow_materialize_workflow_to_kanban,
     promote_inbox_item_to_workflow as workflow_promote_inbox_item_to_workflow,
     resolve_workflow_gate_control as workflow_resolve_workflow_gate_control,
+    shape_inbox_item_as_draft_workflow as workflow_shape_inbox_item_as_draft_workflow,
     update_inbox_item_triage as workflow_update_inbox_item_triage,
 )
 from hermes_cli.workflow.store import connect as workflow_connect
@@ -708,6 +709,30 @@ async def create_workflow_inbox_endpoint(request: Request):
             return {"facts": {"inboxItem": item.to_dict()}, "insights": None}
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/api/workflows/inbox/{inbox_item_id}/shape")
+async def shape_workflow_inbox_item_endpoint(inbox_item_id: str, request: Request):
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    try:
+        with workflow_connect() as conn:
+            return workflow_shape_inbox_item_as_draft_workflow(
+                conn,
+                inbox_item_id,
+                workflow_id=payload.get("workflowId"),
+                title=payload.get("title"),
+                description=payload.get("description"),
+                board=str(payload.get("board") or "default"),
+                scale=str(payload.get("scale") or "medium"),
+            )
+    except ValueError as exc:
+        message = str(exc)
+        if message.startswith("workflow inbox item not found:"):
+            raise HTTPException(status_code=404, detail=message)
+        raise HTTPException(status_code=400, detail=message)
 
 
 @app.post("/api/workflows/inbox/{inbox_item_id}/promote")

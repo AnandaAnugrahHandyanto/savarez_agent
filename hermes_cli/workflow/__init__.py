@@ -17,6 +17,7 @@ from .api import (
     materialize_workflow_to_kanban,
     promote_inbox_item_to_workflow,
     resolve_workflow_gate_control,
+    shape_inbox_item_as_draft_workflow,
     update_inbox_item_triage,
 )
 from .dag import DagValidationResult, normalize_dag, validate_dag
@@ -93,6 +94,7 @@ __all__ = [
     "resolve_gate",
     "resolve_workflow_gate_control",
     "save_dag",
+    "shape_inbox_item_as_draft_workflow",
     "update_inbox_item",
     "update_inbox_item_triage",
     "update_workflow_status",

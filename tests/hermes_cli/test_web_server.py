@@ -183,6 +183,38 @@ class TestWebServerEndpoints:
         assert patched["assignedWorkflowId"] == "wf_triaged"
         assert patched["metadata"] == {"labels": ["workflow-system"], "triagedBy": "planner"}
 
+    def test_workflow_inbox_shape_endpoint_returns_core_authored_draft_without_creating_workflow(self):
+        created = self.client.post(
+            "/api/workflows/inbox",
+            json={
+                "title": "Shape from endpoint",
+                "body": "Core should author the draft DAG.",
+                "source": "webui_chat",
+                "classification": "decomposition_worthy",
+                "workspacePath": "/tmp/workspace",
+            },
+        )
+        item_id = created.json()["facts"]["inboxItem"]["id"]
+
+        shaped = self.client.post(
+            f"/api/workflows/inbox/{item_id}/shape",
+            json={"workflowId": "wf_shaped_endpoint", "title": "Endpoint shaped workflow", "board": "core", "scale": "medium"},
+        )
+
+        assert shaped.status_code == 200
+        facts = shaped.json()["facts"]
+        assert facts["draftWorkflow"]["id"] == "wf_shaped_endpoint"
+        assert facts["draftWorkflow"]["workspacePath"] == "/tmp/workspace"
+        assert facts["draftDag"]["workflow_id"] == "wf_shaped_endpoint"
+        assert [node["id"] for node in facts["draftDag"]["nodes"]] == ["shape-plan", "build-slice"]
+        assert self.client.get("/api/workflows?status=dag_draft").json()["facts"]["workflows"] == []
+
+    def test_workflow_inbox_shape_endpoint_returns_404_for_missing_item(self):
+        resp = self.client.post("/api/workflows/inbox/missing/shape", json={"workflowId": "wf_missing"})
+
+        assert resp.status_code == 404
+        assert resp.json()["detail"] == "workflow inbox item not found: missing"
+
     def test_workflow_inbox_promote_endpoint_creates_draft_workflow(self):
         created = self.client.post(
             "/api/workflows/inbox",

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from typing import Any
 
@@ -67,6 +68,69 @@ def update_inbox_item_triage(
     if item is None:
         raise ValueError(f"workflow inbox item not found: {inbox_item_id}")
     return _response({"inboxItem": item.to_dict()})
+
+
+def shape_inbox_item_as_draft_workflow(
+    conn: sqlite3.Connection,
+    inbox_item_id: str,
+    *,
+    workflow_id: str | None = None,
+    title: str | None = None,
+    description: str | None = None,
+    board: str = "default",
+    scale: str = "medium",
+) -> dict[str, Any]:
+    item = get_inbox_item(conn, inbox_item_id)
+    if item is None:
+        raise ValueError(f"workflow inbox item not found: {inbox_item_id}")
+
+    resolved_workflow_id = (workflow_id or item.assigned_workflow_id or _workflow_id_from_inbox_item_id(inbox_item_id)).strip()
+    resolved_title = (title or item.title or resolved_workflow_id).strip()
+    resolved_description = description if description is not None else item.body
+    body = item.body or "Shape and implement the selected inbox item."
+    draft_dag = {
+        "schema_version": 1,
+        "workflow_id": resolved_workflow_id,
+        "name": resolved_title,
+        "scale": scale,
+        "nodes": [
+            {
+                "id": "shape-plan",
+                "title": "Shape plan",
+                "role": "planner",
+                "profile": "planner",
+                "scope": {"summary": f"Shape inbox request: {body}"},
+            },
+            {
+                "id": "build-slice",
+                "title": "Build first slice",
+                "role": "engineer",
+                "profile": "engineer",
+                "parents": ["shape-plan"],
+                "definition_of_done": ["Targeted tests pass."],
+                "scope": {"summary": f"Implement the first useful slice for: {resolved_title}"},
+            },
+        ],
+    }
+    normalized = normalize_dag(draft_dag, policy=DEFAULT_POLICY)
+    if not normalized.ok or normalized.dag is None:
+        first = normalized.errors[0].message if normalized.errors else "unknown validation error"
+        raise ValueError(f"workflow draft DAG is invalid: {first}")
+    return _response(
+        {
+            "inboxItem": item.to_dict(),
+            "draftWorkflow": {
+                "id": resolved_workflow_id,
+                "title": resolved_title,
+                "description": resolved_description,
+                "workspacePath": item.workspace_path,
+                "board": board,
+                "scale": scale,
+                "sourceInboxItemId": inbox_item_id,
+            },
+            "draftDag": normalized.dag,
+        }
+    )
 
 
 def promote_inbox_item_to_workflow(
@@ -369,6 +433,11 @@ def _control_actions(workflow_id: str, workflow: dict[str, Any], gates: list[dic
             }
         )
     return actions
+
+
+def _workflow_id_from_inbox_item_id(inbox_item_id: str) -> str:
+    slug = re.sub(r"[^a-zA-Z0-9]+", "_", inbox_item_id).strip("_")
+    return f"wf_{slug or 'inbox_item'}"
 
 
 def _response(facts: dict[str, Any]) -> dict[str, Any]:

@@ -16,6 +16,7 @@ from hermes_cli.workflow import (
     materialize_workflow_to_kanban,
     promote_inbox_item_to_workflow,
     resolve_workflow_gate_control,
+    shape_inbox_item_as_draft_workflow,
     update_inbox_item_triage,
 )
 from hermes_cli.workflow.materialize import materialize_workflow
@@ -76,8 +77,63 @@ def test_public_workflow_package_exports_read_model_api():
     assert callable(resolve_workflow_gate_control)
     assert callable(materialize_workflow_to_kanban)
     assert callable(promote_inbox_item_to_workflow)
+    assert callable(shape_inbox_item_as_draft_workflow)
     assert callable(update_inbox_item_triage)
 
+
+def test_shape_inbox_item_as_draft_workflow_returns_core_authored_dag_without_mutating_inbox(tmp_path):
+    with connect(tmp_path / "workflow.db") as conn:
+        create_inbox_item(
+            conn,
+            inbox_item_id="inbox_shape",
+            title="Shape this workflow idea",
+            body="Build a durable workflow system path.",
+            source="webui_chat",
+            status="triaged",
+            classification="decomposition_worthy",
+            workspace_path=str(tmp_path),
+            metadata={"labels": ["workflow-system"]},
+            now=2.0,
+        )
+
+        payload = shape_inbox_item_as_draft_workflow(
+            conn,
+            "inbox_shape",
+            workflow_id="wf_shaped",
+            title="Shaped workflow",
+            board="core",
+            scale="medium",
+        )
+        item_after = get_inbox_item_detail(conn, "inbox_shape")["facts"]["inboxItem"]
+        workflows = list_workflow_summaries(conn)["facts"]["workflows"]
+
+    facts = payload["facts"]
+    assert payload["insights"] is None
+    assert facts["inboxItem"]["id"] == "inbox_shape"
+    assert facts["draftWorkflow"] == {
+        "id": "wf_shaped",
+        "title": "Shaped workflow",
+        "description": "Build a durable workflow system path.",
+        "workspacePath": str(tmp_path),
+        "board": "core",
+        "scale": "medium",
+        "sourceInboxItemId": "inbox_shape",
+    }
+    assert facts["draftDag"]["workflow_id"] == "wf_shaped"
+    assert facts["draftDag"]["name"] == "Shaped workflow"
+    assert facts["draftDag"]["scale"] == "medium"
+    assert [node["id"] for node in facts["draftDag"]["nodes"]] == ["shape-plan", "build-slice"]
+    assert facts["draftDag"]["edges"] == [{"source": "shape-plan", "target": "build-slice", "kind": "depends_on"}]
+    assert "Build a durable workflow system path." in facts["draftDag"]["nodes"][0]["scope"]["summary"]
+    assert item_after["status"] == "triaged"
+    assert item_after["assignedWorkflowId"] is None
+    assert workflows == []
+
+
+def test_shape_inbox_item_as_draft_workflow_raises_for_missing_item(tmp_path):
+    with connect(tmp_path / "workflow.db") as conn:
+        with pytest.raises(ValueError, match="workflow inbox item not found: missing"):
+            shape_inbox_item_as_draft_workflow(conn, "missing", workflow_id="wf_missing")
 
 def test_list_inbox_item_summaries_returns_intake_facts_shape_and_filters(tmp_path):
     with connect(tmp_path / "workflow.db") as conn:
