@@ -2266,6 +2266,10 @@ class TestPtyWebSocket:
         q = {"token": tok, **params}
         return f"/api/pty?{urlencode(q)}"
 
+    def _require_real_pty(self):
+        if not self.ws_module._PTY_BRIDGE_AVAILABLE:
+            pytest.skip("PTY bridge optional dependency is unavailable in this test environment")
+
     def test_rejects_when_embedded_chat_disabled(self, monkeypatch):
         monkeypatch.setattr(self.ws_module, "_DASHBOARD_EMBEDDED_CHAT_ENABLED", False)
         from starlette.websockets import WebSocketDisconnect
@@ -2301,7 +2305,24 @@ class TestPtyWebSocket:
                 pass
         assert exc.value.code == 4401
 
+    def test_pty_bridge_available_flag_reflects_optional_dependency(self):
+        from hermes_cli.pty_bridge import PtyBridge
+
+        assert self.ws_module._PTY_BRIDGE_AVAILABLE is PtyBridge.is_available()
+
+    def test_unavailable_posix_dependency_message_mentions_ptyprocess(self, monkeypatch):
+        monkeypatch.setattr(self.ws_module, "_PTY_BRIDGE_AVAILABLE", False)
+        monkeypatch.setattr(sys, "platform", "linux")
+
+        with self.client.websocket_connect(self._url()) as conn:
+            msg = conn.receive_text()
+
+        assert "ptyprocess" in msg
+        assert "pip install" in msg
+        assert "WSL2" not in msg
+
     def test_streams_child_stdout_to_client(self, monkeypatch):
+        self._require_real_pty()
         monkeypatch.setattr(
             self.ws_module,
             "_resolve_chat_argv",
@@ -2330,6 +2351,7 @@ class TestPtyWebSocket:
             assert b"hermes-ws-ok" in buf
 
     def test_client_input_reaches_child_stdin(self, monkeypatch):
+        self._require_real_pty()
         # ``cat`` echoes stdin back, so a write → read round-trip proves
         # the full duplex path.
         monkeypatch.setattr(
@@ -2352,6 +2374,7 @@ class TestPtyWebSocket:
             assert b"round-trip-payload" in buf
 
     def test_resize_escape_is_forwarded(self, monkeypatch):
+        self._require_real_pty()
         # Resize escape gets intercepted and applied via TIOCSWINSZ, then the
         # child reads the TTY ioctl directly. Avoid tput because CI may not set
         # TERM for non-interactive shells.
@@ -2410,6 +2433,7 @@ class TestPtyWebSocket:
             assert "pty missing" in msg or "unavailable" in msg.lower() or "pty" in msg.lower()
 
     def test_resume_parameter_is_forwarded_to_argv(self, monkeypatch):
+        self._require_real_pty()
         captured: dict = {}
 
         def fake_resolve(resume=None, sidecar_url=None):
@@ -2430,6 +2454,7 @@ class TestPtyWebSocket:
         """When /api/pty is opened with ?channel=, the PTY child gets a
         HERMES_TUI_SIDECAR_URL env var pointing back at /api/pub on the
         same channel — which is how tool events reach the dashboard sidebar."""
+        self._require_real_pty()
         captured: dict = {}
 
         def fake_resolve(resume=None, sidecar_url=None):

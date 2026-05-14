@@ -3197,13 +3197,13 @@ async def get_models_analytics(days: int = 30):
 import re
 import asyncio
 
-# PTY bridge is POSIX-only (depends on fcntl/termios/ptyprocess).  On native
-# Windows the import raises; catch and leave PtyBridge=None so the rest of
-# the dashboard (sessions, jobs, metrics, config editor) still loads and the
-# /api/pty endpoint cleanly refuses with a WSL-suggested message.
+# PTY bridge is POSIX-only and depends on optional PTY packages.  On native
+# Windows the import can raise; on POSIX installs missing `ptyprocess`, the
+# module imports but PtyBridge.is_available() is false.  In both cases the rest
+# of the dashboard still loads and /api/pty cleanly refuses with guidance.
 try:
     from hermes_cli.pty_bridge import PtyBridge, PtyUnavailableError
-    _PTY_BRIDGE_AVAILABLE = True
+    _PTY_BRIDGE_AVAILABLE = PtyBridge.is_available()
 except ImportError as _pty_import_err:  # pragma: no cover - Windows-only path
     PtyBridge = None  # type: ignore[assignment]
     _PTY_BRIDGE_AVAILABLE = False
@@ -3325,6 +3325,22 @@ def _channel_or_close_code(ws: WebSocket) -> Optional[str]:
     return channel if _VALID_CHANNEL_RE.match(channel) else None
 
 
+def _pty_unavailable_text() -> str:
+    if sys.platform.startswith("win"):
+        return (
+            "\r\n\x1b[31mChat unavailable: the embedded terminal requires a "
+            "POSIX PTY, which native Windows Python doesn't provide.\x1b[0m\r\n"
+            "\x1b[33mInstall Hermes inside WSL2 to use the dashboard's /chat "
+            "tab — the rest of the dashboard works here.\x1b[0m\r\n"
+        )
+    return (
+        "\r\n\x1b[31mChat unavailable: the embedded terminal requires the "
+        "optional `ptyprocess` package on POSIX systems.\x1b[0m\r\n"
+        "\x1b[33mInstall dashboard PTY support with: pip install ptyprocess "
+        "or pip install -e '.[pty]'.\x1b[0m\r\n"
+    )
+
+
 @app.websocket("/api/pty")
 async def pty_ws(ws: WebSocket) -> None:
     if not _DASHBOARD_EMBEDDED_CHAT_ENABLED:
@@ -3344,15 +3360,10 @@ async def pty_ws(ws: WebSocket) -> None:
 
     await ws.accept()
 
-    # On native Windows, the POSIX PTY bridge can't be imported.  Tell the
-    # client and close cleanly rather than pretending the feature works.
+    # If the PTY bridge cannot run on this platform/install, tell the client
+    # and close cleanly rather than pretending the feature works.
     if not _PTY_BRIDGE_AVAILABLE:
-        await ws.send_text(
-            "\r\n\x1b[31mChat unavailable: the embedded terminal requires a "
-            "POSIX PTY, which native Windows Python doesn't provide.\x1b[0m\r\n"
-            "\x1b[33mInstall Hermes inside WSL2 to use the dashboard's /chat "
-            "tab — the rest of the dashboard works here.\x1b[0m\r\n"
-        )
+        await ws.send_text(_pty_unavailable_text())
         await ws.close(code=1011)
         return
 
