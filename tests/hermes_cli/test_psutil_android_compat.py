@@ -1,5 +1,6 @@
 import io
 import tarfile
+import tempfile
 import urllib.request
 from pathlib import Path
 
@@ -30,8 +31,13 @@ def _fake_urlretrieve(source_archive: Path):
 def test_install_psutil_android_compat_rejects_traversal_archive(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
-    source_archive = tmp_path / "evil.tar.gz"
+    # Set up a controlled inner extraction directory under tmp_path so that a
+    # "../" traversal member would escape to tmp_path (a path we can inspect).
+    inner_dir = tmp_path / "extract_root"
+    inner_dir.mkdir()
     escaped_target = tmp_path / "escaped.txt"
+
+    source_archive = tmp_path / "evil.tar.gz"
     _write_tar(
         source_archive,
         {
@@ -40,6 +46,17 @@ def test_install_psutil_android_compat_rejects_traversal_archive(
         },
     )
 
+    # Monkeypatch tempfile.TemporaryDirectory so the function extracts into
+    # inner_dir (a subdirectory of tmp_path).  A "../" traversal from inner_dir
+    # would land in tmp_path, which we assert remains clean after the call.
+    class _FakeTempDir:
+        def __enter__(self):
+            return str(inner_dir)
+
+        def __exit__(self, *_args):
+            pass
+
+    monkeypatch.setattr(tempfile, "TemporaryDirectory", _FakeTempDir)
     monkeypatch.setattr(urllib.request, "urlretrieve", _fake_urlretrieve(source_archive))
     monkeypatch.setattr(cli_main, "_verify_file_sha256", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(cli_main, "_run_install_with_heartbeat", lambda *_args, **_kwargs: None)
@@ -47,6 +64,8 @@ def test_install_psutil_android_compat_rejects_traversal_archive(
     with pytest.raises(ValueError, match="Unsafe archive member path"):
         cli_main._install_psutil_android_compat(["python", "-m", "pip"])
 
+    # escaped_target lives in tmp_path (the parent of inner_dir).  If the safe
+    # extractor had failed to block the traversal, the file would exist here.
     assert not escaped_target.exists()
 
 
