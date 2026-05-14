@@ -7,9 +7,11 @@ from unittest.mock import patch as mock_patch
 
 import tools.approval as approval_module
 from tools.approval import (
+    _check_crontab_guard,
     _get_approval_mode,
     _smart_approve,
     approve_session,
+    check_all_command_guards,
     detect_dangerous_command,
     is_approved,
     load_permanent,
@@ -1104,34 +1106,45 @@ class TestDetectSudoStdin:
         assert is_dangerous is False
 
 
-class TestDetectDangerousCrontab:
-    """crontab commands must be blocked; agents should use hermes /cron. (#25271)"""
+class TestCrontabHardlineGuard:
+    """crontab commands must be hardline-blocked; agents should use hermes /cron. (#25271)"""
 
     def test_crontab_remove_flag(self):
-        is_dangerous, key, desc = detect_dangerous_command("crontab -r")
-        assert is_dangerous is True
+        is_blocked, desc = _check_crontab_guard("crontab -r")
+        assert is_blocked is True
         assert "crontab" in desc.lower()
 
     def test_crontab_stdin_replace(self):
-        is_dangerous, _, _ = detect_dangerous_command("crontab -")
-        assert is_dangerous is True
+        is_blocked, _ = _check_crontab_guard("crontab -")
+        assert is_blocked is True
 
     def test_crontab_edit(self):
-        is_dangerous, _, _ = detect_dangerous_command("crontab -e")
-        assert is_dangerous is True
+        is_blocked, _ = _check_crontab_guard("crontab -e")
+        assert is_blocked is True
 
     def test_crontab_list(self):
         """Even crontab -l (list) is blocked; agents should use hermes /cron."""
-        is_dangerous, _, _ = detect_dangerous_command("crontab -l")
-        assert is_dangerous is True
+        is_blocked, _ = _check_crontab_guard("crontab -l")
+        assert is_blocked is True
 
     def test_crontab_pipe_pattern(self):
-        is_dangerous, _, _ = detect_dangerous_command(
+        is_blocked, _ = _check_crontab_guard(
             '(crontab -l 2>/dev/null; echo "0 * * * * cmd") | crontab -'
         )
-        assert is_dangerous is True
+        assert is_blocked is True
 
     def test_crontab_word_boundary(self):
         """Ensure 'mycrontab_tool' does not trigger."""
-        is_dangerous, _, _ = detect_dangerous_command("mycrontab_tool --list")
-        assert is_dangerous is False
+        is_blocked, _ = _check_crontab_guard("mycrontab_tool --list")
+        assert is_blocked is False
+
+    def test_crontab_bypasses_yolo(self):
+        """Crontab guard must fire even when yolo mode is enabled."""
+        import os
+        os.environ["HERMES_YOLO_MODE"] = "1"
+        try:
+            result = check_all_command_guards("crontab -r", "local")
+            assert result.get("approved") is False
+            assert "crontab" in result.get("message", "").lower()
+        finally:
+            del os.environ["HERMES_YOLO_MODE"]
