@@ -71,6 +71,50 @@ try:
 except (ImportError, AttributeError):
     _STEADY_CURSOR = None
 
+# --------------------------------------------------------------------------
+# Console-less environment safety net.
+#
+# When hermes runs as a child of a Windows service (NSSM / LocalSystem), the
+# child process has no Win32 console buffer. prompt_toolkit's
+# print_formatted_text() lazily calls create_output() which then raises
+# NoConsoleScreenBufferError, killing the process before AIAgent even starts.
+# We wrap _pt_print so any console-related failure falls back to plain
+# sys.stdout.write — the dispatcher captures stdout regardless, so output is
+# preserved and the agent loop can actually run.
+# --------------------------------------------------------------------------
+try:
+    from prompt_toolkit.output.win32 import NoConsoleScreenBufferError as _PT_NoConsole
+except Exception:
+    class _PT_NoConsole(Exception):  # type: ignore[no-redef]
+        pass
+
+import sys as _sys_for_pt_fallback
+
+
+def _safe_pt_print(text: str) -> None:
+    """print_formatted_text with a plain-stdout fallback for headless services.
+
+    prompt_toolkit fails fatally on Windows when there's no console buffer
+    (e.g. running under a Windows service). We catch that specific error
+    plus any unexpected runtime explosion and degrade gracefully so the
+    process can keep going.
+    """
+    try:
+        _pt_print(_PT_ANSI(text))
+    except _PT_NoConsole:
+        try:
+            _sys_for_pt_fallback.stdout.write(str(text) + "\n")
+            _sys_for_pt_fallback.stdout.flush()
+        except Exception:
+            pass
+    except Exception:
+        # Any other prompt_toolkit/IO failure: don't let a print kill the agent.
+        try:
+            _sys_for_pt_fallback.stdout.write(str(text) + "\n")
+            _sys_for_pt_fallback.stdout.flush()
+        except Exception:
+            pass
+
 try:
     from hermes_cli.pt_input_extras import install_shift_enter_alias, install_ctrl_enter_alias
     install_shift_enter_alias()
@@ -1512,7 +1556,7 @@ def _cprint(text: str):
     try:
         from prompt_toolkit.application import get_app_or_none, run_in_terminal
     except Exception:
-        _pt_print(_PT_ANSI(text))
+        _safe_pt_print(text)
         return
 
     app = None
@@ -1525,7 +1569,7 @@ def _cprint(text: str):
     # direct prompt_toolkit print is safe and matches existing behavior
     # (spinner frames, streamed tokens, tool activity prefixes, …).
     if app is None or not getattr(app, "_is_running", False):
-        _pt_print(_PT_ANSI(text))
+        _safe_pt_print(text)
         return
 
     try:
@@ -1533,7 +1577,7 @@ def _cprint(text: str):
     except Exception:
         loop = None
     if loop is None:
-        _pt_print(_PT_ANSI(text))
+        _safe_pt_print(text)
         return
 
     import asyncio as _asyncio
@@ -1549,7 +1593,7 @@ def _cprint(text: str):
         current_loop = None
     # Same thread as the app's loop → safe to print directly.
     if current_loop is loop and loop.is_running():
-        _pt_print(_PT_ANSI(text))
+        _safe_pt_print(text)
         return
 
     # Cross-thread emission: ask the app's event loop to schedule a
@@ -1558,10 +1602,10 @@ def _cprint(text: str):
     # fails we fall back to a direct print so the line isn't lost.
     def _schedule():
         try:
-            run_in_terminal(lambda: _pt_print(_PT_ANSI(text)))
+            run_in_terminal(lambda: _safe_pt_print(text))
         except Exception:
             try:
-                _pt_print(_PT_ANSI(text))
+                _safe_pt_print(text)
             except Exception:
                 pass
 
@@ -1569,7 +1613,7 @@ def _cprint(text: str):
         loop.call_soon_threadsafe(_schedule)
     except Exception:
         try:
-            _pt_print(_PT_ANSI(text))
+            _safe_pt_print(text)
         except Exception:
             pass
 
