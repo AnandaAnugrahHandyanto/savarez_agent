@@ -290,6 +290,7 @@ class SlackAdapter(BasePlatformAdapter):
         self._bot_user_id: Optional[str] = None
         self._user_name_cache: Dict[str, str] = {}  # user_id → display name
         self._socket_mode_task: Optional[asyncio.Task] = None
+        self._raw_socket_mode_task: Optional[asyncio.Task] = None
         # Multi-workspace support
         self._team_clients: Dict[str, Any] = {}   # team_id → WebClient
         self._team_bot_user_ids: Dict[str, str] = {}          # team_id → bot_user_id
@@ -660,12 +661,22 @@ class SlackAdapter(BasePlatformAdapter):
             ):
                 self._app.action(_action_id)(self._handle_slash_confirm_action)
 
-            # Start Socket Mode handler in background
+            raw_socket_mode_enabled = self._raw_socket_mode_fallback_enabled()
+
+            # Start Socket Mode handler in background. The raw fallback is an
+            # optional second reader for deployments where Bolt's background
+            # Socket Mode task goes stale or misses an envelope. Event dedup in
+            # _handle_slack_message suppresses duplicate replies.
             self._handler = AsyncSocketModeHandler(self._app, app_token, proxy=proxy_url)
             _apply_slack_proxy(self._handler.client, proxy_url)
             self._socket_mode_task = asyncio.create_task(self._handler.start_async())
 
             self._running = True
+            if raw_socket_mode_enabled:
+                self._raw_socket_mode_task = asyncio.create_task(
+                    self._raw_socket_mode_fallback(app_token, proxy_url)
+                )
+                logger.warning("[Slack] Raw Socket Mode fallback enabled")
             logger.info(
                 "[Slack] Socket Mode connected (%d workspace(s))",
                 len(self._team_clients),
@@ -681,6 +692,16 @@ class SlackAdapter(BasePlatformAdapter):
 
     async def disconnect(self) -> None:
         """Disconnect from Slack."""
+        if self._raw_socket_mode_task:
+            self._raw_socket_mode_task.cancel()
+            try:
+                await self._raw_socket_mode_task
+            except asyncio.CancelledError:
+                pass
+            except Exception as e:  # pragma: no cover - defensive logging
+                logger.warning("[Slack] Raw Socket Mode fallback close error: %s", e, exc_info=True)
+            finally:
+                self._raw_socket_mode_task = None
         if self._handler:
             try:
                 await self._handler.close_async()
@@ -691,6 +712,106 @@ class SlackAdapter(BasePlatformAdapter):
         self._release_platform_lock()
 
         logger.info("[Slack] Disconnected")
+
+    def _raw_socket_mode_fallback_enabled(self) -> bool:
+        configured = self.config.extra.get("socket_raw_fallback")
+        if configured is None:
+            configured = os.getenv("SLACK_SOCKET_RAW_FALLBACK", "")
+        return str(configured).strip().lower() in {"1", "true", "yes", "on"}
+
+    async def _raw_socket_mode_fallback(self, app_token: str, proxy_url: Optional[str]) -> None:
+        """Read Slack Socket Mode directly when Bolt's background task misses events."""
+        reconnect_delay = 5
+        while self._running:
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.post(
+                        "https://slack.com/api/apps.connections.open",
+                        headers={"Authorization": f"Bearer {app_token}"},
+                        proxy=proxy_url,
+                        timeout=aiohttp.ClientTimeout(total=20),
+                    ) as response:
+                        payload = await response.json()
+                    if not payload.get("ok") or not payload.get("url"):
+                        logger.warning(
+                            "[Slack] Raw Socket Mode fallback connection failed: %s",
+                            payload.get("error") or response.status,
+                        )
+                        await asyncio.sleep(reconnect_delay)
+                        continue
+
+                    async with session.ws_connect(
+                        payload["url"],
+                        heartbeat=20,
+                        proxy=proxy_url,
+                    ) as websocket:
+                        logger.warning("[Slack] Raw Socket Mode fallback connected")
+                        async for message in websocket:
+                            if not self._running:
+                                break
+                            if message.type == aiohttp.WSMsgType.TEXT:
+                                try:
+                                    envelope = json.loads(message.data)
+                                except json.JSONDecodeError:
+                                    continue
+                                envelope_id = envelope.get("envelope_id")
+                                if envelope_id:
+                                    await websocket.send_json({"envelope_id": envelope_id})
+                                event_payload = envelope.get("payload") or {}
+                                event = event_payload.get("event") or {}
+                                if event_payload.get("team_id") and not event.get("team"):
+                                    event["team"] = event_payload.get("team_id")
+                                event_type = event.get("type")
+                                channel_id = event.get("channel") or ""
+                                event_text = event.get("text") or ""
+                                bot_mentioned = (
+                                    self._bot_user_id
+                                    and f"<@{self._bot_user_id}>" in event_text
+                                )
+                                should_dispatch = (
+                                    event_type == "app_mention"
+                                    or (
+                                        event_type == "message"
+                                        and (
+                                            channel_id.startswith("D")
+                                            or bot_mentioned
+                                        )
+                                    )
+                                )
+                                if should_dispatch:
+                                    if (
+                                        event_type in {"message", "app_mention"}
+                                        and not channel_id.startswith("D")
+                                        and event.get("ts")
+                                        and (bot_mentioned or event_type == "app_mention")
+                                    ):
+                                        event["_hermes_dedup_key"] = f"mentioned:{event.get('ts')}"
+                                    logger.info(
+                                        "[Slack] Raw Socket Mode fallback dispatch: %s channel=%s ts=%s",
+                                        event_type,
+                                        channel_id,
+                                        event.get("ts"),
+                                    )
+                                    event_for_handler = dict(event)
+                                    task = asyncio.create_task(self._handle_slack_message(event_for_handler))
+                                    task.add_done_callback(self._log_raw_fallback_dispatch_result)
+                            elif message.type in {aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR}:
+                                break
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:  # pragma: no cover - network watchdog
+                if self._running:
+                    logger.warning("[Slack] Raw Socket Mode fallback error: %s", e, exc_info=True)
+            if self._running:
+                await asyncio.sleep(reconnect_delay)
+
+    def _log_raw_fallback_dispatch_result(self, task: asyncio.Task) -> None:
+        try:
+            task.result()
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:  # pragma: no cover - diagnostic callback
+            logger.warning("[Slack] Raw Socket Mode fallback dispatch failed: %s", e, exc_info=True)
 
     def _get_client(self, chat_id: str) -> Any:
         """Return the workspace-specific WebClient for a channel."""
@@ -1710,8 +1831,28 @@ class SlackAdapter(BasePlatformAdapter):
 
     async def _handle_slack_message(self, event: dict) -> None:
         """Handle an incoming Slack message event."""
-        # Dedup: Slack Socket Mode can redeliver events after reconnects (#4777)
-        event_ts = event.get("ts", "")
+        # Dedup: Slack Socket Mode can redeliver events after reconnects (#4777).
+        # Slack can emit both `message` and `app_mention` envelopes for the same
+        # channel @mention. Normalize mentioned channel posts to one key so the
+        # agent only gets one turn even when Bolt or a raw Socket Mode fallback
+        # delivers both envelopes.
+        event_ts = event.get("_hermes_dedup_key")
+        if not event_ts:
+            raw_ts = event.get("ts", "")
+            raw_text = event.get("text", "")
+            raw_channel = event.get("channel", "")
+            raw_mentioned = bool(
+                raw_ts
+                and not raw_channel.startswith("D")
+                and (
+                    event.get("type") == "app_mention"
+                    or (
+                        self._bot_user_id
+                        and f"<@{self._bot_user_id}>" in raw_text
+                    )
+                )
+            )
+            event_ts = f"mentioned:{raw_ts}" if raw_mentioned else raw_ts
         if event_ts and self._dedup.is_duplicate(event_ts):
             return
 
