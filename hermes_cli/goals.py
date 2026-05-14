@@ -110,6 +110,13 @@ JUDGE_USER_PROMPT_WITH_SUBGOALS_TEMPLATE = (
     "Additional criteria the user added mid-loop (all must also be "
     "satisfied for the goal to be DONE):\n{subgoals_block}\n\n"
     "Agent's most recent response:\n{response}\n\n"
+    "Decision: For each numbered criterion above, find concrete "
+    "evidence in the agent's response that the criterion is "
+    "satisfied. Do not accept generic phrases like 'all requirements "
+    "met' or 'implying it was done' — require specific evidence (a "
+    "file contents excerpt, an output line, a command result). If "
+    "ANY criterion lacks specific evidence in the response, the goal "
+    "is NOT done — return CONTINUE.\n\n"
     "Is the goal AND every additional criterion satisfied?"
 )
 
