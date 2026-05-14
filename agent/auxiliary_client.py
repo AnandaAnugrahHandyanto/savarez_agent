@@ -1410,15 +1410,21 @@ def _try_openrouter(explicit_api_key: str = None) -> Tuple[Optional[OpenAI], Opt
             return None, None
         base_url = _pool_runtime_base_url(entry, OPENROUTER_BASE_URL) or OPENROUTER_BASE_URL
         logger.debug("Auxiliary client: OpenRouter via pool")
+        _model = _OPENROUTER_MODEL
+        if _main_model_has_free_suffix():
+            _model = f"{_model}:free"
         return OpenAI(api_key=or_key, base_url=base_url,
-                       default_headers=build_or_headers()), _OPENROUTER_MODEL
+                       default_headers=build_or_headers()), _model
 
     or_key = explicit_api_key or os.getenv("OPENROUTER_API_KEY")
     if not or_key:
         return None, None
     logger.debug("Auxiliary client: OpenRouter")
+    _model = _OPENROUTER_MODEL
+    if _main_model_has_free_suffix():
+        _model = f"{_model}:free"
     return OpenAI(api_key=or_key, base_url=OPENROUTER_BASE_URL,
-                   default_headers=build_or_headers()), _OPENROUTER_MODEL
+                   default_headers=build_or_headers()), _model
 
 
 def _describe_openrouter_unavailable() -> str:
@@ -1465,6 +1471,10 @@ def _try_nous(vision: bool = False) -> Tuple[Optional[OpenAI], Optional[str]]:
     # _NOUS_MODEL (google/gemini-3-flash-preview) when the Portal is unreachable
     # or returns a null recommendation for this task type.
     model = _NOUS_MODEL
+    if not vision and _main_model_has_free_suffix():
+        # User configured a :free model — choose a free-tier fallback instead
+        # of the paid _NOUS_MODEL when the Portal recommendation is absent.
+        model = f"{model}:free"
     try:
         from hermes_cli.models import get_nous_recommended_aux_model
         recommended = get_nous_recommended_aux_model(vision=vision)
@@ -1579,6 +1589,16 @@ def clear_runtime_main() -> None:
     global _RUNTIME_MAIN_PROVIDER, _RUNTIME_MAIN_MODEL
     _RUNTIME_MAIN_PROVIDER = ""
     _RUNTIME_MAIN_MODEL = ""
+
+
+def _main_model_has_free_suffix() -> bool:
+    """Check if the user's configured main model has a :free suffix.
+
+    When the user sets ``model.default: deepseek-v4-flash:free``, this returns
+    True so that auxiliary fallback paths preserve the ``:free`` tier.
+    """
+    model = _read_main_model()
+    return bool(model and model.endswith(":free"))
 
 
 def _resolve_custom_runtime() -> Tuple[Optional[str], Optional[str], Optional[str]]:
