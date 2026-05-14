@@ -5,7 +5,7 @@ version: 1.0.0
 metadata:
   hermes:
     tags: [japanese, jlpt, vocabulary, grammar, kanji, japonca, study, quiz, N5, N4, N3, N2, N1]
-    related_skills: [japanese-turkish-dict]
+    related_skills: [japanese-turkish-dict, jisho]
 ---
 
 # JLPT Çalışma Asistanı

@@ -5,7 +5,7 @@ version: 1.0.0
 metadata:
   hermes:
     tags: [japanese, turkish, dictionary, sözlük, japonca, türkçe, 日本語, translation, çeviri]
-    related_skills: []
+    related_skills: [jisho, jlpt-study]
 ---
 
 # Japonca-Türkçe Sözlük
