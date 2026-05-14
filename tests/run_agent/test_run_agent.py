@@ -5353,3 +5353,64 @@ class TestMemoryProviderTurnStart:
         import inspect
         src = inspect.getsource(AIAgent.run_conversation)
         assert "on_turn_start(self._user_turn_count" in src
+
+
+class TestResolvedMemoryContextInjection:
+    """End-to-end checks for config-gated memory packet injection."""
+
+    class _FakeMemoryManager:
+        def __init__(self, context):
+            self.context = context
+            self.turn_starts = []
+            self.prefetch_queries = []
+
+        def on_turn_start(self, turn_count, user_message):
+            self.turn_starts.append((turn_count, user_message))
+
+        def prefetch_all(self, query):
+            self.prefetch_queries.append(query)
+            return self.context
+
+    def _run_and_capture_api_messages(self, agent, *, packet_builder_enabled):
+        captured = {}
+        agent._memory_packet_builder_enabled = packet_builder_enabled
+        agent._memory_manager = self._FakeMemoryManager(
+            "# Facts\nDarwin is local\n# Preferences\nJuan prefers direct Spanish"
+        )
+        agent._persist_session = lambda *args, **kwargs: None
+        agent._save_trajectory = lambda *args, **kwargs: None
+        agent._save_session_log = lambda *args, **kwargs: None
+
+        def _fake_api_call(api_kwargs):
+            captured["messages"] = api_kwargs["messages"]
+            return _mock_response(content="ok")
+
+        agent._interruptible_api_call = _fake_api_call
+        result = agent.run_conversation("hola")
+        assert result["completed"] is True
+        return captured["messages"]
+
+    def test_packet_builder_off_injects_raw_memory_in_user_message_only(self, agent):
+        api_messages = self._run_and_capture_api_messages(agent, packet_builder_enabled=False)
+        assert api_messages[0]["role"] == "system"
+        assert "Darwin is local" not in api_messages[0]["content"]
+
+        user_messages = [m for m in api_messages if m.get("role") == "user"]
+        assert len(user_messages) == 1
+        content = user_messages[0]["content"]
+        assert "<memory-context>" in content
+        assert "Darwin is local" in content
+        assert "# Resolved Memory Context" not in content
+
+    def test_packet_builder_on_injects_resolved_memory_in_user_message_only(self, agent):
+        api_messages = self._run_and_capture_api_messages(agent, packet_builder_enabled=True)
+        assert api_messages[0]["role"] == "system"
+        assert "# Resolved Memory Context" not in api_messages[0]["content"]
+
+        user_messages = [m for m in api_messages if m.get("role") == "user"]
+        assert len(user_messages) == 1
+        content = user_messages[0]["content"]
+        assert "<memory-context>" in content
+        assert "# Resolved Memory Context" in content
+        assert "Darwin is local" in content
+        assert content.count("Darwin is local") == 1

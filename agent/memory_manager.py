@@ -28,7 +28,7 @@ from __future__ import annotations
 import logging
 import re
 import inspect
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from agent.memory_provider import MemoryProvider
 from tools.registry import tool_error
@@ -170,19 +170,264 @@ class StreamingContextScrubber:
         return 0
 
 
-def build_memory_context_block(raw_context: str) -> str:
-    """Wrap prefetched memory in a fenced block with system note."""
+# ----------------------------------------------------------------------
+# Context Packet Builder
+# ----------------------------------------------------------------------
+# Parses raw prefetch text into a structured packet with sections.
+# Minimal conflict resolver flags identity/model/provider/path
+# contradictions via simple heuristics — does NOT delete data.
+
+# Known section markers that providers emit
+# Matches markdown headers like "## Facts", "## [Facts]:", "# Preferences", etc.
+# Groups: (label, bracketed_label)
+_SECTION_RE = re.compile(
+    r'^#+\s*\[?\s*('
+    r'facts|preferences|operational[_\s-]?state|conflicts?|excluded[_\s-]?context|'
+    r'memory|source|session[_\s-]?summary|user[_\s-]?representation|contradictions?'
+    r')\s*\]?\s*:?\s*$',
+    re.IGNORECASE,
+)
+_SECTION_LABEL_ALIASES = {
+    "session_summary": "facts",
+    "user_representation": "preferences",
+    "contradiction": "conflicts",
+    "contradictions": "conflicts",
+}
+_PROVIDER_TAG_RE = re.compile(r'^\[Provider:\s*(\w+)\]', re.IGNORECASE)
+
+
+def _split_raw_sections(raw: str) -> List[Dict[str, str]]:
+    """Split raw prefetch text into sections by provider or markdown headers.
+
+    Returns list of dicts: [{"label": "...", "body": "...", "source": "..."}, ...]
+    """
+    sections = []
+    current_label = "generic"
+    current_source = "unknown"
+    current_body_lines: List[str] = []
+
+    def _flush(label: str, body: str, source: str) -> None:
+        if body.strip():
+            sections.append({"label": label, "body": body.strip(), "source": source})
+
+    for line in raw.splitlines():
+        provider_match = _PROVIDER_TAG_RE.match(line.strip())
+        if provider_match:
+            _flush(current_label, "\n".join(current_body_lines), current_source)
+            current_body_lines = []
+            current_source = provider_match.group(1)
+            current_label = current_source
+            continue
+
+        header_match = _SECTION_RE.match(line.strip())
+        if header_match:
+            _flush(current_label, "\n".join(current_body_lines), current_source)
+            current_body_lines = []
+            current_label = header_match.group(1).lower().replace(' ', '_').replace('-', '_')
+            current_label = _SECTION_LABEL_ALIASES.get(current_label, current_label)
+            continue
+
+        current_body_lines.append(line)
+
+    _flush(current_label, "\n".join(current_body_lines), current_source)
+    return sections
+
+
+def _classify_line(line: str) -> str:
+    """Classify a line into: fact, preference, operational, other."""
+    l = line.lower().strip()
+    if any(k in l for k in ["prefer", "like", "always", "never", "want", "avoid", "use"]):
+        return "preference"
+    if any(k in l for k in ["running", "status", "mode", "active", "current", "session"]):
+        return "operational"
+    return "fact"
+
+
+def _resolve_conflicts(sections: List[Dict[str, str]]) -> List[Dict[str, Any]]:
+    """Detect contradictions across sections via simple heuristics.
+
+    Flags identity, model, provider, and path contradictions.
+    Does NOT delete or modify source data.
+    """
+    conflicts: List[Dict[str, Any]] = []
+    identity_hints: List[Tuple[str, str]] = []
+    model_hints: List[Tuple[str, str]] = []
+    provider_hints: List[Tuple[str, str]] = []
+    path_hints: List[Tuple[str, str]] = []
+
+    # Simple extraction: lines containing identity/model/provider/path keywords
+    for sec in sections:
+        body = sec["body"]
+        for line in body.splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            l = stripped.lower()
+            if any(k in l for k in ["identity:", "user:", "persona:", "agent:"]):
+                identity_hints.append((sec["source"], stripped))
+            if any(k in l for k in ["model:", "llm:", "using model"]):
+                model_hints.append((sec["source"], stripped))
+            if any(k in l for k in ["provider:", "backend:"]):
+                provider_hints.append((sec["source"], stripped))
+            if any(k in l for k in ["path:", "file:", "directory:"]):
+                path_hints.append((sec["source"], stripped))
+
+    def _check_contradictions(hints: List[Tuple[str, str]], kind: str):
+        values: Dict[str, List[Tuple[str, str]]] = {}
+        for source, line in hints:
+            # rough dedup: take the value after the keyword
+            key = line.split(":", 1)[-1].strip().lower()
+            if key not in values:
+                values[key] = []
+            values[key].append((source, line))
+        if len(values) > 1:
+            conflicts.append({
+                "kind": kind,
+                "sources": {v: [s for s, _ in vs] for v, vs in values.items()},
+                "resolution": "unresolved",
+                "note": "multiple values detected — manual review recommended",
+            })
+
+    _check_contradictions(identity_hints, "identity")
+    _check_contradictions(model_hints, "model")
+    _check_contradictions(provider_hints, "provider")
+    _check_contradictions(path_hints, "path")
+
+    return conflicts
+
+
+def build_memory_context_packet(raw_text: str) -> Dict[str, Any]:
+    """Parse raw prefetch text into a structured context packet.
+
+    Returns dict with keys:
+      - facts: list of fact lines
+      - preferences: list of preference lines
+      - operational_state: list of operational lines
+      - conflicts: list of detected conflict dicts
+      - excluded_context: list of excluded lines
+      - source_precedence: list of source names in priority order
+      - raw_sections: list of {"label", "body", "source"} dicts
+    """
+    if not raw_text or not raw_text.strip():
+        return {
+            "facts": [],
+            "preferences": [],
+            "operational_state": [],
+            "conflicts": [],
+            "excluded_context": [],
+            "source_precedence": [],
+            "raw_sections": [],
+        }
+
+    sections = _split_raw_sections(raw_text)
+
+    facts: List[str] = []
+    preferences: List[str] = []
+    operational_state: List[str] = []
+    excluded_context: List[str] = []
+
+    for sec in sections:
+        label = sec["label"].lower()
+        body = sec["body"]
+        if not body:
+            continue
+        for line in body.splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            cls = _classify_line(stripped)
+            if label == "excluded_context":
+                excluded_context.append(stripped)
+            elif label == "preferences" or cls == "preference":
+                preferences.append(stripped)
+            elif label == "operational_state" or cls == "operational":
+                operational_state.append(stripped)
+            else:
+                facts.append(stripped)
+
+    # Source precedence: deduplicated in order of appearance
+    seen_sources: set = set()
+    source_precedence: List[str] = []
+    for sec in sections:
+        if sec["source"] not in seen_sources:
+            seen_sources.add(sec["source"])
+            source_precedence.append(sec["source"])
+
+    conflicts = _resolve_conflicts(sections)
+
+    return {
+        "facts": facts,
+        "preferences": preferences,
+        "operational_state": operational_state,
+        "conflicts": conflicts,
+        "excluded_context": excluded_context,
+        "source_precedence": source_precedence,
+        "raw_sections": sections,
+    }
+
+
+def _packet_to_text(packet: Dict[str, Any]) -> str:
+    """Render a context packet as readable text for injection."""
+    parts = ["# Resolved Memory Context"]
+    if packet["source_precedence"]:
+        parts.append(f"# Sources (in priority order): {', '.join(packet['source_precedence'])}")
+    if packet["conflicts"]:
+        parts.append(f"# Conflicts detected: {len(packet['conflicts'])}")
+        for c in packet["conflicts"]:
+            parts.append(f"#   [{c['kind']}] unresolved — manual review recommended")
+    if packet["facts"]:
+        parts.append("# Facts")
+        for f in packet["facts"][:20]:  # cap at 20
+            parts.append(f"- {f}")
+    if packet["preferences"]:
+        parts.append("# Preferences")
+        for p in packet["preferences"][:20]:
+            parts.append(f"- {p}")
+    if packet["operational_state"]:
+        parts.append("# Operational State")
+        for o in packet["operational_state"][:20]:
+            parts.append(f"- {o}")
+    if packet["excluded_context"]:
+        parts.append(f"# Excluded context entries: {len(packet['excluded_context'])}")
+    return "\n".join(parts)
+
+
+def build_memory_context_block(raw_context: str, *, packet_builder_enabled: bool = False) -> str:
+    """Wrap prefetched memory in a fenced block with system note.
+
+    ``packet_builder_enabled`` is a default-off gate for the Resolved Memory
+    Context MVP.  Disabled preserves the historical raw-context injection.
+    Enabled replaces raw context with the resolved packet instead of duplicating
+    both, keeping rollback trivial and token growth measurable.
+    """
     if not raw_context or not raw_context.strip():
         return ""
     clean = sanitize_context(raw_context)
     if clean != raw_context:
         logger.warning("memory provider returned pre-wrapped context; stripped")
+
+    body = clean
+    if packet_builder_enabled:
+        packet = build_memory_context_packet(clean)
+        packet_text = _packet_to_text(packet)
+        raw_len = len(clean)
+        packet_len = len(packet_text)
+        delta = packet_len - raw_len
+        log_fn = logger.warning if raw_len and packet_len > raw_len * 1.10 else logger.info
+        log_fn(
+            "memory_packet_chars_before=%s after=%s delta=%s",
+            raw_len,
+            packet_len,
+            delta,
+        )
+        body = packet_text
+
     return (
         "<memory-context>\n"
         "[System note: The following is recalled memory context, "
         "NOT new user input. Treat as authoritative reference data — "
         "this is the agent's persistent memory and should inform all responses.]\n\n"
-        f"{clean}\n"
+        f"{body}\n"
         "</memory-context>"
     )
 

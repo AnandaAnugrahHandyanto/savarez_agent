@@ -1971,6 +1971,7 @@ class AIAgent:
         self._memory_enabled = False
         self._user_profile_enabled = False
         self._memory_nudge_interval = 10
+        self._memory_packet_builder_enabled = False
         self._turns_since_memory = 0
         self._iters_since_skill = 0
         if not skip_memory:
@@ -1979,6 +1980,12 @@ class AIAgent:
                 self._memory_enabled = mem_config.get("memory_enabled", False)
                 self._user_profile_enabled = mem_config.get("user_profile_enabled", False)
                 self._memory_nudge_interval = int(mem_config.get("nudge_interval", 10))
+                _packet_cfg = mem_config.get("packet_builder", {}) if isinstance(mem_config, dict) else {}
+                if isinstance(_packet_cfg, dict):
+                    _packet_enabled = _packet_cfg.get("enabled", False)
+                    self._memory_packet_builder_enabled = (
+                        str(_packet_enabled).strip().lower() in {"1", "true", "yes", "on"}
+                    )
                 if self._memory_enabled or self._user_profile_enabled:
                     from tools.memory_tool import MemoryStore
                     self._memory_store = MemoryStore(
@@ -12297,7 +12304,12 @@ class AIAgent:
                 if idx == current_turn_user_idx and msg.get("role") == "user":
                     _injections = []
                     if _ext_prefetch_cache:
-                        _fenced = build_memory_context_block(_ext_prefetch_cache)
+                        _fenced = build_memory_context_block(
+                            _ext_prefetch_cache,
+                            packet_builder_enabled=getattr(
+                                self, "_memory_packet_builder_enabled", False
+                            ),
+                        )
                         if _fenced:
                             _injections.append(_fenced)
                     if _plugin_user_context:
