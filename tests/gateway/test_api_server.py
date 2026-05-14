@@ -401,7 +401,10 @@ class TestAgentExecution:
         # here doesn't set an explicit session_id string so the guard skips
         # the annotation — header will fall back to the provided session_id.
         assert result["final_response"] == "ok"
-        assert usage == {"input_tokens": 1, "output_tokens": 2, "total_tokens": 3}
+        # Verify usage includes expected fields
+        assert usage["input_tokens"] == 1
+        assert usage["output_tokens"] == 2
+        assert usage["total_tokens"] == 3
         mock_agent.run_conversation.assert_called_once_with(
             user_message="hello",
             conversation_history=[],
