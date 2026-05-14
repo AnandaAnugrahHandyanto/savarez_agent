@@ -3250,7 +3250,7 @@ class AIAgent:
                 # provider-specific paths (e.g. Bedrock static table, OpenRouter API)
                 # are invoked for the correct client, not inherited from the main model.
                 provider=(_aux_cfg_provider if _aux_cfg_provider and _aux_cfg_provider != "auto" else getattr(self, "provider", "")),
-                custom_providers=self._custom_providers,
+                custom_providers=getattr(self, "_custom_providers", None),
             )
 
             # Hard floor: the auxiliary compression model must have at least
@@ -4268,6 +4268,7 @@ class AIAgent:
             except Exception:
                 pass
             review_agent = None
+            review_session_messages = []
             try:
                 with open(os.devnull, "w", encoding="utf-8") as _devnull, \
                      contextlib.redirect_stdout(_devnull), \
@@ -4373,6 +4374,8 @@ class AIAgent:
                     finally:
                         clear_thread_tool_whitelist()
 
+                    review_session_messages = getattr(review_agent, "_session_messages", [])
+
                     # Tear down memory providers while stdout is still
                     # redirected so background thread teardown (Honcho flush,
                     # Hindsight sync, etc.) stays silent.  The finally block
@@ -4394,7 +4397,7 @@ class AIAgent:
                 # re-surface stale "created"/"updated" messages from the prior
                 # conversation as if they just happened (issue #14944).
                 actions = self._summarize_background_review_actions(
-                    getattr(review_agent, "_session_messages", []),
+                    review_session_messages,
                     messages_snapshot,
                 )
 

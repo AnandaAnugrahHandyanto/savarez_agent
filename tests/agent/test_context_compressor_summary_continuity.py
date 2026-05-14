@@ -10,7 +10,7 @@ def _compressor() -> ContextCompressor:
         return ContextCompressor(
             model="test/model",
             threshold_percent=0.85,
-            protect_first_n=1,
+            protect_first_n=0,
             protect_last_n=1,
             quiet_mode=True,
         )
@@ -31,6 +31,7 @@ def _messages_with_handoff(summary_body: str):
         {"role": "assistant", "content": "new assistant work after resume"},
         {"role": "user", "content": "more new work after resume"},
         {"role": "assistant", "content": "latest tail response"},
+        {"role": "user", "content": "final user turn forcing compression"},
     ]
 
 
