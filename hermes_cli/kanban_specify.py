@@ -7,6 +7,8 @@ the auxiliary LLM to produce:
   * A tightened title (optional — only replaces if the model proposes a
     materially different one)
   * A concrete body: goal, proposed approach, acceptance criteria
+  * An assignee suggestion drawn from the worker profile roster
+  * A list of short, lowercase, hyphenated routing labels
 
 and then flips the task ``triage -> todo`` via
 ``kanban_db.specify_triage_task``. The dispatcher promotes it to
@@ -20,9 +22,20 @@ Design notes
   Keeps the surface area tiny and the failure modes predictable.
 
 * The prompt is a short system + user pair. We ask for JSON with
-  ``{title, body}``; if parsing fails, we fall back to treating the
-  whole response as the body and leave the title untouched. No
-  retry loop — one shot, keep cost bounded.
+  ``{title, body, assignee_suggestion, labels}``; if parsing fails,
+  we fall back to treating the whole response as the body and leave
+  the title untouched. No retry loop — one shot, keep cost bounded.
+
+* The ``assignee_suggestion`` is a *suggestion only*. A downstream
+  routing engine may override it. The DB write only fills the
+  assignee column when it was previously empty (see
+  ``specify_triage_task``).
+
+* ``labels`` are short routing/cost tags (e.g. ``long-running``,
+  ``review-only``, ``parallel-fan-out``). A parallel migration is
+  adding a dedicated ``labels`` column to ``tasks``; until that
+  lands, the DB layer falls back to recording them in the
+  ``specified`` event payload so nothing is lost.
 
 * Structured output / JSON mode is not requested explicitly so the
   specifier works on providers that don't implement it. The parse
@@ -35,7 +48,7 @@ import json
 import logging
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 
 from hermes_cli import kanban_db as kb
@@ -43,16 +56,30 @@ from hermes_cli import kanban_db as kb
 logger = logging.getLogger(__name__)
 
 
+_PROFILE_ROSTER = (
+    "h2coder",
+    "h2architect",
+    "h2dispatch",
+    "h2librarian",
+    "h2reviewer",
+    "h2research",
+    "h2simple",
+    "ruflo-swarm",
+)
+
+
 _SYSTEM_PROMPT = """You are the Kanban triage specifier for the Hermes Agent board.
 A user dropped a rough idea into the Triage column. Your job is to turn it
 into a concrete, actionable task spec that an autonomous worker can pick up
 and execute without further clarification.
 
-Output a single JSON object with exactly two keys:
+Output a single JSON object with exactly four keys:
 
   {
     "title": "<tightened task title, <= 80 chars, imperative voice>",
-    "body":  "<multi-line spec, see structure below>"
+    "body":  "<multi-line spec, see structure below>",
+    "assignee_suggestion": "<one of the profile names below, or null>",
+    "labels": ["<short-tag>", "..."]
   }
 
 The body MUST include these sections, each prefixed with a bold markdown
@@ -63,6 +90,28 @@ heading, in this order:
   **Acceptance criteria** — checklist of concrete, verifiable conditions.
   **Out of scope** — short list of things NOT to touch (omit if nothing
       obvious; never invent scope creep).
+
+Worker profile roster (pick the best fit for ``assignee_suggestion``):
+  - h2coder        — general code changes, bug fixes, refactors.
+  - h2architect    — system design, multi-module redesigns, RFCs.
+  - h2dispatch     — coordination, scheduling, dispatcher/board mechanics.
+  - h2librarian    — docs, READMEs, comment cleanups, knowledge curation.
+  - h2reviewer     — review-only or audit-only inspection passes.
+  - h2research     — investigation, write-ups, no-code analysis tasks.
+  - h2simple       — small, well-scoped chores a junior worker can finish.
+  - ruflo-swarm    — long-running parallel fan-out across many subtasks.
+
+If no profile is a clear fit, set ``assignee_suggestion`` to ``null`` —
+do NOT guess. A downstream routing engine may override your suggestion.
+
+Labels are short, lowercase, hyphenated routing/cost tags. Prefer these
+when they apply, but free-form tags are fine when none match:
+
+  long-running, autopilot, audit-only, review-only, large,
+  parallel-fan-out, est-hours-high
+
+Keep ``labels`` empty (``[]``) rather than inventing tags that don't add
+information. 1–5 labels is a healthy range; never exceed 10.
 
 Rules:
   - Keep the tightened title close in meaning to the original idea — do
@@ -90,6 +139,13 @@ class SpecifyOutcome:
     ok: bool
     reason: str = ""
     new_title: Optional[str] = None
+    # Best-guess profile name proposed by the LLM. ``None`` when the model
+    # declined to commit (the recommended behaviour when no profile is a
+    # clear fit). A downstream routing engine may override this.
+    assignee_suggestion: Optional[str] = None
+    # Short, lowercase, hyphenated routing/cost tags. Empty list when the
+    # model produced no usable labels.
+    labels: list[str] = field(default_factory=list)
 
 
 def _truncate(text: str, limit: int) -> str:
@@ -120,6 +176,76 @@ def _extract_json_blob(raw: str) -> Optional[dict]:
     if not isinstance(val, dict):
         return None
     return val
+
+
+_LABEL_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+# Cap on labels per task — guards against runaway model output. Anything
+# past this is silently dropped (we don't error: a noisy label list still
+# lets the rest of the spec through).
+_MAX_LABELS = 10
+_MAX_LABEL_LEN = 40
+
+
+def _normalize_label(raw: object) -> Optional[str]:
+    """Coerce a single label to the canonical ``lowercase-hyphenated`` form.
+
+    Accepts mild deviations (uppercase, surrounding whitespace, snake_case,
+    spaces) and silently rejects strings that can't be cleaned up. Returning
+    ``None`` instead of raising keeps a single bad label from poisoning the
+    whole batch.
+    """
+    if not isinstance(raw, str):
+        return None
+    cleaned = raw.strip().lower()
+    # Convert spaces/underscores to hyphens; collapse repeats.
+    cleaned = re.sub(r"[\s_]+", "-", cleaned)
+    cleaned = re.sub(r"-+", "-", cleaned).strip("-")
+    if not cleaned or len(cleaned) > _MAX_LABEL_LEN:
+        return None
+    if not _LABEL_RE.match(cleaned):
+        return None
+    return cleaned
+
+
+def _normalize_labels(raw: object) -> list[str]:
+    """Coerce the model's ``labels`` field to a clean, de-duplicated list.
+
+    Order is preserved (first occurrence wins). Caps at ``_MAX_LABELS``;
+    silently drops non-string entries and labels that fail the lowercase-
+    hyphenated regex.
+    """
+    if not isinstance(raw, list):
+        return []
+    seen: set[str] = set()
+    out: list[str] = []
+    for item in raw:
+        norm = _normalize_label(item)
+        if norm is None or norm in seen:
+            continue
+        seen.add(norm)
+        out.append(norm)
+        if len(out) >= _MAX_LABELS:
+            break
+    return out
+
+
+def _normalize_assignee_suggestion(raw: object) -> Optional[str]:
+    """Validate the model's ``assignee_suggestion`` against the roster.
+
+    Returns the canonical profile name when the suggestion matches a known
+    profile (case-insensitive, whitespace-tolerant), or ``None`` otherwise.
+    ``None`` is the right default for an off-roster guess — we never want
+    to write a bogus profile name into the assignee column.
+    """
+    if not isinstance(raw, str):
+        return None
+    cleaned = raw.strip().lower()
+    if not cleaned:
+        return None
+    for name in _PROFILE_ROSTER:
+        if cleaned == name.lower():
+            return name
+    return None
 
 
 def _profile_author() -> str:
@@ -207,10 +333,13 @@ def specify_task(
 
     new_title: Optional[str]
     new_body: Optional[str]
+    assignee_suggestion: Optional[str] = None
+    labels: list[str] = []
     if parsed is None:
         # Fall back: treat the whole reply as the body, leave title as-is.
         # Worst case the user edits afterward — still better than stranding
-        # the task in triage on a malformed LLM reply.
+        # the task in triage on a malformed LLM reply. No assignee/labels
+        # are inferable from prose, so leave them at their defaults.
         stripped_raw = raw.strip()
         if not stripped_raw:
             return SpecifyOutcome(
@@ -233,6 +362,10 @@ def specify_task(
             return SpecifyOutcome(
                 task_id, False, "LLM response missing title and body"
             )
+        assignee_suggestion = _normalize_assignee_suggestion(
+            parsed.get("assignee_suggestion")
+        )
+        labels = _normalize_labels(parsed.get("labels"))
 
     with kb.connect() as conn:
         ok = kb.specify_triage_task(
@@ -240,6 +373,8 @@ def specify_task(
             task_id,
             title=new_title,
             body=new_body,
+            assignee_suggestion=assignee_suggestion,
+            labels=labels,
             author=author or _profile_author(),
         )
     if not ok:
@@ -248,7 +383,14 @@ def specify_task(
         return SpecifyOutcome(
             task_id, False, "task moved out of triage before promotion"
         )
-    return SpecifyOutcome(task_id, True, "specified", new_title=new_title)
+    return SpecifyOutcome(
+        task_id,
+        True,
+        "specified",
+        new_title=new_title,
+        assignee_suggestion=assignee_suggestion,
+        labels=labels,
+    )
 
 
 def list_triage_ids(*, tenant: Optional[str] = None) -> list[str]:

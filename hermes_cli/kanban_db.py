@@ -2799,6 +2799,8 @@ def specify_triage_task(
     *,
     title: Optional[str] = None,
     body: Optional[str] = None,
+    assignee_suggestion: Optional[str] = None,
+    labels: Optional[list[str]] = None,
     author: Optional[str] = None,
 ) -> bool:
     """Flesh out a triage task and promote it to ``todo``.
@@ -2813,15 +2815,54 @@ def specify_triage_task(
     dispatcher tick, which keeps the normal parent-gating behaviour intact
     for specified tasks that happen to have open parents.
 
+    ``assignee_suggestion`` is a *suggestion only*. It is written into the
+    ``assignee`` column ONLY when the task currently has no assignee — we
+    never overwrite an existing assignee, since a human (or a routing
+    engine) may already have made a deliberate choice. A downstream
+    routing engine may still override this on a later pass.
+
+    ``labels`` are short routing/cost tags. If the ``tasks.labels`` column
+    exists (added by a parallel migration), labels are stored there as a
+    JSON array. If it doesn't exist, we fall back to a ``tasks.metadata``
+    column (also JSON, with labels nested under the ``labels`` key) when
+    that column is present. If neither column exists, labels are recorded
+    in the ``specified`` event payload so they're recoverable from the
+    audit log.
+
     ``author`` is recorded on an audit comment only when at least one of
-    ``title`` / ``body`` actually changed — avoids noisy comment spam for
+    the writable fields actually changed — avoids noisy comment spam for
     status-only promotions.
     """
     if title is not None and not title.strip():
         raise ValueError("title cannot be blank")
+    # Decide up-front whether we have a ``labels`` or ``metadata`` column to
+    # write into. PRAGMA is cheap (single round-trip, no locking) so doing
+    # it here keeps the SQL builder below tidy. Cached schema lookups would
+    # be a micro-optimisation we don't need yet — specify is rare.
+    task_cols = {
+        row["name"] for row in conn.execute("PRAGMA table_info(tasks)")
+    }
+    has_labels_col = "labels" in task_cols
+    has_metadata_col = "metadata" in task_cols
+    norm_labels: Optional[list[str]] = None
+    if labels is not None:
+        # Defensive normalisation at the DB boundary too: callers should
+        # have already cleaned the list, but a bogus entry here would
+        # corrupt the stored JSON.
+        norm_labels = [
+            str(label).strip()
+            for label in labels
+            if isinstance(label, str) and str(label).strip()
+        ]
+    norm_assignee_suggestion: Optional[str] = None
+    if assignee_suggestion is not None:
+        cleaned = assignee_suggestion.strip()
+        if cleaned:
+            norm_assignee_suggestion = cleaned
     with write_txn(conn):
         existing = conn.execute(
-            "SELECT title, body FROM tasks WHERE id = ? AND status = 'triage'",
+            "SELECT title, body, assignee FROM tasks "
+            "WHERE id = ? AND status = 'triage'",
             (task_id,),
         ).fetchone()
         if existing is None:
@@ -2837,6 +2878,51 @@ def specify_triage_task(
             sets.append("body = ?")
             params.append(body)
             changed_fields.append("body")
+        # Only fill assignee when it's currently empty — never overwrite
+        # an existing one. A pre-existing assignee may have come from the
+        # user (CLI ``--assignee``) or a routing engine; both take
+        # precedence over an LLM suggestion.
+        if (
+            norm_assignee_suggestion is not None
+            and not (existing["assignee"] or "")
+        ):
+            sets.append("assignee = ?")
+            params.append(_canonical_assignee(norm_assignee_suggestion))
+            changed_fields.append("assignee")
+        # Labels: prefer a dedicated ``labels`` column when present, then
+        # ``metadata`` (storing ``{"labels": [...]}``); if neither exists
+        # the payload of the ``specified`` event below carries the labels.
+        labels_payload_for_event: Optional[list[str]] = None
+        if norm_labels is not None:
+            if has_labels_col:
+                sets.append("labels = ?")
+                params.append(json.dumps(norm_labels, ensure_ascii=False))
+                changed_fields.append("labels")
+            elif has_metadata_col:
+                # Merge into any existing metadata so we don't clobber
+                # unrelated fields the routing engine may also write.
+                existing_meta_row = conn.execute(
+                    "SELECT metadata FROM tasks WHERE id = ?",
+                    (task_id,),
+                ).fetchone()
+                meta: dict[str, Any] = {}
+                if existing_meta_row and existing_meta_row["metadata"]:
+                    try:
+                        loaded = json.loads(existing_meta_row["metadata"])
+                        if isinstance(loaded, dict):
+                            meta = loaded
+                    except (ValueError, TypeError):
+                        meta = {}
+                meta["labels"] = norm_labels
+                sets.append("metadata = ?")
+                params.append(json.dumps(meta, ensure_ascii=False))
+                changed_fields.append("labels")
+            else:
+                # No persistent home for labels yet — embed them in the
+                # 'specified' event payload below so they're recoverable.
+                labels_payload_for_event = norm_labels
+                if norm_labels:
+                    changed_fields.append("labels")
         params.append(task_id)
         cur = conn.execute(
             f"UPDATE tasks SET {', '.join(sets)} "
@@ -2863,11 +2949,22 @@ def specify_triage_task(
                     int(time.time()),
                 ),
             )
+        event_payload: Optional[dict[str, Any]] = None
+        if changed_fields or labels_payload_for_event is not None:
+            event_payload = {}
+            if changed_fields:
+                event_payload["changed_fields"] = changed_fields
+            if labels_payload_for_event is not None:
+                # Fallback storage: keeps labels recoverable from the
+                # audit log when no schema column is available. Same key
+                # shape as the metadata fallback (``labels``) for
+                # downstream consistency.
+                event_payload["labels"] = labels_payload_for_event
         _append_event(
             conn,
             task_id,
             "specified",
-            {"changed_fields": changed_fields} if changed_fields else None,
+            event_payload,
         )
     # Outside the write_txn above, so we don't nest BEGIN IMMEDIATE — the
     # ready-promotion pass opens its own IMMEDIATE txn. This runs the same

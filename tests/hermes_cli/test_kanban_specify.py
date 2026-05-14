@@ -335,3 +335,208 @@ def test_cli_specify_author_passed_through(kanban_home, capsys):
     with kb.connect() as conn:
         comments = kb.list_comments(conn, tid)
     assert comments and comments[0].author == "custom-agent"
+
+
+# ---------------------------------------------------------------------------
+# Phase-1 triage layer: assignee_suggestion + labels
+# ---------------------------------------------------------------------------
+
+def test_normalize_label_canonical_form():
+    # Lowercase hyphenated strings pass through unchanged.
+    assert spec._normalize_label("long-running") == "long-running"
+    # Uppercase / whitespace / underscores normalised to lowercase hyphens.
+    assert spec._normalize_label("Long_Running") == "long-running"
+    assert spec._normalize_label("  audit only  ") == "audit-only"
+    assert spec._normalize_label("PARALLEL FAN OUT") == "parallel-fan-out"
+    # Rejects unsalvageable input.
+    assert spec._normalize_label("") is None
+    assert spec._normalize_label("   ") is None
+    assert spec._normalize_label("has/slashes") is None
+    assert spec._normalize_label(42) is None
+    assert spec._normalize_label(None) is None
+    # Caps overly long labels (over 40 chars).
+    assert spec._normalize_label("a" * 41) is None
+
+
+def test_normalize_labels_dedupes_and_caps():
+    raw = ["long-running", "Long_Running", "audit-only", "review-only"]
+    # ``Long_Running`` collapses to a duplicate of ``long-running`` — dropped.
+    assert spec._normalize_labels(raw) == [
+        "long-running", "audit-only", "review-only",
+    ]
+    # Non-list returns empty list (defensive).
+    assert spec._normalize_labels("long-running") == []
+    assert spec._normalize_labels(None) == []
+    # Caps at _MAX_LABELS.
+    huge = [f"tag-{i}" for i in range(spec._MAX_LABELS + 5)]
+    assert len(spec._normalize_labels(huge)) == spec._MAX_LABELS
+
+
+def test_normalize_assignee_suggestion_matches_roster():
+    # Roster names match case-insensitively.
+    assert spec._normalize_assignee_suggestion("h2coder") == "h2coder"
+    assert spec._normalize_assignee_suggestion("H2Coder") == "h2coder"
+    assert spec._normalize_assignee_suggestion("  ruflo-swarm  ") == "ruflo-swarm"
+    # Off-roster names are rejected (returns None).
+    assert spec._normalize_assignee_suggestion("random-agent") is None
+    assert spec._normalize_assignee_suggestion("") is None
+    assert spec._normalize_assignee_suggestion(None) is None
+    assert spec._normalize_assignee_suggestion(42) is None
+
+
+def test_specify_task_parses_four_field_output(kanban_home):
+    """The LLM now emits {title, body, assignee_suggestion, labels} —
+    all four must be carried through to the outcome and persisted."""
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="rough", triage=True)
+
+    content = jsonlib.dumps({
+        "title": "Refined title",
+        "body": "**Goal**\nDo the thing.",
+        "assignee_suggestion": "h2coder",
+        "labels": ["long-running", "review-only"],
+    })
+    p, _ = _patch_aux_client(content)
+    with p:
+        outcome = spec.specify_task(tid, author="ace")
+
+    assert outcome.ok is True
+    assert outcome.new_title == "Refined title"
+    assert outcome.assignee_suggestion == "h2coder"
+    assert outcome.labels == ["long-running", "review-only"]
+
+
+def test_specify_task_fills_empty_assignee_with_suggestion(kanban_home):
+    """When the task has no assignee, the LLM suggestion lands in
+    the assignee column."""
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="rough", triage=True)
+        # Sanity check — no pre-existing assignee.
+        assert kb.get_task(conn, tid).assignee in (None, "")
+
+    content = jsonlib.dumps({
+        "title": "Refined",
+        "body": "spec body",
+        "assignee_suggestion": "h2librarian",
+        "labels": [],
+    })
+    p, _ = _patch_aux_client(content)
+    with p:
+        outcome = spec.specify_task(tid)
+
+    assert outcome.ok is True
+    with kb.connect() as conn:
+        task = kb.get_task(conn, tid)
+    assert task.assignee == "h2librarian"
+
+
+def test_specify_task_preserves_existing_assignee(kanban_home):
+    """A pre-existing assignee MUST NOT be overwritten by the LLM
+    suggestion — humans / routing engines win."""
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="rough",
+            triage=True,
+            assignee="h2architect",  # already set by a human / earlier pass
+        )
+
+    content = jsonlib.dumps({
+        "title": "Refined",
+        "body": "spec body",
+        "assignee_suggestion": "h2coder",  # different suggestion — should be ignored
+        "labels": [],
+    })
+    p, _ = _patch_aux_client(content)
+    with p:
+        outcome = spec.specify_task(tid)
+
+    assert outcome.ok is True
+    # The outcome still reports what the LLM suggested (so callers /
+    # downstream routing can see it) — but the DB row keeps the original.
+    assert outcome.assignee_suggestion == "h2coder"
+    with kb.connect() as conn:
+        task = kb.get_task(conn, tid)
+    assert task.assignee == "h2architect"
+
+
+def test_specify_task_off_roster_suggestion_is_dropped(kanban_home):
+    """If the model invents a profile name not on the roster, we
+    refuse to write it — better empty than wrong."""
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="rough", triage=True)
+
+    content = jsonlib.dumps({
+        "title": "Refined",
+        "body": "spec body",
+        "assignee_suggestion": "totally-made-up-profile",
+        "labels": ["long-running"],
+    })
+    p, _ = _patch_aux_client(content)
+    with p:
+        outcome = spec.specify_task(tid)
+
+    assert outcome.ok is True
+    assert outcome.assignee_suggestion is None
+    with kb.connect() as conn:
+        task = kb.get_task(conn, tid)
+    assert task.assignee in (None, "")
+
+
+def test_specify_task_labels_fallback_when_column_missing(kanban_home):
+    """When the ``tasks.labels`` column doesn't exist yet (the parallel
+    schema migration hasn't landed), labels must still be recorded —
+    we fall back to the 'specified' event payload so they're not lost."""
+    # Sanity: confirm the column is not present in the freshly-initialised
+    # test DB. This is the precondition for the fallback path.
+    with kb.connect() as conn:
+        cols = {row["name"] for row in conn.execute("PRAGMA table_info(tasks)")}
+    assert "labels" not in cols, (
+        "this test requires the labels column to be absent — once the "
+        "parallel migration lands, update this test to assert the labels "
+        "column path instead"
+    )
+
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="rough", triage=True)
+
+    content = jsonlib.dumps({
+        "title": "Refined",
+        "body": "spec body",
+        "assignee_suggestion": None,
+        "labels": ["long-running", "parallel-fan-out"],
+    })
+    p, _ = _patch_aux_client(content)
+    with p:
+        outcome = spec.specify_task(tid)
+
+    assert outcome.ok is True
+    # Outcome carries the cleaned labels regardless of where they're stored.
+    assert outcome.labels == ["long-running", "parallel-fan-out"]
+
+    # When ``labels`` column is missing, the labels live on the
+    # ``specified`` event payload.
+    with kb.connect() as conn:
+        events = kb.list_events(conn, tid)
+    spec_ev = next(e for e in events if e.kind == "specified")
+    assert spec_ev.payload is not None
+    assert spec_ev.payload.get("labels") == ["long-running", "parallel-fan-out"]
+    # And the change is reflected in changed_fields so audit comments
+    # surface "labels" as an updated field.
+    assert "labels" in (spec_ev.payload.get("changed_fields") or [])
+
+
+def test_specify_task_falls_back_body_only_clears_assignee_and_labels(kanban_home):
+    """When JSON parsing fails entirely, we still promote the task but
+    we don't invent an assignee suggestion or labels from prose."""
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="keep title", triage=True)
+
+    content = "no JSON here — just prose."
+    p, _ = _patch_aux_client(content)
+    with p:
+        outcome = spec.specify_task(tid)
+
+    assert outcome.ok is True
+    assert outcome.assignee_suggestion is None
+    assert outcome.labels == []
