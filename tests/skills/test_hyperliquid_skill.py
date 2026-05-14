@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import sys
 from pathlib import Path
 from unittest.mock import patch
+
+import pytest
 
 
 SCRIPT_PATH = (
@@ -402,3 +405,43 @@ def test_main_export_json_skips_funding_for_spot(tmp_path, monkeypatch, capsys):
     assert rendered["summary"]["funding_count"] == 0
     assert saved["source"]["market_type"] == "spot"
     assert saved["funding_history"] == []
+
+
+@pytest.mark.skipif(
+    not (hasattr(os, "O_NOFOLLOW") and os.open in os.supports_dir_fd),
+    reason="Platform does not support dir_fd / O_NOFOLLOW (e.g. Windows)",
+)
+def test_export_rejects_parent_dir_symlink_toctou(tmp_path, monkeypatch):
+    """openat walk rejects a symlink injected into a parent dir after validation.
+
+    This simulates the TOCTOU window: validation passes at T1 (exports/ is a
+    real directory), an attacker replaces exports/ with a symlink at T2, and
+    the write attempt at T3 is blocked by O_NOFOLLOW on the "exports" segment.
+    """
+    mod = load_module()
+
+    safe_root = tmp_path / "safe"
+    safe_root.mkdir()
+    outside_dir = tmp_path / "outside"
+    outside_dir.mkdir()
+
+    monkeypatch.setenv("HERMES_WRITE_SAFE_ROOT", str(safe_root))
+
+    # "exports" inside safe_root is now a symlink pointing outside — this
+    # represents the attacker-injected symlink that appeared after T1.
+    exports_link = safe_root / "exports"
+    exports_link.symlink_to(outside_dir)
+
+    # Bypass _validate_export_path (which would catch the symlink at validation
+    # time) to directly exercise the openat walk, mimicking the race window.
+    nominal_output = safe_root / "exports" / "out.json"
+    with patch.object(mod, "_validate_export_path", return_value=nominal_output):
+        try:
+            mod._write_json_file(nominal_output, {"schema_version": "test"})
+        except SystemExit as exc:
+            message = str(exc)
+        else:
+            raise AssertionError("Expected SystemExit when a parent dir is a symlink")
+
+    assert "symlink" in message.lower() or "non-directory" in message.lower()
+    assert not (outside_dir / "out.json").exists()
