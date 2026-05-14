@@ -128,8 +128,8 @@ class TestVerboseCommand:
                 f"Expected {mode}, got {actual}"
 
     @pytest.mark.asyncio
-    async def test_defaults_to_all_when_no_tool_progress_set(self, tmp_path, monkeypatch):
-        """When tool_progress is not in config, defaults to platform default then cycles."""
+    async def test_defaults_to_new_when_no_tool_progress_set(self, tmp_path, monkeypatch):
+        """When tool_progress is not in config, Telegram defaults to 'new' then cycles to all."""
         hermes_home = tmp_path / "hermes"
         hermes_home.mkdir()
         config_path = hermes_home / "config.yaml"
@@ -143,7 +143,7 @@ class TestVerboseCommand:
         runner = _make_runner()
         result = await runner._handle_verbose_command(_make_event())
 
-        # Telegram platform default is "new" → cycles to "all"
+        # Telegram default is "new" to reduce edit pressure → cycles to all
         assert "ALL" in result
         saved = yaml.safe_load(config_path.read_text(encoding="utf-8"))
         assert saved["display"]["platforms"]["telegram"]["tool_progress"] == "all"
@@ -153,7 +153,7 @@ class TestVerboseCommand:
         """Cycling /verbose on Telegram doesn't change Slack's setting.
 
         Without a global tool_progress, each platform uses its built-in
-        default: Telegram = 'new' (overridden high tier), Slack = 'off' (quiet Slack default).
+        default: Telegram = 'new' (reduced edit pressure), Slack = 'off' (quiet Slack default).
         """
         hermes_home = tmp_path / "hermes"
         hermes_home.mkdir()
@@ -178,7 +178,7 @@ class TestVerboseCommand:
 
         saved = yaml.safe_load(config_path.read_text(encoding="utf-8"))
         platforms = saved["display"]["platforms"]
-        # Telegram: new -> all (platform default = new)
+        # Telegram: new -> all (Telegram default reduces edit pressure)
         assert platforms["telegram"]["tool_progress"] == "all"
         # Slack: off -> new (first /verbose cycle from quiet default)
         assert platforms["slack"]["tool_progress"] == "new"
