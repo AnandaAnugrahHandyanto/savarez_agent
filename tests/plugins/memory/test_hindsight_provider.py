@@ -273,6 +273,39 @@ class TestConfig:
 
         assert env["HINDSIGHT_EMBED_DAEMON_IDLE_TIMEOUT"] == "42"
 
+    def test_embedded_profile_env_per_operation_llm_config(self):
+        """Per-operation LLM overrides in config.json produce daemon env vars."""
+        env = _build_embedded_profile_env({
+            "llm_provider": "openai",
+            "llm_model": "default-model",
+            "llmApiKey": "default-key",
+            "retain_llm_model": "retain-model",
+            "retain_llm_api_key": "retain-key",
+            "consolidation_llm_provider": "openrouter",
+            "consolidation_llm_model": "consolidation-model",
+            "consolidation_llm_api_key": "consolidation-key",
+            "consolidation_llm_base_url": "https://openrouter.ai/api/v1",
+        })
+
+        # Default LLM
+        assert env["HINDSIGHT_API_LLM_PROVIDER"] == "openai"
+        assert env["HINDSIGHT_API_LLM_MODEL"] == "default-model"
+        assert env["HINDSIGHT_API_LLM_API_KEY"] == "default-key"
+
+        # Retain overrides (model + key only, inherits default provider)
+        assert env["HINDSIGHT_API_RETAIN_LLM_MODEL"] == "retain-model"
+        assert env["HINDSIGHT_API_RETAIN_LLM_API_KEY"] == "retain-key"
+        assert "HINDSIGHT_API_RETAIN_LLM_PROVIDER" not in env
+
+        # Consolidation overrides (all fields, provider mapped from openrouter)
+        assert env["HINDSIGHT_API_CONSOLIDATION_LLM_PROVIDER"] == "openai"
+        assert env["HINDSIGHT_API_CONSOLIDATION_LLM_MODEL"] == "consolidation-model"
+        assert env["HINDSIGHT_API_CONSOLIDATION_LLM_API_KEY"] == "consolidation-key"
+        assert env["HINDSIGHT_API_CONSOLIDATION_LLM_BASE_URL"] == "https://openrouter.ai/api/v1"
+
+        # Reflect not set — no per-op vars
+        assert "HINDSIGHT_API_REFLECT_LLM_MODEL" not in env
+
     def test_get_client_passes_idle_timeout_to_hindsight_embedded(self, monkeypatch):
         captured = {}
 

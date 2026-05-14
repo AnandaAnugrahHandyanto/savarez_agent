@@ -399,7 +399,16 @@ def _load_simple_env(path) -> dict[str, str]:
 
 
 def _build_embedded_profile_env(config: dict[str, Any], *, llm_api_key: str | None = None) -> dict[str, str]:
-    """Build the profile-scoped env file that standalone hindsight-embed consumes."""
+    """Build the profile-scoped env file that standalone hindsight-embed consumes.
+
+    Supports per-operation LLM overrides via config.json keys:
+      retain_llm_provider, retain_llm_model, retain_llm_api_key, retain_llm_base_url
+      reflect_llm_provider, reflect_llm_model, reflect_llm_api_key, reflect_llm_base_url
+      consolidation_llm_provider, consolidation_llm_model, consolidation_llm_api_key, consolidation_llm_base_url
+
+    When set, these override the default HINDSIGHT_API_LLM_* for that operation.
+    The daemon falls back to the default when per-op vars are unset.
+    """
     current_key = llm_api_key
     if current_key is None:
         current_key = (
@@ -433,6 +442,27 @@ def _build_embedded_profile_env(config: dict[str, Any], *, llm_api_key: str | No
         env_values["HINDSIGHT_EMBED_DAEMON_IDLE_TIMEOUT"] = str(
             _parse_int_setting(idle_timeout, _DEFAULT_IDLE_TIMEOUT)
         )
+
+    # Per-operation LLM overrides (retain, reflect, consolidation).
+    # Each falls back to the default if not set in config.json.
+    _PER_OP_PREFIXES = {
+        "retain": "HINDSIGHT_API_RETAIN_LLM",
+        "reflect": "HINDSIGHT_API_REFLECT_LLM",
+        "consolidation": "HINDSIGHT_API_CONSOLIDATION_LLM",
+    }
+    _PER_OP_FIELDS = ("provider", "model", "api_key", "base_url")
+
+    for op_name, env_prefix in _PER_OP_PREFIXES.items():
+        for field in _PER_OP_FIELDS:
+            config_key = f"{op_name}_llm_{field}"
+            value = config.get(config_key)
+            if value is not None and str(value).strip():
+                env_var = f"{env_prefix}_{field.upper()}"
+                # Map provider aliases the same way as the default
+                if field == "provider" and str(value) in ("openai_compatible", "openrouter"):
+                    value = "openai"
+                env_values[env_var] = str(value)
+
     return env_values
 
 
