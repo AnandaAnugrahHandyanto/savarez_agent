@@ -198,15 +198,35 @@ class TestWebServerEndpoints:
 
         shaped = self.client.post(
             f"/api/workflows/inbox/{item_id}/shape",
-            json={"workflowId": "wf_shaped_endpoint", "title": "Endpoint shaped workflow", "board": "core", "scale": "medium"},
+            json={
+                "workflowId": "wf_shaped_endpoint",
+                "title": "Endpoint shaped workflow",
+                "board": "core",
+                "scale": "large",
+                "userIntent": "Endpoint callers need explicit shaping intent.",
+                "profileHints": {"planner": "endpoint-planner", "engineer": "endpoint-engineer", "integrator": "endpoint-integrator"},
+            },
         )
 
         assert shaped.status_code == 200
         facts = shaped.json()["facts"]
         assert facts["draftWorkflow"]["id"] == "wf_shaped_endpoint"
         assert facts["draftWorkflow"]["workspacePath"] == "/tmp/workspace"
+        assert facts["draftWorkflow"]["shapeIntent"] == {
+            "userIntent": "Endpoint callers need explicit shaping intent.",
+            "profileHints": {"planner": "endpoint-planner", "engineer": "endpoint-engineer", "integrator": "endpoint-integrator"},
+        }
         assert facts["draftDag"]["workflow_id"] == "wf_shaped_endpoint"
-        assert [node["id"] for node in facts["draftDag"]["nodes"]] == ["shape-plan", "build-slice"]
+        assert [node["id"] for node in facts["draftDag"]["nodes"]] == [
+            "shape-plan",
+            "design-architecture",
+            "build-foundation",
+            "build-integration",
+            "integrate-workflow",
+        ]
+        assert facts["draftDag"]["nodes"][0]["profile"] == "endpoint-planner"
+        assert facts["draftDag"]["nodes"][2]["profile"] == "endpoint-engineer"
+        assert facts["draftDag"]["nodes"][4]["profile"] == "endpoint-integrator"
         assert self.client.get("/api/workflows?status=dag_draft").json()["facts"]["workflows"] == []
 
     def test_workflow_inbox_shape_endpoint_returns_404_for_missing_item(self):

@@ -79,6 +79,8 @@ def shape_inbox_item_as_draft_workflow(
     description: str | None = None,
     board: str = "default",
     scale: str = "medium",
+    user_intent: str | None = None,
+    profile_hints: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     item = get_inbox_item(conn, inbox_item_id)
     if item is None:
@@ -88,29 +90,21 @@ def shape_inbox_item_as_draft_workflow(
     resolved_title = (title or item.title or resolved_workflow_id).strip()
     resolved_description = description if description is not None else item.body
     body = item.body or "Shape and implement the selected inbox item."
+    resolved_user_intent = _clean_optional_text(user_intent)
+    resolved_profile_hints = _clean_profile_hints(profile_hints)
+    shape_context = resolved_user_intent or body
     draft_dag = {
         "schema_version": 1,
         "workflow_id": resolved_workflow_id,
         "name": resolved_title,
         "scale": scale,
-        "nodes": [
-            {
-                "id": "shape-plan",
-                "title": "Shape plan",
-                "role": "planner",
-                "profile": "planner",
-                "scope": {"summary": f"Shape inbox request: {body}"},
-            },
-            {
-                "id": "build-slice",
-                "title": "Build first slice",
-                "role": "engineer",
-                "profile": "engineer",
-                "parents": ["shape-plan"],
-                "definition_of_done": ["Targeted tests pass."],
-                "scope": {"summary": f"Implement the first useful slice for: {resolved_title}"},
-            },
-        ],
+        "nodes": _draft_nodes_for_shape(
+            resolved_title,
+            body=body,
+            shape_context=shape_context,
+            scale=scale,
+            profile_hints=resolved_profile_hints,
+        ),
     }
     normalized = normalize_dag(draft_dag, policy=DEFAULT_POLICY)
     if not normalized.ok or normalized.dag is None:
@@ -127,10 +121,111 @@ def shape_inbox_item_as_draft_workflow(
                 "board": board,
                 "scale": scale,
                 "sourceInboxItemId": inbox_item_id,
+                "shapeIntent": {
+                    "userIntent": resolved_user_intent,
+                    "profileHints": resolved_profile_hints,
+                },
             },
             "draftDag": normalized.dag,
         }
     )
+
+
+def _draft_nodes_for_shape(
+    resolved_title: str,
+    *,
+    body: str,
+    shape_context: str,
+    scale: str,
+    profile_hints: dict[str, str],
+) -> list[dict[str, Any]]:
+    planner_profile = _profile_for_role("planner", profile_hints)
+    engineer_profile = _profile_for_role("engineer", profile_hints)
+    nodes: list[dict[str, Any]] = [
+        {
+            "id": "shape-plan",
+            "title": "Shape plan",
+            "role": "planner",
+            "profile": planner_profile,
+            "scope": {"summary": f"Shape inbox request: {shape_context}"},
+        },
+    ]
+    if scale not in {"large", "xl"}:
+        nodes.append(
+            {
+                "id": "build-slice",
+                "title": "Build first slice",
+                "role": "engineer",
+                "profile": engineer_profile,
+                "parents": ["shape-plan"],
+                "definition_of_done": ["Targeted tests pass."],
+                "scope": {"summary": f"Implement the first useful slice for: {resolved_title}"},
+            }
+        )
+        return nodes
+
+    nodes.extend(
+        [
+            {
+                "id": "design-architecture",
+                "title": "Design architecture",
+                "role": "architect",
+                "profile": _profile_for_role("architect", profile_hints),
+                "parents": ["shape-plan"],
+                "scope": {"summary": f"Design the workflow architecture for: {shape_context}"},
+            },
+            {
+                "id": "build-foundation",
+                "title": "Build foundation",
+                "role": "engineer",
+                "profile": engineer_profile,
+                "parents": ["design-architecture"],
+                "definition_of_done": ["Targeted tests pass.", "Core behavior is covered by regression tests."],
+                "scope": {"summary": f"Build the foundation for: {resolved_title}"},
+            },
+            {
+                "id": "build-integration",
+                "title": "Build integration",
+                "role": "engineer",
+                "profile": engineer_profile,
+                "parents": ["design-architecture"],
+                "definition_of_done": ["Targeted tests pass.", "Integration behavior is covered by regression tests."],
+                "scope": {"summary": f"Build the integration path for: {resolved_title}"},
+            },
+            {
+                "id": "integrate-workflow",
+                "title": "Integrate workflow",
+                "role": "integrator",
+                "profile": _profile_for_role("integrator", profile_hints),
+                "parents": ["build-foundation", "build-integration"],
+                "scope": {"summary": f"Integrate and verify the shaped workflow: {body}"},
+            },
+        ]
+    )
+    return nodes
+
+
+def _clean_optional_text(value: str | None) -> str | None:
+    if value is None:
+        return None
+    stripped = str(value).strip()
+    return stripped or None
+
+
+def _clean_profile_hints(profile_hints: dict[str, str] | None) -> dict[str, str]:
+    if not isinstance(profile_hints, dict):
+        return {}
+    cleaned: dict[str, str] = {}
+    for role, profile in profile_hints.items():
+        role_name = str(role).strip()
+        profile_name = str(profile).strip()
+        if role_name and profile_name:
+            cleaned[role_name] = profile_name
+    return cleaned
+
+
+def _profile_for_role(role: str, profile_hints: dict[str, str]) -> str:
+    return profile_hints.get(role) or role
 
 
 def promote_inbox_item_to_workflow(

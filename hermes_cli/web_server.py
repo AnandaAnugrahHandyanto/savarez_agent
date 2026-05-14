@@ -727,6 +727,8 @@ async def shape_workflow_inbox_item_endpoint(inbox_item_id: str, request: Reques
                 description=payload.get("description"),
                 board=str(payload.get("board") or "default"),
                 scale=str(payload.get("scale") or "medium"),
+                user_intent=payload.get("userIntent"),
+                profile_hints=payload.get("profileHints") if isinstance(payload.get("profileHints"), dict) else None,
             )
     except ValueError as exc:
         message = str(exc)

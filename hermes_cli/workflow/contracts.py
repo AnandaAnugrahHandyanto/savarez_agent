@@ -152,10 +152,29 @@ _DRAFT_DAG = {
     "name": "Workflow Contract Fixture",
     "scale": "large",
     "nodes": [
-        {"id": "shape-plan", "title": "Shape implementation plan", "role": "planner", "profile": "planner", "scope": {"summary": "Shape the contract request."}},
-        {"id": "build-slice", "title": "Build first slice", "role": "engineer", "profile": "engineer", "parents": ["shape-plan"], "definition_of_done": ["Targeted tests pass."], "scope": {"summary": "Build the contract request."}},
+        {"id": "shape-plan", "title": "Shape plan", "role": "planner", "profile": "contract-planner", "scope": {"summary": "Shape inbox request: Confirm contract fields before implementation."}},
+        {"id": "design-architecture", "title": "Design architecture", "role": "architect", "profile": "contract-architect", "parents": ["shape-plan"], "scope": {"summary": "Design the workflow architecture for: Confirm contract fields before implementation."}},
+        {"id": "build-foundation", "title": "Build foundation", "role": "engineer", "profile": "contract-engineer", "parents": ["design-architecture"], "definition_of_done": ["Targeted tests pass.", "Core behavior is covered by regression tests."], "scope": {"summary": "Build the foundation for: Workflow Contract Fixture"}},
+        {"id": "build-integration", "title": "Build integration", "role": "engineer", "profile": "contract-engineer", "parents": ["design-architecture"], "definition_of_done": ["Targeted tests pass.", "Integration behavior is covered by regression tests."], "scope": {"summary": "Build the integration path for: Workflow Contract Fixture"}},
+        {"id": "integrate-workflow", "title": "Integrate workflow", "role": "integrator", "profile": "contract-integrator", "parents": ["build-foundation", "build-integration"], "scope": {"summary": "Integrate and verify the shaped workflow: Shape this inbox item into a workflow."}},
     ],
-    "edges": _EDGES,
+    "edges": [
+        {"source": "shape-plan", "target": "design-architecture", "kind": "depends_on"},
+        {"source": "design-architecture", "target": "build-foundation", "kind": "depends_on"},
+        {"source": "design-architecture", "target": "build-integration", "kind": "depends_on"},
+        {"source": "build-foundation", "target": "integrate-workflow", "kind": "depends_on"},
+        {"source": "build-integration", "target": "integrate-workflow", "kind": "depends_on"},
+    ],
+}
+
+_INBOX_SHAPE_INTENT = {
+    "userIntent": "Confirm contract fields before implementation.",
+    "profileHints": {
+        "planner": "contract-planner",
+        "architect": "contract-architect",
+        "engineer": "contract-engineer",
+        "integrator": "contract-integrator",
+    },
 }
 
 
@@ -177,7 +196,7 @@ def workflow_api_contract_fixture() -> dict[str, Any]:
             "workflowArtifacts": _response({"workflowId": "wf_contract", "artifacts": [_ARTIFACT], "count": 1}),
             "inboxList": _response({"inboxItems": [_INBOX_ITEM], "count": 1}),
             "inboxItem": _response({"inboxItem": _INBOX_ITEM}),
-            "inboxShape": _response({"inboxItem": _INBOX_ITEM, "draftWorkflow": {"id": "wf_contract", "title": "Workflow Contract Fixture", "description": _INBOX_ITEM["body"], "workspacePath": "/tmp/workflow-contract", "board": "workflow-system", "scale": "large", "sourceInboxItemId": "inbox_contract"}, "draftDag": _DRAFT_DAG}),
+            "inboxShape": _response({"inboxItem": _INBOX_ITEM, "draftWorkflow": {"id": "wf_contract", "title": "Workflow Contract Fixture", "description": _INBOX_ITEM["body"], "workspacePath": "/tmp/workflow-contract", "board": "workflow-system", "scale": "large", "sourceInboxItemId": "inbox_contract", "shapeIntent": _INBOX_SHAPE_INTENT}, "draftDag": _DRAFT_DAG}),
             "inboxPromote": _response({"workflow": {**_WORKFLOW, "status": "dag_draft"}, "inboxItem": {**_INBOX_ITEM, "status": "promoted", "assignedWorkflowId": "wf_contract"}, "dag": _DRAFT_DAG}),
         },
     }

@@ -125,6 +125,8 @@ def test_workflow_api_contract_fixture_pins_cross_repo_response_shapes():
         "enabled": True,
     }
     assert fixture["fixtures"]["inboxShape"]["facts"]["draftWorkflow"]["sourceInboxItemId"] == "inbox_contract"
+    assert fixture["fixtures"]["inboxShape"]["facts"]["draftWorkflow"]["shapeIntent"]["profileHints"]["engineer"] == "contract-engineer"
+    assert fixture["fixtures"]["inboxShape"]["facts"]["draftDag"]["nodes"][-1]["role"] == "integrator"
     assert fixture["fixtures"]["inboxPromote"]["facts"]["dag"]["workflow_id"] == "wf_contract"
 
 
@@ -172,6 +174,7 @@ def test_shape_inbox_item_as_draft_workflow_returns_core_authored_dag_without_mu
         "board": "core",
         "scale": "medium",
         "sourceInboxItemId": "inbox_shape",
+        "shapeIntent": {"userIntent": None, "profileHints": {}},
     }
     assert facts["draftDag"]["workflow_id"] == "wf_shaped"
     assert facts["draftDag"]["name"] == "Shaped workflow"
@@ -182,6 +185,73 @@ def test_shape_inbox_item_as_draft_workflow_returns_core_authored_dag_without_mu
     assert item_after["status"] == "triaged"
     assert item_after["assignedWorkflowId"] is None
     assert workflows == []
+
+
+def test_shape_inbox_item_as_draft_workflow_accepts_intent_scale_and_profile_hints(tmp_path):
+    with connect(tmp_path / "workflow.db") as conn:
+        create_inbox_item(
+            conn,
+            inbox_item_id="inbox_large_shape",
+            title="Build resilient workflow UX",
+            body="Give operators a durable workflow path.",
+            source="webui_chat",
+            status="triaged",
+            classification="decomposition_worthy",
+            workspace_path=str(tmp_path),
+            now=2.0,
+        )
+
+        payload = shape_inbox_item_as_draft_workflow(
+            conn,
+            "inbox_large_shape",
+            workflow_id="wf_large_shape",
+            title="Resilient workflow UX",
+            board="workflow-system",
+            scale="large",
+            user_intent="Operators need confirmation, retry, and evidence before materialization.",
+            profile_hints={
+                "planner": "workflow-planner",
+                "architect": "workflow-architect",
+                "engineer": "workflow-engineer",
+                "integrator": "workflow-integrator",
+            },
+        )
+
+    facts = payload["facts"]
+    draft_workflow = facts["draftWorkflow"]
+    dag = facts["draftDag"]
+    assert draft_workflow["shapeIntent"] == {
+        "userIntent": "Operators need confirmation, retry, and evidence before materialization.",
+        "profileHints": {
+            "planner": "workflow-planner",
+            "architect": "workflow-architect",
+            "engineer": "workflow-engineer",
+            "integrator": "workflow-integrator",
+        },
+    }
+    assert dag["scale"] == "large"
+    assert [node["id"] for node in dag["nodes"]] == [
+        "shape-plan",
+        "design-architecture",
+        "build-foundation",
+        "build-integration",
+        "integrate-workflow",
+    ]
+    assert [node["profile"] for node in dag["nodes"]] == [
+        "workflow-planner",
+        "workflow-architect",
+        "workflow-engineer",
+        "workflow-engineer",
+        "workflow-integrator",
+    ]
+    assert dag["edges"] == [
+        {"source": "shape-plan", "target": "design-architecture", "kind": "depends_on"},
+        {"source": "design-architecture", "target": "build-foundation", "kind": "depends_on"},
+        {"source": "design-architecture", "target": "build-integration", "kind": "depends_on"},
+        {"source": "build-foundation", "target": "integrate-workflow", "kind": "depends_on"},
+        {"source": "build-integration", "target": "integrate-workflow", "kind": "depends_on"},
+    ]
+    assert "confirmation, retry, and evidence" in dag["nodes"][0]["scope"]["summary"]
 
 
 def test_shape_inbox_item_as_draft_workflow_raises_for_missing_item(tmp_path):
