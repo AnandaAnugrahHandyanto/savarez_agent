@@ -64,6 +64,84 @@ except ImportError:
     HTTPX_AVAILABLE = False
     httpx = None  # type: ignore[assignment]
 
+# ── websockets >= 11 compatibility patch for dingtalk-stream ──────
+# dingtalk-stream (<=0.24.3) uses "async with websockets.connect(uri)" which
+# fails with websockets >= 11 because connect() became a coroutine function.
+# The correct form is "async with await websockets.connect(uri)".
+# Monkey-patch DingTalkStreamClient.start at import time.
+if DINGTALK_STREAM_AVAILABLE:
+    import asyncio
+    import json
+    import logging as _logging
+
+    import websockets as _websockets
+    from urllib.parse import quote_plus
+
+    import dingtalk_stream.stream as _ds_stream
+
+    _dt_logger = _logging.getLogger("dingtalk_stream.patch")
+
+    _original_start = _ds_stream.DingTalkStreamClient.start
+
+    async def _patched_start(self):
+        """Patched start() — websockets >= 11 compatible connect() call.
+
+        The sole change from the upstream implementation is line:
+            async with await websockets.connect(uri) as websocket:
+        (note the *await* keyword).  The rest mirrors dingtalk_stream.stream
+        faithfully so the patch stays invisible to the rest of the SDK.
+        """
+        self.pre_start()
+        while True:
+            try:
+                connection = self.open_connection()
+                if not connection:
+                    self.logger.error("open connection failed")
+                    await asyncio.sleep(10)
+                    continue
+                self.logger.info("endpoint is %s", connection)
+
+                uri = (
+                    f'{connection["endpoint"]}'
+                    f'?ticket={quote_plus(connection["ticket"])}'
+                )
+                # ← websockets>=11: connect() returns a coroutine → await required
+                async with await _websockets.connect(uri) as websocket:
+                    self.websocket = websocket
+                    asyncio.create_task(self.keepalive(websocket))
+                    async for raw_message in websocket:
+                        json_message = json.loads(raw_message)
+                        asyncio.create_task(self.background_task(json_message))
+            except KeyboardInterrupt:
+                break
+            except (
+                asyncio.CancelledError,
+                _websockets.exceptions.ConnectionClosedError,
+            ) as e:
+                self.logger.error("[start] network exception, error=%s", e)
+                await asyncio.sleep(10)
+                continue
+            except Exception as e:
+                await asyncio.sleep(3)
+                self.logger.exception("unknown exception", e)
+                continue
+
+    _ds_stream.DingTalkStreamClient.start = _patched_start
+    _dt_logger.info(
+        "Monkey-patched DingTalkStreamClient.start for websockets>=11"
+    )
+    del (
+        asyncio,
+        json,
+        _logging,
+        _websockets,
+        quote_plus,
+        _ds_stream,
+        _dt_logger,
+        _original_start,
+        _patched_start,
+    )
+
 # Card SDK for AI Cards (following QwenPaw pattern)
 try:
     from alibabacloud_dingtalk.card_1_0 import (
@@ -111,9 +189,33 @@ DINGTALK_TYPE_MAPPING = {
 
 
 def check_dingtalk_requirements() -> bool:
-    """Check if DingTalk dependencies are available and configured."""
+    """Check if DingTalk dependencies are available and configured.
+
+    Lazy-installs dingtalk-stream via ``tools.lazy_deps.ensure("platform.dingtalk")``
+    on first call if not present.
+    """
+    global DINGTALK_STREAM_AVAILABLE, dingtalk_stream, ChatbotMessage, CallbackMessage, AckMessage
+    global HTTPX_AVAILABLE, httpx
     if not DINGTALK_STREAM_AVAILABLE or not HTTPX_AVAILABLE:
-        return False
+        try:
+            from tools.lazy_deps import ensure as _lazy_ensure
+            _lazy_ensure("platform.dingtalk", prompt=False)
+        except Exception:
+            return False
+        try:
+            import dingtalk_stream as _ds
+            from dingtalk_stream import ChatbotMessage as _CM
+            from dingtalk_stream.frames import CallbackMessage as _CBM, AckMessage as _AM
+            import httpx as _httpx
+        except ImportError:
+            return False
+        dingtalk_stream = _ds
+        ChatbotMessage = _CM
+        CallbackMessage = _CBM
+        AckMessage = _AM
+        httpx = _httpx
+        DINGTALK_STREAM_AVAILABLE = True
+        HTTPX_AVAILABLE = True
     if not os.getenv("DINGTALK_CLIENT_ID") or not os.getenv("DINGTALK_CLIENT_SECRET"):
         return False
     return True
@@ -353,14 +455,28 @@ class DingTalkAdapter(BasePlatformAdapter):
         configured = self.config.extra.get("require_mention")
         if configured is not None:
             if isinstance(configured, str):
-                return configured.lower() in ("true", "1", "yes", "on")
+                return configured.lower() in {"true", "1", "yes", "on"}
             return bool(configured)
-        return os.getenv("DINGTALK_REQUIRE_MENTION", "false").lower() in ("true", "1", "yes", "on")
+        return os.getenv("DINGTALK_REQUIRE_MENTION", "false").lower() in {"true", "1", "yes", "on"}
 
     def _dingtalk_free_response_chats(self) -> Set[str]:
         raw = self.config.extra.get("free_response_chats")
         if raw is None:
             raw = os.getenv("DINGTALK_FREE_RESPONSE_CHATS", "")
+        if isinstance(raw, list):
+            return {str(part).strip() for part in raw if str(part).strip()}
+        return {part.strip() for part in str(raw).split(",") if part.strip()}
+
+    def _dingtalk_allowed_chats(self) -> Set[str]:
+        """Return the whitelist of group chat IDs the bot will respond in.
+
+        When non-empty, group messages from chats NOT in this set are silently
+        ignored — even if the bot is @mentioned.  DMs are never filtered.
+        Empty set means no restriction (fully backward compatible).
+        """
+        raw = self.config.extra.get("allowed_chats") if self.config.extra else None
+        if raw is None:
+            raw = os.getenv("DINGTALK_ALLOWED_CHATS", "")
         if isinstance(raw, list):
             return {str(part).strip() for part in raw if str(part).strip()}
         return {part.strip() for part in str(raw).split(",") if part.strip()}
@@ -443,13 +559,21 @@ class DingTalkAdapter(BasePlatformAdapter):
 
         DMs remain unrestricted (subject to ``allowed_users`` which is enforced
         earlier). Group messages are accepted when:
+        - the chat passes the ``allowed_chats`` whitelist (when set)
         - the chat is explicitly allowlisted in ``free_response_chats``
         - ``require_mention`` is disabled
         - the bot is @mentioned (``is_in_at_list``)
         - the text matches a configured regex wake-word pattern
+
+        When ``allowed_chats`` is non-empty, it acts as a hard gate — messages
+        from any group chat not in the list are ignored regardless of the
+        other rules.
         """
         if not is_group:
             return True
+        allowed = self._dingtalk_allowed_chats()
+        if allowed and chat_id and chat_id not in allowed:
+            return False
         if chat_id and chat_id in self._dingtalk_free_response_chats():
             return True
         if not self._dingtalk_require_mention():
@@ -863,6 +987,67 @@ class DingTalkAdapter(BasePlatformAdapter):
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         """DingTalk does not support typing indicators."""
         pass
+
+    async def send_image(
+        self,
+        chat_id: str,
+        image_url: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send an image via DingTalk markdown.
+
+        DingTalk's session webhook only supports text/markdown payloads, not
+        native image/file attachments. For remote image URLs, render the image
+        inline with markdown so the user still sees the image. Local files need
+        OpenAPI media upload and are handled separately.
+        """
+        image_block = f"![image]({image_url})"
+        content = f"{caption}\n\n{image_block}" if caption else image_block
+        return await self.send(
+            chat_id=chat_id,
+            content=content,
+            reply_to=reply_to,
+            metadata=metadata,
+        )
+
+    async def send_image_file(
+        self,
+        chat_id: str,
+        image_path: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        **kwargs,
+    ) -> SendResult:
+        """DingTalk webhook replies cannot send local image files directly."""
+        return SendResult(
+            success=False,
+            error=(
+                "DingTalk session webhook replies do not support local image uploads. "
+                "Only markdown/text replies are supported without OpenAPI media upload."
+            ),
+        )
+
+    async def send_document(
+        self,
+        chat_id: str,
+        file_path: str,
+        caption: Optional[str] = None,
+        file_name: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        **kwargs,
+    ) -> SendResult:
+        """DingTalk webhook replies cannot send local file attachments directly."""
+        return SendResult(
+            success=False,
+            error=(
+                "DingTalk session webhook replies do not support local file attachments. "
+                "Only markdown/text replies are supported without OpenAPI message send."
+            ),
+        )
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         """Return basic info about a DingTalk conversation."""
