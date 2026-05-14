@@ -60,6 +60,21 @@ def test_frontdesk_status_returns_local_overview_without_starting_worker():
     assert result.worker_id is None
 
 
+def test_frontdesk_status_shows_available_lane_when_idle():
+    runtime = OrchestrationRuntime.create()
+    runtime.worker_registry.register(ThreadWorkerLane(runner=lambda spec, token: "ok", name="main"))
+
+    result = runtime.handle_frontdesk_input(
+        "지금 뭐 하고 있어?",
+        frontdesk_mode_active=True,
+        session_key="s1",
+    )
+
+    assert result.decision.intent is Intent.STATUS
+    assert result.action == "status"
+    assert "Available worker lanes: main" in result.message
+
+
 def test_frontdesk_stop_cancels_active_workers_and_tasks_without_replay():
     runtime = OrchestrationRuntime.create()
     release = threading.Event()

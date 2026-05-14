@@ -187,14 +187,24 @@ class OrchestrationRuntime:
     def format_agents(self, *, compact: bool = True) -> str:
         """Render the worker/agent board; the graceful empty-state line when
         there are none."""
-        return _format_agents(self.worker_registry, compact=compact)
+        rendered = _format_agents(self.worker_registry, compact=compact)
+        if rendered == "No active workers are currently registered.":
+            lanes = self.worker_registry.lane_names()
+            if lanes:
+                return "No active workers are currently running. Available worker lanes: " + ", ".join(lanes) + "."
+        return rendered
 
     def format_overview(self, *, session_key: str | None = None, compact: bool = True) -> str:
         """Render the combined board (summary, then tasks, then workers); the
         graceful empty-state line when there is neither."""
-        return _format_overview(
+        rendered = _format_overview(
             self.task_registry, self.worker_registry, session_key=session_key, compact=compact
         )
+        if rendered == "No active tasks or workers are currently registered.":
+            lanes = self.worker_registry.lane_names()
+            if lanes:
+                return "No active tasks or workers are currently running. Available worker lanes: " + ", ".join(lanes) + "."
+        return rendered
 
     # -- frontdesk policy advisory (read-only) ---------------------------
     def advise_frontdesk(

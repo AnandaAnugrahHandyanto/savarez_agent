@@ -1250,6 +1250,17 @@ class GatewayRunner:
         self._fallback_model = self._load_fallback_model()
         self._orchestration_status_queries_enabled = self._load_orchestration_status_queries_enabled()
         self.frontdesk_live_enabled = self._load_frontdesk_live_enabled()
+        if self.frontdesk_live_enabled:
+            try:
+                from agent.frontdesk_live import ensure_default_worker_lane
+
+                ensure_default_worker_lane(self)
+                logger.info("Frontdesk live default worker lane registered")
+            except Exception:
+                logger.warning(
+                    "Frontdesk live enabled but default worker lane registration failed",
+                    exc_info=True,
+                )
 
         # Wire process registry into session store for reset protection
         from tools.process_registry import process_registry
