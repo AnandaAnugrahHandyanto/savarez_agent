@@ -237,6 +237,8 @@ hermes gateway setup
 
 Select **Discord** when prompted, then paste your bot token and user ID when asked.
 
+The user ID you enter here is what authorizes your Discord account to use the bot. If the bot can see your message but you are not authorized, Hermes drops the message before it reaches the agent loop.
+
 ### Option B: Manual Configuration
 
 Add the following to your `~/.hermes/.env` file:
@@ -249,6 +251,18 @@ DISCORD_ALLOWED_USERS=284102345871466496
 # Multiple allowed users (comma-separated)
 # DISCORD_ALLOWED_USERS=284102345871466496,198765432109876543
 ```
+
+Alternatively, authorize an operator through the pairing store instead of editing `.env` directly. This is useful when you are adding access after the gateway is already running:
+
+```bash
+# See approved/pending Discord users
+hermes pairing list
+
+# Approve a pending code that the user received by DM
+hermes pairing approve discord ABC123
+```
+
+Pairing codes are only sent for unauthorized **DMs**. In server channels and threads, unauthorized users are ignored silently for safety; authorize them via `DISCORD_ALLOWED_USERS`, `DISCORD_ALLOWED_ROLES`, or an existing pairing code.
 
 Then start the gateway:
 
@@ -647,6 +661,46 @@ Refreshing the directory (`/channels refresh` on platforms that expose it, or a 
 **Cause**: Your User ID isn't in `DISCORD_ALLOWED_USERS`.
 
 **Fix**: Add your User ID to `DISCORD_ALLOWED_USERS` in `~/.hermes/.env` and restart the gateway.
+
+### Bot adds a ✅ reaction but does not reply
+
+**Cause**: The Discord adapter received and acknowledged the message, but the gateway dropped it before agent execution. The most common reason is that the sender is not authorized. In this state the bot may still add processing reactions such as ✅, which can make it look like Hermes "saw" the message but chose not to answer.
+
+**Confirm**: Check the gateway log for an authorization warning:
+
+```bash
+grep -i "Unauthorized user\|discord" ~/.hermes/logs/gateway.log | tail -80
+```
+
+If you see a line like this, copy the user ID from the log:
+
+```text
+Unauthorized user: 388325404512878592 (PandaMeow) on discord
+```
+
+**Fix**: Authorize that Discord user and restart the gateway:
+
+```bash
+# ~/.hermes/.env
+DISCORD_ALLOWED_USERS=388325404512878592
+
+hermes gateway restart
+```
+
+If you already use multiple allowed users, append the new ID with a comma:
+
+```bash
+DISCORD_ALLOWED_USERS=284102345871466496,388325404512878592
+```
+
+For role-based access, use `DISCORD_ALLOWED_ROLES` instead. For DM-based authorization, have the user DM the bot, then approve the code shown to them:
+
+```bash
+hermes pairing list
+hermes pairing approve discord ABC123
+```
+
+If no `Unauthorized user` warning appears, check the other common causes in this section: Message Content Intent, channel permissions, allowed channels, and Discord rate limits.
 
 ### People in the same channel are sharing context unexpectedly
 

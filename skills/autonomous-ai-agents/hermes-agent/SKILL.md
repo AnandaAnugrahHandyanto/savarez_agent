@@ -832,6 +832,7 @@ Common gateway problems:
 
 ### Platform-specific issues
 - **Discord bot silent**: Must enable **Message Content Intent** in Bot → Privileged Gateway Intents.
+- **Discord adds ✅ but does not reply**: check `~/.hermes/logs/gateway.log` for `Unauthorized user: <id> (<name>) on discord`; authorize that user via `DISCORD_ALLOWED_USERS`, `DISCORD_ALLOWED_ROLES`, or `hermes pairing approve discord <code>`, then restart the gateway.
 - **Slack bot only works in DMs**: Must subscribe to `message.channels` event. Without it, the bot ignores public channels.
 - **Windows-specific issues** (`Alt+Enter` newline, WinError 10106, UTF-8 BOM config, test suite, line endings): see the dedicated **Windows-Specific Quirks** section above.
 
