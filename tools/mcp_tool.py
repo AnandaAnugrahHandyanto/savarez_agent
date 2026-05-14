@@ -259,6 +259,12 @@ _MAX_RECONNECT_RETRIES = 5
 _MAX_INITIAL_CONNECT_RETRIES = 3 # retries for the very first connection attempt
 _MAX_BACKOFF_SECONDS = 60
 
+# Env-var tag injected into every stdio MCP subprocess we spawn.  Lets a
+# future hermes process detect children left behind by a previous unclean
+# exit (SIGKILL/OOM/crash) and reap their trees on startup — see
+# ``_reap_orphaned_mcp_children()``.
+_HERMES_MCP_PARENT_PID_VAR = "HERMES_MCP_PARENT_PID"
+
 # Environment variables that are safe to pass to stdio subprocesses
 _SAFE_ENV_KEYS = frozenset({
     "PATH", "HOME", "USER", "LANG", "LC_ALL", "TERM", "SHELL", "TMPDIR",
@@ -298,6 +304,11 @@ def _build_safe_env(user_env: Optional[dict]) -> dict:
     for key, value in os.environ.items():
         if key in _SAFE_ENV_KEYS or key.startswith("XDG_"):
             env[key] = value
+    # Tag every spawned MCP child with our PID so a future hermes startup
+    # can detect and reap them if this process dies ungracefully.  See
+    # ``_reap_orphaned_mcp_children()``.  Placed before ``user_env`` so an
+    # explicit user override (rare) still wins.
+    env[_HERMES_MCP_PARENT_PID_VAR] = str(os.getpid())
     if user_env:
         env.update(user_env)
     return env
@@ -2039,6 +2050,14 @@ def _ensure_mcp_loop():
     with _lock:
         if _mcp_loop is not None and _mcp_loop.is_running():
             return
+        # Reap MCP children left behind by a previous hermes process that
+        # exited ungracefully.  Runs once per startup (the "already running"
+        # early-return above prevents re-runs within the same process).
+        # Best-effort: failures shouldn't block MCP init.
+        try:
+            _reap_orphaned_mcp_children()
+        except Exception:
+            logger.debug("orphan reaper raised", exc_info=True)
         _mcp_loop = asyncio.new_event_loop()
         _mcp_loop.set_exception_handler(_mcp_loop_exception_handler)
         _mcp_thread = threading.Thread(
@@ -3333,6 +3352,130 @@ def shutdown_mcp_servers():
     _stop_mcp_loop()
 
 
+def _proc_descendant_pids(root_pid: int) -> List[int]:
+    """Return all descendants of ``root_pid`` (Linux /proc walk, DFS).
+
+    Returns an empty list on non-Linux platforms or if /proc is unavailable.
+    The root PID itself is NOT included; callers handle it explicitly so they
+    can choose the per-PID signal order (leaves first vs. root first).
+
+    Used by ``_kill_orphaned_mcp_children`` so that browser subprocesses
+    (camoufox, chromium) spawned by Node.js MCP servers are signalled too,
+    rather than reparented to init when the wrapper dies.
+    """
+    def _children(pid: int) -> List[int]:
+        out: List[int] = []
+        task_dir = f"/proc/{pid}/task"
+        try:
+            tids = os.listdir(task_dir)
+        except (FileNotFoundError, PermissionError, OSError):
+            return out
+        for tid in tids:
+            try:
+                with open(f"{task_dir}/{tid}/children") as f:
+                    for cp in f.read().split():
+                        if cp.strip():
+                            out.append(int(cp))
+            except (FileNotFoundError, PermissionError, OSError, ValueError):
+                pass
+        return out
+
+    if not os.path.isdir(f"/proc/{root_pid}"):
+        return []
+    seen = {root_pid}
+    out: List[int] = []
+    stack = [root_pid]
+    while stack:
+        p = stack.pop()
+        for c in _children(p):
+            if c in seen:
+                continue
+            seen.add(c)
+            out.append(c)
+            stack.append(c)
+    return out
+
+
+def _reap_orphaned_mcp_children() -> int:
+    """Scan /proc for hermes-tagged MCP processes whose parent has exited and
+    kill their trees.  Returns the number of orphan trees reaped.
+
+    Every MCP stdio child we spawn inherits ``HERMES_MCP_PARENT_PID`` (set in
+    ``_build_safe_env``) pointing at the hermes process that spawned it.  After
+    an unclean exit (SIGKILL, OOM, segfault, skipped finally block), those
+    children get reparented to PID 1 and survive forever, leaking RAM and
+    sometimes blocking listening ports (e.g. a stealth browser bound to
+    9222).  This routine runs once at MCP-loop init to clean them up before
+    we spawn replacements.
+
+    Linux-only — depends on ``/proc/<pid>/environ``.  Silent no-op on
+    platforms without /proc.  Never touches a process whose claimed parent
+    is still alive, so it's safe to call when other hermes instances are
+    running on the same host.
+    """
+    import signal as _signal
+
+    my_pid = os.getpid()
+    tag_prefix = (_HERMES_MCP_PARENT_PID_VAR + "=").encode()
+    sigkill = getattr(_signal, "SIGKILL", _signal.SIGTERM)
+    reaped = 0
+    try:
+        entries = os.listdir("/proc")
+    except (FileNotFoundError, PermissionError, OSError):
+        return 0
+    for entry in entries:
+        if not entry.isdigit():
+            continue
+        pid = int(entry)
+        if pid == my_pid:
+            continue
+        try:
+            with open(f"/proc/{pid}/environ", "rb") as f:
+                raw = f.read()
+        except (FileNotFoundError, PermissionError, OSError):
+            continue
+        parent_pid: Optional[int] = None
+        for chunk in raw.split(b"\x00"):
+            if chunk.startswith(tag_prefix):
+                try:
+                    parent_pid = int(chunk[len(tag_prefix):])
+                except (ValueError, IndexError):
+                    pass
+                break
+        if parent_pid is None:
+            continue  # not a hermes-spawned MCP child
+        if parent_pid == my_pid or os.path.isdir(f"/proc/{parent_pid}"):
+            continue  # parent alive — not orphaned
+        # Orphan: SIGKILL the whole tree (leaves first so reparenting doesn't
+        # rescue children mid-kill).  Best-effort; survivors will be caught
+        # next startup.
+        tree = _proc_descendant_pids(pid)
+        killed = 0
+        for p in sorted(tree, reverse=True):
+            try:
+                os.kill(p, sigkill)
+                killed += 1
+            except (ProcessLookupError, PermissionError, OSError):
+                pass
+        try:
+            os.kill(pid, sigkill)
+            killed += 1
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+        if killed:
+            reaped += 1
+            logger.info(
+                "Reaped orphaned MCP tree (pid=%d, dead parent=%d, killed=%d procs)",
+                pid, parent_pid, killed,
+            )
+    if reaped:
+        logger.info(
+            "Orphan reaper: cleaned up %d MCP tree(s) from prior session(s)",
+            reaped,
+        )
+    return reaped
+
+
 def _kill_orphaned_mcp_children(include_active: bool = False) -> None:
     """Best-effort graceful shutdown of stdio MCP subprocesses to reap orphans.
 
@@ -3345,6 +3488,12 @@ def _kill_orphaned_mcp_children(include_active: bool = False) -> None:
     Sends SIGTERM, waits 2 seconds, then escalates to SIGKILL for any
     survivors, avoiding shared-resource collisions when multiple hermes
     processes run on the same host (each has its own ``_stdio_pids`` dict).
+
+    Each tracked PID's full process tree (parent + descendants) gets the
+    signal — otherwise SIGKILL on a Node.js MCP wrapper leaves its browser
+    children (camoufox, chromium, etc.) reparented to init, leaking RAM and
+    bound ports.  Descendant lookup walks /proc on Linux; non-Linux callers
+    fall back to signalling only the tracked parent PID.
 
     With ``include_active=True`` also kills every PID in ``_stdio_pids`` —
     used only at final shutdown, after the MCP event loop has stopped and no
@@ -3367,33 +3516,50 @@ def _kill_orphaned_mcp_children(include_active: bool = False) -> None:
     if not pids:
         return
 
+    # Expand each parent PID into (parent, [descendants]) once up-front so
+    # both signal phases hit the same target set even if children exit
+    # between phases.
+    trees: Dict[int, List[int]] = {pid: _proc_descendant_pids(pid) for pid in pids}
+
     # Phase 1: SIGTERM (graceful)
     for pid, server_name in pids.items():
-        try:
-            os.kill(pid, _signal.SIGTERM)
-            logger.debug("Sent SIGTERM to orphaned MCP process %d (%s)", pid, server_name)
-        except (ProcessLookupError, PermissionError, OSError):
-            pass
+        # Signal parent first so it can begin a graceful shutdown and
+        # propagate to children itself; then signal any descendants we know
+        # about as a backstop.
+        for target in [pid] + trees[pid]:
+            try:
+                os.kill(target, _signal.SIGTERM)
+                logger.debug(
+                    "Sent SIGTERM to MCP process %d (%s tree-member)",
+                    target, server_name,
+                )
+            except (ProcessLookupError, PermissionError, OSError):
+                pass
 
     # Phase 2: Wait for graceful exit
     _time.sleep(2)
 
-    # Phase 3: SIGKILL any survivors
+    # Phase 3: SIGKILL any survivors (leaves first so reparenting doesn't
+    # rescue grandchildren mid-kill).
     _sigkill = getattr(_signal, "SIGKILL", _signal.SIGTERM)
     # ``os.kill(pid, 0)`` is NOT a no-op on Windows. Use the cross-platform
     # existence check before escalating to SIGKILL.
     from gateway.status import _pid_exists
     for pid, server_name in pids.items():
-        if not _pid_exists(pid):
-            continue  # Good — exited after SIGTERM
-        try:
-            os.kill(pid, _sigkill)
-            logger.warning(
-                "Force-killed MCP process %d (%s) after SIGTERM timeout",
-                pid, server_name,
-            )
-        except (ProcessLookupError, PermissionError, OSError):
-            pass
+        # Rebuild the descendant list (children may have new PIDs reparented)
+        # then signal leaves-first.
+        survivors = _proc_descendant_pids(pid)
+        for target in sorted(survivors, reverse=True) + [pid]:
+            if not _pid_exists(target):
+                continue
+            try:
+                os.kill(target, _sigkill)
+                logger.warning(
+                    "Force-killed MCP process %d (%s tree-member) after SIGTERM timeout",
+                    target, server_name,
+                )
+            except (ProcessLookupError, PermissionError, OSError):
+                pass
 
 
 def _stop_mcp_loop():
