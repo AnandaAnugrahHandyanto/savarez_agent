@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 
 def _hermes_home_path() -> Path:
@@ -109,3 +112,52 @@ def get_read_block_error(path: str) -> Optional[str]:
             "Use the skills_list or skill_view tools instead."
         )
     return None
+
+
+# Well-known system directories that must never be chmod'd.
+_UNSAFE_PARENT_DIRS: frozenset[str] = frozenset({
+    "/", "/etc", "/usr", "/var", "/sys", "/proc", "/boot",
+    "/dev", "/bin", "/sbin", "/lib", "/lib64", "/opt", "/root",
+})
+
+
+def safe_chmod_parent(path: Path | str, mode: int = 0o700) -> None:
+    """chmod ``path.parent`` only after verifying it is a sane directory.
+
+    Prevents ``os.chmod(\"/\", 0o700)`` which strips traversal permission
+    from the root inode and bricks the entire host (DNS, networking,
+    journald, Docker, etc.).  See issue #25821.
+
+    Checks (any failure → skip with warning, no exception raised):
+      1. Resolved parent is not ``/`` or a well-known system directory.
+      2. Parent exists and is a directory.
+    """
+    try:
+        parent = Path(path).resolve().parent
+    except Exception:
+        logger.warning("safe_chmod_parent: cannot resolve parent of %r", path)
+        return
+
+    parent_str = str(parent)
+
+    # Check 1: not root or a well-known system directory
+    if parent_str in _UNSAFE_PARENT_DIRS:
+        logger.warning(
+            "safe_chmod_parent: refusing to chmod system directory %s "
+            "(path=%r) — see #25821", parent_str, str(path),
+        )
+        return
+
+    # Check 2: parent exists and is a directory
+    if not parent.is_dir():
+        logger.warning(
+            "safe_chmod_parent: parent %s does not exist or is not a directory "
+            "(path=%r) — skipping chmod", parent_str, str(path),
+        )
+        return
+
+    try:
+        os.chmod(parent, mode)
+    except OSError:
+        # Silently ignore — some filesystems (e.g. Windows mounts) don't support chmod
+        pass
