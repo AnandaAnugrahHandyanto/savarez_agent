@@ -1260,8 +1260,10 @@ copy_config_templates() {
             touch "$HERMES_HOME/.env"
             log_success "Created ~/.hermes/.env"
         fi
+        chmod 600 "$HERMES_HOME/.env"
     else
         log_info "~/.hermes/.env already exists, keeping it"
+        chmod 600 "$HERMES_HOME/.env"
     fi
 
     # Create config.yaml at ~/.hermes/config.yaml (top level, easy to find)
