@@ -682,6 +682,31 @@ class TestCustomProviderCompatibility:
         models = [e.get("model") for e in compatible]
         assert models == ["qwen3-coder", "glm-5.1", "kimi-k2.5"]
 
+    def test_compatible_custom_providers_preserves_discover_models(self, tmp_path):
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            yaml.safe_dump(
+                {
+                    "_config_version": 17,
+                    "custom_providers": [
+                        {
+                            "name": "Gateway",
+                            "base_url": "https://gateway.example.com/v1",
+                            "api_key": "sk-test",
+                            "discover_models": False,
+                            "model": "gateway-chat",
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            compatible = get_compatible_custom_providers()
+
+        assert compatible[0]["discover_models"] is False
+
 
 class TestInterimAssistantMessageConfig:
     """Test the explicit gateway interim-message config gate."""

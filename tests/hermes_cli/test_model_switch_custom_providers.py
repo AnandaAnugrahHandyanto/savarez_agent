@@ -567,3 +567,46 @@ def test_custom_providers_uses_live_models_for_multi_model_endpoint(monkeypatch)
         "gateway-model-c",
     ], "Live models must replace the static subset"
     assert gateway_prov["total_models"] == 3
+
+
+def test_custom_providers_can_disable_live_model_discovery(monkeypatch):
+    """Dedicated routers can pin /model to configured chat models only."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+
+    calls = []
+
+    def fake_fetch_api_models(api_key, base_url):
+        calls.append((api_key, base_url))
+        return ["gateway-chat", "gateway-image", "gateway-embedding"]
+
+    monkeypatch.setattr("hermes_cli.models.fetch_api_models", fake_fetch_api_models)
+
+    custom_providers = [
+        {
+            "name": "my-gateway",
+            "api_key": "sk-gateway-key",
+            "base_url": "https://gateway.example.com/v1",
+            "discover_models": False,
+            "model": "gateway-chat",
+            "models": {
+                "gateway-chat": {},
+                "gateway-coder": {},
+            },
+        }
+    ]
+
+    providers = list_authenticated_providers(
+        current_provider="custom:my-gateway",
+        current_base_url="https://gateway.example.com/v1",
+        custom_providers=custom_providers,
+        max_models=50,
+    )
+
+    gateway_prov = next(
+        p for p in providers if p.get("api_url") == "https://gateway.example.com/v1"
+    )
+
+    assert calls == []
+    assert gateway_prov["models"] == ["gateway-chat", "gateway-coder"]
+    assert gateway_prov["total_models"] == 2

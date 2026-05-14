@@ -1687,8 +1687,28 @@ def list_authenticated_providers(
             if _grp_url_norm and _grp_url_norm in _builtin_endpoints:
                 continue
             # Live model discovery from custom provider endpoints (matches
-            # Section 3 behavior for user ``providers:`` entries).
-            if api_url and api_key:
+            # Section 3 behavior for user ``providers:`` entries). Allow
+            # dedicated gateways to opt out: some OpenAI-compatible routers
+            # expose their entire multimodal/provider-prefixed catalog from
+            # /models, while the picker should show only the chat models the
+            # user configured for this custom provider.
+            discover = True
+            for entry in custom_providers:
+                if not isinstance(entry, dict):
+                    continue
+                entry_url = (
+                    entry.get("base_url", "")
+                    or entry.get("url", "")
+                    or entry.get("api", "")
+                    or ""
+                ).strip().rstrip("/")
+                entry_key = (entry.get("api_key") or "").strip()
+                if entry_url == api_url and entry_key == api_key:
+                    discover = entry.get("discover_models", True)
+                    break
+            if isinstance(discover, str):
+                discover = discover.lower() not in {"false", "no", "0"}
+            if api_url and api_key and discover:
                 try:
                     from hermes_cli.models import fetch_api_models
 
