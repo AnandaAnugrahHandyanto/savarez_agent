@@ -140,6 +140,9 @@ class PooledCredential:
         data.setdefault("priority", 0)
         data.setdefault("source", SOURCE_MANUAL)
         data.setdefault("access_token", "")
+        for ts_key in ("last_status_at", "last_error_reset_at"):
+            if ts_key in data and data[ts_key] is not None:
+                data[ts_key] = _parse_absolute_timestamp(data[ts_key])
         return cls(provider=provider, **data)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -277,8 +280,10 @@ def _exhausted_until(entry: PooledCredential) -> Optional[float]:
     reset_at = _parse_absolute_timestamp(getattr(entry, "last_error_reset_at", None))
     if reset_at is not None:
         return reset_at
-    if entry.last_status_at:
-        return entry.last_status_at + _exhausted_ttl(entry.last_error_code)
+    if entry.last_status_at is not None:
+        ts = _parse_absolute_timestamp(entry.last_status_at)
+        if ts is not None:
+            return ts + _exhausted_ttl(entry.last_error_code)
     return None
 
 

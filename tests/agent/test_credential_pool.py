@@ -286,6 +286,57 @@ def test_exhausted_401_entry_resets_after_five_minutes(tmp_path, monkeypatch):
     assert entry.last_status == "ok"
 
 
+def test_iso_string_last_status_at_does_not_crash_exhausted_until(tmp_path, monkeypatch):
+    """Regression: ISO-8601 last_status_at from disk should not cause TypeError.
+
+    See https://github.com/NousResearch/hermes-agent/issues/25516
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "openai": [
+                    {
+                        "id": "cred-1",
+                        "label": "primary",
+                        "auth_type": "api_key",
+                        "priority": 0,
+                        "source": "manual",
+                        "access_token": "***",
+                        "last_status": "exhausted",
+                        "last_status_at": "2026-05-11T08:23:20.891066+00:00",
+                        "last_error_code": 429,
+                    },
+                    {
+                        "id": "cred-2",
+                        "label": "secondary",
+                        "auth_type": "api_key",
+                        "priority": 1,
+                        "source": "manual",
+                        "access_token": "***",
+                        "last_status": "ok",
+                        "last_status_at": None,
+                        "last_error_code": None,
+                    },
+                ]
+            },
+        },
+    )
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("openai")
+    # Should not raise TypeError: can't add str and int
+    entry = pool.select()
+
+    assert entry is not None
+    # ISO timestamp from May 2026 is long expired; cred-1 should be usable again
+    assert entry.id == "cred-1"
+    assert entry.last_status == "ok"
+
+
 def test_explicit_reset_timestamp_overrides_default_429_ttl(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     # Prevent auto-seeding from Codex CLI tokens on the host
