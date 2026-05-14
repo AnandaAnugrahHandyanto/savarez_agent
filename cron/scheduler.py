@@ -55,6 +55,38 @@ class CronPromptInjectionBlocked(Exception):
     """
 
 
+def _truthy(value: object) -> bool:
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _falsey(value: object) -> bool:
+    return str(value).strip().lower() in {"0", "false", "no", "off"}
+
+
+def _cron_persist_sessions_enabled(cfg: dict | None = None) -> bool:
+    """Return whether LLM cron runs should be persisted as chat sessions.
+
+    Defaults to legacy behavior (enabled) for compatibility. Operators with
+    high-frequency scheduled jobs can set ``cron.persist_sessions: false`` in
+    config.yaml or ``HERMES_CRON_PERSIST_SESSIONS=0`` to keep cron output in
+    delivery/evidence ledgers without growing the primary conversation DB.
+    """
+    env_value = os.getenv("HERMES_CRON_PERSIST_SESSIONS", "").strip()
+    if env_value:
+        if _falsey(env_value):
+            return False
+        if _truthy(env_value):
+            return True
+    cron_cfg = (cfg or {}).get("cron") or {}
+    if isinstance(cron_cfg, dict) and "persist_sessions" in cron_cfg:
+        value = cron_cfg.get("persist_sessions")
+        if _falsey(value):
+            return False
+        if _truthy(value):
+            return True
+    return True
+
+
 def _resolve_cron_enabled_toolsets(job: dict, cfg: dict) -> list[str] | None:
     """Resolve the toolset list for a cron job.
 
@@ -1131,14 +1163,10 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     # ---------------------------------------------------------------
     from run_agent import AIAgent
 
-    # Initialize SQLite session store so cron job messages are persisted
-    # and discoverable via session_search (same pattern as gateway/run.py).
+    # Session persistence is initialized after config.yaml is loaded below.
+    # This allows high-frequency cron deployments to opt out of storing every
+    # scheduled run as a full chat session while preserving legacy defaults.
     _session_db = None
-    try:
-        from hermes_state import SessionDB
-        _session_db = SessionDB()
-    except Exception as e:
-        logger.debug("Job '%s': SQLite session store not available: %s", job.get("id", "?"), e)
 
     # Wake-gate: if this job has a pre-check script, run it BEFORE building
     # the prompt so a ``{"wakeAgent": false}`` response can short-circuit
@@ -1303,6 +1331,19 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                         model = _model_cfg.get("default", model)
         except Exception as e:
             logger.warning("Job '%s': failed to load config.yaml, using defaults: %s", job_id, e)
+
+        # Initialize SQLite session store only when enabled. Cron sessions are
+        # useful for low-frequency jobs and session_search, but high-frequency
+        # proof loops should write compact evidence/ledger records instead of
+        # growing the primary conversation DB indefinitely.
+        if _cron_persist_sessions_enabled(_cfg):
+            try:
+                from hermes_state import SessionDB
+                _session_db = SessionDB()
+            except Exception as e:
+                logger.debug("Job '%s': SQLite session store not available: %s", job.get("id", "?"), e)
+        else:
+            logger.info("Job '%s': cron session persistence disabled", job_id)
 
         # Apply IPv4 preference if configured.
         try:

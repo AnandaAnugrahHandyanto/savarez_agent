@@ -11165,6 +11165,48 @@ Examples:
         "--yes", "-y", action="store_true", help="Skip confirmation"
     )
 
+    sessions_doctor = sessions_subparsers.add_parser(
+        "doctor", help="Audit session DB growth, source mix, and retention risks"
+    )
+    sessions_doctor.add_argument(
+        "--json", action="store_true", help="Print the full doctor report as JSON"
+    )
+    sessions_doctor.add_argument(
+        "--output", help="Write the full doctor report JSON to this path"
+    )
+
+    sessions_archive_prune = sessions_subparsers.add_parser(
+        "archive-prune",
+        help="Archive ended sessions to a SQLite DB before pruning them",
+    )
+    sessions_archive_prune.add_argument(
+        "--source", default="cron", help="Source to archive-prune (default: cron)"
+    )
+    sessions_archive_prune.add_argument(
+        "--older-than",
+        type=int,
+        default=7,
+        help="Archive-prune ended sessions older than N days (default: 7)",
+    )
+    sessions_archive_prune.add_argument(
+        "--archive", help="Archive SQLite DB path (default: ~/.hermes/archives/...)"
+    )
+    sessions_archive_prune.add_argument(
+        "--backup", help="Pre-prune state.db backup path (default: ~/.hermes/backups/...)"
+    )
+    sessions_archive_prune.add_argument(
+        "--report", help="Write maintenance report JSON to this path"
+    )
+    sessions_archive_prune.add_argument(
+        "--dry-run", action="store_true", help="Show candidate counts without modifying the DB"
+    )
+    sessions_archive_prune.add_argument(
+        "--no-vacuum", action="store_true", help="Skip VACUUM after pruning"
+    )
+    sessions_archive_prune.add_argument(
+        "--yes", "-y", action="store_true", help="Skip confirmation"
+    )
+
     sessions_subparsers.add_parser("stats", help="Show session store statistics")
 
     sessions_rename = sessions_subparsers.add_parser(
@@ -11298,6 +11340,80 @@ Examples:
                 older_than_days=days, source=args.source, sessions_dir=sessions_dir
             )
             print(f"Pruned {count} session(s).")
+
+        elif action == "doctor":
+            from hermes_cli.session_maintenance import doctor_report, write_json_report
+
+            report = doctor_report(db.db_path)
+            if args.output:
+                write_json_report(report, Path(args.output))
+                print(f"Wrote session doctor report to {args.output}")
+            if args.json:
+                print(_json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))
+            else:
+                print(f"Database: {report['db_path']}")
+                print(f"Size: {report['db_size_mb']} MB")
+                print(f"Sessions: {report['counts']['sessions']}")
+                print(f"Messages: {report['counts']['messages']}")
+                print("By source:")
+                for row in report["by_source"]:
+                    print(
+                        f"  {row['source']}: {row['sessions']} sessions, "
+                        f"{row.get('messages') or 0} messages, "
+                        f"{row.get('session_text_mb') or 0} MB session text"
+                    )
+                if report["risk_flags"]:
+                    print("Risk flags:")
+                    for flag in report["risk_flags"]:
+                        print(f"  {flag['code']}: {flag['detail']}")
+
+        elif action == "archive-prune":
+            from datetime import datetime
+            from hermes_cli.session_maintenance import (
+                archive_prune,
+                plan_archive_prune,
+                write_json_report,
+            )
+
+            stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+            hermes_home = get_hermes_home()
+            archive = Path(args.archive) if args.archive else hermes_home / "archives" / f"state-{args.source}-archive-{stamp}.sqlite"
+            backup = Path(args.backup) if args.backup else hermes_home / "backups" / f"state-before-{args.source}-archive-prune-{stamp}.db"
+            report_path = Path(args.report) if args.report else hermes_home / "archives" / f"state-{args.source}-archive-prune-{stamp}.json"
+            plan = plan_archive_prune(
+                db.db_path,
+                source=args.source,
+                older_than_days=args.older_than,
+            )
+            if args.dry_run:
+                print(_json.dumps(plan, ensure_ascii=False, indent=2, sort_keys=True))
+                return
+            if not args.yes:
+                if not _confirm_prompt(
+                    f"Archive then prune {plan['candidate_sessions']} ended {args.source} "
+                    f"session(s) older than {args.older_than} days? [y/N] "
+                ):
+                    print("Cancelled.")
+                    return
+            db.close()
+            report = archive_prune(
+                db.db_path,
+                archive,
+                source=args.source,
+                older_than_days=args.older_than,
+                backup_path=backup,
+                vacuum=not args.no_vacuum,
+            )
+            write_json_report(report, report_path)
+            print(
+                f"Archived {report['archived_sessions']} session(s), "
+                f"pruned {report['deleted_sessions']} session(s), "
+                f"reclaimed {report.get('reclaimed_mb', 0)} MB."
+            )
+            print(f"Archive: {archive}")
+            print(f"Backup: {backup}")
+            print(f"Report: {report_path}")
+            return
 
         elif action == "rename":
             resolved_session_id = db.resolve_session_id(args.session_id)
