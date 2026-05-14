@@ -1997,6 +1997,10 @@ class TestThreadReplyHandling:
         a = SlackAdapter(config)
         a._app = MagicMock()
         a._app.client = AsyncMock()
+        a._app.client.users_info = AsyncMock(return_value={"user": {"name": "Chris"}})
+        a._app.client.conversations_replies = AsyncMock(return_value={
+            "messages": [{"text": "Thread parent"}],
+        })
         a._bot_user_id = "U_BOT"
         a._team_bot_user_ids = {"T_TEAM": "U_BOT"}
         a._running = True
@@ -2017,6 +2021,70 @@ class TestThreadReplyHandling:
             "channel": "C123",
             "ts": "123.456",
             "thread_ts": "123.000",  # Different from ts - this is a reply
+            "parent_user_id": "U_OTHER",
+            "channel_type": "channel",
+            "team": "T_TEAM",
+        }
+        await adapter_with_session_store._handle_slack_message(event)
+        adapter_with_session_store.handle_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_thread_reply_to_bot_parent_without_mention_processed(
+        self, adapter_with_session_store, mock_session_store
+    ):
+        """Replies on bot-authored thread parents are implicitly addressed to the bot."""
+        mock_session_store._entries = {}
+
+        event = {
+            "text": "approve",
+            "user": "U_USER",
+            "channel": "C123",
+            "ts": "123.456",
+            "thread_ts": "123.000",
+            "parent_user_id": "U_BOT",
+            "channel_type": "channel",
+            "team": "T_TEAM",
+        }
+        await adapter_with_session_store._handle_slack_message(event)
+        adapter_with_session_store.handle_message.assert_called_once()
+        msg_event = adapter_with_session_store.handle_message.call_args[0][0]
+        assert msg_event.text.endswith("approve")
+        assert msg_event.source.thread_id == "123.000"
+
+    @pytest.mark.asyncio
+    async def test_top_level_message_with_parent_user_id_still_requires_mention(
+        self, adapter_with_session_store, mock_session_store
+    ):
+        """Only real thread replies get implicit bot-parent addressing."""
+        mock_session_store._entries = {}
+
+        event = {
+            "text": "approve",
+            "user": "U_USER",
+            "channel": "C123",
+            "ts": "123.000",
+            # No thread_ts means top-level, even if Slack includes parent-ish data.
+            "parent_user_id": "U_BOT",
+            "channel_type": "channel",
+            "team": "T_TEAM",
+        }
+        await adapter_with_session_store._handle_slack_message(event)
+        adapter_with_session_store.handle_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_thread_reply_to_non_bot_parent_requires_mention(
+        self, adapter_with_session_store, mock_session_store
+    ):
+        """Replies in someone else's thread still require an @mention or active session."""
+        mock_session_store._entries = {}
+
+        event = {
+            "text": "approve",
+            "user": "U_USER",
+            "channel": "C123",
+            "ts": "123.456",
+            "thread_ts": "123.000",
+            "parent_user_id": "U_OTHER",
             "channel_type": "channel",
             "team": "T_TEAM",
         }

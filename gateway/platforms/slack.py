@@ -1781,6 +1781,34 @@ class SlackAdapter(BasePlatformAdapter):
         self._cache_assistant_thread_metadata(metadata)
         self._seed_assistant_thread_session(metadata)
 
+    def _is_thread_reply_to_bot_message(
+        self,
+        event: dict,
+        *,
+        bot_uid: Optional[str],
+        event_thread_ts: Optional[str],
+        message_ts: Optional[str],
+    ) -> bool:
+        """Return True when a Slack thread reply is on a bot-authored parent.
+
+        Slack message events include ``parent_user_id`` for thread replies in
+        channels. That is the authoritative signal that the thread parent was
+        authored by this bot, and it survives gateway restarts. Fall back to
+        cached bot-post timestamps for older/partial payloads.
+        """
+        if not bot_uid or not event_thread_ts or event_thread_ts == message_ts:
+            return False
+
+        parent_user_id = event.get("parent_user_id")
+        if parent_user_id and parent_user_id == bot_uid:
+            return True
+
+        root = event.get("root")
+        if isinstance(root, dict) and root.get("user") == bot_uid:
+            return True
+
+        return event_thread_ts in self._bot_message_ts
+
     async def _handle_slack_message(self, event: dict) -> None:
         """Handle an incoming Slack message event."""
         # Dedup: Slack Socket Mode can redeliver events after reconnects (#4777)
@@ -1990,12 +2018,15 @@ class SlackAdapter(BasePlatformAdapter):
                 pass  # Free-response channel — always process
             elif not self._slack_require_mention():
                 pass  # Mention requirement disabled globally for Slack
-            elif self._slack_strict_mention() and not is_mentioned:
-                return  # Strict mode: ignore until @-mentioned again
             elif not is_mentioned:
-                reply_to_bot_thread = (
-                    is_thread_reply and event_thread_ts in self._bot_message_ts
+                reply_to_bot_thread = self._is_thread_reply_to_bot_message(
+                    event,
+                    bot_uid=bot_uid,
+                    event_thread_ts=event_thread_ts,
+                    message_ts=ts,
                 )
+                if self._slack_strict_mention() and not reply_to_bot_thread:
+                    return  # Strict mode: ignore until @-mentioned again, except direct replies to our own posts
                 in_mentioned_thread = (
                     event_thread_ts is not None
                     and event_thread_ts in self._mentioned_threads
