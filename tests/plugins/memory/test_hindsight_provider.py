@@ -306,6 +306,36 @@ class TestConfig:
         # Reflect not set — no per-op vars
         assert "HINDSIGHT_API_REFLECT_LLM_MODEL" not in env
 
+    def test_embedded_profile_env_daemon_env_passthrough(self):
+        """daemon_env dict in config.json passes arbitrary HINDSIGHT_API_* vars to daemon."""
+        env = _build_embedded_profile_env({
+            "llm_provider": "openai",
+            "llm_model": "default-model",
+            "llmApiKey": "default-key",
+            "daemon_env": {
+                "HINDSIGHT_API_WORKER_MAX_SLOTS": "10",
+                "HINDSIGHT_API_CONSOLIDATION_LLM_BATCH_SIZE": "16",
+                "HINDSIGHT_API_SKIP_LLM_VERIFICATION": "true",
+                "NON_HINDSIGHT_KEY": "should-be-ignored",
+                "HINDSIGHT_API_NULL_VALUE": None,
+            },
+        })
+
+        assert env["HINDSIGHT_API_WORKER_MAX_SLOTS"] == "10"
+        assert env["HINDSIGHT_API_CONSOLIDATION_LLM_BATCH_SIZE"] == "16"
+        assert env["HINDSIGHT_API_SKIP_LLM_VERIFICATION"] == "true"
+        assert "NON_HINDSIGHT_KEY" not in env
+        assert "HINDSIGHT_API_NULL_VALUE" not in env
+
+    def test_embedded_profile_env_daemon_env_none_or_missing(self):
+        """daemon_env=None or missing doesn't crash and doesn't affect other keys."""
+        for config in [
+            {"llm_provider": "openai", "llmApiKey": "k", "llm_model": "m", "daemon_env": None},
+            {"llm_provider": "openai", "llmApiKey": "k", "llm_model": "m"},
+        ]:
+            env = _build_embedded_profile_env(config)
+            assert env["HINDSIGHT_API_LLM_PROVIDER"] == "openai"
+
     def test_get_client_passes_idle_timeout_to_hindsight_embedded(self, monkeypatch):
         captured = {}
 
@@ -789,8 +819,8 @@ class TestSyncTurn:
         assert item["metadata"]["turn_index"] == "3"
         assert item["metadata"]["message_count"] == "6"
 
-    def test_sync_turn_accumulates_full_session(self, provider_with_config):
-        """Each retain sends the ENTIRE session, not just the latest batch."""
+    def test_sync_turn_accumulates_full_session_for_legacy_overwrite_mode(self, provider_with_config):
+        """Legacy APIs without append support need full snapshots to avoid overwrite data loss."""
         p = provider_with_config(retain_every_n_turns=2)
 
         p.sync_turn("turn1-user", "turn1-asst")
@@ -804,11 +834,42 @@ class TestSyncTurn:
         p._retain_queue.join()
 
         content = p._client.aretain_batch.call_args.kwargs["items"][0]["content"]
-        # Should contain ALL turns from the session
+        # Legacy overwrite mode should contain ALL turns from the session.
         assert "turn1-user" in content
         assert "turn2-user" in content
         assert "turn3-user" in content
         assert "turn4-user" in content
+
+    def test_sync_turn_append_mode_sends_only_new_buffered_turns(self, provider_with_config, monkeypatch):
+        """Append mode must not resend prior turns, or token usage becomes quadratic."""
+        p = provider_with_config(retain_every_n_turns=2)
+        monkeypatch.setattr(p, "_resolve_retain_target", lambda fallback: ("test-session", "append"))
+
+        p.sync_turn("turn1-user", "turn1-asst")
+        p.sync_turn("turn2-user", "turn2-asst")
+        p._retain_queue.join()
+
+        first = p._client.aretain_batch.call_args.kwargs
+        first_content = first["items"][0]["content"]
+        assert first["document_id"] == "test-session"
+        assert first["items"][0]["update_mode"] == "append"
+        assert "turn1-user" in first_content
+        assert "turn2-user" in first_content
+
+        p._client.aretain_batch.reset_mock()
+
+        p.sync_turn("turn3-user", "turn3-asst")
+        p.sync_turn("turn4-user", "turn4-asst")
+        p._retain_queue.join()
+
+        second = p._client.aretain_batch.call_args.kwargs
+        second_content = second["items"][0]["content"]
+        assert second["document_id"] == "test-session"
+        assert second["items"][0]["update_mode"] == "append"
+        assert "turn1-user" not in second_content
+        assert "turn2-user" not in second_content
+        assert "turn3-user" in second_content
+        assert "turn4-user" in second_content
 
     def test_sync_turn_passes_document_id(self, provider):
         """sync_turn should pass document_id (session_id + per-startup ts)."""
