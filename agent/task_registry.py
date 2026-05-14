@@ -620,6 +620,32 @@ class TaskRegistry:
         task.touch()
         return pending
 
+    def append_followup(
+        self,
+        task_id: str,
+        text: str,
+        *,
+        source: str = "user",
+        session_key: str | None = None,
+    ) -> PendingTurnItem:
+        """Append a plain-text follow-up to *task_id*.
+
+        This is the explicit frontdesk-facing helper for late user guidance.  It
+        keeps the lower-level :meth:`attach_followup` flexibility while making
+        the common text path spell out provenance and task linkage.
+        """
+        task = self._require(task_id)
+        effective_session_key = session_key if session_key is not None else task.session_key
+        return self.attach_followup(
+            task_id,
+            PendingTurnItem(
+                source=source,
+                text=str(text),
+                session_key=effective_session_key,
+                task_hint=task_id,
+            ),
+        )
+
     def attach_artifact(self, task_id: str, artifact: dict[str, Any]) -> dict[str, Any]:
         """Append an artifact record (a dict) to *task_id*; return the stored copy.
 

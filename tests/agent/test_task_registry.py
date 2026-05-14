@@ -95,6 +95,24 @@ def test_followups_attach_in_order_and_legacy_payloads_gain_session_key():
     assert media.media_refs == ["/tmp/a.png"]
 
 
+def test_append_followup_records_plain_text_provenance_and_task_hint():
+    reg = TaskRegistry()
+    task = reg.create_task("collect late guidance", session_key="s1")
+
+    item = reg.append_followup(
+        task.task_id,
+        "이 조건도 넣어줘",
+        source="gateway",
+        session_key="s1",
+    )
+
+    assert task.pending_followups == [item]
+    assert item.text == "이 조건도 넣어줘"
+    assert item.source == "gateway"
+    assert item.session_key == "s1"
+    assert item.task_hint == task.task_id
+
+
 def test_serialization_roundtrip_excludes_raw_without_touching_it():
     reg = TaskRegistry()
     task = reg.create_task("serialize safely", origin={"platform": "cli", "session_key": "s1"})

@@ -90,7 +90,9 @@ from agent.task_registry import (
     TaskRegistry,
 )
 from agent.worker_lanes import (
+    ACTIVE_WORKER_STATUSES,
     WorkerLaneRegistry,
+    WorkerHandle,
     WorkerSpec,
     link_worker_to_task,
 )
@@ -338,6 +340,22 @@ class OrchestrationRuntime:
                 message=self.format_overview(session_key=session_key),
             )
 
+        if self._is_worker_followup_candidate(decision):
+            attached = self._attach_followup_to_active_worker_task(
+                decision,
+                session_key=session_key,
+                source_surface=source_surface,
+            )
+            if attached is not None:
+                task_id, worker_id = attached
+                return FrontdeskTurnResult(
+                    decision=decision,
+                    action="followup_attached",
+                    message=f"control: follow-up attached to active worker {worker_id}",
+                    task_id=task_id,
+                    worker_id=worker_id,
+                )
+
         if decision.intent is Intent.STEER:
             if main_in_flight and steer_callback is not None:
                 try:
@@ -449,6 +467,59 @@ class OrchestrationRuntime:
             task_id=task.task_id,
             worker_id=handle.worker_id,
         )
+
+    def _is_worker_followup_candidate(self, decision: ControlPlaneDecision) -> bool:
+        """Return whether *decision* is safe to treat as active-worker guidance.
+
+        STOP/STATUS are handled before this method is called.  Worker-shaped
+        requests are excluded so they can still start/link their own task.
+        """
+        if decision.intent not in {Intent.NEW_TASK_MAIN, Intent.STEER}:
+            return False
+        text = decision.raw_text.strip()
+        if not text:
+            return False
+        if len(text) > 160:
+            return False
+        return text.count("\n") <= 1
+
+    def _active_worker_task_for_session(
+        self, *, session_key: str | None = None
+    ) -> tuple[str, WorkerHandle] | None:
+        """Return the newest active task with a still-active worker for a session."""
+        for task in reversed(
+            self.task_registry.list_tasks(session_key=session_key, active_only=True)
+        ):
+            worker_id = task.active_worker_id
+            if not isinstance(worker_id, str) or not worker_id:
+                continue
+            try:
+                handle = self.worker_registry.status(worker_id)
+            except KeyError:
+                continue
+            if handle.status in ACTIVE_WORKER_STATUSES:
+                return task.task_id, handle
+        return None
+
+    def _attach_followup_to_active_worker_task(
+        self,
+        decision: ControlPlaneDecision,
+        *,
+        session_key: str | None,
+        source_surface: str,
+    ) -> tuple[str, str] | None:
+        active = self._active_worker_task_for_session(session_key=session_key)
+        if active is None:
+            return None
+        task_id, handle = active
+        pending = self.task_registry.append_followup(
+            task_id,
+            decision.raw_text,
+            source=source_surface,
+            session_key=session_key,
+        )
+        self.worker_registry.append_followup(handle.worker_id, pending)
+        return task_id, handle.worker_id
 
     def _cancel_active_frontdesk_work(
         self, *, session_key: str | None = None
