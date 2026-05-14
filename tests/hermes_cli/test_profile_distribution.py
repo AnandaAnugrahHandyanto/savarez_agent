@@ -362,6 +362,11 @@ class TestUpdate:
         (plan.target_dir / "auth.json").write_text('{"user": "auth"}')
         (plan.target_dir / "sessions").mkdir(exist_ok=True)
         (plan.target_dir / "sessions" / "chat.json").write_text('{"s": 1}')
+        # Cron jobs must be preserved across updates (issue #25281)
+        (plan.target_dir / "cron").mkdir(exist_ok=True)
+        (plan.target_dir / "cron" / "jobs.json").write_text(
+            '{"jobs": [{"id": "j_abc123", "name": "Monitor h13b", "schedule": "30m"}]}'
+        )
 
         # 3. Bump source in the staging dir
         (staged / "SOUL.md").write_text("I am Source v2.\n")
@@ -376,6 +381,10 @@ class TestUpdate:
         assert (plan.target_dir / ".env").read_text() == "OPENAI_API_KEY=sk-user\n"
         assert (plan.target_dir / "auth.json").read_text() == '{"user": "auth"}'
         assert (plan.target_dir / "sessions" / "chat.json").read_text() == '{"s": 1}'
+        # Cron jobs preserved (issue #25281)
+        assert (plan.target_dir / "cron" / "jobs.json").read_text() == (
+            '{"jobs": [{"id": "j_abc123", "name": "Monitor h13b", "schedule": "30m"}]}'
+        )
 
     def test_update_preserves_config_by_default(self, profile_env):
         staged = _make_staging_dir(profile_env, "src")
