@@ -7578,28 +7578,31 @@ def _cmd_update_impl(args, gateway_mode: bool):
         )
         current_branch = result.stdout.strip()
 
-        # Always update against main
+        # ``hermes update`` mutates the installed source checkout.  Never switch
+        # branches from inside the updater: this checkout may be shared by
+        # multiple live Hermes sessions, so a hidden checkout changes the code
+        # under every session, not just the caller that asked for an update.
         branch = "main"
-
-        # If user is on a non-main branch or detached HEAD, switch to main
-        if current_branch != "main":
+        if current_branch != branch:
             label = (
                 "detached HEAD"
                 if current_branch == "HEAD"
                 else f"branch '{current_branch}'"
             )
-            print(f"  ⚠ Currently on {label} — switching to main for update...")
-            # Stash before checkout so uncommitted work isn't lost
-            auto_stash_ref = _stash_local_changes_if_needed(git_cmd, PROJECT_ROOT)
-            subprocess.run(
-                git_cmd + ["checkout", "main"],
-                cwd=PROJECT_ROOT,
-                capture_output=True,
-                text=True,
-                check=True,
+            print(f"✗ Refusing to update while on {label}.")
+            print(
+                "  hermes update changes the installed checkout; switching "
+                "branches here would affect all running Hermes sessions."
             )
-        else:
-            auto_stash_ref = _stash_local_changes_if_needed(git_cmd, PROJECT_ROOT)
+            print("  Switch explicitly when you are ready, then run hermes update:")
+            print(f"  git -C {PROJECT_ROOT} checkout main && hermes update")
+            print(
+                "  For feature work, use hermes -w or a separate git worktree "
+                "so updates do not disturb active branches."
+            )
+            sys.exit(1)
+
+        auto_stash_ref = _stash_local_changes_if_needed(git_cmd, PROJECT_ROOT)
 
         prompt_for_restore = (
             auto_stash_ref is not None
