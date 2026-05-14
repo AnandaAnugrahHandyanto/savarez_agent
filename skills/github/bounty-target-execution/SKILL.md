@@ -21,6 +21,74 @@ keeps Algora/GitHub target verification, TAKE gating, dev command planning,
 DevOps validation, and maintainer communication separate so external actions
 only happen after explicit user approval.
 
+## Two-Team Architecture
+
+### Team A: github-bounty-income-30m
+
+Purpose: read-only scouting, scoring, and target discovery.
+
+Allowed:
+
+- Inspect public Algora/GitHub bounty pages.
+- Read GitHub repositories, issues, comments, labels, README, CONTRIBUTING,
+  SECURITY, and public metadata.
+- Score candidates and produce reports.
+- Produce a TAKE dossier for user review.
+
+Not allowed:
+
+- Claim bounties.
+- Fork repositories.
+- Clone into execution workspaces unless explicitly part of read-only local
+  inspection approved by the user.
+- Create branches, commits, pushes, or PRs.
+- Comment on issues/PRs or contact maintainers.
+- Start bounty implementation work.
+
+### Team B: github-bounty-execution-team
+
+Purpose: development, DevOps, testing, and communication drafting for a bounty
+target that the user has already confirmed as TAKE.
+
+Allowed after TAKE confirmation:
+
+- Clone or prepare an isolated local workspace.
+- Analyze the codebase and issue requirements.
+- Write code and tests locally.
+- Run setup, test, lint, build, and DevOps validation commands.
+- Produce PR drafts, claim/comment drafts, status updates, and handoff notes.
+
+Still requires explicit confirmation for each externally visible action:
+
+- Claiming or requesting assignment.
+- Posting comments or messages.
+- Forking when it creates a public artifact.
+- Pushing branches.
+- Opening or submitting PRs.
+- Triggering remote CI intentionally.
+
+### Handoff Contract
+
+Team A must hand Team B a TAKE dossier before execution starts:
+
+```text
+Source team: github-bounty-income-30m
+Recommended team: github-bounty-execution-team
+TAKE status: recommended / not recommended / needs user decision
+Score:
+Platform:
+Target URL:
+Repository:
+Issue / bounty ID:
+Reward:
+Current status:
+Duplicate PR / active attempt check:
+Feasibility notes:
+Risks:
+Suggested first commands:
+External actions requiring confirmation:
+```
+
 ## Required Gates
 
 ### 1. Target Verification
