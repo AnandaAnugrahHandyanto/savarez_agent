@@ -40,6 +40,13 @@ except ImportError:
 _jobs_file_lock = threading.Lock()
 ONESHOT_GRACE_SECONDS = 120
 
+# Backwards-compatible module-level paths.
+# Tests monkeypatch these; production code should use _get_cron_dir().
+HERMES_DIR = get_hermes_home().resolve()
+CRON_DIR = HERMES_DIR / "cron"
+JOBS_FILE = CRON_DIR / "jobs.json"
+OUTPUT_DIR = CRON_DIR / "output"
+
 
 def _get_cron_dir() -> Path:
     """Resolve cron directory dynamically via get_hermes_home so per-agent
