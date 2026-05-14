@@ -1323,9 +1323,9 @@ class TestIsStaleConnectionError:
         # frame's ``f_globals["__name__"]`` is what the classifier inspects.
         fake_globals = {"__name__": "urllib3.connectionpool"}
         try:
-            exec("def _boom():
+            exec("""def _boom():
     assert False
-_boom()", fake_globals)
+_boom()""", fake_globals)
         except AssertionError as exc:
             assert is_stale_connection_error(exc) is True
         else:
@@ -1336,9 +1336,9 @@ _boom()", fake_globals)
         from agent.bedrock_adapter import is_stale_connection_error
         fake_globals = {"__name__": "botocore.httpsession"}
         try:
-            exec("def _boom():
+            exec("""def _boom():
     assert False
-_boom()", fake_globals)
+_boom()""", fake_globals)
         except AssertionError as exc:
             assert is_stale_connection_error(exc) is True
         else:
