@@ -5308,7 +5308,11 @@ class AIAgent:
         reason: Optional[str] = None,
     ) -> None:
         try:
-            from hermes_cli.plugins import invoke_hook as _invoke_hook
+            from hermes_cli.plugins import (
+                OBSERVER_SCHEMA_VERSION,
+                invoke_hook as _invoke_hook,
+            )
+            ended_at = time.time()
             _invoke_hook(
                 "api_request_error",
                 task_id=task_id,
@@ -5321,7 +5325,9 @@ class AIAgent:
                 base_url=self.base_url,
                 api_mode=self.api_mode,
                 api_call_count=api_call_count,
-                api_duration=time.time() - api_start_time,
+                api_duration=ended_at - api_start_time,
+                started_at=api_start_time,
+                ended_at=ended_at,
                 status_code=status_code,
                 retry_count=retry_count,
                 max_retries=max_retries,
@@ -5332,6 +5338,7 @@ class AIAgent:
                     "message": error_message,
                 },
                 request=self._api_request_payload_for_hook(api_kwargs),
+                telemetry_schema_version=OBSERVER_SCHEMA_VERSION,
             )
         except Exception:
             pass
@@ -10817,7 +10824,11 @@ class AIAgent:
         finally:
             self._executing_tools = False
 
-    def _dispatch_delegate_task(self, function_args: dict) -> str:
+    def _dispatch_delegate_task(
+        self,
+        function_args: dict,
+        parent_tool_call_id: Optional[str] = None,
+    ) -> str:
         """Single call site for delegate_task dispatch.
 
         New DELEGATE_TASK_SCHEMA fields only need to be added here to reach all
@@ -10834,6 +10845,8 @@ class AIAgent:
             acp_args=function_args.get("acp_args"),
             role=function_args.get("role"),
             parent_agent=self,
+            parent_turn_id=getattr(self, "_current_turn_id", "") or "",
+            parent_tool_call_id=parent_tool_call_id or "",
         )
 
     def _tool_uses_model_tools_dispatch(self, function_name: str) -> bool:
@@ -10846,15 +10859,21 @@ class AIAgent:
         return True
 
     @staticmethod
-    def _tool_result_status_for_hook(function_result: str) -> tuple[str, Optional[str]]:
+    def _tool_result_status_for_hook(function_result: str) -> tuple[str, Optional[str], Optional[str]]:
         try:
             parsed = json.loads(function_result) if isinstance(function_result, str) else function_result
             if isinstance(parsed, dict) and parsed.get("error"):
-                return "error", str(parsed.get("error"))
+                error_message = str(parsed.get("error"))
+                lowered_error = error_message.lower()
+                if "blocked" in lowered_error:
+                    return "blocked", "ToolBlocked", error_message
+                if "cancelled" in lowered_error or "canceled" in lowered_error:
+                    return "cancelled", "ToolCancelled", error_message
+                return "error", str(parsed.get("error_type") or "ToolError"), error_message
         except Exception:
             if isinstance(function_result, str) and "error" in function_result[:80].lower():
-                return "error", function_result[:500]
-        return "ok", None
+                return "error", "ToolError", function_result[:500]
+        return "ok", None, None
 
     def _invoke_inline_tool_result_hooks(
         self,
@@ -10864,10 +10883,15 @@ class AIAgent:
         effective_task_id: str,
         tool_call_id: Optional[str],
         duration_ms: int,
+        started_at: Optional[float] = None,
+        ended_at: Optional[float] = None,
     ) -> str:
-        status, error_message = self._tool_result_status_for_hook(function_result)
+        status, error_type, error_message = self._tool_result_status_for_hook(function_result)
+        started_at = started_at if started_at is not None else time.time()
+        ended_at = ended_at if ended_at is not None else time.time()
+        api_request_id = getattr(self, "_current_api_request_id", "") or ""
         try:
-            from hermes_cli.plugins import invoke_hook
+            from hermes_cli.plugins import OBSERVER_SCHEMA_VERSION, invoke_hook
             invoke_hook(
                 "post_tool_call",
                 tool_name=function_name,
@@ -10877,15 +10901,20 @@ class AIAgent:
                 session_id=self.session_id or "",
                 tool_call_id=tool_call_id or "",
                 turn_id=getattr(self, "_current_turn_id", "") or "",
+                api_request_id=api_request_id,
                 duration_ms=duration_ms,
+                started_at=started_at,
+                ended_at=ended_at,
                 status=status,
+                error_type=error_type,
                 error_message=error_message,
+                telemetry_schema_version=OBSERVER_SCHEMA_VERSION,
             )
         except Exception as hook_err:
             logger.debug("post_tool_call hook error for inline tool: %s", hook_err)
 
         try:
-            from hermes_cli.plugins import invoke_hook
+            from hermes_cli.plugins import OBSERVER_SCHEMA_VERSION, invoke_hook
             hook_results = invoke_hook(
                 "transform_tool_result",
                 tool_name=function_name,
@@ -10895,9 +10924,14 @@ class AIAgent:
                 session_id=self.session_id or "",
                 tool_call_id=tool_call_id or "",
                 turn_id=getattr(self, "_current_turn_id", "") or "",
+                api_request_id=api_request_id,
                 duration_ms=duration_ms,
+                started_at=started_at,
+                ended_at=ended_at,
                 status=status,
+                error_type=error_type,
                 error_message=error_message,
+                telemetry_schema_version=OBSERVER_SCHEMA_VERSION,
             )
             for hook_result in hook_results:
                 if isinstance(hook_result, str):
@@ -10906,6 +10940,42 @@ class AIAgent:
             logger.debug("transform_tool_result hook error for inline tool: %s", hook_err)
 
         return function_result
+
+    def _invoke_blocked_tool_completion_hook(
+        self,
+        function_name: str,
+        function_args: dict,
+        function_result: str,
+        effective_task_id: str,
+        tool_call_id: Optional[str],
+        error_message: Optional[str] = None,
+        started_at: Optional[float] = None,
+        ended_at: Optional[float] = None,
+    ) -> None:
+        started_at = started_at if started_at is not None else time.time()
+        ended_at = ended_at if ended_at is not None else started_at
+        try:
+            from hermes_cli.plugins import OBSERVER_SCHEMA_VERSION, invoke_hook
+            invoke_hook(
+                "post_tool_call",
+                tool_name=function_name,
+                args=function_args,
+                result=function_result,
+                task_id=effective_task_id or "",
+                session_id=self.session_id or "",
+                tool_call_id=tool_call_id or "",
+                turn_id=getattr(self, "_current_turn_id", "") or "",
+                api_request_id=getattr(self, "_current_api_request_id", "") or "",
+                duration_ms=max(0, int((ended_at - started_at) * 1000)),
+                started_at=started_at,
+                ended_at=ended_at,
+                status="blocked",
+                error_type="ToolBlocked",
+                error_message=error_message,
+                telemetry_schema_version=OBSERVER_SCHEMA_VERSION,
+            )
+        except Exception as hook_err:
+            logger.debug("post_tool_call hook error for blocked tool: %s", hook_err)
 
     def _invoke_tool(self, function_name: str, function_args: dict, effective_task_id: str,
                      tool_call_id: Optional[str] = None, messages: list = None,
@@ -10928,16 +10998,30 @@ class AIAgent:
                     session_id=self.session_id or "",
                     tool_call_id=tool_call_id or "",
                     turn_id=getattr(self, "_current_turn_id", "") or "",
+                    api_request_id=getattr(self, "_current_api_request_id", "") or "",
                 )
             except Exception:
                 pass
         if block_message is not None:
-            return json.dumps({"error": block_message}, ensure_ascii=False)
+            now = time.time()
+            result = json.dumps({"error": block_message}, ensure_ascii=False)
+            self._invoke_blocked_tool_completion_hook(
+                function_name,
+                function_args,
+                result,
+                effective_task_id,
+                tool_call_id,
+                error_message=block_message,
+                started_at=now,
+                ended_at=now,
+            )
+            return result
 
         tool_start_time = time.time()
 
         def _finish_inline_tool(result: str) -> str:
-            duration_ms = int((time.time() - tool_start_time) * 1000)
+            tool_end_time = time.time()
+            duration_ms = int((tool_end_time - tool_start_time) * 1000)
             return self._invoke_inline_tool_result_hooks(
                 function_name,
                 function_args,
@@ -10945,6 +11029,8 @@ class AIAgent:
                 effective_task_id,
                 tool_call_id,
                 duration_ms,
+                started_at=tool_start_time,
+                ended_at=tool_end_time,
             )
 
         if function_name == "todo":
@@ -11002,13 +11088,17 @@ class AIAgent:
                 callback=self.clarify_callback,
             ))
         elif function_name == "delegate_task":
-            return _finish_inline_tool(self._dispatch_delegate_task(function_args))
+            return _finish_inline_tool(self._dispatch_delegate_task(
+                function_args,
+                parent_tool_call_id=tool_call_id,
+            ))
         else:
             return handle_function_call(
                 function_name, function_args, effective_task_id,
                 tool_call_id=tool_call_id,
                 session_id=self.session_id or "",
                 turn_id=getattr(self, "_current_turn_id", "") or "",
+                api_request_id=getattr(self, "_current_api_request_id", "") or "",
                 enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
                 skip_pre_tool_call_hook=True,
             )
@@ -11110,6 +11200,7 @@ class AIAgent:
                     session_id=self.session_id or "",
                     tool_call_id=getattr(tool_call, "id", "") or "",
                     turn_id=getattr(self, "_current_turn_id", "") or "",
+                    api_request_id=getattr(self, "_current_api_request_id", "") or "",
                 )
             except Exception:
                 block_message = None
@@ -11162,6 +11253,17 @@ class AIAgent:
         for i, (tc, name, args, block_result, blocked_by_guardrail) in enumerate(parsed_calls):
             if block_result is not None:
                 results[i] = (name, args, block_result, 0.0, True, True)
+                now = time.time()
+                self._invoke_blocked_tool_completion_hook(
+                    name,
+                    args,
+                    block_result,
+                    effective_task_id,
+                    getattr(tc, "id", None),
+                    error_message=self._tool_result_status_for_hook(block_result)[2],
+                    started_at=now,
+                    ended_at=now,
+                )
 
         # Touch activity before launching workers so the gateway knows
         # we're executing tools (not stuck).
@@ -11497,6 +11599,7 @@ class AIAgent:
                     session_id=self.session_id or "",
                     tool_call_id=getattr(tool_call, "id", "") or "",
                     turn_id=getattr(self, "_current_turn_id", "") or "",
+                    api_request_id=getattr(self, "_current_api_request_id", "") or "",
                 )
             except Exception:
                 pass
@@ -11669,7 +11772,10 @@ class AIAgent:
                 self._delegate_spinner = spinner
                 _delegate_result = None
                 try:
-                    function_result = self._dispatch_delegate_task(function_args)
+                    function_result = self._dispatch_delegate_task(
+                        function_args,
+                        parent_tool_call_id=getattr(tool_call, "id", None),
+                    )
                     _delegate_result = function_result
                 finally:
                     self._delegate_spinner = None
@@ -11741,6 +11847,7 @@ class AIAgent:
                         tool_call_id=tool_call.id,
                         session_id=self.session_id or "",
                         turn_id=getattr(self, "_current_turn_id", "") or "",
+                        api_request_id=getattr(self, "_current_api_request_id", "") or "",
                         enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
                         skip_pre_tool_call_hook=True,
                     )
@@ -11762,6 +11869,7 @@ class AIAgent:
                         tool_call_id=tool_call.id,
                         session_id=self.session_id or "",
                         turn_id=getattr(self, "_current_turn_id", "") or "",
+                        api_request_id=getattr(self, "_current_api_request_id", "") or "",
                         enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
                         skip_pre_tool_call_hook=True,
                     )
@@ -11770,7 +11878,18 @@ class AIAgent:
                     logger.error("handle_function_call raised for %s: %s", function_name, tool_error, exc_info=True)
                 tool_duration = time.time() - tool_start_time
 
-            if not _execution_blocked and not self._tool_uses_model_tools_dispatch(function_name):
+            if _execution_blocked:
+                self._invoke_blocked_tool_completion_hook(
+                    function_name,
+                    function_args,
+                    function_result,
+                    effective_task_id,
+                    getattr(tool_call, "id", None),
+                    error_message=self._tool_result_status_for_hook(function_result)[2],
+                    started_at=tool_start_time,
+                    ended_at=tool_start_time + tool_duration,
+                )
+            elif not self._tool_uses_model_tools_dispatch(function_name):
                 function_result = self._invoke_inline_tool_result_hooks(
                     function_name,
                     function_args,
@@ -11778,6 +11897,8 @@ class AIAgent:
                     effective_task_id,
                     getattr(tool_call, "id", None),
                     int(tool_duration * 1000),
+                    started_at=tool_start_time,
+                    ended_at=tool_start_time + tool_duration,
                 )
 
             if isinstance(function_result, str):
@@ -12216,6 +12337,7 @@ class AIAgent:
         effective_task_id = task_id or str(uuid.uuid4())
         turn_id = f"{self.session_id or 'session'}:{effective_task_id}:{uuid.uuid4().hex[:8]}"
         self._current_turn_id = turn_id
+        self._current_api_request_id = ""
         # Expose the active task_id so tools running mid-turn (e.g. delegate_task
         # in delegate_tool.py) can identify this agent for the cross-agent file
         # state registry.  Set BEFORE any tool dispatch so snapshots taken at
@@ -12387,12 +12509,16 @@ class AIAgent:
                 # continuation).  Plugins can use this to initialise
                 # session-scoped state (e.g. warm a memory cache).
                 try:
-                    from hermes_cli.plugins import invoke_hook as _invoke_hook
+                    from hermes_cli.plugins import (
+                        OBSERVER_SCHEMA_VERSION,
+                        invoke_hook as _invoke_hook,
+                    )
                     _invoke_hook(
                         "on_session_start",
                         session_id=self.session_id,
                         model=self.model,
                         platform=getattr(self, "platform", None) or "",
+                        telemetry_schema_version=OBSERVER_SCHEMA_VERSION,
                     )
                 except Exception as exc:
                     logger.warning("on_session_start hook failed: %s", exc)
@@ -12488,7 +12614,10 @@ class AIAgent:
         # All injected context is ephemeral (not persisted to session DB).
         _plugin_user_context = ""
         try:
-            from hermes_cli.plugins import invoke_hook as _invoke_hook
+            from hermes_cli.plugins import (
+                OBSERVER_SCHEMA_VERSION,
+                invoke_hook as _invoke_hook,
+            )
             _pre_results = _invoke_hook(
                 "pre_llm_call",
                 turn_id=turn_id,
@@ -12499,6 +12628,7 @@ class AIAgent:
                 model=self.model,
                 platform=getattr(self, "platform", None) or "",
                 sender_id=getattr(self, "_user_id", None) or "",
+                telemetry_schema_version=OBSERVER_SCHEMA_VERSION,
             )
             _ctx_parts: list[str] = []
             for r in _pre_results:
@@ -12598,6 +12728,7 @@ class AIAgent:
             api_call_count += 1
             self._api_call_count = api_call_count
             api_request_id = f"{turn_id}:api:{api_call_count}"
+            self._current_api_request_id = api_request_id
             self._touch_activity(f"starting API call #{api_call_count}")
 
             # Grace call: the budget is exhausted but we gave the model one
@@ -12979,7 +13110,10 @@ class AIAgent:
                         api_kwargs = self._get_transport().preflight_kwargs(api_kwargs, allow_stream=False)
 
                     try:
-                        from hermes_cli.plugins import invoke_hook as _invoke_hook
+                        from hermes_cli.plugins import (
+                            OBSERVER_SCHEMA_VERSION,
+                            invoke_hook as _invoke_hook,
+                        )
                         _invoke_hook(
                             "pre_api_request",
                             task_id=effective_task_id,
@@ -12997,7 +13131,9 @@ class AIAgent:
                             approx_input_tokens=approx_tokens,
                             request_char_count=total_chars,
                             max_tokens=self.max_tokens,
+                            started_at=api_start_time,
                             request=self._api_request_payload_for_hook(api_kwargs),
+                            telemetry_schema_version=OBSERVER_SCHEMA_VERSION,
                         )
                     except Exception:
                         pass
@@ -14905,9 +15041,13 @@ class AIAgent:
                         assistant_message.content = str(raw)
 
                 try:
-                    from hermes_cli.plugins import invoke_hook as _invoke_hook
+                    from hermes_cli.plugins import (
+                        OBSERVER_SCHEMA_VERSION,
+                        invoke_hook as _invoke_hook,
+                    )
                     _assistant_tool_calls = getattr(assistant_message, "tool_calls", None) or []
                     _assistant_text = assistant_message.content or ""
+                    _api_ended_at = api_start_time + api_duration
                     _invoke_hook(
                         "post_api_request",
                         task_id=effective_task_id,
@@ -14921,6 +15061,8 @@ class AIAgent:
                         api_mode=self.api_mode,
                         api_call_count=api_call_count,
                         api_duration=api_duration,
+                        started_at=api_start_time,
+                        ended_at=_api_ended_at,
                         finish_reason=finish_reason,
                         message_count=len(api_messages),
                         response_model=getattr(response, "model", None),
@@ -14932,6 +15074,7 @@ class AIAgent:
                             assistant_message,
                             finish_reason=finish_reason,
                         ),
+                        telemetry_schema_version=OBSERVER_SCHEMA_VERSION,
                     )
                 except Exception:
                     pass
@@ -15899,7 +16042,10 @@ class AIAgent:
         # First hook to return a string wins; None/empty return leaves text unchanged.
         if final_response and not interrupted:
             try:
-                from hermes_cli.plugins import invoke_hook as _invoke_hook
+                from hermes_cli.plugins import (
+                    OBSERVER_SCHEMA_VERSION,
+                    invoke_hook as _invoke_hook,
+                )
                 _transform_results = _invoke_hook(
                     "transform_llm_output",
                     turn_id=turn_id,
@@ -15907,6 +16053,7 @@ class AIAgent:
                     session_id=self.session_id or "",
                     model=self.model,
                     platform=getattr(self, "platform", None) or "",
+                    telemetry_schema_version=OBSERVER_SCHEMA_VERSION,
                 )
                 for _hook_result in _transform_results:
                     if isinstance(_hook_result, str) and _hook_result:
@@ -15921,7 +16068,10 @@ class AIAgent:
         # to an external memory system).
         if final_response and not interrupted:
             try:
-                from hermes_cli.plugins import invoke_hook as _invoke_hook
+                from hermes_cli.plugins import (
+                    OBSERVER_SCHEMA_VERSION,
+                    invoke_hook as _invoke_hook,
+                )
                 _invoke_hook(
                     "post_llm_call",
                     turn_id=turn_id,
@@ -15931,6 +16081,7 @@ class AIAgent:
                     conversation_history=list(messages),
                     model=self.model,
                     platform=getattr(self, "platform", None) or "",
+                    telemetry_schema_version=OBSERVER_SCHEMA_VERSION,
                 )
             except Exception as exc:
                 logger.warning("post_llm_call hook failed: %s", exc)
@@ -16037,7 +16188,10 @@ class AIAgent:
         # Fired at the very end of every run_conversation call.
         # Plugins can use this for cleanup, flushing buffers, etc.
         try:
-            from hermes_cli.plugins import invoke_hook as _invoke_hook
+            from hermes_cli.plugins import (
+                OBSERVER_SCHEMA_VERSION,
+                invoke_hook as _invoke_hook,
+            )
             _invoke_hook(
                 "on_session_end",
                 turn_id=turn_id,
@@ -16046,6 +16200,7 @@ class AIAgent:
                 interrupted=interrupted,
                 model=self.model,
                 platform=getattr(self, "platform", None) or "",
+                telemetry_schema_version=OBSERVER_SCHEMA_VERSION,
             )
         except Exception as exc:
             logger.warning("on_session_end hook failed: %s", exc)

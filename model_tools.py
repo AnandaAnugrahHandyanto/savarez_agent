@@ -701,6 +701,7 @@ def handle_function_call(
     tool_call_id: Optional[str] = None,
     session_id: Optional[str] = None,
     turn_id: Optional[str] = None,
+    api_request_id: Optional[str] = None,
     user_task: Optional[str] = None,
     enabled_tools: Optional[List[str]] = None,
     skip_pre_tool_call_hook: bool = False,
@@ -749,12 +750,43 @@ def handle_function_call(
                     session_id=session_id or "",
                     tool_call_id=tool_call_id or "",
                     turn_id=turn_id or "",
+                    api_request_id=api_request_id or "",
                 )
             except Exception as _hook_err:
                 logger.debug("pre_tool_call hook error: %s", _hook_err)
 
             if block_message is not None:
-                return json.dumps({"error": block_message}, ensure_ascii=False)
+                result = json.dumps({"error": block_message}, ensure_ascii=False)
+                now = time.time()
+                try:
+                    from hermes_cli.plugins import (
+                        OBSERVER_SCHEMA_VERSION,
+                        invoke_hook,
+                    )
+                    invoke_hook(
+                        "post_tool_call",
+                        tool_name=function_name,
+                        args=function_args,
+                        result=result,
+                        task_id=task_id or "",
+                        session_id=session_id or "",
+                        tool_call_id=tool_call_id or "",
+                        turn_id=turn_id or "",
+                        api_request_id=api_request_id or "",
+                        duration_ms=0,
+                        started_at=now,
+                        ended_at=now,
+                        status="blocked",
+                        error_type="ToolBlocked",
+                        error_message=block_message,
+                        telemetry_schema_version=OBSERVER_SCHEMA_VERSION,
+                    )
+                except Exception as _hook_err:
+                    logger.debug(
+                        "post_tool_call hook error for blocked tool: %s",
+                        _hook_err,
+                    )
+                return result
 
         # Notify the read-loop tracker when a non-read/search tool runs,
         # so the *consecutive* counter resets (reads after other work are fine).
@@ -773,36 +805,93 @@ def handle_function_call(
         # to wrap every tool manually.  We use monotonic() so the value is
         # unaffected by wall-clock adjustments during the call.
         _dispatch_start = time.monotonic()
-        if function_name == "execute_code":
-            # Prefer the caller-provided list so subagents can't overwrite
-            # the parent's tool set via the process-global.
-            sandbox_enabled = enabled_tools if enabled_tools is not None else _last_resolved_tool_names
-            result = registry.dispatch(
-                function_name, function_args,
-                task_id=task_id,
-                enabled_tools=sandbox_enabled,
-            )
-        else:
-            result = registry.dispatch(
-                function_name, function_args,
-                task_id=task_id,
-                user_task=user_task,
-            )
-        duration_ms = int((time.monotonic() - _dispatch_start) * 1000)
+        started_at = time.time()
         tool_status = "ok"
+        tool_error_type = None
         tool_error_message = None
+        _approval_tokens = None
+        _reset_approval_context = None
         try:
-            parsed_result = json.loads(result) if isinstance(result, str) else result
-            if isinstance(parsed_result, dict) and parsed_result.get("error"):
-                tool_status = "error"
-                tool_error_message = str(parsed_result.get("error"))
-        except Exception:
-            if isinstance(result, str) and "error" in result[:80].lower():
-                tool_status = "error"
-                tool_error_message = result[:500]
+            try:
+                from tools.approval import (
+                    reset_current_observability_context,
+                    set_current_observability_context,
+                )
+                _approval_tokens = set_current_observability_context(
+                    turn_id=turn_id or "",
+                    tool_call_id=tool_call_id or "",
+                )
+                _reset_approval_context = reset_current_observability_context
+            except Exception:
+                pass
+            if function_name == "execute_code":
+                # Prefer the caller-provided list so subagents can't overwrite
+                # the parent's tool set via the process-global.
+                sandbox_enabled = enabled_tools if enabled_tools is not None else _last_resolved_tool_names
+                result = registry.dispatch(
+                    function_name, function_args,
+                    task_id=task_id,
+                    enabled_tools=sandbox_enabled,
+                )
+            else:
+                result = registry.dispatch(
+                    function_name, function_args,
+                    task_id=task_id,
+                    user_task=user_task,
+                )
+        except Exception as e:
+            tool_status = "error"
+            tool_error_type = type(e).__name__
+            tool_error_message = f"Error executing {function_name}: {str(e)}"
+            logger.exception(tool_error_message)
+            result = json.dumps({"error": tool_error_message}, ensure_ascii=False)
+        finally:
+            if _reset_approval_context is not None and _approval_tokens is not None:
+                try:
+                    _reset_approval_context(_approval_tokens)
+                except Exception:
+                    pass
+        ended_at = time.time()
+        duration_ms = int((time.monotonic() - _dispatch_start) * 1000)
+        if tool_status == "ok":
+            try:
+                parsed_result = json.loads(result) if isinstance(result, str) else result
+                if isinstance(parsed_result, dict) and parsed_result.get("error"):
+                    tool_error_message = str(parsed_result.get("error"))
+                    lowered_error = tool_error_message.lower()
+                    if "blocked" in lowered_error:
+                        tool_status = "blocked"
+                        tool_error_type = "ToolBlocked"
+                    elif "cancelled" in lowered_error or "canceled" in lowered_error:
+                        tool_status = "cancelled"
+                        tool_error_type = "ToolCancelled"
+                    else:
+                        tool_status = "error"
+                        tool_error_type = str(parsed_result.get("error_type") or "ToolError")
+            except Exception:
+                pass
+        if tool_status == "ok":
+            try:
+                if isinstance(result, str) and "error" in result[:80].lower():
+                    tool_status = "error"
+                    tool_error_type = "ToolError"
+                    tool_error_message = result[:500]
+            except Exception:
+                pass
+        elif tool_error_type is None and tool_error_message:
+            tool_error_type = "ToolError"
 
         try:
-            from hermes_cli.plugins import invoke_hook
+            parsed_result = json.loads(result) if isinstance(result, str) else result
+            if tool_status == "ok" and isinstance(parsed_result, dict) and parsed_result.get("error"):
+                tool_status = "error"
+                tool_error_type = str(parsed_result.get("error_type") or "ToolError")
+                tool_error_message = result[:500]
+        except Exception:
+            pass
+
+        try:
+            from hermes_cli.plugins import OBSERVER_SCHEMA_VERSION, invoke_hook
             invoke_hook(
                 "post_tool_call",
                 tool_name=function_name,
@@ -812,9 +901,14 @@ def handle_function_call(
                 session_id=session_id or "",
                 tool_call_id=tool_call_id or "",
                 turn_id=turn_id or "",
+                api_request_id=api_request_id or "",
                 duration_ms=duration_ms,
+                started_at=started_at,
+                ended_at=ended_at,
                 status=tool_status,
+                error_type=tool_error_type,
                 error_message=tool_error_message,
+                telemetry_schema_version=OBSERVER_SCHEMA_VERSION,
             )
         except Exception as _hook_err:
             logger.debug("post_tool_call hook error: %s", _hook_err)
@@ -826,7 +920,7 @@ def handle_function_call(
         # is appended back into conversation context. Fail-open; the first
         # valid string return wins; non-string returns are ignored.
         try:
-            from hermes_cli.plugins import invoke_hook
+            from hermes_cli.plugins import OBSERVER_SCHEMA_VERSION, invoke_hook
             hook_results = invoke_hook(
                 "transform_tool_result",
                 tool_name=function_name,
@@ -836,9 +930,14 @@ def handle_function_call(
                 session_id=session_id or "",
                 tool_call_id=tool_call_id or "",
                 turn_id=turn_id or "",
+                api_request_id=api_request_id or "",
                 duration_ms=duration_ms,
+                started_at=started_at,
+                ended_at=ended_at,
                 status=tool_status,
+                error_type=tool_error_type,
                 error_message=tool_error_message,
+                telemetry_schema_version=OBSERVER_SCHEMA_VERSION,
             )
             for hook_result in hook_results:
                 if isinstance(hook_result, str):

@@ -19,17 +19,35 @@ def test_session_finalize_on_reset(mock_invoke_hook):
     cli = HermesCLI()
     cli.agent = MagicMock()
     cli.agent.session_id = "test-session-id"
+    cli.session_id = "test-session-id"
+    old_session_id = cli.session_id
 
     # Simulate /new command which triggers on_session_finalize for the old session
     cli.new_session(silent=True)
 
     # Check if on_session_finalize was called for the old session
     mock_invoke_hook.assert_any_call(
-        "on_session_finalize", session_id="test-session-id", platform="cli"
+        "on_session_finalize",
+        session_id="test-session-id",
+        platform="cli",
+        reason="new_session",
+        old_session_id=old_session_id,
+        new_session_id=None,
+        completed=True,
+        interrupted=False,
+        telemetry_schema_version="hermes.observer.v1",
     )
     # Check if on_session_reset was called for the new session
     mock_invoke_hook.assert_any_call(
-        "on_session_reset", session_id=cli.session_id, platform="cli"
+        "on_session_reset",
+        session_id=cli.session_id,
+        platform="cli",
+        reason="new_session",
+        old_session_id=old_session_id,
+        new_session_id=cli.session_id,
+        completed=False,
+        interrupted=False,
+        telemetry_schema_version="hermes.observer.v1",
     )
 
 
@@ -46,7 +64,13 @@ def test_session_finalize_on_cleanup(mock_invoke_hook):
     cli_mod._run_cleanup()
 
     mock_invoke_hook.assert_any_call(
-        "on_session_finalize", session_id="cleanup-session-id", platform="cli"
+        "on_session_finalize",
+        session_id="cleanup-session-id",
+        platform="cli",
+        reason="cli_exit",
+        completed=True,
+        interrupted=False,
+        telemetry_schema_version="hermes.observer.v1",
     )
 
 

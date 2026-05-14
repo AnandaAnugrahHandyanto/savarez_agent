@@ -169,6 +169,8 @@ VALID_HOOKS: Set[str] = {
     "post_approval_response",
 }
 
+OBSERVER_SCHEMA_VERSION = "hermes.observer.v1"
+
 ENTRY_POINTS_GROUP = "hermes_agent.plugins"
 
 _NS_PARENT = "hermes_plugins"
@@ -1391,6 +1393,7 @@ def get_pre_tool_call_block_message(
     session_id: str = "",
     tool_call_id: str = "",
     turn_id: str = "",
+    api_request_id: str = "",
 ) -> Optional[str]:
     """Check ``pre_tool_call`` hooks for a blocking directive.
 
@@ -1416,6 +1419,8 @@ def get_pre_tool_call_block_message(
         session_id=session_id,
         tool_call_id=tool_call_id,
         turn_id=turn_id,
+        api_request_id=api_request_id,
+        telemetry_schema_version=OBSERVER_SCHEMA_VERSION,
     )
 
     for result in hook_results:

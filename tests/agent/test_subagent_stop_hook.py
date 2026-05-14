@@ -62,6 +62,8 @@ def _stub_child_builder(monkeypatch):
         child = MagicMock()
         child._delegate_saved_tool_names = []
         child._credential_pool = None
+        child._parent_turn_id = kwargs.get("parent_turn_id", "")
+        child._parent_tool_call_id = kwargs.get("parent_tool_call_id", "")
         return child
 
     monkeypatch.setattr(
@@ -101,7 +103,12 @@ class TestSingleTask:
                 "tool_trace": [{"tool": "read_file", "status": "ok"}],
                 "_child_role": "analyst",
             }
-            delegate_task(goal="do X", parent_agent=_make_parent())
+            delegate_task(
+                goal="do X",
+                parent_agent=_make_parent(),
+                parent_turn_id="turn-1",
+                parent_tool_call_id="tool-1",
+            )
 
         assert len(captured) == 1
         payload = captured[0]
@@ -109,11 +116,14 @@ class TestSingleTask:
         assert payload["child_status"] == "completed"
         assert payload["child_summary"] == "Done!"
         assert payload["duration_ms"] == 5000
+        assert payload["parent_turn_id"] == "turn-1"
+        assert payload["parent_tool_call_id"] == "tool-1"
         assert payload["api_calls"] == 3
         assert payload["model"] == "test-model"
         assert payload["exit_reason"] == "completed"
         assert payload["tokens"] == {"input": 11, "output": 7}
         assert payload["tool_trace"] == [{"tool": "read_file", "status": "ok"}]
+        assert payload["telemetry_schema_version"] == "hermes.observer.v1"
 
     def test_fires_on_parent_thread(self):
         captured = _register_capturing_hook()

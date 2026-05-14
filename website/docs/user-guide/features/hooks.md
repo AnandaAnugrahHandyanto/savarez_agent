@@ -402,7 +402,9 @@ Fires **immediately before** every tool execution — built-in tools and plugin 
 **Callback signature:**
 
 ```python
-def my_callback(tool_name: str, args: dict, task_id: str, **kwargs):
+def my_callback(tool_name: str, args: dict, task_id: str,
+                turn_id: str, tool_call_id: str,
+                api_request_id: str, **kwargs):
 ```
 
 | Parameter | Type | Description |
@@ -410,8 +412,13 @@ def my_callback(tool_name: str, args: dict, task_id: str, **kwargs):
 | `tool_name` | `str` | Name of the tool about to execute (e.g. `"terminal"`, `"web_search"`, `"read_file"`) |
 | `args` | `dict` | The arguments the model passed to the tool |
 | `task_id` | `str` | Session/task identifier. Empty string if not set. |
+| `session_id` | `str` | Current Hermes session ID when available |
+| `tool_call_id` | `str` | Provider tool-call ID for this call when available |
+| `turn_id` | `str` | Stable identifier shared by turn, API, and tool hooks for this user turn |
+| `api_request_id` | `str` | Provider request attempt that produced the tool call, when known |
+| `telemetry_schema_version` | `str` | Observer payload contract version. Current value: `"hermes.observer.v1"` |
 
-**Fires:** In `model_tools.py`, inside `handle_function_call()`, before the tool's handler runs. Fires once per tool call — if the model calls 3 tools in parallel, this fires 3 times.
+**Fires:** For registry-backed tools, in `model_tools.py` inside `handle_function_call()`. For agent-loop tools handled inline by `run_agent.py`, the agent loop fires the same hook before the inline handler runs. Fires once per tool call — if the model calls 3 tools in parallel, this fires 3 times.
 
 **Return value — veto the call:**
 
@@ -462,7 +469,8 @@ Fires **immediately after** every tool execution returns.
 
 ```python
 def my_callback(tool_name: str, args: dict, result: str, task_id: str,
-                duration_ms: int, status: str, turn_id: str, **kwargs):
+                duration_ms: int, status: str, turn_id: str,
+                api_request_id: str, **kwargs):
 ```
 
 | Parameter | Type | Description |
@@ -471,12 +479,18 @@ def my_callback(tool_name: str, args: dict, result: str, task_id: str,
 | `args` | `dict` | The arguments the model passed to the tool |
 | `result` | `str` | The tool's return value (always a JSON string) |
 | `task_id` | `str` | Session/task identifier. Empty string if not set. |
+| `session_id` | `str` | Current Hermes session ID when available |
+| `tool_call_id` | `str` | Provider tool-call ID for this call when available |
 | `duration_ms` | `int` | How long the tool's dispatch took, in milliseconds (measured with `time.monotonic()` around `registry.dispatch()`). |
-| `status` | `str` | `"ok"` or `"error"` based on the returned tool payload |
-| `error_message` | `str \| None` | Parsed error text when `status == "error"` |
+| `status` | `str` | `"ok"`, `"error"`, `"blocked"`, or `"cancelled"` based on the returned tool payload |
+| `error_type` | `str \| None` | Structured error category when the tool did not complete successfully |
+| `error_message` | `str \| None` | Parsed error text when `status != "ok"` |
 | `turn_id` | `str` | Stable identifier shared by turn, API, and tool hooks for this user turn |
+| `api_request_id` | `str` | Provider request attempt that produced the tool call, when known |
+| `started_at` / `ended_at` | `float` | Unix timestamps for the tool dispatch boundary |
+| `telemetry_schema_version` | `str` | Observer payload contract version. Current value: `"hermes.observer.v1"` |
 
-**Fires:** For registry-backed tools, in `model_tools.py` inside `handle_function_call()`. For agent-loop tools handled inline by `run_agent.py` (`todo`, `memory`, `session_search`, `clarify`, `delegate_task`, context-engine tools, and memory-provider tools), the agent loop fires the same hook after the inline handler returns. Fires once per executed tool call. Does **not** fire for a tool blocked before execution.
+**Fires:** For registry-backed tools, in `model_tools.py` inside `handle_function_call()`. For agent-loop tools handled inline by `run_agent.py` (`todo`, `memory`, `session_search`, `clarify`, `delegate_task`, context-engine tools, and memory-provider tools), the agent loop fires the same hook after the inline handler returns. Fires once per tool call completion. If a `pre_tool_call` plugin blocks execution, Hermes still emits `post_tool_call` with `status="blocked"` so observers can close the tool span without changing the blocked result returned to the model.
 
 **Return value:** Ignored.
 
@@ -516,7 +530,8 @@ Fires **once per turn**, before the tool-calling loop begins. This is the **only
 
 ```python
 def my_callback(session_id: str, user_message: str, conversation_history: list,
-                is_first_turn: bool, model: str, platform: str, **kwargs):
+                is_first_turn: bool, model: str, platform: str,
+                turn_id: str, task_id: str, **kwargs):
 ```
 
 | Parameter | Type | Description |
@@ -527,6 +542,9 @@ def my_callback(session_id: str, user_message: str, conversation_history: list,
 | `is_first_turn` | `bool` | `True` if this is the first turn of a new session, `False` on subsequent turns |
 | `model` | `str` | The model identifier (e.g. `"anthropic/claude-sonnet-4.6"`) |
 | `platform` | `str` | Where the session is running: `"cli"`, `"telegram"`, `"discord"`, etc. |
+| `turn_id` | `str` | Stable identifier shared by turn, API, and tool hooks for this user turn |
+| `task_id` | `str` | Session/task identifier. Empty string if not set. |
+| `telemetry_schema_version` | `str` | Observer payload contract version. Current value: `"hermes.observer.v1"` |
 
 **Fires:** In `run_agent.py`, inside `run_conversation()`, after context compression but before the main `while` loop. Fires once per `run_conversation()` call (i.e. once per user turn), not once per API call within the tool loop.
 
@@ -598,7 +616,8 @@ Fires **once per turn**, after the tool-calling loop completes and the agent has
 
 ```python
 def my_callback(session_id: str, user_message: str, assistant_response: str,
-                conversation_history: list, model: str, platform: str, **kwargs):
+                conversation_history: list, model: str, platform: str,
+                turn_id: str, task_id: str, **kwargs):
 ```
 
 | Parameter | Type | Description |
@@ -609,6 +628,9 @@ def my_callback(session_id: str, user_message: str, assistant_response: str,
 | `conversation_history` | `list` | Copy of the full message list after the turn completed |
 | `model` | `str` | The model identifier |
 | `platform` | `str` | Where the session is running |
+| `turn_id` | `str` | Stable identifier shared by turn, API, and tool hooks for this user turn |
+| `task_id` | `str` | Session/task identifier. Empty string if not set. |
+| `telemetry_schema_version` | `str` | Observer payload contract version. Current value: `"hermes.observer.v1"` |
 
 **Fires:** In `run_agent.py`, inside `run_conversation()`, after the tool loop exits with a final response. Guarded by `if final_response and not interrupted` — so it does **not** fire when the user interrupts mid-turn or the agent hits the iteration limit without producing a response.
 
@@ -657,9 +679,9 @@ def register(ctx):
 
 `pre_api_request`, `post_api_request`, and `api_request_error` fire once per provider request attempt inside the tool loop. They carry the same `turn_id` and a per-attempt `api_request_id`, so telemetry plugins can join request, response, error, tool, and final-turn events without guessing from order.
 
-**Common parameters:** `task_id`, `turn_id`, `api_request_id`, `session_id`, `platform`, `model`, `provider`, `base_url`, `api_mode`, and `api_call_count`.
+**Common parameters:** `task_id`, `turn_id`, `api_request_id`, `session_id`, `platform`, `model`, `provider`, `base_url`, `api_mode`, `api_call_count`, and `telemetry_schema_version="hermes.observer.v1"`.
 
-`pre_api_request` also includes request sizing fields plus `request`, a bounded, sanitized object shaped like `{"method": "POST", "body": {...}}`. Sanitization always redacts API key fields, authorization/proxy-authorization headers, and cookie/set-cookie fields before plugins receive the payload. `post_api_request` includes latency, finish reason, normalized token `usage`, assistant size summaries, and `response`, a bounded, sanitized response object with the normalized assistant message and provider response. `api_request_error` includes `api_duration`, retry metadata, `status_code`, `reason`, `error`, and the sanitized request.
+`pre_api_request` also includes request sizing fields, `started_at`, plus `request`, a bounded, sanitized object shaped like `{"method": "POST", "body": {...}}`. Sanitization always redacts API key fields, authorization/proxy-authorization headers, and cookie/set-cookie fields before plugins receive the payload. `post_api_request` includes latency, `started_at`, `ended_at`, finish reason, normalized token `usage`, assistant size summaries, and `response`, a bounded, sanitized response object with the normalized assistant message and provider response. `api_request_error` includes `api_duration`, `started_at`, `ended_at`, retry metadata, `status_code`, `reason`, `error`, and the sanitized request.
 
 **Return value:** Ignored.
 
@@ -682,6 +704,7 @@ def my_callback(session_id: str, model: str, platform: str, **kwargs):
 | `session_id` | `str` | Unique identifier for the new session |
 | `model` | `str` | The model identifier |
 | `platform` | `str` | Where the session is running |
+| `telemetry_schema_version` | `str` | Observer payload contract version. Current value: `"hermes.observer.v1"` |
 
 **Fires:** In `run_agent.py`, inside `run_conversation()`, during the first turn of a new session — specifically after the system prompt is built but before the tool loop starts. The check is `if not conversation_history` (no prior messages = new session).
 
@@ -726,6 +749,7 @@ def my_callback(session_id: str, completed: bool, interrupted: bool,
 | `interrupted` | `bool` | `True` if the turn was interrupted (user sent new message, `/stop`, or quit) |
 | `model` | `str` | The model identifier |
 | `platform` | `str` | Where the session is running |
+| `telemetry_schema_version` | `str` | Observer payload contract version. Current value: `"hermes.observer.v1"` |
 
 **Fires:** In two places:
 1. **`run_agent.py`** — at the end of every `run_conversation()` call, after all cleanup. Always fires, even if the turn errored.
@@ -790,6 +814,12 @@ def my_callback(session_id: str | None, platform: str, **kwargs):
 |-----------|------|-------------|
 | `session_id` | `str` or `None` | The outgoing session ID. May be `None` if no active session existed. |
 | `platform` | `str` | `"cli"` or the messaging platform name (`"telegram"`, `"discord"`, etc.). |
+| `reason` | `str` | Boundary reason such as `"new_session"`, `"cli_exit"`, `"gateway_stop"`, or `"session_expired"` |
+| `old_session_id` | `str \| None` | Outgoing session ID for reset flows |
+| `new_session_id` | `str \| None` | Incoming session ID for reset flows, when known |
+| `completed` | `bool \| None` | Whether the outgoing session reached a normal boundary |
+| `interrupted` | `bool \| None` | Whether the boundary was caused by interruption |
+| `telemetry_schema_version` | `str` | Observer payload contract version. Current value: `"hermes.observer.v1"` |
 
 **Fires:** In `cli.py` (on `/new` / CLI exit) and `gateway/run.py` (when a session is reset or GC'd). Always paired with `on_session_reset` on the gateway side.
 
@@ -813,6 +843,12 @@ def my_callback(session_id: str, platform: str, **kwargs):
 |-----------|------|-------------|
 | `session_id` | `str` | The new session's ID (already rotated to the fresh value). |
 | `platform` | `str` | The messaging platform name. |
+| `reason` | `str` | Reset reason such as `"new_session"` |
+| `old_session_id` | `str \| None` | Session ID that was replaced |
+| `new_session_id` | `str \| None` | Fresh session ID, normally equal to `session_id` |
+| `completed` | `bool \| None` | Whether the prior session reached a normal boundary |
+| `interrupted` | `bool \| None` | Whether the reset was caused by interruption |
+| `telemetry_schema_version` | `str` | Observer payload contract version. Current value: `"hermes.observer.v1"` |
 
 **Fires:** In `gateway/run.py`, immediately after the new session key is allocated but before the next inbound message is processed. On the gateway, the order is: `on_session_finalize(old_id)` → swap → `on_session_reset(new_id)` → `on_session_start(new_id)` on the first inbound turn.
 
@@ -842,6 +878,8 @@ def my_callback(parent_session_id: str, child_session_id: str,
 |-----------|------|-------------|
 | `parent_session_id` | `str` | Session ID of the delegating parent agent |
 | `parent_subagent_id` | `str \| None` | Parent subagent ID for nested delegation |
+| `parent_turn_id` | `str` | Parent user-turn ID that requested the child, when available |
+| `parent_tool_call_id` | `str` | Parent `delegate_task` tool-call ID that spawned the child, when available |
 | `child_session_id` | `str` | Session ID assigned to the child agent |
 | `subagent_id` | `str` | Stable subagent identifier shared with `subagent_stop` |
 | `task_index` | `int` | Zero-based index within the delegate batch |
@@ -850,6 +888,7 @@ def my_callback(parent_session_id: str, child_session_id: str,
 | `model` / `provider` / `base_url` / `api_mode` | `str` | Runtime selected for the child |
 | `toolsets` | `list[str]` | Toolsets available to the child |
 | `depth` | `int` | Nesting depth for display/telemetry |
+| `telemetry_schema_version` | `str` | Observer payload contract version. Current value: `"hermes.observer.v1"` |
 
 **Return value:** Ignored.
 
@@ -873,6 +912,8 @@ def my_callback(parent_session_id: str, child_role: str | None,
 |-----------|------|-------------|
 | `parent_session_id` | `str` | Session ID of the delegating parent agent |
 | `parent_subagent_id` | `str \| None` | Parent subagent ID for nested delegation |
+| `parent_turn_id` | `str` | Parent user-turn ID that requested the child, when available |
+| `parent_tool_call_id` | `str` | Parent `delegate_task` tool-call ID that spawned the child, when available |
 | `child_session_id` | `str \| None` | Session ID assigned to the child agent |
 | `subagent_id` | `str \| None` | Stable subagent identifier shared with `subagent_start` |
 | `task_index` | `int` | Zero-based index within the delegate batch |
@@ -886,6 +927,7 @@ def my_callback(parent_session_id: str, child_role: str | None,
 | `tokens` | `dict \| None` | Child input/output token totals when available |
 | `tool_trace` | `list \| None` | Compact child tool-call trace |
 | `error` | `str \| None` | Error text for failed children |
+| `telemetry_schema_version` | `str` | Observer payload contract version. Current value: `"hermes.observer.v1"` |
 
 **Fires:** In `tools/delegate_tool.py`, after `ThreadPoolExecutor.as_completed()` drains all child futures. Firing is marshalled to the parent thread so hook authors don't have to reason about concurrent callback execution.
 
@@ -1005,6 +1047,9 @@ def my_callback(
 | `pattern_keys` | `list[str]` | All pattern keys that matched |
 | `session_key` | `str` | Session identifier, useful for scoping notifications per-chat |
 | `surface` | `str` | `"cli"` for interactive CLI/TUI prompts, `"gateway"` for async platform approvals |
+| `turn_id` | `str` | Active user-turn ID when the approval was triggered by a tool call |
+| `tool_call_id` | `str` | Active tool-call ID when the approval was triggered by a tool call |
+| `telemetry_schema_version` | `str` | Observer payload contract version. Current value: `"hermes.observer.v1"` |
 
 **Return value:** ignored. Hooks here are observer-only; they cannot veto or pre-answer the approval. Use [`pre_tool_call`](#pre_tool_call) to block a tool before it reaches the approval system.
 
@@ -1082,6 +1127,8 @@ def my_callback(
     task_id: str | None,
     duration_ms: int,
     status: str,
+    turn_id: str,
+    api_request_id: str,
     **kwargs,
 ) -> str | None:
 ```
@@ -1092,8 +1139,16 @@ def my_callback(
 | `args` | `dict` | Arguments the model called the tool with. |
 | `result` | `str` | The tool's raw result string, post-truncation and post-ANSI-strip. |
 | `task_id` | `str \| None` | Task/session ID when running inside RL/benchmark environments. |
+| `session_id` | `str` | Current Hermes session ID when available |
+| `tool_call_id` | `str` | Provider tool-call ID for this call when available |
 | `duration_ms` | `int` | Tool execution duration in milliseconds. |
-| `status` | `str` | `"ok"` or `"error"` based on the returned tool payload. |
+| `status` | `str` | `"ok"`, `"error"`, `"blocked"`, or `"cancelled"` based on the returned tool payload. |
+| `error_type` | `str \| None` | Structured error category when the tool did not complete successfully |
+| `error_message` | `str \| None` | Parsed error text when `status != "ok"` |
+| `turn_id` | `str` | Stable identifier shared by turn, API, and tool hooks for this user turn |
+| `api_request_id` | `str` | Provider request attempt that produced the tool call, when known |
+| `started_at` / `ended_at` | `float` | Unix timestamps for the tool dispatch boundary |
+| `telemetry_schema_version` | `str` | Observer payload contract version. Current value: `"hermes.observer.v1"` |
 
 **Return value:** `str` to replace the result (the returned string is what the model sees), `None` to leave it unchanged.
 

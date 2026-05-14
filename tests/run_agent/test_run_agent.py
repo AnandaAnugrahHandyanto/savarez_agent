@@ -2089,6 +2089,7 @@ class TestConcurrentToolExecution:
                 tool_call_id=None,
                 session_id=agent.session_id,
                 turn_id="",
+                api_request_id="",
                 enabled_tools=list(agent.valid_tool_names),
                 skip_pre_tool_call_hook=True,
             )
@@ -2193,11 +2194,25 @@ class TestConcurrentToolExecution:
             "hermes_cli.plugins.get_pre_tool_call_block_message",
             lambda *args, **kwargs: "Blocked by test policy",
         )
-        with patch("tools.todo_tool.todo_tool", side_effect=AssertionError("should not run")) as mock_todo:
+        hook_calls = []
+
+        def _record_hook(name, **kw):
+            hook_calls.append((name, kw))
+            return []
+
+        with (
+            patch("tools.todo_tool.todo_tool", side_effect=AssertionError("should not run")) as mock_todo,
+            patch("hermes_cli.plugins.invoke_hook", side_effect=_record_hook),
+        ):
             result = agent._invoke_tool("todo", {"todos": []}, "task-1")
 
         assert json.loads(result) == {"error": "Blocked by test policy"}
         mock_todo.assert_not_called()
+        post_call = [kw for name, kw in hook_calls if name == "post_tool_call"][0]
+        assert post_call["status"] == "blocked"
+        assert post_call["error_type"] == "ToolBlocked"
+        assert post_call["error_message"] == "Blocked by test policy"
+        assert post_call["telemetry_schema_version"] == "hermes.observer.v1"
 
     def test_invoke_tool_blocked_skips_handle_function_call(self, agent, monkeypatch):
         """Blocked registry tools should not reach handle_function_call."""
@@ -2608,8 +2623,12 @@ class TestRunConversation:
         ]
         assert all("message_count" in c and "request" in c for c in pre_request_calls)
         assert all("messages" in c["request"]["body"] for c in pre_request_calls)
+        assert all(c["telemetry_schema_version"] == "hermes.observer.v1" for c in pre_request_calls)
+        assert all("started_at" in c for c in pre_request_calls)
         assert all("usage" in c and "response" in c for c in post_request_calls)
         assert all("assistant_message" in c["response"] for c in post_request_calls)
+        assert all(c["telemetry_schema_version"] == "hermes.observer.v1" for c in post_request_calls)
+        assert all(c["started_at"] <= c["ended_at"] for c in post_request_calls)
 
     def test_content_with_tool_calls_stays_silent_for_non_cli_quiet_mode(self, agent):
         self._setup_agent(agent)

@@ -724,8 +724,19 @@ def _run_cleanup():
     # Shut down memory provider (on_session_end + shutdown_all) at actual
     # session boundary — NOT per-turn inside run_conversation().
     try:
-        from hermes_cli.plugins import invoke_hook as _invoke_hook
-        _invoke_hook("on_session_finalize", session_id=_active_agent_ref.session_id if _active_agent_ref else None, platform="cli")
+        from hermes_cli.plugins import (
+            OBSERVER_SCHEMA_VERSION,
+            invoke_hook as _invoke_hook,
+        )
+        _invoke_hook(
+            "on_session_finalize",
+            session_id=_active_agent_ref.session_id if _active_agent_ref else None,
+            platform="cli",
+            reason="cli_exit",
+            completed=True,
+            interrupted=False,
+            telemetry_schema_version=OBSERVER_SCHEMA_VERSION,
+        )
     except Exception:
         pass
     try:
@@ -5537,33 +5548,63 @@ class HermesCLI:
         flush_tool_summary()
         print()
     
-    def _notify_session_boundary(self, event_type: str) -> None:
+    def _notify_session_boundary(
+        self,
+        event_type: str,
+        *,
+        reason: str = "",
+        old_session_id: str | None = None,
+        new_session_id: str | None = None,
+        completed: bool | None = None,
+        interrupted: bool | None = None,
+    ) -> None:
         """Fire a session-boundary plugin hook (on_session_finalize or on_session_reset).
 
         Non-blocking — errors are caught and logged.  Safe to call from any
         lifecycle point (shutdown, /new, /reset).
         """
         try:
-            from hermes_cli.plugins import invoke_hook as _invoke_hook
+            from hermes_cli.plugins import (
+                OBSERVER_SCHEMA_VERSION,
+                invoke_hook as _invoke_hook,
+            )
             _invoke_hook(
                 event_type,
                 session_id=self.agent.session_id if self.agent else None,
                 platform=getattr(self, "platform", None) or "cli",
+                reason=reason,
+                old_session_id=old_session_id,
+                new_session_id=new_session_id,
+                completed=completed,
+                interrupted=interrupted,
+                telemetry_schema_version=OBSERVER_SCHEMA_VERSION,
             )
         except Exception:
             pass
 
     def new_session(self, silent=False, title=None):
         """Start a fresh session with a new session ID and cleared agent state."""
+        old_session_id = self.session_id
         if self.agent and self.conversation_history:
             # Trigger memory extraction on the old session before session_id rotates.
             self.agent.commit_memory_session(self.conversation_history)
-            self._notify_session_boundary("on_session_finalize")
+            self._notify_session_boundary(
+                "on_session_finalize",
+                reason="new_session",
+                old_session_id=old_session_id,
+                completed=True,
+                interrupted=False,
+            )
         elif self.agent:
             # First session or empty history — still finalize the old session
-            self._notify_session_boundary("on_session_finalize")
+            self._notify_session_boundary(
+                "on_session_finalize",
+                reason="new_session",
+                old_session_id=old_session_id,
+                completed=True,
+                interrupted=False,
+            )
 
-        old_session_id = self.session_id
         if self._session_db and old_session_id:
             try:
                 self._session_db.end_session(old_session_id, "new_session")
@@ -5646,7 +5687,14 @@ class HermesCLI:
                     )
             except Exception:
                 pass
-            self._notify_session_boundary("on_session_reset")
+            self._notify_session_boundary(
+                "on_session_reset",
+                reason="new_session",
+                old_session_id=old_session_id,
+                new_session_id=self.session_id,
+                completed=False,
+                interrupted=False,
+            )
 
         if not silent:
             if title:
@@ -13398,7 +13446,10 @@ class HermesCLI:
             # the exit occurred, meaning run_conversation's hook didn't fire.
             if self.agent and getattr(self, '_agent_running', False):
                 try:
-                    from hermes_cli.plugins import invoke_hook as _invoke_hook
+                    from hermes_cli.plugins import (
+                        OBSERVER_SCHEMA_VERSION,
+                        invoke_hook as _invoke_hook,
+                    )
                     _invoke_hook(
                         "on_session_end",
                         session_id=self.agent.session_id,
@@ -13406,6 +13457,7 @@ class HermesCLI:
                         interrupted=True,
                         model=getattr(self.agent, 'model', None),
                         platform=getattr(self.agent, 'platform', None) or "cli",
+                        telemetry_schema_version=OBSERVER_SCHEMA_VERSION,
                     )
                 except Exception:
                     pass

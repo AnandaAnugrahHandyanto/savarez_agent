@@ -17,6 +17,8 @@ from tools.approval import (
     unregister_gateway_notify,
     resolve_gateway_approval,
     set_current_session_key,
+    set_current_observability_context,
+    reset_current_observability_context,
     clear_session,
 )
 
@@ -86,6 +88,45 @@ class TestCliPathFiresHooks:
         assert post_kwargs["surface"] == "cli"
         assert post_kwargs["command"] == "rm -rf /tmp/test-hook"
 
+    def test_approval_hooks_include_tool_correlation(
+        self, isolated_session, monkeypatch
+    ):
+        monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+        monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
+        monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
+        monkeypatch.setattr(approval_module, "_get_approval_mode", lambda: "manual")
+
+        captured = []
+
+        def fake_invoke_hook(hook_name, **kwargs):
+            captured.append((hook_name, kwargs))
+            return []
+
+        def cb(command, description, *, allow_permanent=True):
+            return "once"
+
+        tokens = set_current_observability_context(
+            turn_id="turn-1",
+            tool_call_id="tool-1",
+        )
+        try:
+            with patch("hermes_cli.plugins.invoke_hook", side_effect=fake_invoke_hook):
+                result = check_all_command_guards(
+                    "rm -rf /tmp/test-correlation", "local", approval_callback=cb,
+                )
+        finally:
+            reset_current_observability_context(tokens)
+
+        assert result["approved"] is True
+        pre_kwargs = next(kw for name, kw in captured if name == "pre_approval_request")
+        post_kwargs = next(kw for name, kw in captured if name == "post_approval_response")
+        assert pre_kwargs["turn_id"] == "turn-1"
+        assert pre_kwargs["tool_call_id"] == "tool-1"
+        assert pre_kwargs["telemetry_schema_version"] == "hermes.observer.v1"
+        assert post_kwargs["turn_id"] == "turn-1"
+        assert post_kwargs["tool_call_id"] == "tool-1"
+        assert post_kwargs["telemetry_schema_version"] == "hermes.observer.v1"
+
     def test_deny_reported_to_post_hook(self, isolated_session, monkeypatch):
         monkeypatch.setenv("HERMES_INTERACTIVE", "1")
         monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
@@ -141,5 +182,4 @@ class TestGatewayPathFiresHooks:
     gateway notify callback is registered. The agent thread blocks on the
     approval event until resolve_gateway_approval() is called from another
     thread."""
-
 

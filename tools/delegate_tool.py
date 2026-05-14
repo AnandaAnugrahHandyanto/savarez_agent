@@ -883,6 +883,8 @@ def _build_child_agent(
     # 'leaf' (default) cannot; 'orchestrator' retains the delegation
     # toolset subject to depth/kill-switch bounds applied below.
     role: str = "leaf",
+    parent_turn_id: str = "",
+    parent_tool_call_id: str = "",
 ):
     """
     Build a child AIAgent on the main thread (thread-safe construction).
@@ -1140,6 +1142,8 @@ def _build_child_agent(
     # for _run_single_child / interrupt_subagent to look up by id.
     child._subagent_id = subagent_id
     child._parent_subagent_id = parent_subagent_id
+    child._parent_turn_id = parent_turn_id or ""
+    child._parent_tool_call_id = parent_tool_call_id or ""
     child._subagent_goal = goal
 
     # Share a credential pool with the child when possible so subagents can
@@ -1167,11 +1171,16 @@ def _build_child_agent(
             logger.debug("spawn_requested relay failed: %s", exc)
 
     try:
-        from hermes_cli.plugins import invoke_hook as _invoke_hook
+        from hermes_cli.plugins import (
+            OBSERVER_SCHEMA_VERSION,
+            invoke_hook as _invoke_hook,
+        )
         _invoke_hook(
             "subagent_start",
             parent_session_id=getattr(parent_agent, "session_id", None),
             parent_subagent_id=parent_subagent_id,
+            parent_turn_id=parent_turn_id or "",
+            parent_tool_call_id=parent_tool_call_id or "",
             child_session_id=getattr(child, "session_id", None),
             subagent_id=subagent_id,
             task_index=task_index,
@@ -1183,6 +1192,7 @@ def _build_child_agent(
             api_mode=effective_api_mode,
             toolsets=child_toolsets,
             depth=tui_depth,
+            telemetry_schema_version=OBSERVER_SCHEMA_VERSION,
         )
     except Exception:
         logger.debug("subagent_start hook invocation failed", exc_info=True)
@@ -1937,6 +1947,8 @@ def delegate_task(
     acp_args: Optional[List[str]] = None,
     role: Optional[str] = None,
     parent_agent=None,
+    parent_turn_id: str = "",
+    parent_tool_call_id: str = "",
 ) -> str:
     """
     Spawn one or more child agents to handle delegated tasks.
@@ -2092,6 +2104,8 @@ def delegate_task(
                     else (acp_args if acp_args is not None else creds.get("args"))
                 ),
                 role=effective_role,
+                parent_turn_id=parent_turn_id or "",
+                parent_tool_call_id=parent_tool_call_id or "",
             )
             # Override with correct parent tool names (before child construction mutated global)
             child._delegate_saved_tool_names = _parent_tool_names
@@ -2257,9 +2271,15 @@ def delegate_task(
     # child was closed.
     _parent_session_id = getattr(parent_agent, "session_id", None)
     try:
-        from hermes_cli.plugins import invoke_hook as _invoke_hook
+        from hermes_cli.plugins import (
+            OBSERVER_SCHEMA_VERSION,
+            invoke_hook as _invoke_hook,
+        )
     except Exception:
         _invoke_hook = None
+        _observer_schema_version = "hermes.observer.v1"
+    else:
+        _observer_schema_version = OBSERVER_SCHEMA_VERSION
     # Aggregate child spend here so the parent's footer/UI reflect the true
     # cost of a subagent-heavy turn.  Port of Kilo-Org/kilocode#9448.  Each
     # child's cost was captured in _run_single_child before its AIAgent was
@@ -2287,6 +2307,8 @@ def delegate_task(
                 "subagent_stop",
                 parent_session_id=_parent_session_id,
                 parent_subagent_id=getattr(_child_agent, "_parent_subagent_id", None),
+                parent_turn_id=getattr(_child_agent, "_parent_turn_id", "") or "",
+                parent_tool_call_id=getattr(_child_agent, "_parent_tool_call_id", "") or "",
                 child_session_id=(
                     getattr(_child_agent, "session_id", None)
                     if isinstance(getattr(_child_agent, "session_id", None), str)
@@ -2308,6 +2330,7 @@ def delegate_task(
                 tokens=entry.get("tokens"),
                 tool_trace=entry.get("tool_trace"),
                 error=entry.get("error"),
+                telemetry_schema_version=_observer_schema_version,
             )
         except Exception:
             logger.debug("subagent_stop hook invocation failed", exc_info=True)

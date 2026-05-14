@@ -82,7 +82,15 @@ async def test_reset_fires_finalize_hook(mock_invoke_hook):
     await runner._handle_reset_command(_make_event("/new"))
 
     mock_invoke_hook.assert_any_call(
-        "on_session_finalize", session_id="sess-old", platform="telegram"
+        "on_session_finalize",
+        session_id="sess-old",
+        platform="telegram",
+        reason="new_session",
+        old_session_id="sess-old",
+        new_session_id="sess-new",
+        completed=True,
+        interrupted=False,
+        telemetry_schema_version="hermes.observer.v1",
     )
 
 
@@ -95,7 +103,15 @@ async def test_reset_fires_reset_hook(mock_invoke_hook):
     await runner._handle_reset_command(_make_event("/new"))
 
     mock_invoke_hook.assert_any_call(
-        "on_session_reset", session_id="sess-new", platform="telegram"
+        "on_session_reset",
+        session_id="sess-new",
+        platform="telegram",
+        reason="new_session",
+        old_session_id="sess-old",
+        new_session_id="sess-new",
+        completed=False,
+        interrupted=False,
+        telemetry_schema_version="hermes.observer.v1",
     )
 
 

@@ -63,6 +63,8 @@ class TestHandleFunctionCall:
                 session_id="session-1",
                 tool_call_id="call-1",
                 turn_id="",
+                api_request_id="",
+                telemetry_schema_version="hermes.observer.v1",
             ),
             call(
                 "post_tool_call",
@@ -73,9 +75,14 @@ class TestHandleFunctionCall:
                 session_id="session-1",
                 tool_call_id="call-1",
                 turn_id="",
+                api_request_id="",
                 duration_ms=ANY,
+                started_at=ANY,
+                ended_at=ANY,
                 status="ok",
+                error_type=None,
                 error_message=None,
+                telemetry_schema_version="hermes.observer.v1",
             ),
             call(
                 "transform_tool_result",
@@ -86,9 +93,14 @@ class TestHandleFunctionCall:
                 session_id="session-1",
                 tool_call_id="call-1",
                 turn_id="",
+                api_request_id="",
                 duration_ms=ANY,
+                started_at=ANY,
+                ended_at=ANY,
                 status="ok",
+                error_type=None,
                 error_message=None,
+                telemetry_schema_version="hermes.observer.v1",
             ),
         ]
 
@@ -159,7 +171,10 @@ class TestPreToolCallBlocking:
     """Verify that pre_tool_call hooks can block tool execution."""
 
     def test_blocked_tool_returns_error_and_skips_dispatch(self, monkeypatch):
+        hook_calls = []
+
         def fake_invoke_hook(hook_name, **kwargs):
+            hook_calls.append((hook_name, kwargs))
             if hook_name == "pre_tool_call":
                 return [{"action": "block", "message": "Blocked by policy"}]
             return []
@@ -178,11 +193,18 @@ class TestPreToolCallBlocking:
         result = json.loads(handle_function_call("read_file", {"path": "test.txt"}, task_id="t1"))
         assert result == {"error": "Blocked by policy"}
         assert not dispatch_called
+        post_call = [kw for name, kw in hook_calls if name == "post_tool_call"][0]
+        assert post_call["status"] == "blocked"
+        assert post_call["error_type"] == "ToolBlocked"
+        assert post_call["error_message"] == "Blocked by policy"
+        assert post_call["telemetry_schema_version"] == "hermes.observer.v1"
 
     def test_blocked_tool_skips_read_loop_notification(self, monkeypatch):
         notifications = []
+        hook_calls = []
 
         def fake_invoke_hook(hook_name, **kwargs):
+            hook_calls.append((hook_name, kwargs))
             if hook_name == "pre_tool_call":
                 return [{"action": "block", "message": "Blocked"}]
             return []
@@ -196,6 +218,7 @@ class TestPreToolCallBlocking:
         result = json.loads(handle_function_call("web_search", {"q": "test"}, task_id="t1"))
         assert result == {"error": "Blocked"}
         assert notifications == []
+        assert [name for name, _ in hook_calls].count("post_tool_call") == 1
 
     def test_invalid_hook_returns_do_not_block(self, monkeypatch):
         """Malformed hook returns should be ignored — tool executes normally."""
