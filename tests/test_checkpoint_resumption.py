@@ -27,6 +27,16 @@ import traceback
 from pathlib import Path
 from typing import Any, Dict, List
 
+import pytest
+
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.skipif(
+        os.getenv("RUN_LIVE_AGENT_TESTS") != "1",
+        reason="requires live LLM credentials/API quota; set RUN_LIVE_AGENT_TESTS=1 to run",
+    ),
+]
+
 # Add parent directory to path to import batch_runner
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
