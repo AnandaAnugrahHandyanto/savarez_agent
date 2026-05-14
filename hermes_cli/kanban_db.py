@@ -3876,23 +3876,23 @@ def _rotate_worker_log(log_path: Path, max_bytes: int) -> None:
 def _hermes_main_bootstrap() -> str:
     """Return Python code that runs Hermes without importing from child CWD."""
     trusted_root = str(Path(__file__).resolve().parent.parent)
-    return (
-        "import os, runpy, sys; "
-        f"trusted_root = os.path.realpath({trusted_root!r}); "
-        "cwd = os.path.realpath(os.getcwd()); "
-        "safe_path = []; "
-        "sep = os.path.sep; "
-        "trusted_prefix = trusted_root + sep; "
-        "cwd_prefix = cwd + sep; "
-        "for p in sys.path: "
-        "    if not p or not os.path.isabs(p): "
-        "        continue; "
-        "    rp = os.path.realpath(p); "
-        "    if rp == trusted_root or rp == cwd or rp.startswith(cwd_prefix): "
-        "        continue; "
-        "    safe_path.append(p); "
-        "sys.path = [trusted_root] + safe_path; "
-        "runpy.run_module('hermes_cli.main', run_name='__main__', alter_sys=True)"
+    return "\n".join(
+        [
+            "import os, runpy, sys",
+            f"trusted_root = os.path.realpath({trusted_root!r})",
+            "cwd = os.path.realpath(os.getcwd())",
+            "safe_path = []",
+            "cwd_prefix = cwd + os.path.sep",
+            "for p in sys.path:",
+            "    if not p or not os.path.isabs(p):",
+            "        continue",
+            "    rp = os.path.realpath(p)",
+            "    if rp == trusted_root or rp == cwd or rp.startswith(cwd_prefix):",
+            "        continue",
+            "    safe_path.append(p)",
+            "sys.path = [trusted_root] + safe_path",
+            "runpy.run_module('hermes_cli.main', run_name='__main__', alter_sys=True)",
+        ]
     )
 
 
@@ -3913,12 +3913,10 @@ def _resolve_hermes_argv() -> list[str]:
     # the task workspace: Python prepends cwd to module search paths. ``-P``
     # avoids that implicit cwd entry and the bootstrap adds only the trusted
     # install/source root that loaded this module.
-    return [
-        str(Path(sys.executable).resolve()),
-        "-P",
-        "-c",
-        _hermes_main_bootstrap(),
-    ]
+    python_exe = (
+        sys.executable if os.path.isabs(sys.executable) else os.path.abspath(sys.executable)
+    )
+    return [python_exe, "-P", "-c", _hermes_main_bootstrap()]
 
 
 def _default_spawn(

@@ -1379,7 +1379,10 @@ def test_resolve_hermes_argv_falls_back_to_safe_bootstrap_when_no_path_shim(monk
     monkeypatch.setattr(shutil, "which", lambda name: None)
     argv = kb._resolve_hermes_argv()
 
-    assert argv[:3] == [str(Path(sys.executable).resolve()), "-P", "-c"]
+    expected_python = (
+        sys.executable if os.path.isabs(sys.executable) else os.path.abspath(sys.executable)
+    )
+    assert argv[:3] == [expected_python, "-P", "-c"]
     assert "runpy.run_module('hermes_cli.main'" in argv[3]
     assert "trusted_root" in argv[3]
 
