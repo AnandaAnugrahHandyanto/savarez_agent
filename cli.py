@@ -305,6 +305,7 @@ def load_cli_config() -> Dict[str, Any]:
             "default": "",
             "base_url": "",
             "provider": "auto",
+            "default_headers": {},
         },
         "terminal": {
             "env_type": "local",

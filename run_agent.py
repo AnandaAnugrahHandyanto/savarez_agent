@@ -1095,6 +1095,22 @@ def _qwen_portal_headers() -> dict:
     }
 
 
+def _user_configured_headers() -> dict:
+    """Load user-configured default_headers from config.yaml.
+
+    Returns a dict of header key→value pairs.  Empty dict on failure
+    so it's always safe to ``.update()`` the result.
+    """
+    try:
+        from hermes_cli.config import load_config as _load_cfg
+        _headers = _load_cfg().get("model", {}).get("default_headers", {}) or {}
+        if isinstance(_headers, dict):
+            return {k: v for k, v in _headers.items() if v is not None}
+    except Exception:
+        pass
+    return {}
+
+
 class AIAgent:
     """
     AI Agent with tool calling capabilities.
@@ -1690,6 +1706,12 @@ class AIAgent:
                             client_kwargs["default_headers"] = dict(_ph.default_headers)
                     except Exception:
                         pass
+
+                # Merge user-configured default_headers from config.yaml.
+                # User headers override provider defaults on key conflicts.
+                if "default_headers" not in client_kwargs:
+                    client_kwargs["default_headers"] = {}
+                client_kwargs["default_headers"].update(_user_configured_headers())
             else:
                 # No explicit creds — use the centralized provider router
                 from agent.auxiliary_client import resolve_provider_client
@@ -1705,6 +1727,10 @@ class AIAgent:
                     # Preserve any default_headers the router set
                     if hasattr(_routed_client, '_default_headers') and _routed_client._default_headers:
                         client_kwargs["default_headers"] = dict(_routed_client._default_headers)
+                    # Merge user-configured default_headers
+                    if "default_headers" not in client_kwargs:
+                        client_kwargs["default_headers"] = {}
+                    client_kwargs["default_headers"].update(_user_configured_headers())
                 else:
                     # When the user explicitly chose a non-OpenRouter provider
                     # but no credentials were found, fail fast with a clear
@@ -1755,6 +1781,10 @@ class AIAgent:
                                     client_kwargs["timeout"] = _provider_timeout
                                 if hasattr(_fb_client, "_default_headers") and _fb_client._default_headers:
                                     client_kwargs["default_headers"] = dict(_fb_client._default_headers)
+                                # Merge user-configured default_headers
+                                if "default_headers" not in client_kwargs:
+                                    client_kwargs["default_headers"] = {}
+                                client_kwargs["default_headers"].update(_user_configured_headers())
                                 _fb_resolved = True
                                 break
                         if not _fb_resolved:
