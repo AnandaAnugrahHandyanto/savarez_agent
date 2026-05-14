@@ -1,3 +1,4 @@
+import copy
 #!/usr/bin/env python3
 """
 Delegate Tool -- Subagent Architecture
@@ -1075,8 +1076,13 @@ def _build_child_agent(
     # from rate-limits and credential exhaustion exactly like the top-level
     # agent does.  _fallback_chain is a list accepted by AIAgent's
     # fallback_model parameter (which handles both list and dict forms).
-    parent_fallback = getattr(parent_agent, "_fallback_chain", None) or None
-
+    # Deep-copy so the subagent's chain is independent: parent and child
+    # must not share mutable entry dicts (e.g. if a future normalisation
+    # pass strips keys), and each agent tracks its own _fallback_index.
+    # See #24782 — shared chain references can cause subagent fallback to
+    # silently use the parent's base_url instead of its own.
+    _raw_parent_fallback = getattr(parent_agent, "_fallback_chain", None)
+    parent_fallback = copy.deepcopy(_raw_parent_fallback) if _raw_parent_fallback else None
     # Inherit the parent's OpenRouter provider-preference filters by default
     # (so subagents routed to the same provider honour the same routing
     # constraints).  BUT: when `delegation.provider` is set the user is
