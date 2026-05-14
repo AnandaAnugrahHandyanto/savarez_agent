@@ -660,9 +660,11 @@ See `references/gateway-request-tracking.md` for the gateway cost tracking archi
 | Memory | `hermes memory status` or [Memory docs](https://hermes-agent.nousresearch.com/docs/user-guide/features/memory) |
 | Env variables | `hermes config env-path` or [Env vars reference](https://hermes-agent.nousresearch.com/docs/reference/environment-variables) |
 | CLI commands | `hermes --help` or [CLI reference](https://hermes-agent.nousresearch.com/docs/reference/cli-commands) |
-| Gateway logs | `~/.hermes/logs/gateway.log` |
-| Session files | `~/.hermes/sessions/` or `hermes sessions browse` |
-| Source code | `~/.hermes/hermes-agent/` |
+### Gateway logs | `~/.hermes/logs/gateway.log`
+| Session files | `~/.hermes/sessions/` or `hermes sessions browse`
+| Source code | `~/.hermes/hermes-agent/`
+
+**Model config safety**: Always confirm with Gordon before running `hermes config set model.*` — see `references/hermes-model-config-safety.md`.
 
 ---
 

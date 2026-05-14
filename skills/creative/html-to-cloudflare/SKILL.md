@@ -73,6 +73,13 @@ GIT_TERMINAL_PROMPT=0 git push origin main
 
 **⚠️ Two separate Cloudflare Pages projects.** Deleting or deploying files affects only the project whose `--project-name` matches. Always verify `wrangler pages project list` output if unsure which project a source dir maps to.
 
+**⚠️ Pre-deletion checklist.** Before deleting any file, directory, or wiki:
+1. Confirm the target URL with the user (e.g. "delete the wiki at hermes-pages-d55.pages.dev/wiki/")
+2. Check `wrangler pages project list` to see which project the source dir belongs to
+3. If the user references a URL, map it to the correct source dir using the table above
+4. A URL like `gordon-pages.pages.dev` maps to `/opt/data/gordon-pages/`, NOT `/opt/data/hermes-pages/`
+5. **Ask the user to confirm** before running any destructive command — do not assume from context alone
+
 ## Current direct deploy workflow
 
 | Deployment target | Source dir | Deploy command |
