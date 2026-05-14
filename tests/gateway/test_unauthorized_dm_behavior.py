@@ -15,6 +15,7 @@ def _clear_auth_env(monkeypatch) -> None:
         "DISCORD_ALLOWED_USERS",
         "WHATSAPP_ALLOWED_USERS",
         "SLACK_ALLOWED_USERS",
+        "SLACK_UNAUTHORIZED_ALERT_USERS",
         "SIGNAL_ALLOWED_USERS",
         "SIGNAL_GROUP_ALLOWED_USERS",
         "TELEGRAM_GROUP_ALLOWED_CHATS",
@@ -646,3 +647,84 @@ def test_qqbot_with_allowlist_ignores_unauthorized_dm(monkeypatch):
 
     behavior = runner._get_unauthorized_dm_behavior(Platform.QQBOT)
     assert behavior == "ignore"
+
+
+@pytest.mark.asyncio
+async def test_slack_unauthorized_sender_alerts_allowed_owner(monkeypatch):
+    """Slack allowlist denials should DM the operator who can act on them."""
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("SLACK_ALLOWED_USERS", "U_OWNER")
+
+    runner, _adapter = _make_runner(
+        Platform.SLACK,
+        GatewayConfig(platforms={Platform.SLACK: PlatformConfig(enabled=True)}),
+    )
+    runner._unauthorized_slack_alerts = {}
+
+    client = SimpleNamespace(
+        chat_getPermalink=AsyncMock(return_value={"permalink": "https://slack.example/p/1"}),
+        conversations_open=AsyncMock(return_value={"channel": {"id": "D_OWNER"}}),
+        chat_postMessage=AsyncMock(),
+    )
+    runner.adapters[Platform.SLACK] = SimpleNamespace(_get_client=lambda _chat_id: client)
+
+    event = MessageEvent(
+        text="approve this for me",
+        message_id="171.000",
+        raw_message={"ts": "171.000"},
+        source=SessionSource(
+            platform=Platform.SLACK,
+            user_id="U_INTRUDER",
+            chat_id="C_REVIEW",
+            thread_id="170.000",
+            user_name="Intruder",
+            chat_type="group",
+        ),
+    )
+
+    await runner._notify_slack_unauthorized_sender(event)
+
+    client.conversations_open.assert_awaited_once_with(users="U_OWNER")
+    client.chat_postMessage.assert_awaited_once()
+    kwargs = client.chat_postMessage.await_args.kwargs
+    assert kwargs["channel"] == "D_OWNER"
+    assert "Unauthorized Slack message to Hazel" in kwargs["text"]
+    assert "U_INTRUDER" in kwargs["text"]
+    assert "https://slack.example/p/1" in kwargs["text"]
+
+
+@pytest.mark.asyncio
+async def test_slack_unauthorized_sender_alert_dedupes_retries(monkeypatch):
+    """Slack retries should not spam owner DMs for the same denied message."""
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("SLACK_ALLOWED_USERS", "U_OWNER")
+
+    runner, _adapter = _make_runner(
+        Platform.SLACK,
+        GatewayConfig(platforms={Platform.SLACK: PlatformConfig(enabled=True)}),
+    )
+    runner._unauthorized_slack_alerts = {}
+
+    client = SimpleNamespace(
+        chat_getPermalink=AsyncMock(return_value={}),
+        conversations_open=AsyncMock(return_value={"channel": {"id": "D_OWNER"}}),
+        chat_postMessage=AsyncMock(),
+    )
+    runner.adapters[Platform.SLACK] = SimpleNamespace(_get_client=lambda _chat_id: client)
+
+    event = MessageEvent(
+        text="hello",
+        message_id="171.000",
+        source=SessionSource(
+            platform=Platform.SLACK,
+            user_id="U_INTRUDER",
+            chat_id="C_REVIEW",
+            user_name="Intruder",
+            chat_type="group",
+        ),
+    )
+
+    await runner._notify_slack_unauthorized_sender(event)
+    await runner._notify_slack_unauthorized_sender(event)
+
+    client.chat_postMessage.assert_awaited_once()

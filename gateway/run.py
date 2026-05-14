@@ -1260,6 +1260,9 @@ class GatewayRunner:
         # cannot grow unbounded over a long-running gateway lifetime.
         self._session_sources: "OrderedDict[str, SessionSource]" = OrderedDict()
         self._session_sources_max = 512
+        # Best-effort owner notifications for unauthorized Slack messages.
+        # Keyed by Slack message identity to avoid duplicate alerts on retries.
+        self._unauthorized_slack_alerts: Dict[str, float] = {}
 
         # Cache AIAgent instances per session to preserve prompt caching.
         # Without this, a new AIAgent is created per message, rebuilding the
@@ -2578,6 +2581,7 @@ class GatewayRunner:
                 event.source.platform.value if event.source.platform else "unknown",
                 session_key,
             )
+            await self._notify_slack_unauthorized_sender(event)
             return True  # handled (silently dropped); do not fall through
 
         # --- Draining case (gateway restarting/stopping) ---
@@ -5675,6 +5679,139 @@ class GatewayRunner:
 
         return bool(check_ids & allowed_ids)
 
+    def _parse_csv_ids(self, raw: str) -> List[str]:
+        """Parse a comma-separated ID list, preserving order and removing blanks."""
+        seen: set[str] = set()
+        ids: List[str] = []
+        for part in (raw or "").split(","):
+            item = part.strip()
+            if not item or item == "*" or item in seen:
+                continue
+            seen.add(item)
+            ids.append(item)
+        return ids
+
+    def _slack_unauthorized_alert_recipients(self, unauthorized_user_id: Optional[str]) -> List[str]:
+        """Return Slack user IDs that should get unauthorized-sender alerts.
+
+        Operators can set SLACK_UNAUTHORIZED_ALERT_USERS. If unset, fall back
+        to SLACK_ALLOWED_USERS so restricted Slack gateways notify the same
+        approved operator(s) who can actually use the bot.
+        """
+        raw = os.getenv("SLACK_UNAUTHORIZED_ALERT_USERS", "").strip()
+        if not raw:
+            raw = os.getenv("SLACK_ALLOWED_USERS", "").strip()
+        recipients = self._parse_csv_ids(raw)
+        if unauthorized_user_id:
+            recipients = [uid for uid in recipients if uid != unauthorized_user_id]
+        return recipients
+
+    def _slack_escape(self, text: Any) -> str:
+        return str(text or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+    async def _notify_slack_unauthorized_sender(self, event: MessageEvent) -> None:
+        """DM the Slack owner(s) when an unauthorized Slack user addresses Hermes.
+
+        This is intentionally best-effort: authorization denial must still work
+        even if Slack DM delivery fails.
+        """
+        source = event.source
+        if not source or source.platform != Platform.SLACK:
+            return
+
+        recipients = self._slack_unauthorized_alert_recipients(source.user_id)
+        if not recipients:
+            return
+
+        now = time.time()
+        alerts = getattr(self, "_unauthorized_slack_alerts", None)
+        if alerts is None:
+            alerts = self._unauthorized_slack_alerts = {}
+        # Keep the dedupe cache bounded and fresh.
+        for key, ts in list(alerts.items()):
+            if now - ts > 3600:
+                alerts.pop(key, None)
+        raw = event.raw_message if isinstance(event.raw_message, dict) else {}
+        message_ts = event.message_id or source.message_id or raw.get("ts") or ""
+        dedupe_key = f"{source.chat_id}:{source.thread_id or ''}:{message_ts}:{source.user_id}"
+        if message_ts and dedupe_key in alerts:
+            return
+        if message_ts:
+            alerts[dedupe_key] = now
+
+        adapter = self.adapters.get(Platform.SLACK)
+        if not adapter:
+            return
+
+        client = None
+        try:
+            get_client = getattr(adapter, "_get_client", None)
+            if callable(get_client):
+                client = get_client(source.chat_id)
+            if client is None:
+                app = getattr(adapter, "_app", None)
+                client = getattr(app, "client", None)
+        except Exception:
+            client = None
+        if client is None:
+            return
+
+        permalink = ""
+        if source.chat_id and message_ts:
+            try:
+                resp = await client.chat_getPermalink(channel=source.chat_id, message_ts=message_ts)
+                permalink = str(resp.get("permalink") or "")
+            except Exception as exc:
+                logger.debug("Slack unauthorized alert permalink lookup failed: %s", exc)
+
+        text = (event.text or "").strip()
+        if len(text) > 1200:
+            text = text[:1197] + "..."
+        if not text and event.media_types:
+            text = f"[{', '.join(event.media_types)} attachment]"
+        if not text:
+            text = "[no text captured]"
+
+        sender_label = source.user_name or source.user_id or "unknown user"
+        alert_lines = [
+            ":rotating_light: *Unauthorized Slack message to Hazel*",
+            f"Sender: {self._slack_escape(sender_label)} (`{self._slack_escape(source.user_id or 'unknown')}`)",
+            f"Where: `{self._slack_escape(source.chat_id or 'unknown')}`",
+        ]
+        if source.thread_id:
+            alert_lines.append(f"Thread: `{self._slack_escape(source.thread_id)}`")
+        if permalink:
+            alert_lines.append(f"Message: {permalink}")
+        alert_lines.append(f"Asked: ```{self._slack_escape(text)}```")
+        alert_text = "\n".join(alert_lines)
+
+        for recipient in recipients:
+            try:
+                dm_resp = await client.conversations_open(users=recipient)
+                dm_channel = (dm_resp.get("channel") or {}).get("id")
+                if not dm_channel:
+                    raise RuntimeError(f"conversations.open returned no channel for {recipient}")
+                await client.chat_postMessage(
+                    channel=dm_channel,
+                    text=alert_text,
+                    mrkdwn=True,
+                    unfurl_links=False,
+                    unfurl_media=False,
+                )
+                logger.info(
+                    "Sent Slack unauthorized-sender alert to %s for user=%s channel=%s ts=%s",
+                    recipient,
+                    source.user_id,
+                    source.chat_id,
+                    message_ts,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Failed to send Slack unauthorized-sender alert to %s: %s",
+                    recipient,
+                    exc,
+                )
+
     def _get_unauthorized_dm_behavior(self, platform: Optional[Platform]) -> str:
         """Return how unauthorized DMs should be handled for a platform.
 
@@ -5845,6 +5982,7 @@ class GatewayRunner:
             return None
         elif not self._is_user_authorized(source):
             logger.warning("Unauthorized user: %s (%s) on %s", source.user_id, source.user_name, source.platform.value)
+            await self._notify_slack_unauthorized_sender(event)
             # In DMs: offer pairing code. In groups: silently ignore.
             if source.chat_type == "dm" and self._get_unauthorized_dm_behavior(source.platform) == "pair":
                 platform_name = source.platform.value if source.platform else "unknown"
