@@ -162,9 +162,16 @@ def _normalize_child_runtime_tuple(
         resolved_base_url and current_base_url != resolved_base_url
     )
     api_mode_mismatch = bool(resolved_api_mode and api_mode != resolved_api_mode)
+    api_key_mismatch = bool(resolved_api_key and api_key != resolved_api_key)
     missing_base_url = current_base_url is None and resolved_base_url is not None
 
-    if not (provider_mismatch or missing_base_url or base_url_mismatch or api_mode_mismatch):
+    if not (
+        provider_mismatch
+        or missing_base_url
+        or base_url_mismatch
+        or api_mode_mismatch
+        or api_key_mismatch
+    ):
         return provider, base_url, api_key, api_mode
 
     logger.info(
@@ -2394,9 +2401,10 @@ def _resolve_child_credential_pool(effective_provider: Optional[str], parent_age
     """Resolve a credential pool for the child agent.
 
     Rules:
-    1. Same provider as the parent -> share the parent's pool so cooldown state
-       and rotation stay synchronized.
-    2. Different provider -> try to load that provider's own pool.
+    1. Same provider and same pool provider as the parent -> share the parent's
+       pool so cooldown state and rotation stay synchronized.
+    2. Different provider, or stale parent pool -> try to load that provider's
+       own pool.
     3. No pool available -> return None and let the child keep the inherited
        fixed credential behavior.
     """
@@ -2406,7 +2414,11 @@ def _resolve_child_credential_pool(effective_provider: Optional[str], parent_age
     parent_provider = getattr(parent_agent, "provider", None) or ""
     parent_pool = getattr(parent_agent, "_credential_pool", None)
     if parent_pool is not None and effective_provider == parent_provider:
-        return parent_pool
+        parent_pool_provider = getattr(parent_pool, "provider", None)
+        if not isinstance(parent_pool_provider, str) or (
+            parent_pool_provider == effective_provider
+        ):
+            return parent_pool
 
     try:
         from agent.credential_pool import load_pool

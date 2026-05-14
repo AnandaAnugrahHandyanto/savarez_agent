@@ -409,6 +409,43 @@ class TestDelegateTask(unittest.TestCase):
             )
 
     @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
+    def test_child_normalizes_stale_inherited_api_key(self, mock_resolve):
+        parent = _make_mock_parent(depth=0)
+        parent.base_url = "https://chatgpt.com/backend-api/codex"
+        parent.api_key = "stale-key"
+        parent.provider = "openai-codex"
+        parent.api_mode = "codex_responses"
+        parent.model = "gpt-5.5"
+        mock_resolve.return_value = {
+            "provider": "openai-codex",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key": "fresh-key",
+            "api_mode": "codex_responses",
+        }
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.run_conversation.return_value = {
+                "final_response": "ok",
+                "completed": True,
+                "api_calls": 1,
+            }
+            MockAgent.return_value = mock_child
+
+            delegate_task(goal="Test stale key normalization", parent_agent=parent)
+
+            _, kwargs = MockAgent.call_args
+            self.assertEqual(kwargs["provider"], "openai-codex")
+            self.assertEqual(kwargs["model"], "gpt-5.5")
+            self.assertEqual(kwargs["base_url"], "https://chatgpt.com/backend-api/codex")
+            self.assertEqual(kwargs["api_key"], "fresh-key")
+            self.assertEqual(kwargs["api_mode"], "codex_responses")
+            mock_resolve.assert_called_with(
+                requested="openai-codex",
+                target_model="gpt-5.5",
+            )
+
+    @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
     @patch("hermes_cli.models.detect_provider_for_model")
     def test_child_infers_provider_from_model_before_normalizing(
         self,
@@ -1380,10 +1417,25 @@ class TestChildCredentialPoolResolution(unittest.TestCase):
     def test_same_provider_shares_parent_pool(self):
         parent = _make_mock_parent()
         mock_pool = MagicMock()
+        mock_pool.provider = "openrouter"
         parent._credential_pool = mock_pool
 
         result = _resolve_child_credential_pool("openrouter", parent)
         self.assertIs(result, mock_pool)
+
+    def test_same_provider_does_not_share_stale_parent_pool(self):
+        parent = _make_mock_parent()
+        parent.provider = "openai-codex"
+        stale_pool = MagicMock()
+        stale_pool.provider = "zai"
+        parent._credential_pool = stale_pool
+        openai_pool = MagicMock()
+        openai_pool.has_credentials.return_value = True
+
+        with patch("agent.credential_pool.load_pool", return_value=openai_pool):
+            result = _resolve_child_credential_pool("openai-codex", parent)
+
+        self.assertIs(result, openai_pool)
 
     def test_no_provider_inherits_parent_pool(self):
         parent = _make_mock_parent()
@@ -1427,6 +1479,7 @@ class TestChildCredentialPoolResolution(unittest.TestCase):
     def test_build_child_agent_assigns_parent_pool_when_shared(self):
         parent = _make_mock_parent()
         mock_pool = MagicMock()
+        mock_pool.provider = "openrouter"
         parent._credential_pool = mock_pool
 
         with patch("run_agent.AIAgent") as MockAgent:
