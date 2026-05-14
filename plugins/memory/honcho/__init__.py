@@ -673,7 +673,16 @@ class HonchoMemoryProvider(MemoryProvider):
             dialectic_result = ""
 
         if dialectic_result and dialectic_result.strip():
-            parts.append(dialectic_result)
+            # Discard deriver-style non-responses that slip through on sparse context.
+            _dr = dialectic_result.strip().lower()
+            _is_deriver_noise = (
+                _dr.startswith("nothing to save")
+                or _dr.startswith("no new information")
+                or _dr.startswith("no information")
+                or (_dr.startswith("nothing") and len(_dr) < 120)
+            )
+            if not _is_deriver_noise:
+                parts.append(f"## Honcho Contextual Analysis\n{dialectic_result.strip()}")
 
         if not parts:
             return ""
