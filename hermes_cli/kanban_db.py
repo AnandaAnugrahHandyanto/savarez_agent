@@ -4365,6 +4365,9 @@ def task_age(task: Task) -> dict:
 # Notification subscriptions (used by the gateway kanban-notifier)
 # ---------------------------------------------------------------------------
 
+BOARD_NOTIFY_TASK_ID = "*"
+
+
 def add_notify_sub(
     conn: sqlite3.Connection,
     *,
@@ -4442,12 +4445,20 @@ def unseen_events_for_sub(
         return 0, []
     cursor = int(row["last_event_id"])
     kind_list = list(kinds) if kinds else None
-    q = (
-        "SELECT * FROM task_events WHERE task_id = ? AND id > ? "
-        + ("AND kind IN (" + ",".join("?" * len(kind_list)) + ") " if kind_list else "")
-        + "ORDER BY id ASC"
-    )
-    params: list[Any] = [task_id, cursor]
+    if task_id == BOARD_NOTIFY_TASK_ID:
+        q = (
+            "SELECT * FROM task_events WHERE id > ? "
+            + ("AND kind IN (" + ",".join("?" * len(kind_list)) + ") " if kind_list else "")
+            + "ORDER BY id ASC"
+        )
+        params: list[Any] = [cursor]
+    else:
+        q = (
+            "SELECT * FROM task_events WHERE task_id = ? AND id > ? "
+            + ("AND kind IN (" + ",".join("?" * len(kind_list)) + ") " if kind_list else "")
+            + "ORDER BY id ASC"
+        )
+        params = [task_id, cursor]
     if kind_list:
         params.extend(kind_list)
     rows = conn.execute(q, params).fetchall()

@@ -515,6 +515,19 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         help="Profile gateway that owns/delivers this subscription (default: active profile)",
     )
 
+    p_nsub_board = sub.add_parser(
+        "notify-subscribe-board",
+        help="Subscribe a gateway source to terminal events from every task on the active board",
+    )
+    p_nsub_board.add_argument("--platform", required=True)
+    p_nsub_board.add_argument("--chat-id", required=True)
+    p_nsub_board.add_argument("--thread-id", default=None)
+    p_nsub_board.add_argument("--user-id", default=None)
+    p_nsub_board.add_argument(
+        "--notifier-profile", default=None,
+        help="Profile gateway that owns/delivers this subscription (default: active profile)",
+    )
+
     p_nlist = sub.add_parser(
         "notify-list",
         help="List notification subscriptions (optionally for a single task)",
@@ -530,6 +543,14 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_nrm.add_argument("--platform", required=True)
     p_nrm.add_argument("--chat-id", required=True)
     p_nrm.add_argument("--thread-id", default=None)
+
+    p_nrm_board = sub.add_parser(
+        "notify-unsubscribe-board",
+        help="Remove a gateway subscription from the active board",
+    )
+    p_nrm_board.add_argument("--platform", required=True)
+    p_nrm_board.add_argument("--chat-id", required=True)
+    p_nrm_board.add_argument("--thread-id", default=None)
 
     # --- log ---
     p_log = sub.add_parser(
@@ -736,8 +757,10 @@ def kanban_command(args: argparse.Namespace) -> int:
         "heartbeat": _cmd_heartbeat,
         "assignees": _cmd_assignees,
         "notify-subscribe":   _cmd_notify_subscribe,
+        "notify-subscribe-board": _cmd_notify_subscribe_board,
         "notify-list":        _cmd_notify_list,
         "notify-unsubscribe": _cmd_notify_unsubscribe,
+        "notify-unsubscribe-board": _cmd_notify_unsubscribe_board,
         "context":  _cmd_context,
         "specify":  _cmd_specify,
         "gc":       _cmd_gc,
@@ -1952,6 +1975,21 @@ def _cmd_notify_subscribe(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_notify_subscribe_board(args: argparse.Namespace) -> int:
+    with kb.connect() as conn:
+        kb.add_notify_sub(
+            conn, task_id=kb.BOARD_NOTIFY_TASK_ID,
+            platform=args.platform, chat_id=args.chat_id,
+            thread_id=args.thread_id, user_id=args.user_id,
+            notifier_profile=args.notifier_profile or _profile_author(),
+        )
+    board = os.environ.get("HERMES_KANBAN_BOARD") or kb.get_current_board()
+    print(f"Subscribed {args.platform}:{args.chat_id}"
+          + (f":{args.thread_id}" if args.thread_id else "")
+          + f" to board {board}")
+    return 0
+
+
 def _cmd_notify_list(args: argparse.Namespace) -> int:
     with kb.connect() as conn:
         subs = kb.list_notify_subs(conn, args.task_id)
@@ -1963,8 +2001,9 @@ def _cmd_notify_list(args: argparse.Namespace) -> int:
         return 0
     for s in subs:
         thr = f":{s['thread_id']}" if s.get("thread_id") else ""
+        target = "(board)" if s["task_id"] == kb.BOARD_NOTIFY_TASK_ID else s["task_id"]
         owner = f"  owner={s['notifier_profile']}" if s.get("notifier_profile") else ""
-        print(f"  {s['task_id']:10s}  {s['platform']}:{s['chat_id']}{thr}"
+        print(f"  {target:10s}  {s['platform']}:{s['chat_id']}{thr}"
               f"  (since event {s['last_event_id']}){owner}")
     return 0
 
@@ -1980,6 +2019,21 @@ def _cmd_notify_unsubscribe(args: argparse.Namespace) -> int:
         print("(no such subscription)", file=sys.stderr)
         return 1
     print(f"Unsubscribed from {args.task_id}")
+    return 0
+
+
+def _cmd_notify_unsubscribe_board(args: argparse.Namespace) -> int:
+    with kb.connect() as conn:
+        ok = kb.remove_notify_sub(
+            conn, task_id=kb.BOARD_NOTIFY_TASK_ID,
+            platform=args.platform, chat_id=args.chat_id,
+            thread_id=args.thread_id,
+        )
+    if not ok:
+        print("(no such board subscription)", file=sys.stderr)
+        return 1
+    board = os.environ.get("HERMES_KANBAN_BOARD") or kb.get_current_board()
+    print(f"Unsubscribed from board {board}")
     return 0
 
 

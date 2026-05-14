@@ -4354,7 +4354,13 @@ class GatewayRunner:
                                 )
                                 if not events:
                                     continue
-                                task = _kb.get_task(conn, sub["task_id"])
+                                task = None
+                                tasks_by_id = {}
+                                if sub["task_id"] == getattr(_kb, "BOARD_NOTIFY_TASK_ID", "*"):
+                                    for task_id in {ev.task_id for ev in events}:
+                                        tasks_by_id[task_id] = _kb.get_task(conn, task_id)
+                                else:
+                                    task = _kb.get_task(conn, sub["task_id"])
                                 logger.debug(
                                     "kanban notifier: claimed %d event(s) for %s on board %s cursor %s→%s",
                                     len(events), sub["task_id"], slug, old_cursor, cursor,
@@ -4365,6 +4371,7 @@ class GatewayRunner:
                                     "cursor": cursor,
                                     "events": events,
                                     "task": task,
+                                    "tasks_by_id": tasks_by_id,
                                     "board": slug,
                                 })
                         finally:
@@ -4401,12 +4408,17 @@ class GatewayRunner:
                         )
                         continue
                     title = (task.title if task else sub["task_id"])[:120]
+                    is_board_sub = sub["task_id"] == "*"
+                    tasks_by_id = d.get("tasks_by_id") or {}
                     for ev in d["events"]:
+                        event_task = tasks_by_id.get(ev.task_id) if is_board_sub else task
+                        event_task_id = ev.task_id if is_board_sub else sub["task_id"]
+                        title = (event_task.title if event_task else event_task_id)[:120]
                         kind = ev.kind
                         # Identity prefix: attribute terminal pings to the
                         # worker that did the work. Makes fleets (where one
                         # chat subscribes to many tasks) legible at a glance.
-                        who = (task.assignee if task and task.assignee else None)
+                        who = (event_task.assignee if event_task and event_task.assignee else None)
                         tag = f"@{who} " if who else ""
                         if kind == "completed":
                             # Prefer the run's summary (the worker's
@@ -4421,29 +4433,29 @@ class GatewayRunner:
                             if payload_summary:
                                 h = payload_summary.strip().splitlines()[0][:200]
                                 handoff = f"\n{h}"
-                            elif task and task.result:
-                                r = task.result.strip().splitlines()[0][:160]
+                            elif event_task and event_task.result:
+                                r = event_task.result.strip().splitlines()[0][:160]
                                 handoff = f"\n{r}"
                             msg = (
-                                f"✔ {tag}Kanban {sub['task_id']} done"
+                                f"✔ {tag}Kanban {event_task_id} done"
                                 f" — {title}{handoff}"
                             )
                         elif kind == "blocked":
                             reason = ""
                             if ev.payload and ev.payload.get("reason"):
                                 reason = f": {str(ev.payload['reason'])[:160]}"
-                            msg = f"⏸ {tag}Kanban {sub['task_id']} blocked{reason}"
+                            msg = f"⏸ {tag}Kanban {event_task_id} blocked{reason}"
                         elif kind == "gave_up":
                             err = ""
                             if ev.payload and ev.payload.get("error"):
                                 err = f"\n{str(ev.payload['error'])[:200]}"
                             msg = (
-                                f"✖ {tag}Kanban {sub['task_id']} gave up "
+                                f"✖ {tag}Kanban {event_task_id} gave up "
                                 f"after repeated spawn failures{err}"
                             )
                         elif kind == "crashed":
                             msg = (
-                                f"✖ {tag}Kanban {sub['task_id']} worker crashed "
+                                f"✖ {tag}Kanban {event_task_id} worker crashed "
                                 f"(pid gone); dispatcher will retry"
                             )
                         elif kind == "timed_out":
@@ -4451,7 +4463,7 @@ class GatewayRunner:
                             if ev.payload and ev.payload.get("limit_seconds"):
                                 limit = int(ev.payload["limit_seconds"])
                             msg = (
-                                f"⏱ {tag}Kanban {sub['task_id']} timed out "
+                                f"⏱ {tag}Kanban {event_task_id} timed out "
                                 f"(max_runtime={limit}s); will retry"
                             )
                         else:
@@ -4509,14 +4521,12 @@ class GatewayRunner:
                         await asyncio.to_thread(
                             self._kanban_advance, sub, d["cursor"], board_slug,
                         )
-                        # Unsubscribe only when the task has reached a truly
-                        # final status (done / archived). For blocked /
-                        # gave_up / crashed / timed_out the subscription is
-                        # kept alive so the user gets notified again if the
-                        # dispatcher respawns the task and it cycles into the
-                        # same state. See the longer comment on TERMINAL_KINDS
-                        # above for the failure mode this prevents.
-                        task_terminal = task and task.status in {"done", "archived"}
+                        # Unsubscribe only when a task-level subscription has
+                        # reached a truly final status (done / archived). Board
+                        # subscriptions intentionally stay active across many
+                        # tasks; blocked / gave_up / crashed / timed_out task
+                        # subscriptions stay alive so retries can notify again.
+                        task_terminal = (not is_board_sub) and task and task.status in {"done", "archived"}
                         if task_terminal:
                             await asyncio.to_thread(
                                 self._kanban_unsub, sub, board_slug,

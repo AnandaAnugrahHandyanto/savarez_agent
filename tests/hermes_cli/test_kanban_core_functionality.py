@@ -11,6 +11,7 @@ parity across every registered verb.
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import os
 import subprocess
@@ -619,6 +620,131 @@ def test_notify_claim_is_single_owner_and_rewindable(kanban_home):
     finally:
         conn1.close()
         conn2.close()
+
+
+def test_board_notify_sub_sees_terminal_events_across_tasks(kanban_home):
+    conn = kb.connect()
+    try:
+        a = kb.create_task(conn, title="a", assignee="w1")
+        b = kb.create_task(conn, title="b", assignee="w2")
+        kb.add_notify_sub(
+            conn,
+            task_id=kb.BOARD_NOTIFY_TASK_ID,
+            platform="discord",
+            chat_id="chan",
+        )
+
+        kb.complete_task(conn, a, result="done")
+        kb.block_task(conn, b, reason="needs input")
+
+        cursor, events = kb.unseen_events_for_sub(
+            conn,
+            task_id=kb.BOARD_NOTIFY_TASK_ID,
+            platform="discord",
+            chat_id="chan",
+            kinds=["completed", "blocked"],
+        )
+        assert [(e.task_id, e.kind) for e in events] == [
+            (a, "completed"),
+            (b, "blocked"),
+        ]
+
+        kb.advance_notify_cursor(
+            conn,
+            task_id=kb.BOARD_NOTIFY_TASK_ID,
+            platform="discord",
+            chat_id="chan",
+            new_cursor=cursor,
+        )
+        _, events2 = kb.unseen_events_for_sub(
+            conn,
+            task_id=kb.BOARD_NOTIFY_TASK_ID,
+            platform="discord",
+            chat_id="chan",
+            kinds=["completed", "blocked"],
+        )
+        assert events2 == []
+    finally:
+        conn.close()
+
+
+def test_cli_notify_subscribe_board(kanban_home):
+    out = run_slash("notify-subscribe-board --platform discord --chat-id 42")
+    assert "Subscribed discord:42 to board" in out
+    conn = kb.connect()
+    try:
+        subs = kb.list_notify_subs(conn)
+        assert len(subs) == 1
+        assert subs[0]["task_id"] == kb.BOARD_NOTIFY_TASK_ID
+        assert subs[0]["platform"] == "discord"
+        listed = run_slash("notify-list")
+        assert "(board)" in listed
+        removed = run_slash("notify-unsubscribe-board --platform discord --chat-id 42")
+        assert "Unsubscribed from board" in removed
+        assert kb.list_notify_subs(conn) == []
+    finally:
+        conn.close()
+
+
+@pytest.mark.asyncio
+async def test_gateway_board_notify_sub_renders_event_task_ids_and_stays_subscribed(
+    kanban_home, monkeypatch
+):
+    from gateway.config import GatewayConfig, Platform
+    from gateway.run import GatewayRunner
+
+    class CaptureAdapter:
+        def __init__(self):
+            self.sent = []
+
+        async def send(self, chat_id, text, metadata=None):
+            self.sent.append((chat_id, text, metadata or {}))
+
+    conn = kb.connect()
+    try:
+        a = kb.create_task(conn, title="alpha", assignee="w1")
+        b = kb.create_task(conn, title="beta", assignee="w2")
+        kb.add_notify_sub(
+            conn,
+            task_id=kb.BOARD_NOTIFY_TASK_ID,
+            platform="discord",
+            chat_id="chan",
+        )
+        kb.complete_task(conn, a, result="alpha done")
+        kb.block_task(conn, b, reason="needs input")
+    finally:
+        conn.close()
+
+    sleeps = 0
+    real_sleep = asyncio.sleep
+
+    async def one_tick_sleep(_delay):
+        nonlocal sleeps
+        sleeps += 1
+        if sleeps >= 2:
+            runner._running = False
+        await real_sleep(0)
+
+    runner = GatewayRunner(GatewayConfig())
+    runner._running = True
+    adapter = CaptureAdapter()
+    runner.adapters[Platform.DISCORD] = adapter
+    monkeypatch.setattr(asyncio, "sleep", one_tick_sleep)
+
+    await runner._kanban_notifier_watcher(interval=1)
+
+    messages = [text for _chat_id, text, _metadata in adapter.sent]
+    assert any(f"Kanban {a} done" in msg for msg in messages)
+    assert any(f"Kanban {b} blocked: needs input" in msg for msg in messages)
+
+    conn = kb.connect()
+    try:
+        subs = kb.list_notify_subs(conn)
+        assert len(subs) == 1
+        assert subs[0]["task_id"] == kb.BOARD_NOTIFY_TASK_ID
+        assert int(subs[0]["last_event_id"]) > 0
+    finally:
+        conn.close()
 
 
 # ---------------------------------------------------------------------------
