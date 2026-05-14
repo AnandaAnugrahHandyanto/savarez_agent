@@ -110,6 +110,11 @@ USER_OWNED_EXCLUDE: frozenset = frozenset({
     "image_cache", "audio_cache", "document_cache",
     "browser_screenshots", "checkpoints", "sandboxes",
     "backups", "cache",
+    # User-created cron jobs — stored in cron/jobs.json; must NOT be
+    # wiped when a distribution ships an empty cron/ scaffolding dir.
+    # (Wiped cron jobs are a data-catastrophic regression for users who
+    # have production automations scheduled.  See issue #25281.)
+    "cron",
     # Infrastructure
     "hermes-agent", ".worktrees", "profiles", "bin", "node_modules",
     # User customization namespace
