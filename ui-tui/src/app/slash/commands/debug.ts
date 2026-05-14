@@ -1,6 +1,7 @@
 import { formatBytes, performHeapDump } from '../../../lib/memory.js'
 import {
   isKeyDebugEnabled,
+  keyDebugDestination,
   setKeyDebugEnabled,
   setKeyDebugSink,
   toggleKeyDebug
@@ -19,13 +20,13 @@ export const debugCommands: SlashCommand[] = [
       if (!mode || mode === 'toggle') {
         const next = toggleKeyDebug()
 
-        return ctx.transcript.sys(`key debug ${next ? 'on' : 'off'}`)
+        return ctx.transcript.sys(`key debug ${next ? `on (${keyDebugDestination()})` : 'off'}`)
       }
 
       if (mode === 'on' || mode === 'true' || mode === '1') {
         setKeyDebugEnabled(true)
 
-        return ctx.transcript.sys('key debug on')
+        return ctx.transcript.sys(`key debug on (${keyDebugDestination()})`)
       }
 
       if (mode === 'off' || mode === 'false' || mode === '0') {
@@ -35,7 +36,9 @@ export const debugCommands: SlashCommand[] = [
       }
 
       if (mode === 'status') {
-        return ctx.transcript.sys(`key debug ${isKeyDebugEnabled() ? 'on' : 'off'}`)
+        return ctx.transcript.sys(
+          `key debug ${isKeyDebugEnabled() ? `on (${keyDebugDestination()})` : 'off'}`
+        )
       }
 
       return ctx.transcript.sys('usage: /debug-keys [on|off|toggle|status]')
