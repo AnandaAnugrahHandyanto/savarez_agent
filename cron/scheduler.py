@@ -73,17 +73,29 @@ def _resolve_cron_enabled_toolsets(job: dict, cfg: dict) -> list[str] | None:
     surprise $4.63 run).
     """
     per_job = job.get("enabled_toolsets")
-    if per_job:
-        return per_job
+    per_job_toolsets = [str(t).strip() for t in per_job if str(t).strip()] if per_job else None
     try:
         from hermes_cli.tools_config import _get_platform_tools  # lazy: avoid heavy import at cron module load
-        return sorted(_get_platform_tools(cfg or {}, "cron"))
+        platform_toolsets = set(_get_platform_tools(cfg or {}, "cron"))
     except Exception as exc:
         logger.warning(
             "Cron toolset resolution failed, falling back to full default toolset: %s",
             exc,
         )
-        return None
+        return per_job_toolsets or None
+
+    if per_job_toolsets:
+        resolved = [toolset for toolset in per_job_toolsets if toolset in platform_toolsets]
+        dropped = [toolset for toolset in per_job_toolsets if toolset not in platform_toolsets]
+        if dropped:
+            logger.warning(
+                "Cron job %r requested disabled toolsets %s; dropping them",
+                job.get("name") or job.get("id"),
+                dropped,
+            )
+        return resolved
+
+    return sorted(platform_toolsets)
 
 # Valid delivery platforms — used to validate user-supplied platform names
 # in cron delivery targets, preventing env var enumeration via crafted names.

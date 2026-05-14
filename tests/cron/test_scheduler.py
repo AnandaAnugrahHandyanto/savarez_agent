@@ -990,9 +990,8 @@ class TestRunJobSessionPersistence:
         # run cannot accidentally spin up frontier models.
         assert "moa" not in kwargs["enabled_toolsets"]
 
-    def test_run_job_per_job_toolsets_win_over_platform_config(self, tmp_path):
-        """Per-job enabled_toolsets (via cronjob tool) always take precedence
-        over the platform-level ``hermes tools`` config."""
+    def test_run_job_per_job_toolsets_narrow_platform_config(self, tmp_path):
+        """Per-job enabled_toolsets can narrow the platform-level cron config."""
         job = {
             "id": "override-job",
             "name": "test",
@@ -1000,13 +999,13 @@ class TestRunJobSessionPersistence:
             "enabled_toolsets": ["terminal"],
         }
         fake_db, patches = self._make_run_job_patches(tmp_path)
-        # Even if the user has ``hermes tools`` configured to enable web+file
-        # for cron, the per-job override wins.
+        # The user has ``hermes tools`` configured to enable web+file+terminal
+        # for cron, and the job narrows that to terminal.
         with patches[0], patches[1], patches[2], patches[3], patches[4], \
              patch("run_agent.AIAgent") as mock_agent_cls, \
              patch(
                  "hermes_cli.tools_config._get_platform_tools",
-                 return_value={"web", "file"},
+                 return_value={"web", "file", "terminal"},
              ):
             mock_agent = MagicMock()
             mock_agent.run_conversation.return_value = {"final_response": "ok"}
@@ -1015,6 +1014,28 @@ class TestRunJobSessionPersistence:
 
         kwargs = mock_agent_cls.call_args.kwargs
         assert kwargs["enabled_toolsets"] == ["terminal"]
+
+    def test_run_job_drops_per_job_toolsets_disabled_by_platform_config(self, tmp_path):
+        job = {
+            "id": "denied-toolset-job",
+            "name": "test",
+            "prompt": "hello",
+            "enabled_toolsets": ["terminal", "file"],
+        }
+        fake_db, patches = self._make_run_job_patches(tmp_path)
+        with patches[0], patches[1], patches[2], patches[3], patches[4], \
+             patch("run_agent.AIAgent") as mock_agent_cls, \
+             patch(
+                 "hermes_cli.tools_config._get_platform_tools",
+                 return_value={"file", "web"},
+             ):
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+            run_job(job)
+
+        kwargs = mock_agent_cls.call_args.kwargs
+        assert kwargs["enabled_toolsets"] == ["file"]
 
     def test_run_job_empty_response_returns_empty_not_placeholder(self, tmp_path):
         """Empty final_response should stay empty for delivery logic (issue #2234).
