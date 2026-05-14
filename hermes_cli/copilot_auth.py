@@ -9,11 +9,10 @@ Token type support (per GitHub docs):
   ghu_          GitHub App token      ✓  (via environment variable)
   ghp_          Classic PAT           ✗  NOT SUPPORTED
 
-Credential search order (matching Copilot CLI behaviour):
+Credential search order:
   1. COPILOT_GITHUB_TOKEN env var
   2. GH_TOKEN env var
   3. GITHUB_TOKEN env var
-  4. gh auth token  CLI fallback
 """
 
 from __future__ import annotations
@@ -21,11 +20,7 @@ from __future__ import annotations
 import json
 import logging
 import os
-import shutil
-import subprocess
 import time
-from pathlib import Path
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -82,72 +77,7 @@ def resolve_copilot_token() -> tuple[str, str]:
                 continue
             return val, env_var
 
-    # 2. Fall back to gh auth token
-    token = _try_gh_cli_token()
-    if token:
-        valid, msg = validate_copilot_token(token)
-        if not valid:
-            raise ValueError(
-                f"Token from `gh auth token` is a classic PAT (ghp_*). {msg}"
-            )
-        return token, "gh auth token"
-
     return "", ""
-
-
-def _gh_cli_candidates() -> list[str]:
-    """Return candidate ``gh`` binary paths, including common Homebrew installs."""
-    candidates: list[str] = []
-
-    resolved = shutil.which("gh")
-    if resolved:
-        candidates.append(resolved)
-
-    for candidate in (
-        "/opt/homebrew/bin/gh",
-        "/usr/local/bin/gh",
-        str(Path.home() / ".local" / "bin" / "gh"),
-    ):
-        if candidate in candidates:
-            continue
-        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
-            candidates.append(candidate)
-
-    return candidates
-
-
-def _try_gh_cli_token() -> Optional[str]:
-    """Return a token from ``gh auth token`` when the GitHub CLI is available.
-
-    When COPILOT_GH_HOST is set, passes ``--hostname`` so gh returns the
-    correct host's token.  Also strips GITHUB_TOKEN / GH_TOKEN from the
-    subprocess environment so ``gh`` reads from its own credential store
-    (hosts.yml) instead of just echoing the env var back.
-    """
-    hostname = os.getenv("COPILOT_GH_HOST", "").strip()
-
-    # Build a clean env so gh doesn't short-circuit on GITHUB_TOKEN / GH_TOKEN
-    clean_env = {k: v for k, v in os.environ.items()
-                 if k not in {"GITHUB_TOKEN", "GH_TOKEN"}}
-
-    for gh_path in _gh_cli_candidates():
-        cmd = [gh_path, "auth", "token"]
-        if hostname:
-            cmd += ["--hostname", hostname]
-        try:
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=5,
-                env=clean_env,
-            )
-        except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
-            logger.debug("gh CLI token lookup failed (%s): %s", gh_path, exc)
-            continue
-        if result.returncode == 0 and result.stdout.strip():
-            return result.stdout.strip()
-    return None
 
 
 # ─── OAuth Device Code Flow ────────────────────────────────────────────────

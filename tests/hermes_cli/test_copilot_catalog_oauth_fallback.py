@@ -5,9 +5,8 @@ Regression for #16708: when the user's only Copilot credential is a
 ``auth.json`` under ``credential_pool.copilot[]`` — placed there by
 ``hermes auth add copilot`` or by ``_seed_from_env`` when the env var
 is set in ``~/.hermes/.env`` — the picker was silently dropping back to
-a stale hardcoded list because ``_resolve_copilot_catalog_api_key``
-only consulted env vars / ``gh auth token`` and never read the
-credential pool.
+a stale hardcoded list because pool credentials were not used when
+``resolve_api_key_provider_credentials`` returned an empty token.
 """
 
 from unittest.mock import patch
