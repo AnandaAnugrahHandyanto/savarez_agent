@@ -20,6 +20,7 @@ from .api import (
     shape_inbox_item_as_draft_workflow,
     update_inbox_item_triage,
 )
+from .contracts import WORKFLOW_API_CONTRACT_VERSION, workflow_api_contract_fixture
 from .dag import DagValidationResult, normalize_dag, validate_dag
 from .errors import WorkflowError, WorkflowValidationError
 from .materialize import MaterializationResult, MaterializedTask, materialize_workflow
@@ -64,6 +65,7 @@ __all__ = [
     "WorkflowPolicy",
     "WorkflowRecord",
     "WorkflowValidationError",
+    "WORKFLOW_API_CONTRACT_VERSION",
     "add_artifact",
     "add_event",
     "add_gate",
@@ -99,4 +101,5 @@ __all__ = [
     "update_inbox_item_triage",
     "update_workflow_status",
     "validate_dag",
+    "workflow_api_contract_fixture",
 ]

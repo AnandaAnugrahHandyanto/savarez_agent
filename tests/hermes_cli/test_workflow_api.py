@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import pytest
 
 from hermes_cli import kanban_db
 from hermes_cli.workflow import (
+    WORKFLOW_API_CONTRACT_VERSION,
     create_inbox_item,
     get_inbox_item_detail,
     get_workflow_artifacts,
@@ -18,6 +22,7 @@ from hermes_cli.workflow import (
     resolve_workflow_gate_control,
     shape_inbox_item_as_draft_workflow,
     update_inbox_item_triage,
+    workflow_api_contract_fixture,
 )
 from hermes_cli.workflow.materialize import materialize_workflow
 from hermes_cli.workflow.store import add_artifact, add_event, add_gate, connect, create_workflow, resolve_gate, save_dag
@@ -79,6 +84,55 @@ def test_public_workflow_package_exports_read_model_api():
     assert callable(promote_inbox_item_to_workflow)
     assert callable(shape_inbox_item_as_draft_workflow)
     assert callable(update_inbox_item_triage)
+    assert callable(workflow_api_contract_fixture)
+
+
+def test_workflow_api_contract_fixture_pins_cross_repo_response_shapes():
+    fixture = workflow_api_contract_fixture()
+
+    assert WORKFLOW_API_CONTRACT_VERSION == "workflow-api-v1"
+    assert fixture["contractVersion"] == WORKFLOW_API_CONTRACT_VERSION
+    assert fixture["envelope"] == {"facts": {}, "insights": None}
+    assert set(fixture["fixtures"]) == {
+        "workflowList",
+        "workflowDag",
+        "workflowNode",
+        "workflowEvents",
+        "workflowArtifacts",
+        "inboxList",
+        "inboxItem",
+        "inboxShape",
+        "inboxPromote",
+    }
+    dag_facts = fixture["fixtures"]["workflowDag"]["facts"]
+    assert {"workflow", "nodes", "edges", "gates", "artifacts", "controlActions"}.issubset(dag_facts)
+    assert dag_facts["workflow"]["workspacePath"] == "/tmp/workflow-contract"
+    assert dag_facts["nodes"][0]["workspace"] == {
+        "kind": "worktree",
+        "branch": "workflow/wf_contract/shape-plan",
+        "worktreePath": "/tmp/worktrees/wf_contract-shape-plan",
+        "baseRef": "origin/main",
+    }
+    assert dag_facts["controlActions"][0] == {
+        "id": "approve-gate:gate_contract_review",
+        "type": "resolve_gate",
+        "label": "Approve review gate",
+        "method": "POST",
+        "endpoint": "/api/workflows/wf_contract/gates/gate_contract_review/resolve",
+        "gateId": "gate_contract_review",
+        "status": "approved",
+        "verdict": "approved",
+        "enabled": True,
+    }
+    assert fixture["fixtures"]["inboxShape"]["facts"]["draftWorkflow"]["sourceInboxItemId"] == "inbox_contract"
+    assert fixture["fixtures"]["inboxPromote"]["facts"]["dag"]["workflow_id"] == "wf_contract"
+
+
+def test_workflow_api_contract_fixture_json_matches_core_helper():
+    fixture_path = Path(__file__).resolve().parents[2] / "docs" / "contracts" / "workflow-api-v1.fixture.json"
+
+    assert fixture_path.exists()
+    assert json.loads(fixture_path.read_text(encoding="utf-8")) == workflow_api_contract_fixture()
 
 
 def test_shape_inbox_item_as_draft_workflow_returns_core_authored_dag_without_mutating_inbox(tmp_path):
