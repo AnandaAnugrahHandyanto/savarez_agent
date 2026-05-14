@@ -146,11 +146,43 @@ def _json_safe_copy(value: Any, *, label: str) -> Any:
         raise TypeError(f"{label} must be JSON-serializable") from exc
 
 
-def _coerce_result(value: Any) -> str | None:
-    """Coerce a runner return value to the ``str | None`` shape of ``WorkerResult.result``."""
+def _coerce_result(value: Any) -> Any:
+    """Coerce a runner return value into JSON-safe worker-result payload data."""
     if value is None:
         return None
-    return value if isinstance(value, str) else str(value)
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (dict, list, tuple)):
+        return _json_safe_clean(value)
+    return str(value)
+
+
+def _json_safe_clean(value: Any) -> Any:
+    if value is None or isinstance(value, (str, bool, int)):
+        return value
+    if isinstance(value, float):
+        if value != value or value in {float("inf"), float("-inf")}:
+            raise TypeError("non-finite float is not JSON-safe")
+        return value
+    if isinstance(value, dict):
+        cleaned: dict[str, Any] = {}
+        for key, item in value.items():
+            if not isinstance(key, str):
+                continue
+            try:
+                cleaned[key] = _json_safe_clean(item)
+            except TypeError:
+                continue
+        return cleaned
+    if isinstance(value, (list, tuple)):
+        cleaned_list = []
+        for item in value:
+            try:
+                cleaned_list.append(_json_safe_clean(item))
+            except TypeError:
+                continue
+        return cleaned_list
+    raise TypeError(f"{type(value).__name__} is not JSON-safe")
 
 
 # --------------------------------------------------------------------------
@@ -294,7 +326,7 @@ class WorkerResult:
 
     worker_id: str
     status: str
-    result: str | None = None
+    result: Any = None
     error: str | None = None
     started_at: float | None = None
     finished_at: float | None = None
@@ -359,7 +391,7 @@ class _WorkerEntry:
     updated_at: float
     started_at: float | None = None
     finished_at: float | None = None
-    result: str | None = None
+    result: Any = None
     error: str | None = None
     cancel_requested: bool = False
     cancel_token: CancelToken = field(default_factory=CancelToken)
@@ -468,7 +500,7 @@ class ThreadWorkerLane:
         entry: _WorkerEntry,
         status: str,
         *,
-        result: str | None = None,
+        result: Any = None,
         error: str | None = None,
     ) -> None:
         entry.status = status

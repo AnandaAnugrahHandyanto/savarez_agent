@@ -67,6 +67,10 @@ __all__ = [
     "WORKER_CLAUDE_CODE",
     "WORKER_TERMINAL",
     "WORKER_RALPH",
+    "RESULT_SUCCEEDED",
+    "RESULT_FAILED",
+    "RESULT_CANCELLED",
+    "REVIEW_PENDING",
     "TaskOrigin",
     "FocusedTask",
     "TaskRegistry",
@@ -115,6 +119,12 @@ WORKER_CLAUDE_CODE = "claude_code"  # a Claude Code CLI worker
 WORKER_TERMINAL = "terminal"        # a detached terminal / background process
 WORKER_RALPH = "ralph"              # the future focused-agent ("Ralph") runtime
 
+RESULT_SUCCEEDED = "succeeded"
+RESULT_FAILED = "failed"
+RESULT_CANCELLED = "cancelled"
+RESULT_STATUSES = frozenset({RESULT_SUCCEEDED, RESULT_FAILED, RESULT_CANCELLED})
+REVIEW_PENDING = "pending_review"
+
 
 def _new_task_id() -> str:
     return f"task-{uuid.uuid4().hex}"
@@ -149,6 +159,132 @@ def _json_safe_copy(value: Any, *, label: str) -> Any:
         return json.loads(json.dumps(value, ensure_ascii=False, allow_nan=False))
     except (TypeError, ValueError) as exc:
         raise TypeError(f"{label} must be JSON-serializable") from exc
+
+
+def _json_safe_clean(value: Any) -> Any:
+    """Return a JSON-safe representation of *value*, dropping unsafe metadata.
+
+    Worker results may be assembled near subprocesses, callbacks, exception
+    instances, and other process-local objects.  Result snapshots intentionally
+    keep only JSON data; unsupported nested values are omitted instead of being
+    stringified wholesale into misleading metadata.
+    """
+    if value is None or isinstance(value, (str, bool, int)):
+        return value
+    if isinstance(value, float):
+        if value != value or value in {float("inf"), float("-inf")}:
+            raise TypeError("value is not finite")
+        return value
+    if isinstance(value, dict):
+        cleaned: dict[str, Any] = {}
+        for key, item in value.items():
+            if not isinstance(key, str):
+                continue
+            try:
+                cleaned[key] = _json_safe_clean(item)
+            except TypeError:
+                continue
+        return cleaned
+    if isinstance(value, (list, tuple)):
+        cleaned_list = []
+        for item in value:
+            try:
+                cleaned_list.append(_json_safe_clean(item))
+            except TypeError:
+                continue
+        return cleaned_list
+    raise TypeError(f"value of type {type(value).__name__} is not JSON-safe")
+
+
+def _coerce_result_status(status: Any) -> str:
+    if status in RESULT_STATUSES:
+        return str(status)
+    if status == STATUS_DONE or status == "done":
+        return RESULT_SUCCEEDED
+    if status == STATUS_ERROR or status == "error":
+        return RESULT_FAILED
+    if status == STATUS_CANCELLED or status == "cancelled":
+        return RESULT_CANCELLED
+    raise ValueError(
+        f"unknown worker result status {status!r}; expected one of {sorted(RESULT_STATUSES)}"
+    )
+
+
+def _string_or_none(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, BaseException):
+        text = str(value)
+    else:
+        text = value if isinstance(value, str) else str(value)
+    return text if text else None
+
+
+def _worker_result_snapshot(
+    *,
+    task_id: str,
+    result: Any = None,
+    worker_id: str | None = None,
+    status: str | None = None,
+    summary: Any = None,
+    artifacts: Any = None,
+    tests: Any = None,
+    error: Any = None,
+    review_status: str = REVIEW_PENDING,
+) -> dict[str, Any]:
+    if hasattr(result, "to_dict") and not isinstance(result, dict):
+        result = result.to_dict()
+
+    source = result if isinstance(result, dict) else {}
+    resolved_worker_id = worker_id or _string_or_none(source.get("worker_id"))
+    resolved_status = _coerce_result_status(status or source.get("status"))
+    resolved_task_id = _string_or_none(source.get("task_id")) or task_id
+    resolved_summary = summary
+    if resolved_summary is None:
+        resolved_summary = source.get("summary")
+    if resolved_summary is None and not isinstance(result, dict):
+        resolved_summary = result
+    if resolved_summary is None:
+        resolved_summary = source.get("result")
+    resolved_error = error if error is not None else source.get("error")
+
+    snapshot: dict[str, Any] = {
+        "worker_id": resolved_worker_id or "",
+        "task_id": resolved_task_id,
+        "status": resolved_status,
+        "summary": _string_or_none(resolved_summary) or "",
+        "review_status": _string_or_none(source.get("review_status")) or review_status,
+    }
+
+    resolved_artifacts = artifacts if artifacts is not None else source.get("artifacts")
+    if resolved_artifacts is not None:
+        if isinstance(resolved_artifacts, dict):
+            resolved_artifacts = [resolved_artifacts]
+        if isinstance(resolved_artifacts, list):
+            cleaned_artifacts = []
+            for item in resolved_artifacts:
+                if not isinstance(item, dict):
+                    continue
+                cleaned = _json_safe_clean(item)
+                if cleaned:
+                    cleaned_artifacts.append(cleaned)
+            if cleaned_artifacts:
+                snapshot["artifacts"] = cleaned_artifacts
+
+    resolved_tests = tests if tests is not None else source.get("tests")
+    if resolved_tests is not None:
+        try:
+            cleaned_tests = _json_safe_clean(resolved_tests)
+        except TypeError:
+            cleaned_tests = None
+        if cleaned_tests not in (None, {}, []):
+            snapshot["tests"] = cleaned_tests
+
+    error_text = _string_or_none(resolved_error)
+    if error_text:
+        snapshot["error"] = error_text
+
+    return _json_safe_copy(snapshot, label="worker result")
 
 
 # --------------------------------------------------------------------------
@@ -204,6 +340,7 @@ class FocusedTask:
     pending_followups: list[PendingTurnItem] = field(default_factory=list)
     artifacts: list[dict[str, Any]] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+    result: dict[str, Any] | None = None
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
 
@@ -243,6 +380,7 @@ class FocusedTask:
             "pending_followups": [it.to_dict() for it in self.pending_followups],
             "artifacts": [_json_safe_copy(a, label="artifact") for a in self.artifacts],
             "notes": list(self.notes),
+            "result": _json_safe_copy(self.result, label="worker result") if self.result else None,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
         }
@@ -271,6 +409,14 @@ class FocusedTask:
             if isinstance(a, dict)
         ]
         notes = [str(n) for n in (data.get("notes") or [])]
+        result = data.get("result")
+        if result is not None and not isinstance(result, dict):
+            result = None
+        if result is not None:
+            result = _worker_result_snapshot(
+                task_id=str(data.get("task_id") or ""),
+                result=result,
+            )
         created_at = _as_float(data.get("created_at"), time.time())
         updated_at = _as_float(data.get("updated_at"), created_at)
         return cls(
@@ -284,6 +430,7 @@ class FocusedTask:
             pending_followups=followups,
             artifacts=artifacts,
             notes=notes,
+            result=result,
             created_at=created_at,
             updated_at=updated_at,
         )
@@ -495,6 +642,43 @@ class TaskRegistry:
         task.notes.append(str(note))
         task.touch()
         return task
+
+    def attach_worker_result(
+        self,
+        task_id: str,
+        result: Any = None,
+        *,
+        worker_id: str | None = None,
+        status: str | None = None,
+        summary: Any = None,
+        artifacts: Any = None,
+        tests: Any = None,
+        error: Any = None,
+        review_status: str = REVIEW_PENDING,
+    ) -> dict[str, Any]:
+        """Attach a JSON-safe worker result snapshot to *task_id*.
+
+        Only the review/import gate fields are retained: worker/task identity,
+        normalized result status, summary, optional artifacts/tests/error, and
+        ``review_status``.  Unknown keys and non-JSON local-process metadata are
+        dropped, so task serialization never captures subprocess objects,
+        callbacks, exception instances, file handles, or raw payloads.
+        """
+        task = self._require(task_id)
+        snapshot = _worker_result_snapshot(
+            task_id=task_id,
+            result=result,
+            worker_id=worker_id,
+            status=status,
+            summary=summary,
+            artifacts=artifacts,
+            tests=tests,
+            error=error,
+            review_status=review_status,
+        )
+        task.result = snapshot
+        task.touch()
+        return snapshot
 
     def cancel_task(self, task_id: str, *, reason: str | None = None) -> FocusedTask:
         """Mark *task_id* ``cancelled``; record *reason* as a note when given."""

@@ -1,5 +1,6 @@
 """Tests for the minimal frontdesk control-loop runtime."""
 
+import json
 import threading
 
 from agent.control_plane import Intent, Recommendation
@@ -40,6 +41,46 @@ def test_frontdesk_worker_decision_creates_task_and_starts_registered_worker_lan
     worker_result = runtime.worker_registry.result(result.worker_id)
     assert worker_result is not None
     assert worker_result.status == WorkerStatus.DONE
+
+
+def test_frontdesk_worker_completion_retains_result_for_review():
+    runtime = OrchestrationRuntime.create()
+
+    def runner(spec: WorkerSpec, token: CancelToken):  # noqa: ARG001
+        return {
+            "summary": f"done:{spec.goal}",
+            "artifacts": [{"path": "report.md"}],
+            "tests": {"pytest": "passed"},
+            "raw_process": object(),
+        }
+
+    runtime.worker_registry.register(ThreadWorkerLane(runner=runner, name="thread"))
+    started = runtime.handle_frontdesk_input(
+        "draft a report.md with the audit",
+        frontdesk_mode_active=True,
+        session_key="s1",
+        source_surface="gateway",
+    )
+
+    assert started.task_id is not None
+    assert started.worker_id is not None
+    assert runtime.worker_registry.wait(started.worker_id, timeout=2.0)
+
+    attached = runtime.collect_worker_results()
+    assert [r["worker_id"] for r in attached] == [started.worker_id]
+
+    task = runtime.task_registry.get_task(started.task_id)
+    assert task is not None
+    assert task.result is not None
+    assert task.result["worker_id"] == started.worker_id
+    assert task.result["task_id"] == started.task_id
+    assert task.result["status"] == "succeeded"
+    assert task.result["summary"].startswith("done:draft")
+    assert task.result["artifacts"] == [{"path": "report.md"}]
+    assert task.result["tests"] == {"pytest": "passed"}
+    assert "raw_process" not in task.result
+    assert task.result["review_status"] == "pending_review"
+    json.dumps(task.to_dict(), allow_nan=False)
 
 
 def test_frontdesk_status_returns_local_overview_without_starting_worker():
