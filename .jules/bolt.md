@@ -1,0 +1,3 @@
+Testing error handling blocks deep inside AIAgent.run_conversation() is challenging because of the large amount of tightly coupled initialization logic and dependencies. It is much easier to define tests inside test_run_agent.py and reuse the existing uninitialized AIAgent instances and helper functions (like _mock_response), then mock _interruptible_api_call directly to return the required responses and avoid heavy stubbing requirements.
+
+When applying inline logic fixes, replacing only the specific changed block using standard string manipulation or simple sed is preferable over using formatters that rewrite the entire file (which causes unacceptable Git diff pollution and code review rejection).
