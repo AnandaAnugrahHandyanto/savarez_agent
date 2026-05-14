@@ -14543,7 +14543,7 @@ class GatewayRunner:
         # - Feishu only honors reply_in_thread when sending a reply, so topic
         #   progress uses the triggering event message as the reply target
         # - Other platforms should use explicit source.thread_id only
-        if source.platform == Platform.SLACK:
+        if source.platform in (Platform.SLACK, Platform.MATTERMOST):
             _progress_thread_id = source.thread_id or event_message_id
         else:
             _progress_thread_id = source.thread_id
