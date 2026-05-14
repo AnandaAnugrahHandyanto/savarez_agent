@@ -1555,6 +1555,26 @@ def _read_main_provider() -> str:
     return ""
 
 
+def _read_main_base_url_and_key() -> Tuple[str, str]:
+    """Read model.base_url and model.api_key from config.yaml.
+
+    Used by _resolve_auto() Step 1 to pass configured endpoint details to
+    resolve_provider_client() for providers that need user-supplied base_url
+    (e.g. litellm) but aren't the generic "custom" provider.
+    """
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+        model_cfg = cfg.get("model", {})
+        if isinstance(model_cfg, dict):
+            base = str(model_cfg.get("base_url") or "").strip()
+            key = str(model_cfg.get("api_key") or "").strip()
+            return base, key
+    except Exception:
+        pass
+    return "", ""
+
+
 # Process-local override set by AIAgent at session/turn start. Single-threaded
 # per turn — no lock needed. Cleared by ``clear_runtime_main()``.
 _RUNTIME_MAIN_PROVIDER: str = ""
@@ -2525,6 +2545,15 @@ def _resolve_auto(main_runtime: Optional[Dict[str, Any]] = None) -> Tuple[Option
             resolved_provider = "custom"
             explicit_base_url = runtime_base_url
             explicit_api_key = runtime_api_key or None
+        else:
+            # For first-class providers that require user-configured endpoints
+            # (e.g. litellm with model.base_url in config.yaml), pass the
+            # configured base_url and api_key so resolve_provider_client can
+            # reach the endpoint.  Without this, api_key providers with no
+            # hardcoded inference_base_url get an empty URL and fail.
+            cfg_base, cfg_key = _read_main_base_url_and_key()
+            explicit_base_url = runtime_base_url or cfg_base or None
+            explicit_api_key = runtime_api_key or cfg_key or None
         # Skip Step-1 if the main provider was recently 402'd. The unhealthy
         # cache TTL bounds how long we bypass it, so a topped-up account
         # recovers automatically. If we tried Step-1 anyway, every aux call
@@ -2545,6 +2574,7 @@ def _resolve_auto(main_runtime: Optional[Dict[str, Any]] = None) -> Tuple[Option
                 logger.info("Auxiliary auto-detect: using main provider %s (%s)",
                             main_provider, resolved or main_model)
                 return client, resolved or main_model
+
 
     # ── Step 2: aggregator / fallback chain ──────────────────────────────
     tried = []
@@ -3840,16 +3870,15 @@ def _resolve_task_provider_model(
 
     if task:
         # Config.yaml is the primary source for per-task overrides.
+        # If the user set an explicit non-"auto" provider, respect it —
+        # forcing "custom" here would discard the provider flag that
+        # downstream code uses to skip inappropriate probes (e.g. litellm
+        # shouldn't be probed for Ollama/LM Studio endpoints).
+        if cfg_provider and cfg_provider != "auto":
+            return cfg_provider, resolved_model, cfg_base_url or None, cfg_api_key or None, resolved_api_mode
         if cfg_base_url and cfg_api_key:
             # Both base_url and api_key explicitly set → custom endpoint.
             return "custom", resolved_model, cfg_base_url, cfg_api_key, resolved_api_mode
-        if cfg_base_url and cfg_provider and cfg_provider != "auto":
-            # base_url set without api_key but with a known provider — use
-            # the provider so it can resolve credentials from env vars
-            # (e.g. OPENROUTER_API_KEY) instead of locking into "custom".
-            return cfg_provider, resolved_model, cfg_base_url, None, resolved_api_mode
-        if cfg_provider and cfg_provider != "auto":
-            return cfg_provider, resolved_model, cfg_base_url, cfg_api_key, resolved_api_mode
 
         return "auto", resolved_model, None, None, resolved_api_mode
 

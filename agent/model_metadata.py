@@ -451,12 +451,17 @@ def is_local_endpoint(base_url: str) -> bool:
     return False
 
 
-def detect_local_server_type(base_url: str, api_key: str = "") -> Optional[str]:
+def detect_local_server_type(base_url: str, api_key: str = "", provider: str = "") -> Optional[str]:
     """Detect which local server is running at base_url by probing known endpoints.
 
     Returns one of: "ollama", "lm-studio", "vllm", "llamacpp", or None.
+    
     """
     import httpx
+
+    # Skip probes for known gateway providers.
+    if provider in ("litellm",):
+        return None
 
     normalized = _normalize_base_url(base_url)
     server_url = normalized
@@ -626,6 +631,7 @@ def fetch_endpoint_model_metadata(
     base_url: str,
     api_key: str = "",
     force_refresh: bool = False,
+    provider: str = "",
 ) -> Dict[str, Dict[str, Any]]:
     """Fetch model metadata from an OpenAI-compatible ``/models`` endpoint.
 
@@ -634,6 +640,11 @@ def fetch_endpoint_model_metadata(
     """
     normalized = _normalize_base_url(base_url)
     if not normalized or _is_openrouter_base_url(normalized):
+        return {}
+
+    # LiteLLM is a multi-backend gateway — /models probing is not useful
+    # and causes auth errors if the proxy requires an API key.
+    if provider in ("litellm",):
         return {}
 
     if not force_refresh:
@@ -655,7 +666,7 @@ def fetch_endpoint_model_metadata(
 
     if is_local_endpoint(normalized):
         try:
-            if detect_local_server_type(normalized, api_key=api_key) == "lm-studio":
+            if detect_local_server_type(normalized, api_key=api_key, provider=provider) == "lm-studio":
                 server_url = normalized[:-3].rstrip("/") if normalized.endswith("/v1") else normalized
                 response = requests.get(
                     server_url.rstrip("/") + "/api/v1/models",
@@ -770,9 +781,10 @@ def _resolve_endpoint_context_length(
     model: str,
     base_url: str,
     api_key: str = "",
+    provider: str = "",
 ) -> Optional[int]:
     """Resolve context length from an endpoint's live ``/models`` metadata."""
-    endpoint_metadata = fetch_endpoint_model_metadata(base_url, api_key=api_key)
+    endpoint_metadata = fetch_endpoint_model_metadata(base_url, api_key=api_key, provider=provider)
     matched = endpoint_metadata.get(model)
     if not matched:
         if len(endpoint_metadata) == 1:
@@ -951,7 +963,7 @@ def _model_id_matches(candidate_id: str, lookup_model: str) -> bool:
     return False
 
 
-def query_ollama_num_ctx(model: str, base_url: str, api_key: str = "") -> Optional[int]:
+def query_ollama_num_ctx(model: str, base_url: str, api_key: str = "", provider: str = "") -> Optional[int]:
     """Query an Ollama server for the model's context length.
 
     Returns the model's maximum context from GGUF metadata via ``/api/show``,
@@ -969,7 +981,7 @@ def query_ollama_num_ctx(model: str, base_url: str, api_key: str = "") -> Option
         server_url = server_url[:-3]
 
     try:
-        server_type = detect_local_server_type(base_url, api_key=api_key)
+        server_type = detect_local_server_type(base_url, api_key=api_key, provider=provider)
     except Exception:
         return None
     if server_type != "ollama":
@@ -1079,7 +1091,7 @@ def _model_name_suggests_kimi(model: str) -> bool:
     return lower.startswith("kimi") or "moonshot" in lower
 
 
-def _query_local_context_length(model: str, base_url: str, api_key: str = "") -> Optional[int]:
+def _query_local_context_length(model: str, base_url: str, api_key: str = "", provider: str = "") -> Optional[int]:
     """Query a local server for the model's context length."""
     import httpx
 
@@ -1095,7 +1107,7 @@ def _query_local_context_length(model: str, base_url: str, api_key: str = "") ->
     headers = _auth_headers(api_key)
 
     try:
-        server_type = detect_local_server_type(base_url, api_key=api_key)
+        server_type = detect_local_server_type(base_url, api_key=api_key, provider=provider)
     except Exception:
         server_type = None
 
@@ -1457,6 +1469,31 @@ def get_model_context_length(
         except Exception:
             pass  # fall through to probing
 
+    # 0c. LiteLLM /v1/model/info — authoritative source when the provider
+    # is a LiteLLM proxy.  Placed before provider-prefix stripping so the
+    # raw model name (as LiteLLM knows it) is used for lookup.
+    if provider == "litellm" and base_url:
+        try:
+            import json as _json
+            from urllib.request import Request, urlopen
+
+            _info_url = f"{base_url.rstrip('/')}/v1/model/info"
+            _headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+            _req = Request(_info_url, headers=_headers)
+            with urlopen(_req, timeout=10) as _resp:
+                _info_data = _json.loads(_resp.read())
+            for _entry in (_info_data.get("data") or []):
+                if _entry.get("model_name") == model:
+                    _mi = _entry.get("model_info") or {}
+                    _litellm_ctx = _mi.get("max_tokens") or _mi.get("max_input_tokens")
+                    if _litellm_ctx:
+                        if base_url:
+                            save_context_length(model, base_url, _litellm_ctx)
+                        return _litellm_ctx
+                    break
+        except Exception:
+            pass
+
     # Normalise provider-prefixed model names (e.g. "local:model-name" →
     # "model-name") so cache lookups and server queries use the bare ID that
     # local servers actually know about.  Ollama "model:tag" colons are preserved.
@@ -1532,21 +1569,24 @@ def get_model_context_length(
     # /models endpoint may report a provider-imposed limit (e.g. Copilot
     # returns 128k) instead of the model's full context (400k).  models.dev
     # has the correct per-provider values and is checked at step 5+.
-    if _is_custom_endpoint(base_url) and not _is_known_provider_base_url(base_url):
-        context_length = _resolve_endpoint_context_length(model, base_url, api_key=api_key)
+    # LiteLLM is a multi-backend gateway — skip Ollama/LM Studio/llama.cpp
+    # probes that would 404 against it.
+    if _is_custom_endpoint(base_url) and not _is_known_provider_base_url(base_url) and provider != "litellm":
+        context_length = _resolve_endpoint_context_length(model, base_url, api_key=api_key, provider=provider)
         if context_length is not None:
             return context_length
         if not _is_known_provider_base_url(base_url):
             # 2b. Ollama native /api/show — any URL might be an Ollama server
             # (local, cloud, or custom hosting).  Non-Ollama servers return
-            # 404/405 quickly.  Fall through on failure.
-            ctx = _query_ollama_api_show(model, base_url, api_key=api_key)
-            if ctx is not None:
-                save_context_length(model, base_url, ctx)
-                return ctx
+            # 404/405 quickly.  LiteLLM is not Ollama — skip this probe.
+            if provider != "litellm":
+                ctx = _query_ollama_api_show(model, base_url, api_key=api_key)
+                if ctx is not None:
+                    save_context_length(model, base_url, ctx)
+                    return ctx
             # 3. Try querying local server directly
             if is_local_endpoint(base_url):
-                local_ctx = _query_local_context_length(model, base_url, api_key=api_key)
+                local_ctx = _query_local_context_length(model, base_url, api_key=api_key, provider=provider)
                 if local_ctx and local_ctx > 0:
                     if provider != "lmstudio":
                         save_context_length(model, base_url, local_ctx)
@@ -1632,7 +1672,8 @@ def get_model_context_length(
     # For non-Ollama servers (OpenAI, Anthropic, etc.), the POST returns
     # 404/405 quickly.  Results are cached, so the hit is per-model+URL,
     # once per hour.
-    if base_url:
+    # LiteLLM is not Ollama — skip this probe to avoid 404s.
+    if base_url and provider != "litellm":
         ctx = _query_ollama_api_show(model, base_url, api_key=api_key)
         if ctx is not None:
             save_context_length(model, base_url, ctx)
@@ -1676,7 +1717,7 @@ def get_model_context_length(
 
     # 9. Query local server as last resort
     if base_url and is_local_endpoint(base_url):
-        local_ctx = _query_local_context_length(model, base_url, api_key=api_key)
+        local_ctx = _query_local_context_length(model, base_url, api_key=api_key, provider=provider)
         if local_ctx and local_ctx > 0:
             if provider != "lmstudio":
                 save_context_length(model, base_url, local_ctx)

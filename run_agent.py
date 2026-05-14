@@ -2415,9 +2415,9 @@ class AIAgent:
                 self._ollama_num_ctx = int(_ollama_num_ctx_override)
             except (TypeError, ValueError):
                 logger.debug("Invalid ollama_num_ctx config value: %r", _ollama_num_ctx_override)
-        if self._ollama_num_ctx is None and self.base_url and is_local_endpoint(self.base_url):
+        if self._ollama_num_ctx is None and self.base_url and is_local_endpoint(self.base_url) and self.provider not in ("custom", "litellm"):
             try:
-                _detected = query_ollama_num_ctx(self.model, self.base_url, api_key=self.api_key or "")
+                _detected = query_ollama_num_ctx(self.model, self.base_url, api_key=self.api_key or "", provider=self.provider or "")
                 if _detected and _detected > 0:
                     self._ollama_num_ctx = _detected
             except Exception as exc:
@@ -3743,6 +3743,11 @@ class AIAgent:
 
     def _is_ollama_glm_backend(self) -> bool:
         """Detect the narrow backend family affected by Ollama/GLM stop misreports."""
+        # Explicit "custom" or "litellm" provider means the user pointed Hermes
+        # at their own proxy (LiteLLM, OpenAI-compatible gateway, etc.) — not raw
+        # Ollama.  Skip the workaround to avoid false positives on private IPs.
+        if self.provider in ("custom", "litellm"):
+            return False
         model_lower = (self.model or "").lower()
         provider_lower = (self.provider or "").lower()
         if "glm" not in model_lower and provider_lower != "zai":
@@ -8814,15 +8819,21 @@ class AIAgent:
             # Without this, compression decisions use the primary model's
             # context window (e.g. 200K) instead of the fallback's (e.g. 32K),
             # causing oversized sessions to overflow the fallback.
-            # Also pass _config_context_length so the explicit config override
-            # (model.context_length in config.yaml) is respected — without this,
-            # the fallback activation drops to 128K even when config says 204800.
+            # Prefer an explicit context_length from the fallback chain entry
+            # over the primary model's config_context_length — they may differ.
             if hasattr(self, 'context_compressor') and self.context_compressor:
                 from agent.model_metadata import get_model_context_length
+                _fb_ctx_override = None
+                _fb_raw_ctx = fb.get("context_length")
+                if _fb_raw_ctx is not None:
+                    try:
+                        _fb_ctx_override = int(_fb_raw_ctx)
+                    except (TypeError, ValueError):
+                        pass
                 fb_context_length = get_model_context_length(
                     self.model, base_url=self.base_url,
                     api_key=self.api_key, provider=self.provider,
-                    config_context_length=getattr(self, "_config_context_length", None),
+                    config_context_length=_fb_ctx_override or getattr(self, "_config_context_length", None),
                 )
                 self.context_compressor.update_model(
                     model=self.model,
