@@ -82,6 +82,12 @@ async def test_worker_request_starts_default_worker_when_frontdesk_enabled():
     assert tasks[0].active_worker_id
     assert "worker started" in " ".join(tasks[0].notes)
 
+    assert runtime.worker_registry.wait(tasks[0].active_worker_id, timeout=2.0)
+    assert tasks[0].result is not None
+    assert tasks[0].result["status"] == "succeeded"
+    assert tasks[0].result["summary"] == "worker done"
+    assert tasks[0].result["review_status"] == "pending_review"
+
 
 @pytest.mark.asyncio
 async def test_korean_followup_steers_active_agent_when_live_enabled():

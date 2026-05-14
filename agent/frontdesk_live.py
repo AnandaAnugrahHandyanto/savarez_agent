@@ -14,6 +14,7 @@ from utils import is_truthy_value
 
 _DEFAULT_WORKER_LANE = "main"
 _DEFAULT_WORKER_TIMEOUT_SECONDS = 60 * 60
+_COMPLETION_NOTICE_LIMIT = 1200
 _FRONTDESK_NOTIFIERS: dict[tuple[int, str | None], Callable[[str], Any]] = {}
 
 
@@ -71,6 +72,57 @@ def _run_default_worker_subprocess(goal: str, token: Any) -> str:
     return (stdout or "").strip() or "worker completed with no output"
 
 
+def _completion_notice(task_id: str | None, summary: str) -> str:
+    text = summary.strip()
+    if len(text) > _COMPLETION_NOTICE_LIMIT:
+        text = text[: _COMPLETION_NOTICE_LIMIT - 1].rstrip() + "…"
+    return f"worker complete: {task_id or 'untracked'}\n\n{text}"
+
+
+def _linked_worker_id(runtime: Any, task_id: str | None) -> str | None:
+    if not task_id:
+        return None
+    for _ in range(20):
+        task = runtime.task_registry.get_task(task_id)
+        worker_id = getattr(task, "active_worker_id", None) if task is not None else None
+        if isinstance(worker_id, str) and worker_id:
+            return worker_id
+        time.sleep(0.01)
+    return None
+
+
+def _attach_worker_result(
+    runtime: Any,
+    *,
+    task_id: str | None,
+    worker_id: str | None,
+    status: str,
+    summary: str,
+    error: str | None = None,
+) -> None:
+    if task_id is None:
+        return
+    payload = {
+        "worker_id": worker_id,
+        "task_id": task_id,
+        "status": status,
+        "summary": summary,
+    }
+    if error:
+        payload["error"] = error
+    try:
+        runtime.attach_worker_result(
+            task_id=task_id,
+            worker_id=worker_id or "",
+            result=payload,
+        )
+    except Exception:
+        try:
+            runtime.task_registry.attach_worker_result(task_id, payload)
+        except Exception:
+            pass
+
+
 def ensure_default_worker_lane(
     owner: Any,
     *,
@@ -95,9 +147,33 @@ def ensure_default_worker_lane(
         return
 
     owner_id = id(owner)
+    run_default_worker = _run_default_worker_subprocess
 
     def runner(spec: WorkerSpec, token: CancelToken) -> str:
-        result = _run_default_worker_subprocess(spec.goal, token)
+        worker_id = _linked_worker_id(runtime, spec.task_id)
+        try:
+            result = run_default_worker(spec.goal, token)
+        except BaseException as exc:
+            from agent.worker_lanes import WorkerCancelled
+
+            status = "cancelled" if isinstance(exc, WorkerCancelled) else "failed"
+            summary = "worker cancelled" if status == "cancelled" else "worker failed"
+            _attach_worker_result(
+                runtime,
+                task_id=spec.task_id,
+                worker_id=worker_id,
+                status=status,
+                summary=summary,
+                error=str(exc) or type(exc).__name__,
+            )
+            raise
+        _attach_worker_result(
+            runtime,
+            task_id=spec.task_id,
+            worker_id=worker_id,
+            status="succeeded",
+            summary=result,
+        )
         sk = None
         if isinstance(spec.metadata, dict):
             raw_sk = spec.metadata.get("session_key")
@@ -107,7 +183,7 @@ def ensure_default_worker_lane(
         )
         if notifier is not None:
             try:
-                notifier(f"worker complete: {spec.task_id or 'untracked'}\n\n{result}")
+                notifier(_completion_notice(spec.task_id, result))
             except Exception:
                 pass
         return result

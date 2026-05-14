@@ -165,6 +165,59 @@ def test_artifacts_are_detached_json_safe_copies():
     json.dumps(reg.to_dict(), allow_nan=False)
 
 
+def test_worker_result_attaches_json_safe_snapshot_to_task():
+    reg = TaskRegistry()
+    task = reg.create_task("implementation", session_key="s1")
+
+    result = reg.attach_worker_result(
+        task.task_id,
+        {
+            "worker_id": "worker-1",
+            "task_id": task.task_id,
+            "status": "succeeded",
+            "summary": "changed agent/task_registry.py",
+            "artifacts": [{"path": "agent/task_registry.py", "kind": "source"}],
+            "tests": [{"command": "pytest tests/agent/test_task_registry.py", "status": "passed"}],
+            "extra_raw": object(),
+        },
+    )
+
+    assert result["worker_id"] == "worker-1"
+    assert result["task_id"] == task.task_id
+    assert result["status"] == "succeeded"
+    assert result["review_status"] == "pending_review"
+    assert "extra_raw" not in result
+    assert task.to_dict()["result"] == result
+    json.dumps(task.to_dict(), allow_nan=False)
+
+
+def test_worker_result_strips_or_rejects_raw_non_json_metadata():
+    reg = TaskRegistry()
+    task = reg.create_task("implementation", session_key="s1")
+
+    result = reg.attach_worker_result(
+        task.task_id,
+        {
+            "worker_id": "worker-1",
+            "task_id": task.task_id,
+            "status": "failed",
+            "summary": "failed before completion",
+            "error": RuntimeError("boom"),
+            "metadata": {"proc": object()},
+        },
+    )
+
+    assert result == {
+        "worker_id": "worker-1",
+        "task_id": task.task_id,
+        "status": "failed",
+        "summary": "failed before completion",
+        "error": "boom",
+        "review_status": "pending_review",
+    }
+    json.dumps(reg.to_dict(), allow_nan=False)
+
+
 def test_json_persistence_roundtrip_and_missing_file(tmp_path):
     path = tmp_path / "registry.json"
     missing = TaskRegistry.load(path)

@@ -83,6 +83,8 @@ from agent.orchestration_status import (
 )
 from agent.task_registry import (
     STATUS_CANCELLED,
+    STATUS_DONE,
+    STATUS_ERROR,
     STATUS_QUEUED,
     STATUS_RUNNING,
     TaskRegistry,
@@ -205,6 +207,66 @@ class OrchestrationRuntime:
             if lanes:
                 return "No active tasks or workers are currently running. Available worker lanes: " + ", ".join(lanes) + "."
         return rendered
+
+    # -- worker result retention ----------------------------------------
+    def attach_worker_result(
+        self,
+        *,
+        task_id: str,
+        worker_id: str,
+        result: Any,
+    ) -> dict[str, Any]:
+        """Attach a terminal worker result to its logical task.
+
+        The task registry performs the JSON-safety filtering; this method maps
+        worker lifecycle status onto task lifecycle status and keeps the linkage
+        to the worker id intact for later review/import gates.
+        """
+        status = getattr(result, "status", None)
+        error = getattr(result, "error", None)
+        payload = getattr(result, "result", result)
+        snapshot = self.task_registry.attach_worker_result(
+            task_id,
+            payload,
+            worker_id=worker_id,
+            status=status,
+            error=error,
+        )
+        if snapshot["status"] == "succeeded":
+            self.task_registry.update_status(task_id, STATUS_DONE, note="worker result pending review")
+        elif snapshot["status"] == "failed":
+            self.task_registry.update_status(task_id, STATUS_ERROR, note="worker failed; result pending review")
+        elif snapshot["status"] == "cancelled":
+            self.task_registry.update_status(task_id, STATUS_CANCELLED, note="worker cancelled")
+        return snapshot
+
+    def collect_worker_results(
+        self, *, session_key: str | None = None
+    ) -> list[dict[str, Any]]:
+        """Attach newly terminal worker results for linked tasks.
+
+        This is an explicit sweep rather than a background watcher: callers can
+        run it after ``wait()``, before status formatting, or from a live notifier
+        path.  It is idempotent for tasks that already carry a result snapshot.
+        """
+        attached: list[dict[str, Any]] = []
+        for task in self.task_registry.list_tasks(session_key=session_key):
+            if task.result is not None or not task.active_worker_id:
+                continue
+            try:
+                worker_result = self.worker_registry.result(task.active_worker_id)
+            except KeyError:
+                continue
+            if worker_result is None:
+                continue
+            attached.append(
+                self.attach_worker_result(
+                    task_id=task.task_id,
+                    worker_id=task.active_worker_id,
+                    result=worker_result,
+                )
+            )
+        return attached
 
     # -- frontdesk policy advisory (read-only) ---------------------------
     def advise_frontdesk(
