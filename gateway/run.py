@@ -971,6 +971,43 @@ def _load_gateway_config() -> dict:
     return {}
 
 
+def _effective_agent_config(
+    config: dict | None = None,
+    platform_key: str | None = None,
+) -> dict:
+    """Return agent config with optional ``agent.platforms.<platform>`` overlay.
+
+    The global ``agent`` block remains the default for CLI/Telegram/etc.  A
+    gateway surface can opt into a smaller budget without forcing the CLI or
+    cron runners off their deep-work defaults:
+
+        agent:
+          reasoning_effort: xhigh
+          max_turns: 90
+          platforms:
+            discord:
+              reasoning_effort: low
+              max_turns: 24
+    """
+    cfg = config if config is not None else _load_gateway_config()
+    base = cfg.get("agent") if isinstance(cfg, dict) else {}
+    if not isinstance(base, dict):
+        return {}
+
+    effective = dict(base)
+    platform_key = str(platform_key or "").strip()
+    platforms = base.get("platforms")
+    if platform_key and isinstance(platforms, dict):
+        overrides = platforms.get(platform_key)
+        if overrides is None:
+            overrides = platforms.get(platform_key.lower())
+        if isinstance(overrides, dict):
+            for key, value in overrides.items():
+                if key != "platforms":
+                    effective[key] = value
+    return effective
+
+
 def _resolve_gateway_model(config: dict | None = None) -> str:
     """Read model from config.yaml — single source of truth.
 
@@ -2307,27 +2344,21 @@ class GatewayRunner:
         return ""
 
     @staticmethod
-    def _load_reasoning_config() -> dict | None:
-        """Load reasoning effort from config.yaml.
+    def _load_reasoning_config(platform_key: str | None = None) -> dict | None:
+        """Load reasoning effort, honoring ``agent.platforms.<platform>``.
 
-        Reads agent.reasoning_effort from config.yaml. Valid: "none",
-        "minimal", "low", "medium", "high", "xhigh". Returns None to use
-        default (medium).
+        Reads agent.reasoning_effort by default.  When ``platform_key`` is
+        provided, values under ``agent.platforms.<platform_key>`` override the
+        global agent block. Valid: "none", "minimal", "low", "medium",
+        "high", "xhigh". Returns None to use provider/model default.
         """
         from hermes_constants import parse_reasoning_effort
-        effort = ""
-        try:
-            import yaml as _y
-            cfg_path = _hermes_home / "config.yaml"
-            if cfg_path.exists():
-                with open(cfg_path, encoding="utf-8") as _f:
-                    cfg = _y.safe_load(_f) or {}
-                effort = str(cfg_get(cfg, "agent", "reasoning_effort", default="") or "").strip()
-        except Exception:
-            pass
+        agent_cfg = _effective_agent_config(platform_key=platform_key)
+        effort = str(agent_cfg.get("reasoning_effort", "") or "").strip()
         result = parse_reasoning_effort(effort)
         if effort and effort.strip() and result is None:
-            logger.warning("Unknown reasoning_effort '%s', using default (medium)", effort)
+            location = f"agent.platforms.{platform_key}.reasoning_effort" if platform_key else "agent.reasoning_effort"
+            logger.warning("Unknown %s '%s', using default (medium)", location, effort)
         return result
 
     @staticmethod
@@ -2373,7 +2404,8 @@ class GatewayRunner:
         overrides = getattr(self, "_session_reasoning_overrides", {}) or {}
         if resolved_session_key and resolved_session_key in overrides:
             return overrides[resolved_session_key]
-        return self._load_reasoning_config()
+        platform_key = _platform_config_key(source.platform) if source is not None else None
+        return self._load_reasoning_config(platform_key)
 
     def _set_session_reasoning_override(
         self,
@@ -2391,31 +2423,78 @@ class GatewayRunner:
             self._session_reasoning_overrides[session_key] = dict(reasoning_config)
 
     @staticmethod
-    def _load_service_tier() -> str | None:
-        """Load Priority Processing setting from config.yaml.
+    def _load_service_tier(platform_key: str | None = None) -> str | None:
+        """Load Priority Processing setting, honoring platform overrides.
 
-        Reads agent.service_tier from config.yaml. Accepted values mirror the CLI:
-        "fast"/"priority"/"on" => "priority", while "normal"/"off" disables it.
-        Returns None when unset or unsupported.
+        Reads agent.service_tier by default, with optional override from
+        ``agent.platforms.<platform>.service_tier``. Accepted values mirror the
+        CLI: "fast"/"priority"/"on" => "priority", while
+        "normal"/"off" disables it. Returns None when unset or unsupported.
         """
-        raw = ""
-        try:
-            import yaml as _y
-            cfg_path = _hermes_home / "config.yaml"
-            if cfg_path.exists():
-                with open(cfg_path, encoding="utf-8") as _f:
-                    cfg = _y.safe_load(_f) or {}
-                raw = str(cfg_get(cfg, "agent", "service_tier", default="") or "").strip()
-        except Exception:
-            pass
+        agent_cfg = _effective_agent_config(platform_key=platform_key)
+        raw = str(agent_cfg.get("service_tier", "") or "").strip()
 
         value = raw.lower()
         if not value or value in {"normal", "default", "standard", "off", "none"}:
             return None
         if value in {"fast", "priority", "on"}:
             return "priority"
-        logger.warning("Unknown service_tier '%s', ignoring", raw)
+        location = f"agent.platforms.{platform_key}.service_tier" if platform_key else "agent.service_tier"
+        logger.warning("Unknown %s '%s', ignoring", location, raw)
         return None
+
+    @staticmethod
+    def _load_max_iterations(
+        config: dict | None = None,
+        platform_key: str | None = None,
+    ) -> int:
+        """Load max agent turns, honoring ``agent.platforms.<platform>``."""
+        cfg = config if config is not None else _load_gateway_config()
+        agent_cfg = _effective_agent_config(cfg, platform_key)
+        raw = agent_cfg.get("max_turns")
+        if raw in (None, "") and isinstance(cfg, dict):
+            raw = cfg.get("max_turns")
+        if raw in (None, ""):
+            raw = os.getenv("HERMES_MAX_ITERATIONS", "90")
+        try:
+            return max(1, int(raw))
+        except (TypeError, ValueError):
+            location = f"agent.platforms.{platform_key}.max_turns" if platform_key else "agent.max_turns"
+            logger.warning("Invalid %s value %r, using default 90", location, raw)
+            return 90
+
+    @staticmethod
+    def _load_agent_timeout_settings(
+        config: dict | None = None,
+        platform_key: str | None = None,
+    ) -> tuple[float, float, float]:
+        """Return (timeout, warning_after, notify_interval) for a platform."""
+        cfg = config if config is not None else _load_gateway_config()
+        agent_cfg = _effective_agent_config(cfg, platform_key)
+
+        def _coerce_seconds(key: str, env_key: str, default: float) -> float:
+            raw = agent_cfg.get(key)
+            if raw in (None, ""):
+                raw = os.getenv(env_key, str(default))
+            try:
+                value = float(raw)
+                if value < 0:
+                    raise ValueError
+                return value
+            except (TypeError, ValueError):
+                location = f"agent.platforms.{platform_key}.{key}" if platform_key else f"agent.{key}"
+                logger.warning("Invalid %s value %r, using default %s", location, raw, default)
+                return default
+
+        timeout = _coerce_seconds("gateway_timeout", "HERMES_AGENT_TIMEOUT", 1800.0)
+        warning_after = _coerce_seconds("gateway_timeout_warning", "HERMES_AGENT_TIMEOUT_WARNING", 900.0)
+        notify_interval = _coerce_seconds("gateway_notify_interval", "HERMES_AGENT_NOTIFY_INTERVAL", 180.0)
+        if timeout > 0:
+            if warning_after > 0:
+                warning_after = min(warning_after, timeout)
+            if notify_interval > 0:
+                notify_interval = min(notify_interval, timeout)
+        return timeout, warning_after, notify_interval
 
     @staticmethod
     def _load_show_reasoning() -> bool:
@@ -6508,6 +6587,25 @@ class GatewayRunner:
             is_gateway_known_command,
             resolve_command as _resolve_cmd,
         )
+
+        # Plain-text quick commands let messaging users type short local aliases
+        # like "focus gate" without invoking the LLM loop. Keep this limited to
+        # user-defined exec commands so normal chat text is unaffected.
+        if not command:
+            if isinstance(self.config, dict):
+                _plain_quick_commands = self.config.get("quick_commands", {}) or {}
+            else:
+                _plain_quick_commands = getattr(self.config, "quick_commands", {}) or {}
+            _plain_key = " ".join((event.text or "").strip().lower().split())
+            if (
+                _plain_key
+                and "\n" not in (event.text or "")
+                and isinstance(_plain_quick_commands, dict)
+                and _plain_key in _plain_quick_commands
+                and isinstance(_plain_quick_commands.get(_plain_key), dict)
+                and _plain_quick_commands[_plain_key].get("type") == "exec"
+            ):
+                command = _plain_key
 
         # Resolve aliases to canonical name so dispatch and hook names
         # don't depend on the exact alias the user typed.
@@ -10729,14 +10827,14 @@ class GatewayRunner:
 
             from hermes_cli.tools_config import _get_platform_tools
             enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
-            agent_cfg = user_config.get("agent") or {}
+            agent_cfg = _effective_agent_config(user_config, platform_key)
             disabled_toolsets = agent_cfg.get("disabled_toolsets") or None
 
             pr = self._provider_routing
-            max_iterations = int(os.getenv("HERMES_MAX_ITERATIONS", "90"))
+            max_iterations = self._load_max_iterations(user_config, platform_key)
             reasoning_config = self._resolve_session_reasoning_config(source=source)
             self._reasoning_config = reasoning_config
-            self._service_tier = self._load_service_tier()
+            self._service_tier = self._load_service_tier(platform_key)
             turn_route = self._resolve_turn_agent_config(prompt, model, runtime_kwargs)
 
             # Enrich the prompt with image descriptions so the background
@@ -13889,15 +13987,22 @@ class GatewayRunner:
         ("compression", "target_ratio"),
         ("compression", "protect_last_n"),
         ("agent", "disabled_toolsets"),
+        ("agent", "max_turns"),
     )
 
     @classmethod
-    def _extract_cache_busting_config(cls, user_config: dict | None) -> dict:
+    def _extract_cache_busting_config(
+        cls,
+        user_config: dict | None,
+        platform_key: str | None = None,
+    ) -> dict:
         """Pull values that must bust the cached agent.
 
         Returns a flat dict keyed by 'section.key'.  Missing config keys and
         non-dict sections yield None values, which still contribute to the
-        signature (so 'absent' vs 'present-and-null' differ).
+        signature (so 'absent' vs 'present-and-null' differ). Agent keys are
+        resolved through ``agent.platforms.<platform>`` so per-platform tool
+        and budget changes invalidate the affected platform's cache.
 
         The live tool registry generation is included too.  MCP reloads and
         dynamic MCP tool-list changes mutate the registry without necessarily
@@ -13907,12 +14012,18 @@ class GatewayRunner:
         """
         out: Dict[str, Any] = {}
         cfg = user_config if isinstance(user_config, dict) else {}
+        effective_agent_cfg = _effective_agent_config(cfg, platform_key)
         for section, key in cls._CACHE_BUSTING_CONFIG_KEYS:
+            if section == "agent":
+                out[f"{section}.{key}"] = effective_agent_cfg.get(key)
+                continue
             section_val = cfg.get(section)
             if isinstance(section_val, dict):
                 out[f"{section}.{key}"] = section_val.get(key)
             else:
                 out[f"{section}.{key}"] = None
+        if platform_key:
+            out["agent.platform_key"] = platform_key
         try:
             from tools.registry import registry
 
@@ -14692,7 +14803,7 @@ class GatewayRunner:
 
         from hermes_cli.tools_config import _get_platform_tools
         enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
-        agent_cfg_local = user_config.get("agent") or {}
+        agent_cfg_local = _effective_agent_config(user_config, platform_key)
         disabled_toolsets = agent_cfg_local.get("disabled_toolsets") or None
 
         display_config = user_config.get("display", {})
@@ -15206,13 +15317,13 @@ class GatewayRunner:
             # (concurrency-safe). Keep os.environ as fallback for CLI/cron.
             os.environ["HERMES_SESSION_KEY"] = session_key or ""
 
-            # Read from env var or use default (same as CLI)
-            max_iterations = int(os.getenv("HERMES_MAX_ITERATIONS", "90"))
-            
             # Map platform enum to the platform hint key the agent understands.
             # Platform.LOCAL ("local") maps to "cli"; others pass through as-is.
             platform_key = "cli" if source.platform == Platform.LOCAL else source.platform.value
-            
+
+            # Read from config/env, with optional per-platform budget overrides.
+            max_iterations = self._load_max_iterations(user_config, platform_key)
+
             # Combine platform context, per-channel context, and the user-configured
             # ephemeral system prompt.
             combined_ephemeral = context_prompt or ""
@@ -15251,7 +15362,7 @@ class GatewayRunner:
                 session_key=session_key,
             )
             self._reasoning_config = reasoning_config
-            self._service_tier = self._load_service_tier()
+            self._service_tier = self._load_service_tier(platform_key)
             # Set up stream consumer for token streaming or interim commentary.
             _stream_consumer = None
             _stream_delta_cb = None
@@ -15366,7 +15477,7 @@ class GatewayRunner:
                 turn_route["runtime"],
                 enabled_toolsets,
                 combined_ephemeral,
-                cache_keys=self._extract_cache_busting_config(user_config),
+                cache_keys=self._extract_cache_busting_config(user_config, platform_key),
             )
             agent = None
             _cache_lock = getattr(self, "_agent_cache_lock", None)
@@ -15434,6 +15545,7 @@ class GatewayRunner:
             agent.status_callback = _status_callback_sync
             agent.reasoning_config = reasoning_config
             agent.service_tier = self._service_tier
+            agent.max_iterations = max_iterations
             agent.request_overrides = turn_route.get("request_overrides") or {}
 
             _bg_review_release = threading.Event()
@@ -16113,10 +16225,14 @@ class GatewayRunner:
 
         # Periodic "still working" notifications for long-running tasks.
         # Fires every N seconds so the user knows the agent hasn't died.
-        # Config: agent.gateway_notify_interval in config.yaml, or
+        # Config: agent.gateway_notify_interval in config.yaml, optional
+        # agent.platforms.<platform>.gateway_notify_interval override, or
         # HERMES_AGENT_NOTIFY_INTERVAL env var.  Default 180s (3 min).
         # 0 = disable notifications.
-        _NOTIFY_INTERVAL_RAW = _float_env("HERMES_AGENT_NOTIFY_INTERVAL", 180)
+        _agent_timeout_raw, _agent_warning_raw, _NOTIFY_INTERVAL_RAW = self._load_agent_timeout_settings(
+            user_config,
+            platform_key,
+        )
         _NOTIFY_INTERVAL = _NOTIFY_INTERVAL_RAW if _NOTIFY_INTERVAL_RAW > 0 else None
         _notify_start = time.time()
 
@@ -16167,12 +16283,11 @@ class GatewayRunner:
             # but a hung API call or stuck tool with no activity for the
             # configured duration is caught and killed.  (#4815)
             #
-            # Config: agent.gateway_timeout in config.yaml, or
-            # HERMES_AGENT_TIMEOUT env var (env var takes precedence).
+            # Config: agent.gateway_timeout in config.yaml, optional
+            # agent.platforms.<platform>.gateway_timeout override, or
+            # HERMES_AGENT_TIMEOUT env var.
             # Default 1800s (30 min inactivity).  0 = unlimited.
-            _agent_timeout_raw = _float_env("HERMES_AGENT_TIMEOUT", 1800)
             _agent_timeout = _agent_timeout_raw if _agent_timeout_raw > 0 else None
-            _agent_warning_raw = _float_env("HERMES_AGENT_TIMEOUT_WARNING", 900)
             _agent_warning = _agent_warning_raw if _agent_warning_raw > 0 else None
             _warning_fired = False
             _executor_task = asyncio.ensure_future(

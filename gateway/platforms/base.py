@@ -2135,21 +2135,72 @@ class BasePlatformAdapter(ABC):
         cleaned = cleaned.replace("[[as_document]]", "")
         
         # Extract MEDIA:<path> tags, allowing optional whitespace after the colon
-        # and quoted/backticked paths for LLM-formatted outputs.
-        media_pattern = re.compile(
-            r'''[`"']?MEDIA:\s*(?P<path>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|(?:~/|/)\S+(?:[^\S\n]+\S+)*?\.(?:png|jpe?g|gif|webp|mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a|flac|epub|pdf|zip|rar|7z|docx?|xlsx?|pptx?|txt|csv|apk|ipa)(?=[\s`"',;:)\]}]|$)|\S+)[`"']?'''
+        # and quoted/backticked paths for LLM-formatted outputs.  Only absolute
+        # or home-relative file paths are accepted; this intentionally rejects
+        # regex/code literals like ``MEDIA:\\s*\\S+`` and malformed ``MEDIA:/``
+        # snippets that previously triggered bogus send_document attempts.
+        _media_exts = (
+            "png|jpe?g|gif|webp|mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|"
+            "m4a|flac|epub|pdf|zip|rar|7z|docx?|xlsx?|pptx?|txt|csv|apk|ipa"
         )
-        for match in media_pattern.finditer(content):
-            path = match.group("path").strip()
-            if len(path) >= 2 and path[0] == path[-1] and path[0] in "`\"'":
-                path = path[1:-1].strip()
-            path = path.lstrip("`\"'").rstrip("`\"',.;:)}]")
+        bare_path_pattern = re.compile(
+            r'(?P<path>(?:~/|/)[^\n`"\',;:)\]}\\]+?'
+            r'(?:[^\S\n]+[^\n`"\',;:)\]}\\]+?)*?'
+            r'\.(?:' + _media_exts + r'))(?=[\s`"\',;:)\]}\\]|$)',
+            re.IGNORECASE,
+        )
+
+        # Ignore fenced code examples.  Inline backticks are still allowed as
+        # path wrappers because many tools/LLMs format a real MEDIA path that way.
+        fenced_spans = [m.span() for m in re.finditer(r'```[^\n]*\n.*?```', content, re.DOTALL)]
+
+        def _in_fenced_code(pos: int) -> bool:
+            return any(start <= pos < end for start, end in fenced_spans)
+
+        valid_spans: list[tuple[int, int]] = []
+        for match in re.finditer(r'MEDIA:\s*', content):
+            if _in_fenced_code(match.start()):
+                continue
+            pos = match.end()
+            if pos >= len(content):
+                continue
+
+            path = ""
+            span_end = pos
+            opener = content[pos]
+            if opener in "`\"'":
+                close = content.find(opener, pos + 1)
+                if close == -1:
+                    continue
+                candidate = content[pos + 1:close].strip()
+                if "\n" in candidate:
+                    continue
+                if bare_path_pattern.fullmatch(candidate):
+                    path = candidate
+                    span_end = close + 1
+            else:
+                path_match = bare_path_pattern.match(content, pos)
+                if path_match:
+                    path = path_match.group("path").strip()
+                    span_end = path_match.end()
+
             if path:
                 media.append((os.path.expanduser(path), has_voice_tag))
+                valid_spans.append((match.start(), span_end))
 
-        # Remove MEDIA tags from content (including surrounding quote/backtick wrappers)
+        # Remove valid MEDIA tags from the original content so span offsets stay
+        # correct even when directives were stripped from ``cleaned`` above.
+        # Invalid MEDIA examples are left intact.
         if media:
-            cleaned = media_pattern.sub('', cleaned)
+            parts: list[str] = []
+            last = 0
+            for start, end in valid_spans:
+                parts.append(content[last:start])
+                last = end
+            parts.append(content[last:])
+            cleaned = ''.join(parts)
+            cleaned = cleaned.replace("[[audio_as_voice]]", "")
+            cleaned = cleaned.replace("[[as_document]]", "")
             cleaned = re.sub(r'\n{3,}', '\n\n', cleaned).strip()
         
         return media, cleaned

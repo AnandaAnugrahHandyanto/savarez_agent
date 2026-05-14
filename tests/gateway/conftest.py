@@ -32,6 +32,7 @@ incident.
 """
 
 import ast
+import os
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -121,8 +122,8 @@ def _ensure_discord_mock() -> None:
             self.color = color
             self.fields = []
             self.footer = None
-        def add_field(self, *, name=None, value=None, inline=False, **_):
-            self.fields.append({"name": name, "value": value, "inline": inline})
+        def add_field(self, *, name=None, value=None, inline=True, **_):
+            self.fields.append(SimpleNamespace(name=name, value=value, inline=inline))
             return self
         def set_footer(self, *, text=None, icon_url=None, **_):
             self.footer = {"text": text, "icon_url": icon_url}
@@ -181,7 +182,7 @@ def _ensure_discord_mock() -> None:
     )
     discord_mod.Color = SimpleNamespace(
         orange=lambda: 1, green=lambda: 2, blue=lambda: 3,
-        red=lambda: 4, purple=lambda: 5, greyple=lambda: 6,
+        red=lambda: 4, purple=lambda: 5, greyple=lambda: 6, gold=lambda: 7,
     )
 
     # app_commands — needed by _register_slash_commands auto-registration
@@ -226,6 +227,20 @@ def _ensure_discord_mock() -> None:
 # Run at collection time — before any test file's module-level imports.
 _ensure_telegram_mock()
 _ensure_discord_mock()
+
+
+@pytest.fixture(autouse=True)
+def _isolate_discord_deployment_env(monkeypatch):
+    """Keep gateway Discord unit tests independent from the live bot config.
+
+    Cai's local Hermes process exports deployment-specific DISCORD_* knobs
+    (allowed channels, reactions, cleanup, approval pings). Unit tests should
+    verify their own explicit env setup, not inherit the operator's live bot
+    routing policy.
+    """
+    for key in list(os.environ):
+        if key.startswith("DISCORD_") or key.startswith("HERMES_DISCORD_"):
+            monkeypatch.delenv(key, raising=False)
 
 
 # ---------------------------------------------------------------------------

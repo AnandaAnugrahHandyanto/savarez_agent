@@ -270,6 +270,24 @@ class TestExtractMedia:
         assert media[0][0] == "/path/to/audio.ogg"
         assert media[0][1] is False  # no voice tag
 
+    def test_media_tag_ignores_regex_literal_without_absolute_path(self):
+        content = r"Use this regex: `MEDIA:\s*\S+`"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert media == []
+        assert cleaned == content
+
+    def test_media_tag_ignores_malformed_root_only_path(self):
+        content = "Bad example: MEDIA:/ should not attach anything."
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert media == []
+        assert cleaned == content
+
+    def test_media_tag_ignores_fenced_code_examples(self):
+        content = "```python\nprint('MEDIA:/tmp/example.png')\n```\nDone"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert media == []
+        assert cleaned == content
+
     def test_media_with_voice_directive(self):
         content = "[[audio_as_voice]]\nMEDIA:/path/to/voice.ogg"
         media, cleaned = BasePlatformAdapter.extract_media(content)

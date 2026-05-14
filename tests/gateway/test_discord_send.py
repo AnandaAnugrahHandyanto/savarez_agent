@@ -12,6 +12,21 @@ def _ensure_discord_mock():
     if "discord" in sys.modules and hasattr(sys.modules["discord"], "__file__"):
         return
 
+    color_mock = SimpleNamespace(orange=lambda: 1, green=lambda: 2, blue=lambda: 3, red=lambda: 4, purple=lambda: 5, gold=lambda: 6)
+    existing = sys.modules.get("discord")
+    if existing is not None:
+        # Another Discord test module may already have installed a lightweight
+        # mock. Keep it, but patch the attributes this file needs.
+        existing.Color = color_mock
+        existing.Embed = getattr(existing, "Embed", MagicMock)
+        existing.ui = getattr(existing, "ui", SimpleNamespace(View=object, button=lambda *a, **k: (lambda fn: fn), Button=object))
+        existing.ButtonStyle = getattr(existing, "ButtonStyle", SimpleNamespace(success=1, primary=2, secondary=2, danger=3, green=1, grey=2, blurple=2, red=3))
+        existing.Interaction = getattr(existing, "Interaction", object)
+        existing.DMChannel = getattr(existing, "DMChannel", type("DMChannel", (), {}))
+        existing.Thread = getattr(existing, "Thread", type("Thread", (), {}))
+        existing.ForumChannel = getattr(existing, "ForumChannel", type("ForumChannel", (), {}))
+        return
+
     discord_mod = MagicMock()
     discord_mod.Intents.default.return_value = MagicMock()
     discord_mod.Client = MagicMock
@@ -21,7 +36,7 @@ def _ensure_discord_mock():
     discord_mod.ForumChannel = type("ForumChannel", (), {})
     discord_mod.ui = SimpleNamespace(View=object, button=lambda *a, **k: (lambda fn: fn), Button=object)
     discord_mod.ButtonStyle = SimpleNamespace(success=1, primary=2, secondary=2, danger=3, green=1, grey=2, blurple=2, red=3)
-    discord_mod.Color = SimpleNamespace(orange=lambda: 1, green=lambda: 2, blue=lambda: 3, red=lambda: 4, purple=lambda: 5)
+    discord_mod.Color = SimpleNamespace(orange=lambda: 1, green=lambda: 2, blue=lambda: 3, red=lambda: 4, purple=lambda: 5, gold=lambda: 6)
     discord_mod.Interaction = object
     discord_mod.Embed = MagicMock
     discord_mod.app_commands = SimpleNamespace(
@@ -43,6 +58,158 @@ def _ensure_discord_mock():
 _ensure_discord_mock()
 
 from gateway.platforms.discord import DiscordAdapter  # noqa: E402
+
+
+@pytest.mark.asyncio
+async def test_send_exec_approval_pings_configured_allowed_users(monkeypatch):
+    monkeypatch.delenv("DISCORD_APPROVAL_PING_USERS", raising=False)
+    adapter = DiscordAdapter(
+        PlatformConfig(
+            enabled=True,
+            token="***",
+            extra={"approval_ping_users": "allowed_users"},
+        )
+    )
+    adapter._allowed_user_ids = {"111111", "not-a-numeric-name"}
+
+    channel = SimpleNamespace(
+        send=AsyncMock(return_value=SimpleNamespace(id=4321)),
+    )
+    adapter._client = SimpleNamespace(
+        get_channel=lambda _chat_id: channel,
+        fetch_channel=AsyncMock(),
+    )
+
+    result = await adapter.send_exec_approval(
+        chat_id="555",
+        command="rm -rf /tmp/example",
+        session_key="agent:main:discord:group:555",
+    )
+
+    assert result.success is True
+    kwargs = channel.send.await_args.kwargs
+    assert kwargs["content"] == "<@111111> approval needed"
+    assert "embed" in kwargs
+    assert "view" in kwargs
+
+
+@pytest.mark.asyncio
+async def test_send_slash_confirm_pings_configured_allowed_users(monkeypatch):
+    monkeypatch.delenv("DISCORD_APPROVAL_PING_USERS", raising=False)
+    adapter = DiscordAdapter(
+        PlatformConfig(
+            enabled=True,
+            token="***",
+            extra={"approval_ping_users": "allowed_users"},
+        )
+    )
+    adapter._allowed_user_ids = {"111111"}
+
+    channel = SimpleNamespace(send=AsyncMock(return_value=SimpleNamespace(id=4322)))
+    adapter._client = SimpleNamespace(
+        get_channel=lambda _chat_id: channel,
+        fetch_channel=AsyncMock(),
+    )
+
+    result = await adapter.send_slash_confirm(
+        chat_id="555",
+        title="Confirm",
+        message="Approve this action?",
+        session_key="agent:main:discord:group:555",
+        confirm_id="abc",
+    )
+
+    assert result.success is True
+    kwargs = channel.send.await_args.kwargs
+    assert kwargs["content"] == "<@111111> approval needed"
+    assert "embed" in kwargs
+    assert "view" in kwargs
+
+
+@pytest.mark.asyncio
+async def test_send_update_prompt_pings_configured_allowed_users(monkeypatch):
+    monkeypatch.delenv("DISCORD_APPROVAL_PING_USERS", raising=False)
+    adapter = DiscordAdapter(
+        PlatformConfig(
+            enabled=True,
+            token="***",
+            extra={"approval_ping_users": "allowed_users"},
+        )
+    )
+    adapter._allowed_user_ids = {"111111"}
+
+    channel = SimpleNamespace(send=AsyncMock(return_value=SimpleNamespace(id=4323)))
+    adapter._client = SimpleNamespace(
+        get_channel=lambda _chat_id: channel,
+        fetch_channel=AsyncMock(),
+    )
+
+    result = await adapter.send_update_prompt(
+        chat_id="555",
+        prompt="Approve update?",
+        session_key="agent:main:discord:group:555",
+    )
+
+    assert result.success is True
+    kwargs = channel.send.await_args.kwargs
+    assert kwargs["content"] == "<@111111> approval needed"
+    assert "embed" in kwargs
+    assert "view" in kwargs
+
+
+@pytest.mark.asyncio
+async def test_send_adds_completion_reaction_to_delivered_reply(monkeypatch):
+    monkeypatch.delenv("DISCORD_REACTIONS", raising=False)
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+
+    sent_msg = SimpleNamespace(id=1234, add_reaction=AsyncMock())
+    channel = SimpleNamespace(send=AsyncMock(return_value=sent_msg))
+    adapter._client = SimpleNamespace(
+        get_channel=lambda _chat_id: channel,
+        fetch_channel=AsyncMock(),
+    )
+
+    result = await adapter.send("555", "hello")
+
+    assert result.success is True
+    sent_msg.add_reaction.assert_awaited_once_with("✅")
+
+
+@pytest.mark.asyncio
+async def test_send_skips_completion_reaction_for_streaming_preview(monkeypatch):
+    monkeypatch.delenv("DISCORD_REACTIONS", raising=False)
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+
+    sent_msg = SimpleNamespace(id=1234, add_reaction=AsyncMock())
+    channel = SimpleNamespace(send=AsyncMock(return_value=sent_msg))
+    adapter._client = SimpleNamespace(
+        get_channel=lambda _chat_id: channel,
+        fetch_channel=AsyncMock(),
+    )
+
+    result = await adapter.send("555", "working ▉")
+
+    assert result.success is True
+    sent_msg.add_reaction.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_edit_finalize_adds_completion_reaction(monkeypatch):
+    monkeypatch.delenv("DISCORD_REACTIONS", raising=False)
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+
+    msg = SimpleNamespace(id=1234, edit=AsyncMock(), add_reaction=AsyncMock())
+    channel = SimpleNamespace(fetch_message=AsyncMock(return_value=msg))
+    adapter._client = SimpleNamespace(
+        get_channel=lambda _chat_id: channel,
+        fetch_channel=AsyncMock(),
+    )
+
+    result = await adapter.edit_message("555", "1234", "final", finalize=True)
+
+    assert result.success is True
+    msg.edit.assert_awaited_once_with(content="final")
+    msg.add_reaction.assert_awaited_once_with("✅")
 
 
 @pytest.mark.asyncio

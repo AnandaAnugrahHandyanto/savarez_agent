@@ -85,6 +85,25 @@ def _clean_discord_id(entry: str) -> str:
     return entry.strip()
 
 
+def _clean_discord_id_list(value: Any) -> list[str]:
+    """Normalize a list/comma-separated string of Discord user IDs.
+
+    Non-numeric entries are preserved by ``_clean_discord_id`` but filtered by
+    call sites that need actual mentionable IDs.  This lets config accept raw
+    IDs, ``<@123>`` mentions, YAML lists, or comma-separated strings.
+    """
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple, set)):
+        raw_entries = [str(item) for item in value]
+    else:
+        raw = str(value).strip()
+        if not raw:
+            return []
+        raw_entries = [part for part in re.split(r"[,\s]+", raw) if part]
+    return [_clean_discord_id(entry) for entry in raw_entries if entry.strip()]
+
+
 def check_discord_requirements() -> bool:
     """Check if Discord dependencies are available.
 
@@ -546,6 +565,10 @@ class DiscordAdapter(BasePlatformAdapter):
     # Discord message limits
     MAX_MESSAGE_LENGTH = 2000
     _SPLIT_THRESHOLD = 1900  # near the 2000-char split point
+
+    # Stream consumer hook: when final content is already visible, still add
+    # the Discord completion reaction without doing a redundant final edit.
+    POST_STREAM_FINAL_VISIBLE = True
 
     # Auto-disconnect from voice channel after this many seconds of inactivity
     VOICE_TIMEOUT = 300
@@ -1347,6 +1370,187 @@ class DiscordAdapter(BasePlatformAdapter):
         """Check if message reactions are enabled via config/env."""
         return os.getenv("DISCORD_REACTIONS", "true").lower() not in {"false", "0", "no"}
 
+    def _thread_done_cleanup_enabled(self) -> bool:
+        """Whether explicit Discord thread-close phrases should archive/remove user."""
+        raw = os.getenv("DISCORD_THREAD_DONE_CLEANUP")
+        if raw is None or raw == "":
+            raw = self.config.extra.get("thread_done_cleanup")
+        if raw is None or raw == "":
+            return False
+        return str(raw).strip().lower() in ("true", "1", "yes", "on")
+
+    def _thread_done_cleanup_delay_seconds(self) -> float:
+        raw = os.getenv("DISCORD_THREAD_DONE_CLEANUP_DELAY_SECONDS")
+        if raw is None or raw == "":
+            raw = self.config.extra.get("thread_done_cleanup_delay_seconds", 8)
+        try:
+            return max(0.0, float(raw))
+        except (TypeError, ValueError):
+            return 8.0
+
+    def _post_reply_reaction_enabled(self) -> bool:
+        """Whether to react to the bot's own delivered reply as a visible completion cue."""
+        raw = os.getenv("DISCORD_REPLY_DONE_REACTION")
+        if raw is None or raw == "":
+            raw = self.config.extra.get("reply_done_reaction", True)
+        if isinstance(raw, bool):
+            return raw
+        return str(raw).strip().lower() not in ("false", "0", "no", "off", "none")
+
+    def _reply_done_emoji(self) -> str:
+        raw = os.getenv("DISCORD_REPLY_DONE_EMOJI")
+        if raw is None or raw == "":
+            raw = self.config.extra.get("reply_done_emoji", "✅")
+        return str(raw or "✅").strip() or "✅"
+
+    @staticmethod
+    def _looks_like_streaming_preview(text: str) -> bool:
+        """Return True for in-progress streamed Discord previews with a cursor."""
+        return bool((text or "").rstrip().endswith("▉"))
+
+    async def _add_reply_done_reaction(self, message: Any, content: str = "") -> None:
+        """Best-effort completion reaction after a Discord reply is actually delivered."""
+        if not self._reactions_enabled() or not self._post_reply_reaction_enabled():
+            return
+        if self._looks_like_streaming_preview(content):
+            # Streaming previews get their completion reaction from edit_message(finalize=True).
+            return
+        await self._add_reaction(message, self._reply_done_emoji())
+
+    def _thread_done_cleanup_user_ids(self, event: MessageEvent) -> list[int]:
+        """Return Discord user IDs to remove from a finished thread."""
+        raw = os.getenv("DISCORD_THREAD_DONE_CLEANUP_USER_IDS")
+        if raw is None or raw == "":
+            raw = self.config.extra.get("thread_done_cleanup_user_ids")
+        if raw is None or raw == "":
+            raw = (
+                os.getenv("HERMES_DISCORD_CAI_USER_ID")
+                or os.getenv("DISCORD_CAI_USER_ID")
+                or ""
+            )
+        if raw is None or raw == "":
+            # Local-first default: remove the human who explicitly closed the
+            # thread.  This avoids hardcoding Cai's ID in source and still does
+            # the expected thing in single-user deployments.
+            raw = event.source.user_id or ""
+
+        user_ids: list[int] = []
+        for part in str(raw).split(","):
+            cleaned = _clean_discord_id(part)
+            if cleaned.isdigit():
+                user_ids.append(int(cleaned))
+        # Preserve order while deduplicating.
+        return list(dict.fromkeys(user_ids))
+
+    @staticmethod
+    def _normalize_thread_done_text(text: str) -> str:
+        text = re.sub(r"<@!?\d+>", " ", text or "")
+        text = text.replace("’", "'").replace("`", "")
+        text = re.sub(r"\s+", " ", text).strip().lower()
+        # Cai often closes threads with terse/mobile typo variants; normalize the
+        # common "odne" typo before matching explicit close phrases.
+        text = re.sub(r"\bodne\b", "done", text)
+        return text.strip(" \t\r\n.!?")
+
+    def _should_cleanup_thread_after_message(self, event: MessageEvent) -> bool:
+        if not self._thread_done_cleanup_enabled():
+            return False
+        if event.message_type != MessageType.TEXT:
+            return False
+        if not event.source.thread_id:
+            return False
+        text = self._normalize_thread_done_text(event.text)
+        if not text:
+            return False
+        # Keep this intentionally narrow: it should catch explicit close/done
+        # utterances, not meta-discussions like "why didn't you react when I
+        # said 'we're done here'?".
+        return any(
+            re.fullmatch(pattern, text)
+            for pattern in (
+                r"(?:ok|okay|k|kk|cool|great|perfect|thanks|thank you|ty|got it|roger)?\s*,?\s*(?:we're|we are|were)\s+done(?:\s+here)?",
+                r"(?:ok|okay|k|kk|cool|great|perfect|thanks|thank you|ty|got it|roger)?\s*,?\s*(?:all\s+)?done(?:\s+here)?",
+                r"(?:please\s+)?(?:archive|close|clean\s+up)\s+(?:this\s+)?thread",
+                r"(?:this\s+)?thread\s+(?:is\s+)?done",
+                r"remove\s+me\s+from\s+(?:this\s+)?thread",
+            )
+        )
+
+    def _schedule_thread_done_cleanup(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
+        if outcome != ProcessingOutcome.SUCCESS:
+            return
+        if not self._should_cleanup_thread_after_message(event):
+            return
+
+        user_ids = self._thread_done_cleanup_user_ids(event)
+        if not user_ids:
+            logger.warning(
+                "[%s] Discord thread cleanup requested for %s but no user IDs resolved",
+                self.name,
+                event.source.thread_id,
+            )
+            return
+
+        delay = self._thread_done_cleanup_delay_seconds()
+        task = asyncio.create_task(
+            self._run_thread_done_cleanup(
+                str(event.source.thread_id),
+                user_ids,
+                delay_seconds=delay,
+                raw_message=event.raw_message,
+            )
+        )
+        try:
+            self._background_tasks.add(task)
+            task.add_done_callback(self._background_tasks.discard)
+        except TypeError:
+            pass
+
+    async def _run_thread_done_cleanup(
+        self,
+        thread_id: str,
+        user_ids: list[int],
+        *,
+        delay_seconds: float,
+        raw_message: Any = None,
+    ) -> None:
+        """Best-effort archive + remove-user cleanup for explicit done phrases."""
+        if delay_seconds > 0:
+            await asyncio.sleep(delay_seconds)
+
+        if not self._client or not DISCORD_AVAILABLE:
+            return
+
+        thread = None
+        raw_channel = getattr(raw_message, "channel", None)
+        if str(getattr(raw_channel, "id", "")) == str(thread_id):
+            thread = raw_channel
+        if thread is None:
+            try:
+                thread = self._client.get_channel(int(thread_id))
+            except Exception:
+                thread = None
+        if thread is None:
+            try:
+                thread = await self._client.fetch_channel(int(thread_id))
+            except Exception as e:
+                logger.warning("[%s] Discord thread cleanup could not fetch %s: %s", self.name, thread_id, e)
+                return
+
+        for user_id in user_ids:
+            try:
+                await thread.remove_user(discord.Object(id=int(user_id)))
+                logger.info("[%s] Removed user %s from done thread %s", self.name, user_id, thread_id)
+            except Exception as e:
+                # Desired state may already be true; keep cleanup best-effort.
+                logger.debug("[%s] Removing user %s from thread %s failed: %s", self.name, user_id, thread_id, e)
+
+        try:
+            await thread.edit(archived=True)
+            logger.info("[%s] Archived done thread %s", self.name, thread_id)
+        except Exception as e:
+            logger.warning("[%s] Archiving done thread %s failed: %s", self.name, thread_id, e)
+
     async def on_processing_start(self, event: MessageEvent) -> None:
         """Add an in-progress reaction for normal Discord message events."""
         if not self._reactions_enabled():
@@ -1356,7 +1560,9 @@ class DiscordAdapter(BasePlatformAdapter):
             await self._add_reaction(message, "👀")
 
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
-        """Swap the in-progress reaction for a final success/failure reaction."""
+        """Swap reaction state and schedule explicit thread-close cleanup."""
+        self._schedule_thread_done_cleanup(event, outcome)
+
         if not self._reactions_enabled():
             return
         message = event.raw_message
@@ -1415,6 +1621,7 @@ class DiscordAdapter(BasePlatformAdapter):
             chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
 
             message_ids = []
+            last_sent_message = None
             reference = None
 
             if reply_to and self._reply_to_mode != "off":
@@ -1462,6 +1669,10 @@ class DiscordAdapter(BasePlatformAdapter):
                     else:
                         raise
                 message_ids.append(str(msg.id))
+                last_sent_message = msg
+
+            if last_sent_message is not None:
+                await self._add_reply_done_reaction(last_sent_message, chunks[-1] if chunks else "")
 
             # Track the last message we sent in this channel for history
             # backfill — avoids a full channel.history() scan on hot paths.
@@ -1613,10 +1824,32 @@ class DiscordAdapter(BasePlatformAdapter):
             if len(formatted) > self.MAX_MESSAGE_LENGTH:
                 formatted = formatted[:self.MAX_MESSAGE_LENGTH - 3] + "..."
             await msg.edit(content=formatted)
+            if finalize:
+                await self._add_reply_done_reaction(msg, formatted)
             return SendResult(success=True, message_id=message_id)
         except Exception as e:  # pragma: no cover - defensive logging
             logger.error("[%s] Failed to edit Discord message %s: %s", self.name, message_id, e, exc_info=True)
             return SendResult(success=False, error=str(e))
+
+    async def on_stream_final_visible(
+        self,
+        *,
+        chat_id: str,
+        message_id: str,
+        content: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """React after stream final text is visible but no final edit was needed."""
+        if not self._client:
+            return
+        try:
+            channel = self._client.get_channel(int(chat_id))
+            if not channel:
+                channel = await self._client.fetch_channel(int(chat_id))
+            msg = await channel.fetch_message(int(message_id))
+            await self._add_reply_done_reaction(msg, content)
+        except Exception as e:  # pragma: no cover - defensive logging
+            logger.debug("[%s] stream-final-visible reaction failed for %s: %s", self.name, message_id, e)
 
     async def _send_file_attachment(
         self,
@@ -3987,6 +4220,35 @@ class DiscordAdapter(BasePlatformAdapter):
             )
             return None
 
+    def _approval_ping_user_ids(self) -> list[str]:
+        """Return configured Discord user IDs to ping on exec approval prompts."""
+        raw = os.getenv("DISCORD_APPROVAL_PING_USERS")
+        if raw is None:
+            raw = self.config.extra.get("approval_ping_users")
+
+        if isinstance(raw, bool):
+            candidates = self._allowed_user_ids if raw else []
+        elif isinstance(raw, str):
+            normalized = raw.strip().lower()
+            if normalized in {"", "false", "0", "no", "off", "none"}:
+                candidates = []
+            elif normalized in {"true", "1", "yes", "on", "allowed", "allowed_users", "allowlist"}:
+                candidates = self._allowed_user_ids
+            else:
+                candidates = _clean_discord_id_list(raw)
+        else:
+            candidates = _clean_discord_id_list(raw)
+
+        return sorted({uid for uid in candidates if str(uid).isdigit()})
+
+    def _approval_ping_content(self) -> str | None:
+        """Build plain-message content that causes a real Discord user ping."""
+        user_ids = self._approval_ping_user_ids()
+        if not user_ids:
+            return None
+        mentions = " ".join(f"<@{uid}>" for uid in user_ids)
+        return f"{mentions} approval needed"
+
     async def send_exec_approval(
         self, chat_id: str, command: str, session_key: str,
         description: str = "dangerous command",
@@ -4027,7 +4289,11 @@ class DiscordAdapter(BasePlatformAdapter):
                 allowed_role_ids=self._allowed_role_ids,
             )
 
-            msg = await channel.send(embed=embed, view=view)
+            content = self._approval_ping_content()
+            if content:
+                msg = await channel.send(content=content, embed=embed, view=view)
+            else:
+                msg = await channel.send(embed=embed, view=view)
             return SendResult(success=True, message_id=str(msg.id))
 
         except Exception as e:
@@ -4066,7 +4332,11 @@ class DiscordAdapter(BasePlatformAdapter):
                 allowed_role_ids=self._allowed_role_ids,
             )
 
-            msg = await channel.send(embed=embed, view=view)
+            content = self._approval_ping_content()
+            if content:
+                msg = await channel.send(content=content, embed=embed, view=view)
+            else:
+                msg = await channel.send(embed=embed, view=view)
             return SendResult(success=True, message_id=str(msg.id))
         except Exception as e:
             return SendResult(success=False, error=str(e))
@@ -4178,7 +4448,11 @@ class DiscordAdapter(BasePlatformAdapter):
                 allowed_user_ids=self._allowed_user_ids,
                 allowed_role_ids=self._allowed_role_ids,
             )
-            msg = await channel.send(embed=embed, view=view)
+            content = self._approval_ping_content()
+            if content:
+                msg = await channel.send(content=content, embed=embed, view=view)
+            else:
+                msg = await channel.send(embed=embed, view=view)
             return SendResult(success=True, message_id=str(msg.id))
         except Exception as e:
             return SendResult(success=False, error=str(e))
@@ -4516,7 +4790,13 @@ class DiscordAdapter(BasePlatformAdapter):
             skip_thread = bool(channel_ids & no_thread_channels) or is_free_channel
             auto_thread = os.getenv("DISCORD_AUTO_THREAD", "true").lower() in {"true", "1", "yes"}
             is_reply_message = getattr(message, "type", None) == discord.MessageType.reply
-            if auto_thread and not skip_thread and not is_voice_linked_channel and not is_reply_message:
+            if (
+                auto_thread
+                and not skip_thread
+                and not is_free_channel
+                and not is_voice_linked_channel
+                and not is_reply_message
+            ):
                 thread = await self._auto_create_thread(message)
                 if thread:
                     parent_channel_id = str(message.channel.id)

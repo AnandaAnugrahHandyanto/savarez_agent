@@ -16,6 +16,7 @@ Credit: jobless0x (#774, #1312), OutThisLife (#798), clicksingh (#697).
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import queue
 import re
@@ -215,6 +216,32 @@ class GatewayStreamConsumer:
             cb()
         except Exception:
             logger.debug("on_new_message callback error", exc_info=True)
+
+    async def _notify_stream_final_visible(self) -> None:
+        """Notify adapters that the final streamed content is already visible.
+
+        Most adapters do not need a redundant final edit when the last normal
+        edit already delivered the final text. Some adapters still want a
+        side-effect at that point (Discord completion reaction, etc.). Gate via
+        an explicit class flag so MagicMock attribute access in tests does not
+        accidentally enable this path.
+        """
+        if getattr(self.adapter, "POST_STREAM_FINAL_VISIBLE", False) is not True:
+            return
+        hook = getattr(self.adapter, "on_stream_final_visible", None)
+        if hook is None or self._message_id in (None, "__no_edit__"):
+            return
+        try:
+            result = hook(
+                chat_id=self.chat_id,
+                message_id=self._message_id,
+                content=self._accumulated,
+                metadata=self.metadata,
+            )
+            if inspect.isawaitable(result):
+                await result
+        except Exception:
+            logger.debug("stream-final-visible hook failed", exc_info=True)
 
     def _reset_segment_state(self, *, preserve_no_edit: bool = False) -> None:
         if preserve_no_edit and self._message_id == "__no_edit__":
@@ -536,7 +563,10 @@ class GatewayStreamConsumer:
                             # Mid-stream edit above already delivered the
                             # final accumulated content.  Skip the redundant
                             # final edit — but only for adapters that don't
-                            # need an explicit finalize signal.
+                            # need an explicit finalize signal.  Still notify
+                            # adapters that want a post-final side effect such
+                            # as Discord's completion reaction.
+                            await self._notify_stream_final_visible()
                             self._final_response_sent = True
                         elif self._message_id:
                             # Either the mid-stream edit didn't run (no

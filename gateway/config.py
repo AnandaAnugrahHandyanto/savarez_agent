@@ -823,6 +823,8 @@ def load_gateway_config() -> GatewayConfig:
                     bridged["require_mention"] = platform_cfg["require_mention"]
                 if "free_response_channels" in platform_cfg:
                     bridged["free_response_channels"] = platform_cfg["free_response_channels"]
+                if plat == Platform.DISCORD and "approval_ping_users" in platform_cfg:
+                    bridged["approval_ping_users"] = platform_cfg["approval_ping_users"]
                 if "mention_patterns" in platform_cfg:
                     bridged["mention_patterns"] = platform_cfg["mention_patterns"]
                 if "dm_policy" in platform_cfg:
@@ -919,10 +921,24 @@ def load_gateway_config() -> GatewayConfig:
                     if isinstance(frc, list):
                         frc = ",".join(str(v) for v in frc)
                     os.environ["DISCORD_FREE_RESPONSE_CHANNELS"] = str(frc)
+                apu = discord_cfg.get("approval_ping_users")
+                if apu is not None and not os.getenv("DISCORD_APPROVAL_PING_USERS"):
+                    if isinstance(apu, list):
+                        apu = ",".join(str(v) for v in apu)
+                    os.environ["DISCORD_APPROVAL_PING_USERS"] = str(apu)
                 if "auto_thread" in discord_cfg and not os.getenv("DISCORD_AUTO_THREAD"):
                     os.environ["DISCORD_AUTO_THREAD"] = str(discord_cfg["auto_thread"]).lower()
                 if "reactions" in discord_cfg and not os.getenv("DISCORD_REACTIONS"):
                     os.environ["DISCORD_REACTIONS"] = str(discord_cfg["reactions"]).lower()
+                if "thread_done_cleanup" in discord_cfg and not os.getenv("DISCORD_THREAD_DONE_CLEANUP"):
+                    os.environ["DISCORD_THREAD_DONE_CLEANUP"] = str(discord_cfg["thread_done_cleanup"]).lower()
+                if "thread_done_cleanup_delay_seconds" in discord_cfg and not os.getenv("DISCORD_THREAD_DONE_CLEANUP_DELAY_SECONDS"):
+                    os.environ["DISCORD_THREAD_DONE_CLEANUP_DELAY_SECONDS"] = str(discord_cfg["thread_done_cleanup_delay_seconds"])
+                tdc_user_ids = discord_cfg.get("thread_done_cleanup_user_ids")
+                if tdc_user_ids is not None and not os.getenv("DISCORD_THREAD_DONE_CLEANUP_USER_IDS"):
+                    if isinstance(tdc_user_ids, list):
+                        tdc_user_ids = ",".join(str(v) for v in tdc_user_ids)
+                    os.environ["DISCORD_THREAD_DONE_CLEANUP_USER_IDS"] = str(tdc_user_ids)
                 # ignored_channels: channels where bot never responds (even when mentioned)
                 ic = discord_cfg.get("ignored_channels")
                 if ic is not None and not os.getenv("DISCORD_IGNORED_CHANNELS"):

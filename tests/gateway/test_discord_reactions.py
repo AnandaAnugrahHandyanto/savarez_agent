@@ -246,3 +246,97 @@ async def test_on_processing_complete_cancelled_removes_eyes_without_terminal_re
 
     raw_message.remove_reaction.assert_awaited_once_with("👀", adapter._client.user)
     raw_message.add_reaction.assert_not_awaited()
+
+
+def _make_thread_event(text: str, thread, user_id: str = "42") -> MessageEvent:
+    return MessageEvent(
+        text=text,
+        message_type=MessageType.TEXT,
+        source=SessionSource(
+            platform=Platform.DISCORD,
+            chat_id=str(thread.id),
+            chat_type="thread",
+            user_id=user_id,
+            user_name="Jezza",
+            thread_id=str(thread.id),
+        ),
+        raw_message=SimpleNamespace(
+            channel=thread,
+            add_reaction=AsyncMock(),
+            remove_reaction=AsyncMock(),
+        ),
+        message_id="8",
+    )
+
+
+@pytest.mark.asyncio
+async def test_done_here_schedules_thread_cleanup(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_THREAD_DONE_CLEANUP", "true")
+    monkeypatch.setenv("DISCORD_THREAD_DONE_CLEANUP_DELAY_SECONDS", "0")
+    monkeypatch.setenv("DISCORD_REACTIONS", "false")
+    monkeypatch.delenv("DISCORD_THREAD_DONE_CLEANUP_USER_IDS", raising=False)
+    monkeypatch.delenv("HERMES_DISCORD_CAI_USER_ID", raising=False)
+    monkeypatch.delenv("DISCORD_CAI_USER_ID", raising=False)
+
+    thread_cls = sys.modules["discord"].Thread
+    thread = thread_cls()
+    thread.id = 987654321
+    thread.remove_user = AsyncMock()
+    thread.edit = AsyncMock()
+
+    event = _make_thread_event("ok we're done here", thread, user_id="42")
+    await adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
+
+    tasks = list(adapter._background_tasks)
+    assert tasks
+    await asyncio.gather(*tasks)
+
+    thread.remove_user.assert_awaited_once()
+    thread.edit.assert_awaited_once_with(archived=True)
+
+
+@pytest.mark.parametrize(
+    "phrase",
+    [
+        "we're done",
+        "ok we're done",
+        "we are done",
+        "ok we're odne",
+        "done",
+        "all done",
+        "cool done",
+    ],
+)
+def test_done_phrase_variants_match_cleanup(adapter, monkeypatch, phrase):
+    monkeypatch.setenv("DISCORD_THREAD_DONE_CLEANUP", "true")
+
+    thread_cls = sys.modules["discord"].Thread
+    thread = thread_cls()
+    thread.id = 987654323
+
+    event = _make_thread_event(phrase, thread, user_id="42")
+
+    assert adapter._should_cleanup_thread_after_message(event) is True
+
+
+@pytest.mark.asyncio
+async def test_done_phrase_meta_discussion_does_not_cleanup(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_THREAD_DONE_CLEANUP", "true")
+    monkeypatch.setenv("DISCORD_THREAD_DONE_CLEANUP_DELAY_SECONDS", "0")
+    monkeypatch.setenv("DISCORD_REACTIONS", "false")
+
+    thread_cls = sys.modules["discord"].Thread
+    thread = thread_cls()
+    thread.id = 987654322
+    thread.remove_user = AsyncMock()
+    thread.edit = AsyncMock()
+
+    event = _make_thread_event(
+        "why didn't you remove me when I said we're done here?",
+        thread,
+    )
+    await adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
+    await asyncio.sleep(0)
+
+    thread.remove_user.assert_not_awaited()
+    thread.edit.assert_not_awaited()
