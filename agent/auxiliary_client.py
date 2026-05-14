@@ -125,13 +125,37 @@ def _is_localhost_base_url(base_url: Optional[str]) -> bool:
         return False
 
 
+def _build_local_httpx_client(async_mode: bool = False) -> Any:
+    """Create a loop-local HTTPX client that never reads environment proxies."""
+    try:
+        import httpx
+        if async_mode:
+            try:
+                return httpx.AsyncClient(
+                    transport=httpx.AsyncHTTPTransport(proxy=None),
+                    trust_env=False,
+                )
+            except TypeError:
+                return httpx.AsyncClient(trust_env=False)
+        try:
+            return httpx.Client(
+                transport=httpx.HTTPTransport(proxy=None),
+                trust_env=False,
+            )
+        except TypeError:
+            return httpx.Client(trust_env=False)
+    except Exception:
+        return None
+
+
 def _build_openai_client_kwargs(base_url: Optional[str], extra: Dict[str, Any] = None) -> Dict[str, Any]:
     """Build OpenAI kwargs and disable env-derived proxy config for localhost."""
     kwargs: Dict[str, Any] = dict(extra or {})
     try:
         if _is_localhost_base_url(base_url) and "http_client" not in kwargs:
-            import httpx
-            kwargs["http_client"] = httpx.Client(trust_env=False)
+            local_http_client = _build_local_httpx_client()
+            if local_http_client is not None:
+                kwargs["http_client"] = local_http_client
     except Exception:
         pass
     return kwargs
@@ -142,8 +166,9 @@ def _build_async_openai_client_kwargs(base_url: Optional[str], extra: Dict[str, 
     kwargs: Dict[str, Any] = dict(extra or {})
     try:
         if _is_localhost_base_url(base_url) and "http_client" not in kwargs:
-            import httpx
-            kwargs["http_client"] = httpx.AsyncClient(trust_env=False)
+            async_http_client = _build_local_httpx_client(async_mode=True)
+            if async_http_client is not None:
+                kwargs["http_client"] = async_http_client
     except Exception:
         pass
     return kwargs

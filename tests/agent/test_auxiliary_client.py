@@ -2505,6 +2505,22 @@ class TestOpenAIProxyClientConstruction:
         http_client.close()
         assert call_kwargs["base_url"] == "http://localhost:20128/v1"
 
+    def test_localhost_ip_without_scheme_uses_http_client_with_trust_env_false(self):
+        mock_class = MagicMock(return_value=MagicMock())
+        with patch("agent.auxiliary_client._load_openai_cls", return_value=mock_class):
+            aux_client = None
+            from agent.auxiliary_client import OpenAI
+
+            aux_client = OpenAI(api_key="dummy", base_url="127.0.0.1:20128/v1")
+        assert aux_client is not None
+        assert mock_class.call_count == 1
+        call_kwargs = mock_class.call_args.kwargs
+        assert "http_client" in call_kwargs
+        http_client = call_kwargs["http_client"]
+        assert http_client.trust_env is False
+        http_client.close()
+        assert call_kwargs["base_url"] == "127.0.0.1:20128/v1"
+
     def test_remote_base_url_does_not_inject_http_client(self, monkeypatch):
         mock_class = MagicMock(return_value=MagicMock())
         with patch("agent.auxiliary_client._load_openai_cls", return_value=mock_class):
