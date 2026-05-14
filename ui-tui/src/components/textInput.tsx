@@ -185,10 +185,11 @@ export function returnKeyAction(
   key: Pick<Key, 'ctrl' | 'meta' | 'shift' | 'super'>,
   mac = isMac
 ): ReturnKeyAction {
-  // Warp can surface Cmd+Enter as `meta+return` instead of the unambiguous
-  // `super+return` shape. Treat either action-modifier shape as submit on
-  // macOS; plain Enter, Shift+Enter, and Ctrl+Enter still edit the draft.
-  const macSubmit = mac && (key.meta || key.super === true) && !key.shift
+  // On macOS, plain Enter should edit the draft and a real Cmd+Enter
+  // should submit. `key.meta` is Alt/Option in modern terminal protocols,
+  // so require the unambiguous `super` bit for submit and keep Alt+Enter as
+  // a newline fallback.
+  const macSubmit = mac && key.super === true && !key.shift
 
   if (macSubmit || (!mac && !key.shift && !key.ctrl && !key.meta)) {
     return 'submit'

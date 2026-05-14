@@ -10,11 +10,9 @@ describe('returnKeyAction', () => {
     expect(returnKeyAction(key(), true)).toBe('newline')
     expect(returnKeyAction(key({ shift: true }), true)).toBe('newline')
     expect(returnKeyAction(key({ ctrl: true }), true)).toBe('newline')
-    expect(returnKeyAction(key({ meta: true }), true)).toBe('submit')
+    expect(returnKeyAction(key({ meta: true }), true)).toBe('newline')
     expect(returnKeyAction(key({ super: true }), true)).toBe('submit')
-    expect(returnKeyAction(key({ ctrl: true, meta: true }), true)).toBe('submit')
     expect(returnKeyAction(key({ ctrl: true, super: true }), true)).toBe('submit')
-    expect(returnKeyAction(key({ shift: true, meta: true }), true)).toBe('newline')
     expect(returnKeyAction(key({ shift: true, super: true }), true)).toBe('newline')
   })
 
