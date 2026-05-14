@@ -609,13 +609,13 @@ class TestWeixinMarkdownLinks:
     def test_format_message_preserves_links_inside_code_blocks(self):
         adapter = _make_adapter()
 
-        content = "See below:
+        content = """See below:
 
 ```
 [link](https://example.com)
 ```
 
-Done."
+Done.""""
         result = adapter.format_message(content)
         assert "[link](https://example.com)" in result
 
