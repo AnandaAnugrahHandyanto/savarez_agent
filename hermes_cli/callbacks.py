@@ -23,7 +23,14 @@ def clarify_callback(cli, question, choices):
     """
     from cli import CLI_CONFIG
 
-    timeout = CLI_CONFIG.get("clarify", {}).get("timeout", 120)
+    # Prefer the unified `agent.clarify_timeout` key (also used by the
+    # gateway) so a single config change applies everywhere.  Fall back
+    # to the CLI-specific `clarify.timeout` key, then to 120s.
+    agent_timeout = CLI_CONFIG.get("agent", {}).get("clarify_timeout")
+    if agent_timeout is not None:
+        timeout = int(agent_timeout)
+    else:
+        timeout = CLI_CONFIG.get("clarify", {}).get("timeout", 120)
     response_queue = queue.Queue()
     is_open_ended = not choices
 
