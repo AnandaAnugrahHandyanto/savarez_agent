@@ -1,0 +1,81 @@
+{
+  "parked_domain_patterns": [
+    "^(www\\.)?[a-z0-9-]+\\.(click|download|bid|win|loan|top)$",
+    "^(www\\.)?buy[a-z0-9-]+\\.(com|net|org)$",
+    "^(www\\.)?get[a-z0-9-]+\\.(com|net|org)$",
+    "^(www\\.)?best[a-z0-9-]+deals?\\.(com|net|org)$",
+    "^(www\\.)?[a-z]{2,3}\\d{4,}\\.",
+    "^(www\\.)?\\d{3,}[a-z]{1,3}\\.",
+    "^(www\\.)?free-?[a-z]+-?templates?-?[a-z]*\\.",
+    "^(www\\.)?[a-z]+-(hub|zone|world|center|solutions|platform|network)\\.(com|net|org|xyz|top|info)$",
+    "^(www\\.)?my[a-z]+(online|free|pro)\\."
+  ],
+  "mfa_patterns": [
+    "^(www\\.)?[a-z]+-[a-z]+-[a-z]+-[a-z]+\\.",
+    "^(www\\.)?top\\d+[a-z]+\\.",
+    "^(www\\.)?best[a-z]+reviews?\\.",
+    "^(www\\.)?[a-z]+comparisons?\\.",
+    "^(www\\.)?daily[a-z]+news\\.",
+    "^(www\\.)?viral[a-z]+\\.",
+    "^(www\\.)?trending[a-z]+\\.",
+    "^(www\\.)?[a-z]*howto[a-z]*\\.",
+    "^(www\\.)?[a-z]*guide[0-9]*\\.",
+    "^(www\\.)?[a-z]*tips(and|for|about)[a-z]*\\.",
+    "^(www\\.)?[a-z]*facts?[0-9]*\\.",
+    "^(www\\.)?all[a-z]+(jobs|local|deals)\\.",
+    "^(www\\.)?[a-z]*(click|cash|money|fast)[a-z]*\\.(com|net|xyz|top|info)$",
+    "^(www\\.)?[a-z]*(shocking|leaked|exposed|scandal)[a-z]*\\.",
+    "^(www\\.)?[a-z]*(article|content|story)s?[0-9]*\\."
+  ],
+  "random_domain_indicators": {
+    "min_consonant_ratio": 0.75,
+    "min_numeric_ratio": 0.35,
+    "min_length_for_random_check": 6,
+    "min_length_for_ratio_check": 10,
+    "patterns": [
+      "^[bcdfghjklmnpqrstvwxyz]{5,}\\.",
+      "^[a-z]{2}\\d{4,}\\.",
+      "^\\d{3,}[a-z]{1,4}\\.",
+      "^[a-z]{2}\\d{2,}\\.",
+      "^[a-z0-9]{20,}\\.(com|net|org|info|xyz|top)$"
+    ],
+    "entropy_patterns": [
+      "^[bcdfghjklmnpqrstvwxyz]{5,}\\.",
+      "^(?:[a-z]{2}[0-9]){3,}\\."
+    ]
+  },
+  "non_latin_domain_patterns": [
+    "^xn--"
+  ],
+  "high_risk_tlds_tier1": [
+    ".tk", ".ml", ".ga", ".cf", ".gq",
+    ".cfd", ".sbs", ".buzz", ".monster",
+    ".quest", ".rest", ".surf", ".beauty", ".hair"
+  ],
+  "high_risk_tlds_tier2": [
+    ".xyz", ".top", ".click", ".info", ".online",
+    ".site", ".club", ".fun", ".space", ".website",
+    ".store", ".uno", ".download", ".bid",
+    ".win", ".loan", ".pw", ".ws", ".cc",
+    ".autos", ".directory", ".today"
+  ],
+  "high_risk_tld_note": "Tier 1: auto-flag regardless of domain name (>95% spam rate). Tier 2: flag when combined with ANY suspicious signal (short name, digits, hyphens, no vowel clusters).",
+  "google_owned_placements": [
+    "mail.google.com",
+    "news.google.com",
+    "discover.google.com",
+    "youtube.com",
+    "googleapis.com",
+    "googleusercontent.com",
+    "google.com"
+  ],
+  "google_owned_note": "These are Google surfaces that cannot be excluded. Flag as GOOGLE_OWNED (INFO) but never recommend exclusion.",
+  "adsense_mobile_app_placement": "adsenseformobileapps.com",
+  "url_normalization": {
+    "strip_www": true,
+    "strip_m_subdomain": true,
+    "lowercase": true,
+    "remove_trailing_slash": true,
+    "collapse_protocol": true
+  }
+}

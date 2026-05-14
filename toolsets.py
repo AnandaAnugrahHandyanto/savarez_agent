@@ -77,6 +77,12 @@ _HERMES_CORE_TOOLS = [
 # These can include individual tools or reference other toolsets
 TOOLSETS = {
     # Basic toolsets - individual tool categories
+    "none": {
+        "description": "No tools. Use for plain-chat models that do not support tool calling.",
+        "tools": [],
+        "includes": []
+    },
+
     "web": {
         "description": "Web research and content extraction tools",
         "tools": ["web_search", "web_extract"],

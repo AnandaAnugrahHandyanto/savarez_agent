@@ -1,0 +1,19 @@
+SELECT
+  asset.id,
+  asset.name,
+  asset.type,
+  asset.sitelink_asset.link_text,
+  asset.sitelink_asset.description1,
+  asset.sitelink_asset.description2,
+  asset.callout_asset.callout_text,
+  asset.structured_snippet_asset.header,
+  asset.structured_snippet_asset.values,
+  asset.image_asset.full_size.url,
+  asset.image_asset.full_size.height_pixels,
+  asset.image_asset.full_size.width_pixels,
+  asset.image_asset.mime_type,
+  asset.policy_summary.approval_status,
+  asset.policy_summary.review_status
+FROM asset
+WHERE asset.type IN ('SITELINK', 'CALLOUT', 'STRUCTURED_SNIPPET', 'IMAGE')
+ORDER BY asset.type

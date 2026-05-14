@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_path="$(readlink -f "${BASH_SOURCE[0]}")"
+cd "$(dirname "$script_path")"
+
+export HERMES_UID="${HERMES_UID:-$(id -u)}"
+export HERMES_GID="${HERMES_GID:-$(id -g)}"
+
+case "${1:-}" in
+    --build|build|rebuild)
+        docker compose up -d --build
+        ;;
+    ""|start|up)
+        docker compose up -d
+        ;;
+    *)
+        printf 'Usage: ha [start|up|--build|build|rebuild]\n' >&2
+        exit 2
+        ;;
+esac
+
+docker compose ps
+
+printf '\nHermes Agent dashboard: http://127.0.0.1:9119\n'

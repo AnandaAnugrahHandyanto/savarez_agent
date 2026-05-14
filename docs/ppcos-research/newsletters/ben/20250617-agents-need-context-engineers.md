@@ -1,0 +1,70 @@
+# agents need context engineers
+
+**From:** "ben's bites" <bensbites@substack.com>
+**Date:** 2025-06-17T13:01:51.000Z
+**Folder:** ben
+
+---
+
+View this post on the web at https://www.bensbites.com/p/agents-need-context-engineers
+
+I write a newsletter about startups and investing—for ai builders of all levels.
+I record mini-tutorials, review tools I’m testing, share my insights from an exited founder turned investor.
+Hey folks,
+I’m just about ‘caught up’ from my week away and kids bday - so just the regular swarm of updates to cover today 🙃
+I met Jeff for dinner a couple months ago and he’s one of the clearest thinkers on AI computing imo. He wrote a short piece; why AI is a new computer [ https://open.substack.com/pub/jeffhuber/p/ai-is-a-new-computer?r=2fqkdz&utm_medium=ios ]. Being a new computer means everything computer’s do today can be re-built (related pod with Marc Andreessen [ https://substack.com/redirect/44c74c6b-4256-4804-a3aa-90fa243f24f7?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ]).
+I’m still using Dia from The Browser Company. Nick works there and showed off their ‘script’ prototype [ https://substack.com/redirect/3690b4d5-69ac-4a94-b628-7cbbf232264c?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ] - to allow you to take actions on sites e.g. play 4 youtube videos at once, hide the sidebar on twitter etc. Reminds me of Arc’s ‘boosts’ feature but better. They still need MCPs and tool-use but it’s easy to see where this ‘ai-native’ browser is going.
+Anthropic [ https://substack.com/redirect/63d10f84-b736-4af3-ad2f-61cbe4f4c2e6?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ] and Cognition [ https://substack.com/redirect/46f11564-ce16-4cbc-b36e-1d1f18713e67?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ] both put out posts on building multi-agent systems. Cognition said it’s hard for coding, Anthropic said it’s good for research. Both are worth a read, and one important thing to note is context engineering:
+In 2025, the models out there are extremely intelligent. But even the smartest human won’t be able to do their job effectively without the context of what they’re being asked to do. “Prompt engineering” was coined as a term for the effort needing to write your task in the ideal format for a LLM chatbot. “Context engineering” is the next level of this. It is about doing this automatically in a dynamic system. It takes more nuance and is effectively the #1 job of engineers building AI agents.
+What happens when agents have access to your private data, untrusted web content, and the ability to talk to external services (ie using MCPs)? A lethal trifecta for security [ https://substack.com/redirect/17332638-e714-45a2-ac60-cf2943eb8a64?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ]. We need to take prompt injection seriously before it becomes the new computer virus nightmare of the 2000s. Here’s Karpathy’s take [ https://substack.com/redirect/2f5eb08f-61a0-4c4d-85fe-9a90a63fb20a?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ].
+🔎 News worth knowing
+Codex can now generate multiple responses [ https://substack.com/redirect/02569bf1-3819-43eb-b6ef-fbb046f48eb1?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ] for a single task. This "best of N" approach is a big deal. You see it in benchmarks all the time—a model's performance jumps if it gets 8 or 64 attempts at a problem. This is now rolling out directly in the product. And the rumour is that o3-pro is “best of 10 responses from o3”.
+The general trend of better performance with the best of N method is a signal that we're not hitting a wall with model progress; we can still squeeze out better performance and then distil that capability into a new model that gets it right on the first try.
+OpenAI also shipped some improvements to Projects [ https://substack.com/redirect/f3b5d913-017f-4be5-93a7-99e0c5bf4625?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ] and Search [ https://substack.com/redirect/6adab6c7-6c96-4dee-91ab-7499d2e516ec?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ] in ChatGPT. You can run Deep Research in a project now, and even in normal chats, ChatGPT references past chats from that project. And ChatGPT can search using images as well now.
+Keynotes from the AI Engineer World Fair [ https://substack.com/redirect/90a89ea3-75cb-4e79-8253-ce48541a4ac4?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ] - the best place to get a grip on the current state of AI engineering.
+Box [ https://substack.com/redirect/f71675f8-b4d6-437b-a298-10824ebd7bc3?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ], a leader in Intelligent Content Management, recently surveyed 1,300+ IT leaders to see what is truly happening in AI and packaged its findings into Box’s State of AI in the Enterprise report [ https://substack.com/redirect/fd1d8ed6-38f3-4376-8f45-0119511dae2b?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ]. Download the report to learn more about how AI is rapidly transforming businesses across industries.*
+*sponsored
+want to partner with us? Click here [ https://substack.com/redirect/d12d84c0-201a-460c-a93c-662ffdba22e3?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ]
+🌐 What I’m consuming
+A breakdown of bad AI writing patterns [ https://substack.com/redirect/72d42062-a43d-4bc0-868b-da83f1730a60?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ] and what gets wrongly flagged as AI-generated.
+If you’re still not on the Claude Code train, give this guide [ https://substack.com/redirect/78353187-8407-44dd-b057-b656c804911f?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ] a read, but if you’re already burning tokens, here’s how to push it to its limits [ https://substack.com/redirect/78353187-8407-44dd-b057-b656c804911f?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ] for more complex tasks.
+How OpenAI's head of business products [ https://substack.com/redirect/8256f62e-82ea-4576-94fe-02b3892dc67f?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ] uses ChatGPT to save time at work.
+Cursor’s CEO with Garry Tan. [ https://substack.com/redirect/9d65d1bc-8e87-4384-879e-fbc400012b19?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ] I like the part where Michael talks about niche software opportunities.
+A conversation with the creators of the Model Context Protocol (MCP) [ https://substack.com/redirect/9f9df130-a5f2-4c21-a1a1-3a5a9af590e1?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ].
+Why we want robots at work [ https://substack.com/redirect/53d5027b-075a-4b40-9d42-a9f30b85fb43?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ], but humans in art.
+Future of work with AI agents [ https://substack.com/redirect/25820279-0aa5-4ce6-a534-a2e6a3d54f3d?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ], based on a study of 1500 workers across 104 occupations.
+According to a new Gallup poll, the number of workers who say they use AI at work has nearly doubled [ https://substack.com/redirect/3efacc82-ed83-40dc-8cba-a7f9540294ee?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ] in the past year.
+⚙️  Tools I’m looking into
+new.website [ https://substack.com/redirect/5d6aec3d-56c9-462a-9b86-c22c230b373a?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ] - Text-to-app is hard, but text-to-website creation is relatively an easier problem. This tool is going after website creation, with the tricky parts where AI still struggles patched with features like built-in functional forms, Zapier integration, SEO, and a CMS.
+Granola for Windows [ https://substack.com/redirect/f3421341-89fd-4102-947b-a140ab61877f?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ] - the AI-note taking app that everyone loves and uses (incl me) is now available on Windows (the link will only show if viewing on a Windows device fyi)
+Sketch [ https://substack.com/redirect/6537b8e3-7a34-4b80-9d2c-1970b6b77884?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ] - An agentic coding tool that runs in your terminal but also has a web UI. It understands your codebase and helps you get work done, with the best support for Go.
+RunwayML just introduced a chat mode [ https://substack.com/redirect/8337d3ea-6c58-4fe1-8482-38b4e977672e?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ]. You can now generate and edit images, add references, and even work with video through a conversational interface instead of clicking around.
+Helio 02 [ https://substack.com/redirect/02e91699-c5ae-4712-b104-6af3635d5937?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ] - A new text-to-video model that's up there with Veo 3 and SeedDance, and it's especially good at image-to-video tasks. (try here [ https://substack.com/redirect/a3789ff8-b06e-4a19-9565-2f4d7d3812d2?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ])
+Tool idea: Figma, but for data visualization [ https://substack.com/redirect/26f63857-ce97-4c0c-88e6-60a521575a51?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ]. Upload a CSV, describe the design you want, and get a chart. A tool like Julius AI could do this, but the market is big enough for dedicated players.
+Chorus [ https://substack.com/redirect/d961c360-f7d0-4a7d-a709-50343a6321fa?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ] - You can now import your chat history from ChatGPT and Claude into this macOS AI app. This is really interesting. Now, who is going to make a tool to get editable/portable memories out of your ChatGPT history?
+🥣  dev dish
+Native container support in macOS [ https://substack.com/redirect/4d008804-bce2-4138-be2c-5a19235db95f?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ] - This is a big deal because it could replace the need for tools like Docker for many developers (and vibe coders), simplifying local development workflows.
+Claude Squad [ https://github.com/smtg-ai/claude-squad ] - A terminal app to manage multiple Claude Code instances in separate workspaces, so you can work on several tasks at once.
+Zen MCP Server [ https://github.com/BeehiveInnovations/zen-mcp-server ] - An MCP server that lets Claude orchestrate other models like Gemini, o3, and anything on OpenRouter.
+Kimi-Dev-72B [ https://huggingface.co/moonshotai/Kimi-Dev-72B ] - A 72B open-source model from Moonshot AI, specifically for resolving GitHub issues.
+JAN nano [ https://x.com/menloresearch/status/1934809407604576559?s=12 ] - A tiny 4B parameter model built for deep search tasks using MCP.
+A free course on how to build AI agents [ https://mastra.ai/course ] from Mastra AI, available via MCP [ https://x.com/bentossell/status/1934555167455867316 ].
+miniDiffusion [ https://github.com/yousef-rafat/miniDiffusion ] - re-implementation of Stable Diffusion 3.5 in pure PyTorch.
+cursorkleosr [ https://github.com/kleosr/cursorkleosr ] - Memory for Cursor.
+🍦 Afters
+A few portfolio-related shout-outs:
+SpeedTrials.ai [ https://www.speedtrials.ai/ ] is holding an event for software engineers in SF on June 28th, to see how quickly developers can ship with AI.
+Pointer is building the interface between humans and software — a copilot that lives inside apps to guide, answer, and act. They just closed thier seed led by Amplify and great angels (incl me!), and are already helping fast-growing companies like Rho and Delve. Looking for a founding engineer to join them in SF and help change how people interact with software. More info here [ https://dub.sh/pointer-engineer ].
+General Bionix is building software for programming robots (cursor for robotics, if you will). They’re looking for a cracked engineer in SF. Looking for experience with deep robotic manipulation and 3D vision evidenced by work history, side projects and education. Reach out to Vaishak [ https://x.com/real_vaishak ].
+Ali Rowghani (former Pixar, Twitter COO & YC growth program) is launching First Harmonic [ https://thoughts.firstharmonic.com/choose-your-customer ], an 8-week cohort to help early-stage companies nail their go-to-market strategy. Ali has been an awesome LP and I’ve recommended several portco founders join his program.
+Dalton Caldwell is leaving YC to launch Standard Capital [ https://x.com/daltonc/status/1933231767642910743?s=12 ], an AI-native Series A firm, with Paul Buchheit and Brian Berg.
+A16Z speedrun [ https://partiful.com/e/V5AIHOFKaaV57UJJUwOX ] is coming to London on July 2nd. I might be there.
+The Xeno Demo Day [ https://lu.ma/xenodemo ] is giving $15,000 grants to autonomous AI agents in a four-week, AI-native program.
+A member of our community is running free AI workshops for educators [ https://playlabai.notion.site/summer-learning ] this summer.
+Tensions are reportedly reaching a boiling point between OpenAI and Microsoft [ https://www.wsj.com/tech/ai/openai-and-microsoft-tensions-are-reaching-a-boiling-point-4981c44f?mod=hp_lead_pos3 ].
+That’s it for today. Feel free to hit reply and share your thoughts. 👋
+Enjoy this newsletter? Please forward to a friend.
+Find me on X [ https://x.com/bentossell/ ], Linkedin [ https://www.linkedin.com/in/ben-tossell-70453537/ ], or Instagram [ https://instagram.com/@bentossell ]
+Read about me [ https://bensbites.substack.com/about ] and ben’s bites
+
+Unsubscribe https://substack.com/redirect/2/eyJlIjoiaHR0cHM6Ly93d3cuYmVuc2JpdGVzLmNvbS9hY3Rpb24vZGlzYWJsZV9lbWFpbD90b2tlbj1leUoxYzJWeVgybGtJam94TWpVMU5UazVMQ0p3YjNOMFgybGtJam94TmpZeE16SXlORFVzSW1saGRDSTZNVGMxTURFMk5UUXhNaXdpWlhod0lqb3hOemd4TnpBeE5ERXlMQ0pwYzNNaU9pSndkV0l0TkRNM09USTVPU0lzSW5OMVlpSTZJbVJwYzJGaWJHVmZaVzFoYVd3aWZRLnpXYjd5R3c1UmhNNm5BV2ViRzFqNUhhRWxzM2ItRnRPNF9xaVF3WEZyU2MiLCJwIjoxNjYxMzIyNDUsInMiOjQzNzkyOTksImYiOmZhbHNlLCJ1IjoxMjU1NTk5LCJpYXQiOjE3NTAxNjU0MTIsImV4cCI6MTc1Mjc1NzQxMiwiaXNzIjoicHViLTAiLCJzdWIiOiJsaW5rLXJlZGlyZWN0In0.FebukF-vMs12LGn-QMD4kUuHACX_vfVkhVQXaK8GbrI?

@@ -1,0 +1,18 @@
+SELECT
+  campaign.name,
+  ad_group.name,
+  ad_group_criterion.criterion_id,
+  ad_group_criterion.type,
+  ad_group_criterion.display_name,
+  ad_group_criterion.bid_modifier,
+  metrics.impressions,
+  metrics.clicks,
+  metrics.ctr,
+  metrics.cost_micros,
+  metrics.conversions,
+  metrics.conversions_value,
+  metrics.average_cpc,
+  metrics.cost_per_conversion
+FROM ad_group_audience_view
+WHERE segments.date {DATE_RANGE}
+ORDER BY metrics.cost_micros DESC

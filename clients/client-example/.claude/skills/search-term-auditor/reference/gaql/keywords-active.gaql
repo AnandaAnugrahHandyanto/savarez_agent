@@ -1,0 +1,16 @@
+SELECT
+  campaign.id,
+  campaign.name,
+  campaign.status,
+  ad_group.id,
+  ad_group.name,
+  ad_group.status,
+  ad_group_criterion.keyword.text,
+  ad_group_criterion.keyword.match_type,
+  ad_group_criterion.status
+FROM keyword_view
+WHERE ad_group_criterion.status = 'ENABLED'
+  AND ad_group_criterion.negative = false
+  AND ad_group.status = 'ENABLED'
+  AND campaign.status = 'ENABLED'
+  AND campaign.serving_status = 'SERVING'

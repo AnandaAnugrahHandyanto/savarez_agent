@@ -1,0 +1,21 @@
+SELECT
+  campaign.id,
+  campaign.name,
+  campaign.status,
+  campaign.experiment_type,
+  campaign.base_campaign,
+  campaign.advertising_channel_type,
+  campaign.campaign_budget,
+  campaign_budget.id,
+  campaign_budget.amount_micros,
+  campaign_budget.explicitly_shared,
+  segments.date,
+  metrics.cost_micros,
+  metrics.clicks,
+  metrics.impressions,
+  metrics.conversions
+FROM campaign
+WHERE campaign.status = 'ENABLED'
+  AND campaign.serving_status = 'SERVING'
+  {EXPERIMENT_FILTER}
+  AND segments.date {DATE_RANGE}

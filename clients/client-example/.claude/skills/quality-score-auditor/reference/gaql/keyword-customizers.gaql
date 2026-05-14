@@ -1,0 +1,17 @@
+SELECT
+  campaign.id,
+  campaign.name,
+  ad_group.id,
+  ad_group.name,
+  ad_group_criterion.criterion_id,
+  ad_group_criterion.keyword.text,
+  ad_group_criterion_customizer.customizer_attribute,
+  ad_group_criterion_customizer.status,
+  ad_group_criterion_customizer.value.type,
+  ad_group_criterion_customizer.value.string_value
+FROM ad_group_criterion_customizer
+WHERE campaign.advertising_channel_type = 'SEARCH'
+  AND campaign.status = 'ENABLED'
+  AND ad_group.status = 'ENABLED'
+  AND ad_group_criterion.status = 'ENABLED'
+  AND ad_group_criterion_customizer.status = 'ENABLED'

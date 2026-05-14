@@ -59,6 +59,10 @@ class TestOpenRouterModels:
         """Sanity check that the models list hasn't been accidentally truncated."""
         assert len(OPENROUTER_MODELS) >= 5
 
+    def test_includes_hermes_3_405b_free(self):
+        ids = [mid for mid, _ in OPENROUTER_MODELS]
+        assert "nousresearch/hermes-3-llama-3.1-405b:free" in ids
+
 
 class TestFetchOpenRouterModels:
     def test_live_fetch_recomputes_free_tags(self, monkeypatch):

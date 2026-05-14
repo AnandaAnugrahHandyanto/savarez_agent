@@ -45,6 +45,17 @@ if [ "$(id -u)" = "0" ]; then
             echo "Warning: chown .venv failed (rootless container?) — continuing anyway"
     fi
 
+    # Build-time assets are owned by the image's default hermes UID (10000).
+    # When the runtime remaps hermes to the host UID, writable dev/build trees
+    # must move too or dashboard chat cannot rebuild the embedded TUI.
+    for runtime_writable_dir in "$INSTALL_DIR/ui-tui" "$INSTALL_DIR/node_modules"; do
+        if [ -e "$runtime_writable_dir" ] && [ "$(stat -c %u "$runtime_writable_dir" 2>/dev/null)" != "$actual_hermes_uid" ]; then
+            echo "Fixing ownership of $runtime_writable_dir to hermes ($actual_hermes_uid)"
+            chown -R hermes:hermes "$runtime_writable_dir" 2>/dev/null || \
+                echo "Warning: chown failed for $runtime_writable_dir — continuing anyway"
+        fi
+    done
+
     # Ensure config.yaml is readable by the hermes runtime user even if it was
     # edited on the host after initial ownership setup. Must run here (as root)
     # rather than after the gosu drop, otherwise a non-root caller like

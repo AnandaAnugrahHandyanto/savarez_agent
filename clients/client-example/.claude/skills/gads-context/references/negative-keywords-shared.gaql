@@ -1,0 +1,8 @@
+SELECT
+  shared_set.name,
+  shared_set.resource_name,
+  shared_criterion.keyword.text,
+  shared_criterion.keyword.match_type
+FROM shared_criterion
+WHERE shared_set.type = 'NEGATIVE_KEYWORDS'
+ORDER BY shared_set.name

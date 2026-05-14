@@ -1,0 +1,10 @@
+SELECT
+  bidding_strategy.id,
+  bidding_strategy.resource_name,
+  bidding_strategy.name,
+  bidding_strategy.type,
+  bidding_strategy.target_cpa.target_cpa_micros,
+  bidding_strategy.target_roas.target_roas,
+  bidding_strategy.maximize_conversions.target_cpa_micros,
+  bidding_strategy.maximize_conversion_value.target_roas
+FROM bidding_strategy

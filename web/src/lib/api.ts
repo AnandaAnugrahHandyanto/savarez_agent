@@ -275,6 +275,27 @@ export const api = {
       `/api/actions/${encodeURIComponent(name)}/status?lines=${lines}`,
     ),
 
+  uploadChatFile: async (file: File) => {
+    const token = await getSessionToken();
+    const headers = new Headers({
+      [SESSION_HEADER]: token,
+      "X-Hermes-Filename": encodeURIComponent(file.name || "upload"),
+    });
+    if (file.type) {
+      headers.set("Content-Type", file.type);
+    }
+    const res = await fetch(`${BASE}/api/chat/uploads`, {
+      method: "POST",
+      headers,
+      body: file,
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => res.statusText);
+      throw new Error(`${res.status}: ${text}`);
+    }
+    return res.json() as Promise<ChatUploadResponse>;
+  },
+
   // Dashboard plugins
   getPlugins: () =>
     fetchJSON<PluginManifestResponse[]>("/api/dashboard/plugins"),
@@ -354,6 +375,15 @@ export interface ActionStatusResponse {
   name: string;
   pid: number | null;
   running: boolean;
+}
+
+export interface ChatUploadResponse {
+  is_image: boolean;
+  mime_type: string | null;
+  name: string;
+  ok: boolean;
+  path: string;
+  size: number;
 }
 
 export interface PlatformStatus {

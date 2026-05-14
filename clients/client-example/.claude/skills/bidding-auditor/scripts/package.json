@@ -1,0 +1,14 @@
+{
+  "name": "bidding-auditor-scripts",
+  "version": "1.0.0",
+  "type": "module",
+  "private": true,
+  "description": "Diagnostic engines for bidding-auditor skill",
+  "scripts": {
+    "pull": "node pull-all.js",
+    "analyze:strategy-targets": "node analyze-strategy-targets.js",
+    "analyze:portfolio": "node analyze-portfolio.js",
+    "analyze:temporal": "node analyze-temporal.js",
+    "analyze:adjustments": "node analyze-adjustments.js"
+  }
+}

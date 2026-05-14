@@ -6,6 +6,75 @@ This wrapper should behave like the installed `hermes` command, including
 subcommands such as `gateway`, `cron`, and `doctor`.
 """
 
+from __future__ import annotations
+
+import os
+import sys
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parent
+
+
+def _local_python() -> Path | None:
+    """Return the checkout venv Python, if one is available."""
+    if os.environ.get("HERMES_SKIP_LOCAL_VENV"):
+        return None
+
+    for name in ("venv", ".venv"):
+        candidate = ROOT / name / "bin" / "python"
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def _reexec_with_local_venv() -> None:
+    python = _local_python()
+    if not python:
+        return
+
+    try:
+        current = Path(sys.executable).resolve()
+        target = python.resolve()
+    except OSError:
+        return
+
+    if current == target:
+        return
+
+    os.environ.setdefault("VIRTUAL_ENV", str(target.parent.parent))
+    os.execv(str(target), [str(target), __file__, *sys.argv[1:]])
+
+
+def _print_dependency_help(error: ModuleNotFoundError) -> None:
+    missing = error.name or str(error)
+    venv_hint = "venv" if (ROOT / "venv").exists() else ".venv"
+
+    print(
+        f"Hermes is missing Python dependency: {missing}\n\n"
+        "From this checkout, run one of:\n\n"
+        "  ./setup-hermes.sh\n\n"
+        "or:\n\n"
+        f"  python3 -m venv {venv_hint}\n"
+        f"  source {venv_hint}/bin/activate\n"
+        '  pip install -e ".[cli]"\n\n'
+        "Then start Hermes with:\n\n"
+        "  ./hermes",
+        file=sys.stderr,
+    )
+
+
 if __name__ == "__main__":
-    from hermes_cli.main import main
-    main()
+    _reexec_with_local_venv()
+
+    try:
+        from hermes_cli.main import main
+    except ModuleNotFoundError as exc:
+        _print_dependency_help(exc)
+        raise SystemExit(1) from None
+
+    try:
+        main()
+    except ModuleNotFoundError as exc:
+        _print_dependency_help(exc)
+        raise SystemExit(1) from None

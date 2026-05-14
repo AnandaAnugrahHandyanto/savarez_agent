@@ -1,0 +1,20 @@
+SELECT
+  campaign.id,
+  campaign.name,
+  campaign.status,
+  campaign.experiment_type,
+  campaign.serving_status,
+  campaign.bidding_strategy_type,
+  campaign.bidding_strategy,
+  campaign.target_cpa.target_cpa_micros,
+  campaign.maximize_conversions.target_cpa_micros,
+  campaign.target_roas.target_roas,
+  campaign.maximize_conversion_value.target_roas,
+  campaign.campaign_budget,
+  campaign_budget.amount_micros,
+  campaign.advertising_channel_type,
+  campaign.advertising_channel_sub_type
+FROM campaign
+WHERE
+  campaign.status = 'ENABLED'
+  AND campaign.serving_status = 'SERVING'

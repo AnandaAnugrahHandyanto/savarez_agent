@@ -1,0 +1,23 @@
+SELECT
+  campaign.name,
+  campaign.advertising_channel_type,
+  ad_group.id,
+  ad_group.name,
+  ad_group.status,
+  ad_group.type,
+  ad_group.cpc_bid_micros,
+  ad_group.target_cpa_micros,
+  metrics.impressions,
+  metrics.clicks,
+  metrics.ctr,
+  metrics.cost_micros,
+  metrics.conversions,
+  metrics.conversions_value,
+  metrics.average_cpc,
+  metrics.cost_per_conversion,
+  metrics.search_impression_share
+FROM ad_group
+WHERE segments.date {DATE_RANGE}
+  AND campaign.status = 'ENABLED'
+  AND ad_group.status = 'ENABLED'
+ORDER BY metrics.cost_micros DESC

@@ -1,0 +1,22 @@
+SELECT
+  campaign.id,
+  campaign.name,
+  campaign.status,
+  campaign.advertising_channel_type,
+  campaign.bidding_strategy_type,
+  campaign.bidding_strategy,
+  campaign.target_cpa.target_cpa_micros,
+  campaign.target_roas.target_roas,
+  campaign.maximize_conversions.target_cpa_micros,
+  campaign.maximize_conversion_value.target_roas,
+  campaign.target_roas.cpc_bid_ceiling_micros,
+  campaign.target_impression_share.cpc_bid_ceiling_micros,
+  campaign.campaign_budget,
+  campaign_budget.amount_micros,
+  campaign_budget.explicitly_shared,
+  metrics.cost_micros,
+  metrics.conversions,
+  metrics.conversions_value
+FROM campaign
+WHERE campaign.status = 'ENABLED'
+  AND segments.date {DATE_RANGE}

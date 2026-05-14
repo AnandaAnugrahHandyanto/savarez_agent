@@ -1,0 +1,14 @@
+SELECT
+  campaign.id,
+  campaign.name,
+  metrics.impressions,
+  metrics.search_impression_share,
+  metrics.search_rank_lost_impression_share,
+  metrics.search_budget_lost_impression_share,
+  metrics.search_top_impression_share,
+  metrics.search_absolute_top_impression_share
+FROM campaign
+WHERE campaign.advertising_channel_type = 'SEARCH'
+  AND campaign.status = 'ENABLED'
+  AND campaign.serving_status = 'SERVING'
+  AND segments.date {DATE_RANGE}

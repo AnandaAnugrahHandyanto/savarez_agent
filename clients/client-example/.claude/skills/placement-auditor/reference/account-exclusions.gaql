@@ -1,0 +1,28 @@
+-- Query 6a: Mobile app category exclusions
+SELECT
+  customer_negative_criterion.resource_name,
+  customer_negative_criterion.id,
+  customer_negative_criterion.type,
+  customer_negative_criterion.mobile_app_category.mobile_app_category_constant
+FROM customer_negative_criterion
+WHERE customer_negative_criterion.type = 'MOBILE_APP_CATEGORY'
+
+-- Query 6b: Content label exclusions
+SELECT
+  customer_negative_criterion.resource_name,
+  customer_negative_criterion.id,
+  customer_negative_criterion.type,
+  customer_negative_criterion.content_label.type
+FROM customer_negative_criterion
+WHERE customer_negative_criterion.type = 'CONTENT_LABEL'
+
+-- Query 6c: Placement exclusions (URLs, YouTube, placement lists)
+SELECT
+  customer_negative_criterion.resource_name,
+  customer_negative_criterion.id,
+  customer_negative_criterion.type,
+  customer_negative_criterion.placement.url,
+  customer_negative_criterion.youtube_video.video_id,
+  customer_negative_criterion.youtube_channel.channel_id
+FROM customer_negative_criterion
+WHERE customer_negative_criterion.type IN ('PLACEMENT', 'YOUTUBE_VIDEO', 'YOUTUBE_CHANNEL', 'PLACEMENT_LIST')

@@ -1,0 +1,6 @@
+SELECT
+  custom_conversion_goal.id,
+  custom_conversion_goal.name,
+  custom_conversion_goal.status,
+  custom_conversion_goal.conversion_actions
+FROM custom_conversion_goal

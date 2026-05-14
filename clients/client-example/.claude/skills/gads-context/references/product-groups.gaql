@@ -1,0 +1,22 @@
+SELECT
+  campaign.name,
+  ad_group.name,
+  ad_group_criterion.listing_group.type,
+  ad_group_criterion.listing_group.case_value.product_brand.value,
+  ad_group_criterion.listing_group.case_value.product_category.category_id,
+  ad_group_criterion.listing_group.case_value.product_category.level,
+  ad_group_criterion.listing_group.case_value.product_item_id.value,
+  ad_group_criterion.listing_group.case_value.product_type.level,
+  ad_group_criterion.listing_group.case_value.product_type.value,
+  ad_group_criterion.listing_group.case_value.product_custom_attribute.index,
+  ad_group_criterion.listing_group.case_value.product_custom_attribute.value,
+  metrics.impressions,
+  metrics.clicks,
+  metrics.ctr,
+  metrics.cost_micros,
+  metrics.conversions,
+  metrics.conversions_value
+FROM product_group_view
+WHERE segments.date {DATE_RANGE}
+  AND metrics.impressions > 0
+ORDER BY metrics.cost_micros DESC

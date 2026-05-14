@@ -1,0 +1,9 @@
+SELECT
+  campaign.name,
+  campaign_criterion.keyword.text,
+  campaign_criterion.keyword.match_type
+FROM campaign_criterion
+WHERE campaign_criterion.type = 'KEYWORD'
+  AND campaign_criterion.negative = true
+  AND campaign.status = 'ENABLED'
+ORDER BY campaign.name

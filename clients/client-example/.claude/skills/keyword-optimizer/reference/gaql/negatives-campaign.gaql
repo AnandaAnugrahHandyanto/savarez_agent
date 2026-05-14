@@ -1,0 +1,11 @@
+SELECT
+  campaign.id,
+  campaign.name,
+  campaign_criterion.criterion_id,
+  campaign_criterion.keyword.text,
+  campaign_criterion.keyword.match_type,
+  campaign_criterion.negative
+FROM campaign_criterion
+WHERE campaign_criterion.type = 'KEYWORD'
+  AND campaign_criterion.negative = true
+  AND campaign.status != 'REMOVED'

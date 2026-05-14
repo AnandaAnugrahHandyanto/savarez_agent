@@ -1,0 +1,25 @@
+SELECT
+  campaign.id,
+  campaign.name,
+  campaign.status,
+  campaign.advertising_channel_type,
+  campaign.experiment_type,
+  campaign.serving_status,
+  campaign.bidding_strategy_type,
+  campaign.bidding_strategy,
+  campaign.target_cpa.target_cpa_micros,
+  campaign.maximize_conversion_value.target_roas,
+  campaign.maximize_conversions.target_cpa_micros,
+  campaign.target_roas.target_roas,
+  campaign_budget.amount_micros,
+  metrics.impressions,
+  metrics.clicks,
+  metrics.cost_micros,
+  metrics.conversions,
+  metrics.conversions_value,
+  metrics.ctr,
+  metrics.average_cpc,
+  metrics.search_impression_share
+FROM campaign
+WHERE segments.date {DATE_RANGE}
+ORDER BY metrics.cost_micros DESC

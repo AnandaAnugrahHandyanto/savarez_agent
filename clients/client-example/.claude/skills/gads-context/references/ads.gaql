@@ -1,0 +1,16 @@
+SELECT
+  campaign.name,
+  ad_group.name,
+  ad_group_ad.ad.id,
+  ad_group_ad.status,
+  ad_group_ad.ad.responsive_search_ad.headlines,
+  ad_group_ad.ad.responsive_search_ad.descriptions,
+  ad_group_ad.ad.final_urls,
+  metrics.impressions,
+  metrics.clicks,
+  metrics.ctr,
+  metrics.conversions
+FROM ad_group_ad
+WHERE segments.date {DATE_RANGE}
+  AND ad_group_ad.ad.type = 'RESPONSIVE_SEARCH_AD'
+ORDER BY metrics.impressions DESC

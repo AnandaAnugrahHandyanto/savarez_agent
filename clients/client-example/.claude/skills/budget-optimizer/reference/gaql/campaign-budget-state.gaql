@@ -1,0 +1,15 @@
+SELECT
+  campaign_budget.id,
+  campaign_budget.resource_name,
+  campaign_budget.name,
+  campaign_budget.amount_micros,
+  campaign_budget.status,
+  campaign_budget.period,
+  campaign_budget.delivery_method,
+  campaign_budget.type,
+  campaign_budget.explicitly_shared,
+  campaign_budget.has_recommended_budget,
+  campaign_budget.recommended_budget_amount_micros,
+  campaign_budget.reference_count
+FROM campaign_budget
+WHERE campaign_budget.status = 'ENABLED'

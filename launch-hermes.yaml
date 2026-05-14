@@ -1,0 +1,28 @@
+
+• Yes. I added a host-side wrapper and linked it into your PATH, so you can now use:
+
+  hermes
+
+  That opens the Hermes TUI in the Docker container.
+
+  Other shortcuts now available:
+
+  hermes web
+
+  Prints the dashboard URL: http://127.0.0.1:9119
+
+  hermes ask "your prompt here"
+
+  Runs a one-shot prompt.
+
+  hermes shell
+
+  Drops you into a shell inside the Hermes container.
+
+  Normal Hermes commands also pass through, for example:
+
+  hermes --version
+  hermes status
+  hermes logs
+
+  I installed the wrapper at hermes and linked it to ~/.local/bin/hermes. Verified with hermes --version: Hermes Agent v0.13.0.

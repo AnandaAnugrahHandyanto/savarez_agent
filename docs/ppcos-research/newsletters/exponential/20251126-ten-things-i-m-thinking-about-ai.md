@@ -1,0 +1,58 @@
+# 🔮 Ten things I’m thinking about AI
+
+**From:** "Azeem Azhar, Exponential View" <exponentialview@substack.com>
+**Date:** 2025-11-26T18:41:21.000Z
+**Folder:** exponential
+
+---
+
+View this post on the web at https://www.exponentialview.co/p/ten-things-im-thinking-about-ai-part1
+
+On Sunday, 30th November, ChatGPT turns three. Wild three years.
+It’s triggered a dramatic race in research. Before ChatGPT launched, the big US labs released a major model every six months. After ChatGPT, releases picked up to one every two weeks.
+It’s created a cascade of spending commitments. Big tech firms have increased their capex from about $120-150 billion per year before ChatGPT, to closer to $400 billion this year. We reckon that in 2025, about $220-230 billion of that is incremental investment to meet AI demand. The bankers are struggling to make sense of it all.
+As ChatGPT approaches its third birthday, I want to summarise my current beliefs about the deployment of the technology and the wider environment. I first shared these with members on the EV member Slack.
+I will go into more detail in a four-part series over the following days, to cover:
+Part 1: The Firm
+Enterprise adoption – hard but accelerating
+The revenue rocket
+Part 2: Physical limitations
+Energy constraints limiting scaling
+The inference-training trade-off
+The long life of the GPU
+The existential battle for compute
+Part 3: The economic engine
+The capital market struggles
+The productivity countdown
+Part 4: The macro view
+Sovereign AI fragments stack
+Utility-trust gap dangerously widens
+Today’s first part will focus on the firms, looking at how adoption and revenue are materializing. The next three parts will analyze the physical build-out of compute, the ecosystem’s new economics and the wider macro-political system.
+Today’s post is open to all – so share widely. Parts 2-4 of the series will be open to paying members of Exponential View.
+Members get access to the four-part series and the invite-only Slack channel where this series started.
+Here are the 10 things I think about AI right now.
+Part 1: The firm
+1. Enterprise adoption is hard and may be accelerating
+There is a clear disconnect between the accelerating spend on AI infrastructure and the relatively few enterprises reporting transformative results.
+By historical standards, the impact is arriving faster than in previous technology waves, like cloud computing, SaaS or electricity. Close to 90% of surveyed organizations now say they use AI in at least one business function [ https://substack.com/redirect/cf7d77ec-4ea1-4879-8717-124c53c0c9d4?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ].
+But organizational integration is hard because it requires more than just API access. AI is a general-purpose technology which ultimately transforms every knowledge-intensive activity, but only after companies pair the technology with the institutional rewiring that’s needed to metabolise them. This requires significant organizational change, process re‑engineering and data governance.
+McKinsey shared that some 20% of organizations already report a tangible impact on value creation from genAI [ https://substack.com/redirect/5a2cac2b-8351-44d5-a7cd-0b112c84ce17?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ]. Those companies have done the hard yards fixing processes, tightening data, building skills and should find it easier to scale next year. One such company is BNY Mellon [ https://substack.com/redirect/f5ea2897-ba96-4d77-a382-8642d48015da?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ]. The bank’s current efficiency gains follow a multi-year restructuring around a “platforms operating model”. Before a single model could be deployed at scale, they had to create an “AI Hub” to standardize data access and digitize core custody workflows. The ROI appeared only after this architectural heavy-lifting was completed. The bank now operates over 100 “digital employees” and has 117 AI solutions in production. They’ve cut unit costs per custody trade by about 5% and per net asset value by 15%. The next 1,000 “digital employees” should be less of a headache.
+The best example, though, is JP Morgan, whose boss Jamie Dimon said [ https://substack.com/redirect/0dd4e344-2fe0-4080-a822-8c37c65d45a8?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ]: “We have shown that for $2 billion of expense, we have about $2 billion of benefit.” This is exactly what we would expect from a productivity J‑curve. With any general‑purpose technology, a small set of early adopters captures gains first, while everyone else is reorienting their processes around the technology. Electricity and information technology followed that pattern; AI is no exception. The difference now is the speed at which the leading edge is moving.
+I don’t think this will be a multi‑decadal affair for AI. The rate of successful implementation is higher, and organizations are moving up the learning curve. As we go from “hard” to “less hard” over the next 12-18 months, we should expect an inflection point where value creation rapidly broadens. The plus is that the technology itself will only get better.
+Crucially, companies are already spending as if that future value is real. A 2025 survey [ https://substack.com/redirect/163f0300-72ea-4a61-b636-2510a341c36a?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ] by Deloitte shows that 85% of organizations increased their AI investment in the past 12 months, and 91% plan to increase it again in the coming year.
+One complicating factor in assessing the impact of genAI on firms is the humble mobile phone. Even if their bosses are slow to implement new workflows, employees have already turned to AI – often informally, on personal devices and outside official workflows [ https://substack.com/redirect/2328c87a-0424-4f85-8dbc-9c1b973ced83?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ] – which introduces a latent layer of traction inside organisations. This is a confounding factor, and it’s not clear whether this speeds up or slows down enterprise adoption.
+On balance, I’d expect this to be the case. In diffusion models inspired by Everett Rogers [ https://substack.com/redirect/fc4c73ed-ecca-453b-8305-489a0cca1581?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ] and popularised by Geoffrey Moore, analysts often treat roughly 15-20% adoption as the point at which a technology begins to cross from early adopters into the early majority. Once a technology reaches that threshold, adoption typically accelerates as the mainstream follows. We could reasonably expect this share to rise towards 50% over the coming years.
+However, 2026 will be a critical check-in. If the industry is still relying on the case studies of  JP Morgan [ https://substack.com/redirect/9057abd2-e7aa-4379-8bb5-b553012aefea?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ], ServiceNow [ https://substack.com/redirect/3421fa55-92d1-43e7-9119-865cef6f9842?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ] and BNY Mellon rather than a slew of positive productivity celebrations from large American companies, diffusion is taking longer than expected. AI would be well off the pace.
+2. Revenue is already growing like software
+We estimate that the generative AI sector experienced roughly 230% annual revenue growth in 2025, reaching around $60 billion [ https://substack.com/redirect/c9fe4546-9693-4ccf-bffd-e7be3aba5a56?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ].
+That puts this wave on par with commercialization of cloud, which took only two years to reach $60 billion in revenue [ https://substack.com/redirect/f7f054e0-fa4c-4d80-b65a-6d1792004505?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ]. The PC took nine years [ https://substack.com/redirect/0e7882c4-6ba0-4dba-b56e-aa86900506e8?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ]; the internet 13 years [ https://substack.com/redirect/6a0c52ea-9f2e-4649-a241-4d79bd318edd?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ].
+More strikingly, the growth rate is not yet slowing. In our estimates, the last quarter’s annualized revenue growth was about 214%, close to the overall rate for the year. The sources are familiar – cloud, enterprise/API usage and consumer apps – but the fastest‑growing segment by far is API, which we expect to have grown nearly 300% in 2025 (compared to ~140% for apps and ~50% for cloud). Coding tools are already a $3 billion business against $157 billion in developer salaries, a massive efficiency gap. Cursor reportedly hit $1 billion ARR by late 2025 [ https://substack.com/redirect/b6cf775d-4557-4607-90d0-529c717bee6f?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ], the fastest SaaS scale-up ever, while GitHub Copilot generates hundreds of millions in recurring revenue (see my conversation with GitHub CEO Thomas Dohmke [ https://substack.com/redirect/e15679da-fb45-4f8a-9c5c-24865411ebf7?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ]). These tools are converting labor costs into high-margin software revenue as they evolve from autocomplete to autonomous agents. The current market size is just the beginning.
+Consumer revenues, meanwhile, are expanding as the user base compounds. Monthly active users of frontier chatbots are driving a classic “ARPU ratchet”: modest price increases, higher attach rates for add-ons, and a growing share of users paying for premium tiers. There are structural reasons to expect this to continue, even before AI feels ubiquitous inside firms.
+First, the base of adoption is widening. If 2026 brings a wave of verified productivity wins, this trajectory will steepen. More firms should enjoy meaningful results and the surveys should show unambiguously that 25-30% of firms that started pilots are scaling them. As the remaining majority shift from pilots to production, they will push a far greater workload onto a small number of model providers. Revenue can rise even while most firms are still doing the unglamorous integration work; pilots “chew” tokens, but scaling up chews more.
+Second, the workloads themselves are getting heavier. A basic chatbot turn might involve a few hundred tokens, but agentic workflows that plan, load tools and spawn sub‑agents can consume tens of thousands. To the user it still feels like “one question,” but under the surface, the token bill – and therefore the revenues – is often 10-40x higher.
+Of course, this growth in usage will see token bills rise. And companies may increasingly use model-routers to flip workloads to cheaper models (or cheaper hosts) to manage their bills.
+But ultimately, what matters here is the amount consumers and firms are willing to spend on genAI products.
+Part 2
+Tomorrow, we’ll turn from the demand side to the supply side – and confront the physical constraints that are shaping the industry’s trajectory. Parts 2-4 are available exclusively to paying members of Exponential View.
+
+Unsubscribe https://substack.com/redirect/2/eyJlIjoiaHR0cHM6Ly93d3cuZXhwb25lbnRpYWx2aWV3LmNvL2FjdGlvbi9kaXNhYmxlX2VtYWlsP3Rva2VuPWV5SjFjMlZ5WDJsa0lqb3hNalUxTlRrNUxDSndiM04wWDJsa0lqb3hPREF3TXpRek5qZ3NJbWxoZENJNk1UYzJOREU0TWpVd015d2laWGh3SWpveE56azFOekU0TlRBekxDSnBjM01pT2lKd2RXSXRNakkxTWlJc0luTjFZaUk2SW1ScGMyRmliR1ZmWlcxaGFXd2lmUS5rUDl0OTBUTlVxdFVaLU9RTGdzdUp4aF9KRExLUldnNzBnbGplNFdfZ29nIiwicCI6MTgwMDM0MzY4LCJzIjoyMjUyLCJmIjpmYWxzZSwidSI6MTI1NTU5OSwiaWF0IjoxNzY0MTgyNTAzLCJleHAiOjIwNzk3NTg1MDMsImlzcyI6InB1Yi0wIiwic3ViIjoibGluay1yZWRpcmVjdCJ9.R3CyzL9yMHDeEBV0XWo1W3OwXWTrd97x4DY33HP2V-g?

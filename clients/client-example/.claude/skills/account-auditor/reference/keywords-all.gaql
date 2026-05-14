@@ -1,0 +1,13 @@
+SELECT
+  campaign.name,
+  campaign.advertising_channel_type,
+  ad_group.name,
+  ad_group.status,
+  ad_group_criterion.keyword.text,
+  ad_group_criterion.keyword.match_type,
+  ad_group_criterion.status
+FROM ad_group_criterion
+WHERE campaign.status = 'ENABLED'
+  AND ad_group_criterion.type = 'KEYWORD'
+  AND ad_group_criterion.negative = false
+ORDER BY campaign.name, ad_group.name

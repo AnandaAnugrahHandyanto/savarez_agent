@@ -1,0 +1,19 @@
+SELECT
+  campaign_search_term_view.search_term,
+  campaign.id,
+  campaign.name,
+  campaign.status,
+  campaign.serving_status,
+  campaign.experiment_type,
+  segments.search_term_match_type,
+  metrics.impressions,
+  metrics.clicks,
+  metrics.cost_micros,
+  metrics.conversions,
+  metrics.conversions_value
+FROM campaign_search_term_view
+WHERE campaign.advertising_channel_type = 'PERFORMANCE_MAX'
+  AND campaign.status = 'ENABLED'
+  AND campaign.serving_status =  'SERVING'
+  AND segments.date {DATE_RANGE}
+  AND metrics.impressions > 0

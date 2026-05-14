@@ -1,0 +1,41 @@
+SELECT
+  campaign.id,
+  campaign.name,
+  campaign.status,
+  campaign.serving_status,
+  campaign.experiment_type,
+  campaign.bidding_strategy_type,
+  campaign.target_cpa.target_cpa_micros,
+  campaign.maximize_conversions.target_cpa_micros,
+  campaign.target_roas.target_roas,
+  campaign.maximize_conversion_value.target_roas,
+  ad_group.id,
+  ad_group.name,
+  ad_group.status,
+  ad_group_criterion.criterion_id,
+  ad_group_criterion.keyword.text,
+  ad_group_criterion.keyword.match_type,
+  ad_group_criterion.status,
+  ad_group_criterion.approval_status,
+  ad_group_criterion.quality_info.quality_score,
+  ad_group_criterion.quality_info.creative_quality_score,
+  ad_group_criterion.quality_info.post_click_quality_score,
+  ad_group_criterion.quality_info.search_predicted_ctr,
+  ad_group_criterion.effective_cpc_bid_micros,
+  ad_group_criterion.position_estimates.first_page_cpc_micros,
+  metrics.impressions,
+  metrics.clicks,
+  metrics.cost_micros,
+  metrics.conversions,
+  metrics.conversions_value,
+  metrics.search_impression_share,
+  metrics.search_rank_lost_impression_share,
+  metrics.average_cpc
+FROM keyword_view
+WHERE campaign.advertising_channel_type = 'SEARCH'
+  AND campaign.status = 'ENABLED'
+  AND campaign.serving_status =  'SERVING'
+  AND ad_group.status = 'ENABLED'
+  AND segments.date {DATE_RANGE}
+  AND ad_group_criterion.status = 'ENABLED'
+  AND ad_group_criterion.approval_status IN ('APPROVED', 'DISAPPROVED', 'PENDING_REVIEW', 'UNDER_REVIEW')

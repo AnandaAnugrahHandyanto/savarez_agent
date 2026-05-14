@@ -1,0 +1,25 @@
+SELECT
+  campaign.name,
+  segments.product_item_id,
+  segments.product_title,
+  segments.product_brand,
+  segments.product_category_level1,
+  segments.product_type_l1,
+  segments.product_custom_attribute0,
+  segments.product_custom_attribute1,
+  segments.product_custom_attribute2,
+  segments.product_custom_attribute3,
+  segments.product_custom_attribute4,
+  segments.product_channel,
+  metrics.impressions,
+  metrics.clicks,
+  metrics.ctr,
+  metrics.cost_micros,
+  metrics.conversions,
+  metrics.conversions_value,
+  metrics.average_cpc,
+  metrics.cost_per_conversion
+FROM shopping_performance_view
+WHERE segments.date {DATE_RANGE}
+  AND metrics.impressions > 0
+ORDER BY metrics.cost_micros DESC

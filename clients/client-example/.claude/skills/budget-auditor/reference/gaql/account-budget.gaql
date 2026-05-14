@@ -1,0 +1,14 @@
+SELECT
+  account_budget.id,
+  account_budget.name,
+  account_budget.status,
+  account_budget.amount_served_micros,
+  account_budget.total_adjustments_micros,
+  account_budget.approved_spending_limit_micros,
+  account_budget.approved_spending_limit_type,
+  account_budget.approved_start_date_time,
+  account_budget.approved_end_date_time,
+  account_budget.adjusted_spending_limit_micros,
+  account_budget.adjusted_spending_limit_type
+FROM account_budget
+WHERE account_budget.status IN ('APPROVED', 'PENDING')

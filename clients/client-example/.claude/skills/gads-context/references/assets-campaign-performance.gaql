@@ -1,0 +1,17 @@
+SELECT
+  campaign.name,
+  campaign_asset.field_type,
+  campaign_asset.status,
+  campaign_asset.primary_status,
+  asset.id,
+  asset.name,
+  asset.type,
+  metrics.impressions,
+  metrics.clicks,
+  metrics.ctr,
+  metrics.cost_micros,
+  metrics.conversions,
+  metrics.conversions_value
+FROM campaign_asset
+WHERE segments.date {DATE_RANGE}
+ORDER BY metrics.impressions DESC

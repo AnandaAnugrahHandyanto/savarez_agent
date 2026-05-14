@@ -1,0 +1,25 @@
+SELECT
+  campaign.id,
+  campaign.name,
+  ad_group.id,
+  ad_group.name,
+  ad_group_criterion.keyword.text,
+  ad_group_criterion.keyword.match_type,
+  metrics.impressions,
+  metrics.clicks,
+  metrics.cost_micros,
+  metrics.conversions,
+  metrics.conversions_value,
+  metrics.average_cpc,
+  metrics.search_impression_share,
+  metrics.search_rank_lost_impression_share,
+  metrics.search_top_impression_share,
+  metrics.search_absolute_top_impression_share
+FROM keyword_view
+WHERE campaign.advertising_channel_type = 'SEARCH'
+  AND campaign.status = 'ENABLED'
+  AND ad_group.status = 'ENABLED'
+  AND ad_group_criterion.status = 'ENABLED'
+  AND metrics.impressions > 0
+  AND segments.date {DATE_RANGE}
+ORDER BY metrics.cost_micros DESC

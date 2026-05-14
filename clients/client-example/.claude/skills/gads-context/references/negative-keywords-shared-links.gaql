@@ -1,0 +1,7 @@
+SELECT
+  campaign.name,
+  shared_set.name,
+  shared_set.resource_name
+FROM campaign_shared_set
+WHERE shared_set.type = 'NEGATIVE_KEYWORDS'
+ORDER BY campaign.name, shared_set.name

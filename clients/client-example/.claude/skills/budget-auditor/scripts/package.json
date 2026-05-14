@@ -1,0 +1,12 @@
+{
+  "name": "budget-auditor-scripts",
+  "version": "1.0.0",
+  "type": "module",
+  "private": true,
+  "description": "Diagnostic engines for budget-auditor skill",
+  "scripts": {
+    "pull": "node pull-all.js",
+    "analyze:health": "node analyze-budget-health.js",
+    "analyze:pacing": "node analyze-pacing.js"
+  }
+}

@@ -1,0 +1,20 @@
+SELECT
+  campaign.id,
+  campaign.name,
+  ad_group.id,
+  ad_group.name,
+  segments.date,
+  metrics.impressions,
+  metrics.clicks,
+  metrics.cost_micros,
+  metrics.conversions,
+  metrics.conversions_value,
+  metrics.average_cpc,
+  metrics.search_impression_share,
+  metrics.search_budget_lost_impression_share,
+  metrics.search_rank_lost_impression_share
+FROM ad_group
+WHERE campaign.advertising_channel_type = 'SHOPPING'
+  AND campaign.status = 'ENABLED'
+  AND ad_group.status = 'ENABLED'
+  AND segments.date {DATE_RANGE}

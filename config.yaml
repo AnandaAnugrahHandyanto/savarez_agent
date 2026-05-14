@@ -1,0 +1,10 @@
+model:
+  provider: openrouter
+  default: minimax/minimax-m2.7
+  base_url: https://openrouter.ai/api/v1
+  api_mode: chat_completions
+
+auxiliary:
+  goal_judge:
+    provider: openrouter
+    model: google/gemma-4-26b-a4b-it:free

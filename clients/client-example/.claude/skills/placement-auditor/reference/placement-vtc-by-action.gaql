@@ -1,0 +1,10 @@
+SELECT
+  group_placement_view.placement,
+  campaign.id,
+  segments.conversion_action,
+  segments.conversion_action_name,
+  metrics.view_through_conversions
+FROM group_placement_view
+WHERE segments.date {DATE_RANGE}
+  AND metrics.view_through_conversions > 0
+ORDER BY metrics.view_through_conversions DESC

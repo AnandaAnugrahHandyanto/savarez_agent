@@ -14,7 +14,9 @@ import hmac
 import importlib.util
 import json
 import logging
+import mimetypes
 import os
+import re
 import secrets
 import subprocess
 import sys
@@ -50,7 +52,7 @@ from hermes_cli.config import (
 from gateway.status import get_running_pid, read_runtime_status
 
 try:
-    from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+    from fastapi import Body, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
     from fastapi.middleware.cors import CORSMiddleware
     from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
     from fastapi.staticfiles import StaticFiles
@@ -472,6 +474,10 @@ class ModelAssignment(BaseModel):
     provider: str
     model: str
     task: str = ""
+
+
+_CHAT_UPLOAD_MAX_BYTES = 50 * 1024 * 1024
+_CHAT_UPLOAD_SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9._ -]+")
 
 
 _GATEWAY_HEALTH_URL = os.getenv("GATEWAY_HEALTH_URL")
@@ -1267,6 +1273,70 @@ async def reveal_env_var(body: EnvVarReveal, request: Request):
 
     _log.info("env/reveal: %s", body.key)
     return {"key": body.key, "value": value}
+
+
+def _safe_chat_upload_name(raw_name: str) -> str:
+    """Return a conservative filename for dashboard chat uploads."""
+    name = Path(raw_name or "upload").name.strip().replace("\x00", "")
+    name = _CHAT_UPLOAD_SAFE_NAME_RE.sub("_", name)
+    name = name.strip(" .")
+    return name or "upload"
+
+
+@app.post("/api/chat/uploads")
+async def upload_chat_file(request: Request, body: bytes = Body(default=b"")):
+    """Store one browser-selected file for use in the embedded chat.
+
+    The frontend sends the file bytes as the request body and the original
+    filename in ``X-Hermes-Filename``.  This avoids a hard dependency on
+    python-multipart for the dashboard extra while still supporting ordinary
+    browser file picker uploads.
+    """
+    _require_token(request)
+
+    raw_name = urllib.parse.unquote(request.headers.get("x-hermes-filename", ""))
+    safe_name = _safe_chat_upload_name(raw_name)
+    upload_id = f"{int(time.time())}-{secrets.token_urlsafe(6)}"
+    upload_dir = get_hermes_home() / "dashboard_uploads" / upload_id
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    target = upload_dir / safe_name
+
+    try:
+        total = len(body)
+        if total > _CHAT_UPLOAD_MAX_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail="File is too large for dashboard chat upload",
+            )
+        target.write_bytes(body)
+    except HTTPException:
+        raise
+    except Exception:
+        _log.exception("POST /api/chat/uploads failed")
+        raise HTTPException(status_code=500, detail="Failed to save upload")
+
+    mime_type, _ = mimetypes.guess_type(safe_name)
+    suffix = target.suffix.lower()
+    is_image = suffix in {
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".gif",
+        ".webp",
+        ".bmp",
+        ".tiff",
+        ".tif",
+        ".heic",
+        ".heif",
+    }
+    return {
+        "ok": True,
+        "name": safe_name,
+        "path": str(target),
+        "size": total,
+        "mime_type": mime_type,
+        "is_image": is_image,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -3150,6 +3220,7 @@ except ImportError as _pty_import_err:  # pragma: no cover - Windows-only path
 _RESIZE_RE = re.compile(rb"\x1b\[RESIZE:(\d+);(\d+)\]")
 _PTY_READ_CHUNK_TIMEOUT = 0.2
 _VALID_CHANNEL_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
+_QUERY_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
 # Starlette's TestClient reports the peer as "testclient"; treat it as
 # loopback so tests don't need to rewrite request scope.
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost", "testclient"})
@@ -3184,6 +3255,9 @@ _event_lock = asyncio.Lock()
 def _resolve_chat_argv(
     resume: Optional[str] = None,
     sidecar_url: Optional[str] = None,
+    model: Optional[str] = None,
+    provider: Optional[str] = None,
+    toolsets: Optional[str] = None,
 ) -> tuple[list[str], Optional[str], Optional[dict]]:
     """Resolve the argv + cwd + env for the chat PTY.
 
@@ -3199,11 +3273,20 @@ def _resolve_chat_argv(
     `sidecar_url` (when set) is forwarded as ``HERMES_TUI_SIDECAR_URL`` so
     the spawned ``tui_gateway.entry`` can mirror dispatcher emits to the
     dashboard's ``/api/pub`` endpoint (see :func:`pub_ws`).
+
+    URL-scoped model/provider overrides are exported through the same env vars
+    the TUI gateway already honors, so separate browser windows can run
+    separate PTY children against different LLMs without mutating config.yaml.
     """
     from hermes_cli.main import PROJECT_ROOT, _make_tui_argv
 
     argv, cwd = _make_tui_argv(PROJECT_ROOT / "ui-tui", tui_dev=False)
     env = os.environ.copy()
+    workspace_cwd = _resolve_dashboard_chat_workspace_cwd(env)
+    env.setdefault("HERMES_PYTHON_SRC_ROOT", str(PROJECT_ROOT))
+    env.setdefault("HERMES_PYTHON", sys.executable)
+    env["HERMES_CWD"] = workspace_cwd
+    env["TERMINAL_CWD"] = workspace_cwd
     env.setdefault("NODE_ENV", "production")
     # Browser-embedded chat should prefer stable wheel-based scrollback over
     # native terminal mouse tracking. When mouse tracking is enabled, wheel
@@ -3222,7 +3305,54 @@ def _resolve_chat_argv(
     if sidecar_url:
         env["HERMES_TUI_SIDECAR_URL"] = sidecar_url
 
+    if model:
+        env["HERMES_MODEL"] = model
+        env["HERMES_INFERENCE_MODEL"] = model
+
+    if provider:
+        env["HERMES_TUI_PROVIDER"] = provider
+        env["HERMES_INFERENCE_PROVIDER"] = provider
+
+    if toolsets:
+        env["HERMES_TUI_TOOLSETS"] = toolsets
+
     return list(argv), str(cwd) if cwd else None, env
+
+
+def _resolve_dashboard_chat_workspace_cwd(env: dict[str, str]) -> str:
+    """Return the workspace cwd for the dashboard-embedded TUI.
+
+    The PTY process itself runs from the bundled TUI directory so Node can
+    locate its assets.  The Python gateway inside that TUI should still behave
+    like a normal Hermes session rooted at the dashboard launch directory (or
+    an explicit terminal.cwd), otherwise file completion/context is scoped to
+    ui-tui and project files outside that subtree disappear.
+    """
+    raw_cwd: object = None
+    try:
+        config = load_config()
+        terminal = config.get("terminal") if isinstance(config, dict) else None
+        if isinstance(terminal, dict):
+            candidate = terminal.get("cwd")
+            if candidate not in (None, "", ".", "auto", "cwd"):
+                raw_cwd = candidate
+    except Exception:
+        raw_cwd = None
+
+    if raw_cwd is None:
+        for key in ("TERMINAL_CWD", "HERMES_CWD"):
+            candidate = env.get(key)
+            if candidate and candidate not in (".", "auto", "cwd"):
+                raw_cwd = candidate
+                break
+
+    if raw_cwd is None:
+        raw_cwd = os.getcwd()
+
+    path = os.path.expanduser(str(raw_cwd))
+    if not os.path.isabs(path):
+        path = os.path.abspath(path)
+    return path
 
 
 def _build_sidecar_url(channel: str) -> Optional[str]:
@@ -3260,6 +3390,24 @@ def _channel_or_close_code(ws: WebSocket) -> Optional[str]:
     return channel if _VALID_CHANNEL_RE.match(channel) else None
 
 
+def _clean_pty_query_value(
+    value: Optional[str],
+    *,
+    name: str,
+    max_len: int,
+) -> Optional[str]:
+    """Return a sanitized PTY query override, or raise on unsafe input."""
+    if value is None:
+        return None
+
+    cleaned = value.strip()
+    if not cleaned:
+        return None
+    if len(cleaned) > max_len or _QUERY_CONTROL_RE.search(cleaned):
+        raise ValueError(f"invalid {name}")
+    return cleaned
+
+
 @app.websocket("/api/pty")
 async def pty_ws(ws: WebSocket) -> None:
     if not _DASHBOARD_EMBEDDED_CHAT_ENABLED:
@@ -3275,6 +3423,26 @@ async def pty_ws(ws: WebSocket) -> None:
 
     if not _ws_client_is_allowed(ws):
         await ws.close(code=4403)
+        return
+
+    try:
+        model_override = _clean_pty_query_value(
+            ws.query_params.get("model"),
+            name="model",
+            max_len=256,
+        )
+        provider_override = _clean_pty_query_value(
+            ws.query_params.get("provider"),
+            name="provider",
+            max_len=128,
+        )
+        toolsets_override = _clean_pty_query_value(
+            ws.query_params.get("toolsets"),
+            name="toolsets",
+            max_len=256,
+        )
+    except ValueError:
+        await ws.close(code=4400)
         return
 
     await ws.accept()
@@ -3297,7 +3465,13 @@ async def pty_ws(ws: WebSocket) -> None:
     sidecar_url = _build_sidecar_url(channel) if channel else None
 
     try:
-        argv, cwd, env = _resolve_chat_argv(resume=resume, sidecar_url=sidecar_url)
+        argv, cwd, env = _resolve_chat_argv(
+            resume=resume,
+            sidecar_url=sidecar_url,
+            model=model_override,
+            provider=provider_override,
+            toolsets=toolsets_override,
+        )
     except SystemExit as exc:
         # _make_tui_argv calls sys.exit(1) when node/npm is missing.
         await ws.send_text(f"\r\n\x1b[31mChat unavailable: {exc}\x1b[0m\r\n")

@@ -1,0 +1,38 @@
+SELECT
+  campaign.id,
+  campaign.name,
+  campaign.status,
+  campaign.serving_status,
+  campaign.advertising_channel_type,
+  campaign.advertising_channel_sub_type,
+  campaign.bidding_strategy_type,
+  campaign.bidding_strategy,
+  campaign.target_cpa.target_cpa_micros,
+  campaign.target_roas.target_roas,
+  campaign.maximize_conversions.target_cpa_micros,
+  campaign.maximize_conversion_value.target_roas,
+  campaign.target_impression_share.location,
+  campaign.target_impression_share.location_fraction_micros,
+  campaign.target_impression_share.cpc_bid_ceiling_micros,
+  campaign.manual_cpc.enhanced_cpc_enabled,
+  campaign.percent_cpc.cpc_bid_ceiling_micros,
+  campaign.campaign_budget,
+  campaign_budget.amount_micros,
+  campaign_budget.explicitly_shared,
+  metrics.impressions,
+  metrics.clicks,
+  metrics.cost_micros,
+  metrics.conversions,
+  metrics.conversions_value,
+  metrics.average_cpc,
+  metrics.search_impression_share,
+  metrics.search_budget_lost_impression_share,
+  metrics.search_rank_lost_impression_share,
+  metrics.search_top_impression_share,
+  metrics.search_absolute_top_impression_share,
+  metrics.cost_per_conversion,
+  metrics.value_per_conversion
+FROM campaign
+WHERE campaign.status = 'ENABLED'
+  {EXPERIMENT_FILTER}
+  AND segments.date {DATE_RANGE}

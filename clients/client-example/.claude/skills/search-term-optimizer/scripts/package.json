@@ -1,0 +1,10 @@
+{
+  "name": "search-term-optimizer-scripts",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Search term optimizer mutation script (Google Ads API, dry-run + live)",
+  "dependencies": {
+    "google-ads-api": "^20.0.0",
+    "dotenv": "^16.4.5"
+  }
+}

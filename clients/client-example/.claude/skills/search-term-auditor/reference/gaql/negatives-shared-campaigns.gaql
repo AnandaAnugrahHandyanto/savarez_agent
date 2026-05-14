@@ -1,0 +1,11 @@
+SELECT
+  campaign.id,
+  campaign.name,
+  campaign.status,
+  campaign.serving_status,
+  shared_set.id,
+  shared_set.name
+FROM campaign_shared_set
+WHERE campaign.status = 'ENABLED'
+  AND campaign.serving_status = 'SERVING'
+  AND shared_set.type = 'NEGATIVE_KEYWORDS'

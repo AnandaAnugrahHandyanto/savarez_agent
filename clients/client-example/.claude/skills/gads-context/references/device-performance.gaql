@@ -1,0 +1,17 @@
+SELECT
+  campaign.id,
+  campaign.name,
+  campaign.advertising_channel_type,
+  segments.device,
+  metrics.impressions,
+  metrics.clicks,
+  metrics.ctr,
+  metrics.cost_micros,
+  metrics.conversions,
+  metrics.conversions_value,
+  metrics.average_cpc,
+  metrics.cost_per_conversion
+FROM campaign
+WHERE segments.date {DATE_RANGE}
+  AND campaign.status = 'ENABLED'
+ORDER BY campaign.name, metrics.cost_micros DESC

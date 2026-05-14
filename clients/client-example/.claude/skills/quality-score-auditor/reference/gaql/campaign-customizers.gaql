@@ -1,0 +1,11 @@
+SELECT
+  campaign.id,
+  campaign.name,
+  campaign_customizer.customizer_attribute,
+  campaign_customizer.status,
+  campaign_customizer.value.type,
+  campaign_customizer.value.string_value
+FROM campaign_customizer
+WHERE campaign.advertising_channel_type = 'SEARCH'
+  AND campaign.status = 'ENABLED'
+  AND campaign_customizer.status = 'ENABLED'

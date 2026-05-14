@@ -1,0 +1,8 @@
+SELECT
+  campaign.id,
+  campaign.name,
+  campaign.advertising_channel_type,
+  campaign.video_brand_safety_suitability
+FROM campaign
+WHERE campaign.status = 'ENABLED'
+  AND campaign.advertising_channel_type IN ('VIDEO', 'DISPLAY', 'DEMAND_GEN', 'PERFORMANCE_MAX')

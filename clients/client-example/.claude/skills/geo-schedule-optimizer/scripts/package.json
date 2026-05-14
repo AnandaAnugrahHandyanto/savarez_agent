@@ -1,0 +1,10 @@
+{
+  "name": "geo-schedule-optimizer-scripts",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Google Ads mutation scripts for geo-schedule-optimizer skill",
+  "dependencies": {
+    "google-ads-api": "^22.0.0",
+    "dotenv": "^16.4.5"
+  }
+}

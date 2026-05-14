@@ -1,0 +1,24 @@
+SELECT
+  campaign.id,
+  campaign.name,
+  campaign.experiment_type,
+  ad_group.id,
+  ad_group.name,
+  ad_group_criterion.criterion_id,
+  ad_group_criterion.keyword.text,
+  ad_group_criterion.keyword.match_type,
+  segments.week,
+  metrics.impressions,
+  metrics.clicks,
+  metrics.cost_micros,
+  metrics.historical_quality_score,
+  metrics.historical_creative_quality_score,
+  metrics.historical_landing_page_quality_score,
+  metrics.historical_search_predicted_ctr
+FROM keyword_view
+WHERE campaign.advertising_channel_type = 'SEARCH'
+  AND campaign.status = 'ENABLED'
+  AND campaign.experiment_type = 'BASE'
+  AND ad_group_criterion.status = 'ENABLED'
+  AND ad_group_criterion.negative = FALSE
+  AND segments.date {DATE_RANGE}

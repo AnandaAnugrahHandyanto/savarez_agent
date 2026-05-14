@@ -1,0 +1,10 @@
+# AI Is Not Popular
+
+**Channel:** Evan Puschak
+**Video ID:** zwTse0fIRDQ
+**Upload Date:** 2026-01-26
+**URL:** https://www.youtube.com/watch?v=zwTse0fIRDQ
+
+## Transcript
+
+AI is not popular. It is scary. It sounds like job loss and it sounds expensive. When you see headlines, you know, Goldman Sachs forecasted that this year, just in the United States, we're going to spend like $600 billion on building data centers and it's all going into warehouses that are filled with miles of wires and copper pipes. It's going to increase electricity prices and they are ugly and people just don't like them. And even if you don't live near a data center, which is one great because you don't want to live near a data center, but two, if you don't live near one, your politicians are going to act like they are. You can expect that all these political figures will recognize that Trump has really embraced this AI stuff. Like if there's any central feature of his economic and technological policy, it is the embrace of artificial intelligence. And you can expect that whatever your political leanings, whether you love Donald Trump, whether you hate him, there's going to be ads. There's going to be talking points about these data centers. There's going to be talking points about how people are losing their jobs or your electricity is higher. And whether that's true or not, it's worth recognizing that these politicians know it's important and they are going to use it to manipulate how you feel. They're going to use it to manipulate your vote. What that additionally means is that companies are subject to political ideology. If you are thinking about investing or working in any of these companies, you need to realize that this is essentially a political choice. That being a part of this for better or for worse becomes a political issue and you have to behave accordingly. In a good world, technology lives or dies by its merits alone. But this year in 2026, technology will live or die based on the politicians it aligns itself with. And I just don't think that's good for anyone.

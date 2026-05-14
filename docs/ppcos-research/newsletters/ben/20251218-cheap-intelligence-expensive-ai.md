@@ -1,0 +1,54 @@
+# Cheap intelligence, expensive AI
+
+**From:** "ben's bites" <bensbites@substack.com>
+**Date:** 2025-12-18T14:05:26.000Z
+**Folder:** ben
+
+---
+
+View this post on the web at https://www.bensbites.com/p/cheap-intelligence-expensive-ai
+
+The newsletter for the technically curious. Updates, tool reviews, and lay of the land from an exited founder turned investor and forever tinkerer.
+Hey folks,
+Gemini 3 Flash is out [ https://substack.com/redirect/8acc4669-6e73-4ea9-9cff-9eabf0e43a80?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ]. It’s a good enough model to now shift any use-case that was running fine on the previous generation of “expensive models” like 2.5 Pro, and get a boost in performance while reducing your costs. For example, it scores 78% on SWE Bench Verified, higher than Sonnet 4.5 and even 3 Pro.
+Its pricing, though, again highlights the trend for 2025 - “Intelligence is getting cheaper, but AI is becoming more expensive than ever.” Gemini 3 Flash and other recent models (3 Pro, GPT 5.2) have had a significant pricing jump from the baseline established earlier this year. Combine that with an increasing number of $200/mo plans, “the best AI you can get” keeps costing you more, even if the cost of intelligence keeps going down.
+ChatGPT has a standalone UI for images [ https://substack.com/redirect/5bb1ffdb-046b-4700-8f56-20c11962bf45?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ] now, powered by its new image generation models GPT-Image-1.5. It beats Google’s Nano Banana Pro on leaderboards by just a margin. OpenAI is also, once again, attempting to make an App Store for ChatGPT - they have now opened submissions for review [ https://substack.com/redirect/24fa6355-ece2-43f4-8baf-3c0d36f0f29f?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ] and a path to monetise [ https://substack.com/redirect/31a06998-5b30-46b1-8174-e5a51469dbfa?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ] them.
+Meta has been focusing on its SAM (Segment Anything Model) series of models recently. The latest addition to it is Sam Audio [ https://substack.com/redirect/cae522a8-ff1e-49a2-9932-634d751177b9?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ], which isolates and edits sound from complex audio mixtures. Also, SAM3 now powers Instagram’s Edit app [ http://make it easier to blur an object, tag an outfit, outline, and more. ] - making it easier to blur an object, tag an outfit, outline, and more.
+Claude Code [ https://substack.com/redirect/56adad22-8ad4-4d3a-9e05-99cdba41465a?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ] now suggest follow-up prompts automatically (press Tab to accept), highlights syntax in diffs, and has a first-party plugins marketplace. Pro tip: if you installed Claude Code a long time ago, you should switch to their native install (vs the old NPM install). Run “claude install” in your terminal to update.
+Register now for  [ https://substack.com/redirect/2791cc00-6f9b-4400-abe4-115c2e781af1?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ]MongoDB’s Agentic Hackathon [ https://substack.com/redirect/2791cc00-6f9b-4400-abe4-115c2e781af1?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ] on Jan 10. Build your idea in 1 day, pitch it to top industry leaders, and compete for $30k in cash prizes. Finalists receive free access to MongoDB.local SF tech conf [ https://substack.com/redirect/64c9b297-47c8-434e-a89d-5353d059fe2a?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ] on Jan 15. Not competing? Use code MDBBuilder for 50% off .local tickets.
+🌐 What I’m consuming
+Frontier of the Year 2025 [ https://substack.com/redirect/5ed7e7c8-06c2-4608-b375-cf07ca9a00b4?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ] - New milestones reached in 2025 (beyond just AI) and their potential impact.
+Cursor CEO interviews John Schulman [ https://substack.com/redirect/a3e52804-2280-4bdd-849a-6257f582a0c3?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ], the co-founder of Thinking Machines and previously OpenAI.
+Prompt caching [ https://substack.com/redirect/1d47523b-bf3e-4c94-a157-bbd286d288b5?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ] - 10x cheaper LLM tokens, but how? This is a very good and beginner-friendly read, even if you don’t know anything about LLMs
+Prototypes [ https://substack.com/redirect/30d73a39-0a64-4bc5-a8ce-b8e085e82281?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ] are the new PRDs.
+What actually is Claude Code’s plan mode [ https://substack.com/redirect/88df7694-e2da-4087-a97e-a8abf1d21afa?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ]?
+The jagged AI frontier is a data frontier [ https://substack.com/redirect/6a4b4034-5f21-4c4e-b8cc-92b741f39bca?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ].
+Writing the prompts [ https://substack.com/redirect/1aaa34a8-425b-4b1b-ba36-2b0fedd7f202?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ] for Granola’s Crunched 2025.
+This week, Adobe added three of its most popular apps, Photoshop, Adobe Express and Acrobat, into ChatGPT. So now you can edit photos, create designs and edit PDFs directly in your ChatGPT conversations. This handy tutorial shows you how to get started for free. [ https://substack.com/redirect/9d8ac37c-3e6e-497d-b199-5b541379d760?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ]*
+⚙️ Tools and demos
+These new DEEP WORK AI Agents by a Swedish startup called “Incredible“ are going viral. Don’t miss this one! Only 300 spots left. Join here [ https://substack.com/redirect/5ce7e133-5af6-45ae-b777-83ceda06a02f?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ].*
+People Search by Exa AI [ https://substack.com/redirect/fe86300f-a102-4a12-9702-191238ef54a2?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ] - Search over 1 billion people profiles semantically for sales, recruiting, market research and more.
+Resemble AI [ https://substack.com/redirect/b1cc6334-dbf0-4346-a5e1-b33dc4f367f8?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ] - Deepfake detection with the answer to why some content is flagged, not just that it is.
+Letta Code [ https://substack.com/redirect/ac43bcb6-1971-4b65-88c6-9040a98e3d61?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ] - A memory-first coding agent. Long-lived agents that persist across sessions and improve with use. (read more [ https://substack.com/redirect/f6f63023-6836-4a7b-a40e-37c30938e706?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ])
+ngrok.ai [ https://substack.com/redirect/0a085161-4b6c-4cc8-a121-2d71e85e8a65?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ] - Route, secure, and manage traffic to any LLM—cloud or local—with one unified platform.
+Review.fast [ https://substack.com/redirect/1adecea2-fbc6-4447-8404-bcbce13b7a1d?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ] - Speed up human review of AI-generated code 3X.
+Quorum [ https://substack.com/redirect/8308ae8d-66ff-429a-bcde-caaef01d8752?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ] - Get AI to write text that doesn’t feel like slop.
+🥣 Dev Dish
+Mistral has a new API only model called Mistral Small Creative [ https://substack.com/redirect/c80443c5-5fea-461e-8e27-e2d6e06b63e2?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ] with $0.1 and $0.3 input/output costs for 1M tokens. (available on OpenRouter too)
+port-killer [ http://Native macOS menu bar app for finding and killing processes on open ports ] - Native macOS menu bar app for finding and killing processes on open ports.
+prettylog.net [ https://substack.com/redirect/ff4e9207-e021-457e-8277-bee42f48e2c8?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ] - Parser & formatter with search and syntax highlighting for your raw logs, debug output, etc.
+google/mcp [ https://substack.com/redirect/2b46afa2-f4aa-474a-baad-7bdaab2380d6?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ] - The GitHub repo for all MCP servers at Google.
+mini-SGLang [ https://substack.com/redirect/975b1d46-4e82-487d-8f61-d04c88340cad?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ] - Distilled version of SGLang from 300K into 5,000 lines for anyone to understand how inference really works.
+🍦 Afters
+Replit Learn [ https://substack.com/redirect/4ee86511-6fd4-40bb-bad8-d66e4d72ce84?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ] - Free beginner-friendly lessons to build real apps.
+FrontierScience [ https://substack.com/redirect/75db35d1-041a-4a54-ba9b-858e38a96927?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ] - A new benchmark from OpenAI to measure PhD-level scientific reasoning across physics, chemistry, and biology. GPT-5.2 tops the chart in both structured and open-ended problems.
+YouTube is testing Playables Builders [ https://substack.com/redirect/46311b9b-538b-4e3a-a975-cc3750c77f24?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ] with creators to build mini games with AI and share them with their audience.
+Enjoy this newsletter? Forward it to a friend.
+That’s it for today. Feel free to comment and share your thoughts. 👋
+Find me on X [ https://substack.com/redirect/79f2b4ac-3f01-4946-9d57-e33b4ffd2228?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ], Linkedin [ https://substack.com/redirect/f193b044-3256-4609-b078-b68c0846e71d?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ], or Instagram [ https://substack.com/redirect/4d23dae2-3651-449c-8ef2-94b2739a7863?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ]
+Read about me [ https://substack.com/redirect/0d611e80-ed11-490e-90dd-eacc19265a37?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ] and Ben’s Bites
+📷 thumbnail creds: @keshavatearth [ https://substack.com/redirect/e2e5f4e2-f002-4b3d-bf28-5617188c7478?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ]
+Thanks to today’s sponsors who made this newsletter possible :)
+Wanna partner with us [ mailto:shanice@bensbites.com ] for Q1?
+
+Unsubscribe https://substack.com/redirect/2/eyJlIjoiaHR0cHM6Ly93d3cuYmVuc2JpdGVzLmNvbS9hY3Rpb24vZGlzYWJsZV9lbWFpbD90b2tlbj1leUoxYzJWeVgybGtJam94TWpVMU5UazVMQ0p3YjNOMFgybGtJam94T0RFNU5UWXdNellzSW1saGRDSTZNVGMyTmpBMk56QTFOaXdpWlhod0lqb3hOemszTmpBek1EVTJMQ0pwYzNNaU9pSndkV0l0TkRNM09USTVPU0lzSW5OMVlpSTZJbVJwYzJGaWJHVmZaVzFoYVd3aWZRLkx5VFNLTWNwSkk2RWlmOFFwWXZQM19NMk11Qm0zdXhfV0kyVXNjRnFPWUkiLCJwIjoxODE5NTYwMzYsInMiOjQzNzkyOTksImYiOmZhbHNlLCJ1IjoxMjU1NTk5LCJpYXQiOjE3NjYwNjcwNTYsImV4cCI6MjA4MTY0MzA1NiwiaXNzIjoicHViLTAiLCJzdWIiOiJsaW5rLXJlZGlyZWN0In0.2CnsAgkBoF028ZuuYRrDHw_Umebse6JGnlTZzVFtFhc?

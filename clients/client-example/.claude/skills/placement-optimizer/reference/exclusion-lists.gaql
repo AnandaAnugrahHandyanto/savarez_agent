@@ -1,0 +1,40 @@
+-- Re-pull current shared exclusion lists before generating mutations
+
+-- All placement exclusion lists
+SELECT
+  shared_set.resource_name,
+  shared_set.id,
+  shared_set.name,
+  shared_set.type,
+  shared_set.status,
+  shared_set.member_count,
+  shared_set.reference_count
+FROM shared_set
+WHERE shared_set.type = 'NEGATIVE_PLACEMENTS'
+  AND shared_set.status = 'ENABLED'
+
+-- List-to-campaign linkage
+SELECT
+  campaign.id,
+  campaign.name,
+  shared_set.id,
+  shared_set.name,
+  shared_set.type,
+  shared_set.member_count,
+  campaign_shared_set.status
+FROM campaign_shared_set
+WHERE shared_set.type = 'NEGATIVE_PLACEMENTS'
+  AND shared_set.status = 'ENABLED'
+
+-- Contents of each placement list
+SELECT
+  shared_set.id,
+  shared_set.name,
+  shared_criterion.criterion_id,
+  shared_criterion.type,
+  shared_criterion.placement.url,
+  shared_criterion.youtube_channel.channel_id,
+  shared_criterion.youtube_video.video_id,
+  shared_criterion.mobile_app_category.mobile_app_category_constant
+FROM shared_criterion
+WHERE shared_set.type = 'NEGATIVE_PLACEMENTS'

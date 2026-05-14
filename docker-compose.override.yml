@@ -1,0 +1,22 @@
+services:
+  gateway:
+    network_mode: bridge
+    ports:
+      - "127.0.0.1:9119:9119"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - .:/workspace/hermes-agent
+    env_file:
+      - .env
+    environment:
+      - HERMES_DASHBOARD=1
+      - HERMES_DASHBOARD_TUI=1
+      - HERMES_DASHBOARD_HOST=0.0.0.0
+      - HERMES_DASHBOARD_PORT=9119
+      - HERMES_CWD=/workspace/hermes-agent
+      - TERMINAL_CWD=/workspace/hermes-agent
+
+  dashboard:
+    profiles:
+      - standalone-dashboard

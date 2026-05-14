@@ -1,0 +1,2124 @@
+{
+  "schemaVersion": "1.0",
+  "baseVersion": "1.2.0",
+  "installedAt": "2026-05-13T17:12:49.527Z",
+  "lastUpdated": "2026-05-13T17:12:49.527Z",
+  "managedFiles": {
+    ".claude/agents/placement-content-reviewer.md": {
+      "checksum": "sha256:99642aa398912bad28b1a5bf9302f8d9cb0db8a4f3b22a9ccc0bc0491bfbc434",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/hooks/post-compact-reminder.sh": {
+      "checksum": "sha256:5a60f8fd2567b2354cb37450901e1007ce9a969a6b701087679c43face8c29b1",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/hooks/session-context-check.sh": {
+      "checksum": "sha256:442bdb78c3481d6ccfa0aa1f1c7920901ee9ea3655b06761cd012a38e425e60c",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/hooks/stop-memory-check.sh": {
+      "checksum": "sha256:039cee262217bb629480d7e4fa74aad13c42da51c074a5951de8c583723779e7",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/rules/context-files.md": {
+      "checksum": "sha256:7adbfc51284206d75f6099f8f61f30092090dd7e2509e7d5f1e79707ffb97259",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/rules/memory-logging.md": {
+      "checksum": "sha256:a3ee089d915cde5b6b5847f4f6a559979f8358ca679fa886c1d224c3af7606ac",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/rules/script-authoring.md": {
+      "checksum": "sha256:a3dbb32b97ceef3f2d35d222a441e4b0757ba0d55644398fa23de377af11e258",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/settings.local.json": {
+      "checksum": "sha256:e42711bf5cd03886335fdbfc7444c117b23d34030332ed9ce31a051581014042",
+      "version": "1.2.0",
+      "managedType": "config"
+    },
+    ".claude/skills/account-auditor/SKILL.md": {
+      "checksum": "sha256:5667a258e32a332d887ea6bf5a90426cd47ff80d97163be7f0c4e2e3054d6f56",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/account-auditor/reference/campaigns-settings-audit.gaql": {
+      "checksum": "sha256:05c24b2e7ae133586010004f467c7eab8b49afb2c31f5f5543fce32e56549476",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/account-auditor/reference/diagnostic-rules-adgroups.md": {
+      "checksum": "sha256:0515a729a6b45bc02f3a071d264a1b124a6a3ef6ce644b61d400542c42fb8fea",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/account-auditor/reference/diagnostic-rules-defaults.md": {
+      "checksum": "sha256:063db85cf69056a3ef37e0ac81afa37789d6ac8b402fbde4a2546ae0a0d23a9d",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/account-auditor/reference/diagnostic-rules-naming.md": {
+      "checksum": "sha256:b2abbed18ba7c5d8d2df4c53006cade82f6892c78bbd37cd4d4ddd0fa16f387f",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/account-auditor/reference/diagnostic-rules-settings.md": {
+      "checksum": "sha256:f3d8facaf3847dc731fadc93ce1dc22ada3e9f086e6ef75327dca3638729b325",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/account-auditor/reference/diagnostic-rules-shared.md": {
+      "checksum": "sha256:4299c67a60295e7382769d4e3ca7e2c3988ca23b5a23d6aa465da3f8008126c4",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/account-auditor/reference/diagnostic-rules-structure.md": {
+      "checksum": "sha256:e82b0f5c8244ea89ee89befa043870a440d0c9f52cf3ae6c6248ed0006d368ff",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/account-auditor/reference/keywords-all.gaql": {
+      "checksum": "sha256:9e9ea1074552c640c4fa845dc21bcb5ae1e385147c7b210cec334e3e6df3393b",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/account-auditor/reference/report-template.md": {
+      "checksum": "sha256:1070b7610dd1af1f015ac46a07368ce2f671add5d9e54f62442f2307cedb3bac",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/account-changelog/SKILL.md": {
+      "checksum": "sha256:3efe950070bf09147468354a9395264a1ec84166c1745b32853eeca7ce947d56",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/account-changelog/references/change-event.gaql": {
+      "checksum": "sha256:bd60bbf6224b9d49ea8905fc581c83bef3028d7765e7f7ca4f7da69a0ffe4595",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/account-changelog/scripts/fetch-changes.js": {
+      "checksum": "sha256:8aa762a4ea51855a5d9773252819042ddf194babf70fd812b66173188fb7f32f",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/account-changelog/scripts/package-lock.json": {
+      "checksum": "sha256:34d5e25ffe129f7f77373d50e609378a96609ee27da9f569bf18c5344866becb",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/account-changelog/scripts/package.json": {
+      "checksum": "sha256:65fd7fe62f57200883c2626d7ff6dd33b820e0a61a7c1c7af375dc7f116f9591",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/ads-context-gatherer/SKILL.md": {
+      "checksum": "sha256:68186589ee3c38216d9446d9d46b8d2e9b5fd56ac8f866db86f01ea0e7def2d1",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/ads-context-gatherer/references/brand-extraction-prompt.md": {
+      "checksum": "sha256:208103c1945903e940eefcec698a1a7c7f003d38298831f4cfd63551df081769",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/ads-context-gatherer/references/colour-extraction-script.md": {
+      "checksum": "sha256:f135ae0592f4ada3d428803606b035709b3ec2553012627881be212912b22ca3",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/ads-context-gatherer/references/palette-output-template.md": {
+      "checksum": "sha256:b9831adcfc3155731d1e4409927cbb7474a53503fcf18d6d1f9ae3c01bb613a2",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/bidding-auditor/SKILL.md": {
+      "checksum": "sha256:0d9b424429ff8a8d97dca84c775a633be82fdb48148135fc323c32563793763c",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/bidding-auditor/reference/configuration.md": {
+      "checksum": "sha256:40b11e573022b7ff1f0e3843d0b08370783eac92934a64c5df63becc75008161",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/bidding-auditor/reference/conv-volume-thresholds.md": {
+      "checksum": "sha256:394ec73cd55ae5faa73f991ec765ab893f177f5f9e8eefde6e6c09c8423ee408",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/bidding-auditor/reference/diagnostic-rules-adjustments.md": {
+      "checksum": "sha256:ca724b1a35d0ef7a5e15c06e190017560db2a080c3d47c841dac213641c36e8b",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/bidding-auditor/reference/diagnostic-rules-cpc.md": {
+      "checksum": "sha256:1f5c2dd96fdcbe9b21bfc82ae44d757e1b0e86a38e4f3e9d20387f3bfe4dc760",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/bidding-auditor/reference/diagnostic-rules-learning.md": {
+      "checksum": "sha256:0cda57325d2b1fee3bf416d27bbc64ac56eabc8708f7d4975c4c9696bf851287",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/bidding-auditor/reference/diagnostic-rules-portfolio.md": {
+      "checksum": "sha256:d16091b56eec23c3962ac122307425c0db5626973f35ba866a58d4d5516b35a5",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/bidding-auditor/reference/diagnostic-rules-strategy.md": {
+      "checksum": "sha256:fb55d1214073ba4b41c0d22e86ac373e0658a01472ebcad4c84d4590ca35f199",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/bidding-auditor/reference/diagnostic-rules-targets.md": {
+      "checksum": "sha256:68da65bfb45914971ad7a628b77f491ebd3fdac072b3a1ab59c7a1f2ee85ef49",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/bidding-auditor/reference/diagnostic-rules-value-rules.md": {
+      "checksum": "sha256:473522e5d099e27d59348d2d1cf77a406282782891593922eb43f50585c5d3e8",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/bidding-auditor/reference/gaql/bidding-strategies.gaql": {
+      "checksum": "sha256:b66d0bc5f9db3fc8cae831a5728d8c0d8dc46d7febfcc0ed607181e349874a94",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/bidding-auditor/reference/gaql/campaigns-bidding-daily.gaql": {
+      "checksum": "sha256:edecd4d29b6171d3b06c21d378de22e3e3dcaba9ae2a3e053b0903b0ea40f029",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/bidding-auditor/reference/gaql/campaigns-bidding-perf.gaql": {
+      "checksum": "sha256:a148c90feb887dc399dfa281808f8ab3d19f58b517a163dd01d0f58703035eaa",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/bidding-auditor/reference/gaql/campaigns-criteria.gaql": {
+      "checksum": "sha256:d9fd9adae1acfdb6d69b50ac373bbee99789f6c40eb06299f46ad04734b6919b",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/bidding-auditor/reference/gaql/conversion-value-rules.gaql": {
+      "checksum": "sha256:960119319df8b748b8f0aa3adc6a485b13fa027a4aa736cdd381cb822f15722b",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/bidding-auditor/reference/gaql/data-exclusions.gaql": {
+      "checksum": "sha256:6e4abfcff2548bc1f2c28ed57335433a9f2c496fa2b54e62b2d5a20e3669c380",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/bidding-auditor/reference/handoff-matrix.md": {
+      "checksum": "sha256:d48edbfea6f56ac8b0bb7d23ff5a5225bf24f1e08e65177243492337b342f058",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/bidding-auditor/reference/report-template.md": {
+      "checksum": "sha256:05917b5bec54a4e429a69815389c940b698647cd1de9cd6acdd689f10a819bff",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/bidding-auditor/reference/scoring-model.md": {
+      "checksum": "sha256:6ea9839943241a44da589d6a641daba501ac7435b9cc6273ac29384339dac81f",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/bidding-auditor/reference/synthesis-playbook.md": {
+      "checksum": "sha256:e46815fe9c1ee920db0cd06834c5fe1d0333d3884a72b4c788aaa7020b385cbb",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/bidding-auditor/scripts/analyze-adjustments.js": {
+      "checksum": "sha256:3a2810881bbac894a71808cb33dd9403733429679b688483667016a5bef427bb",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/bidding-auditor/scripts/analyze-portfolio.js": {
+      "checksum": "sha256:8bf8b0fe334b5e84f0826061b1f773b5d2b0835d04ba8286c9fe55bdf4ccfc23",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/bidding-auditor/scripts/analyze-strategy-targets.js": {
+      "checksum": "sha256:95b2fe3c4e964e86346e02edddc481fe79f302fa64954d8b52ac80ec313f77f4",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/bidding-auditor/scripts/analyze-temporal.js": {
+      "checksum": "sha256:585aad3529adeb48c935277aa0ebbdfcca30b3830341f3a1b25b314211f1034e",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/bidding-auditor/scripts/lib.js": {
+      "checksum": "sha256:0c50a2336d597ff81e1ed41732c61b820da879d1da852b4fae57ef76ad95933c",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/bidding-auditor/scripts/package.json": {
+      "checksum": "sha256:4d9597da142734ae0ec5342a5326097f6434133cb7cff6059c1321966e919fd0",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/bidding-auditor/scripts/pull-all.js": {
+      "checksum": "sha256:2aa8249b45b5913c52bcde2802b794358226f7cc55623d81f4033a12c20f4418",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/bidding-optimizer/SKILL.md": {
+      "checksum": "sha256:46f394184de3e4bc02e3edc09a4e6abebde9c0c5c28bef26b31aba129938df99",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/bidding-optimizer/reference/api-constraints.md": {
+      "checksum": "sha256:e783b2dcec50431f7eaf4879f87455b9fcf7013bed39c0f0dd4777d5262f5d84",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/bidding-optimizer/reference/bidding-safety.md": {
+      "checksum": "sha256:75b3738c1896c62dd9066f92c804cf4710f2450c76acfb788a067b3db6786db9",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/bidding-optimizer/reference/execute-rules.md": {
+      "checksum": "sha256:57be8b9bf4d3dbc6f1df11a4b54251d96477ffd4092bbd186df46515c569d89b",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/bidding-optimizer/reference/gaql/campaign-bid-strategy.gaql": {
+      "checksum": "sha256:8ff7600b5b3a903efaab31f7cc31b293cc045eba2a334eff7da4f5297a4ba5e8",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/bidding-optimizer/reference/handoff-matrix.md": {
+      "checksum": "sha256:729d83cc54af1d5e09632391b282ff815d9ab1415e319dd521715234b992e218",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/bidding-optimizer/reference/launcher-interface.md": {
+      "checksum": "sha256:30e91d5dc5ec90dea8f04b5e658224eaa596145801b1508193705f5f51c81373",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/bidding-optimizer/scripts/mutate.js": {
+      "checksum": "sha256:b81cfe51656f5316dc3b721642e2edfaaf529834ed80a7601850501a2cccb3b4",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/bidding-optimizer/scripts/package-lock.json": {
+      "checksum": "sha256:937487aa7288d0859e8cef12bea888a14578f8ea4e832d70b7b55a41abca3ca1",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/bidding-optimizer/scripts/package.json": {
+      "checksum": "sha256:4cf6aae1bd8ca641f05084d62939194fc3e29c52ba7da25eb0c9409140112588",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/budget-auditor/SKILL.md": {
+      "checksum": "sha256:65e695492fd169004ae5eabd2cd10e62df03a803ac602374c6265dcbfb8e4962",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/budget-auditor/reference/configuration.md": {
+      "checksum": "sha256:519da8a89c764aa85a67d18a87e57f61dc1a343b67e7e34c1959293ed9b9adb4",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/budget-auditor/reference/diagnostic-rules-allocation.md": {
+      "checksum": "sha256:24ab6923985f253be4fa3e7f146166d6958ef9506dea9cc418219d8785f076c7",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/budget-auditor/reference/diagnostic-rules-limitation.md": {
+      "checksum": "sha256:ca5068385e0a6d90f40d049624251e90cf70b6bfd888a08da6d647b0a0ad419c",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/budget-auditor/reference/diagnostic-rules-pacing.md": {
+      "checksum": "sha256:ee733097247bdadad7e41acf1960af7044a69c91f45f79ccab86d73fc38042d2",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/budget-auditor/reference/diagnostic-rules-shared.md": {
+      "checksum": "sha256:78e8a36e6d754d1f91018fd70e99542a3f3c0354a88040936c06f6cdc0d02950",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/budget-auditor/reference/diagnostic-rules-sufficiency.md": {
+      "checksum": "sha256:ade9d5e263ec3a8a686f89ee6adaddc993b9eed2a294ad8e3983d841ea579882",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/budget-auditor/reference/gaql/account-budget.gaql": {
+      "checksum": "sha256:3c75b2153abfbe53f70eb75d2b8b127650cb13fbf0376e7667fd0723a614f1ad",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/budget-auditor/reference/gaql/bidding-strategies.gaql": {
+      "checksum": "sha256:0bc4344240a389f7f0a4e6cedc19e69fd8c69a387365b261df9cef79854e30d5",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/budget-auditor/reference/gaql/campaign-budgets.gaql": {
+      "checksum": "sha256:105b42956f2ff9c0aa8b0672eb7c70a33e94416b92fe3ba38ed350ab30709e2c",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/budget-auditor/reference/gaql/campaigns-budget-perf.gaql": {
+      "checksum": "sha256:a1753431625020bc185c9234a2212d723adf6b3f18d58f36dce78c2e20e811e5",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/budget-auditor/reference/gaql/campaigns-pacing-daily.gaql": {
+      "checksum": "sha256:39c93e8531b73abf9d297e676d9d55740f8fddbd5ef45dbc05eecef90dc1313d",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/budget-auditor/reference/handoff-matrix.md": {
+      "checksum": "sha256:a012fb807fc235e259595388f570514588dbcd1a25cf2367d46a911b5e9d2dbf",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/budget-auditor/reference/report-template.md": {
+      "checksum": "sha256:956f728ce79d80dbef1c8e144e5572e7a79ecb570538a40f50730b2ce3ccb02a",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/budget-auditor/reference/scoring-model.md": {
+      "checksum": "sha256:9a4a9c1b702d1c1aeed3a94e5b9ee5e451a1c63ace74f210ff9976364584de8f",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/budget-auditor/reference/synthesis-playbook.md": {
+      "checksum": "sha256:98ae9d611977e66c54d03633e4dc3176449c3b89135be2755157cb0f94bf8b93",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/budget-auditor/scripts/analyze-budget-health.js": {
+      "checksum": "sha256:11aba5194fa43d684ae6ddded566828d13ffff0d2df8de43d0cdef8be8189f30",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/budget-auditor/scripts/analyze-pacing.js": {
+      "checksum": "sha256:0dd488bbc0fe7de8f5cb231ab4ccd28fcdc9700c395a9b39f0f8193a48de95fe",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/budget-auditor/scripts/lib.js": {
+      "checksum": "sha256:f72ef7703da87661a84d9680abf845879308a1f48a58871d12614cfe18833cf4",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/budget-auditor/scripts/package.json": {
+      "checksum": "sha256:e0de5bc37b7806334b08445367bae580d5cb9696a228e22176e00a13b0fe5ff7",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/budget-auditor/scripts/pull-all.js": {
+      "checksum": "sha256:418c317a8a3ed5c573638a74667f4aaff86800de9f225ea61dadac0f1b54e3c8",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/budget-optimizer/SKILL.md": {
+      "checksum": "sha256:7700d702d70d8b3f33f47e00a00a4a80155c16688ea6e8c3760948ee19c5f3c5",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/budget-optimizer/reference/api-constraints.md": {
+      "checksum": "sha256:d872c3621f42f728dce729c432d64341422e7311a639f61185e1ccd0f2c343b8",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/budget-optimizer/reference/budget-safety.md": {
+      "checksum": "sha256:8ee5af9a4e7a183331156103932d386270f61b64ce9dd9cc3bd79e8046d5b2bc",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/budget-optimizer/reference/execute-rules.md": {
+      "checksum": "sha256:7555055415c1b961d9fb7dad920237614826467f34002399c8764e5010ff7531",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/budget-optimizer/reference/gaql/campaign-budget-state.gaql": {
+      "checksum": "sha256:c38a34f3e8c72481a7c36087765480a9691378da56a7372509c7e0d023c16b1f",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/budget-optimizer/reference/handoff-matrix.md": {
+      "checksum": "sha256:9f378c2389f4f145b2a713627ad33f11dc59b141f5922bb97d92c5caaeb416da",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/budget-optimizer/scripts/mutate.js": {
+      "checksum": "sha256:eb71876cca951aae2aef34f7b284fa1c9ae5db31e3dbb72780be224179abaac4",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/budget-optimizer/scripts/package.json": {
+      "checksum": "sha256:bb6679efedd73c0cfa3113ded630bb3d2f49d19e26b6ee24b82a355d54c492eb",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/business-context-gatherer/SKILL.md": {
+      "checksum": "sha256:4b205a255763d46364b1c4953d1fff99db32f3eb85fab31d006ef66942e89aaf",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/business-context-gatherer/reference/business-md-template.md": {
+      "checksum": "sha256:4a2fac3c7064787c73f5257d3a5d94dd8b6566b72f1629512469fee4ee914f3c",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/business-context-gatherer/reference/goals-kpis-questions.md": {
+      "checksum": "sha256:becb3e2aecdf00e229e2829df39b4468588a17363851ff084b946fdb003e35c5",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/business-context-gatherer/reference/strategic-context-questions.md": {
+      "checksum": "sha256:1c53dda198a172af1c6456cc4d1a79252a1c8c2585b005724624dc1a4d514e24",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/business-context-gatherer/reference/unit-economics-questions.md": {
+      "checksum": "sha256:0447e66587073727c7c942685b5e44bf19cafbe7d9dfb8ede851c606f48624a4",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/business-context-gatherer/reference/validation-rules.md": {
+      "checksum": "sha256:b0eef4d7505c19f0a5e8bac531d4c43c87ad9cf31c2ba1497a5f2029479a1ae6",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/competitive-analyst/SKILL.md": {
+      "checksum": "sha256:f90543cb4b28a9dc47ee8c9d492a2f1566def5372a1d1bcf3baa6f532cfba57d",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/competitive-analyst/reference/diagnostic-rules.md": {
+      "checksum": "sha256:05ddb46a284db31589a8ac57ad85a92eb8e4a8dd12e8c1521609b68e201b1e58",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/competitive-analyst/reference/handoff-matrix.md": {
+      "checksum": "sha256:3631b70dee0083ad839ed74fc19ff3dfaed6ef2a118699df74c0fee2867d47f4",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/competitive-analyst/reference/report-template.md": {
+      "checksum": "sha256:10604cd03a0cf1d7172a8a06ba5d92359b0425c3777428b1a852365951b4d35e",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/competitive-analyst/reference/scoring-model.md": {
+      "checksum": "sha256:4540614b9579e5dfb265e42b6531a46822c841276836ec6dc073641ed86931bb",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/competitive-analyst/reference/synthesis-playbook.md": {
+      "checksum": "sha256:8a62313689b16560ab4c93d588977abf62eb3a79925b4bdd70c6aa48f0619285",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/competitive-analyst/scripts/analyze-competitive-position.js": {
+      "checksum": "sha256:4d8fd6896b48daa7c2b8b0b0b4e108f13d23464a76805b571506fc596e3912d2",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/competitive-analyst/scripts/gaql/campaign-is-timeseries.gaql": {
+      "checksum": "sha256:86814f022d878df2f18b6f22b6cabdefc57193107cc323e443c528557d0810db",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/competitive-analyst/scripts/gaql/keyword-is.gaql": {
+      "checksum": "sha256:28845be586cfcfbafd6378f4c61982aa17dec3d344e84b7096199a62523ffa46",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/competitive-analyst/scripts/gaql/shopping-adgroup-is-timeseries.gaql": {
+      "checksum": "sha256:9339930ceb5ac5072ab2af34ec8c790115bc71fa70866200243a6b56e22a0536",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/competitive-analyst/scripts/package-lock.json": {
+      "checksum": "sha256:031c21fb7c9706ebb7072c282ce5adbcbbeafd21429955baa52774ed3875bdf5",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/competitive-analyst/scripts/package.json": {
+      "checksum": "sha256:b36e38419f8353c21f277b37070bb92caf86a77e59a6bfba726bb87fb1a496dc",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/competitive-analyst/scripts/pull-all.js": {
+      "checksum": "sha256:ee1d07e3c08d8b018ee509907ef6e1747b88c13dc52806b60d3e7b2994e2d50e",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/competitor-scraper/SKILL.md": {
+      "checksum": "sha256:38a8ac71efa797a6306af09af8aad82887da84cf8941a72ad2ef273e93f9e8ff",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/competitor-scraper/references/location-codes.json": {
+      "checksum": "sha256:74fa3ef15cd2a0f28669adaa611e8dff0494a34565b5ed1b34d5fb691e1317d9",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/competitor-scraper/scripts/extract-ad-content.js": {
+      "checksum": "sha256:6062bb1caa6bb45cecc2c0a0b8560c5e5837c5d696f11757363ac237d955f202",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/competitor-scraper/scripts/extract-ad-images.js": {
+      "checksum": "sha256:1776189133841fef4e98590fc5776d6cf5269be0882f993c9149363340b5c15c",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/competitor-scraper/scripts/fetch-ads.js": {
+      "checksum": "sha256:2d759033fd5dece80ee9bfdebd6e0136aff6306ff48c696639c9d6bf34e9b47e",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/competitor-scraper/scripts/package-lock.json": {
+      "checksum": "sha256:4984005fdf236834597cc09189c6e5d561793e93635ce01e0a489f75662b1dd8",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/competitor-scraper/scripts/package.json": {
+      "checksum": "sha256:311509e7ab222dd9ed81e994432226d96fc53ddf5d584d54c2d2ee01b01eb3fd",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/ecom-page-builder/SKILL.md": {
+      "checksum": "sha256:7688b8fda32469c633d80eaaea51c5906da2a216d29403a8a58aa33fc6e46397",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/ecom-page-builder/reference/ecommerce-cta-patterns.md": {
+      "checksum": "sha256:a349a1db84469c4e87670477b6c1396a343291caf2a337c2408f7fda5121407d",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/ecom-page-builder/reference/ecommerce-headline-patterns.md": {
+      "checksum": "sha256:27e92809de98af979e8638440db8e87266d0ff5cd7bcb7c2be6577e55530c44c",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/ecom-page-builder/reference/ecommerce-html-template.md": {
+      "checksum": "sha256:fad5a357cf2a01d86b3301beed2d2e5dc20d76500c2deeaa8c3346526d89b714",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/ecom-page-builder/reference/ecommerce-persuasion-sequence.md": {
+      "checksum": "sha256:4e36340d13a12f4f927da5ef963fffaab7e25393229e01bdfecc9d4c636d8e39",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/ecom-page-builder/reference/ecommerce-quality-checklist.md": {
+      "checksum": "sha256:f30006c3c0bf8bc329fdec3affc8a2ecc360e7b37780b62d2cb9a748f0732766",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/ecom-page-builder/reference/ecommerce-section-catalog.md": {
+      "checksum": "sha256:22ca170b5b95bab84e3f2c6525ad6c754726cde4f44ad56aac1524e5e67c6709",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/gads-context/SKILL.md": {
+      "checksum": "sha256:d9fb5f96678381ceb992d1fe7aca4451482856b77f1d49bc646de82c920b710b",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/gads-context/references/adgroups.gaql": {
+      "checksum": "sha256:cd5240ba9bcc4beabdb94810249af332afba7da028e63e3180d033c75186454d",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/gads-context/references/ads.gaql": {
+      "checksum": "sha256:aae0c59efa8a69f53355c6616b27ffa230a68e639c81ccdf3fa55ec3e026c984",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/gads-context/references/assets-adgroup-performance.gaql": {
+      "checksum": "sha256:0886bcbfcb771bdd1a803c21af2ee79fa6571770007688ee22ef4af343cac23b",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/gads-context/references/assets-campaign-performance.gaql": {
+      "checksum": "sha256:6b0ef3d3ab95edfabd9a8120e4f7ca2b3b16e9aa3990caacbeb6869da7809ea5",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/gads-context/references/assets.gaql": {
+      "checksum": "sha256:89ea7196265bdeb33fb9b2c9f258d052b5ddea92d7868a565dc2bbe600b3d038",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/gads-context/references/audiences-adgroup.gaql": {
+      "checksum": "sha256:dca33e08d8274302678a37c01b3cd5357fadf12c3343f07967e2a4624cc35dfc",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/gads-context/references/audiences-campaign.gaql": {
+      "checksum": "sha256:07407196282776d74214dc7bcc6e6d13805b65149998ff5c97564f03bed385ed",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/gads-context/references/bidding-strategies.gaql": {
+      "checksum": "sha256:140e4918bbc81fa05171ace55e908005008459e2886674f167483edf12f114f0",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/gads-context/references/campaigns.gaql": {
+      "checksum": "sha256:3d6dbf5908758c291667e9b4290e8d8d707b638ebf7b0c7186178c269a8d8d71",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/gads-context/references/conversions.gaql": {
+      "checksum": "sha256:35ee29215cad5f7be8df0e67b5ead735a4bd96aac7406bc50430365f5f51d4e4",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/gads-context/references/device-performance.gaql": {
+      "checksum": "sha256:8c2e8617f096db7e4cadfedc7156f0f93fad636bca6457447769a19e616fb2d5",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/gads-context/references/geo-targeted.gaql": {
+      "checksum": "sha256:4278bedb2d6686ac0050a9bc31c1a3336c74f9cdb9df15bfa2459509a00a5f50",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/gads-context/references/geo-user-location.gaql": {
+      "checksum": "sha256:7f7d4dd11d53bb0bda78cd507c98924fd2128249cb199eaf494327f1fca63c60",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/gads-context/references/keywords.gaql": {
+      "checksum": "sha256:27966c7d783c96298c867b089f2a7e16f852939f5f0e25ec03c51d91bc70b3af",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/gads-context/references/negative-keywords-adgroup.gaql": {
+      "checksum": "sha256:4c462e7b70189bdb20ec9029bcefcd708080aa3329a6e97525b5be75259a7b2c",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/gads-context/references/negative-keywords-campaign.gaql": {
+      "checksum": "sha256:1e96a7856015269e6d308b74b6d7385d7c09ae57d4623074557fa2ff6f60a6a7",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/gads-context/references/negative-keywords-shared-links.gaql": {
+      "checksum": "sha256:2e387a3c06ff090e89a5663e34372262f8569c72b2194dbac84b690590969612",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/gads-context/references/negative-keywords-shared.gaql": {
+      "checksum": "sha256:05e173143bbf337f8007522cfa11be4b30962d75ff03fccab151ebd0c6bf6e59",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/gads-context/references/product-groups.gaql": {
+      "checksum": "sha256:88e600e18c148252ca8563940646030769c7e3fad858ed7a813beff1c93bc5ea",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/gads-context/references/search-terms.gaql": {
+      "checksum": "sha256:831a91ba612ae29a72322ca6721dd6d00dce291bc4bf19e36738f4479a092288",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/gads-context/references/shopping-performance.gaql": {
+      "checksum": "sha256:97ceb121f83dd0be3021fb15351b8c5d0e16038aeb1d36578e88ad86b6993023",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/gads-context/references/shopping-products.gaql": {
+      "checksum": "sha256:6df76f6cf4ce36261dc6b856848755fe705ff31237ca1979a12285ee2cbcc507",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/gads-context/references/templates/adgroups.md": {
+      "checksum": "sha256:30ea20a8b89ed951d3c43c81b38e9f2a1e9f54ca6f5ebcbf91b0f5efb0e70637",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/gads-context/references/templates/ads.md": {
+      "checksum": "sha256:74f8fccb7189f87361f78d5c47aa1a067058c5c7fcf5312b5d4c3153bed61c67",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/gads-context/references/templates/assets.md": {
+      "checksum": "sha256:32d4931713e31c7ef5199fd014f0e32a0c3e9b599bd6339bfc6c1acb87c64298",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/gads-context/references/templates/audiences.md": {
+      "checksum": "sha256:fd28825fe991cb91a449b97517a2c1d4f109547524aef5262cc56356a8c826ce",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/gads-context/references/templates/campaigns.md": {
+      "checksum": "sha256:d172d08f177d2da23e47ee978dad0dc76ef435879c1a03966d093b3c95111c6c",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/gads-context/references/templates/device-performance.md": {
+      "checksum": "sha256:5404c4d28d9881393d7c03285e0d23aefaf55a9f9548054a097b0a6e081bac78",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/gads-context/references/templates/geo-performance.md": {
+      "checksum": "sha256:9bb4bd02ab4ee523fedca1c1263aa3e4a031832f239b85d27fdbef9a3d7aeb80",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/gads-context/references/templates/keywords.md": {
+      "checksum": "sha256:553e7f7b6ae3100452186ac3eedffcab1db20dd14f0a052e2a89d643643e5914",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/gads-context/references/templates/search-terms.md": {
+      "checksum": "sha256:1f7043e74a7ecc05ed958bffb8c13e2ddfabc3df38d2abf19af95ea042e7745e",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/gads-context/references/templates/shopping.md": {
+      "checksum": "sha256:193ae2eadbf75162b7c636e0f991006c9e0b9c73a51182445f6435662438ba9e",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/gads-context/scripts/merge-csv.js": {
+      "checksum": "sha256:bd59f99bb714ccdcca83c504fb2e3a05f75ad14484c554d7abf4a318baf6d5c5",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/gads-context/scripts/package-lock.json": {
+      "checksum": "sha256:e8df56e05a2cc175ec1338d57e04c73fe78e089cc65496faa508197323890d70",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/gads-context/scripts/package.json": {
+      "checksum": "sha256:65fd7fe62f57200883c2626d7ff6dd33b820e0a61a7c1c7af375dc7f116f9591",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/gads-context/scripts/query.js": {
+      "checksum": "sha256:fde0b54e0a401675a1d1b39b758eb572cfcfc8656d18539d30f8f1a67746b92b",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/gads-context/scripts/run-all.js": {
+      "checksum": "sha256:c412905e8916e9a818ac1fa064a2bf7c7ce3d95ce143819efac89e1d285cb64d",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/geo-schedule-auditor/SKILL.md": {
+      "checksum": "sha256:26ce745541b8ef8ddd6acde818eb0eaefc5d67ce547337a39636c821dce14c46",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/geo-schedule-auditor/reference/campaign-criteria.gaql": {
+      "checksum": "sha256:d554a0387550f4b61d771e370ecf22ff6c3ffad2f92426c615edb74a1656a9e4",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/geo-schedule-auditor/reference/demographics-gender.gaql": {
+      "checksum": "sha256:00ed913d05af76c2d324b90e6d2c760a5f4f2fc5fedc36cf421066ee335e1471",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/geo-schedule-auditor/reference/demographics-income.gaql": {
+      "checksum": "sha256:c47bf1976ddb6482765866e18f49b39e48908d87e7d57f0306be7f473cd0a3d7",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/geo-schedule-auditor/reference/demographics.gaql": {
+      "checksum": "sha256:64613ec5fe7b0254759e21b2cfd4cd403c087912a8a918abd7ba1b9595c371a8",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/geo-schedule-auditor/reference/diagnostic-rules-demo.md": {
+      "checksum": "sha256:00f3c55d44aeba304f80c2d918235d95ec486d5ec2e549685568388b8f3d410e",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/geo-schedule-auditor/reference/diagnostic-rules-geo.md": {
+      "checksum": "sha256:9f9c366d35fcbff17598a1a67552f0ada93e15fb52b9ad968d6e9f2834e91557",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/geo-schedule-auditor/reference/diagnostic-rules-schedule.md": {
+      "checksum": "sha256:2fd4e550e8b2e869fa79e8767297eb32542dd5bbaa102ef5fd625d7967a051f6",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/geo-schedule-auditor/reference/diagnostic-rules-shared.md": {
+      "checksum": "sha256:2201604d84ee4cc8ad6245e48d84f0a153cb88f28b12bd8b86b7b89c198072ac",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/geo-schedule-auditor/reference/geo-performance.gaql": {
+      "checksum": "sha256:6b194227f4dbc0757d3e65263d17440ff2e5e9294280a61d95d37bc6109964a7",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/geo-schedule-auditor/reference/report-template.md": {
+      "checksum": "sha256:43cf5fe55b9c7ea00149cd1e5dc2dfd8eb19f80936f87d02328a91a295eeda90",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/geo-schedule-auditor/reference/schedule-performance.gaql": {
+      "checksum": "sha256:34c55ed7ea414ef32d89a6c5efe92551dbed65291957b3712e78ad7e5415efb8",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/geo-schedule-auditor/scripts/analyze-geo-seasonal.js": {
+      "checksum": "sha256:9693040ae88bae8a29cab06446b532075b9b0b1282531c9cafe45c00ad322620",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/geo-schedule-auditor/scripts/analyze-schedule-consistency.js": {
+      "checksum": "sha256:bd2aa68ef968d5efaee5e846feebb5b5766b3ec9d6edb79b74d59f7cfab8641e",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/geo-schedule-auditor/scripts/package-lock.json": {
+      "checksum": "sha256:93e40c7fbd1d1e02a7e69c5961bd52426987f3c812fbcb61cf93ec0de8bac423",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/geo-schedule-auditor/scripts/package.json": {
+      "checksum": "sha256:b8cc1d093c4ec645ba5501793f963290713f70940a6ad5c29ab34719afacc953",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/geo-schedule-optimizer/SKILL.md": {
+      "checksum": "sha256:3121a501f23df784ab9e2013f5f261082e6a8337a157274cadfbfbfd5f899219",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/geo-schedule-optimizer/reference/campaign-criteria.gaql": {
+      "checksum": "sha256:d554a0387550f4b61d771e370ecf22ff6c3ffad2f92426c615edb74a1656a9e4",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/geo-schedule-optimizer/reference/execute-rules.md": {
+      "checksum": "sha256:f25971221a927ce28c44fe9063839b45209e1871b954008e27045711a0180ba4",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/geo-schedule-optimizer/reference/handoff-matrix.md": {
+      "checksum": "sha256:bfa67e96bc5430c9bf529c0b320e3d83c8ba8300d5d377ddbbb80f65f4f5d2bf",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/geo-schedule-optimizer/reference/report-template.md": {
+      "checksum": "sha256:100f42e9bc35a4d4787f156051100b233d611daee61513d7d591b4de96029cbd",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/geo-schedule-optimizer/scripts/mutate.js": {
+      "checksum": "sha256:04385a523f7f68bccbecb058eb831adce69ef9471178d3397f5a23f1fa39b4d8",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/geo-schedule-optimizer/scripts/package.json": {
+      "checksum": "sha256:fb9fe90615ab247871ac2acbf6fc1f00dcc23489d29f0b873b72c65c86373e20",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/keyword-auditor/SKILL.md": {
+      "checksum": "sha256:03b1ba9cdc1769f3bb209009faf3d2a1d42a1ad4975258a4e4d520ffd61610cc",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/keyword-auditor/reference/diagnostic-rules.md": {
+      "checksum": "sha256:8c783be14430e4b83496f071faff112cf28048332f75c394396f078984104c54",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/keyword-auditor/reference/gaql/bidding-strategies.gaql": {
+      "checksum": "sha256:140e4918bbc81fa05171ace55e908005008459e2886674f167483edf12f114f0",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/keyword-auditor/reference/gaql/campaigns-settings.gaql": {
+      "checksum": "sha256:2dd0bfe08889cda9e1a71ec70da434ef38b91c2e3ed5c5a19b40a48c8e375a4a",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/keyword-auditor/reference/gaql/keywords-conversions-by-action.gaql": {
+      "checksum": "sha256:adb6e8ae78847af1a9cf1c82695076d8be118a19b2b7a87538022e8d3d4d92b7",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/keyword-auditor/reference/gaql/keywords-period.gaql": {
+      "checksum": "sha256:119d5e9936b8ba3ec2b2723be2afa8a8f3c35c2066f20f6614a45948f7e9a894",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/keyword-auditor/reference/gaql/keywords-structural.gaql": {
+      "checksum": "sha256:e40916b467fec0061af413bade214398f40294a8545e87894faaee48efb7493b",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/keyword-auditor/reference/gaql/negatives-adgroup.gaql": {
+      "checksum": "sha256:1d7c0b2aea1bccb28f606b46d91c0a13396aec3fbc05cc43839aed923d70bdd0",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/keyword-auditor/reference/gaql/negatives-campaign.gaql": {
+      "checksum": "sha256:a341417099f6599dc5778bc7b55934c7ce838c43ae34a123d2262ec885e9248f",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/keyword-auditor/reference/gaql/negatives-shared-campaigns.gaql": {
+      "checksum": "sha256:f60affe924e65d585ec75e9fb507923551cf80acc177b1995e626288ae82e936",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/keyword-auditor/reference/gaql/negatives-shared.gaql": {
+      "checksum": "sha256:68a3c2cb2b1503fd27ea295fd72a17e650784bbd9dece91404bfc34824cd08e0",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/keyword-auditor/reference/gaql/pmax-search-terms.gaql": {
+      "checksum": "sha256:787fc209313ffe988bdb7f075995bb2fdef96c074b250eefa1605d0de27ae316",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/keyword-auditor/reference/handoff-matrix.md": {
+      "checksum": "sha256:95adb6aa252cd3b191be7f020d50d00dc8fb92363f7d692bec9eb084d71ca6e3",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/keyword-auditor/reference/report-template.md": {
+      "checksum": "sha256:8d3f826795a5d764a04ae33d9312cd2ae3648f9ba12dcb055c17f7b1a8b65ea4",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/keyword-auditor/reference/scoring-model.md": {
+      "checksum": "sha256:c88e85ea04d42d7df3d22e435285bfa13e5f95bb5828c6edc4027d1ef271b5c1",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/keyword-auditor/reference/synthesis-playbook.md": {
+      "checksum": "sha256:aa537f6eaadcb987f4c2b7aad8555affaf70f3ed47bb999ecadafda4fe41c24b",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/keyword-auditor/scripts/analyze-keyword-overlap.js": {
+      "checksum": "sha256:c4362c7549817c64aea12a30eac6b37aa6bb7179a52ae9bf4b8d129719b83835",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/keyword-auditor/scripts/analyze-keyword-performance.js": {
+      "checksum": "sha256:9c5ebb59566d6fd2490b45d3317fae11a32d3294e03e69c58cf4878148efce5d",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/keyword-auditor/scripts/package-lock.json": {
+      "checksum": "sha256:18b27c698a5a34a5357ce164c033df44871b497725f7b2ccc20110f134e9e5dc",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/keyword-auditor/scripts/package.json": {
+      "checksum": "sha256:13793c541c5504ebebce4408f0b56813627a9f114de3a977a6378d5a528bb30f",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/keyword-auditor/scripts/pull-all.js": {
+      "checksum": "sha256:7bc6c5c51216c30b09f2d9a5a78fafe60f2dafd0ec0fb877d7dd61c61b153813",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/keyword-optimizer/SKILL.md": {
+      "checksum": "sha256:3cb315fe6e06d603967900ebb29980fd4b304fb066399757910ebd805204c711",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/keyword-optimizer/reference/api-constraints.md": {
+      "checksum": "sha256:8163f33093836051ff5954c6773a66db69366c13520b5e330dabc8893fa78270",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/keyword-optimizer/reference/bid-strategy-safety.md": {
+      "checksum": "sha256:581a125a155fe4c9324635127919a41be9eb8ce119ec11ef172f08ae4a57c5dc",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/keyword-optimizer/reference/execute-rules.md": {
+      "checksum": "sha256:9a66a0d71ffef343df0121114dfbcab1d65190bf3834f2ef79f5866b0899c8b8",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/keyword-optimizer/reference/gaql/campaign-bid-strategy.gaql": {
+      "checksum": "sha256:aeba9e0fdd4aed1cc5ec056f7279cf811dc8bfd3f92094c3de4c00fa5e9b199d",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/keyword-optimizer/reference/gaql/negatives-adgroup.gaql": {
+      "checksum": "sha256:4a0a69e358c636d473c6eceea2ea2305c7639e7c44be083795649ce2bfc54cb7",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/keyword-optimizer/reference/gaql/negatives-campaign.gaql": {
+      "checksum": "sha256:d4c8f1b0c6ed4163c41bcb2a59da7f515f721319e4f28e6c17493f4daddc3785",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/keyword-optimizer/reference/gaql/negatives-shared.gaql": {
+      "checksum": "sha256:059fb53f9a3dcea55b5529ef9d29adb5884a73964c72c46e1060ecb25ebb829f",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/keyword-optimizer/reference/handoff-matrix.md": {
+      "checksum": "sha256:74def770460c74bf404ca0c183e6b16a9532439d650ddb40ef3dcc21553912c2",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/keyword-optimizer/scripts/mutate.js": {
+      "checksum": "sha256:bcead39f77ea5f01e88001ebdca615b35614c20c6fc368a027bbccdf43d9a2d8",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/keyword-optimizer/scripts/package-lock.json": {
+      "checksum": "sha256:cc0dc9f8f21129775322b918916683b9d6353250cde11053b36ab8bffb3d5979",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/keyword-optimizer/scripts/package.json": {
+      "checksum": "sha256:5020586396176e294cd432f65d90d117475331b69ef5c91e0e6bf9ec7ce96e76",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/landing-page-builder/SKILL.md": {
+      "checksum": "sha256:52990d46a0878fd9b1bb5102ba76f4c0b1486b6519b911689fd447971a83eabe",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/landing-page-builder/reference/awareness-and-hierarchy.md": {
+      "checksum": "sha256:dff6afd0c2083fd0df144a749f153d93932100564b54384d87679384436fea61",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/landing-page-builder/reference/cta-patterns.md": {
+      "checksum": "sha256:a38151f1aa8a1ec0ff899d1b3c3b9e74937779733e8434e09ecbf71184983e7a",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/landing-page-builder/reference/headline-patterns.md": {
+      "checksum": "sha256:e2e2ff1be3a120c3b2b32656e4f214742d45d34e5340225fb91b717815abb13a",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/landing-page-builder/reference/html-template.md": {
+      "checksum": "sha256:f6afb8d07d5d18815f1be15fd7be5869d68fe043180ee9571b6d6c9d78a30854",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/landing-page-builder/reference/quality-checklist.md": {
+      "checksum": "sha256:0982d8346b865b3e9003bbe8516a94585d4e027b1948c30ef4af3d67057496ed",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/landing-page-builder/reference/section-patterns.md": {
+      "checksum": "sha256:d04e2faa7118f9e2e37d3426008a94102dc35167828b2be3c7d7be1d9fd9ea12",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/lp-auditor/SKILL.md": {
+      "checksum": "sha256:6a90ffac02a3808bc76a2b7802f993c04c760d1be8c175824057f2c401b3a6b3",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/lp-auditor/reference/benchmarks.md": {
+      "checksum": "sha256:b33caa275ff13012a847a0e273a90262e777f4d66be50b449d377da0b140fc92",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/lp-auditor/reference/devtools-page-analysis.md": {
+      "checksum": "sha256:53a213b8c1b991b6301d2a86c246d1116e32ef0381da496724efe46be3041771",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/lp-auditor/reference/diagnostic-rules-ecommerce.md": {
+      "checksum": "sha256:dbbeb15d131f768aec0aba372fdb8bab25850205c182731b5a219bcc351ee0e1",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/lp-auditor/reference/diagnostic-rules-message-match.md": {
+      "checksum": "sha256:2a88d5390022b2ae7bb99c1637ebdf4868068f0f7f72285022d8d65f560fa59c",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/lp-auditor/reference/diagnostic-rules-performance.md": {
+      "checksum": "sha256:f3144a95ba727c5927f1e2e8e366477261d47a6eacb796da9f1f855748d75389",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/lp-auditor/reference/diagnostic-rules-shared.md": {
+      "checksum": "sha256:c06d3b38badd6f87c3164a17c3852021f647fd62306036d62ed51e1444abc7f2",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/lp-auditor/reference/diagnostic-rules-structural.md": {
+      "checksum": "sha256:02735c2f9d9c66d6a36dd0c16502e2b022d69021cdb7250978e18aeab5229e6a",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/lp-auditor/reference/diagnostic-rules-technical.md": {
+      "checksum": "sha256:29e912b26f910f11a8ebc4b72f7d7d1efb52578e7bfa2b7c7b5074ffeb7f71c7",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/lp-auditor/reference/diagnostic-rules-url-health.md": {
+      "checksum": "sha256:152e1b8a97c21c2e4dbddf6e233a9e7060b2f2a31dfc7fc2eb981918c8e2edf2",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/lp-auditor/reference/report-template.md": {
+      "checksum": "sha256:1b78eff4d562ee55a924ba408b79cef506e2b69e8af4f2c68092d8e4ed994359",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/lp-auditor/scripts/page-content-extractor.js": {
+      "checksum": "sha256:9a3e73c4a987dfd817bc599f95316737d53ff7de3174bf859cf224a47d86a53e",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/lp-auditor/scripts/url-health-check.js": {
+      "checksum": "sha256:1e08a5cb52cf9e66072eeb273a88c95c8110a277189461f5f5d643e2b5696496",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/lp-optimizer/SKILL.md": {
+      "checksum": "sha256:8c821c6bc9afa45c66d76d926468493839b1d6beb3e981c9f48f84e53c6de90d",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/lp-optimizer/reference/action-ab-test.md": {
+      "checksum": "sha256:ec6486b4693ead4b254eb94c281e4fc2d65e686ce5bb6023e81a2d3215710ee8",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/lp-optimizer/reference/action-cart-checkout.md": {
+      "checksum": "sha256:1b00e72f3a985596d95ab3e4f4fc954fa9bd5f13d8110646aa896733a4d1c4e4",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/lp-optimizer/reference/action-elements.md": {
+      "checksum": "sha256:2e3513f7c9fa7d3f9c6c7a3bd16f6bf25c66571e13bb27e58a346953537f2df3",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/lp-optimizer/reference/action-forms.md": {
+      "checksum": "sha256:34236f534a60b8a6d31289651cf92c1bcf47c310d4fdb946323ab8e66c6ccd8f",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/lp-optimizer/reference/action-message-match.md": {
+      "checksum": "sha256:51265dd89a205129df798aec86158842733dc3dd524aabc155d322a5b13a55f1",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/lp-optimizer/reference/action-mobile.md": {
+      "checksum": "sha256:a541c26f05230b4b161b374b0ad1d66a9927cb7e110413b0d2cd4c929a079d2c",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/lp-optimizer/reference/action-monitoring.md": {
+      "checksum": "sha256:c5c9490f3fa46bb2b2ea5ede1e21d2e2ea07be64d344a53fc588c66618428eb2",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/lp-optimizer/reference/action-speed.md": {
+      "checksum": "sha256:1e4ef91ebf2884e781041be6acaac8231d1a5281387b446a916b73e796a147ce",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/lp-optimizer/reference/handoff-matrix.md": {
+      "checksum": "sha256:e471c4936f5a72e2aa3d68a3b006377e6d28fde1af9598436e5a6f809fd61dec",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/lp-optimizer/reference/lp-experience-methodology.md": {
+      "checksum": "sha256:62245ddb574021a3a2a6e6f3e8d89b293d3ae924c417bdf5bb4e28ea87ff3577",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/lp-optimizer/reference/optimize-methodology.md": {
+      "checksum": "sha256:b66c8a59e2d23c38e810115204819b9224cae77459ab1699a09d70bd00e1f3f1",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/lp-optimizer/reference/report-template.md": {
+      "checksum": "sha256:17ebe20dd157530647026122e3049d4df91415c1b43980d0cdbe7e84c1154ebe",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/offer-auditor/SKILL.md": {
+      "checksum": "sha256:347cf0e0be1f3416768935afbdbec351d3b79db87c9b8ca9e3ba7d04a3e06fe8",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/offer-auditor/reference/diagnostic-rules-offer-quality.md": {
+      "checksum": "sha256:a276bc5657a8bb90e6d3a48d8666eaf75d85a7a8f704e40a60d4c228649fb0a1",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/offer-auditor/reference/offer-angle-quality-checklist.md": {
+      "checksum": "sha256:5f57d5e8aad342360c6ad69bbd4fe8b575838c2ad4c0647480e932130d0cc5de",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/offer-auditor/reference/offer-audit-checklist.md": {
+      "checksum": "sha256:4090f7a517c06ed3a6bffe367ce20a39e146ea66744b3cbf40209fd741c102e6",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/offer-auditor/reference/report-template.md": {
+      "checksum": "sha256:7095e27d3df45cd5ce0b12a6ffab3bc1f651ea626a93954b332a8952c5910f6c",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/offer-maker/SKILL.md": {
+      "checksum": "sha256:724d497bdf57064800e96400490fe0c2bafa5c34f8c9eb63a9bdf19409287415",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/offer-maker/references/awareness-stage-matrix.md": {
+      "checksum": "sha256:5e7e8900554589136aa57dd01abfc5ceafa5e65ffb3d38edff4cfb9b835a79be",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/offer-maker/references/execute-angle-variants.md": {
+      "checksum": "sha256:34f06c6d65d853a9fb72e25f52d799ed316b0a93880119aa564019df55faa616",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/offer-maker/references/execute-competitor-comparison.md": {
+      "checksum": "sha256:6b8b20cbc6dbd5183509a148484e92daefc489f0361546acf723f773422de1d7",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/offer-maker/references/execute-diagnose-weak.md": {
+      "checksum": "sha256:00a7385cf3c36c6ab9ac552789b0a3a0250019a98b4dc77d68a4a713980ae0df",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/offer-maker/references/execute-offer-angles.md": {
+      "checksum": "sha256:9c1226937a6b54374482d03dd0f8046a26b9b043ed3dc64479ad836af6e1fb9b",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/offer-maker/references/execute-offer-creation.md": {
+      "checksum": "sha256:e13ee54bb4e81b9b67e6c920c0ed00fa23a2904f133940bcfa20b840414b7f2e",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/offer-maker/references/interview-questions.md": {
+      "checksum": "sha256:66c5ca3b1ef2d3596c4ed76fd4aacffa89de74d3148bff7d83a444c3ebb6ff98",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/offer-maker/references/offer-angle-quality-checklist.md": {
+      "checksum": "sha256:9464780813f43ea9bc5c265ec025d1c3b3bc4b3556f5ebc539660348ce18be30",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/offer-maker/references/offer-audit-checklist.md": {
+      "checksum": "sha256:f7649b529884929b3e554e48064f1f0ea66da16aea86b21bb9531614ad787c9f",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/placement-auditor/SKILL.md": {
+      "checksum": "sha256:19bcea21dd25be8abd2758e443e53154b59deb45c568d827aea151d13fb5069a",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/placement-auditor/reference/account-exclusions.gaql": {
+      "checksum": "sha256:83c8bbd845cb905926e77ba4743f7102b6820b6f2c9eb2ed0cb61fb02cf95f4f",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/placement-auditor/reference/brand-safety-settings.gaql": {
+      "checksum": "sha256:aeb3e7809ef572cfa8a18ae3f0427881e98d175d91236c03ba608e26e16d5db8",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/placement-auditor/reference/diagnostic-rules-hygiene.md": {
+      "checksum": "sha256:de080f181b8e3ee59297bbbd1a35e612c095c0db4d9f82ce4bcd04ab8498b245",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/placement-auditor/reference/diagnostic-rules-performance.md": {
+      "checksum": "sha256:715d8783243402456152e1cbe51574c5745084deb6a711eff382a24d87b27451",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/placement-auditor/reference/diagnostic-rules-safety.md": {
+      "checksum": "sha256:16ace428ecacc9ea6bad2b2b59fe943299bd9616b86b3dbc2c5e37d229a0d2e8",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/placement-auditor/reference/diagnostic-rules-shared.md": {
+      "checksum": "sha256:38def68aa4a833d2be4e96f894c8ddf7475ac6c488d580ffc776e41f8036ca80",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/placement-auditor/reference/domain-patterns.json": {
+      "checksum": "sha256:3c0132c2d8c16a978d0e7a6e43cd9abecb9f4d8b4d8d5d5f9d5946c325dbaf1e",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/placement-auditor/reference/exclusion-lists.gaql": {
+      "checksum": "sha256:1e69ea4035af417e3c0ebab158a76b02ece41744bed82a470d2f944421e27b61",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/placement-auditor/reference/mobile-app-categories.gaql": {
+      "checksum": "sha256:9be51b373b4516bdc33b077e2b3e963e27a8469a69eb2f2c963f809506769bce",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/placement-auditor/reference/placement-detail.gaql": {
+      "checksum": "sha256:2818829861eed5bb23deb2a21eda3f37e8fa40141e61cdc416c62fbfd2987abf",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/placement-auditor/reference/placement-performance.gaql": {
+      "checksum": "sha256:1e78a9141cbb023d8f5ee7a01b84a630c0c779c61fe9a01211e47f87bdd7ecf5",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/placement-auditor/reference/placement-vtc-by-action.gaql": {
+      "checksum": "sha256:e58c07b67143f2a0f3a10863bc38067bd2b955b71281260ff1893f932e460256",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/placement-auditor/reference/pmax-placements.gaql": {
+      "checksum": "sha256:9276cd5dc218e38629db3963a09eff1e7498ade9c9a02a382b366ec3c949b317",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/placement-auditor/reference/report-template.md": {
+      "checksum": "sha256:b73ee14cddf30430257e94fdbfbf0ee35092439a296dc03d0e270304f7b85eea",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/placement-auditor/scripts/analyze-exclusion-coverage.js": {
+      "checksum": "sha256:0f2b5b3da123590655ec763d1407e9fdabcb0c7b51593a2e90c93d95917a70db",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/placement-auditor/scripts/analyze-placement-performance.js": {
+      "checksum": "sha256:da355b07b28d6aa46c1b1bb8f25563e69adf3791fb7d8fd2f7945f5389f1ebcb",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/placement-auditor/scripts/package-lock.json": {
+      "checksum": "sha256:3216ba6a99928613c6687c964daa40bcbc47c227bc0384bb7d3b018e3c6ce3b6",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/placement-auditor/scripts/package.json": {
+      "checksum": "sha256:46de2b9fbd4c2b2e4721c242b0db641b01495009d6e54a98fd38118e2a8ff371",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/placement-auditor/scripts/resolve-primary-vtc.js": {
+      "checksum": "sha256:2eb62cc748d85e492a861d8543cb8a9dd3cd45faa3aae25cfb234f423a85b75d",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/placement-optimizer/SKILL.md": {
+      "checksum": "sha256:0ebb8a42612f43b5750051a7b596f73ea527d8dcfff23887e5dadef0b2bc648c",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/placement-optimizer/reference/account-exclusions.gaql": {
+      "checksum": "sha256:53de7a1b0d44ce48c016310e53fb428612c5c1724ad99cac6c4badd195747759",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/placement-optimizer/reference/exclusion-lists.gaql": {
+      "checksum": "sha256:3a06eeb0dfccba2e11f35452e43ec184ccde3e0037eb1c9bce2dfd158dd19980",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/placement-optimizer/reference/execute-rules.md": {
+      "checksum": "sha256:04ce867dedafe84d540042da47e10dabda3b828f713d610ead4fb9d481725e7d",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/placement-optimizer/reference/handoff-matrix.md": {
+      "checksum": "sha256:bf81163a8b326dd471c5add78414c3323a568217557cfd177a5f1185fcd1e98d",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/placement-optimizer/reference/report-template.md": {
+      "checksum": "sha256:87f28e34a12fce649e2c084789115227dac0de9d0d364c2e4109dbe8b3d84d23",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/placement-optimizer/scripts/mutate.js": {
+      "checksum": "sha256:1f1976191b6aac1af84b3e1beaa8f6b98f48f4312b0344f53f201a453ef1456d",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/placement-optimizer/scripts/package-lock.json": {
+      "checksum": "sha256:a6630eb71ebb2fa62d92213566f6be329e99cd2ab16d870283c562df1ae699a5",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/placement-optimizer/scripts/package.json": {
+      "checksum": "sha256:224ffbe09a6352b9a1ae483b76bb65dd45375dcee3fc1e89fcafa744c75e0da1",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/quality-score-auditor/SKILL.md": {
+      "checksum": "sha256:bc9fdce7b06f3d3f9b2d8bb39151bc451ec7f278515ddf6a93ab5a030ef64be3",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/quality-score-auditor/reference/configuration.md": {
+      "checksum": "sha256:876f4cca97d567c276604078d52e2102917a5c1aba00c611f23a7e8ebf6f750b",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/quality-score-auditor/reference/diagnostic-rules.md": {
+      "checksum": "sha256:74f2a690e0db9863361789353aab67cfc97cdec19a1b44e1d88e3bf6f8f92f6d",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/quality-score-auditor/reference/gaql/ad-group-customizers.gaql": {
+      "checksum": "sha256:d28d06cc2aa8d657318b798d4ee35616b684dfc2d780d2918806692244ffa723",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/quality-score-auditor/reference/gaql/ads.gaql": {
+      "checksum": "sha256:a24c817fa5f1a529e69273ef607d4ce1e21df14bb1d6c87d50609251ba8286fd",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/quality-score-auditor/reference/gaql/bidding-strategies.gaql": {
+      "checksum": "sha256:140e4918bbc81fa05171ace55e908005008459e2886674f167483edf12f114f0",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/quality-score-auditor/reference/gaql/campaign-customizers.gaql": {
+      "checksum": "sha256:4e47db4d5f6463080fcb14ea88dde7793cc7c3a64e0389dc43657e0017a6cc61",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/quality-score-auditor/reference/gaql/campaigns-is.gaql": {
+      "checksum": "sha256:e98ebbbb905b5313afc649481fb4ac7f7b7f15add0e93537ddb76bfd67617947",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/quality-score-auditor/reference/gaql/campaigns-settings.gaql": {
+      "checksum": "sha256:3c755d7f5ad13966214bf0884eb5999a0c8cb5f8bba0b26e3c070e53ab2c4ca8",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/quality-score-auditor/reference/gaql/customer-customizers.gaql": {
+      "checksum": "sha256:ec745a66bdbca474480ad3ec594fe278b36a09bbff526cfda6dca116b6884399",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/quality-score-auditor/reference/gaql/customizer-attributes.gaql": {
+      "checksum": "sha256:483f5a2c809398c016222b7c692cb5a08188afee3f0b4972dee3448063326b1a",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/quality-score-auditor/reference/gaql/keyword-customizers.gaql": {
+      "checksum": "sha256:6c7623c673c42c64402e7b8f0bb5a55cb75808aab8f7c0fe6b309c07e011a983",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/quality-score-auditor/reference/gaql/keywords-qs-period.gaql": {
+      "checksum": "sha256:d654e81206d19089152a931b7f21c026a702a8499936113fed733e81d03fdd24",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/quality-score-auditor/reference/gaql/keywords-qs-timeseries.gaql": {
+      "checksum": "sha256:8e1f74da057d41101cd594facb44e5dd6b93624ed767327cd253ff58d4cbb76c",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/quality-score-auditor/reference/handoff-matrix.md": {
+      "checksum": "sha256:1b2466453134f7455918e3b47084304a2f0db67b3d5c3a2edf8fba6993fd2862",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/quality-score-auditor/reference/report-template.md": {
+      "checksum": "sha256:21565b4129bd4511a426b30258f93b931439abe80dfe2df5ca4fbe579a27d441",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/quality-score-auditor/reference/scoring-model.md": {
+      "checksum": "sha256:fc0869c75561396d2f85feb83d3f99547329a3dc92b104c4d401d0b5346036a9",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/quality-score-auditor/reference/synthesis-playbook.md": {
+      "checksum": "sha256:29bd7283dc3f2acf474050ec560723b93113573a27c32e6e671697e2e8cdbee2",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/quality-score-auditor/scripts/analyze-customizers.js": {
+      "checksum": "sha256:ca7b90cccdf13b0d79420ad1872375d0d91cebd87f63fd992c6cd84f285f6fd1",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/quality-score-auditor/scripts/analyze-qs-trends.js": {
+      "checksum": "sha256:b06a2238601a085b70b9f3f42e9e733b808c7a660bc48cc7c9e3ca8a1134368d",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/quality-score-auditor/scripts/analyze-quality-score.js": {
+      "checksum": "sha256:26e8d6c6440bc88e1fcc23ba134b1af011601b1dfbb3b2bcde9344c66179382b",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/quality-score-auditor/scripts/lib.js": {
+      "checksum": "sha256:70aeaeff6f9e0825ed1b8a227d14139c134323c58730b0938d6ccdd2c4e01b85",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/quality-score-auditor/scripts/package-lock.json": {
+      "checksum": "sha256:a228fa5d46402cc04f2f5154a8be44fc1b71d8c03d7f6e199100c74172aed9db",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/quality-score-auditor/scripts/package.json": {
+      "checksum": "sha256:6915cac87ab85dcd68fa10a0323aeb2b4b9a994e33dbb01b56ed88b4864b82e4",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/quality-score-auditor/scripts/pull-all.js": {
+      "checksum": "sha256:891d4a8b803513404d9251791cda9cd5333ca8791680830788682a4d3be7c946",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/rsa-maker/SKILL.md": {
+      "checksum": "sha256:829aab3fbf05bf08d1aa9c972f2226e645b5cb90b99b173854682a01a9fb223f",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/rsa-maker/references/ad-relevance-methodology.md": {
+      "checksum": "sha256:aeddf2343a65d163832be13c15a74d881e4496e82c306c32d1452383b87228b2",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/rsa-maker/references/csv-column-reference.md": {
+      "checksum": "sha256:5c045c4293dd7279433dced0731244d290b4498c8338ceac776252dde985db89",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/rsa-maker/references/description-expansion-catalog.md": {
+      "checksum": "sha256:78e446ee70f2aaf7d73b49b77b7771e8bfcd9a6b7dafc8e780213350be2d954e",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/rsa-maker/references/description-quality-checklist.md": {
+      "checksum": "sha256:d55a05b8cf4f7a07c43bb9ff6f3d36b95828fe70caf8e9616cbdd1647a045317",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/rsa-maker/references/headline-angle-catalog.md": {
+      "checksum": "sha256:67d3a9505aa8d8c1339884247c30d9ae2191487b88a7fc6968fa72b3d17f65ea",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/rsa-maker/references/headline-quality-checklist.md": {
+      "checksum": "sha256:358005eee9b21ccf5a20c8e17b936023153877e2f60b2e9ca5f30071fdba1d0f",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/rsa-maker/references/rsa-composition-sop.md": {
+      "checksum": "sha256:903428478a5dbf77817489342537d307443d4d5469611d2a8dca9420839ff50d",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/rsa-maker/references/rsa-import-template.csv": {
+      "checksum": "sha256:27fa2c02580b80b9f6a48bb752e97e1c6c9dc54496c758ecafcfa307e5de4192",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/rsa-maker/scripts/generate-csv.py": {
+      "checksum": "sha256:79a38562077077f06fc9f40bf793d160cca2d19639031d088a21bfcb5484ccd8",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/search-term-auditor/SKILL.md": {
+      "checksum": "sha256:0f07ec70e271549758601b541d72d551e08eebe27fd832fa359e26ee8dbc7c85",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/search-term-auditor/reference/configuration.md": {
+      "checksum": "sha256:ef8f3064e6c5895297fa926e4f43b594962ed294246b645f04cbe857823422af",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/search-term-auditor/reference/diagnostic-rules.md": {
+      "checksum": "sha256:3d11b4a7fae0a847ad28f7f1dde3fc1f4c17fb37bf578a879637dc418b07f9f5",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/search-term-auditor/reference/gaql/bidding-strategies.gaql": {
+      "checksum": "sha256:140e4918bbc81fa05171ace55e908005008459e2886674f167483edf12f114f0",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/search-term-auditor/reference/gaql/campaigns-settings.gaql": {
+      "checksum": "sha256:d58fe5e5aac88748656fc5ecddedd66b5a8142ac017adeaab5c64362192e846f",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/search-term-auditor/reference/gaql/keywords-active.gaql": {
+      "checksum": "sha256:8f311f86065d4ce8230cbc039658fc29bc469e35d2c36fca5b581ebd9af638aa",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/search-term-auditor/reference/gaql/negatives-adgroup.gaql": {
+      "checksum": "sha256:42d39dcefd7572e21a0d76a941614466e206ff3cc06f78f6b60b1de687575b4b",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/search-term-auditor/reference/gaql/negatives-campaign.gaql": {
+      "checksum": "sha256:a341417099f6599dc5778bc7b55934c7ce838c43ae34a123d2262ec885e9248f",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/search-term-auditor/reference/gaql/negatives-shared-campaigns.gaql": {
+      "checksum": "sha256:f60affe924e65d585ec75e9fb507923551cf80acc177b1995e626288ae82e936",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/search-term-auditor/reference/gaql/negatives-shared.gaql": {
+      "checksum": "sha256:68a3c2cb2b1503fd27ea295fd72a17e650784bbd9dece91404bfc34824cd08e0",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/search-term-auditor/reference/gaql/pmax-search-terms.gaql": {
+      "checksum": "sha256:aec738b3033e96c36656f5c633ec4689f2ce43a9af9f5aa0b5c180af8841db26",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/search-term-auditor/reference/gaql/search-terms.gaql": {
+      "checksum": "sha256:b7dd6af87101b01cd636be8792a6881fe0305051ef4471d8d6ad57a9f66ff177",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/search-term-auditor/reference/handoff-matrix.md": {
+      "checksum": "sha256:8ef0c968d86159621ed99722d7292004d8854989f5dd6e211ccfdf378542159e",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/search-term-auditor/reference/report-template.md": {
+      "checksum": "sha256:b8d468c0c14cecbbf4657c8a418f6dc704fadb37e125abf888fcf86d638171ae",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/search-term-auditor/reference/synthesis-playbook.md": {
+      "checksum": "sha256:a1d7af7a47a4abb83cb504f0422864bf5676b32a7916d3da4113de415ebe228b",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/search-term-auditor/scripts/analyze-negatives.js": {
+      "checksum": "sha256:30ded4a5451d54f30ec4a0559a33839f907baa50b22a7849e05c2ae2d29a1a7e",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/search-term-auditor/scripts/analyze-search-terms.js": {
+      "checksum": "sha256:62184db05e04c3803db2ab0d6a03d612992d5d60923f2e9552084b663c8f35b4",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/search-term-auditor/scripts/lib.js": {
+      "checksum": "sha256:0b9c58545155e58385bd51729a8b4366b7c89dd7c5f57d047534b2ef73e54ab3",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/search-term-auditor/scripts/package-lock.json": {
+      "checksum": "sha256:28bde45e6fb30f6a12f0a2dddab89b80437659a786eff14331901e894f37c6b9",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/search-term-auditor/scripts/package.json": {
+      "checksum": "sha256:de27bffba49b91d8eb62bfc515d0c7580a560ae3520c6968ef54ce03330b6322",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/search-term-auditor/scripts/pull-all.js": {
+      "checksum": "sha256:90d4d17e858fd54fdd873aacc5f7b7caaaec1fd44e1154fd0f79b7477a227ec9",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/search-term-optimizer/SKILL.md": {
+      "checksum": "sha256:9266f83706a356d2eb05f333a4db9215211967144fb3e6c83767f0aa8ca47856",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/search-term-optimizer/reference/execute-rules.md": {
+      "checksum": "sha256:93d66805b7ea8c71845777ac2e772972547122b3117886d1c305dddc6dc468e8",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/search-term-optimizer/reference/export-formats.md": {
+      "checksum": "sha256:e7c9e57f0b2e2bcb3a534bf9856b210fd364df9deb9dcf72ce178ed698447145",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/search-term-optimizer/reference/handoff-matrix.md": {
+      "checksum": "sha256:49c73561cb0022a748b0af0cdc457a45449e51b4276bf6a526e47295bd292aa8",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/search-term-optimizer/scripts/mutate.js": {
+      "checksum": "sha256:794acefdcd780f933a7504b7b35089a8e48aeb87e8864a2086c0247be77eb9ec",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/search-term-optimizer/scripts/package-lock.json": {
+      "checksum": "sha256:6af5971d4f8cc8a201f226d86bd05807ab229b6c4980cdfe1c80d14513b0557b",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/search-term-optimizer/scripts/package.json": {
+      "checksum": "sha256:c9d29d6410b5ddb61dadc8578e08e4e1cedeb2b63eaa4226137631a60a29b76a",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/strategy-specialist/SKILL.md": {
+      "checksum": "sha256:c8d4de712ad409edcde518c7464f7b364f2f97001f7f01c3bd74b7d2069e3213",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/strategy-specialist/reference/bid-strategy-alignment.md": {
+      "checksum": "sha256:310d695c52ae23b9f850c9740c46caf4b9c2a307c7f0e1d45f14feed15af6981",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/strategy-specialist/reference/bid-targets-par.md": {
+      "checksum": "sha256:acdc3c756f8e17100db62363619c66df4fad623b46016b85160ac5533ffb8219",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/strategy-specialist/reference/diagnostic-rules-goals-kpis.md": {
+      "checksum": "sha256:855594d02937b23c034241ba0ccf6479496480810f81d321c2e401bd69bea220",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/strategy-specialist/reference/diagnostic-rules-shared.md": {
+      "checksum": "sha256:c004f078e6517d1df82f5f2e5886684b44416eb0292782186a3764c582c999b5",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/strategy-specialist/reference/diagnostic-rules-unit-economics.md": {
+      "checksum": "sha256:c0b208043faf532ef273db1c26a017311619f0f341f5388bd5ced8884df80ebf",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/strategy-specialist/reference/execute-goals-kpis.md": {
+      "checksum": "sha256:88d00af1bb8bb7ab6c6b4289e1f4fa3ba3fdbf4140cf935aeba85ec55b5e9b08",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/strategy-specialist/reference/execute-unit-economics.md": {
+      "checksum": "sha256:a54f20888fefe2e3e6c19d6b0746274e2153881cb8fc966a3327387d36023b57",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/strategy-specialist/reference/execute-viability-report.md": {
+      "checksum": "sha256:8579a785feb43a44bd374980941dff515d67e189cf9efc3e1bfacdaf8472f0d3",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/strategy-specialist/reference/goal-quality-checklist.md": {
+      "checksum": "sha256:ca7e3d2f71d5e6bb2db2c476967675171d56c41c8292252e920f6a15522c9cb2",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/strategy-specialist/reference/kpi-framework.md": {
+      "checksum": "sha256:adc14aca87d16ca75b8968afc914c72c16f09b00ffe53f10789096701948b3cf",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/strategy-specialist/reference/report-template.md": {
+      "checksum": "sha256:f355c7e45600ccb20d4caea758d17c694d19e477fd3400f81332a5ee1a525f77",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/strategy-specialist/reference/unit-economics-formulas.md": {
+      "checksum": "sha256:4b4de6d44324ff1909cd23ffccba9d62e06b21ee8edb6338ccf3850f01a529d8",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/strategy-specialist/reference/viability-thresholds.md": {
+      "checksum": "sha256:55f0099a4ae4baddaa077b8b783ef15debeb78119a43625b7e5a72474551469f",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/tracking-specialist/SKILL.md": {
+      "checksum": "sha256:57884e1367dc75fe958f94a26b73bbb5d2979a241d8bbaec93b1dd53351da7b6",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/tracking-specialist/reference/conversion-goal-config.gaql": {
+      "checksum": "sha256:e4b557b4636331475dd9350b96c454d6fc83ae7c125eeb55bb82ebd7bbc9dc87",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/tracking-specialist/reference/conversions-all.gaql": {
+      "checksum": "sha256:d4204e3221c745603f2ce57b7b71f630ade58365ed9e18aa08d51aad6cbee663",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/tracking-specialist/reference/conversions-attribution.gaql": {
+      "checksum": "sha256:41d7e02762eb1e1a33fd4b05588fe5bd6687573a87889e281b5058cccc5501f3",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/tracking-specialist/reference/conversions-daily.gaql": {
+      "checksum": "sha256:854a3c2670e75b17148ed4b07896c80169bf21b8072a2e02e4ed5443bd971aee",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/tracking-specialist/reference/custom-conversion-goals.gaql": {
+      "checksum": "sha256:22019f67e8bfd8f94b9142ca819af97d44cad4eb6306bf0bf789db74f4822031",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/tracking-specialist/reference/diagnostic-rules-advanced.md": {
+      "checksum": "sha256:65af3efadbfc19e20cebf20be3917e8793e0d7f2a1000997a5b9cd7e51deb92a",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/tracking-specialist/reference/diagnostic-rules-attribution.md": {
+      "checksum": "sha256:94230e189e23c1e2157b9dbe97a28c09e4e40fd6e52428c6000c2d6dfe32d919",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/tracking-specialist/reference/diagnostic-rules-completeness.md": {
+      "checksum": "sha256:3bd62b230aa7add6cf6fdac1b71a3ccd23f77c64f2e5579bf6c53604e98abbb5",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/tracking-specialist/reference/diagnostic-rules-consent.md": {
+      "checksum": "sha256:f2af59465cb75b32bdfcfb2a2a3c67fb84b5be326f89a898604de823c38d21c0",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/tracking-specialist/reference/diagnostic-rules-hygiene.md": {
+      "checksum": "sha256:fe6175af29f7648b341178ff737420339e2bbea37ba64f5e3af10cde2f759e33",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/tracking-specialist/reference/diagnostic-rules-oct.md": {
+      "checksum": "sha256:636ee89bccf4ca2cd5a5320bbf756f918b3330d1dc640ee45c67b32f4826d4c0",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/tracking-specialist/reference/diagnostic-rules-shared.md": {
+      "checksum": "sha256:c11f3f0d6c99dd188dae7de3222f877e61aa5dda90e70b0acfb502567c221ca4",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/tracking-specialist/reference/diagnostic-rules-tag-health.md": {
+      "checksum": "sha256:413c5d43607b3315153bc8a6d7ccebd6a61fd456d4aed1ff6794e7ba8ac82ac2",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/tracking-specialist/reference/naming-conventions.md": {
+      "checksum": "sha256:bb45fff4cc620d7a598018d28fab98b77ec377541274242e09f1e0ca6bbbfc1a",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/tracking-specialist/reference/report-template.md": {
+      "checksum": "sha256:c73b6750d55c6bf289c9548bfd3b489b527595f0e961a6d8d3da633f55083e39",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/tracking-specialist/reference/tag-verification-patterns.md": {
+      "checksum": "sha256:2c1c559c1affcccfb2b5718c7f4cf5312e5adc0a6a51c1391ee40c7bf937dc16",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    ".claude/skills/tracking-specialist/reference/vertical-config-rules.md": {
+      "checksum": "sha256:35d620574293fd98774cfcc56b4ab6167bd11ae7279f8b876284135a916f6889",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    "CLAUDE.md": {
+      "checksum": "sha256:2c2bb8b6e7d9584459dd5720e7a5d4be87461d6163ee88065c9aad36dbade60f",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    "config/.env.example": {
+      "checksum": "sha256:c672a9c57eb4f8fa7aa11c1f22e94419749461d6d407dd9722c33a7cc8a3434e",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    "config/ads-context.config.json": {
+      "checksum": "sha256:d5446d2a870ece9d796fc61cbba7ea64f02155e9345cd3eff74d7d18bee31708",
+      "version": "1.2.0",
+      "managedType": "config"
+    },
+    "context/.gitkeep": {
+      "checksum": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    "context/business.md": {
+      "checksum": "sha256:262e5594e130ee1557022c690a1a12998f9b01d6677567476e4d9962cd1c4d8a",
+      "version": "1.2.0",
+      "managedType": "config"
+    },
+    "created/.gitkeep": {
+      "checksum": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    "hub-base/.claude/skills/add-client/SKILL.md": {
+      "checksum": "sha256:1b9fc41dcdd18bc772e94b40c8524bb061443c91790f108d1eacc097a672bb0e",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    "hub-base/.claude/skills/branding-generator/SKILL.md": {
+      "checksum": "sha256:7f5043de070904deaec0f54da79e9cdd4c5824b5629ba872fb943e4e1ce01409",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    "hub-base/.claude/skills/branding-generator/reference/brand-schema.md": {
+      "checksum": "sha256:b13cbb0a04b58c87f05e36d0bd69c779056aafa11a67bb23865cd97c617aad46",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    "hub-base/.claude/skills/branding-generator/reference/colour-extraction-script.md": {
+      "checksum": "sha256:21b43ad8fae14775901cd4623589a10adc866d523326d8677b55bbade1373cdf",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    "hub-base/.claude/skills/health-check/SKILL.md": {
+      "checksum": "sha256:bf3c6a4876b9c15128fd5804fcb602d9240666cf53e94c512c6463890b6e17af",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    "hub-base/.claude/skills/report-generator/SKILL.md": {
+      "checksum": "sha256:428e8236535dd5439a920a9dce2f65a1a295302400b6947eb2cf89dc616a9bc0",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    "hub-base/.claude/skills/report-generator/reference/html-base-template.md": {
+      "checksum": "sha256:16eeee466d532f16ac75d5a0ef7a1e602e8969ea987692149d773838b21ca90f",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    "hub-base/.claude/skills/report-generator/reference/report-registry.json": {
+      "checksum": "sha256:c20e2de1585f1b9aef6eeb0d5cbf6f9b911e4a6a5647087d4b47e350b23368af",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    "hub-base/.claude/skills/report-generator/reference/section-account-audit.md": {
+      "checksum": "sha256:6635ea6908becbc8cce3222c5f3ae919f9dac247da959265e724ca81bd13f6af",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    "hub-base/.claude/skills/report-generator/reference/section-bidding-audit.md": {
+      "checksum": "sha256:1c342364411b8829ee2ec54a0d46570fa22a70a16fff78590eabd256b2dffdcc",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    "hub-base/.claude/skills/report-generator/reference/section-budget-audit.md": {
+      "checksum": "sha256:f17bad7297823f9a847885aebb5879497d6f85412e6276206a495c9f3d37d5f2",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    "hub-base/.claude/skills/report-generator/reference/section-competitive-audit.md": {
+      "checksum": "sha256:63402aac3ef88ec3533a9b1ef67c2f4e757c342a5725cf040b08cf4a3e772c21",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    "hub-base/.claude/skills/report-generator/reference/section-executive-summary.md": {
+      "checksum": "sha256:f6d21ae53386bcb17d1c39e4eade0a1b5a3ab478b85bc192b58f3fd806931c89",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    "hub-base/.claude/skills/report-generator/reference/section-geo-schedule-audit.md": {
+      "checksum": "sha256:13ceed2d9ee74adea6fa37af85e64995b4eaa18539456a2df4390c2fd7591ac2",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    "hub-base/.claude/skills/report-generator/reference/section-keyword-audit.md": {
+      "checksum": "sha256:962abc8b5dce5230e504375ec30b2c0b1eeae2f82b249a8ef7d75b21e5f065ae",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    "hub-base/.claude/skills/report-generator/reference/section-lp-audit.md": {
+      "checksum": "sha256:7dcb489b9c5af18dce6fe66facfb706bc0af59be22fb1ee3045056e12180e4f8",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    "hub-base/.claude/skills/report-generator/reference/section-offer-audit.md": {
+      "checksum": "sha256:045501612f8e5e3ca4b92058c0d839af0750813af83f0be51f3513a7841cdd5e",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    "hub-base/.claude/skills/report-generator/reference/section-placement-audit.md": {
+      "checksum": "sha256:529162b348a22e387dfcae7e90caa499ee954af290c26788682ee5dd37f6caef",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    "hub-base/.claude/skills/report-generator/reference/section-quality-score-audit.md": {
+      "checksum": "sha256:3f0b0cecd6f8ff2c7ef21aba02f2a367aac7e6b4d02b89189febeb32c8401572",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    "hub-base/.claude/skills/report-generator/reference/section-search-term-audit.md": {
+      "checksum": "sha256:c9917904e278182f46ebdf1531e893c7432df185679928f563f918816de59aa1",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    "hub-base/.claude/skills/report-generator/reference/section-strategy-audit.md": {
+      "checksum": "sha256:99ffda8926d40af7c3f8febeff5c82936b36ce2b2d5c38a25dbaf4b32c35e92a",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    "hub-base/.claude/skills/report-generator/reference/section-tracking-audit.md": {
+      "checksum": "sha256:47a69a603686f549bf8d51095c8ea4ce91e9c755f77c933b43dc1230db1cafa9",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    "hub-base/.claude/skills/update-ppcos/SKILL.md": {
+      "checksum": "sha256:7628c9d7ceff77e6314fbb057f792a409b41758bf4f963ec81e4a4b5740379f5",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    "hub-base/my-brand/.gitkeep": {
+      "checksum": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "version": "1.2.0",
+      "managedType": "update"
+    },
+    "hub-base/reports/.gitkeep": {
+      "checksum": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "version": "1.2.0",
+      "managedType": "update"
+    }
+  },
+  "conflicts": []
+}

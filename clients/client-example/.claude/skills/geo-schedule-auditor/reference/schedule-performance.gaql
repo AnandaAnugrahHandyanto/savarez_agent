@@ -1,0 +1,11 @@
+SELECT
+  campaign.id, campaign.name, campaign.bidding_strategy_type,
+  segments.hour, segments.day_of_week,
+  metrics.clicks, metrics.impressions, metrics.cost_micros,
+  metrics.conversions, metrics.conversions_value
+FROM campaign
+WHERE segments.date {DATE_RANGE}
+  AND campaign.status = 'ENABLED'
+  AND campaign.experiment_type != 'EXPERIMENT'
+  AND metrics.impressions > 0
+ORDER BY campaign.name, segments.day_of_week, segments.hour

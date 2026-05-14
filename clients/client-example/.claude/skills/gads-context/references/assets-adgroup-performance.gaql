@@ -1,0 +1,18 @@
+SELECT
+  campaign.name,
+  ad_group.name,
+  ad_group_asset.field_type,
+  ad_group_asset.status,
+  ad_group_asset.primary_status,
+  asset.id,
+  asset.name,
+  asset.type,
+  metrics.impressions,
+  metrics.clicks,
+  metrics.ctr,
+  metrics.cost_micros,
+  metrics.conversions,
+  metrics.conversions_value
+FROM ad_group_asset
+WHERE segments.date {DATE_RANGE}
+ORDER BY metrics.impressions DESC

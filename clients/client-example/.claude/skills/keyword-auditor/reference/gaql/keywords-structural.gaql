@@ -1,0 +1,22 @@
+SELECT
+  campaign.id,
+  campaign.name,
+  campaign.status,
+  campaign.serving_status,
+  campaign.experiment_type,
+  ad_group.id,
+  ad_group.name,
+  ad_group_criterion.criterion_id,
+  ad_group_criterion.keyword.text,
+  ad_group_criterion.keyword.match_type,
+  ad_group_criterion.status,
+  ad_group_criterion.approval_status,
+  ad_group_criterion.system_serving_status
+FROM ad_group_criterion
+WHERE ad_group_criterion.type = 'KEYWORD'
+  AND ad_group_criterion.status = 'ENABLED'
+  AND campaign.advertising_channel_type = 'SEARCH'
+  AND campaign.status = 'ENABLED'
+  AND campaign.serving_status =  'SERVING'
+  AND ad_group.status = 'ENABLED'
+  AND ad_group_criterion.approval_status IN ('APPROVED', 'DISAPPROVED', 'PENDING_REVIEW', 'UNDER_REVIEW')

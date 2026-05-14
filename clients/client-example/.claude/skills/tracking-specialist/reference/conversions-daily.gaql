@@ -1,0 +1,10 @@
+SELECT
+  conversion_action.name,
+  conversion_action.resource_name,
+  segments.date,
+  metrics.all_conversions,
+  metrics.all_conversions_value
+FROM conversion_action
+WHERE segments.date {DATE_RANGE}
+  AND conversion_action.status NOT IN ('REMOVED', 'HIDDEN')
+  AND conversion_action.primary_for_goal = TRUE

@@ -1,0 +1,20 @@
+SELECT
+  bidding_strategy.id,
+  bidding_strategy.resource_name,
+  bidding_strategy.name,
+  bidding_strategy.type,
+  bidding_strategy.status,
+  bidding_strategy.currency_code,
+  bidding_strategy.target_cpa.target_cpa_micros,
+  bidding_strategy.target_roas.target_roas,
+  bidding_strategy.target_roas.cpc_bid_ceiling_micros,
+  bidding_strategy.target_roas.cpc_bid_floor_micros,
+  bidding_strategy.maximize_conversions.target_cpa_micros,
+  bidding_strategy.maximize_conversion_value.target_roas,
+  bidding_strategy.target_impression_share.location,
+  bidding_strategy.target_impression_share.location_fraction_micros,
+  bidding_strategy.target_impression_share.cpc_bid_ceiling_micros,
+  bidding_strategy.campaign_count,
+  bidding_strategy.non_removed_campaign_count
+FROM bidding_strategy
+WHERE bidding_strategy.status = 'ENABLED'

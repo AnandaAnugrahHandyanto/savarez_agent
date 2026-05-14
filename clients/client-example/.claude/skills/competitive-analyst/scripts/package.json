@@ -1,0 +1,9 @@
+{
+  "name": "competitive-analyst-scripts",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Competitive position analysis scripts for competitive-analyst skill",
+  "dependencies": {
+    "csv-parse": "^5.5.3"
+  }
+}

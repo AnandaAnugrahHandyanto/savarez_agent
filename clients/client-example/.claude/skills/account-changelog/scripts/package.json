@@ -1,0 +1,7 @@
+{
+  "type": "module",
+  "dependencies": {
+    "google-ads-api": "^22.0.0",
+    "dotenv": "^16.4.5"
+  }
+}

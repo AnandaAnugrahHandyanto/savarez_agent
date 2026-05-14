@@ -185,6 +185,20 @@ class TestCuratedAccessors:
             ("openrouter/elephant-alpha", "free"),
         ]
 
+    def test_repo_catalog_includes_hermes_3_405b_free(self):
+        catalog_path = (
+            Path(__file__).resolve().parents[2]
+            / "website"
+            / "static"
+            / "api"
+            / "model-catalog.json"
+        )
+        with open(catalog_path, encoding="utf-8") as fh:
+            data = json.load(fh)
+        openrouter = data["providers"]["openrouter"]["models"]
+        ids = [model["id"] for model in openrouter]
+        assert "nousresearch/hermes-3-llama-3.1-405b:free" in ids
+
     def test_nous_returns_ids(self, isolated_home):
         from hermes_cli import model_catalog
         with patch.object(

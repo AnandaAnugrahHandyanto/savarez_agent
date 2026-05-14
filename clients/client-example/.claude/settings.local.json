@@ -1,0 +1,60 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__chrome-devtools__new_page",
+      "mcp__chrome-devtools__take_snapshot",
+      "mcp__chrome-devtools__evaluate_script",
+      "mcp__chrome-devtools__navigate_page",
+      "mcp__chrome-devtools__list_network_requests",
+      "mcp__chrome-devtools__list_console_messages",
+      "mcp__chrome-devtools__get_network_request",
+      "mcp__chrome-devtools__fill",
+      "mcp__chrome-devtools__click"
+    ],
+
+    "deny": [
+      "Read(./.env)",
+      "Read(./.env.*)",
+      "Read(./secrets/**)"
+    ]
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/session-context-check.sh",
+            "timeout": 30,
+            "statusMessage": "Checking context freshness..."
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/stop-memory-check.sh",
+            "timeout": 10,
+            "statusMessage": "Checking memory log..."
+          }
+        ]
+      }
+    ],
+    "PostCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/post-compact-reminder.sh",
+            "timeout": 30,
+            "statusMessage": "Restoring context after compaction..."
+          }
+        ]
+      }
+    ]
+  }
+}

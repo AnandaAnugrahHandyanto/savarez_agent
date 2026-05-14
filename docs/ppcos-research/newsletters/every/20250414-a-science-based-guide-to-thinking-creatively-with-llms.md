@@ -1,0 +1,53 @@
+# A Science-based Guide to Thinking Creatively—With LLMs
+
+**From:** Every <hello@every.to>
+**Date:** 2025-04-14T17:56:12.000Z
+**Folder:** every
+
+---
+
+A Science-based Guide to Thinking Creatively—With LLMs
+
+Creativity isn’t magic. You can train it like a muscle, and AI can help.
+
+Learning Curve
+
+A Science-based Guide to Thinking Creatively—With LLMs
+
+Creativity isn’t magic. You can train it like a muscle, and AI can help.
+
+by Rhea Purohit
+
+ChatGPT/Every illustration.
+
+Was this newsletter forwarded to you? Sign up to get it in your inbox.Last week, after an anxious hour of writer’s block, a well-meaning friend suggested that I “just take a walk.” I nodded politely, but inside I wanted to scream. Finding creative inspiration has always mattered, but lately, it feels more important than ever. As AI takes on routine, repetitive tasks, what stands out isn’t execution—it’s originality. Waiting (or walking) around for new ideas to materialize felt arbitrary to me, so I scoured the internet looking for a more structured approach to creativity. What I found changed how I approach creative thinking.After reading a few papers about whether LLMs can be creative, I discovered the work of Margaret Boden, a cognitive scientist who broke creativity down into specific mental processes in the 1990s. Boden is intriguing because she treats the mind—even its most imaginative abilities—as an information-processing system that follows rules, much like a computer program, rather than something mysterious and unpredictable. Her study of creativity is grounded in a practical, systematic understanding of how ideas form, far more reassuring than my sixth stroll (read: frenetic walk) around the block.Boden’s structured view of creativity helped me see the fears about LLMs ending human creativity in a new light. Her framework allowed me to understand my own creative process—something I’d long treated as a flighty, fragile feeling—as a system I could work with. This shift brought with it a sense of security, and the realization that AI isn’t a creative competitor—it’s an ally. I found ways to use LLMs to train creativity like a muscle, something I could strengthen with practice, not just desperately hope would show up. Applying Boden’s theory to LLMs has reshaped the way I think creatively—it might do the same for you. Let’s dive in.
+
+Visual storytelling with AI-powered precisionLTX Studio is an AI-powered co-pilot transforming advertising pitches and creative concepts into fully realized, multi-shot narratives with unprecedented control. Experience: Custom character creation (and consistency): Their new Actors feature lets you train custom, consistent characters using just 5-12 reference images, ensuring perfect visual continuity across your entire project.
+
+Professional-grade control: Direct every detail with keyframe control, facial expressions, and automatic sound effects that bring your narrative to life at industry-leading speed.
+
+Elevate your film, advertising, and digital media production with LTX Studio.Try it today
+Want to sponsor Every? Click here.
+
+What is creativity, really?
+Too many artists, scientists, and writers talk about their creative process as a blackbox—an ephemeral spark that’s difficult to explain and impossible to predict. But it’s not. Boden is one of the most influential cognitive scientists to think about creativity through a computational lens. Her work is rooted in the study of early AI attempts to recreate human creativity, like computer programs that could draw, tell jokes, or compose music.In her 2003 book The Creative Mind, Boden described creativity as the ability to come up with ideas that are new, surprising, and valuable. She also classified creativity, dividing it into three types—combinatorial, exploratory, and transformational. Combinatorial creativity: Great ideas come from unexpected but meaningful connections
+This type of creativity is about creating unfamiliar combinations of familiar ideas, with the added requirement that there’s a clear conceptual link between the ideas. The resulting combination has to “make sense.”A classic example is the literary device of analogy. Boden uses Macbeth’s description of sleep as something that "knits up the ravelled sleeve of care," noting that William Shakespeare’s analogy works because there’s an intelligible link between the ideas: Just as knitting repairs a frayed sleeve, sleep heals a restless mind.A more recent example of combinatorial creativity are the viral memes that compare Mark Zuckerberg to a lizard, like this one:Source: Facebook.It became so widespread that Zuckerberg even publicly denied being a reptile during a Facebook livestream. The humor works because the analogy pulls on relevant cultural threads: a long-running conspiracy theory about elite lizard overlords, combined with the popular perception of Zuckerberg being awkward, robotic, and emotionally flat. The comparison may be silly, but it isn’t random; it works because there’s an intelligible conceptual link between the ideas. Exploratory creativity: How to find new ideas in familiar places
+Exploratory creativity is about discovering new possibilities within a conceptual space—a style of painting, a genre of music, or a branch of mathematics, for example. Each of these spaces is defined by rules, and exploratory creativity doesn’t break them. Instead, it plays within them in surprising ways. It’s about seeing new patterns in familiar places.When Charles Dickens described Scrooge as "a squeezing, wrenching, grasping, scraping, clutching, covetous old sinner" Boden says, “he was exploring the space of English grammar” in which “the rules of grammar allow us to use any number of adjectives before a noun.” It’s something the language always allowed, but Dickens used it in a particularly striking way.She points out that the size of a conceptual space can vary significantly. Some spaces offer a far greater capacity for creative exploration than others. Boden explains this by comparing the simplicity of the game of tic-tac-toe with the complexity of chess. In the former, the limited rules and gameplay constrain the number of possible novel moves. In chess, however, although the number of potential moves is still finite, there is an astronomically wider range of action. And certain conceptual spaces remain open-ended: “the space for possible limericks, or sonnets, has not—and never will be exhausted.”Transformation creativity—bending the rules until a new reality emerges
+Transformational creativity goes a step beyond exploratory creativity. Instead of exploring a conceptual space, it fundamentally alters its structure by changing one of its core rules. Boden takes the example of the composer Arnold Schoenberg, who made atonal music by altering the rule that a piece of music must begin and end in the same key.How to use LLMs to be more creative
+Boden’s work demystifies creativity by revealing its cognitive scaffolding, giving us a clear framework that LLMs can help us engage with and build upon. Here are three ways LLMs can support your creative process in practice.Make feedback loops shorter
+One of the most practical ways LLMs can support creativity is by dramatically shortening feedback loops. For example, it reduces the time I take to come up with a good analogy (combinatorial creativity) because I can prompt it to come up with, say, 20 examples of metaphors that describe the concept I want to express. From there I can identify the ones with potential and refine them myself. Exploratory and transformational creativity, on the other hand, often require deep familiarity with a conceptual space. Here, LLMs save time by acting as intelligent research assistants. Tools like OpenAI’s deep research can help you get a clearer sense of the landscape you’re working within, as well as a stronger foundation from which to push its boundaries.Push past the obvious—and you might surprise yourself
+Since LLMs can rapidly iterate on a given idea, they’re good at revealing directions and nuances you might not have noticed on your own. Finding adjacent but unexpected ideas is an important aspect of both exploratory and transformative creativity—and LLMs make it easier for you to see the spectrum of creative possibility. I sometimes prompt ChatGPT to re-explain the core argument of one of my pieces in the voice of a retired philosophy professor or sci-fi novelist, surfacing analogies or interpretations I wouldn’t have thought of on my own. Another way to practice this kind of thinking is by prompting the model to challenge your assumptions—for example, by asking it to present an opposing perspective, or a critique from a voice unlike your own.Articulate your taste
+We’ve talked about how LLMs are powerful tools to help you put words to your aesthetic sensibilities before. Taste—in books, music, clothing, people—is notoriously hard to define without resorting to a string of examples. I find it hard to put words to the kind of books I like to read, but I can tell you that I enjoy Vladimir Nabokov, David Sedaris, and Jon Krakauer—three wildly different writers. An LLM, however, detected underlying patterns across those choices: a tendency for precise word choice, a mordant wit, and a fascination with the intensity of the human experience. In doing so, it helps transform taste from something you feel into something you understand. When taste becomes not just something you have, but something you can explain, you’re better equipped to recognize what feels “meaningful”—and to make more intentional creative choices as a result.We can use LLMs to be more creative, not by replacing our own intuition or taste, but by sharpening our ability to recognize and cultivate those senses—making creativity something we can reliably nurture, rather than merely await.Rhea Purohit is a contributing writer for Every focused on research-driven storytelling in tech. You can follow her on X at @RheaPurohit1 and on LinkedIn, and Every on X at @every and on LinkedIn.We build AI tools for readers like you. Automate repeat writing with Spiral. Organize files automatically with Sparkle. Write something great with Lex. Deliver yourself from email with Cora.We also do AI training, adoption, and innovation for companies. Work with us to bring AI into your organization.Get paid for sharing Every with your friends. Join our referral program.Subscribe
+What did you think of this post?
+
+Amazing
+
+Good
+
+Meh
+
+Bad
+
+You received this email because you signed up for emails from Every. No longer interested in receiving emails from us? Click here to unsubscribe.
+
+221 Canal St 5th floor, New York, NY 10013

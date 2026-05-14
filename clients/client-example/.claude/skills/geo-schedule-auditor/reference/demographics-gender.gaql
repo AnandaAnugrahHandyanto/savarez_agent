@@ -1,0 +1,14 @@
+SELECT
+  campaign.id, campaign.name,
+  ad_group.id, ad_group.name,
+  gender_view.resource_name,
+  ad_group_criterion.gender.type,
+  metrics.clicks, metrics.impressions, metrics.cost_micros,
+  metrics.conversions, metrics.conversions_value
+FROM gender_view
+WHERE segments.date {DATE_RANGE}
+  AND campaign.status = 'ENABLED'
+  AND campaign.experiment_type != 'EXPERIMENT'
+  AND ad_group.status = 'ENABLED'
+  AND metrics.impressions > 0
+ORDER BY campaign.name, metrics.cost_micros DESC

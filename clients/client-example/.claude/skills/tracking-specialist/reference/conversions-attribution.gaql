@@ -1,0 +1,13 @@
+SELECT
+  conversion_action.name,
+  conversion_action.status,
+  conversion_action.type,
+  conversion_action.origin,
+  conversion_action.category,
+  conversion_action.primary_for_goal,
+  conversion_action.attribution_model_settings.attribution_model,
+  conversion_action.click_through_lookback_window_days,
+  conversion_action.view_through_lookback_window_days,
+  conversion_action.include_in_conversions_metric
+FROM conversion_action
+WHERE conversion_action.status NOT IN ('REMOVED', 'HIDDEN')

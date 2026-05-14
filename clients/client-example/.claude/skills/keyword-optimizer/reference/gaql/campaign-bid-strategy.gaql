@@ -1,0 +1,21 @@
+SELECT
+  campaign.id,
+  campaign.name,
+  campaign.status,
+  campaign.serving_status,
+  campaign.bidding_strategy_type,
+  campaign.bidding_strategy,
+  campaign.target_cpa.target_cpa_micros,
+  campaign.target_roas.target_roas,
+  campaign.maximize_conversions.target_cpa_micros,
+  campaign.maximize_conversion_value.target_roas,
+  campaign.campaign_budget,
+  campaign_budget.amount_micros,
+  metrics.cost_micros,
+  metrics.conversions,
+  metrics.conversions_value
+FROM campaign
+WHERE campaign.advertising_channel_type = 'SEARCH'
+  AND campaign.status = 'ENABLED'
+  AND campaign.serving_status = 'SERVING'
+  AND segments.date {DATE_RANGE}

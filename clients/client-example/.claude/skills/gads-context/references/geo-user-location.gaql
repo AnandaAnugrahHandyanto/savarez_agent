@@ -1,0 +1,15 @@
+SELECT
+  campaign.name,
+  geographic_view.country_criterion_id,
+  geographic_view.location_type,
+  metrics.impressions,
+  metrics.clicks,
+  metrics.ctr,
+  metrics.cost_micros,
+  metrics.conversions,
+  metrics.conversions_value,
+  metrics.average_cpc,
+  metrics.cost_per_conversion
+FROM geographic_view
+WHERE segments.date {DATE_RANGE}
+ORDER BY metrics.cost_micros DESC

@@ -25,7 +25,8 @@ import "@xterm/xterm/css/xterm.css";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Typography } from "@/components/NouiTypography";
 import { cn } from "@/lib/utils";
-import { Copy, PanelRight, X } from "lucide-react";
+import { Copy, Loader2, PanelRight, Paperclip, X } from "lucide-react";
+import type { ChangeEvent } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useSearchParams } from "react-router-dom";
@@ -40,10 +41,16 @@ function buildWsUrl(
   token: string,
   resume: string | null,
   channel: string,
+  model: string | null,
+  provider: string | null,
+  toolsets: string | null,
 ): string {
   const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
   const qs = new URLSearchParams({ token, channel });
   if (resume) qs.set("resume", resume);
+  if (model) qs.set("model", model);
+  if (provider) qs.set("provider", provider);
+  if (toolsets) qs.set("toolsets", toolsets);
   return `${proto}//${window.location.host}/api/pty?${qs.toString()}`;
 }
 
@@ -108,6 +115,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   // Exposed to the main metrics-sync effect so it can refit the terminal
   // the moment `isActive` flips back to true (display:none → display:flex
   // collapses the host's box, so ResizeObserver never fires on return).
@@ -121,6 +129,8 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       : null,
   );
   const [copyState, setCopyState] = useState<"idle" | "copied">("idle");
+  const [uploadState, setUploadState] = useState<"idle" | "uploading">("idle");
+  const [uploadError, setUploadError] = useState<string | null>(null);
   const copyResetRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Raw state for the mobile side-sheet + a derived value that force-
   // closes whenever the chat tab isn't active.  The *derived* value is
@@ -151,11 +161,18 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   // The dashboard keeps ChatPage mounted persistently so the PTY survives tab
   // switches. That is great for ordinary /chat navigation, but it means query
   // param changes do NOT remount the component. Resume-in-chat from the
-  // Sessions page relies on `/chat?resume=<id>` changing at runtime, so we must
-  // treat the current resume target as part of the PTY identity and rebuild the
-  // terminal session when it changes.
+  // Sessions page relies on `/chat?resume=<id>` changing at runtime, and
+  // model-specific chat links rely on `/chat?model=<id>` changing at runtime.
+  // Treat URL-scoped runtime choices as part of the PTY identity and rebuild
+  // the terminal session when they change.
   const resumeParam = searchParams.get("resume");
-  const channel = useMemo(() => generateChannelId(), [resumeParam]);
+  const modelParam = searchParams.get("model");
+  const providerParam = searchParams.get("provider");
+  const toolsetsParam = searchParams.get("toolsets");
+  const channel = useMemo(
+    () => generateChannelId(),
+    [resumeParam, modelParam, providerParam, toolsetsParam],
+  );
 
   useEffect(() => {
     if (!resumeParam) return;
@@ -264,6 +281,59 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     termRef.current?.focus();
   };
 
+  const handleAddFiles = () => {
+    setUploadError(null);
+    fileInputRef.current?.click();
+  };
+
+  const pasteIntoTerminal = useCallback((text: string) => {
+    const term = termRef.current;
+    const ws = wsRef.current;
+    if (!term || !ws || ws.readyState !== WebSocket.OPEN) {
+      setUploadError("Chat is not ready yet.");
+      return;
+    }
+    term.paste(text);
+    term.focus();
+  }, []);
+
+  const escapeDroppedPath = (path: string) => path.replace(/ /g, "\\ ");
+
+  const handleFilesSelected = async (
+    event: ChangeEvent<HTMLInputElement>,
+  ) => {
+    const files = Array.from(event.currentTarget.files ?? []);
+    event.currentTarget.value = "";
+    if (files.length === 0) return;
+
+    setUploadState("uploading");
+    setUploadError(null);
+    try {
+      const uploads = [];
+      for (const file of files) {
+        uploads.push(await api.uploadChatFile(file));
+      }
+
+      if (uploads.length === 1) {
+        pasteIntoTerminal(`${escapeDroppedPath(uploads[0].path)} `);
+        return;
+      }
+
+      const markers = uploads
+        .map((upload) =>
+          upload.is_image
+            ? `[User attached image: ${upload.path}]`
+            : `[User attached file: ${upload.path}]`,
+        )
+        .join("\n");
+      pasteIntoTerminal(`${markers}\n`);
+    } catch (err) {
+      setUploadError(err instanceof Error ? err.message : "Upload failed.");
+    } finally {
+      setUploadState("idle");
+    }
+  };
+
   useEffect(() => {
     const host = hostRef.current;
     if (!host) return;
@@ -309,12 +379,9 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     //
     // Three independent paths all route to the system clipboard:
     //
-    //   1. **Selection → Ctrl+C (or Cmd+C on macOS).**  Ink's own handler
-    //      in useInputHandlers.ts turns Ctrl+C into a copy when the
-    //      terminal has a selection, then emits an OSC 52 escape.  Our
-    //      OSC 52 handler below decodes that escape and writes to the
-    //      browser clipboard — so the flow works just like it does in
-    //      `hermes --tui`.
+    //   1. **Selection → Ctrl+C/Cmd+C.**  When xterm has a browser-visible
+    //      selection, copy it directly.  If not, let the key reach Ink so
+    //      bare Ctrl+C can still mean SIGINT or copy Ink's own selection.
     //
     //   2. **Ctrl/Cmd+Shift+C.**  Belt-and-suspenders shortcut that
     //      operates directly on xterm's selection, useful if the TUI
@@ -344,7 +411,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           // original keydown event's activation. Log to aid debugging.
           console.warn("[dashboard clipboard] OSC 52 write failed:", err.message);
         });
-      } catch (e) {
+      } catch {
         console.warn("[dashboard clipboard] malformed OSC 52 payload");
       }
       return true;
@@ -356,13 +423,14 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     term.attachCustomKeyEventHandler((ev) => {
       if (ev.type !== "keydown") return true;
 
-      // Copy: Cmd+C on macOS, Ctrl+Shift+C on other platforms. Bare Ctrl+C
-      // is reserved for SIGINT to the TUI child — matches xterm / gnome-terminal /
-      // konsole / Windows Terminal. Ctrl+Shift+C only copies if a selection exists;
-      // without a selection it passes through to the TUI so agents can still
-      // react to the keypress.
+      // Copy: Cmd+C on macOS, Ctrl+C/Ctrl+Shift+C on other platforms.
+      // Bare Ctrl+C still reaches the TUI when there is no browser-visible
+      // selection, preserving SIGINT. Ctrl+Shift+C remains available for
+      // users with terminal muscle memory.
       // Paste: Cmd+Shift+V on macOS, Ctrl+Shift+V on others.
-      const copyModifier = isMac ? ev.metaKey : ev.ctrlKey && ev.shiftKey;
+      const copyModifier = isMac
+        ? ev.metaKey
+        : ev.ctrlKey && !ev.altKey && !ev.metaKey;
       const pasteModifier = isMac ? ev.metaKey : ev.ctrlKey && ev.shiftKey;
 
       if (copyModifier && ev.key.toLowerCase() === "c") {
@@ -379,8 +447,8 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           ev.preventDefault();
           return false;
         }
-        // No selection → fall through so the TUI receives Ctrl+Shift+C
-        // (or the bare ev if the user used a different modifier).
+        // No selection → fall through so the TUI receives Ctrl+C or
+        // Ctrl+Shift+C.
       }
 
       if (pasteModifier && ev.key.toLowerCase() === "v") {
@@ -563,7 +631,14 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     });
 
     // WebSocket
-    const url = buildWsUrl(token, resumeParam, channel);
+    const url = buildWsUrl(
+      token,
+      resumeParam,
+      channel,
+      modelParam,
+      providerParam,
+      toolsetsParam,
+    );
     const ws = new WebSocket(url);
     ws.binaryType = "arraybuffer";
     wsRef.current = ws;
@@ -668,7 +743,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         copyResetRef.current = null;
       }
     };
-  }, [channel, resumeParam]);
+  }, [channel, resumeParam, modelParam, providerParam, toolsetsParam]);
 
   // When the user returns to the chat tab (isActive: false → true), the
   // terminal host just transitioned from display:none to display:flex.
@@ -832,6 +907,57 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
             ref={hostRef}
             className="hermes-chat-xterm-host min-h-0 min-w-0 flex-1"
           />
+
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            className="hidden"
+            onChange={handleFilesSelected}
+          />
+
+          <Button
+            ghost
+            onClick={handleAddFiles}
+            title="Add files to the current prompt"
+            aria-label="Add files"
+            disabled={uploadState === "uploading"}
+            className={cn(
+              "absolute z-10",
+              "rounded border border-current/30",
+              "bg-black/20 backdrop-blur-sm",
+              "opacity-70 hover:opacity-100 hover:border-current/60",
+              "transition-opacity duration-150 normal-case font-normal tracking-normal",
+              "bottom-2 left-2 px-2 py-1 text-[0.65rem] sm:bottom-3 sm:left-3 sm:px-2.5 sm:py-1.5 sm:text-xs",
+              "lg:bottom-4 lg:left-4",
+            )}
+            style={{ color: TERMINAL_THEME.foreground }}
+          >
+            <span className="inline-flex items-center gap-1.5">
+              {uploadState === "uploading" ? (
+                <Loader2 className="h-3 w-3 shrink-0 animate-spin" />
+              ) : (
+                <Paperclip className="h-3 w-3 shrink-0" />
+              )}
+              <span className="hidden min-[400px]:inline tracking-wide">
+                {uploadState === "uploading" ? "adding" : "add files"}
+              </span>
+            </span>
+          </Button>
+
+          {uploadError && (
+            <div
+              className={cn(
+                "pointer-events-none absolute left-2 right-2 z-10",
+                "bottom-12 sm:left-3 sm:right-auto sm:bottom-14 lg:left-4",
+                "max-w-[min(28rem,calc(100%-1rem))]",
+                "rounded border border-warning/50 bg-black/70 px-2 py-1",
+                "text-[0.65rem] leading-snug text-warning normal-case tracking-normal",
+              )}
+            >
+              {uploadError}
+            </div>
+          )}
 
           <Button
             ghost

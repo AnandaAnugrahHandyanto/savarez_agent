@@ -1,0 +1,96 @@
+{
+  "registryVersion": "1.0",
+  "reports": [
+    {
+      "sourceFile": "account-audit.md",
+      "displayName": "Account structure audit",
+      "templateFile": "section-account-audit.md",
+      "modules": ["Structure", "Naming", "Settings", "Ad Groups", "Defaults"],
+      "diagnosticPrefix": "AUD-D"
+    },
+    {
+      "sourceFile": "tracking-audit.md",
+      "displayName": "Tracking audit",
+      "templateFile": "section-tracking-audit.md",
+      "modules": ["Completeness", "Tag Health"],
+      "diagnosticPrefix": "D"
+    },
+    {
+      "sourceFile": "strategy-audit.md",
+      "displayName": "Strategy & unit economics",
+      "templateFile": "section-strategy-audit.md",
+      "modules": ["Unit Economics", "Goals & KPIs"],
+      "diagnosticPrefix": "D"
+    },
+    {
+      "sourceFile": "offer-audit.md",
+      "displayName": "Offer quality audit",
+      "templateFile": "section-offer-audit.md",
+      "modules": ["Value", "Urgency", "Trust", "Positioning"],
+      "diagnosticPrefix": "D"
+    },
+    {
+      "sourceFile": "lp-audit.md",
+      "displayName": "Landing page audit",
+      "templateFile": "section-lp-audit.md",
+      "modules": ["Structural", "Message Match", "Technical", "Performance", "URL Health", "Ecommerce"],
+      "diagnosticPrefix": "LP-D"
+    },
+    {
+      "sourceFile": "geo-schedule-audit.md",
+      "displayName": "Geo-schedule audit",
+      "templateFile": "section-geo-schedule-audit.md",
+      "modules": ["Geographic", "Schedule & Device", "Demographics & Advanced"],
+      "diagnosticPrefix": "GS-D"
+    },
+    {
+      "sourceFile": "placement-audit.md",
+      "displayName": "Placement audit",
+      "templateFile": "section-placement-audit.md",
+      "modules": ["Performance & App Audit", "Brand Safety & Coverage", "Hygiene & Monitoring"],
+      "diagnosticPrefix": "PL-D"
+    },
+    {
+      "sourceFile": "keyword-audit.md",
+      "displayName": "Keyword audit",
+      "templateFile": "section-keyword-audit.md",
+      "modules": ["Match Type Health", "Performance Segmentation", "Cannibalization & Duplicates", "Keyword Hygiene", "Intent Alignment"],
+      "diagnosticPrefix": "KW-D"
+    },
+    {
+      "sourceFile": "competitive-audit.md",
+      "displayName": "Competitive position audit",
+      "templateFile": "section-competitive-audit.md",
+      "modules": ["IS Health & Trends", "Competitive Position", "Competitive Impact"],
+      "diagnosticPrefix": "CA-D"
+    },
+    {
+      "sourceFile": "search-term-audit.md",
+      "displayName": "Search term audit",
+      "templateFile": "section-search-term-audit.md",
+      "modules": ["Search Term Quality", "Negative Coverage", "N-grams", "Close Variants", "Promotion & PMax"],
+      "diagnosticPrefix": "ST-D"
+    },
+    {
+      "sourceFile": "quality-score-audit.md",
+      "displayName": "Quality Score audit",
+      "templateFile": "section-quality-score-audit.md",
+      "modules": ["QS Distribution", "Component Breakdown", "Historical Trends", "Competitive Context"],
+      "diagnosticPrefix": "QS-D"
+    },
+    {
+      "sourceFile": "bidding-audit.md",
+      "displayName": "Bidding audit",
+      "templateFile": "section-bidding-audit.md",
+      "modules": ["Target Validation", "Strategy Selection", "Learning Phase", "Portfolio Health", "CPC & Cost Health", "Conversion Value Rules", "Bid Adjustments"],
+      "diagnosticPrefix": "BID-D"
+    },
+    {
+      "sourceFile": "budget-audit.md",
+      "displayName": "Budget audit",
+      "templateFile": "section-budget-audit.md",
+      "modules": ["Allocation", "Limitation", "Pacing", "Sufficiency", "Shared Budgets"],
+      "diagnosticPrefix": "BUD-D"
+    }
+  ]
+}

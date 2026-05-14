@@ -1,0 +1,20 @@
+SELECT
+  campaign.name,
+  campaign.advertising_channel_type,
+  ad_group.name,
+  segments.ad_network_type,
+  campaign_search_term_view.search_term,
+  metrics.clicks,
+  metrics.impressions,
+  metrics.cost_micros,
+  metrics.conversions,
+  metrics.conversions_value,
+  metrics.cost_per_conversion,
+  metrics.conversions_value_per_cost,
+  metrics.ctr,
+  metrics.average_cpc
+FROM campaign_search_term_view
+WHERE
+  segments.date {DATE_RANGE}
+ORDER BY
+  metrics.impressions DESC

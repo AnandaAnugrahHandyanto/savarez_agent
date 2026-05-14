@@ -1,0 +1,15 @@
+SELECT
+  conversion_value_rule.id,
+  conversion_value_rule.resource_name,
+  conversion_value_rule.status,
+  conversion_value_rule.action.operation,
+  conversion_value_rule.action.value,
+  conversion_value_rule.geo_location_condition.geo_match_type,
+  conversion_value_rule.geo_location_condition.geo_target_constants,
+  conversion_value_rule.geo_location_condition.excluded_geo_match_type,
+  conversion_value_rule.geo_location_condition.excluded_geo_target_constants,
+  conversion_value_rule.device_condition.device_types,
+  conversion_value_rule.audience_condition.user_lists,
+  conversion_value_rule.audience_condition.user_interests
+FROM conversion_value_rule
+WHERE conversion_value_rule.status != 'REMOVED'

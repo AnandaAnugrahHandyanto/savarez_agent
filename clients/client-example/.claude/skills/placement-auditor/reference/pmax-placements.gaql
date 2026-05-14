@@ -1,0 +1,14 @@
+SELECT
+  performance_max_placement_view.placement,
+  performance_max_placement_view.display_name,
+  performance_max_placement_view.target_url,
+  performance_max_placement_view.placement_type,
+  campaign.id,
+  campaign.name,
+  campaign.status,
+  campaign.serving_status,
+  campaign.experiment_type,
+  metrics.impressions
+FROM performance_max_placement_view
+WHERE segments.date {DATE_RANGE}
+ORDER BY metrics.impressions DESC

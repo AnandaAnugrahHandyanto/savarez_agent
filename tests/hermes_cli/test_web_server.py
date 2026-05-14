@@ -218,6 +218,42 @@ class TestWebServerEndpoints:
         # Should contain known env var names
         assert any(k.endswith("_API_KEY") or k.endswith("_TOKEN") for k in data.keys())
 
+    def test_chat_upload_stores_file(self):
+        import asyncio
+        from starlette.requests import Request
+        import hermes_cli.web_server as web_server
+
+        async def receive():
+            return {"type": "http.request", "body": b"", "more_body": False}
+
+        scope = {
+            "type": "http",
+            "method": "POST",
+            "path": "/api/chat/uploads",
+            "headers": [
+                (b"x-hermes-filename", b"../unsafe name?.txt"),
+                (
+                    web_server._SESSION_HEADER_NAME.lower().encode("ascii"),
+                    web_server._SESSION_TOKEN.encode("ascii"),
+                ),
+            ],
+        }
+        request = Request(scope, receive)
+
+        data = asyncio.run(
+            web_server.upload_chat_file(
+                request,
+                body=b"hello from browser upload",
+            )
+        )
+
+        assert data["ok"] is True
+        assert data["name"] == "unsafe name_.txt"
+        assert data["size"] == len(b"hello from browser upload")
+        stored = Path(data["path"])
+        assert stored.exists()
+        assert stored.read_text(encoding="utf-8") == "hello from browser upload"
+
     def test_reveal_env_var(self, tmp_path):
         """POST /api/env/reveal should return the real unredacted value."""
         from hermes_cli.config import save_env_value
@@ -2068,6 +2104,66 @@ skip_on_windows = pytest.mark.skipif(
 )
 
 
+def test_resolve_chat_argv_exports_dashboard_workspace(monkeypatch, tmp_path):
+    import hermes_cli.main as main
+    import hermes_cli.web_server as ws
+
+    ui_root = tmp_path / "ui-tui"
+    ui_root.mkdir()
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("TERMINAL_CWD", raising=False)
+    monkeypatch.delenv("HERMES_CWD", raising=False)
+    monkeypatch.setattr(main, "_make_tui_argv", lambda tui_dir, tui_dev: (["node", "entry.js"], ui_root))
+    monkeypatch.setattr(ws, "load_config", lambda: {"terminal": {"cwd": "."}})
+
+    argv, cwd, env = ws._resolve_chat_argv()
+
+    assert argv == ["node", "entry.js"]
+    assert cwd == str(ui_root)
+    assert env["HERMES_CWD"] == str(tmp_path)
+    assert env["TERMINAL_CWD"] == str(tmp_path)
+
+
+def test_resolve_chat_argv_prefers_explicit_terminal_cwd(monkeypatch, tmp_path):
+    import hermes_cli.main as main
+    import hermes_cli.web_server as ws
+
+    configured_workspace = tmp_path / "workspace"
+    configured_workspace.mkdir()
+    ui_root = tmp_path / "ui-tui"
+    ui_root.mkdir()
+    monkeypatch.setenv("TERMINAL_CWD", "/stale/inherited/cwd")
+    monkeypatch.setattr(main, "_make_tui_argv", lambda tui_dir, tui_dev: (["node", "entry.js"], ui_root))
+    monkeypatch.setattr(ws, "load_config", lambda: {"terminal": {"cwd": str(configured_workspace)}})
+
+    _argv, _cwd, env = ws._resolve_chat_argv()
+
+    assert env["HERMES_CWD"] == str(configured_workspace)
+    assert env["TERMINAL_CWD"] == str(configured_workspace)
+
+
+def test_resolve_chat_argv_applies_url_model_override(monkeypatch, tmp_path):
+    import hermes_cli.main as main
+    import hermes_cli.web_server as ws
+
+    ui_root = tmp_path / "ui-tui"
+    ui_root.mkdir()
+    monkeypatch.setattr(main, "_make_tui_argv", lambda tui_dir, tui_dev: (["node", "entry.js"], ui_root))
+    monkeypatch.setattr(ws, "load_config", lambda: {"terminal": {"cwd": str(tmp_path)}})
+
+    _argv, _cwd, env = ws._resolve_chat_argv(
+        model="nousresearch/hermes-3-llama-3.1-405b:free",
+        provider="openrouter",
+        toolsets="none",
+    )
+
+    assert env["HERMES_MODEL"] == "nousresearch/hermes-3-llama-3.1-405b:free"
+    assert env["HERMES_INFERENCE_MODEL"] == "nousresearch/hermes-3-llama-3.1-405b:free"
+    assert env["HERMES_TUI_PROVIDER"] == "openrouter"
+    assert env["HERMES_INFERENCE_PROVIDER"] == "openrouter"
+    assert env["HERMES_TUI_TOOLSETS"] == "none"
+
+
 @skip_on_windows
 class TestPtyWebSocket:
     @pytest.fixture(autouse=True)
@@ -2105,7 +2201,7 @@ class TestPtyWebSocket:
         monkeypatch.setattr(
             self.ws_module,
             "_resolve_chat_argv",
-            lambda resume=None, sidecar_url=None: (["/bin/cat"], None, None),
+            lambda resume=None, sidecar_url=None, **_kw: (["/bin/cat"], None, None),
         )
         from starlette.websockets import WebSocketDisconnect
 
@@ -2118,7 +2214,7 @@ class TestPtyWebSocket:
         monkeypatch.setattr(
             self.ws_module,
             "_resolve_chat_argv",
-            lambda resume=None, sidecar_url=None: (["/bin/cat"], None, None),
+            lambda resume=None, sidecar_url=None, **_kw: (["/bin/cat"], None, None),
         )
         from starlette.websockets import WebSocketDisconnect
 
@@ -2131,7 +2227,7 @@ class TestPtyWebSocket:
         monkeypatch.setattr(
             self.ws_module,
             "_resolve_chat_argv",
-            lambda resume=None, sidecar_url=None: (
+            lambda resume=None, sidecar_url=None, **_kw: (
                 ["/bin/sh", "-c", "printf hermes-ws-ok"],
                 None,
                 None,
@@ -2161,7 +2257,7 @@ class TestPtyWebSocket:
         monkeypatch.setattr(
             self.ws_module,
             "_resolve_chat_argv",
-            lambda resume=None, sidecar_url=None: (["/bin/cat"], None, None),
+            lambda resume=None, sidecar_url=None, **_kw: (["/bin/cat"], None, None),
         )
         with self.client.websocket_connect(self._url()) as conn:
             conn.send_bytes(b"round-trip-payload\n")
@@ -2194,7 +2290,7 @@ class TestPtyWebSocket:
             self.ws_module,
             "_resolve_chat_argv",
             # sleep gives the test time to push the resize before the child reads the ioctl.
-            lambda resume=None, sidecar_url=None: (
+            lambda resume=None, sidecar_url=None, **_kw: (
                 [sys.executable, "-c", winsize_script],
                 None,
                 None,
@@ -2223,7 +2319,7 @@ class TestPtyWebSocket:
         monkeypatch.setattr(
             self.ws_module,
             "_resolve_chat_argv",
-            lambda resume=None, sidecar_url=None: (["/bin/cat"], None, None),
+            lambda resume=None, sidecar_url=None, **_kw: (["/bin/cat"], None, None),
         )
         # Patch PtyBridge.spawn at the web_server module's binding.
         import hermes_cli.web_server as ws_mod
@@ -2238,7 +2334,7 @@ class TestPtyWebSocket:
     def test_resume_parameter_is_forwarded_to_argv(self, monkeypatch):
         captured: dict = {}
 
-        def fake_resolve(resume=None, sidecar_url=None):
+        def fake_resolve(resume=None, sidecar_url=None, **_kw):
             captured["resume"] = resume
             return (["/bin/sh", "-c", "printf resume-arg-ok"], None, None)
 
@@ -2252,13 +2348,46 @@ class TestPtyWebSocket:
                 pass
         assert captured.get("resume") == "sess-42"
 
+    def test_model_parameter_is_forwarded_to_argv(self, monkeypatch):
+        captured: dict = {}
+
+        def fake_resolve(
+            resume=None,
+            sidecar_url=None,
+            model=None,
+            provider=None,
+            toolsets=None,
+        ):
+            captured["model"] = model
+            captured["provider"] = provider
+            captured["toolsets"] = toolsets
+            return (["/bin/sh", "-c", "printf model-arg-ok"], None, None)
+
+        monkeypatch.setattr(self.ws_module, "_resolve_chat_argv", fake_resolve)
+
+        with self.client.websocket_connect(
+            self._url(
+                model="nousresearch/hermes-3-llama-3.1-405b:free",
+                provider="openrouter",
+                toolsets="none",
+            )
+        ) as conn:
+            try:
+                conn.receive_bytes()
+            except Exception:
+                pass
+
+        assert captured.get("model") == "nousresearch/hermes-3-llama-3.1-405b:free"
+        assert captured.get("provider") == "openrouter"
+        assert captured.get("toolsets") == "none"
+
     def test_channel_param_propagates_sidecar_url(self, monkeypatch):
         """When /api/pty is opened with ?channel=, the PTY child gets a
         HERMES_TUI_SIDECAR_URL env var pointing back at /api/pub on the
         same channel — which is how tool events reach the dashboard sidebar."""
         captured: dict = {}
 
-        def fake_resolve(resume=None, sidecar_url=None):
+        def fake_resolve(resume=None, sidecar_url=None, **_kw):
             captured["sidecar_url"] = sidecar_url
             return (["/bin/sh", "-c", "printf sidecar-ok"], None, None)
 

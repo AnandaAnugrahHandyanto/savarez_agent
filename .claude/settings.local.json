@@ -1,0 +1,32 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ollama list *)",
+      "Bash(curl -s http://localhost:11434/api/tags)",
+      "Bash(curl -s http://localhost:1234/v1/models)",
+      "Read(//home/thegoodgoodworkstation/.local/share/lm-studio/**)",
+      "Bash(systemctl --user status ollama)",
+      "Bash(systemctl status *)",
+      "Read(//home/thegoodgoodworkstation/.hermes/**)",
+      "Bash(echo \"---exists: $?\")",
+      "Bash(curl -s http://localhost:8000/v1/models)",
+      "Bash(curl -s http://localhost:5000/v1/models)",
+      "Bash(curl -s -H \"Authorization: Bearer 52d40e0f5137148ac3788e5ea32e7c5c4e8ebe9d3d4196a9\" http://localhost:8090/v1/models)",
+      "Bash(python3 -m json.tool)",
+      "Bash(curl -s http://localhost:8090/v1/models)",
+      "Bash(python3 -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\(json.dumps\\(d.get\\('data',[]\\),indent=2\\)\\)\")",
+      "Bash(awk '{print $1}')",
+      "Bash(cat)",
+      "Bash(ollama create *)",
+      "Bash(python3 *)",
+      "Bash(pip show *)",
+      "Bash(pip3 show *)",
+      "Bash(conda list *)",
+      "Bash(nvidia-smi --query-gpu=name,memory.total --format=csv,noheader)",
+      "Bash(curl -s http://localhost:11434/v1/models)",
+      "Bash(curl -s http://localhost:11434/v1/chat/completions -H \"Content-Type: application/json\" -H \"Authorization: Bearer ollama\" -d '{\"model\":\"qwen2.5-14b-instruct:latest\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":5}')",
+      "Bash(curl -s http://10.44.0.58:11434/v1/models)",
+      "Bash(curl -s http://10.44.0.58:8090/v1/models)"
+    ]
+  }
+}

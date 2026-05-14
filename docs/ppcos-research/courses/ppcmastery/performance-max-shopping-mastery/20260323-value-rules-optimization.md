@@ -1,0 +1,11 @@
+# Value Rules optimization
+
+- **Source:** PPC Mastery (hub.ppcmastery.com)
+- **Course:** performance-max-shopping-mastery
+- **Section:** Module 6: Insights
+- **Duration:** 02:24
+- **Transcribed:** 2026-03-23
+
+## Transcript
+
+All right, welcome to the next video in which I'm going to be talking about value rules optimization. I'm going to briefly introduce what value rules are and why it's often best to stay away from them. So value rules are something that you can find in your campaign settings and with value rules you can add, multiply or set new values for specific conditions and these specific conditions can for example include devices, locations, audiences etc. And what you can do here is you can, for example, take a device and a location and say, okay, if somebody is located in the Netherlands and their device is desktop, then I want to multiply their conversion value by 1.5. Or if someone is searching on mobile in Belgium, then I want to set a new value. Or if someone is searching or if someone is in a specific audience in Baltimore, USA, then I want to multiply it by 0.8, take away some of the conversion value. That's basically how it works in a nutshell. But I will say, be careful when using value rules, because in theory, they sound nice because you can give extra value to specific conditions. but actually if you use them then they will alter your conversion values and therefore they will have a huge impact on your reports and smart bidding so in my opinion i've actually never used them before i haven't seen use case any use case in it yet because it i don't really like it when it alters my conversion values and especially with these things you're often acting on a bunch of assumptions so smart bidding is already taking into consideration like bid adjustments for all these conditions like mobile devices audiences locations etc and then i don't want to go over the top and say okay for everybody in this specific location on this device or this audience multiply by 1.5 because to me that's just gonna screw up the data and and yeah mess up my my reports and and everything so generally speaking honestly i haven't used value rules before and i don't really recommend it unless you 100 know what you're doing so that's it for value rules and see you in the next one

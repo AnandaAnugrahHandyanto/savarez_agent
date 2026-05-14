@@ -1,0 +1,16 @@
+SELECT
+  campaign.id,
+  campaign.name,
+  campaign.status,
+  campaign.advertising_channel_type,
+  campaign.experiment_type,
+  campaign.serving_status,
+  campaign.network_settings.target_content_network,
+  campaign.network_settings.target_search_network,
+  campaign.geo_target_type_setting.positive_geo_target_type,
+  campaign.geo_target_type_setting.negative_geo_target_type,
+  campaign.ad_serving_optimization_status,
+  campaign.tracking_url_template,
+  campaign.asset_automation_settings
+FROM campaign
+WHERE campaign.status != 'REMOVED'

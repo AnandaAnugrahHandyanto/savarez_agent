@@ -1,0 +1,10 @@
+{
+  "name": "quality-score-auditor-scripts",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Quality Score analysis scripts for quality-score-auditor skill",
+  "dependencies": {
+    "csv-parse": "^5.5.3",
+    "dotenv": "^16.4.5"
+  }
+}

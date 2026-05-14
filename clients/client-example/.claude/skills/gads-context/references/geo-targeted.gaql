@@ -1,0 +1,16 @@
+SELECT
+  campaign.name,
+  campaign_criterion.location.geo_target_constant,
+  campaign_criterion.bid_modifier,
+  metrics.impressions,
+  metrics.clicks,
+  metrics.ctr,
+  metrics.cost_micros,
+  metrics.conversions,
+  metrics.conversions_value,
+  metrics.average_cpc,
+  metrics.cost_per_conversion
+FROM location_view
+WHERE segments.date {DATE_RANGE}
+  AND campaign_criterion.status != 'REMOVED'
+ORDER BY metrics.cost_micros DESC

@@ -1,0 +1,52 @@
+# GPT-5 doesn't suck anymore
+
+**From:** "ben's bites" <bensbites@substack.com>
+**Date:** 2025-12-16T17:31:04.000Z
+**Folder:** ben
+
+---
+
+View this post on the web at https://www.bensbites.com/p/gpt-5-doesnt-suck-anymore
+
+The newsletter for the technically curious. Updates, tool reviews, and lay of the land from an exited founder turned investor and forever tinkerer.
+Hey folks,
+OpenAI released GPT 5.2 [ https://substack.com/redirect/d30a1085-cb41-4fe0-8cdb-f01f08e8e850?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ] with three variants - instant, thinking and pro. The small version bump hides the magnitude of improvement it is over GPT-5.1. Significant bump in SWE benchmarks, extremely good at spreadsheets, better vision and lower hallucination rates. It’s now on par with Gemini 3 Pro and Opus 4.5 (though I’d say not definitely better than any of them).
+ChatGPT and Codex are secretly adopting Skills [ https://substack.com/redirect/41915c08-fb4a-4b23-8d17-fd660f19e481?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ]. First released by Anthropic, Skills borrow many principles from MCP but are a simpler alternative for teaching the model to do something repeatedly. A “skill” is just a folder with markdown files and some code scripts. The code interpreter in ChatGPT has a new folder “/home/oai/skills” that covers working with spreadsheets, docx and PDFs with presumably options to add our own coming soon.
+Tinker by Thinking Machines is open for everyone now [ https://substack.com/redirect/32b28c22-7466-476f-b61f-0d9bb039ea19?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ]. Tinker lets researchers fine-tune and do “frontier-grade” experiments with open models easily. The public launch comes with the support for Kimi K2 Thinking (probably the best open model out there), image-based fine-tuning, and inference that’s compatible with the OpenAI API.
+Gemini has a new Interactions API [ https://substack.com/redirect/bcd132af-e4d8-49d4-8b34-6bef37a50028?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ] that combines access to models and agents for developers. The first agent exposed to developers is Deep Research [ https://substack.com/redirect/e0259c68-57a3-4ad4-9765-1d490401ae86?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ]. A few weeks ago, someone asked me “who uses deep research anymore” because thinking models gave a good enough answer without waiting for 5-10 mins. I think this answers that question: deep research capability will be built into third party apps for specific tasks and work in the background just like how RAG is everywhere but you don’t actively think of it.
+Pitch your AI idea to top leaders in the industry at MongoDB’s Agentic and Collaboration Hackathon on Jan. 10th. Register now [ https://substack.com/redirect/f96def81-4322-4dc3-afc2-ed7d332fd0fd?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ] to secure your team’s spot in a chance to win over $30,000 in cash prizes. Finalists will receive complimentary access to MongoDB’s .local San Francisco [ https://substack.com/redirect/bb53fc66-9d80-4026-86b4-f5bc3bf98526?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ] on Jan. 15th.*
+🌐 What I’m consuming
+Where’s my flying car? [ https://substack.com/redirect/19a46d68-6be6-4ef3-ba49-e750084b110d?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ] - Five things I thought we’d have by the end of 2025 in the LLM era.
+Longer-running agents [ https://substack.com/redirect/13af5a52-96b5-433e-85fc-4d30e6569947?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ] are starting to work; what about debugging and improving them?
+What happens when the coding becomes the least interesting part [ https://substack.com/redirect/f054b6e5-ff2e-4dfb-8d77-789ad27b2650?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ] of the work.
+Claude Code’s DX is too good [ https://substack.com/redirect/e77fb399-fdc1-47ae-9eac-053dd018dc7e?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ], and that’s a problem.
+How Instacart built Pixel [ https://substack.com/redirect/5596a673-18c4-4361-adcc-b38c2e2e37f9?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ] - an unified image generation platfrom.
+Joining OpenAI at 10 [ https://substack.com/redirect/3a59c0fa-4a17-4808-813c-970b48c72ac8?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ] - From Fidji Simo, the former CEO of Instacart, who is now the CEO of Applications at OpenAI. OpenAI now has three ex-CEOs in top positions: Sarah Friar from Nextdoor as CFO and Denise Dresser from Slack as CRO.
+This week, Adobe added three of its most popular apps, Photoshop, Adobe Express and Acrobat, into ChatGPT. So now you can edit photos, create designs and edit PDFs directly in your ChatGPT conversations. This handy tutorial shows you how to get started for free [ https://substack.com/redirect/45242a50-2af1-4169-ab9b-30dd69d88bd5?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ].*
+⚙️ Tools and demos
+Craft [ https://substack.com/redirect/629b4bc9-6ad3-4ad3-b4f8-4db7391ea44f?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ]: Your best personal productivity app - connect it to any tool via MCP. Share your workflow in our Challenge and win up to $10,000.*
+shadcn/create [ https://substack.com/redirect/2667d293-d0a1-4d69-8c25-cf8902eced23?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ] – Build your own shadcn/ui with full customisation. Icons, base colour, theme, fonts and the component library. (see how [ https://substack.com/redirect/571a27b8-654e-4dc8-859c-915976e8cf42?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ])
+Code Wiki by Google [ https://substack.com/redirect/5f7a77c3-ed1f-4a42-9978-f2c212ee0c71?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ] - Gemini-generated interactive docs for open-source repos (with private repos coming soon).
+btca.dev [ https://substack.com/redirect/f2e3efa6-9a7a-458d-b4a7-e2d7f0593401?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ] - the better context app. CLI for asking questions about libraries/frameworks by cloning their repos.
+HyperBookLM [ https://substack.com/redirect/c92e8616-7aff-4003-8041-c8cc9a1fb1d4?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ] - Open-source NotebookLM with web-agents.
+OpenCode [ https://substack.com/redirect/e6e9ca3b-f231-45dd-bfb6-2c12990a5689?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ] has a desktop app now.
+An AI agent that watches user sessions + emails users when they get stuck (demo [ https://substack.com/redirect/75b2d86a-178e-4c7c-981f-99fc275457d1?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ])
+🥣 Dev Dish
+OpenAI released three new audio models [ https://substack.com/redirect/615e16f9-872b-45dd-9ce2-ef3373529aff?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ], mini ones for both transcription and TTS and a bigger one for realtime audio to audio.
+Chorus [ https://substack.com/redirect/ed84157f-2d28-404d-9ef6-b45fff2120ef?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ], an AI chat app from the makers of conductor is now open source.
+OpenCommit [ https://substack.com/redirect/758cb8e9-825b-4804-bf02-4e8a4afb9dd9?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ] - AI commits done properly with git messages, changelog & documentation generation.
+Deno [ https://substack.com/redirect/e9b05e64-52c3-4ea2-b2af-4a2c72290d84?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ] and Warp [ https://substack.com/redirect/1d5ded8f-7d08-4e61-9fee-26117128ea4a?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ] are both (separately) building Sandboxes now to run untrusted code generated by LLMs safely.
+Android Use [ https://substack.com/redirect/ce72164f-56b8-4cc7-951e-a4c486cd270c?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ] - An open source library that gives AI agents hands to control native Android apps.
+Publish your documentation as an npm package [ https://substack.com/redirect/ab371aae-3728-415a-90b6-760e59c4e8b7?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ] for LLMs.
+🍦 Afters
+Notion is making half of its revenue [ https://substack.com/redirect/fb2e8ad5-56af-4077-95be-1fcc855b2bc3?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ] from AI now.
+You can now gift claude [ https://substack.com/redirect/736345ea-5c0d-49b9-b849-c54130a670f1?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ] to others.
+Enjoy this newsletter? Forward it to a friend.
+That’s it for today. Feel free to comment and share your thoughts. 👋
+Find me on X [ https://substack.com/redirect/9b6f3bdb-026c-4d89-b586-a7eca9b5aa3a?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ], Linkedin [ https://substack.com/redirect/9abd54e2-303e-4c3b-8c0d-7e0be4d5189b?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ], or Instagram [ https://substack.com/redirect/79afe4a2-b23a-4789-bd35-cebf74bd3d75?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ]
+Read about me [ https://substack.com/redirect/bc92b15f-3067-422e-a0d1-9506a62c4f63?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ] and Ben’s Bites
+📷 thumbnail creds: @keshavatearth [ https://substack.com/redirect/e49d12a2-6ecd-40ce-973a-a2150159cfcc?j=eyJ1IjoicXd0ciJ9.0tEpqnOrcfuKYRYnEOurmlOZ_pVIUnS06konjQA-bCs ]
+Thanks to today’s sponsors who made this newsletter possible :)
+Wanna partner with us [ mailto:shanice@bensbites.com ] for Q1?
+
+Unsubscribe https://substack.com/redirect/2/eyJlIjoiaHR0cHM6Ly93d3cuYmVuc2JpdGVzLmNvbS9hY3Rpb24vZGlzYWJsZV9lbWFpbD90b2tlbj1leUoxYzJWeVgybGtJam94TWpVMU5UazVMQ0p3YjNOMFgybGtJam94T0RFM05qUTFOekFzSW1saGRDSTZNVGMyTlRrd05qTTBNQ3dpWlhod0lqb3hOemszTkRReU16UXdMQ0pwYzNNaU9pSndkV0l0TkRNM09USTVPU0lzSW5OMVlpSTZJbVJwYzJGaWJHVmZaVzFoYVd3aWZRLm9KQkZsU3R5VFg4QnBPd0lTWWM5QXFiS0tfQTAtRUhtWF9kTnBKTVpHRU0iLCJwIjoxODE3NjQ1NzAsInMiOjQzNzkyOTksImYiOmZhbHNlLCJ1IjoxMjU1NTk5LCJpYXQiOjE3NjU5MDYzNDAsImV4cCI6MjA4MTQ4MjM0MCwiaXNzIjoicHViLTAiLCJzdWIiOiJsaW5rLXJlZGlyZWN0In0.c3Jn_7hXuWmySMiwIU3Zt0qjr_cmcHmTqBimtbohzY8?

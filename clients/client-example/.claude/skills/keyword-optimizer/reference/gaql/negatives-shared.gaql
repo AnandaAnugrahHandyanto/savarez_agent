@@ -1,0 +1,9 @@
+SELECT
+  shared_set.id,
+  shared_set.name,
+  shared_set.type,
+  shared_set.status,
+  shared_set.member_count
+FROM shared_set
+WHERE shared_set.type = 'NEGATIVE_KEYWORDS'
+  AND shared_set.status = 'ENABLED'

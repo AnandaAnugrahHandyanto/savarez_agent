@@ -1,0 +1,21 @@
+SELECT
+  campaign.id,
+  campaign.name,
+  campaign.advertising_channel_type,
+  campaign.bidding_strategy_type,
+  segments.date,
+  metrics.impressions,
+  metrics.clicks,
+  metrics.cost_micros,
+  metrics.conversions,
+  metrics.conversions_value,
+  metrics.average_cpc,
+  metrics.search_impression_share,
+  metrics.search_budget_lost_impression_share,
+  metrics.search_rank_lost_impression_share,
+  metrics.search_top_impression_share,
+  metrics.search_absolute_top_impression_share
+FROM campaign
+WHERE campaign.advertising_channel_type IN ('SEARCH', 'SHOPPING')
+  AND campaign.status = 'ENABLED'
+  AND segments.date {DATE_RANGE}

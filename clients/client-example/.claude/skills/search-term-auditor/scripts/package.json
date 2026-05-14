@@ -1,0 +1,10 @@
+{
+  "name": "search-term-auditor-scripts",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Search term auditor scripts (diagnostic-only; no mutations)",
+  "dependencies": {
+    "csv-parse": "^5.5.6",
+    "dotenv": "^16.4.5"
+  }
+}

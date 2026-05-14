@@ -1,0 +1,11 @@
+SELECT
+  conversion_action.name,
+  conversion_action.status,
+  conversion_action.type,
+  conversion_action.category,
+  conversion_action.primary_for_goal,
+  conversion_action.counting_type,
+  metrics.all_conversions,
+  metrics.all_conversions_value
+FROM conversion_action
+WHERE conversion_action.name = '{CONVERSION_ACTION_NAME}'

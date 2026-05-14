@@ -1,0 +1,10 @@
+{
+  "name": "geo-schedule-auditor-scripts",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Analysis scripts for geo-schedule-auditor skill (read-only)",
+  "dependencies": {
+    "google-ads-api": "^22.0.0",
+    "dotenv": "^16.4.5"
+  }
+}
