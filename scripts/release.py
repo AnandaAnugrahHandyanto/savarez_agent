@@ -97,6 +97,7 @@ AUTHOR_MAP = {
     "nicoechaniz@altermundi.net": "nicoechaniz",
     "ninso112@proton.me": "Ninso112",
     "wesleysimplicio@live.com": "wesleysimplicio",
+    "wesley.simplicio.ext@siemens-energy.com": "wesleysimplicio",
     "matthew.dean.cater@gmail.com": "SiliconID",
     "xieniu@proton.me": "xieNniu",
     "rw8143a@american.edu": "wali-reheman",
