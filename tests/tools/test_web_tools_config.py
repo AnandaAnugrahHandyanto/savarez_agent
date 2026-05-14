@@ -512,12 +512,17 @@ class TestWebSearchErrorHandling:
              patch.object(tools.web_tools._debug, "save"):
             result = json.loads(tools.web_tools.web_search_tool("test query", limit=3))
 
-        assert result == {"error": "Error searching web: boom"}
+        # Provider exceptions are now caught inside _dispatch_search_backend
+        # so the fallback chain can pick up. The shape is still a sanitized
+        # error dict — no traceback, no exception_type, no config.
+        assert result == {
+            "success": False,
+            "error": "Backend firecrawl failed: boom",
+        }
 
         debug_payload = mock_log_call.call_args.args[1]
-        assert debug_payload["error"] == "Error searching web: boom"
-        assert "traceback" not in debug_payload["error"]
-        assert "exception_type" not in debug_payload["error"]
+        assert "traceback" not in (debug_payload.get("error") or "")
+        assert "exception_type" not in (debug_payload.get("error") or "")
         assert "config" not in result
         assert "exception_type" not in result
         assert "exception_chain" not in result
