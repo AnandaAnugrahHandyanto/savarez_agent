@@ -12526,7 +12526,12 @@ class GatewayRunner:
         git_dir = project_root / '.git'
 
         if not git_dir.exists():
-            return t("gateway.update.not_git_repo")
+            # Docker images do not include /opt/hermes/.git. The update
+            # implementation below already knows how to use the mounted
+            # source checkout, so let /update pass the same fallback repo.
+            alt_git = Path("/opt/data/_hermes_repo/.git")
+            if not alt_git.exists():
+                return t("gateway.update.not_git_repo")
 
         hermes_cmd = _resolve_hermes_bin()
         if not hermes_cmd:
@@ -16845,3 +16850,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
