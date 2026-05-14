@@ -177,7 +177,11 @@ DEFAULT_MIMO_TTS_MODEL = "mimo-v2.5-tts"
 DEFAULT_MIMO_TTS_BASE_URL = "https://api.xiaomimimo.com/v1"
 DEFAULT_MIMO_TTS_VOICE = "冰糖"
 MIMO_TTS_PRESET_VOICES = frozenset({
+    # Legacy MiMo V2 voices kept for compatibility with older configs/PRs.
     "mimo_default",
+    "default_zh",
+    "default_en",
+    # MiMo V2.5 documented preset voices.
     "冰糖",
     "茉莉",
     "苏打",

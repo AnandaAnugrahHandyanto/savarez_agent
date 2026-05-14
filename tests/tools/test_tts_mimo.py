@@ -44,6 +44,32 @@ def test_generate_mimo_preset_payload(tmp_path, monkeypatch):
     mock_client.close.assert_called_once()
 
 
+def test_generate_mimo_legacy_v2_voice_payload(tmp_path, monkeypatch):
+    monkeypatch.setenv("MIMO_API_KEY", "legacy-key")
+    mock_cls, mock_client = _mock_mimo_client(b"wav-data")
+
+    with patch("tools.tts_tool._import_openai_client", return_value=mock_cls):
+        from tools.tts_tool import _generate_mimo_tts
+
+        output = _generate_mimo_tts(
+            "hello",
+            str(tmp_path / "out.wav"),
+            {"mimo": {"model": "mimo-v2-tts", "voice": "default_en"}},
+        )
+
+    assert output == str(tmp_path / "out.wav")
+    assert (tmp_path / "out.wav").read_bytes() == b"wav-data"
+    mock_cls.assert_called_once_with(
+        api_key="legacy-key",
+        base_url="https://api.xiaomimimo.com/v1",
+        default_headers={"api-key": "legacy-key"},
+    )
+    kwargs = mock_client.chat.completions.create.call_args.kwargs
+    assert kwargs["model"] == "mimo-v2-tts"
+    assert kwargs["messages"] == [{"role": "assistant", "content": "hello"}]
+    assert kwargs["audio"] == {"format": "wav", "voice": "default_en"}
+
+
 def test_generate_mimo_voice_design_requires_context(tmp_path, monkeypatch):
     monkeypatch.setenv("XIAOMI_API_KEY", "test-key")
     from tools.tts_tool import _generate_mimo_tts
@@ -104,3 +130,19 @@ def test_text_to_speech_mimo_marks_telegram_voice_compatible(tmp_path, monkeypat
     assert result["file_path"] == str(output)
     assert result["voice_compatible"] is True
     assert result["media_tag"] == f"[[audio_as_voice]]\nMEDIA:{output}"
+
+
+def test_mimo_is_available_in_setup_provider_picker():
+    from hermes_cli.tools_config import TOOL_CATEGORIES
+
+    providers = TOOL_CATEGORIES["tts"]["providers"]
+    mimo_provider = next(provider for provider in providers if provider.get("tts_provider") == "mimo")
+
+    assert mimo_provider["name"] == "Xiaomi MiMo TTS"
+    assert any(env["key"] == "XIAOMI_API_KEY" for env in mimo_provider["env_vars"])
+
+
+def test_mimo_legacy_v2_voices_registered():
+    from tools.tts_tool import MIMO_TTS_PRESET_VOICES
+
+    assert {"mimo_default", "default_zh", "default_en"}.issubset(MIMO_TTS_PRESET_VOICES)
