@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useState } from "react";
 import {
   Eye,
   EyeOff,
@@ -35,6 +35,7 @@ import { Badge } from "@nous-research/ui/ui/components/badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useI18n } from "@/i18n";
+import { usePageHeader } from "@/contexts/usePageHeader";
 import { PluginSlot } from "@/plugins";
 
 /* ------------------------------------------------------------------ */
@@ -89,7 +90,20 @@ const CATEGORY_META_ICONS: Record<string, typeof KeyRound> = {
   tool: KeyRound,
   messaging: MessageSquare,
   setting: Settings,
+  custom: KeyRound,
 };
+
+const CUSTOM_ENV_CATEGORIES = [
+  { value: "custom", label: "Custom keys" },
+  { value: "provider", label: "Provider" },
+  { value: "tool", label: "Tool" },
+  { value: "messaging", label: "Messaging" },
+  { value: "setting", label: "Setting" },
+];
+
+function redactedPreview(value: string): string {
+  return value.length > 8 ? `${value.slice(0, 4)}...${value.slice(-4)}` : "***";
+}
 
 /* ------------------------------------------------------------------ */
 /*  EnvVarRow — single key edit row                                    */
@@ -132,7 +146,7 @@ function EnvVarRow({
   // Compact inline row for unset, non-editing keys (used inside provider groups)
   if (compact && !info.is_set && !isEditing) {
     return (
-      <div className="flex items-center justify-between gap-3 py-1.5 opacity-50 hover:opacity-100 transition-opacity">
+      <div className="flex items-center justify-between gap-3 py-1.5 min-w-0 overflow-hidden opacity-50 hover:opacity-100 transition-opacity">
         <div className="flex items-center gap-2 min-w-0">
           <span className="font-mono-ui text-[0.7rem] text-muted-foreground">
             {varKey}
@@ -168,7 +182,7 @@ function EnvVarRow({
   // Non-compact unset row
   if (!info.is_set && !isEditing) {
     return (
-      <div className="flex items-center justify-between gap-3 border border-border/50 px-4 py-2.5 opacity-60 hover:opacity-100 transition-opacity">
+      <div className="flex items-center justify-between gap-3 border border-border/50 px-4 py-2.5 min-w-0 overflow-hidden opacity-60 hover:opacity-100 transition-opacity">
         <div className="flex items-center gap-3 min-w-0">
           <Label className="font-mono-ui text-[0.7rem] text-muted-foreground">
             {varKey}
@@ -203,7 +217,7 @@ function EnvVarRow({
 
   // Full expanded row for set keys or keys being edited
   return (
-    <div className="grid gap-2 border border-border p-4">
+    <div className="grid gap-2 border border-border p-4 min-w-0 overflow-hidden">
       <div className="flex items-center justify-between gap-2 flex-wrap">
         <div className="flex items-center gap-2">
           <Label className="font-mono-ui text-[0.7rem]">{varKey}</Label>
@@ -493,8 +507,11 @@ export default function EnvPage() {
   const [showAdvanced, setShowAdvanced] = useState(true); // Show all providers by default
   const [customKey, setCustomKey] = useState("");
   const [customValue, setCustomValue] = useState("");
+  const [customCategory, setCustomCategory] = useState("custom");
+  const [customDescription, setCustomDescription] = useState("");
   const { toast, showToast } = useToast();
   const { t } = useI18n();
+  const { setAfterTitle } = usePageHeader();
 
   useEffect(() => {
     api
@@ -502,6 +519,59 @@ export default function EnvPage() {
       .then(setVars)
       .catch(() => {});
   }, []);
+
+  // Scroll-to sub-nav in the page header
+  const sections = useMemo(() => {
+    const items: { id: string; label: string }[] = [
+      { id: "section-oauth", label: "OAuth" },
+      { id: "section-providers", label: "Providers" },
+    ];
+    if (vars) {
+      const categories = ["tool", "messaging", "setting", "custom"];
+      const CATEGORY_LABELS: Record<string, string> = {
+        tool: "Tools",
+        messaging: "Messaging",
+        setting: "Settings",
+        custom: "Custom keys",
+      };
+      for (const cat of categories) {
+        const hasEntries = Object.values(vars).some(
+          (info) => info.category === cat,
+        );
+        if (hasEntries) {
+          items.push({ id: `section-${cat}`, label: CATEGORY_LABELS[cat] ?? cat });
+        }
+      }
+    }
+    return items;
+  }, [vars]);
+
+  useLayoutEffect(() => {
+    if (!vars) {
+      setAfterTitle(null);
+      return;
+    }
+    const scrollTo = (id: string) => {
+      document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" });
+    };
+    setAfterTitle(
+      <nav className="flex items-center gap-1" aria-label="Jump to section">
+        {sections.map((s) => (
+          <button
+            key={s.id}
+            type="button"
+            onClick={() => scrollTo(s.id)}
+            className="cursor-pointer px-2 py-0.5 text-[10px] uppercase tracking-wider text-muted-foreground hover:text-foreground border border-border/50 hover:border-foreground/30 transition-colors"
+          >
+            {s.label}
+          </button>
+        ))}
+      </nav>,
+    );
+    return () => {
+      setAfterTitle(null);
+    };
+  }, [vars, sections, setAfterTitle]);
 
   const handleSave = async (key: string) => {
     const value = edits[key];
@@ -542,6 +612,11 @@ export default function EnvPage() {
   const handleAddCustomEnvVar = async () => {
     const key = customKey.trim().toUpperCase();
     const value = customValue.trim();
+    const category = CUSTOM_ENV_CATEGORIES.some((entry) => entry.value === customCategory)
+      ? customCategory
+      : "custom";
+    const description = customDescription.trim() || "Custom environment variable";
+
     if (!/^[A-Z_][A-Z0-9_]*$/.test(key)) {
       showToast("Use a valid env var name: letters, numbers, underscores, not starting with a number", "error");
       return;
@@ -550,29 +625,33 @@ export default function EnvPage() {
       showToast("Enter a value before saving the custom key", "error");
       return;
     }
+
     setSaving(key);
     try {
-      await api.setEnvVar(key, value);
+      await api.setEnvVar(key, value, { category, description });
       setVars((prev) => {
         const existing = prev?.[key];
+        const preserveKnownMetadata = !!existing && !existing.custom;
         return {
           ...(prev ?? {}),
           [key]: {
             is_set: true,
-            redacted_value: value.slice(0, 4) + "..." + value.slice(-4),
-            description: existing?.description ?? "Custom environment variable",
+            redacted_value: redactedPreview(value),
+            description: preserveKnownMetadata ? existing.description : description,
             url: existing?.url ?? null,
-            category: existing?.category ?? "custom",
+            category: preserveKnownMetadata ? existing.category : category,
             is_password: existing?.is_password ?? true,
             tools: existing?.tools ?? [],
             advanced: existing?.advanced ?? false,
-            custom: existing?.custom ?? true,
+            ...(preserveKnownMetadata ? {} : { custom: true }),
           },
         };
       });
       setCustomKey("");
       setCustomValue("");
-      showToast(`${key} added`, "success");
+      setCustomCategory("custom");
+      setCustomDescription("");
+      showToast(`${key} saved`, "success");
     } catch (e) {
       showToast(`${t.config.failedToSave} ${key}: ${e}`, "error");
     } finally {
@@ -586,14 +665,18 @@ export default function EnvPage() {
         setSaving(key);
         try {
           await api.deleteEnvVar(key);
-          setVars((prev) =>
-            prev
-              ? {
-                  ...prev,
-                  [key]: { ...prev[key], is_set: false, redacted_value: null },
-                }
-              : prev,
-          );
+          setVars((prev) => {
+            if (!prev) return prev;
+            if (prev[key]?.custom) {
+              const next = { ...prev };
+              delete next[key];
+              return next;
+            }
+            return {
+              ...prev,
+              [key]: { ...prev[key], is_set: false, redacted_value: null },
+            };
+          });
           setEdits((prev) => {
             const n = { ...prev };
             delete n[key];
@@ -642,14 +725,12 @@ export default function EnvPage() {
   };
 
   /* ---- Build provider groups ---- */
-  const { providerGroups, nonProviderGrouped, customEntries } = useMemo(() => {
-    if (!vars) return { providerGroups: [], nonProviderGrouped: [], customEntries: [] };
-
-    const customEntries = Object.entries(vars).filter(([, info]) => info.custom);
+  const { providerGroups, nonProviderGrouped } = useMemo(() => {
+    if (!vars) return { providerGroups: [], nonProviderGrouped: [] };
 
     const providerEntries = Object.entries(vars).filter(
       ([, info]) =>
-        !info.custom && info.category === "provider" && (showAdvanced || !info.advanced),
+        info.category === "provider" && (showAdvanced || !info.advanced),
     );
 
     // Group by provider
@@ -674,11 +755,12 @@ export default function EnvPage() {
       tool: t.app.nav.keys,
       messaging: t.common.messaging,
       setting: t.app.nav.config,
+      custom: "Custom keys",
     };
-    const otherCategories = ["tool", "messaging", "setting"];
+    const otherCategories = ["tool", "messaging", "setting", "custom"];
     const nonProvider = otherCategories.map((cat) => {
       const entries = Object.entries(vars).filter(
-        ([, info]) => !info.custom && info.category === cat && (showAdvanced || !info.advanced),
+        ([, info]) => info.category === cat && (showAdvanced || !info.advanced),
       );
       const setEntries = entries.filter(([, info]) => info.is_set);
       const unsetEntries = entries.filter(([, info]) => !info.is_set);
@@ -692,7 +774,7 @@ export default function EnvPage() {
       };
     });
 
-    return { providerGroups: groups, nonProviderGrouped: nonProvider, customEntries };
+    return { providerGroups: groups, nonProviderGrouped: nonProvider };
   }, [vars, showAdvanced, t]);
 
   if (!vars) {
@@ -761,9 +843,9 @@ export default function EnvPage() {
         </CardHeader>
         <CardContent className="grid gap-3 pt-4">
           <p className="text-xs text-muted-foreground">
-            Custom keys are saved to the Hermes environment but are only used when referenced by config, tools, plugins, or your own scripts.
+            Custom keys are saved to the Hermes environment and become visible on refresh. They are only used when referenced by config, tools, plugins, or your own scripts.
           </p>
-          <div className="grid gap-3 sm:grid-cols-[minmax(14rem,1fr)_minmax(16rem,2fr)_auto] sm:items-end">
+          <div className="grid gap-3 lg:grid-cols-[minmax(12rem,1fr)_minmax(14rem,1.2fr)_minmax(10rem,0.8fr)_minmax(14rem,1.2fr)_auto] lg:items-end">
             <div className="grid gap-1.5">
               <Label htmlFor="custom-env-key">Key name</Label>
               <Input
@@ -785,6 +867,31 @@ export default function EnvPage() {
                 className="font-mono-ui text-xs"
               />
             </div>
+            <div className="grid gap-1.5">
+              <Label htmlFor="custom-env-category">Section</Label>
+              <select
+                id="custom-env-category"
+                value={customCategory}
+                onChange={(e) => setCustomCategory(e.target.value)}
+                className="h-9 border border-input bg-background px-3 py-1 text-xs text-foreground"
+              >
+                {CUSTOM_ENV_CATEGORIES.map((entry) => (
+                  <option key={entry.value} value={entry.value}>
+                    {entry.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="grid gap-1.5">
+              <Label htmlFor="custom-env-description">Label / description</Label>
+              <Input
+                id="custom-env-description"
+                value={customDescription}
+                onChange={(e) => setCustomDescription(e.target.value)}
+                placeholder="Custom environment variable"
+                className="text-xs"
+              />
+            </div>
             <Button
               onClick={handleAddCustomEnvVar}
               prefix={<Save />}
@@ -801,44 +908,14 @@ export default function EnvPage() {
         </CardContent>
       </Card>
 
-      {customEntries.length > 0 && (
-        <Card>
-          <CardHeader className="border-b border-border bg-card">
-            <div className="flex items-center gap-2">
-              <KeyRound className="h-5 w-5 text-muted-foreground" />
-              <CardTitle className="text-base">Custom keys</CardTitle>
-            </div>
-            <CardDescription>
-              {customEntries.length} custom environment {customEntries.length === 1 ? "variable" : "variables"} stored in <code>~/.hermes/.env</code>.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="grid gap-3 pt-4">
-            {customEntries.map(([key, info]) => (
-              <EnvVarRow
-                key={key}
-                varKey={key}
-                info={info}
-                edits={edits}
-                setEdits={setEdits}
-                revealed={revealed}
-                saving={saving}
-                onSave={handleSave}
-                onClear={keyClear.requestDelete}
-                onReveal={handleReveal}
-                onCancelEdit={cancelEdit}
-                clearDialogOpen={keyClear.isOpen}
-              />
-            ))}
-          </CardContent>
-        </Card>
-      )}
+      <div id="section-oauth">
+        <OAuthProvidersCard
+          onError={(msg) => showToast(msg, "error")}
+          onSuccess={(msg) => showToast(msg, "success")}
+        />
+      </div>
 
-      <OAuthProvidersCard
-        onError={(msg) => showToast(msg, "error")}
-        onSuccess={(msg) => showToast(msg, "success")}
-      />
-
-      <Card>
+      <Card id="section-providers">
         <CardHeader className="border-b border-border bg-card">
           <div className="flex items-center gap-2">
             <Zap className="h-5 w-5 text-muted-foreground" />
@@ -882,7 +959,7 @@ export default function EnvPage() {
           if (totalEntries === 0) return null;
 
           return (
-            <Card key={category}>
+            <Card key={category} id={`section-${category}`}>
               <CardHeader className="border-b border-border bg-card">
                 <div className="flex items-center gap-2">
                   <Icon className="h-5 w-5 text-muted-foreground" />
@@ -894,7 +971,7 @@ export default function EnvPage() {
                 </CardDescription>
               </CardHeader>
 
-              <CardContent className="grid gap-3 pt-4">
+              <CardContent className="grid gap-3 pt-4 overflow-hidden">
                 {setEntries.map(([key, info]) => (
                   <EnvVarRow
                     key={key}
@@ -942,6 +1019,7 @@ export default function EnvPage() {
 /* ------------------------------------------------------------------ */
 
 function CollapsibleUnset({
+  category: _category,
   unsetEntries,
   edits,
   setEdits,
