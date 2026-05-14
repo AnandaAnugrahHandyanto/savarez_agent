@@ -167,13 +167,12 @@ youtube = [
 # `hermes dashboard` (localhost SPA + API).  Not in core to keep the default install lean.
 web = ["fastapi==0.133.1", "uvicorn[standard]==0.41.0"]
 rl = [
-  "atroposlib @ git+https://github.com/NousResearch/atropos.git@c20c85256e5a45ad31edf8b7276e9c5ee1995a30",
-  "tinker @ git+https://github.com/thinking-machines-lab/tinker.git@30517b667f18a3dfb7ef33fb56cf686d5820ba2b",
+  "atroposlib==0.4.0",
+  "tinker==0.18.2",
   "fastapi==0.133.1",
   "uvicorn[standard]==0.41.0",
   "wandb==0.25.1",
 ]
-yc-bench = ["yc-bench @ git+https://github.com/collinear-ai/yc-bench.git@bfb0c88062450f46341bd9a5298903fc2e952a5c ; python_version >= '3.12'"]
 all = [
   # Policy (2026-05-12): `[all]` includes only extras that genuinely
   # CAN'T be lazy-installed via `tools/lazy_deps.py` — i.e. things every
