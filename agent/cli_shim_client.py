@@ -167,7 +167,80 @@ class _CliShimChatCompletions:
         self._client = client
 
     def create(self, **kwargs: Any) -> Any:
-        return self._client._create_chat_completion(**kwargs)
+        # When hermes asks for streaming, return a synthetic single-chunk
+        # iterator that wraps the whole response. The CLIs we shell out to
+        # don't support per-token streaming, so we collect the full response
+        # and emit it as one delta chunk + a final chunk with finish_reason.
+        stream_requested = bool(kwargs.pop("stream", False))
+        response = self._client._create_chat_completion(**kwargs)
+        if not stream_requested:
+            return response
+        return _wrap_response_as_stream(response)
+
+
+def _wrap_response_as_stream(response: Any):
+    """Yield OpenAI-shaped streaming chunks from a fully-formed response.
+
+    Hermes' stream consumer iterates chunks, each with .choices[].delta.
+    We emit:
+      1) one chunk with the full content as a delta
+      2) one chunk per tool_call (if any) with the full tool args
+      3) one final chunk with finish_reason set and usage attached
+    """
+    choice = response.choices[0]
+    msg = choice.message
+    finish_reason = choice.finish_reason or "stop"
+    model = response.model
+
+    # Chunk 1: content delta
+    content = getattr(msg, "content", "") or ""
+    delta1 = SimpleNamespace(
+        role="assistant",
+        content=content,
+        tool_calls=None,
+        reasoning=getattr(msg, "reasoning", None),
+        reasoning_content=getattr(msg, "reasoning_content", None),
+    )
+    yield SimpleNamespace(
+        id="cli-shim-stream-1",
+        model=model,
+        choices=[SimpleNamespace(index=0, delta=delta1, finish_reason=None)],
+        usage=None,
+    )
+
+    # Chunk 2+: tool_calls (each as its own delta following OpenAI shape)
+    tool_calls = getattr(msg, "tool_calls", None) or []
+    for i, tc in enumerate(tool_calls):
+        delta_tc = SimpleNamespace(
+            role=None,
+            content=None,
+            tool_calls=[
+                SimpleNamespace(
+                    index=i,
+                    id=getattr(tc, "id", f"call_{i}"),
+                    type="function",
+                    function=SimpleNamespace(
+                        name=getattr(tc.function, "name", ""),
+                        arguments=getattr(tc.function, "arguments", "{}"),
+                    ),
+                )
+            ],
+        )
+        yield SimpleNamespace(
+            id=f"cli-shim-stream-tc-{i}",
+            model=model,
+            choices=[SimpleNamespace(index=0, delta=delta_tc, finish_reason=None)],
+            usage=None,
+        )
+
+    # Final chunk: finish_reason + usage
+    delta_final = SimpleNamespace(role=None, content=None, tool_calls=None)
+    yield SimpleNamespace(
+        id="cli-shim-stream-final",
+        model=model,
+        choices=[SimpleNamespace(index=0, delta=delta_final, finish_reason=finish_reason)],
+        usage=response.usage,
+    )
 
 
 class _CliShimChatNamespace:
