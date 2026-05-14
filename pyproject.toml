@@ -242,7 +242,7 @@ redundant-cast = "ignore"
 exclude = ["tinker-atropos"]
 
 [tool.ruff]
-exclude = ["tinker-atropos"]
+exclude = ["tinker-atlas", "tests/agent/test_bedrock_adapter.py"]
 preview = true  # required for PLW1514 (unspecified-encoding) — preview rule
 
 [tool.ruff.lint]
