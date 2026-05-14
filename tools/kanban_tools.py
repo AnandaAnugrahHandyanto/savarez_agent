@@ -614,6 +614,11 @@ def _handle_create(args: dict, **kw) -> str:
                 created_by=os.environ.get("HERMES_PROFILE") or "worker",
             )
             new_task = kb.get_task(conn, new_tid)
+            # Auto-subscribe notifications: if we're running inside a
+            # gateway session, register a subscription so the user who
+            # initiated this task receives terminal-state notifications
+            # (completed, blocked, qc_review, etc.) directly in their chat.
+            _try_auto_subscribe(kb, conn, new_tid)
             return _ok(
                 task_id=new_tid,
                 status=new_task.status if new_task else None,
@@ -625,6 +630,34 @@ def _handle_create(args: dict, **kw) -> str:
     except Exception as e:
         logger.exception("kanban_create failed")
         return tool_error(f"kanban_create: {e}")
+
+
+def _try_auto_subscribe(kb, conn, task_id: str) -> None:
+    """Best-effort auto-subscribe to a task's terminal events.
+
+    Called after creating a task via the kanban_create tool. Uses the
+    gateway session context (when available) to subscribe the current
+    chat to the task's completed/blocked/qc_review events.
+
+    Designed to be a no-op outside of a gateway context (CLI, tests).
+    """
+    try:
+        from gateway.session_context import get_session_env
+        platform = get_session_env("HERMES_SESSION_PLATFORM")
+        chat_id = get_session_env("HERMES_SESSION_CHAT_ID")
+        thread_id = get_session_env("HERMES_SESSION_THREAD_ID")
+        user_id = get_session_env("HERMES_SESSION_USER_ID")
+        if platform and chat_id:
+            kb.add_notify_sub(
+                conn, task_id=task_id,
+                platform=platform, chat_id=chat_id,
+                thread_id=thread_id or None,
+                user_id=user_id or None,
+            )
+    except ImportError:
+        pass  # Not running in a gateway context — skip silently.
+    except Exception:
+        logger.debug("kanban auto-subscribe failed (non-fatal)", exc_info=True)
 
 
 def _handle_unblock(args: dict, **kw) -> str:
