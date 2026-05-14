@@ -2783,6 +2783,17 @@ class AIAgent:
         self._fallback_activated = False
         self._fallback_index = 0
 
+        # ── Load credential pool for the new provider ──
+        # When switching providers mid-session (e.g. via /model), the pool
+        # from the old provider is stale.  Load the new provider's pool so
+        # that rate-limit recovery (_recover_with_credential_pool) works
+        # immediately without waiting for a future agent init.
+        try:
+            from agent.credential_pool import load_pool as _load_pool
+            self._credential_pool = _load_pool(new_provider)
+        except Exception:
+            pass
+
         # When the user deliberately swaps primary providers (e.g. openrouter
         # → anthropic), drop any fallback entries that target the OLD primary
         # or the NEW one.  The chain was seeded from config at agent init for
