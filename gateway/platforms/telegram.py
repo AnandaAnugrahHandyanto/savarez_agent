@@ -4012,7 +4012,7 @@ class TelegramAdapter(BasePlatformAdapter):
             return
         if not self._should_process_message(msg, is_command=True):
             return
-        
+
         event = self._build_message_event(msg, MessageType.COMMAND, update_id=update.update_id)
         await self.handle_message(event)
 
