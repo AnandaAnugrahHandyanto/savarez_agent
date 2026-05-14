@@ -136,6 +136,13 @@ class PooledCredential:
         data.setdefault("priority", 0)
         data.setdefault("source", SOURCE_MANUAL)
         data.setdefault("access_token", "")
+        # Normalise last_status_at to a float epoch.  Pool state files serialise
+        # this field as an ISO-8601 string; _exhausted_until() performs arithmetic
+        # on it directly, so a bare string causes ``TypeError: can only concatenate
+        # str (not "int") to str`` on rehydration.  Apply the same helper used
+        # elsewhere in this module so the field is always a float when set.
+        if "last_status_at" in data and data["last_status_at"] is not None:
+            data["last_status_at"] = _parse_absolute_timestamp(data["last_status_at"])
         return cls(provider=provider, **data)
 
     def to_dict(self) -> Dict[str, Any]:

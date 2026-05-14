@@ -1641,3 +1641,60 @@ def test_codex_exhausted_entry_stays_stuck_without_auth_store_update(tmp_path, m
     # still skips it.
     available = pool._available_entries(clear_expired=True, refresh=False)
     assert available == []
+
+
+def test_from_dict_normalises_iso_last_status_at(tmp_path, monkeypatch):
+    """Regression: pool state serialises last_status_at as an ISO string.
+    from_dict() must coerce it to a float so _exhausted_until() can do
+    arithmetic without raising TypeError."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+
+    import datetime
+    from agent.credential_pool import PooledCredential, _exhausted_until, STATUS_EXHAUSTED
+
+    iso_ts = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    entry = PooledCredential.from_dict(
+        "openai",
+        {
+            "id": "iso-test",
+            "label": "iso",
+            "auth_type": "api_key",
+            "access_token": "sk-test",
+            "last_status": STATUS_EXHAUSTED,
+            "last_status_at": iso_ts,
+            "last_error_code": 429,
+        },
+    )
+    # last_status_at must be a float after rehydration — not an ISO string
+    assert isinstance(entry.last_status_at, float), (
+        f"expected float, got {type(entry.last_status_at)}: {entry.last_status_at!r}"
+    )
+    # _exhausted_until must not raise TypeError
+    result = _exhausted_until(entry)
+    assert result is not None
+    assert isinstance(result, float)
+
+
+def test_from_dict_normalises_epoch_ms_last_status_at(tmp_path, monkeypatch):
+    """from_dict() must also normalise epoch-millisecond last_status_at values."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+
+    from agent.credential_pool import PooledCredential, STATUS_EXHAUSTED
+    import time
+
+    epoch_ms = int(time.time() * 1000)
+    entry = PooledCredential.from_dict(
+        "openai",
+        {
+            "id": "ms-test",
+            "label": "ms",
+            "auth_type": "api_key",
+            "access_token": "sk-test",
+            "last_status": STATUS_EXHAUSTED,
+            "last_status_at": epoch_ms,
+            "last_error_code": 429,
+        },
+    )
+    assert isinstance(entry.last_status_at, float)
+    # epoch-ms value divided by 1000 → reasonable "now" range
+    assert 1_700_000_000 < entry.last_status_at < 2_000_000_000
