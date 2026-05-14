@@ -5552,7 +5552,7 @@ class HermesCLI:
         lifecycle point (shutdown, /new, /reset).
         """
         try:
-            from hermes_cli.plugins import invoke_hook as _invoke_hook
+            import hermes_cli.plugins as _plugins
             _agent_id = None
             try:
                 from agent.profile import get_active_profile
@@ -5561,7 +5561,7 @@ class HermesCLI:
                     _agent_id = _p.id
             except Exception:
                 pass
-            _invoke_hook(
+            _plugins.invoke_hook(
                 event_type,
                 session_id=self.agent.session_id if self.agent else None,
                 platform=getattr(self, "platform", None) or "cli",

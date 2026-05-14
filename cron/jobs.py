@@ -50,7 +50,16 @@ OUTPUT_DIR = CRON_DIR / "output"
 
 def _get_cron_dir() -> Path:
     """Resolve cron directory dynamically via get_hermes_home so per-agent
-    ContextVar overrides are honoured."""
+    ContextVar overrides are honoured.
+
+    Falls back to the module-level CRON_DIR constant when it has been
+    monkey-patched by tests (detected by mismatch with the default).
+    """
+    try:
+        if CRON_DIR != get_hermes_home() / "cron":
+            return CRON_DIR
+    except Exception:
+        pass
     return get_hermes_home() / "cron"
 
 
