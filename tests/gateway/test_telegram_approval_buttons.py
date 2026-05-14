@@ -240,6 +240,42 @@ class TestTelegramApprovalCallback:
     """Test the approval callback handling in _handle_callback_query."""
 
     @pytest.mark.asyncio
+    async def test_plugin_hook_can_claim_namespaced_callback(self, monkeypatch):
+        adapter = _make_adapter()
+        handled = {}
+
+        query = AsyncMock()
+        query.data = "vm:stop"
+        query.message = MagicMock()
+        query.message.chat_id = 12345
+        query.message.chat = MagicMock()
+        query.message.chat.type = "private"
+        query.from_user = MagicMock()
+        query.from_user.id = "12345"
+        query.from_user.first_name = "Norbert"
+        query.answer = AsyncMock()
+
+        async def plugin_handler(**kwargs):
+            handled["data"] = kwargs["data"]
+            handled["adapter"] = kwargs["adapter"]
+            await kwargs["query"].answer(text="handled")
+            return {"action": "handled"}
+
+        def invoke_hook(name, **kwargs):
+            assert name == "telegram_callback_query"
+            return [plugin_handler(**kwargs)]
+
+        monkeypatch.setattr("hermes_cli.plugins.invoke_hook", invoke_hook)
+
+        update = MagicMock()
+        update.callback_query = query
+        await adapter._handle_callback_query(update, MagicMock())
+
+        assert handled["data"] == "vm:stop"
+        assert handled["adapter"] is adapter
+        query.answer.assert_awaited_once_with(text="handled")
+
+    @pytest.mark.asyncio
     async def test_resolves_approval_on_click(self):
         adapter = _make_adapter()
         # Set up approval state

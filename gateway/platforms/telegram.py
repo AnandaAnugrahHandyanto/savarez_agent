@@ -13,6 +13,7 @@ import logging
 import os
 import tempfile
 import html as _html
+import inspect
 import re
 from typing import Dict, List, Optional, Any
 
@@ -2876,6 +2877,31 @@ class TelegramAdapter(BasePlatformAdapter):
                         clarify_id,
                     )
             return
+
+        # --- Plugin-owned callbacks ---
+        try:
+            from hermes_cli.plugins import invoke_hook as _invoke_hook
+            hook_results = _invoke_hook(
+                "telegram_callback_query",
+                adapter=self,
+                update=update,
+                context=context,
+                query=query,
+                data=data,
+            )
+        except Exception as exc:
+            logger.warning("[%s] telegram_callback_query hook failed: %s", self.name, exc)
+            hook_results = []
+
+        for result in hook_results:
+            if inspect.isawaitable(result):
+                try:
+                    result = await result
+                except Exception as exc:
+                    logger.warning("[%s] telegram_callback_query handler failed: %s", self.name, exc)
+                    continue
+            if isinstance(result, dict) and result.get("action") == "handled":
+                return
 
         # --- Update prompt callbacks ---
         if not data.startswith("update_prompt:"):

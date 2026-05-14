@@ -151,6 +151,11 @@ VALID_HOOKS: Set[str] = {
     #   {"action": "allow"}  /  None             -> normal dispatch
     # Kwargs: event: MessageEvent, gateway: GatewayRunner, session_store.
     "pre_gateway_dispatch",
+    # Telegram inline keyboard callback hook. Fired for callback_data values not
+    # claimed by Hermes core before the adapter falls through. Plugins may
+    # return {"action": "handled"} to stop further callback processing.
+    # Kwargs: adapter, update, context, query, data.
+    "telegram_callback_query",
     # Approval lifecycle hooks. Fired by tools/approval.py when a dangerous
     # command needs user approval -- fires BOTH for CLI-interactive prompts
     # and for gateway/ACP approvals (Telegram, Discord, Slack, TUI, etc.).
