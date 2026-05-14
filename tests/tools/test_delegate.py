@@ -409,6 +409,50 @@ class TestDelegateTask(unittest.TestCase):
             )
 
     @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
+    @patch("hermes_cli.models.detect_provider_for_model")
+    def test_child_infers_provider_from_model_before_normalizing(
+        self,
+        mock_detect,
+        mock_resolve,
+    ):
+        parent = _make_mock_parent(depth=0)
+        parent.base_url = "https://api.z.ai/api/coding/paas/v4"
+        parent.api_key = "wrong-key"
+        parent.provider = ""
+        parent.api_mode = "codex_responses"
+        parent.model = "gpt-5.5"
+        mock_detect.return_value = ("openai-codex", "gpt-5.5")
+        mock_resolve.return_value = {
+            "provider": "openai-codex",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key": "codex-key",
+            "api_mode": "codex_responses",
+        }
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.run_conversation.return_value = {
+                "final_response": "ok",
+                "completed": True,
+                "api_calls": 1,
+            }
+            MockAgent.return_value = mock_child
+
+            delegate_task(goal="Test inferred runtime normalization", parent_agent=parent)
+
+            _, kwargs = MockAgent.call_args
+            self.assertEqual(kwargs["provider"], "openai-codex")
+            self.assertEqual(kwargs["model"], "gpt-5.5")
+            self.assertEqual(kwargs["base_url"], "https://chatgpt.com/backend-api/codex")
+            self.assertEqual(kwargs["api_key"], "codex-key")
+            self.assertEqual(kwargs["api_mode"], "codex_responses")
+            mock_detect.assert_called_with("gpt-5.5", "auto")
+            mock_resolve.assert_called_with(
+                requested="openai-codex",
+                target_model="gpt-5.5",
+            )
+
+    @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
     def test_explicit_delegation_base_url_is_not_normalized(self, mock_resolve):
         parent = _make_mock_parent(depth=0)
 
