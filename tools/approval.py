@@ -314,7 +314,7 @@ def _contains_sudo_stdin_invocation(command: str) -> bool:
 
     expect_command = True
     for index, word in enumerate(words):
-        if set(word) <= set(";&|()<>`"):
+        if set(word) <= set(";&|()`"):
             expect_command = True
             continue
         if not expect_command:
