@@ -42,6 +42,6 @@ systemctl --user enable --now hermes-notion-kanban-sync.timer
 systemctl --user list-timers hermes-notion-kanban-sync.timer --no-pager
 ```
 
-The watchdog runs `python -m hermes_cli.notion_kanban_sync` from `~/.hermes/hermes-agent` by default. Override `HERMES_NOTION_SYNC_REPO`, `HERMES_NOTION_SYNC_PYTHON`, `HERMES_NOTION_SYNC_REPORT_DIR`, or `HERMES_NOTION_SYNC_MAX_CREATES` in the systemd service environment if needed. If `HERMES_NOTION_SYNC_REPORT_DIR` is unset, the module writes to the profile-safe default `~/.hermes/reports/hermes-notion-sync/`.
+The watchdog runs `python -m hermes_cli.notion_kanban_sync` from `~/.hermes/hermes-agent` when the module is available there, with a fallback to `~/.hermes/profiles/dev/scripts/notion_kanban_sync.py` for pre-merge installs. Override `HERMES_NOTION_SYNC_REPO`, `HERMES_NOTION_SYNC_SCRIPT`, `HERMES_NOTION_SYNC_PYTHON`, `HERMES_NOTION_SYNC_REPORT_DIR`, or `HERMES_NOTION_SYNC_MAX_CREATES` in the systemd service environment if needed. If `HERMES_NOTION_SYNC_REPORT_DIR` is unset, the module writes to the profile-safe default `~/.hermes/reports/hermes-notion-sync/`.
 
 The watchdog is quiet when no changes occur; non-empty stdout means a sync changed something or hit an error.

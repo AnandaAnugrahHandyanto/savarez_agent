@@ -15,4 +15,8 @@ if [[ -n "${HERMES_NOTION_SYNC_REPORT_DIR:-}" ]]; then
   ARGS+=(--report-dir "$HERMES_NOTION_SYNC_REPORT_DIR")
 fi
 cd "$REPO"
-exec "$PY" -m hermes_cli.notion_kanban_sync "${ARGS[@]}"
+if [[ -f "$REPO/hermes_cli/notion_kanban_sync.py" ]]; then
+  exec "$PY" -m hermes_cli.notion_kanban_sync "${ARGS[@]}"
+fi
+SCRIPT=${HERMES_NOTION_SYNC_SCRIPT:-$HOME/.hermes/profiles/dev/scripts/notion_kanban_sync.py}
+exec "$PY" "$SCRIPT" "${ARGS[@]}"
