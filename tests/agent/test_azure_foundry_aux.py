@@ -267,6 +267,32 @@ class TestAzureDeploymentNotFoundTranslation:
         assert not any("Azure Foundry: deployment" in r.getMessage()
                        for r in caplog.records)
 
+    def test_400_with_deployment_not_found_text_passes_through(self, caplog):
+        from agent.auxiliary_client import _translate_azure_deployment_error
+
+        exc = _FakeAzureError(400, {
+            "error": {
+                "code": "BadRequest",
+                "message": (
+                    "Invalid request body while checking DeploymentNotFound: "
+                    "the api deployment for this resource does not exist"
+                ),
+            }
+        })
+
+        def boom():
+            raise exc
+
+        caplog.set_level(logging.WARNING, logger="agent.auxiliary_client")
+        with pytest.raises(_FakeAzureError):
+            _translate_azure_deployment_error(
+                boom,
+                base_url="https://example.openai.azure.com/anthropic",
+                model="claude-haiku-4-5",
+            )
+        assert not any("Azure Foundry: deployment" in r.getMessage()
+                       for r in caplog.records)
+
     def test_success_returns_value(self):
         from agent.auxiliary_client import _translate_azure_deployment_error
 

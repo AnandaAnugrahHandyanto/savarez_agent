@@ -1156,10 +1156,11 @@ def _detect_azure_deployment_not_found(exc: BaseException) -> bool:
     """Return True when ``exc`` looks like an Azure DeploymentNotFound 404."""
     status = getattr(exc, "status_code", None)
     if status is None:
-        # Some SDKs nest the status on .response.status_code
+        # Some SDKs nest the status on .response.status_code. If no status is
+        # exposed at all, fall back to the body marker for SDK compatibility.
         response = getattr(exc, "response", None)
         status = getattr(response, "status_code", None)
-    if status not in (None, 400, 404):
+    if status not in (None, 404):
         return False
     body = _extract_azure_error_body(exc).lower()
     return any(token in body for token in _AZURE_DEPLOYMENT_NOT_FOUND_PATTERNS)
