@@ -268,11 +268,20 @@ class OrchestrationRuntime:
 
         if decision.intent is Intent.STEER:
             if main_in_flight and steer_callback is not None:
-                steer_callback(decision.raw_text)
+                try:
+                    accepted = bool(steer_callback(decision.raw_text))
+                except Exception:
+                    accepted = False
+                if accepted:
+                    return FrontdeskTurnResult(
+                        decision=decision,
+                        action="steered",
+                        message="control: steered active main turn",
+                    )
                 return FrontdeskTurnResult(
                     decision=decision,
-                    action="steered",
-                    message="control: steered active main turn",
+                    action="main",
+                    message="control: steer not accepted; route as main input",
                 )
             return FrontdeskTurnResult(
                 decision=decision,
@@ -293,6 +302,22 @@ class OrchestrationRuntime:
                 action=decision.intent.value,
                 message=f"control: {decision.intent.value}",
             )
+
+        if (
+            main_in_flight
+            and steer_callback is not None
+            and decision.intent is Intent.NEW_TASK_MAIN
+        ):
+            try:
+                accepted = bool(steer_callback(decision.raw_text))
+            except Exception:
+                accepted = False
+            if accepted:
+                return FrontdeskTurnResult(
+                    decision=decision,
+                    action="steered",
+                    message="control: steered active main turn",
+                )
 
         return FrontdeskTurnResult(
             decision=decision,
