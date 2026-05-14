@@ -113,6 +113,16 @@ def _get_live_tracking_cwd(task_id: str = "default") -> str | None:
     except Exception:
         pass
 
+    try:
+        from tools.terminal_tool import _task_env_overrides
+
+        override = _task_env_overrides.get(container_key, {}) or _task_env_overrides.get(task_id, {})
+        override_cwd = override.get("cwd")
+        if isinstance(override_cwd, str) and override_cwd:
+            return override_cwd
+    except Exception:
+        pass
+
     return None
 
 
