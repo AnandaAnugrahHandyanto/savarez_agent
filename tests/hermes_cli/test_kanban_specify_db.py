@@ -182,3 +182,139 @@ def test_specify_second_call_noop_false(kanban_home):
         assert kb.specify_triage_task(conn, tid, body="spec") is True
     with kb.connect() as conn:
         assert kb.specify_triage_task(conn, tid, body="spec again") is False
+
+
+# ---------------------------------------------------------------------------
+# Phase-1 triage layer: assignee_suggestion + labels on the DB write
+# ---------------------------------------------------------------------------
+
+def test_specify_writes_assignee_suggestion_when_empty(kanban_home):
+    with kb.connect() as conn:
+        tid = _create_triage(conn, title="rough")
+        assert kb.get_task(conn, tid).assignee in (None, "")
+    with kb.connect() as conn:
+        ok = kb.specify_triage_task(
+            conn,
+            tid,
+            body="spec body",
+            assignee_suggestion="h2coder",
+        )
+    assert ok is True
+    with kb.connect() as conn:
+        task = kb.get_task(conn, tid)
+    assert task.assignee == "h2coder"
+
+
+def test_specify_does_not_overwrite_existing_assignee(kanban_home):
+    with kb.connect() as conn:
+        tid = _create_triage(conn, title="rough", assignee="h2architect")
+    with kb.connect() as conn:
+        ok = kb.specify_triage_task(
+            conn,
+            tid,
+            body="spec body",
+            assignee_suggestion="h2coder",  # ignored — already set
+        )
+    assert ok is True
+    with kb.connect() as conn:
+        task = kb.get_task(conn, tid)
+    assert task.assignee == "h2architect"
+
+
+def test_specify_labels_fallback_to_event_payload(kanban_home):
+    """No ``labels`` or ``metadata`` column in the test DB → labels must
+    live on the ``specified`` event payload so they survive until the
+    parallel migration adds the column."""
+    # Precondition: neither column exists in the fresh test DB.
+    with kb.connect() as conn:
+        cols = {row["name"] for row in conn.execute("PRAGMA table_info(tasks)")}
+    assert "labels" not in cols
+    assert "metadata" not in cols
+
+    with kb.connect() as conn:
+        tid = _create_triage(conn, title="rough")
+    with kb.connect() as conn:
+        ok = kb.specify_triage_task(
+            conn,
+            tid,
+            body="spec body",
+            labels=["long-running", "audit-only"],
+            author="ace",
+        )
+    assert ok is True
+    with kb.connect() as conn:
+        events = kb.list_events(conn, tid)
+    spec_ev = next(e for e in events if e.kind == "specified")
+    assert spec_ev.payload is not None
+    assert spec_ev.payload.get("labels") == ["long-running", "audit-only"]
+    assert "labels" in (spec_ev.payload.get("changed_fields") or [])
+
+
+def test_specify_labels_uses_labels_column_when_present(kanban_home):
+    """When a ``labels`` column has been added (parallel migration), the
+    fallback to event payload must NOT fire — labels go in the column."""
+    # Simulate the parallel migration by adding the column manually.
+    with kb.connect() as conn:
+        conn.execute("ALTER TABLE tasks ADD COLUMN labels TEXT")
+        conn.commit()
+        tid = _create_triage(conn, title="rough")
+    with kb.connect() as conn:
+        ok = kb.specify_triage_task(
+            conn,
+            tid,
+            body="spec body",
+            labels=["large", "parallel-fan-out"],
+            author="ace",
+        )
+    assert ok is True
+    # Labels written to the column.
+    with kb.connect() as conn:
+        row = conn.execute(
+            "SELECT labels FROM tasks WHERE id = ?", (tid,)
+        ).fetchone()
+        events = kb.list_events(conn, tid)
+    import json as _json
+    assert _json.loads(row["labels"]) == ["large", "parallel-fan-out"]
+    # Event payload reports labels in changed_fields but does NOT also
+    # carry the labels list (no need — they're in the column).
+    spec_ev = next(e for e in events if e.kind == "specified")
+    assert "labels" in (spec_ev.payload.get("changed_fields") or [])
+    assert "labels" not in (spec_ev.payload or {})
+
+
+def test_specify_labels_uses_metadata_column_when_no_labels_column(kanban_home):
+    """Intermediate state: a ``metadata`` column exists but no ``labels``
+    column yet. Labels nest under ``metadata.labels`` (JSON)."""
+    with kb.connect() as conn:
+        conn.execute("ALTER TABLE tasks ADD COLUMN metadata TEXT")
+        conn.commit()
+        tid = _create_triage(conn, title="rough")
+    with kb.connect() as conn:
+        ok = kb.specify_triage_task(
+            conn,
+            tid,
+            body="spec body",
+            labels=["est-hours-high"],
+        )
+    assert ok is True
+    with kb.connect() as conn:
+        row = conn.execute(
+            "SELECT metadata FROM tasks WHERE id = ?", (tid,)
+        ).fetchone()
+    import json as _json
+    meta = _json.loads(row["metadata"])
+    assert meta == {"labels": ["est-hours-high"]}
+
+
+def test_specify_assignee_suggestion_none_does_nothing(kanban_home):
+    """Passing ``assignee_suggestion=None`` is a no-op on assignee."""
+    with kb.connect() as conn:
+        tid = _create_triage(conn, title="rough")
+    with kb.connect() as conn:
+        ok = kb.specify_triage_task(
+            conn, tid, body="spec body", assignee_suggestion=None
+        )
+    assert ok is True
+    with kb.connect() as conn:
+        task = kb.get_task(conn, tid)
+    assert task.assignee in (None, "")
