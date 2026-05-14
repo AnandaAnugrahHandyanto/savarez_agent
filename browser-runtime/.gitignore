@@ -1,3 +1,32 @@
 /target/
-/node_modules/
-.env
+/coverage/
+*.profraw
+
+# Browser runtime artifacts are private by default. Only reviewed,
+# sanitized evidence should be force-added deliberately after a hygiene scan.
+/artifacts/**/runtime-data/
+/artifacts/**/raw/
+/artifacts/**/__pycache__/
+/artifacts/**/*.pyc
+/scripts/__pycache__/
+/scripts/**/*.pyc
+
+# Capability-bearing session/API responses must not be committed accidentally.
+/artifacts/**/session-create*.json
+/artifacts/**/session-get*.json
+/artifacts/**/session-delete*.json
+/artifacts/**/session_create*.json
+/artifacts/**/session_get*.json
+/artifacts/**/session_delete*.json
+/artifacts/**/session_*_response.json
+/artifacts/**/session_for_probe.json
+/artifacts/**/takeover-pause*.json
+
+# Defense-in-depth for copied browser profile state outside runtime-data/.
+/artifacts/**/Cookies*
+/artifacts/**/History*
+/artifacts/**/Login Data*
+/artifacts/**/Local State*
+/artifacts/**/Local Storage/**
+/artifacts/**/Trust Tokens*
+/artifacts/**/Web Data*

@@ -1,0 +1,16 @@
+{
+  "session_id": "fixture-session",
+  "cdp_ws_url": "<redacted cdp websocket fixture>",
+  "takeover_url": "<redacted takeover fixture>",
+  "headless": true,
+  "launch_mode": "headless",
+  "webrtc_ip_policy": "default_public_interface_only",
+  "gpu_policy": "auto",
+  "persona": {
+    "locale": "en-US",
+    "timezone_id": "America/New_York",
+    "platform": "MacIntel",
+    "viewport": {"width": 1280, "height": 800}
+  },
+  "runtime_data_dir": "/home/fixture/.hermes/hermes-agent/browser-runtime/runtime-data/profiles/private-profile"
+}
