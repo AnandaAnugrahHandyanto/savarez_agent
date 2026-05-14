@@ -6075,6 +6075,15 @@ class AIAgent:
         if self.provider:
             timestamp_line += f"\nProvider: {self.provider}"
         volatile_parts.append(timestamp_line)
+        
+        # Belief pipeline context injection
+        try:
+            from src.belief_pipeline import format_belief_context_for_system_prompt
+            belief_context = format_belief_context_for_system_prompt()
+            if belief_context:
+                volatile_parts.append(belief_context)
+        except Exception:
+            pass  # Graceful fallback if belief pipeline not available
 
         return {
             "stable":   "\n\n".join(p.strip() for p in stable_parts   if p and p.strip()),
@@ -10529,6 +10538,24 @@ class AIAgent:
         independent: read-only tools may always share the parallel path, while
         file reads/writes may do so only when their target paths do not overlap.
         """
+        # Belief pipeline: automatic grounding for Path A
+        if (hasattr(self, '_belief_input_category') and 
+            self._belief_input_category and 
+            self._belief_input_category.get('requires_grounding', False)):
+            try:
+                from src.belief_pipeline import auto_ground_claim
+                # Ground the claim before executing tools
+                grounding_result = auto_ground_claim(assistant_message.content if hasattr(assistant_message, 'content') else "")
+                if not grounding_result.get('is_supported', True):
+                    # Inject grounding information into the messages
+                    grounding_message = {
+                        "role": "user",
+                        "content": f"[System: Prior fact-check of user claim] {grounding_result.get('explanation', 'Claim requires verification.')}"
+                    }
+                    messages.append(grounding_message)
+            except Exception:
+                pass  # Continue with tool execution if grounding fails
+
         tool_calls = assistant_message.tool_calls
 
         # Allow _vprint during tool execution even with stream consumers
@@ -11823,6 +11850,15 @@ class AIAgent:
             user_message = _sanitize_surrogates(user_message)
         if isinstance(persist_user_message, str):
             persist_user_message = _sanitize_surrogates(persist_user_message)
+            
+        # Belief pipeline: input category detection for A/B path routing
+        try:
+            from src.belief_pipeline import categorize_input, HIGH_RISK_CATEGORIES
+            input_category = categorize_input(user_message, HIGH_RISK_CATEGORIES)
+            # Store for use in tool processing
+            self._belief_input_category = input_category
+        except Exception:
+            self._belief_input_category = None
 
         # Store stream callback for _interruptible_api_call to pick up
         self._stream_callback = stream_callback
