@@ -409,3 +409,82 @@ class TestCoerceToolArgs:
         assert isinstance(result["offset"], int)
         assert result["limit"] == 100
         assert isinstance(result["limit"], int)
+
+    # ── Union schema (anyOf/oneOf) coercion ────────────────────────────────
+
+    def test_coerces_integer_arg_with_anyof_union_schema(self):
+        """String arg coerced to integer when property uses anyOf with integer variant."""
+        schema = self._mock_schema({
+            "limit": {
+                "anyOf": [
+                    {"type": "integer"},
+                    {"type": "null"},
+                ],
+            },
+        })
+        with patch("model_tools.registry.get_schema", return_value=schema):
+            args = {"limit": "42"}
+            result = coerce_tool_args("test_tool", args)
+            assert result["limit"] == 42
+            assert isinstance(result["limit"], int)
+
+    def test_coerces_string_arg_with_anyof_union_schema(self):
+        """String arg preserved when anyOf union has string as first matchable type."""
+        schema = self._mock_schema({
+            "path": {
+                "anyOf": [
+                    {"type": "string"},
+                    {"type": "null"},
+                ],
+            },
+        })
+        with patch("model_tools.registry.get_schema", return_value=schema):
+            args = {"path": "hello.txt"}
+            result = coerce_tool_args("test_tool", args)
+            assert result["path"] == "hello.txt"
+
+    def test_coerces_boolean_arg_with_oneof_union_schema(self):
+        """String arg coerced to boolean when property uses oneOf with boolean variant."""
+        schema = self._mock_schema({
+            "merge": {
+                "oneOf": [
+                    {"type": "boolean"},
+                    {"type": "null"},
+                ],
+            },
+        })
+        with patch("model_tools.registry.get_schema", return_value=schema):
+            args = {"merge": "true"}
+            result = coerce_tool_args("test_tool", args)
+            assert result["merge"] is True
+
+    def test_coerces_number_arg_with_multi_type_anyof(self):
+        """String arg coerced when anyOf has multiple non-null types (e.g. integer|string)."""
+        schema = self._mock_schema({
+            "count": {
+                "anyOf": [
+                    {"type": "integer"},
+                    {"type": "string"},
+                ],
+            },
+        })
+        with patch("model_tools.registry.get_schema", return_value=schema):
+            args = {"count": "7"}
+            result = coerce_tool_args("test_tool", args)
+            assert result["count"] == 7
+            assert isinstance(result["count"], int)
+
+    def test_json_string_arg_coerces_for_union_schema(self):
+        """JSON-string tool args whose schema type is declared via anyOf/oneOf are coerced."""
+        schema = self._mock_schema({
+            "config": {
+                "anyOf": [
+                    {"type": "object"},
+                    {"type": "null"},
+                ],
+            },
+        })
+        with patch("model_tools.registry.get_schema", return_value=schema):
+            args = {"config": '{"key": "value"}'}
+            result = coerce_tool_args("test_tool", args)
+            assert result["config"] == {"key": "value"}
