@@ -21,8 +21,16 @@ import { getUiState, patchUiState } from './uiStore.js'
 
 const DOUBLE_ENTER_MS = 450
 const SESSION_BUSY_RE = /session busy|waiting for model response/i
+const PROMPT_ACCEPT_WATCHDOG_MS = 60000
 
 const isSessionBusyError = (e: unknown) => e instanceof Error && SESSION_BUSY_RE.test(e.message)
+
+export const promptAcceptedWithoutEvents = (
+  ui: { busy: boolean; sid: null | string },
+  sid: string,
+  acceptedEventSeq: number,
+  currentEventSeq: number
+) => ui.sid === sid && ui.busy && currentEventSeq === acceptedEventSeq
 
 const expandSnips = (snips: PasteSnippet[]) => {
   const byLabel = new Map<string, string[]>()
@@ -53,7 +61,35 @@ export function useSubmission(opts: UseSubmissionOptions) {
   } = opts
 
   const lastEmptyAt = useRef(0)
+  const promptAcceptWatchdog = useRef<ReturnType<typeof setTimeout> | null>(null)
   const typingIdleTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const clearPromptAcceptWatchdog = useCallback(() => {
+    if (promptAcceptWatchdog.current) {
+      clearTimeout(promptAcceptWatchdog.current)
+      promptAcceptWatchdog.current = null
+    }
+  }, [])
+
+  const armPromptAcceptWatchdog = useCallback(
+    (sid: string, eventSeq: number) => {
+      clearPromptAcceptWatchdog()
+      promptAcceptWatchdog.current = setTimeout(() => {
+        promptAcceptWatchdog.current = null
+
+        if (!promptAcceptedWithoutEvents(getUiState(), sid, eventSeq, turnController.eventSeq)) {
+          return
+        }
+
+        turnController.recordError()
+        sys('error: prompt accepted but no stream events arrived; cleared stuck busy state')
+        patchUiState({ busy: false, status: 'ready' })
+      }, PROMPT_ACCEPT_WATCHDOG_MS)
+    },
+    [clearPromptAcceptWatchdog, sys]
+  )
+
+  useEffect(() => () => clearPromptAcceptWatchdog(), [clearPromptAcceptWatchdog])
 
   useEffect(() => {
     if (typingIdleTimer.current) {
@@ -104,20 +140,29 @@ export function useSubmission(opts: UseSubmissionOptions) {
         }
 
         patchUiState({ busy: true, status: 'running…' })
-        turnController.bufRef = ''
-        turnController.interrupted = false
+        turnController.resetForSubmit()
 
-        gw.request<PromptSubmitResponse>('prompt.submit', { session_id: sid, text: submitText }).catch((e: Error) => {
-          if (isSessionBusyError(e)) {
-            composerActions.enqueue(submitText)
-            patchUiState({ busy: true, status: 'queued for next turn' })
+        const eventSeq = turnController.eventSeq
 
-            return sys(`queued: "${submitText.slice(0, 50)}${submitText.length > 50 ? '…' : ''}"`)
-          }
+        gw.request<PromptSubmitResponse>('prompt.submit', { session_id: sid, text: submitText })
+          .then(r => {
+            if (r?.status === 'streaming') {
+              armPromptAcceptWatchdog(sid, eventSeq)
+            }
+          })
+          .catch((e: Error) => {
+            clearPromptAcceptWatchdog()
 
-          sys(`error: ${e.message}`)
-          patchUiState({ busy: false, status: 'ready' })
-        })
+            if (isSessionBusyError(e)) {
+              composerActions.enqueue(submitText)
+              patchUiState({ busy: true, status: 'queued for next turn' })
+
+              return sys(`queued: "${submitText.slice(0, 50)}${submitText.length > 50 ? '…' : ''}"`)
+            }
+
+            sys(`error: ${e.message}`)
+            patchUiState({ busy: false, status: 'ready' })
+          })
       }
 
       const sid = getUiState().sid
@@ -145,7 +190,7 @@ export function useSubmission(opts: UseSubmissionOptions) {
         })
         .catch(() => startSubmit(text, expand(text), showUserMessage))
     },
-    [appendMessage, composerActions, composerState.pasteSnips, gw, maybeGoodVibes, setLastUserMsg, sys]
+    [appendMessage, armPromptAcceptWatchdog, clearPromptAcceptWatchdog, composerActions, composerState.pasteSnips, gw, maybeGoodVibes, setLastUserMsg, sys]
   )
 
   const shellExec = useCallback(

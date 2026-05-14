@@ -34,6 +34,32 @@ load_hermes_dotenv(
 )
 
 
+def _safe_cwd() -> str:
+    """Return a usable cwd even if the process cwd was deleted.
+
+    Avoid patterns like ``os.getenv("TERMINAL_CWD", os.getcwd())``: Python
+    evaluates the default eagerly and can raise before the env override is
+    considered.  Keep all TUI gateway cwd fallbacks lazy and tolerate deleted
+    working directories.
+    """
+    candidates: list[str | None] = [os.environ.get("TERMINAL_CWD")]
+    try:
+        candidates.append(os.getcwd())
+    except OSError:
+        pass
+    candidates.extend([os.environ.get("PWD"), os.path.expanduser("~"), str(_hermes_home), "/"])
+
+    for candidate in candidates:
+        if not candidate:
+            continue
+        try:
+            if os.path.isdir(candidate):
+                return candidate
+        except OSError:
+            continue
+    return "/"
+
+
 # ── Panic logger ─────────────────────────────────────────────────────
 # Gateway crashes in a TUI session leave no forensics: stdout is the
 # JSON-RPC pipe (TUI side parses it, doesn't log raw), the root logger
@@ -206,7 +232,7 @@ class _SlashWorker:
             stderr=subprocess.PIPE,
             text=True,
             bufsize=1,
-            cwd=os.getcwd(),
+            cwd=_safe_cwd(),
             env=os.environ.copy(),
         )
         threading.Thread(target=self._drain_stdout, daemon=True).start()
@@ -1378,7 +1404,7 @@ def _session_info(agent) -> dict:
         "fast": service_tier == "priority",
         "tools": {},
         "skills": {},
-        "cwd": os.getenv("TERMINAL_CWD", os.getcwd()),
+        "cwd": _safe_cwd(),
         "version": "",
         "release_date": "",
         "update_behind": None,
@@ -1964,7 +1990,7 @@ def _new_session_key() -> str:
 
 
 def _with_checkpoints(session, fn):
-    return fn(session["agent"]._checkpoint_mgr, os.getenv("TERMINAL_CWD", os.getcwd()))
+    return fn(session["agent"]._checkpoint_mgr, _safe_cwd())
 
 
 def _resolve_checkpoint_hash(mgr, cwd: str, ref: str) -> str:
@@ -2138,7 +2164,7 @@ def _(rid, params: dict) -> dict:
                 "model": _resolve_model(),
                 "tools": {},
                 "skills": {},
-                "cwd": os.getenv("TERMINAL_CWD", os.getcwd()),
+                "cwd": _safe_cwd(),
                 "lazy": True,
             },
         },
@@ -2993,6 +3019,15 @@ def _(rid, params: dict) -> dict:
 # ── Methods: prompt ──────────────────────────────────────────────────
 
 
+def _emit_prompt_failure(sid: str, session: dict, message: str) -> None:
+    """Surface a prompt dispatch failure and release the busy guard."""
+    try:
+        _emit("error", sid, {"message": message or "prompt dispatch failed"})
+    finally:
+        with session["history_lock"]:
+            session["running"] = False
+
+
 @method("prompt.submit")
 def _(rid, params: dict) -> dict:
     sid, text = params.get("session_id", ""), params.get("text", "")
@@ -3004,37 +3039,54 @@ def _(rid, params: dict) -> dict:
             return _err(rid, 4009, "session busy")
         session["running"] = True
 
-    _start_agent_build(sid, session)
+    try:
+        _start_agent_build(sid, session)
+    except Exception as exc:
+        _emit_prompt_failure(sid, session, f"agent initialization failed: {exc}")
+        return _ok(rid, {"status": "streaming"})
 
     def run_after_agent_ready() -> None:
-        err = _wait_agent(session, rid)
-        if err:
-            _emit(
-                "error",
-                sid,
-                {
-                    "message": err.get("error", {}).get(
+        try:
+            ready = session.get("agent_ready")
+            if ready is not None and not ready.is_set():
+                _emit(
+                    "status.update",
+                    sid,
+                    {"kind": "status", "text": "initializing agent…"},
+                )
+            err = _wait_agent(session, rid)
+            if err:
+                _emit_prompt_failure(
+                    sid,
+                    session,
+                    err.get("error", {}).get(
                         "message", "agent initialization failed"
-                    )
-                },
-            )
-            with session["history_lock"]:
-                session["running"] = False
-            return
-        _run_prompt_submit(rid, sid, session, text)
+                    ),
+                )
+                return
+            _run_prompt_submit(rid, sid, session, text)
+        except Exception as exc:
+            _emit_prompt_failure(sid, session, f"prompt dispatch failed: {exc}")
 
-    threading.Thread(target=run_after_agent_ready, daemon=True).start()
+    try:
+        threading.Thread(target=run_after_agent_ready, daemon=True).start()
+    except Exception as exc:
+        _emit_prompt_failure(sid, session, f"prompt dispatch failed: {exc}")
     return _ok(rid, {"status": "streaming"})
 
 
 def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
-    with session["history_lock"]:
-        history = list(session["history"])
-        history_version = int(session.get("history_version", 0))
-        images = list(session.get("attached_images", []))
-        session["attached_images"] = []
-    agent = session["agent"]
-    _emit("message.start", sid)
+    try:
+        with session["history_lock"]:
+            history = list(session["history"])
+            history_version = int(session.get("history_version", 0))
+            images = list(session.get("attached_images", []))
+            session["attached_images"] = []
+        agent = session["agent"]
+        _emit("message.start", sid)
+    except Exception as exc:
+        _emit_prompt_failure(sid, session, f"prompt dispatch failed: {exc}")
+        return
 
     def run():
         approval_token = None
@@ -3067,8 +3119,8 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                 )
                 ctx = preprocess_context_references(
                     prompt,
-                    cwd=os.environ.get("TERMINAL_CWD", os.getcwd()),
-                    allowed_root=os.environ.get("TERMINAL_CWD", os.getcwd()),
+                    cwd=_safe_cwd(),
+                    allowed_root=_safe_cwd(),
                     context_length=ctx_len,
                 )
                 if ctx.blocked:
@@ -3385,7 +3437,10 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                 with session["history_lock"]:
                     session["running"] = False
 
-    threading.Thread(target=run, daemon=True).start()
+    try:
+        threading.Thread(target=run, daemon=True).start()
+    except Exception as exc:
+        _emit_prompt_failure(sid, session, f"prompt dispatch failed: {exc}")
 
 
 @method("clipboard.paste")
@@ -4399,7 +4454,7 @@ def _(rid, params: dict) -> dict:
             capture_output=True,
             text=True,
             timeout=min(int(params.get("timeout", 240)), 600),
-            cwd=os.getcwd(),
+            cwd=_safe_cwd(),
             env=os.environ.copy(),
         )
         parts = [r.stdout or "", r.stderr or ""]
@@ -4909,7 +4964,7 @@ def _(rid, params: dict) -> dict:
         # `/`, `./`, `~/`, `/abs`) fall through to the directory-listing
         # path so explicit navigation intent is preserved.
         if is_context and path_part and "/" not in path_part and prefix_tag != "folder":
-            root = os.getcwd()
+            root = _safe_cwd()
             ranked: list[tuple[tuple[int, int], str, str]] = []
             for rel in _list_repo_files(root):
                 basename = os.path.basename(rel)
@@ -6137,7 +6192,7 @@ def _(rid, params: dict) -> dict:
             {
                 "title": "Environment",
                 "rows": [
-                    ["Working Dir", os.getcwd()],
+                    ["Working Dir", _safe_cwd()],
                     ["Config File", str(_hermes_home / "config.yaml")],
                 ],
             },
@@ -6472,7 +6527,7 @@ def _(rid, params: dict) -> dict:
         pass
     try:
         r = subprocess.run(
-            cmd, shell=True, capture_output=True, text=True, timeout=30, cwd=os.getcwd()
+            cmd, shell=True, capture_output=True, text=True, timeout=30, cwd=_safe_cwd()
         )
         return _ok(
             rid,

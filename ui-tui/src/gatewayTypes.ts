@@ -219,6 +219,7 @@ export interface SessionSteerResponse {
 
 export interface PromptSubmitResponse {
   ok?: boolean
+  status?: 'streaming'
 }
 
 export interface BackgroundStartResponse {
