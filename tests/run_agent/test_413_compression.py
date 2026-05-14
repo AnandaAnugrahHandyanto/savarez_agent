@@ -415,8 +415,8 @@ class TestHTTP413Compression:
 class TestPreflightCompression:
     """Preflight compression should compress history before the first API call."""
 
-    def test_compress_context_emits_lifecycle_status_before_work(self, agent):
-        """Direct context compression should tell gateway users why the turn paused."""
+    def test_compress_context_emits_tui_visible_compressing_status(self, agent):
+        """Automatic context compression should be transcript-visible in the TUI."""
         events = []
         agent.status_callback = lambda ev, msg: events.append((ev, msg))
 
@@ -437,9 +437,31 @@ class TestPreflightCompression:
 
         assert compressed == [{"role": "user", "content": f"{SUMMARY_PREFIX}\nPrevious conversation"}]
         assert new_system_prompt == "new system prompt"
-        assert events[0][0] == "lifecycle"
-        assert "Compacting context" in events[0][1]
+        assert events[0][0] == "compressing"
+        assert "compressing" in events[0][1]
         assert events[1] == ("compress", "started")
+        assert any(event == "compressing" and "compressed" in msg for event, msg in events)
+        assert events[-1] == ("ready", "ready")
+
+    def test_compress_context_clears_tui_status_when_compressor_raises(self, agent):
+        """A failed auxiliary compression call must not leave the TUI status stuck."""
+        events = []
+        agent.status_callback = lambda ev, msg: events.append((ev, msg))
+
+        with patch.object(
+            agent.context_compressor,
+            "compress",
+            side_effect=TimeoutError("compression timed out"),
+        ):
+            with pytest.raises(TimeoutError):
+                agent._compress_context(
+                    [{"role": "user", "content": "hello"}],
+                    "system prompt",
+                    approx_tokens=1234,
+                )
+
+        assert events[0][0] == "compressing"
+        assert events[-1] == ("ready", "ready")
 
     def test_preflight_compresses_oversized_history(self, agent):
         """When loaded history exceeds the model's context threshold, compress before API call."""
