@@ -102,3 +102,52 @@ def test_switch_within_same_provider_preserves_chain():
         )
 
     assert agent._fallback_chain == chain
+
+
+def test_switch_model_clears_stale_recovery_state_for_next_turn():
+    agent = _make_agent([])
+    guardrails = MagicMock()
+    agent._tool_guardrails = guardrails
+
+    # Seed stale, in-band recovery flags from a previous failure flow.
+    agent._empty_content_retries = 3
+    agent._invalid_tool_retries = 2
+    agent._invalid_json_retries = 1
+    agent._incomplete_scratchpad_retries = 1
+    agent._codex_incomplete_retries = 1
+    agent._thinking_prefill_retries = 4
+    agent._post_tool_empty_retried = True
+    agent._last_content_with_tools = {"role": "assistant", "content": "stale"}
+    agent._last_content_tools_all_housekeeping = True
+    agent._mute_post_response = True
+    agent._vision_supported = False
+    agent._unicode_sanitization_passes = 2
+    agent._tool_guardrail_halt_decision = "preexisting-block"
+
+    # Prevent client creation from touching external transport code in this
+    # minimal, __new__-backed fixture.
+    agent._create_openai_client = MagicMock(return_value=MagicMock())
+
+    with patch("hermes_cli.timeouts.get_provider_request_timeout", return_value=None):
+        agent.switch_model(
+            new_model="qwen/qwen3-14b",
+            new_provider="openrouter",
+            api_key="or-key",
+            base_url="https://openrouter.ai/api/v1",
+            api_mode="chat_completions",
+        )
+
+    assert agent._empty_content_retries == 0
+    assert agent._invalid_tool_retries == 0
+    assert agent._invalid_json_retries == 0
+    assert agent._incomplete_scratchpad_retries == 0
+    assert agent._codex_incomplete_retries == 0
+    assert agent._thinking_prefill_retries == 0
+    assert agent._post_tool_empty_retried is False
+    assert agent._last_content_with_tools is None
+    assert agent._last_content_tools_all_housekeeping is False
+    assert agent._mute_post_response is False
+    assert agent._vision_supported is True
+    assert agent._unicode_sanitization_passes == 0
+    assert agent._tool_guardrail_halt_decision is None
+    guardrails.reset_for_turn.assert_called_once_with()
