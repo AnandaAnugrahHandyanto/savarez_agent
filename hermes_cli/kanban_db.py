@@ -378,6 +378,7 @@ def read_board_metadata(board: Optional[str] = None) -> dict:
         "description": "",
         "icon": "",
         "color": "",
+        "default_workdir": None,
         "created_at": None,
         "archived": False,
     }
@@ -404,6 +405,7 @@ def write_board_metadata(
     icon: Optional[str] = None,
     color: Optional[str] = None,
     archived: Optional[bool] = None,
+    default_workdir: Optional[str] = None,
 ) -> dict:
     """Create / update ``board.json`` for ``board``.
 
@@ -425,6 +427,8 @@ def write_board_metadata(
         meta["color"] = str(color)
     if archived is not None:
         meta["archived"] = bool(archived)
+    if default_workdir is not None:
+        meta["default_workdir"] = str(default_workdir) if default_workdir else None
     if not meta.get("created_at"):
         meta["created_at"] = int(time.time())
     path = board_metadata_path(slug)
@@ -444,6 +448,7 @@ def create_board(
     description: Optional[str] = None,
     icon: Optional[str] = None,
     color: Optional[str] = None,
+    default_workdir: Optional[str] = None,
 ) -> dict:
     """Create a new board directory + DB + metadata. Idempotent.
 
@@ -460,6 +465,7 @@ def create_board(
         description=description,
         icon=icon,
         color=color,
+        default_workdir=default_workdir,
     )
     # Touch the DB so list_boards() sees it immediately.
     init_db(board=normed)
@@ -1245,6 +1251,7 @@ def create_task(
     max_runtime_seconds: Optional[int] = None,
     skills: Optional[Iterable[str]] = None,
     max_retries: Optional[int] = None,
+    board: Optional[str] = None,
 ) -> str:
     """Create a new task and optionally link it under parent tasks.
 
@@ -1341,6 +1348,15 @@ def create_task(
             return row["id"]
 
     now = int(time.time())
+
+    # Resolve workspace_path from board-level default_workdir when the
+    # caller did not specify one explicitly.
+    if workspace_path is None:
+        board_slug = board if board else get_current_board()
+        board_meta = read_board_metadata(board_slug)
+        board_default = board_meta.get("default_workdir")
+        if board_default:
+            workspace_path = str(board_default)
 
     # Retry once on the extremely unlikely id collision.
     for attempt in range(2):
