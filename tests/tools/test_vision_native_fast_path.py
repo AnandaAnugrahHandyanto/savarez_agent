@@ -169,7 +169,7 @@ class TestHandleVisionAnalyzeFastPath:
         finally:
             clear_runtime_main()
 
-        # assert isinstance(result, dict), \
+        assert isinstance(result, dict), \
             f"Expected multimodal envelope, got {type(result).__name__}: {str(result)[:200]}"
         assert result.get("_multimodal") is True
 
