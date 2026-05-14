@@ -43,6 +43,7 @@ Payment / credit exhaustion fallback:
 import json
 import logging
 import os
+import re
 import threading
 import time
 from pathlib import Path  # noqa: F401 — used by test mocks
@@ -3033,15 +3034,79 @@ def resolve_provider_client(
             return None, None
 
         raw_base_url = str(creds.get("base_url", "")).strip().rstrip("/") or pconfig.inference_base_url
-        base_url = _to_openai_base_url(raw_base_url)
-        # Honour an explicit base_url override from the caller — used when a
-        # fallback_model entry (or custom_providers lookup) routes through a
-        # built-in provider name but targets a user-specified endpoint.
-        if explicit_base_url:
-            base_url = _to_openai_base_url(explicit_base_url.strip().rstrip("/"))
 
-        default_model = _get_aux_model_for_provider(provider)
-        final_model = _normalize_resolved_model(model or default_model, provider)
+        # ── Azure Foundry special-case ────────────────────────────────
+        # Mirror hermes_cli.runtime_provider._resolve_runtime_from_pool_entry:
+        # honour `model.base_url` and `model.api_mode` from config.yaml so an
+        # Anthropic-on-Azure deployment (api_mode=anthropic_messages, base_url
+        # ending in /anthropic) routes through the Anthropic Messages SDK
+        # instead of being rewritten to /openai/v1 (which yields 404/403).
+        # Explicit per-task overrides (explicit_base_url / api_mode /
+        # explicit_api_key) still win over the model.* config.
+        if provider == "azure-foundry":
+            try:
+                from hermes_cli.runtime_provider import _get_model_config, _parse_api_mode
+                _azure_cfg = _get_model_config() or {}
+            except ImportError:
+                _azure_cfg = {}
+                _parse_api_mode = None  # type: ignore[assignment]
+            _cfg_provider = str(_azure_cfg.get("provider") or "").strip().lower()
+            _cfg_base_url = ""
+            _cfg_api_mode: Optional[str] = None
+            if _cfg_provider == "azure-foundry":
+                _cfg_base_url = str(_azure_cfg.get("base_url") or "").strip().rstrip("/")
+                if _parse_api_mode is not None:
+                    _cfg_api_mode = _parse_api_mode(_azure_cfg.get("api_mode"))
+            # explicit per-task base_url wins; otherwise prefer the
+            # model.base_url config over the pool/default URL.
+            if explicit_base_url:
+                raw_base_url = explicit_base_url.strip().rstrip("/")
+            elif _cfg_base_url:
+                raw_base_url = _cfg_base_url
+            # Resolve effective api_mode: explicit per-task > model.api_mode.
+            effective_api_mode = (api_mode or "").strip().lower() or _cfg_api_mode
+
+            default_model = _get_aux_model_for_provider(provider)
+            final_model = _normalize_resolved_model(model or default_model, provider)
+
+            if effective_api_mode == "anthropic_messages":
+                # Strip a trailing /v1 (mirrors runtime_provider behaviour) so
+                # the Anthropic SDK targets /anthropic, not /anthropic/v1.
+                azure_anthropic_base = re.sub(r"/v1/?$", "", raw_base_url)
+                try:
+                    from agent.anthropic_adapter import build_anthropic_client
+                    real_client = build_anthropic_client(api_key, azure_anthropic_base)
+                except ImportError:
+                    logger.warning(
+                        "azure-foundry requested api_mode=anthropic_messages but "
+                        "the anthropic SDK is not installed — falling back to "
+                        "OpenAI-wire.",
+                    )
+                else:
+                    sync_anthropic = AnthropicAuxiliaryClient(
+                        real_client, final_model, api_key,
+                        azure_anthropic_base, is_oauth=False,
+                    )
+                    logger.debug(
+                        "resolve_provider_client: azure-foundry "
+                        "(%s, anthropic_messages, %s)",
+                        final_model, azure_anthropic_base,
+                    )
+                    if async_mode:
+                        return AsyncAnthropicAuxiliaryClient(sync_anthropic), final_model
+                    return sync_anthropic, final_model
+            # Fall through to OpenAI-wire path (chat_completions / auto).
+            base_url = _to_openai_base_url(raw_base_url)
+        else:
+            base_url = _to_openai_base_url(raw_base_url)
+            # Honour an explicit base_url override from the caller — used when a
+            # fallback_model entry (or custom_providers lookup) routes through a
+            # built-in provider name but targets a user-specified endpoint.
+            if explicit_base_url:
+                base_url = _to_openai_base_url(explicit_base_url.strip().rstrip("/"))
+
+            default_model = _get_aux_model_for_provider(provider)
+            final_model = _normalize_resolved_model(model or default_model, provider)
 
         if provider == "gemini":
             from agent.gemini_native_adapter import GeminiNativeClient, is_native_gemini_base_url
