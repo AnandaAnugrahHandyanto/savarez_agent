@@ -1270,7 +1270,11 @@ class APIServerAdapter(BasePlatformAdapter):
             "usage": {
                 "prompt_tokens": usage.get("input_tokens", 0),
                 "completion_tokens": usage.get("output_tokens", 0),
+                "output_tokens": usage.get("output_tokens", 0),
                 "total_tokens": usage.get("total_tokens", 0),
+                "prompt_tokens_details": {
+                    "cached_tokens": usage.get("cached_tokens", 0) or usage.get("cache_read_tokens", 0)
+                } if usage.get("cached_tokens") or usage.get("cache_read_tokens") else None
             },
         }
         if is_partial or is_failed or not completed:
@@ -1399,7 +1403,11 @@ class APIServerAdapter(BasePlatformAdapter):
                 "usage": {
                     "prompt_tokens": usage.get("input_tokens", 0),
                     "completion_tokens": usage.get("output_tokens", 0),
+                    "output_tokens": usage.get("output_tokens", 0),
                     "total_tokens": usage.get("total_tokens", 0),
+                    "prompt_tokens_details": {
+                        "cached_tokens": usage.get("cached_tokens", 0) or usage.get("cache_read_tokens", 0)
+                    } if usage.get("cached_tokens") or usage.get("cache_read_tokens") else None
                 },
             }
             await response.write(f"data: {json.dumps(finish_chunk)}\n\n".encode())
@@ -1592,6 +1600,9 @@ class APIServerAdapter(BasePlatformAdapter):
                 "input_tokens": usage.get("input_tokens", 0),
                 "output_tokens": usage.get("output_tokens", 0),
                 "total_tokens": usage.get("total_tokens", 0),
+                "prompt_tokens_details": {
+                    "cached_tokens": usage.get("cached_tokens", 0) or usage.get("cache_read_tokens", 0)
+                } if usage.get("cached_tokens") or usage.get("cache_read_tokens") else None
             }
             incomplete_history = list(conversation_history)
             incomplete_history.append({"role": "user", "content": user_message})
@@ -1959,6 +1970,9 @@ class APIServerAdapter(BasePlatformAdapter):
                     "input_tokens": usage.get("input_tokens", 0),
                     "output_tokens": usage.get("output_tokens", 0),
                     "total_tokens": usage.get("total_tokens", 0),
+                    "prompt_tokens_details": {
+                        "cached_tokens": usage.get("cached_tokens", 0) or usage.get("cache_read_tokens", 0)
+                    } if usage.get("cached_tokens") or usage.get("cache_read_tokens") else None
                 }
                 full_history = self._build_response_conversation_history(
                     conversation_history,
@@ -2025,6 +2039,9 @@ class APIServerAdapter(BasePlatformAdapter):
                     "input_tokens": usage.get("input_tokens", 0),
                     "output_tokens": usage.get("output_tokens", 0),
                     "total_tokens": usage.get("total_tokens", 0),
+                    "prompt_tokens_details": {
+                        "cached_tokens": usage.get("cached_tokens", 0) or usage.get("cache_read_tokens", 0)
+                    } if usage.get("cached_tokens") or usage.get("cache_read_tokens") else None
                 }
                 await _write_event("response.failed", {
                     "type": "response.failed",
@@ -2294,7 +2311,11 @@ class APIServerAdapter(BasePlatformAdapter):
             "usage": {
                 "input_tokens": usage.get("input_tokens", 0),
                 "output_tokens": usage.get("output_tokens", 0),
+                "completion_tokens": usage.get("output_tokens", 0),
                 "total_tokens": usage.get("total_tokens", 0),
+                "prompt_tokens_details": {
+                    "cached_tokens": usage.get("cached_tokens", 0) or usage.get("cache_read_tokens", 0)
+                } if usage.get("cached_tokens") or usage.get("cache_read_tokens") else None
             },
         }
 
@@ -2727,6 +2748,14 @@ class APIServerAdapter(BasePlatformAdapter):
                 "output_tokens": getattr(agent, "session_completion_tokens", 0) or 0,
                 "total_tokens": getattr(agent, "session_total_tokens", 0) or 0,
             }
+            # Only add cache tokens if they're actual integer values (not MagicMock objects)
+            cache_read_tokens = getattr(agent, "session_cache_read_tokens", 0)
+            cache_write_tokens = getattr(agent, "session_cache_write_tokens", 0)
+            if isinstance(cache_read_tokens, int) and cache_read_tokens > 0:
+                usage["cached_tokens"] = cache_read_tokens
+                usage["cache_read_tokens"] = cache_read_tokens
+            if isinstance(cache_write_tokens, int) and cache_write_tokens > 0:
+                usage["cache_write_tokens"] = cache_write_tokens
             # Include the effective session ID in the result so callers
             # (e.g. X-Hermes-Session-Id header) can track compression-
             # triggered session rotations. (#16938)
