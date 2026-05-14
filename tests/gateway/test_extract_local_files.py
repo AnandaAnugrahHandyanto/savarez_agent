@@ -67,6 +67,20 @@ class TestBasicDetection:
             assert len(paths) == 1, f"Failed for {ext}"
             assert paths[0] == f"/tmp/clip{ext}"
 
+    def test_document_extensions(self):
+        for ext in (".pdf", ".ics", ".docx", ".xlsx", ".pptx", ".txt", ".md", ".csv", ".json"):
+            text = f"Document at /tmp/report{ext} here"
+            paths, _ = _extract(text)
+            assert len(paths) == 1, f"Failed for {ext}"
+            assert paths[0] == f"/tmp/report{ext}"
+
+    def test_audio_extensions(self):
+        for ext in (".ogg", ".opus", ".mp3", ".wav", ".m4a", ".flac"):
+            text = f"Audio at /tmp/speech{ext} here"
+            paths, _ = _extract(text)
+            assert len(paths) == 1, f"Failed for {ext}"
+            assert paths[0] == f"/tmp/speech{ext}"
+
     def test_image_extensions(self):
         for ext in (".png", ".jpg", ".jpeg", ".gif", ".webp"):
             text = f"Image at /tmp/pic{ext} here"
@@ -268,10 +282,12 @@ class TestEdgeCases:
         assert paths == []
         assert cleaned == ""
 
-    def test_no_media_extensions(self):
-        """Non-media extensions should not be matched."""
-        paths, _ = _extract("See /tmp/data.csv and /tmp/script.py and /tmp/notes.txt")
+    def test_unsupported_extensions_not_matched(self):
+        """Extensions outside the delivery allowlist should not be matched."""
+        paths, cleaned = _extract("See /tmp/script.py and /tmp/archive.tar.gz")
         assert paths == []
+        assert "/tmp/script.py" in cleaned
+        assert "/tmp/archive.tar.gz" in cleaned
 
     def test_path_with_spaces_not_matched(self):
         """Paths with spaces are intentionally not matched (avoids false positives)."""
