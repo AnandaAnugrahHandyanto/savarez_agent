@@ -16,7 +16,8 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List
+from urllib.parse import urlparse
 
 import requests
 
@@ -44,6 +45,13 @@ _MODELS: Dict[str, Dict[str, Any]] = {
 
 # MiniMax natively supports these aspect ratios
 _ASPECT_RATIOS = {"1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "21:9"}
+
+# Allowed hosts for image URL download (SSRF guard)
+_ALLOWED_IMAGE_HOSTS = {
+    "hailuo-image-algeng-data-us.oss-us-east-1.aliyuncs.com",
+    "hailuo-image-algeng-data.oss-cn-hangzhou.aliyuncs.com",
+    "cdn.minimax.io",
+}
 
 
 def _load_config() -> Dict[str, Any]:
@@ -143,7 +151,15 @@ class MiniMaxImageProvider(ImageGenProvider):
                 provider="minimax",
                 model=model,
                 prompt=prompt,
-                aspect_ratio=aspect_ratio,
+                aspect_ratio=mm_ratio,
+            )
+        except ValueError as exc:
+            return error_response(
+                error=f"MiniMax returned non-JSON response: {exc}",
+                provider="minimax",
+                model=model,
+                prompt=prompt,
+                aspect_ratio=mm_ratio,
             )
 
         base_resp = data.get("base_resp", {})
@@ -153,7 +169,7 @@ class MiniMaxImageProvider(ImageGenProvider):
                 provider="minimax",
                 model=model,
                 prompt=prompt,
-                aspect_ratio=aspect_ratio,
+                aspect_ratio=mm_ratio,
             )
 
         image_urls = (data.get("data") or {}).get("image_urls", [])
@@ -163,26 +179,43 @@ class MiniMaxImageProvider(ImageGenProvider):
                 provider="minimax",
                 model=model,
                 prompt=prompt,
-                aspect_ratio=aspect_ratio,
+                aspect_ratio=mm_ratio,
             )
 
-        # Download and cache the image locally
-        try:
-            img_resp = requests.get(image_urls[0], timeout=60)
-            img_resp.raise_for_status()
-            import base64
-            b64 = base64.b64encode(img_resp.content).decode()
-            saved = save_b64_image(b64, prefix="minimax", extension="png")
-            image_path = str(saved)
-        except Exception as exc:
-            logger.debug("MiniMax image download failed, returning URL: %s", exc)
-            image_path = image_urls[0]
+        image_url = image_urls[0]
+
+        # Validate URL before fetching: must be HTTPS and from an allowed host
+        parsed = urlparse(image_url)
+        _host_ok = (
+            parsed.scheme == "https"
+            and any(
+                parsed.netloc == h or parsed.netloc.endswith("." + h)
+                for h in _ALLOWED_IMAGE_HOSTS
+            )
+        )
+
+        image_path = image_url  # fallback: return URL as-is
+        if _host_ok:
+            try:
+                import base64
+                img_resp = requests.get(image_url, timeout=60)
+                img_resp.raise_for_status()
+                b64 = base64.b64encode(img_resp.content).decode()
+                saved = save_b64_image(b64, prefix="minimax", extension="png")
+                image_path = str(saved)
+            except Exception as exc:
+                logger.debug("MiniMax image download failed, returning URL: %s", exc)
+        else:
+            logger.warning(
+                "MiniMax returned image URL with unexpected host %r — skipping download",
+                parsed.netloc,
+            )
 
         return success_response(
             image=image_path,
             model=model,
             prompt=prompt,
-            aspect_ratio=aspect_ratio,
+            aspect_ratio=mm_ratio,
             provider="minimax",
         )
 
