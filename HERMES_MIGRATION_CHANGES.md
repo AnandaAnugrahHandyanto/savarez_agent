@@ -1,6 +1,6 @@
 # Hermes Migration Changes
 
-Last updated: May 14, 2026, 2:23 PM EDT
+Last updated: May 14, 2026, 2:50 PM EDT
 
 ## Runtime Changes
 
@@ -10,6 +10,8 @@ Last updated: May 14, 2026, 2:23 PM EDT
   - Sets `CIPHER_STOCK_UPDATES_TRANSCRIBE_MODEL_ROOT=/Users/admin/.hermes/models`.
   - Sets `CIPHER_VIDEO_SUMMARY_TRANSCRIBE_MODEL_ROOT=/Users/admin/.hermes/models`.
   - Sets `CIPHER_STOCK_UPDATES_ACTIVE_RUN_DIR=/Users/admin/.hermes/state/stock-updates-command`.
+  - Sets stock, video, and voice command script paths to
+    `/Users/admin/.hermes/plugins/cipher-workflows/native`.
   - Sets `OPENCLAW_MLX_SKIP_ENSURE=1`.
   - Spawns bridge processes with cwd `/Users/admin/.hermes`.
   - Removed a stale unused `CLAW_ROOT` constant.
@@ -19,13 +21,23 @@ Last updated: May 14, 2026, 2:23 PM EDT
   - Forces `HOME=/Users/admin/.hermes`.
   - Forces generated cipher output under `/Users/admin/.hermes/outputs/cipher`.
   - Forces stock/video transcription model roots under `/Users/admin/.hermes/models`.
-  - Imports preserved legacy command source from `/Users/admin/claw/plugins`.
+  - Imports Hermes-owned native command source from
+    `/Users/admin/.hermes/plugins/cipher-workflows/native/plugins`.
+  - Runs stock/video command scripts from
+    `/Users/admin/.hermes/plugins/cipher-workflows/native/scripts`.
 
-- Added `/Users/admin/.hermes/scripts/hermes-voice-bridge.mjs`.
+- Added and updated `/Users/admin/.hermes/scripts/hermes-voice-bridge.mjs`.
   - Loads Hermes env files.
   - Forces `HOME=/Users/admin/.hermes`.
-  - Imports preserved legacy voice memo bridge source from
-    `/Users/admin/claw/plugins/voice-memo-controls`.
+  - Imports Hermes-owned native voice memo bridge source from
+    `/Users/admin/.hermes/plugins/cipher-workflows/native/plugins/voice-memo-controls`.
+
+- Added Hermes-owned native workflow source under
+  `/Users/admin/.hermes/plugins/cipher-workflows/native`.
+  - Copied migrated command plugins, shared Telegram helpers, stock/video runner
+    scripts, voice-memo scripts, local-model registry helpers, and the
+    `video-summarize` shared skill engine.
+  - Left Claw originals intact as source-history copies.
 
 - Replaced `/Users/admin/.hermes/scripts/mlx-openai-compat-server.py` with a
   Hermes-owned OpenAI-compatible MLX wrapper.

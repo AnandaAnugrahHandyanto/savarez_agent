@@ -1,6 +1,6 @@
 # Hermes Migration Blockers
 
-Last updated: May 14, 2026, 2:23 PM EDT
+Last updated: May 14, 2026, 2:50 PM EDT
 
 ## Completion Blockers
 
@@ -8,16 +8,10 @@ None for the migrated Hermes command surfaces or active local-model migration.
 
 ## Intentional Legacy Dependencies
 
-- `/Users/admin/claw/plugins/*`
-  - Preserved source for migrated Telegram command plugins.
-  - Hermes wrappers import this source while forcing Hermes runtime HOME,
-    output paths, and model roots.
-
-- `/Users/admin/claw/scripts/cipher/*`
-  - Preserved source for stock updates, video summaries, and voice memo
-    processing.
-  - Generated artifacts and migrated transcription model roots are redirected
-    to Hermes-owned paths.
+- `/Users/admin/claw/plugins/*` and `/Users/admin/claw/scripts/cipher/*`
+  - Preserved source copies only.
+  - Migrated command bridges now load Hermes-owned native copies from
+    `/Users/admin/.hermes/plugins/cipher-workflows/native`.
 
 - `/Users/admin/claw/models/mlx_models/Qwen3.6-27B-OptiQ-4bit`
   - Preserved source copy only.
@@ -52,5 +46,3 @@ None for the migrated Hermes command surfaces or active local-model migration.
   remove every active Claw process, not just migrated Hermes ownership.
 - Move the active Ollama blob store from `/Users/admin/.ollama/models` to
   `/Users/admin/.hermes/models/ollama` during a planned service window.
-- Replace legacy command source imports with native Hermes plugins when the
-  migrated command code is ready to be owned directly by Hermes.

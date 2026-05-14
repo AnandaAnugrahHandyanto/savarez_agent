@@ -70,9 +70,11 @@ Last updated: May 14, 2026, 2:23 PM EDT
 
 - Migrated to Hermes: gateway runtime, profiles, cron outputs, Telegram command
   bridge, stock/video/voice output roots, Qwen MLX wrapper/log/cwd/model path,
-  direct MLX provider/alias, and transcription model root.
-- Preserved as source or credentials: Claw command source, Claw-Cipher
-  SnapTrade secrets/venv, active AutoResearch dashboard.
+  direct MLX provider/alias, transcription model root, and native copies of
+  migrated command/plugin/script source under
+  `/Users/admin/.hermes/plugins/cipher-workflows/native`.
+- Preserved as source or credentials: original Claw command/script source copies,
+  Claw-Cipher SnapTrade secrets/venv, active AutoResearch dashboard.
 - Preserved as source model copies pending approval: original Claw Qwen MLX and
   `distil-large-v3` directories.
 - Stale/disabled: OpenClaw gateway/watchdogs and Bonsai MLX LaunchAgent.
