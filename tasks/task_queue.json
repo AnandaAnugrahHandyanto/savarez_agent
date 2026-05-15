@@ -1,0 +1,11 @@
+{
+  "tasks": [
+    {
+      "id": "NL-001",
+      "status": "open",
+      "priority": "high",
+      "category": "arbitrage",
+      "description": "Process Kanban queue and prioritize arbitrage opportunities"
+    }
+  ]
+}
