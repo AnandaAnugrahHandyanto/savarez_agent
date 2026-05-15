@@ -47,6 +47,37 @@ DELEGATE_BLOCKED_TOOLS = frozenset(
     ]
 )
 
+# Global subagent blocked toolsets — always stripped, cannot be re-enabled
+# by caller or profile.
+GLOBAL_SUBAGENT_BLOCKED_TOOLSETS = frozenset({"desktop"})
+
+# Global subagent blocked tools — always blocked at the single-tool level.
+GLOBAL_SUBAGENT_BLOCKED_TOOLS = frozenset({
+    "send_message",
+    "memory",
+    "execute_code",
+})
+
+
+# ---------------------------------------------------------------------------
+# Phase B: Write tool classification for readonly isolation
+# ---------------------------------------------------------------------------
+
+# Toolsets that contain write-capable tools and should be stripped entirely
+# in readonly mode. "terminal" is the primary one — it lets subagents execute
+# arbitrary commands including file modifications.
+READONLY_STRIP_TOOLSETS = frozenset({"terminal"})
+
+# Individual tools that are write-capable. Stripped from their parent toolsets
+# in readonly mode even when the toolset itself is not entirely stripped.
+# Tool names match the Hermes registry from toolsets.py.
+READONLY_STRIP_TOOLS = frozenset({
+    "write_file",
+    "patch",
+    "terminal",
+    "process",
+})
+
 
 # ---------------------------------------------------------------------------
 # Subagent approval callbacks
@@ -178,6 +209,9 @@ def _register_subagent(record: Dict[str, Any]) -> None:
 def _unregister_subagent(subagent_id: str) -> None:
     with _active_subagents_lock:
         _active_subagents.pop(subagent_id, None)
+    # Phase C+: clean up message queue and background result on unregister
+    with _subagent_message_lock:
+        _subagent_message_queues.pop(subagent_id, None)
 
 
 def interrupt_subagent(subagent_id: str) -> bool:
@@ -214,6 +248,150 @@ def list_active_subagents() -> List[Dict[str, Any]]:
             {k: v for k, v in r.items() if k != "agent"}
             for r in _active_subagents.values()
         ]
+
+
+# ---------------------------------------------------------------------------
+# Phase C+: Background execution
+# ---------------------------------------------------------------------------
+
+_background_executor = None
+_background_executor_lock = threading.Lock()
+
+# Completed background subagent results, keyed by subagent_id.
+# Entries are full result dicts from _run_single_child.
+_background_results: Dict[str, Dict[str, Any]] = {}
+_background_results_lock = threading.Lock()
+
+
+def _get_background_executor():
+    """Return (or create) a long-lived thread pool for background subagents."""
+    global _background_executor
+    if _background_executor is not None:
+        return _background_executor
+    with _background_executor_lock:
+        if _background_executor is not None:
+            return _background_executor
+        _background_executor = ThreadPoolExecutor(
+            max_workers=10,
+            thread_name_prefix="hermes-bg-subagent",
+        )
+        return _background_executor
+
+
+def get_subagent_result(subagent_id: str) -> Optional[Dict[str, Any]]:
+    """Return the completed result for a background subagent, or None.
+
+    Once retrieved, the result is removed from storage. Returns None
+    if the subagent is still running or the ID is unknown.
+    """
+    # Check if still running (only need _active_subagents_lock)
+    with _active_subagents_lock:
+        if subagent_id in _active_subagents:
+            return {"status": "running", "subagent_id": subagent_id}
+    # Retrieve and consume completed result
+    with _background_results_lock:
+        return _background_results.pop(subagent_id, None)
+
+
+# ---------------------------------------------------------------------------
+# Phase C+: send_message infrastructure
+# ---------------------------------------------------------------------------
+
+# Per-subagent message queues. Messages are stored as {timestamp, sender, content}.
+_subagent_message_queues: Dict[str, List[Dict[str, Any]]] = {}
+_subagent_message_lock = threading.Lock()
+
+
+def send_message(subagent_id: str, message: str, sender: str = "parent") -> bool:
+    """Queue a message for delivery to a running subagent.
+
+    The message is stored and can be retrieved via get_subagent_messages().
+    Returns True if the subagent was found and the message was queued.
+    Returns False if the subagent is not running.
+
+    IMPORTANT: Actual injection of messages into the running LLM conversation
+    requires agent-loop modifications (not yet implemented). Messages are
+    stored and retrievable, but are NOT automatically injected into the
+    subagent's next turn. Use get_subagent_messages() to poll.
+    """
+    with _active_subagents_lock:
+        record = _active_subagents.get(subagent_id)
+    if not record:
+        return False
+
+    with _subagent_message_lock:
+        if subagent_id not in _subagent_message_queues:
+            _subagent_message_queues[subagent_id] = []
+        _subagent_message_queues[subagent_id].append({
+            "timestamp": time.time(),
+            "sender": sender,
+            "content": message,
+        })
+    return True
+
+
+def get_subagent_messages(
+    subagent_id: str,
+    *,
+    mark_read: bool = True,
+) -> Optional[List[Dict[str, Any]]]:
+    """Retrieve queued messages for a subagent.
+
+    Args:
+        subagent_id: The subagent to query.
+        mark_read: If True, clears the queue after reading (default).
+
+    Returns the list of messages, or None if the subagent is unknown.
+    """
+    with _active_subagents_lock:
+        if subagent_id not in _active_subagents:
+            return None
+    with _subagent_message_lock:
+        messages = list(_subagent_message_queues.get(subagent_id, []))
+        if mark_read:
+            _subagent_message_queues[subagent_id] = []
+    return messages
+
+
+def _deliver_pending_messages(
+    subagent_id: str,
+    child_agent=None,
+) -> List[Dict[str, Any]]:
+    """Deliver pending messages to a subagent by appending them to its
+    conversation as synthetic user messages.
+
+    This is called by the heartbeat thread or progress callback. Returns
+    the list of delivered messages.
+
+    NOTE: This uses child._conversation_history (internal API) to inject
+    messages between turns. This is a pragmatic bridge until full agent-loop
+    support for subagent messaging is implemented.
+    """
+    with _subagent_message_lock:
+        messages = list(_subagent_message_queues.pop(subagent_id, []))
+    if not messages:
+        return []
+
+    if child_agent is None:
+        return messages  # can't deliver without agent ref
+
+    try:
+        for msg in messages:
+            synthetic = {
+                "role": "user",
+                "content": (
+                    f"[Message from {msg['sender']} at "
+                    f"{time.strftime('%H:%M:%S', time.localtime(msg['timestamp']))}]\n"
+                    f"{msg['content']}"
+                ),
+            }
+            history = getattr(child_agent, "_conversation_history", None)
+            if isinstance(history, list):
+                history.append(synthetic)
+    except Exception as exc:
+        logger.warning("Failed to deliver pending messages to %s: %s", subagent_id, exc)
+
+    return messages
 
 
 def _extract_output_tail(
@@ -462,6 +640,37 @@ def _is_mcp_toolset_name(name: str) -> bool:
     return bool(target and str(target).startswith("mcp-"))
 
 
+def _expand_parent_toolsets(parent_toolsets: set) -> set:
+    """Expand composite toolsets so individual toolset names are recognized.
+
+    When a parent uses a composite toolset like ``hermes-cli`` (which bundles
+    all core tools), the child may request individual toolsets such as ``web``
+    or ``terminal``.  A simple name-based intersection would reject them
+    because ``"web" != "hermes-cli"``.
+
+    This helper collects the tool names from each parent toolset, then adds
+    the names of any individual toolsets whose tools are a *subset* of the
+    parent's available tools.  The original parent toolset names are preserved.
+    """
+    parent_tool_names: set = set()
+    for ts_name in parent_toolsets:
+        ts_def = TOOLSETS.get(ts_name)
+        if ts_def:
+            parent_tool_names.update(ts_def.get("tools", []))
+
+    if not parent_tool_names:
+        return set(parent_toolsets)
+
+    expanded = set(parent_toolsets)
+    for ts_name, ts_def in TOOLSETS.items():
+        if ts_name in expanded:
+            continue
+        ts_tools = ts_def.get("tools", [])
+        if ts_tools and set(ts_tools).issubset(parent_tool_names):
+            expanded.add(ts_name)
+    return expanded
+
+
 def _preserve_parent_mcp_toolsets(
     child_toolsets: List[str], parent_toolsets: set[str]
 ) -> List[str]:
@@ -483,8 +692,8 @@ _HEARTBEAT_INTERVAL = 30  # seconds between parent activity heartbeats during de
 # The idle ceiling stays tight so genuinely stuck children don't mask the gateway
 # timeout. The in-tool ceiling is much higher so legit long-running tools get
 # time to finish; child_timeout_seconds (default 600s) is still the hard cap.
-_HEARTBEAT_STALE_CYCLES_IDLE = 5  # 5 * 30s = 150s idle between turns → stale
-_HEARTBEAT_STALE_CYCLES_IN_TOOL = 20  # 20 * 30s = 600s stuck on same tool → stale
+_HEARTBEAT_STALE_CYCLES_IDLE = 15  # 15 * 30s = 450s idle between turns → stale
+_HEARTBEAT_STALE_CYCLES_IN_TOOL = 40  # 40 * 30s = 1200s stuck on same tool → stale
 DEFAULT_TOOLSETS = ["terminal", "file", "web"]
 
 
@@ -538,6 +747,7 @@ def _build_child_system_prompt(
     role: str = "leaf",
     max_spawn_depth: int = 2,
     child_depth: int = 1,
+    skills: Optional[List[str]] = None,
 ) -> str:
     """Build a focused system prompt for a child agent.
 
@@ -603,6 +813,12 @@ def _build_child_system_prompt(
             f"NOTE: You are at depth {child_depth}. The delegation tree "
             f"is capped at max_spawn_depth={max_spawn_depth}. {child_note}"
         )
+    if skills:
+        parts.append(
+            "## Scoped Skills\n"
+            "The following skills are available to you:\n"
+            + "\n".join(f"- {s}" for s in skills)
+        )
     return "\n".join(parts)
 
 
@@ -642,6 +858,652 @@ def _strip_blocked_tools(toolsets: List[str]) -> List[str]:
         "code_execution",
     }
     return [t for t in toolsets if t not in blocked_toolset_names]
+
+
+# ---------------------------------------------------------------------------
+# Phase A: Registry / profile helpers
+# ---------------------------------------------------------------------------
+
+
+def _load_agent_registry() -> dict:
+    """Load agent registry from ~/.hermes/config/agent-registry.json."""
+    from pathlib import Path
+
+    try:
+        from hermes_constants import get_hermes_home
+    except Exception:
+        def get_hermes_home() -> Path:
+            return Path.home() / ".hermes"
+
+    registry_path = get_hermes_home() / "config" / "agent-registry.json"
+    with open(registry_path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _load_subagent_profile(agent_id: str) -> tuple:
+    """Return (agent_config, subagent_profile) for a named agent.
+
+    Raises:
+        ValueError: agent_id not found or missing subagent_profile.
+    """
+    registry = _load_agent_registry()
+    agents = registry.get("agents", {})
+    agent_config = agents.get(agent_id)
+    if agent_config is None:
+        raise ValueError(
+            f"Agent '{agent_id}' not found in agent-registry.json. "
+            f"Available agents: {list(agents.keys())}"
+        )
+    profile = agent_config.get("subagent_profile")
+    if not profile:
+        raise ValueError(
+            f"Agent '{agent_id}' has no subagent_profile in agent-registry.json. "
+            f"Add a 'subagent_profile' field to enable delegate_task(agent_id=...)."
+        )
+    return agent_config, profile
+
+
+def _desktop_allowed(agent_config: dict, profile: dict) -> bool:
+    """Return True only when both conditions are met:
+
+    1. agent_config.capabilities contains 'desktop_control'.
+    2. profile.toolsets explicitly includes 'desktop'.
+    """
+    caps = set(agent_config.get("capabilities") or [])
+    tools = set(profile.get("toolsets") or [])
+    return "desktop_control" in caps and "desktop" in tools
+
+
+def _should_inherit_mcp_toolsets_for_profile(profile: dict) -> bool:
+    """Return True when the profile explicitly opts into MCP inheritance."""
+    return bool(profile.get("inherit_mcp_toolsets") is True)
+
+
+def _resolve_effective_toolsets(
+    *,
+    agent_config: dict,
+    profile: dict,
+    requested_toolsets: Optional[List[str]],
+    parent_toolsets: set,
+) -> List[str]:
+    """Compute effective toolsets for a named subagent.
+
+    Rules (agent_id path):
+    1. Start with profile.toolsets.
+    2. Intersect with requested_toolsets if provided.
+    3. Intersect with parent_toolsets (never gain tools parent lacks).
+    4. Strip desktop unless _desktop_allowed(…).
+    5. Strip GLOBAL_SUBAGENT_BLOCKED_TOOLSETS (except desktop, already handled).
+    6. Default-deny MCP toolsets (caller must re-add if profile opts in).
+    """
+    base = set(profile.get("toolsets") or [])
+
+    if requested_toolsets:
+        base &= set(requested_toolsets)
+
+    base &= parent_toolsets
+
+    if not _desktop_allowed(agent_config, profile):
+        base.discard("desktop")
+
+    # Strip globally blocked toolsets (desktop already handled above)
+    for ts in GLOBAL_SUBAGENT_BLOCKED_TOOLSETS:
+        if ts != "desktop":
+            base.discard(ts)
+
+    # Default: no MCP inheritance for agent_id path.
+    # Caller adds back MCP toolsets only when the profile explicitly opts in.
+    return sorted(base)
+
+
+def _resolve_effective_blocked_tools(
+    *,
+    profile: dict,
+    requested_blocked_tools: Optional[List[str]] = None,
+) -> set:
+    """Compute effective blocked tools merging all sources.
+
+    Merge order (union only — blocked_tools can only grow):
+    1. DELEGATE_BLOCKED_TOOLS
+    2. GLOBAL_SUBAGENT_BLOCKED_TOOLS
+    3. profile.blocked_tools
+    4. caller-supplied blocked_tools
+
+    Caller blocked_tools can only add, never subtract.
+    """
+    blocked: set = set(DELEGATE_BLOCKED_TOOLS)
+    blocked |= GLOBAL_SUBAGENT_BLOCKED_TOOLS
+    blocked |= set(profile.get("blocked_tools") or [])
+    if requested_blocked_tools:
+        blocked |= set(requested_blocked_tools)
+    return blocked
+
+
+def _check_mcp_server_availability(profile: dict, warnings: List[str]) -> None:
+    """Check that required_mcp_servers are available.
+
+    This is an informational check only — it does NOT auto-grant MCP tool
+    permissions. Toolsets must be explicitly listed in profile.toolsets or
+    inherit_mcp_toolsets must be true.
+    """
+    required = profile.get("required_mcp_servers") or []
+    if not required:
+        return
+    try:
+        from tools.registry import registry
+        available_servers = {
+            name.replace("mcp-", "", 1)
+            for name in registry.get_registered_toolset_names()
+            if name.startswith("mcp-")
+        }
+    except Exception:
+        available_servers = set()
+    for server in required:
+        if server not in available_servers:
+            msg = (
+                f"Required MCP server '{server}' is not available. "
+                f"Subagent may lack expected tools."
+            )
+            logger.warning(msg)
+            warnings.append(msg)
+
+
+# ---------------------------------------------------------------------------
+# Phase B: Isolation resolution
+# ---------------------------------------------------------------------------
+
+
+def _resolve_isolation(
+    *,
+    requested_isolation: Optional[str],
+    profile_isolation: Optional[str],
+    permission_mode: Optional[str],
+) -> tuple:
+    """Resolve effective isolation mode and return (isolation, warnings, error).
+
+    Returns:
+        (isolation: str, warnings: list, error: str or None)
+        If error is not None, the caller must return a tool_error immediately.
+    """
+    warnings: List[str] = []
+
+    # Determine effective isolation: requested > profile default > "shared"
+    effective = requested_isolation or profile_isolation or "shared"
+
+    # read_only permission_mode auto-enables readonly isolation
+    # Only when the caller did not explicitly request a different isolation.
+    if (
+        permission_mode == "read_only"
+        and effective != "readonly"
+        and requested_isolation is None
+    ):
+        effective = "readonly"
+        warnings.append(
+            "permission_mode='read_only' automatically enables isolation='readonly'"
+        )
+
+    # worktree isolation (Phase C)
+    if effective == "worktree":
+        return "worktree", warnings, None
+
+    # Validate isolation value
+    if effective not in ("shared", "readonly"):
+        return (
+            "shared",
+            warnings,
+            f"Unknown isolation mode '{effective}'; valid values: shared, readonly, worktree.",
+        )
+
+    return effective, warnings, None
+
+
+def _apply_readonly_isolation(toolsets: List[str]) -> List[str]:
+    """Strip write-capable toolsets and individual tools for readonly mode.
+
+    - Entire toolsets in READONLY_STRIP_TOOLSETS are removed.
+    - Individual tools in READONLY_STRIP_TOOLS are removed from their
+      parent toolsets.
+    """
+    # Remove entirely-stripped toolsets
+    filtered = [ts for ts in toolsets if ts not in READONLY_STRIP_TOOLSETS]
+
+    # For remaining toolsets, strip individual write tools
+    # We don't resolve individual tools here — we just pass through the
+    # toolset names. The actual tool filtering happens when tools are
+    # resolved downstream via model_tools.get_tool_definitions().
+    # We add blocked_tools entries to ensure write tools are denied.
+    return filtered
+
+
+# ---------------------------------------------------------------------------
+# Phase B: Subagent status/output interfaces (read-only)
+# ---------------------------------------------------------------------------
+
+
+def get_subagent_status(subagent_id: str) -> Optional[Dict[str, Any]]:
+    """Return a snapshot of a subagent's current state, or None if not found.
+
+    Safe to call from any thread. Returns a copy of the record without
+    the raw agent reference.
+    """
+    with _active_subagents_lock:
+        record = _active_subagents.get(subagent_id)
+    if not record:
+        return None
+    return {
+        "subagent_id": record.get("subagent_id"),
+        "parent_id": record.get("parent_id"),
+        "depth": record.get("depth"),
+        "goal": record.get("goal"),
+        "model": record.get("model"),
+        "started_at": record.get("started_at"),
+        "status": record.get("status"),
+        "tool_count": record.get("tool_count"),
+        "last_tool": record.get("last_tool"),
+    }
+
+
+def get_subagent_output_tail(
+    subagent_id: str,
+    lines: int = 50,
+) -> Optional[List[Dict[str, Any]]]:
+    """Return recent tool-call output entries for a subagent, or None.
+
+    This relies on the parent having stored the child's results. For
+    running subagents, returns the tail from the child's conversation
+    messages if the child exposes them.
+
+    Args:
+        subagent_id: The subagent to query.
+        lines: Maximum number of output entries to return.
+    """
+    with _active_subagents_lock:
+        record = _active_subagents.get(subagent_id)
+    if not record:
+        return None
+
+    agent = record.get("agent")
+    if agent is None:
+        return None
+
+    # Try to get conversation messages from the running child
+    try:
+        messages = getattr(agent, "_conversation_messages", None) or []
+        if not messages:
+            return []
+        tail = messages[-min(lines, len(messages)):]
+        return [
+            {
+                "role": m.get("role") if isinstance(m, dict) else "unknown",
+                "content_preview": (
+                    str(m.get("content", ""))[:200]
+                    if isinstance(m, dict)
+                    else str(m)[:200]
+                ),
+            }
+            for m in tail
+        ]
+    except Exception:
+        return None
+
+
+def get_subagent_usage(subagent_id: str) -> Optional[Dict[str, Any]]:
+    """Return token/cost usage for a running subagent, or None."""
+    with _active_subagents_lock:
+        record = _active_subagents.get(subagent_id)
+    if not record:
+        return None
+    agent = record.get("agent")
+    if agent is None:
+        return None
+    try:
+        return {
+            "input_tokens": getattr(agent, "session_prompt_tokens", 0) or 0,
+            "output_tokens": getattr(agent, "session_completion_tokens", 0) or 0,
+            "api_calls": getattr(agent, "api_call_count", 0) or 0,
+            "cost_usd": getattr(agent, "session_estimated_cost_usd", 0.0) or 0.0,
+        }
+    except Exception:
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Phase C: Worktree isolation
+# ---------------------------------------------------------------------------
+
+_WORKTREE_BASE_DIR = None  # Path | None
+
+
+def _get_worktree_base_dir():
+    """Return the base directory for worktrees (~/.hermes/worktrees)."""
+    global _WORKTREE_BASE_DIR
+    if _WORKTREE_BASE_DIR is not None:
+        return _WORKTREE_BASE_DIR
+    try:
+        from hermes_constants import get_hermes_home
+    except Exception:
+        from pathlib import Path as _P
+        def get_hermes_home() -> _P:
+            return _P.home() / ".hermes"
+    _WORKTREE_BASE_DIR = get_hermes_home() / "worktrees"
+    return _WORKTREE_BASE_DIR
+
+
+def _create_worktree(
+    subagent_id: str,
+    *,
+    parent_agent=None,
+) -> Dict[str, Any]:
+    """Create a git worktree for an isolated subagent.
+
+    Returns dict with: {worktree_path, worktree_branch, original_head, repo_path, error}
+    If error is non-empty, the worktree could not be created.
+    """
+    import subprocess as _sp
+    from pathlib import Path as _Path
+
+    result: Dict[str, Any] = {
+        "worktree_path": None,
+        "worktree_branch": None,
+        "original_head": None,
+        "repo_path": None,
+        "error": None,
+    }
+
+    # Find the parent's git repo — prefer TERMINAL_CWD, then parent's workspace hint
+    repo_candidate = None
+    try:
+        repo_candidate = os.environ.get("TERMINAL_CWD") or os.getcwd()
+    except Exception:
+        repo_candidate = os.getcwd()
+
+    # Verify this is a git repo
+    try:
+        proc = _sp.run(
+            ["git", "-C", str(repo_candidate), "rev-parse", "--show-toplevel"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if proc.returncode != 0:
+            result["error"] = f"Cannot find git repository at {repo_candidate}"
+            return result
+        repo_path = _Path(proc.stdout.strip())
+    except (FileNotFoundError, _sp.TimeoutExpired) as exc:
+        result["error"] = f"Git command failed: {exc}"
+        return result
+
+    # Get current HEAD
+    try:
+        proc = _sp.run(
+            ["git", "-C", str(repo_path), "rev-parse", "HEAD"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if proc.returncode != 0:
+            result["error"] = "Cannot resolve HEAD"
+            return result
+        original_head = proc.stdout.strip()
+    except Exception as exc:
+        result["error"] = f"Failed to get HEAD: {exc}"
+        return result
+
+    # Create the worktree
+    safe_id = subagent_id.replace("/", "_").replace("\\", "_")
+    worktree_name = f"hermes-{safe_id}"
+    worktree_base = _get_worktree_base_dir()
+    try:
+        worktree_base.mkdir(parents=True, exist_ok=True)
+    except Exception as exc:
+        result["error"] = f"Cannot create worktree base dir: {exc}"
+        return result
+    worktree_path = worktree_base / worktree_name
+
+    try:
+        proc = _sp.run(
+            ["git", "-C", str(repo_path), "worktree", "add", "--detach",
+             str(worktree_path), original_head],
+            capture_output=True, text=True, timeout=30,
+        )
+        if proc.returncode != 0:
+            result["error"] = f"git worktree add failed: {proc.stderr.strip()}"
+            return result
+    except Exception as exc:
+        result["error"] = f"git worktree add failed: {exc}"
+        return result
+
+    result["worktree_path"] = str(worktree_path)
+    result["worktree_branch"] = worktree_name
+    result["original_head"] = original_head
+    result["repo_path"] = str(repo_path)
+    return result
+
+
+def _cleanup_worktree(
+    worktree_path: str,
+    original_head: str,
+    *,
+    force: bool = False,
+) -> Dict[str, Any]:
+    """Clean up a git worktree. Fail-closed: only remove when safe.
+
+    Returns dict with: {removed, kept, reason, diff_summary}
+    """
+    import subprocess as _sp
+    from pathlib import Path as _Path
+
+    wpath = _Path(worktree_path)
+    result: Dict[str, Any] = {
+        "removed": False,
+        "kept": True,
+        "reason": "",
+        "diff_summary": "",
+    }
+
+    if not wpath.exists():
+        result["reason"] = "worktree path does not exist"
+        result["kept"] = False
+        return result
+
+    if not str(wpath).startswith(str(_get_worktree_base_dir())):
+        result["reason"] = (
+            "worktree path is not under Hermes managed directory — refusing to delete"
+        )
+        return result
+
+    # Check for changes
+    try:
+        proc = _sp.run(
+            ["git", "-C", str(wpath), "status", "--porcelain"],
+            capture_output=True, text=True, timeout=15,
+        )
+        if proc.returncode != 0:
+            result["reason"] = (
+                f"git status failed (exit {proc.returncode}): "
+                f"{proc.stderr.strip()[:200]}"
+            )
+            return result
+        dirty = proc.stdout.strip()
+    except FileNotFoundError:
+        result["reason"] = "git not found"
+        return result
+    except _sp.TimeoutExpired:
+        result["reason"] = "git status timed out"
+        return result
+
+    # Check for .git lock file
+    lock_file = wpath / ".git" / "index.lock"
+    if lock_file.exists():
+        result["reason"] = ".git/index.lock exists — refusing to delete"
+        return result
+
+    if dirty and not force:
+        try:
+            diff_proc = _sp.run(
+                ["git", "-C", str(wpath), "diff", "--stat"],
+                capture_output=True, text=True, timeout=10,
+            )
+            result["diff_summary"] = diff_proc.stdout.strip()[:500]
+        except Exception:
+            result["diff_summary"] = "(diff unavailable)"
+        result["reason"] = (
+            f"Worktree has uncommitted changes — kept at {worktree_path}"
+        )
+        return result
+
+    try:
+        # git worktree remove must run from within the main repo.
+        # The worktree's .git file points to the main repo, so git can
+        # resolve the main repo from the worktree path itself without -C.
+        _sp.run(
+            ["git", "worktree", "remove", "--force", str(wpath)],
+            capture_output=True, text=True, timeout=15,
+            check=True,
+        )
+        result["removed"] = True
+        result["kept"] = False
+        result["reason"] = "worktree removed (no changes)"
+    except _sp.CalledProcessError as exc:
+        result["reason"] = f"git worktree remove failed: {exc.stderr.strip()[:200]}"
+    except Exception as exc:
+        result["reason"] = f"cleanup failed: {exc}"
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Phase C: Transcript JSONL
+# ---------------------------------------------------------------------------
+
+
+def _get_transcript_dir():
+    """Return the base directory for subagent transcripts."""
+    try:
+        from hermes_constants import get_hermes_home
+    except Exception:
+        from pathlib import Path as _P
+        def get_hermes_home() -> _P:
+            return _P.home() / ".hermes"
+    return get_hermes_home() / "subagents"
+
+
+def _write_transcript_event(
+    session_id: str,
+    subagent_id: str,
+    event_type: str,
+    *,
+    tool: Optional[str] = None,
+    preview: str = "",
+    usage: Optional[Dict[str, Any]] = None,
+    agent_id: Optional[str] = None,
+):
+    """Append a single JSONL line to the subagent's transcript.
+
+    Returns the transcript file path, or None on failure.
+    """
+    try:
+        transcript_dir = _get_transcript_dir() / session_id
+        transcript_dir.mkdir(parents=True, exist_ok=True)
+        transcript_path = transcript_dir / f"{subagent_id}.jsonl"
+
+        entry = {
+            "timestamp": time.time(),
+            "event_type": event_type,
+            "subagent_id": subagent_id,
+            "agent_id": agent_id,
+            "tool": tool,
+            "preview": preview[:500],
+            "usage": usage or {},
+        }
+        with open(transcript_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        return transcript_path
+    except Exception as exc:
+        logger.warning("Failed to write transcript event: %s", exc)
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Phase C: Coordinator / Swarm prep
+# ---------------------------------------------------------------------------
+
+
+# Tools allowed for coordinator_mode agents (orchestration only)
+COORDINATOR_ALLOWED_TOOLSETS = frozenset({"delegation", "file"})
+COORDINATOR_BLOCKED_TOOLS = frozenset({
+    "terminal", "process", "write_file", "patch",
+    "send_message", "memory", "execute_code",
+    "browser_navigate", "browser_snapshot", "browser_click",
+})
+
+
+def _apply_coordinator_mode(
+    agent_config: dict,
+    toolsets: List[str],
+    blocked_tools: set,
+    warnings: List[str],
+) -> tuple:
+    """Restrict tools for coordinator_mode agents.
+
+    When agent_config has coordinator_mode: true, only orchestration
+    toolsets are allowed. All write/mutate tools are blocked.
+
+    Returns (filtered_toolsets, updated_blocked_tools, updated_warnings).
+    """
+    coord_mode = agent_config.get("coordinator_mode", False)
+    if not coord_mode:
+        return toolsets, blocked_tools, warnings
+
+    warnings.append("coordinator_mode: restricting to orchestration toolsets")
+    filtered = [ts for ts in toolsets if ts in COORDINATOR_ALLOWED_TOOLSETS]
+    new_blocked = set(blocked_tools) | COORDINATOR_BLOCKED_TOOLS
+    return filtered, new_blocked, warnings
+
+
+def claim_task(task_id: str, agent_id: str) -> bool:
+    """Atomically claim a task using SQLite WAL INSERT OR IGNORE.
+
+    Returns True if the claim was successful (first to claim).
+    Returns False if the task was already claimed by another agent.
+
+    Uses a simple SQLite database at ~/.hermes/swarm_claims.db.
+    Thread-safe via WAL mode.
+
+    IMPORTANT: This guarantees atomicity only on local filesystems
+    (APFS, ext4, NTFS). For distributed coordination, a proper lock
+    service (etcd, Redis Redlock, PostgreSQL advisory lock) is needed.
+    """
+    try:
+        from hermes_constants import get_hermes_home
+    except Exception:
+        from pathlib import Path as _P
+        def get_hermes_home() -> _P:
+            return _P.home() / ".hermes"
+
+    db_path = get_hermes_home() / "swarm_claims.db"
+    try:
+        import sqlite3
+        conn = sqlite3.connect(str(db_path))
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS claims ("
+            "  task_id TEXT PRIMARY KEY,"
+            "  agent_id TEXT NOT NULL,"
+            "  claimed_at REAL NOT NULL"
+            ")"
+        )
+        conn.execute(
+            "INSERT OR IGNORE INTO claims (task_id, agent_id, claimed_at) "
+            "VALUES (?, ?, ?)",
+            (task_id, agent_id, time.time()),
+        )
+        conn.commit()
+        # Check if we got the claim
+        row = conn.execute(
+            "SELECT agent_id FROM claims WHERE task_id = ?", (task_id,)
+        ).fetchone()
+        conn.close()
+        return row is not None and row[0] == agent_id
+    except Exception as exc:
+        logger.warning("claim_task failed: %s", exc)
+        return False
 
 
 def _build_child_progress_callback(
@@ -852,6 +1714,15 @@ def _build_child_agent(
     # 'leaf' (default) cannot; 'orchestrator' retains the delegation
     # toolset subject to depth/kill-switch bounds applied below.
     role: str = "leaf",
+    # Phase A: named subagent via agent_id
+    agent_id: Optional[str] = None,
+    agent_config: Optional[dict] = None,
+    profile: Optional[dict] = None,
+    requested_blocked_tools: Optional[List[str]] = None,
+    # Phase B: isolation
+    requested_isolation: Optional[str] = None,
+    profile_isolation: Optional[str] = None,
+    profile_permission_mode: Optional[str] = None,
 ):
     """
     Build a child AIAgent on the main thread (thread-safe construction).
@@ -887,15 +1758,15 @@ def _build_child_agent(
 
     delegation_cfg = _load_config()
 
-    # When no explicit toolsets given, inherit from parent's enabled toolsets
-    # so disabled tools (e.g. web) don't leak to subagents.
-    # Note: enabled_toolsets=None means "all tools enabled" (the default),
-    # so we must derive effective toolsets from the parent's loaded tools.
+    # ── Toolset resolution ────────────────────────────────────────────────
+    # Two paths:
+    #   agent_id path — profile-driven, tools can only narrow, desktop default-deny
+    #   legacy path   — existing role-based inheritance (unchanged behavior)
+
     parent_enabled = getattr(parent_agent, "enabled_toolsets", None)
     if parent_enabled is not None:
         parent_toolsets = set(parent_enabled)
     elif parent_agent and hasattr(parent_agent, "valid_tool_names"):
-        # enabled_toolsets is None (all tools) — derive from loaded tool names
         import model_tools
 
         parent_toolsets = {
@@ -906,20 +1777,60 @@ def _build_child_agent(
     else:
         parent_toolsets = set(DEFAULT_TOOLSETS)
 
-    if toolsets:
-        # Intersect with parent — subagent must not gain tools the parent lacks
-        child_toolsets = [t for t in toolsets if t in parent_toolsets]
-        if _get_inherit_mcp_toolsets():
+    effective_blocked: set = set()
+    warnings: List[str] = []
+
+    if agent_id and agent_config and profile:
+        # ── agent_id path ─────────────────────────────────────────────
+        child_toolsets = _resolve_effective_toolsets(
+            agent_config=agent_config,
+            profile=profile,
+            requested_toolsets=toolsets,
+            parent_toolsets=parent_toolsets,
+        )
+
+        # MCP inheritance: only when profile explicitly opts in
+        if _should_inherit_mcp_toolsets_for_profile(profile):
             child_toolsets = _preserve_parent_mcp_toolsets(
                 child_toolsets, parent_toolsets
             )
-        child_toolsets = _strip_blocked_tools(child_toolsets)
-    elif parent_agent and parent_enabled is not None:
-        child_toolsets = _strip_blocked_tools(parent_enabled)
-    elif parent_toolsets:
-        child_toolsets = _strip_blocked_tools(sorted(parent_toolsets))
+        # Note: _resolve_effective_toolsets already defaults to no MCP toolsets.
+        # required_mcp_servers is only checked for availability, not for granting
+        # tool permissions. See _check_mcp_server_availability below.
+
+        # Check MCP server availability (informational only, not auto-granted)
+        _check_mcp_server_availability(profile, warnings)
+
+        effective_blocked = _resolve_effective_blocked_tools(
+            profile=profile,
+            requested_blocked_tools=requested_blocked_tools,
+        )
     else:
-        child_toolsets = _strip_blocked_tools(DEFAULT_TOOLSETS)
+        # ── legacy role path ──────────────────────────────────────────
+        if toolsets:
+            # Intersect with parent — subagent must not gain tools the parent lacks.
+            # Expand composite toolsets (e.g. hermes-cli) so that individual
+            # toolset names (e.g. web, terminal) are recognised during intersection.
+            expanded_parent = _expand_parent_toolsets(parent_toolsets)
+            child_toolsets = [t for t in toolsets if t in expanded_parent]
+            if _get_inherit_mcp_toolsets():
+                child_toolsets = _preserve_parent_mcp_toolsets(
+                    child_toolsets, parent_toolsets
+                )
+            child_toolsets = _strip_blocked_tools(child_toolsets)
+        elif parent_agent and parent_enabled is not None:
+            child_toolsets = _strip_blocked_tools(parent_enabled)
+        elif parent_toolsets:
+            child_toolsets = _strip_blocked_tools(sorted(parent_toolsets))
+        else:
+            child_toolsets = _strip_blocked_tools(DEFAULT_TOOLSETS)
+
+    # ── Skill scoping (方案 A) ────────────────────────────────────────
+    child_skills: list[str] = []
+    if agent_id and profile:
+        child_skills = list(profile.get("skills") or [])
+    if child_skills and "skills" not in child_toolsets:
+        child_toolsets = list(child_toolsets) + ["skills"]
 
     # Orchestrators retain the 'delegation' toolset that _strip_blocked_tools
     # removed.  The re-add is unconditional on parent-toolset membership because
@@ -927,6 +1838,37 @@ def _build_child_agent(
     # test_intersection_preserves_delegation_bound test for the design rationale.
     if effective_role == "orchestrator" and "delegation" not in child_toolsets:
         child_toolsets.append("delegation")
+
+    # ── Phase B: Isolation resolution ───────────────────────────────────
+    _effective_isolation, _iso_warnings, _iso_error = _resolve_isolation(
+        requested_isolation=requested_isolation,
+        profile_isolation=profile_isolation,
+        permission_mode=profile_permission_mode,
+    )
+    warnings.extend(_iso_warnings)
+    # If the caller requested worktree isolation, that's a hard error
+    if _iso_error:
+        # We stash the error so delegate_task can return it cleanly.
+        # _build_child_agent doesn't return errors directly, so we store it
+        # as a sentinel on the child object.
+        _isolation_error = _iso_error
+    else:
+        _isolation_error = None
+
+    # Apply readonly isolation: strip write toolsets and individual write tools
+    if _effective_isolation == "readonly":
+        child_toolsets_before_readonly = list(child_toolsets)
+        child_toolsets = _apply_readonly_isolation(child_toolsets)
+        stripped_ts = set(child_toolsets_before_readonly) - set(child_toolsets)
+        for ts in stripped_ts:
+            effective_blocked.add(ts)
+            warnings.append(f"readonly isolation: stripped toolset '{ts}'")
+
+    # ── Phase C: Coordinator mode ──────────────────────────────────────
+    if agent_config and agent_config.get("coordinator_mode"):
+        child_toolsets, effective_blocked, warnings = _apply_coordinator_mode(
+            agent_config, child_toolsets, effective_blocked, warnings,
+        )
 
     workspace_hint = _resolve_workspace_hint(parent_agent)
     child_prompt = _build_child_system_prompt(
@@ -936,6 +1878,7 @@ def _build_child_agent(
         role=effective_role,
         max_spawn_depth=max_spawn,
         child_depth=child_depth,
+        skills=child_skills,
     )
     # Extract parent's API key so subagents inherit auth (e.g. Nous Portal).
     parent_api_key = getattr(parent_agent, "api_key", None)
@@ -1026,6 +1969,29 @@ def _build_child_agent(
     except Exception as exc:
         logger.debug("Could not load delegation reasoning_effort: %s", exc)
 
+    # Inherit the parent's fallback provider chain so subagents can recover
+    # from rate-limits and credential exhaustion exactly like the top-level
+    # agent does.  _fallback_chain is a list accepted by AIAgent's
+    # fallback_model parameter (which handles both list and dict forms).
+    parent_fallback = getattr(parent_agent, "_fallback_chain", None) or None
+
+    # Inherit the parent's OpenRouter provider-preference filters by default
+    # (so subagents routed to the same provider honour the same routing
+    # constraints).  BUT: when `delegation.provider` is set the user is
+    # explicitly asking the child to run on a different provider, and
+    # parent-level OpenRouter filters (e.g. `only=["Anthropic"]`) would
+    # silently force the child back onto the parent's provider. Clear the
+    # filters in that case so the delegated provider is honoured.
+    child_providers_allowed = getattr(parent_agent, "providers_allowed", None)
+    child_providers_ignored = getattr(parent_agent, "providers_ignored", None)
+    child_providers_order = getattr(parent_agent, "providers_order", None)
+    child_provider_sort = getattr(parent_agent, "provider_sort", None)
+    if override_provider:
+        child_providers_allowed = None
+        child_providers_ignored = None
+        child_providers_order = None
+        child_provider_sort = None
+
     child = AIAgent(
         base_url=effective_base_url,
         api_key=effective_api_key,
@@ -1038,6 +2004,7 @@ def _build_child_agent(
         max_tokens=getattr(parent_agent, "max_tokens", None),
         reasoning_config=child_reasoning,
         prefill_messages=getattr(parent_agent, "prefill_messages", None),
+        fallback_model=parent_fallback,
         enabled_toolsets=child_toolsets,
         quiet_mode=True,
         ephemeral_system_prompt=child_prompt,
@@ -1049,10 +2016,10 @@ def _build_child_agent(
         thinking_callback=child_thinking_cb,
         session_db=getattr(parent_agent, "_session_db", None),
         parent_session_id=getattr(parent_agent, "session_id", None),
-        providers_allowed=parent_agent.providers_allowed,
-        providers_ignored=parent_agent.providers_ignored,
-        providers_order=parent_agent.providers_order,
-        provider_sort=parent_agent.provider_sort,
+        providers_allowed=child_providers_allowed,
+        providers_ignored=child_providers_ignored,
+        providers_order=child_providers_order,
+        provider_sort=child_provider_sort,
         tool_progress_callback=child_progress_cb,
         iteration_budget=None,  # fresh budget per subagent
     )
@@ -1067,6 +2034,13 @@ def _build_child_agent(
     child._subagent_id = subagent_id
     child._parent_subagent_id = parent_subagent_id
     child._subagent_goal = goal
+    # Phase A: stash agent_id profile metadata for event logging
+    child._subagent_agent_id = agent_id
+    child._subagent_effective_toolsets = child_toolsets
+    child._subagent_effective_blocked = effective_blocked
+    child._subagent_warnings = warnings
+    child._subagent_isolation = _effective_isolation
+    child._subagent_isolation_error = _isolation_error
 
     # Share a credential pool with the child when possible so subagents can
     # rotate credentials on rate limits instead of getting pinned to one key.
@@ -1239,6 +2213,101 @@ def _dump_subagent_timeout_diagnostic(
         return None
 
 
+def _try_log_subagent_event(
+    event_type: str,
+    *,
+    subagent_id: Optional[str],
+    parent_id: Optional[str],
+    agent_id: Optional[str],
+    role: str,
+    task_id: Optional[str],
+    session_id: Optional[str],
+    goal_preview: str = "",
+    effective_toolsets: Optional[List[str]] = None,
+    blocked_tools: Optional[set] = None,
+    status: str = "",
+    error: str = "",
+    reason: str = "",
+    duration_seconds: float = 0.0,
+    api_calls: int = 0,
+    tokens: Optional[Dict[str, int]] = None,
+    transcript_path: Optional[str] = None,
+) -> None:
+    """Fire a subagent lifecycle event, swallowing all failures.
+
+    EventLog write failure must never interrupt the main task.
+    """
+    try:
+        from agent.session_event_log import EventLog
+
+        elog = EventLog()
+        sid = task_id or ""
+        sess = session_id or ""
+        blocked_list = sorted(blocked_tools) if blocked_tools else []
+
+        if event_type == "started":
+            elog.log_subagent_started(
+                task_id=sid,
+                session_id=sess,
+                subagent_id=subagent_id or "",
+                goal_preview=goal_preview,
+                parent_id=parent_id,
+                agent_id=agent_id,
+                role=role,
+                effective_toolsets=effective_toolsets or [],
+                blocked_tools=blocked_list,
+            )
+        elif event_type == "completed":
+            elog.log_subagent_completed(
+                task_id=sid,
+                session_id=sess,
+                subagent_id=subagent_id or "",
+                status=status,
+                parent_id=parent_id,
+                agent_id=agent_id,
+                role=role,
+                duration_seconds=duration_seconds,
+                api_calls=api_calls,
+                tokens=tokens or {},
+                transcript_path=transcript_path,
+            )
+        elif event_type == "failed":
+            elog.log_subagent_failed(
+                task_id=sid,
+                session_id=sess,
+                subagent_id=subagent_id or "",
+                error=error,
+                parent_id=parent_id,
+                agent_id=agent_id,
+                role=role,
+            )
+        elif event_type == "interrupted":
+            elog.log_subagent_interrupted(
+                task_id=sid,
+                session_id=sess,
+                subagent_id=subagent_id or "",
+                reason=reason,
+                parent_id=parent_id,
+                agent_id=agent_id,
+                role=role,
+            )
+        elif event_type == "backgrounded":
+            # Phase C+: backgrounded has no dedicated EventLog method yet;
+            # log as a completed-style event with status "backgrounded"
+            elog.log_subagent_completed(
+                task_id=sid,
+                session_id=sess,
+                subagent_id=subagent_id or "",
+                status="backgrounded",
+                parent_id=parent_id,
+                agent_id=agent_id,
+                role=role,
+            )
+        elog.close()
+    except Exception as exc:
+        logger.warning("Failed to write subagent %s event: %s", event_type, exc)
+
+
 def _run_single_child(
     task_index: int,
     goal: str,
@@ -1355,6 +2424,12 @@ def _run_single_child(
                 touch(desc)
             except Exception:
                 pass
+            # ── Phase C+: deliver pending messages ──────────────────
+            if _subagent_id:
+                try:
+                    _deliver_pending_messages(_subagent_id, child_agent=child)
+                except Exception:
+                    pass
 
     _heartbeat_thread = threading.Thread(target=_heartbeat_loop, daemon=True)
     _heartbeat_thread.start()
@@ -1386,6 +2461,91 @@ def _run_single_child(
                 "agent": child,
             }
         )
+
+    # ── Phase A: subagent lifecycle event ─────────────────────────────
+    _child_agent_id = getattr(child, "_subagent_agent_id", None)
+    _child_role = getattr(child, "_delegate_role", "leaf")
+    _child_parent_sid = getattr(child, "_parent_subagent_id", None)
+    _parent_task_id = getattr(parent_agent, "_current_task_id", None)
+    _parent_session_id = getattr(parent_agent, "session_id", None)
+    # Sanitize values for JSON serialization (safe with MagicMock test doubles)
+    _safe_subagent_id = _subagent_id if isinstance(_subagent_id, str) else None
+    _safe_agent_id = _child_agent_id if isinstance(_child_agent_id, str) else None
+    _safe_role = _child_role if isinstance(_child_role, str) else "leaf"
+    _raw_toolsets = getattr(child, "_subagent_effective_toolsets", None)
+    _safe_toolsets = list(_raw_toolsets) if isinstance(_raw_toolsets, list) else []
+    _raw_blocked = getattr(child, "_subagent_effective_blocked", None)
+    _safe_blocked = sorted(_raw_blocked) if isinstance(_raw_blocked, (set, list)) else []
+    _raw_warnings = getattr(child, "_subagent_warnings", None)
+    _child_warnings = list(_raw_warnings) if isinstance(_raw_warnings, list) else []
+    _raw_isolation = getattr(child, "_subagent_isolation", None)
+    _child_isolation = (
+        _raw_isolation if isinstance(_raw_isolation, str) and _raw_isolation else "shared"
+    )
+    _try_log_subagent_event(
+        "started",
+        subagent_id=_safe_subagent_id,
+        parent_id=_child_parent_sid if isinstance(_child_parent_sid, str) else None,
+        agent_id=_safe_agent_id,
+        role=_safe_role,
+        task_id=_parent_task_id,
+        session_id=_parent_session_id,
+        goal_preview=goal,
+        effective_toolsets=_safe_toolsets,
+        blocked_tools=_safe_blocked,
+    )
+
+    # ── Phase C: Worktree / Transcript initialization ──────────────────
+    _worktree_info: Dict[str, Any] = {}
+    _cleanup_result: Dict[str, Any] = {}
+    _transcript_path: Optional[str] = None
+    _child_isolation_mode = getattr(child, "_subagent_isolation", "shared") or "shared"
+    if _child_isolation_mode == "worktree":
+        _wt_result = _create_worktree(
+            subagent_id=_subagent_id or f"subagent-{task_index}",
+            parent_agent=parent_agent,
+        )
+        if _wt_result.get("error"):
+            # Worktree creation failed — return error as result
+            _try_log_subagent_event(
+                "failed",
+                subagent_id=_safe_subagent_id,
+                parent_id=_child_parent_sid if isinstance(_child_parent_sid, str) else None,
+                agent_id=_safe_agent_id,
+                role=_safe_role,
+                task_id=_parent_task_id,
+                session_id=_parent_session_id,
+                error=_wt_result["error"],
+            )
+            return {
+                "task_index": task_index,
+                "status": "error",
+                "summary": None,
+                "subagent_id": _safe_subagent_id,
+                "parent_id": _child_parent_sid if isinstance(_child_parent_sid, str) else None,
+                "agent_id": _safe_agent_id,
+                "role": _safe_role,
+                "effective_toolsets": _safe_toolsets,
+                "blocked_tools": _safe_blocked,
+                "isolation": "worktree",
+                "warnings": [_wt_result["error"]],
+                "error": _wt_result["error"],
+                "api_calls": 0,
+                "duration_seconds": 0,
+                "_child_role": _safe_role,
+            }
+        _worktree_info = _wt_result
+        # Register worktree path as cwd override for terminal/file tools
+        _wt_path = _wt_result.get("worktree_path")
+        if _wt_path and _subagent_id:
+            try:
+                from tools.terminal_tool import register_task_env_overrides
+                register_task_env_overrides(_subagent_id, {"cwd": _wt_path})
+            except Exception as exc:
+                logger.warning(
+                    "Failed to register worktree cwd override for %s: %s",
+                    _subagent_id, exc,
+                )
 
     try:
         if child_progress_cb:
@@ -1513,10 +2673,27 @@ def _run_single_child(
             else:
                 _err = str(_timeout_exc)
 
+            _try_log_subagent_event(
+                "failed",
+                subagent_id=_subagent_id,
+                parent_id=_child_parent_sid if isinstance(_child_parent_sid, str) else None,
+                agent_id=_child_agent_id,
+                role=_child_role,
+                task_id=_parent_task_id,
+                session_id=_parent_session_id,
+                error=_err,
+            )
             return {
                 "task_index": task_index,
                 "status": "timeout" if is_timeout else "error",
                 "summary": None,
+                "subagent_id": _safe_subagent_id,
+                "agent_id": _safe_agent_id,
+                "role": _safe_role,
+                "effective_toolsets": _safe_toolsets,
+                "blocked_tools": _safe_blocked,
+                "isolation": _child_isolation,
+                "warnings": _child_warnings,
                 "error": _err,
                 "exit_reason": "timeout" if is_timeout else "error",
                 "api_calls": child_api_calls,
@@ -1605,11 +2782,33 @@ def _run_single_child(
         entry: Dict[str, Any] = {
             "task_index": task_index,
             "status": status,
+            "goal": (goal or "").strip(),
             "summary": summary,
+            "subagent_id": _safe_subagent_id,
+            "parent_id": _child_parent_sid if isinstance(_child_parent_sid, str) else None,
+            "agent_id": _safe_agent_id,
+            "role": _safe_role,
             "api_calls": api_calls,
             "duration_seconds": duration,
             "model": _model if isinstance(_model, str) else None,
             "exit_reason": exit_reason,
+            "effective_toolsets": _safe_toolsets,
+            "blocked_tools": _safe_blocked,
+            "isolation": _child_isolation,
+            "warnings": _child_warnings,
+            "worktree_path": _worktree_info.get("worktree_path") if _child_isolation_mode == "worktree" else None,
+            "worktree_branch": _worktree_info.get("worktree_branch") if _child_isolation_mode == "worktree" else None,
+            "diff_summary": _cleanup_result.get("diff_summary", "") if _child_isolation_mode == "worktree" else None,
+            "transcript_path": _transcript_path,
+            "usage": {
+                "input_tokens": (
+                    _input_tokens if isinstance(_input_tokens, (int, float)) else 0
+                ),
+                "output_tokens": (
+                    _output_tokens if isinstance(_output_tokens, (int, float)) else 0
+                ),
+                "api_calls": api_calls,
+            },
             "tokens": {
                 "input": (
                     _input_tokens if isinstance(_input_tokens, (int, float)) else 0
@@ -1700,6 +2899,7 @@ def _run_single_child(
         )[:40]
 
         _output_tail = _extract_output_tail(result, max_entries=8, max_chars=600)
+        entry["output_tail"] = _output_tail
 
         complete_kwargs: Dict[str, Any] = {
             "preview": summary[:160] if summary else entry.get("error", ""),
@@ -1734,11 +2934,85 @@ def _run_single_child(
             except Exception as e:
                 logger.debug("Progress callback completion failed: %s", e)
 
+        # ── Phase C: Transcript recording ──────────────────────────────
+        _transcript_path: Optional[str] = None
+        if _parent_session_id and _subagent_id:
+            _tw = _write_transcript_event(
+                session_id=_parent_session_id,
+                subagent_id=_subagent_id,
+                event_type="final",
+                tool=None,
+                preview=summary[:500] if summary else entry.get("error", ""),
+                usage={
+                    "input_tokens": (
+                        int(_input_tokens) if isinstance(_input_tokens, (int, float)) else 0
+                    ),
+                    "output_tokens": (
+                        int(_output_tokens) if isinstance(_output_tokens, (int, float)) else 0
+                    ),
+                    "api_calls": int(api_calls) if isinstance(api_calls, (int, float)) else 0,
+                },
+                agent_id=_safe_agent_id,
+            )
+            if _tw:
+                _transcript_path = str(_tw)
+
+        # ── Phase A: subagent lifecycle event ─────────────────────────
+        _child_api_calls = entry.get("api_calls", 0)
+        _child_tokens = entry.get("tokens", {})
+        if status == "interrupted":
+            _try_log_subagent_event(
+                "interrupted",
+                subagent_id=_subagent_id,
+                parent_id=_child_parent_sid if isinstance(_child_parent_sid, str) else None,
+                agent_id=_child_agent_id,
+                role=_child_role,
+                task_id=_parent_task_id,
+                session_id=_parent_session_id,
+                reason=entry.get("error", "Interrupted"),
+            )
+        elif status == "failed":
+            _try_log_subagent_event(
+                "failed",
+                subagent_id=_subagent_id,
+                parent_id=_child_parent_sid if isinstance(_child_parent_sid, str) else None,
+                agent_id=_child_agent_id,
+                role=_child_role,
+                task_id=_parent_task_id,
+                session_id=_parent_session_id,
+                error=entry.get("error", "Subagent did not produce a response."),
+            )
+        else:
+            _try_log_subagent_event(
+                "completed",
+                subagent_id=_subagent_id,
+                parent_id=_child_parent_sid if isinstance(_child_parent_sid, str) else None,
+                agent_id=_safe_agent_id,
+                role=_safe_role,
+                task_id=_parent_task_id,
+                session_id=_parent_session_id,
+                status=status,
+                duration_seconds=duration,
+                api_calls=_child_api_calls,
+                tokens=_child_tokens,
+                transcript_path=_transcript_path,
+            )
+
         return entry
 
     except Exception as exc:
         duration = round(time.monotonic() - child_start, 2)
         logging.exception(f"[subagent-{task_index}] failed")
+        _try_log_subagent_event(
+            "failed",
+            subagent_id=_subagent_id,
+            parent_id=_child_parent_sid if isinstance(_child_parent_sid, str) else None,
+            agent_id=_child_agent_id,
+            role=_child_role,
+            task_id=_parent_task_id,
+            session_id=_parent_session_id,
+            error=str(exc),
+        )
         if child_progress_cb:
             try:
                 child_progress_cb(
@@ -1761,6 +3035,24 @@ def _run_single_child(
         }
 
     finally:
+        # ── Phase C: Worktree cleanup ──────────────────────────────────
+        _wt_path = _worktree_info.get("worktree_path")
+        _wt_head = _worktree_info.get("original_head")
+        # _cleanup_result is initialized before the try block; update it here
+        if _wt_path and _wt_head:
+            try:
+                _cleanup_result = _cleanup_worktree(_wt_path, _wt_head)
+            except Exception as exc:
+                logger.warning("Worktree cleanup failed: %s", exc)
+                _cleanup_result = {"reason": str(exc), "kept": True}
+            # Unregister task env overrides
+            if _subagent_id:
+                try:
+                    from tools.terminal_tool import clear_task_env_overrides
+                    clear_task_env_overrides(_subagent_id)
+                except Exception:
+                    pass
+
         # Stop the heartbeat thread so it doesn't keep touching parent activity
         # after the child has finished (or failed).
         _heartbeat_stop.set()
@@ -1818,6 +3110,10 @@ def delegate_task(
     acp_command: Optional[str] = None,
     acp_args: Optional[List[str]] = None,
     role: Optional[str] = None,
+    agent_id: Optional[str] = None,
+    blocked_tools: Optional[List[str]] = None,
+    isolation: Optional[str] = None,
+    run_in_background: bool = False,
     parent_agent=None,
 ) -> str:
     """
@@ -1832,10 +3128,36 @@ def delegate_task(
     toolset and can spawn its own workers, bounded by
     delegation.max_spawn_depth.  Per-task role beats the top-level one.
 
+    NEW (Phase A): agent_id loads a named profile from agent-registry.json.
+    agent_id and role are mutually exclusive. blocked_tools can only add to
+    the profile's blocked list, never subtract.
+
+    NEW (Phase B): isolation='readonly' strips write tools. isolation='worktree'
+    returns an error (not yet implemented). run_in_background=True returns
+    immediately with status='running' and a subagent_id for later status queries.
+
     Returns JSON with results array, one entry per task.
     """
     if parent_agent is None:
         return tool_error("delegate_task requires a parent agent context.")
+
+    # ── Phase A: agent_id / role mutual exclusion ──────────────────────
+    if agent_id and role:
+        return tool_error(
+            "'agent_id' and 'role' are mutually exclusive. "
+            "Use agent_id for named subagents (registry profile), "
+            "or role for legacy leaf/orchestrator behavior."
+        )
+
+    # ── Phase A: resolve agent_id profile ──────────────────────────────
+    _resolved_agent_config: Optional[dict] = None
+    _resolved_profile: Optional[dict] = None
+    _requested_isolation: Optional[str] = isolation
+    if agent_id:
+        try:
+            _resolved_agent_config, _resolved_profile = _load_subagent_profile(agent_id)
+        except ValueError as exc:
+            return tool_error(str(exc))
 
     # Operator-controlled kill switch — lets the TUI freeze new fan-out
     # when a runaway tree is detected, without interrupting already-running
@@ -1910,6 +3232,12 @@ def delegate_task(
     else:
         return tool_error("Provide either 'goal' (single task) or 'tasks' (batch).")
 
+    if run_in_background and len(task_list) > 1:
+        return tool_error(
+            "run_in_background is only supported for single-task delegation. "
+            "Use separate delegate_task calls for multiple background tasks."
+        )
+
     if not task_list:
         return tool_error("No tasks provided.")
 
@@ -1942,6 +3270,23 @@ def delegate_task(
             # Per-task role beats top-level; normalise again so unknown
             # per-task values warn and degrade to leaf uniformly.
             effective_role = _normalize_role(t.get("role") or top_role)
+            # Per-task agent_id — batch mode: each task can specify its own agent
+            task_agent_id = t.get("agent_id") if "agent_id" in t else None
+            effective_agent_id = task_agent_id or agent_id  # per-task beats top-level
+            task_agent_config = None
+            task_profile = None
+            if effective_agent_id:
+                try:
+                    task_agent_config, task_profile = _load_subagent_profile(effective_agent_id)
+                except ValueError:
+                    pass  # fall through: per-task profile load failure → skip agent_id path
+            # Per-task blocked_tools — can only add to profile blocked
+            task_blocked = t.get("blocked_tools") if "blocked_tools" in t else None
+            effective_blocked = (
+                (blocked_tools or []) + (task_blocked or [])
+                if (blocked_tools or task_blocked)
+                else None
+            ) or None
             child = _build_child_agent(
                 task_index=i,
                 goal=t["goal"],
@@ -1964,6 +3309,13 @@ def delegate_task(
                     else (acp_args if acp_args is not None else creds.get("args"))
                 ),
                 role=effective_role,
+                agent_id=effective_agent_id,
+                agent_config=task_agent_config or _resolved_agent_config,
+                profile=task_profile or _resolved_profile,
+                requested_blocked_tools=effective_blocked,
+                requested_isolation=t.get("isolation") if "isolation" in t else _requested_isolation,
+                profile_isolation=((task_profile or _resolved_profile) or {}).get("isolation") if (task_profile or _resolved_profile) else None,
+                profile_permission_mode=((task_profile or _resolved_profile) or {}).get("permission_mode") if (task_profile or _resolved_profile) else None,
             )
             # Override with correct parent tool names (before child construction mutated global)
             child._delegate_saved_tool_names = _parent_tool_names
@@ -1972,11 +3324,47 @@ def delegate_task(
         # Authoritative restore: reset global to parent's tool names after all children built
         _model_tools._last_resolved_tool_names = _parent_tool_names
 
+    # ── Phase B: isolation error check ──────────────────────────────────
+    for _i, _t, child in children:
+        iso_err = getattr(child, "_subagent_isolation_error", None)
+        if iso_err:
+            return tool_error(iso_err)
+
     if n_tasks == 1:
-        # Single task -- run directly (no thread pool overhead)
         _i, _t, child = children[0]
-        result = _run_single_child(0, _t["goal"], child, parent_agent)
-        results.append(result)
+        if run_in_background:
+            # ── Phase C+: Background execution ────────────────────────
+            _sid = getattr(child, "_subagent_id", None)
+            _bg_executor = _get_background_executor()
+
+            def _bg_run(c, g, p):
+                try:
+                    r = _run_single_child(0, g, c, p)
+                except Exception as exc:
+                    logger.exception("Background subagent crashed: %s", exc)
+                    r = {
+                        "task_index": 0, "status": "error",
+                        "subagent_id": getattr(c, "_subagent_id", None),
+                        "error": f"background subagent crashed: {exc}",
+                    }
+                sid = getattr(c, "_subagent_id", None)
+                key = sid if isinstance(sid, str) else f"unknown-{time.time()}"
+                with _background_results_lock:
+                    _background_results[key] = r
+
+            _bg_executor.submit(_bg_run, child, _t["goal"], parent_agent)
+            results.append({
+                "task_index": 0,
+                "status": "running",
+                "subagent_id": _sid if isinstance(_sid, str) else None,
+                "goal": (_t["goal"] or "").strip(),
+                "summary": "Background subagent started. Use get_subagent_status() to monitor.",
+                "isolation": getattr(child, "_subagent_isolation", "shared") or "shared",
+                "duration_seconds": 0,
+            })
+        else:
+            result = _run_single_child(0, _t["goal"], child, parent_agent)
+            results.append(result)
     else:
         # Batch -- run in parallel with per-task progress lines
         completed_count = 0
@@ -2230,11 +3618,17 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     """Resolve credentials for subagent delegation.
 
     If ``delegation.base_url`` is configured, subagents use that direct
-    OpenAI-compatible endpoint. Otherwise, if ``delegation.provider`` is
-    configured, the full credential bundle (base_url, api_key, api_mode,
-    provider) is resolved via the runtime provider system — the same path used
-    by CLI/gateway startup. This lets subagents run on a completely different
-    provider:model pair.
+    OpenAI-compatible endpoint. ``delegation.api_key`` overrides the key; when
+    omitted, ``api_key`` is returned as ``None`` so ``_build_child_agent``
+    inherits the parent agent's key (``effective_api_key = override_api_key or
+    parent_api_key``). This lets providers that store their key outside
+    ``OPENAI_API_KEY`` (e.g. ``MINIMAX_API_KEY``, ``DASHSCOPE_API_KEY``) work
+    without a duplicate config entry.
+
+    Otherwise, if ``delegation.provider`` is configured, the full credential
+    bundle (base_url, api_key, api_mode, provider) is resolved via the runtime
+    provider system — the same path used by CLI/gateway startup. This lets
+    subagents run on a completely different provider:model pair.
 
     If neither base_url nor provider is configured, returns None values so the
     child inherits everything from the parent agent.
@@ -2247,12 +3641,13 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     configured_api_key = str(cfg.get("api_key") or "").strip() or None
 
     if configured_base_url:
-        api_key = configured_api_key or os.getenv("OPENAI_API_KEY", "").strip()
-        if not api_key:
-            raise ValueError(
-                "Delegation base_url is configured but no API key was found. "
-                "Set delegation.api_key or OPENAI_API_KEY."
-            )
+        # When delegation.api_key is not set, return None so _build_child_agent
+        # falls back to the parent agent's API key via the credential inheritance
+        # path (effective_api_key = override_api_key or parent_api_key). This
+        # lets providers that store their key in a non-OPENAI_API_KEY env var
+        # (e.g. MINIMAX_API_KEY, DASHSCOPE_API_KEY) work without requiring
+        # callers to duplicate the key under delegation.api_key.
+        api_key = configured_api_key  # None → inherited from parent in _build_child_agent
 
         base_lower = configured_base_url.lower()
         provider = "custom"
@@ -2292,7 +3687,7 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     try:
         from hermes_cli.runtime_provider import resolve_runtime_provider
 
-        runtime = resolve_runtime_provider(requested=configured_provider)
+        runtime = resolve_runtime_provider(requested=configured_provider, target_model=configured_model)
     except Exception as exc:
         raise ValueError(
             f"Cannot resolve delegation provider '{configured_provider}': {exc}. "
@@ -2309,7 +3704,7 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
         )
 
     return {
-        "model": configured_model,
+        "model": configured_model or runtime.get("model") or None,
         "provider": runtime.get("provider"),
         "base_url": runtime.get("base_url"),
         "api_key": api_key,
@@ -2330,7 +3725,7 @@ def _load_config() -> dict:
     try:
         from cli import CLI_CONFIG
 
-        cfg = CLI_CONFIG.get("delegation", {})
+        cfg = CLI_CONFIG.get("delegation") or {}
         if cfg:
             return cfg
     except Exception:
@@ -2339,7 +3734,7 @@ def _load_config() -> dict:
         from hermes_cli.config import load_config
 
         full = load_config()
-        return full.get("delegation", {})
+        return full.get("delegation") or {}
     except Exception:
         return {}
 
@@ -2355,10 +3750,33 @@ DELEGATE_TASK_SCHEMA = {
         "Each subagent gets its own conversation, terminal session, and toolset. "
         "Only the final summary is returned -- intermediate tool results "
         "never enter your context window.\n\n"
+        "NAMED AGENTS (use agent_id — PREFERRED over role/toolsets):\n"
+        "- agent_id='kimi' — Deprecated/manual only. Kimi CLI may be unavailable; "
+        "do NOT use for default research unless the user explicitly asks for Kimi.\n"
+        "- agent_id='claude' — Code modification, script execution, git ops, file editing. "
+        "Has 'file'+'terminal' toolsets. Use when the user says \"用 claude\", "
+        "\"让 claude 改代码\", or needs to write/edit files or run commands.\n"
+        "- agent_id='codex' — Codex CLI coding executor / code review backup. "
+        "Use when the user says \"用 codex\" or wants Codex-style implementation/review.\n"
+        "- agent_id='openclaw' — External desktop operator backed by OpenClaw "
+        "(zai/GLM-5-Turbo). Use for macOS desktop control, screenshots, app operations.\n"
+        "- agent_id='hermes-internal' — Analysis, decision making, planning. "
+        "Has 'file' toolset, read-only. Use for strategy judgments and design decisions.\n"
+        "- agent_id='deepseek-worker' — Background execution, polling, file ops. "
+        "Async-only worker for long-running background tasks.\n\n"
+        "CRITICAL RULE — When to use agent_id:\n"
+        "If the user's request contains ANY of these patterns, you MUST use agent_id:\n"
+        "- \"用 kimi\" / \"用 claude\" / \"用 codex\" / \"用 openclaw\" / \"用 hermes\" → matching agent_id\n"
+        "- \"派 kimi\" / \"让 kimi\" / \"叫 kimi\" → agent_id='kimi'\n"
+        "- \"agent_id=kimi\" / \"agent_id=claude\" / \"agent_id=codex\" → matching agent_id\n"
+        "- \"kimi 搜索\" / \"kimi 查\" / \"kimi 读\" → agent_id='kimi'\n"
+        "- \"claude 改\" / \"claude 写\" / \"claude 执行\" → agent_id='claude'\n"
+        "- \"codex 审\" / \"codex 改\" / \"codex 实现\" → agent_id='codex'\n"
+        "- \"桌面\" / \"截图\" / \"打开 App\" / \"点击\" / \"输入\" with OpenClaw mentioned → agent_id='openclaw'\n"
+        "- User mentions a specific agent name → use agent_id, do NOT use role+toolsets\n\n"
         "TWO MODES (one of 'goal' or 'tasks' is required):\n"
         "1. Single task: provide 'goal' (+ optional context, toolsets)\n"
-        "2. Batch (parallel): provide 'tasks' array with up to delegation.max_concurrent_children items (default 3, configurable via config.yaml, no hard ceiling). "
-        "All run concurrently and results are returned together. Nested delegation requires role='orchestrator' and delegation.max_spawn_depth >= 2.\n\n"
+        "2. Batch (parallel): provide 'tasks' array. Nested delegation requires role='orchestrator' and delegation.max_spawn_depth >= 2.\n\n"
         "WHEN TO USE delegate_task:\n"
         "- Reasoning-heavy subtasks (debugging, code review, research synthesis)\n"
         "- Tasks that would flood your context with intermediate data\n"
@@ -2367,38 +3785,21 @@ DELEGATE_TASK_SCHEMA = {
         "- Mechanical multi-step work with no reasoning needed -> use execute_code\n"
         "- Single tool call -> just call the tool directly\n"
         "- Tasks needing user interaction -> subagents cannot use clarify\n"
-        "- Durable long-running work that must outlive the current turn -> "
-        "use cronjob (action='create') or terminal(background=True, "
-        "notify_on_complete=True) instead. delegate_task runs SYNCHRONOUSLY "
-        "inside the parent turn: if the parent is interrupted (user sends a "
-        "new message, /stop, /new) the child is cancelled with status="
-        "'interrupted' and its work is discarded. Children cannot continue "
-        "in the background.\n\n"
+        "- Durable long-running work -> use cronjob or terminal(background=True)\n\n"
         "IMPORTANT:\n"
         "- Subagents have NO memory of your conversation. Pass all relevant "
         "info (file paths, error messages, constraints) via the 'context' field.\n"
-        "- If the user is writing in a non-English language, or asked for "
-        "output in a specific language / tone / style, say so in 'context' "
-        "(e.g. \"respond in Chinese\", \"return output in Japanese\"). "
-        "Otherwise subagents default to English and their summaries will "
-        "contaminate your final reply with the wrong language.\n"
-        "- Subagent summaries are SELF-REPORTS, not verified facts. A subagent "
-        "that claims \"uploaded successfully\" or \"file written\" may be wrong. "
-        "For operations with external side-effects (HTTP POST/PUT, remote "
-        "writes, file creation at shared paths, publishing), require the "
-        "subagent to return a verifiable handle (URL, ID, absolute path, HTTP "
-        "status) and verify it yourself — fetch the URL, stat the file, read "
-        "back the content — before telling the user the operation succeeded.\n"
+        "- Always set 'context' to include the user's language preference "
+        "(e.g. \"respond in Chinese\") to prevent subagent language mismatch.\n"
+        "- Subagent summaries are SELF-REPORTS, not verified facts.\n"
         "- Leaf subagents (role='leaf', the default) CANNOT call: "
         "delegate_task, clarify, memory, send_message, execute_code.\n"
         "- Orchestrator subagents (role='orchestrator') retain "
-        "delegate_task so they can spawn their own workers, but still "
-        "cannot use clarify, memory, send_message, or execute_code. "
-        "Orchestrators are bounded by delegation.max_spawn_depth "
-        "(default 2) and can be disabled globally via "
-        "delegation.orchestrator_enabled=false.\n"
+        "delegate_task so they can spawn their own workers.\n"
         "- Each subagent gets its own terminal session (separate working directory and state).\n"
-        "- Results are always returned as an array, one entry per task."
+        "- Results are always returned as an array, one entry per task.\n"
+        "- agent_id and role are MUTUALLY EXCLUSIVE. When user names a specific "
+        "agent (kimi, claude, etc.), always use agent_id, never role."
     ),
     "parameters": {
         "type": "object",
@@ -2448,7 +3849,7 @@ DELEGATE_TASK_SCHEMA = {
                         },
                         "acp_command": {
                             "type": "string",
-                            "description": "Per-task ACP command override (e.g. 'claude'). Overrides the top-level acp_command for this task only.",
+                            "description": "Per-task ACP command override (e.g. 'copilot'). Overrides the top-level acp_command for this task only.",
                         },
                         "acp_args": {
                             "type": "array",
@@ -2459,6 +3860,11 @@ DELEGATE_TASK_SCHEMA = {
                             "type": "string",
                             "enum": ["leaf", "orchestrator"],
                             "description": "Per-task role override. See top-level 'role' for semantics.",
+                        },
+                        "agent_id": {
+                            "type": "string",
+                            "enum": ["kimi", "claude", "codex", "openclaw", "hermes-internal", "deepseek-worker"],
+                            "description": "Per-task agent override. When set, this specific task uses the named agent's profile. In batch mode, each task can be routed to a different agent.",
                         },
                     },
                     "required": ["goal"],
@@ -2476,22 +3882,77 @@ DELEGATE_TASK_SCHEMA = {
                 "type": "string",
                 "enum": ["leaf", "orchestrator"],
                 "description": (
-                    "Role of the child agent. 'leaf' (default) = focused "
-                    "worker, cannot delegate further. 'orchestrator' = can "
-                    "use delegate_task to spawn its own workers. Requires "
-                    "delegation.max_spawn_depth >= 2 in config; ignored "
-                    "(treated as 'leaf') when the child would exceed "
-                    "max_spawn_depth or when "
-                    "delegation.orchestrator_enabled=false."
+                    "ONLY use when the user does NOT specify a named agent. "
+                    "'leaf' (default) = worker, cannot further delegate. "
+                    "'orchestrator' = can spawn its own workers. Requires "
+                    "delegation.max_spawn_depth >= 2. "
+                    "If the user mentions kimi/claude/codex/openclaw/hermes/deepseek, "
+                    "use agent_id instead — do NOT use role."
+                ),
+            },
+            "agent_id": {
+                "type": "string",
+                "enum": ["kimi", "claude", "codex", "openclaw", "hermes-internal", "deepseek-worker"],
+                "description": (
+                    "WHEN TO USE: User mentions a specific agent name (\"用 kimi\", "
+                    "\"派 claude\", \"用 codex\", \"用 openclaw\", \"agent_id=kimi\"). "
+                    "This is the PREFERRED way to delegate — each agent has a "
+                    "pre-configured profile with the right toolsets, permissions, "
+                    "and isolation mode. ALWAYS use agent_id when the user names "
+                    "an agent. NEVER translate an agent name into role+toolsets.\n\n"
+                    "AGENTS:\n"
+                    "- 'kimi': deprecated/manual-only web research; Kimi CLI may be unavailable\n"
+                    "- 'claude': code editing & command execution (tools: file+terminal)\n"
+                    "- 'codex': Codex CLI coding executor and code review backup\n"
+                    "- 'openclaw': external desktop operator for macOS/app/screenshot tasks\n"
+                    "- 'hermes-internal': analysis & decision making (tools: file, readonly)\n"
+                    "- 'deepseek-worker': background tasks & polling (tools: file)\n\n"
+                    "Mutually exclusive with 'role'. When agent_id is set, "
+                    "toolsets/blocked_tools/isolation are auto-configured from "
+                    "the registry profile — do not set them manually."
+                ),
+            },
+            "blocked_tools": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "Additional tools to block for this subagent (can only add, "
+                    "never subtract from the profile's blocked list). "
+                    "Use when the registry profile is nearly right but needs "
+                    "one extra tool blocked for this specific call."
+                ),
+            },
+            "isolation": {
+                "type": "string",
+                "enum": ["shared", "readonly", "worktree"],
+                "description": (
+                    "Subagent isolation mode. 'shared' (default) shares the "
+                    "parent's workspace. 'readonly' strips all write-capable "
+                    "tools (write_file, patch, terminal, process). "
+                    "'worktree' is not yet implemented — returns an error. "
+                    "When permission_mode is 'read_only' in the registry profile, "
+                    "readonly isolation is automatically enabled."
+                ),
+            },
+            "run_in_background": {
+                "type": "boolean",
+                "description": (
+                    "When true, the subagent runs asynchronously in a background "
+                    "thread. The parent returns immediately with status='running' "
+                    "and a subagent_id. Use get_subagent_status(subagent_id) to "
+                    "monitor progress and get_subagent_result(subagent_id) to "
+                    "retrieve the final result. Only supported for single-task "
+                    "delegation (not batch mode)."
                 ),
             },
             "acp_command": {
                 "type": "string",
                 "description": (
-                    "Override ACP command for child agents (e.g. 'claude', 'copilot'). "
+                    "Override ACP command for child agents (e.g. 'copilot'). "
                     "When set, children use ACP subprocess transport instead of inheriting "
-                    "the parent's transport. Enables spawning Claude Code (claude --acp --stdio) "
-                    "or other ACP-capable agents from any parent, including Discord/Telegram/CLI."
+                    "the parent's transport. Requires an ACP-compatible CLI "
+                    "(currently GitHub Copilot CLI via 'copilot --acp --stdio'). "
+                    "See agent/copilot_acp_client.py for the implementation."
                 ),
             },
             "acp_args": {
@@ -2499,13 +3960,74 @@ DELEGATE_TASK_SCHEMA = {
                 "items": {"type": "string"},
                 "description": (
                     "Arguments for the ACP command (default: ['--acp', '--stdio']). "
-                    "Only used when acp_command is set. Example: ['--acp', '--stdio', '--model', 'claude-opus-4-6']"
+                    "Only used when acp_command is set."
                 ),
             },
         },
         "required": [],
     },
 }
+
+
+# ---------------------------------------------------------------------------
+# Delegation guidance for the parent agent's system prompt
+# ---------------------------------------------------------------------------
+
+
+def get_delegation_guidance() -> str:
+    """Return system prompt text instructing the model when and how to delegate.
+
+    Reads available agents from agent-registry.json to keep the guidance
+    in sync with the actual registry.
+    """
+    try:
+        registry = _load_agent_registry()
+        agents = registry.get("agents", {})
+    except Exception:
+        agents = {}
+
+    agent_lines = []
+    for aid, cfg in agents.items():
+        profile = cfg.get("subagent_profile", {})
+        caps = cfg.get("capabilities", [])
+        cap_str = ", ".join(caps[:4]) if caps else "general"
+        toolsets = profile.get("toolsets", [])
+        ts_str = ", ".join(toolsets) if toolsets else "inherited"
+        agent_lines.append(
+            f"  - agent_id='{aid}': {cfg.get('type', 'worker')} — "
+            f"capabilities=[{cap_str}], tools=[{ts_str}]"
+        )
+
+    agent_list = "\n".join(agent_lines) if agent_lines else (
+        "  - agent_id='kimi': deprecated/manual-only research; Kimi CLI may be unavailable\n"
+        "  - agent_id='claude': code editing & commands (tools: file+terminal)\n"
+        "  - agent_id='codex': Codex CLI coding executor and code review backup\n"
+        "  - agent_id='openclaw': external desktop operator for macOS/app/screenshot tasks\n"
+        "  - agent_id='hermes-internal': analysis & planning (tools: file, readonly)"
+    )
+
+    return (
+        "## Subagent Delegation (delegate_task)\n"
+        "You have access to delegate_task with pre-configured named agents. "
+        "Each agent has a specific profile with the right toolsets, permissions, "
+        "and isolation mode pre-set.\n\n"
+        "**CRITICAL — When user mentions an agent name, you MUST use delegate_task "
+        "with the agent_id parameter:**\n"
+        "- \"用 kimi\" / \"让 kimi\" / \"派 kimi\" → delegate_task(agent_id='kimi', goal=...) only when explicitly requested\n"
+        "- \"用 claude\" / \"让 claude\" / \"派 claude\" → delegate_task(agent_id='claude', goal=...)\n"
+        "- \"用 codex\" / \"让 codex\" / \"agent_id=codex\" → delegate_task(agent_id='codex', goal=...)\n"
+        "- \"用 openclaw\" / \"让 openclaw\" / \"agent_id=openclaw\" → delegate_task(agent_id='openclaw', goal=...)\n"
+        "- \"agent_id=kimi\" or \"agent_id=claude\" → delegate_task(agent_id=..., goal=...)\n\n"
+        "**Available agents:**\n"
+        f"{agent_list}\n\n"
+        "**Key rules:**\n"
+        "1. Kimi is deprecated/manual-only; do not use it as the default research route.\n"
+        "2. When the user names claude/codex/openclaw, use the matching agent_id.\n"
+        "3. agent_id and role are mutually exclusive. Use agent_id, not role.\n"
+        "4. Never translate a user's agent request into manual toolsets+role.\n"
+        "5. Set 'context' to include the user's language preference.\n"
+        "6. Treat OpenClaw as an external desktop operator; verify desktop results with screenshots or command output."
+    )
 
 
 # --- Registry ---
@@ -2524,6 +4046,10 @@ registry.register(
         acp_command=args.get("acp_command"),
         acp_args=args.get("acp_args"),
         role=args.get("role"),
+        agent_id=args.get("agent_id"),
+        blocked_tools=args.get("blocked_tools"),
+        isolation=args.get("isolation"),
+        run_in_background=args.get("run_in_background", False),
         parent_agent=kw.get("parent_agent"),
     ),
     check_fn=check_delegate_requirements,

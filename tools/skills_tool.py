@@ -100,7 +100,7 @@ _PLATFORM_MAP = {
     "windows": "win32",
 }
 _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-_EXCLUDED_SKILL_DIRS = frozenset((".git", ".github", ".hub"))
+_EXCLUDED_SKILL_DIRS = frozenset((".git", ".github", ".hub", ".archive"))
 _REMOTE_ENV_BACKENDS = frozenset(
     {"docker", "singularity", "modal", "ssh", "daytona", "vercel_sandbox"}
 )
@@ -605,11 +605,20 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
                 category = _get_category_from_path(skill_md)
 
                 seen_names.add(name)
-                skills.append({
+                # Hermes 2.8: extract trust/permission manifest
+                from agent.skill_utils import parse_skill_manifest, check_skill_permission_risk
+                manifest = parse_skill_manifest(frontmatter)
+                skill_entry = {
                     "name": name,
                     "description": description,
                     "category": category,
-                })
+                    "trust": manifest.get("trust", "installed"),
+                    "permissions": manifest.get("permissions", {}),
+                }
+                risks = check_skill_permission_risk(manifest)
+                if risks:
+                    skill_entry["permission_risks"] = risks
+                skills.append(skill_entry)
 
             except (UnicodeDecodeError, PermissionError) as e:
                 logger.debug("Failed to read skill file %s: %s", skill_md, e)
@@ -868,6 +877,7 @@ def skill_view(
         JSON string with skill content or error message
     """
     try:
+        local_category_name: str | None = None
         # ── Qualified name dispatch (plugin skills) ──────────────────
         # Names containing ':' are routed to the plugin skill registry.
         # Bare names fall through to the existing flat-tree scan below.
@@ -928,8 +938,12 @@ def skill_view(
                     },
                     ensure_ascii=False,
                 )
-            # Plugin itself not found — fall through to flat-tree scan
-            # which will return a normal "not found" with suggestions.
+            # Plugin itself not found — fall through to flat-tree scan.
+            # Categorized local skills also use `category:skill` in config and
+            # gateway prompts, so preserve that form and translate it to the
+            # on-disk `category/skill` path during the local scan below.
+            if bare:
+                local_category_name = f"{namespace}/{bare}"
 
         from agent.skill_utils import get_external_skills_dirs
 
@@ -962,6 +976,15 @@ def skill_view(
             elif direct_path.with_suffix(".md").exists():
                 skill_md = direct_path.with_suffix(".md")
                 break
+            if local_category_name:
+                categorized_path = search_dir / local_category_name
+                if categorized_path.is_dir() and (categorized_path / "SKILL.md").exists():
+                    skill_dir = categorized_path
+                    skill_md = categorized_path / "SKILL.md"
+                    break
+                elif categorized_path.with_suffix(".md").exists():
+                    skill_md = categorized_path.with_suffix(".md")
+                    break
 
         # Search by directory name across all dirs
         if not skill_md:
@@ -1497,8 +1520,12 @@ def _skill_view_with_bump(args, **kw):
             # qualified forms ("plugin:skill") return with the canonical name.
             resolved = parsed.get("name") or name
             if resolved:
-                from tools.skill_usage import bump_view
+                from tools.skill_usage import bump_use, bump_view
                 bump_view(str(resolved))
+                # A skill_view tool call is the agent actively loading the skill
+                # to act on it — that counts as use, not just a browse/view.
+                # Curator's stale timer keys off last_used_at (see agent/curator.py).
+                bump_use(str(resolved))
     except Exception:
         pass
     return result
@@ -1512,3 +1539,4 @@ registry.register(
     check_fn=check_skills_requirements,
     emoji="📚",
 )
+

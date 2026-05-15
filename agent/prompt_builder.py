@@ -16,9 +16,11 @@ from hermes_constants import get_hermes_home, get_skills_dir, is_wsl
 from typing import Optional
 
 from agent.skill_utils import (
+    extract_skill_agents,
     extract_skill_conditions,
     extract_skill_description,
     get_all_skills_dirs,
+    get_agent_profile_skills,
     get_disabled_skill_names,
     iter_skill_index_files,
     parse_frontmatter,
@@ -147,6 +149,18 @@ HERMES_AGENT_HELP_GUIDANCE = (
     "before answering. Docs: https://hermes-agent.nousresearch.com/docs"
 )
 
+# P2: Main-agent whitelist — only these skills are loaded for agent_id="hermes"
+HERMES_CORE_SKILLS: frozenset[str] = frozenset({
+    "hermes-knowledge-architecture",
+    "hermes-cron-management",
+    "hermes-subagent-delegation",
+    "hermes-gateway-debug",
+    "hermes-multi-agent-research",
+    "hermes-webui",
+    "hermes-agent-skill-authoring",
+    "office-hours",
+})
+
 MEMORY_GUIDANCE = (
     "You have persistent memory across sessions. Save durable facts using the memory "
     "tool: user preferences, environment details, tool quirks, and stable conventions. "
@@ -180,6 +194,64 @@ SKILLS_GUIDANCE = (
     "When using a skill and finding it outdated, incomplete, or wrong, "
     "patch it immediately with skill_manage(action='patch') — don't wait to be asked. "
     "Skills that aren't maintained become liabilities."
+)
+
+KANBAN_GUIDANCE = (
+    "# Kanban task execution protocol\n"
+    "You have been assigned ONE task from "
+    "the shared board at `~/.hermes/kanban.db`. Your task id is in "
+    "`$HERMES_KANBAN_TASK`; your workspace is `$HERMES_KANBAN_WORKSPACE`. "
+    "The `kanban_*` tools in your schema are your primary coordination surface — "
+    "they write directly to the shared SQLite DB and work regardless of terminal "
+    "backend (local/docker/modal/ssh).\n"
+    "\n"
+    "## Lifecycle\n"
+    "\n"
+    "1. **Orient.** Call `kanban_show()` first (no args — it defaults to your "
+    "task). The response includes title, body, parent-task handoffs (summary + "
+    "metadata), any prior attempts on this task if you're a retry, the full "
+    "comment thread, and a pre-formatted `worker_context` you can treat as "
+    "ground truth.\n"
+    "2. **Work inside the workspace.** `cd $HERMES_KANBAN_WORKSPACE` before "
+    "any file operations. The workspace is yours for this run. Don't modify "
+    "files outside it unless the task explicitly asks.\n"
+    "3. **Heartbeat on long operations.** Call `kanban_heartbeat(note=...)` "
+    "every few minutes during long subprocesses (training, encoding, crawling). "
+    "Skip heartbeats for short tasks.\n"
+    "4. **Block on genuine ambiguity.** If you need a human decision you cannot "
+    "infer (missing credentials, UX choice, paywalled source, peer output you "
+    "need first), call `kanban_block(reason=\"...\")` and stop. Don't guess. "
+    "The user will unblock with context and the dispatcher will respawn you.\n"
+    "5. **Complete with structured handoff.** Call `kanban_complete(summary=..., "
+    "metadata=...)`. `summary` is 1–3 human-readable sentences naming concrete "
+    "artifacts. `metadata` is machine-readable facts "
+    "(`{changed_files: [...], tests_run: N, decisions: [...]}`). Downstream "
+    "workers read both via their own `kanban_show`. Never put secrets / "
+    "tokens / raw PII in either field — run rows are durable forever.\n"
+    "6. **If follow-up work appears, create it; don't do it.** Use "
+    "`kanban_create(title=..., assignee=<right-profile>, parents=[your-task-id])` "
+    "to spawn a child task for the appropriate specialist profile instead of "
+    "scope-creeping into the next thing.\n"
+    "\n"
+    "## Orchestrator mode\n"
+    "\n"
+    "If your task is itself a decomposition task (e.g. a planner profile given "
+    "a high-level goal), use `kanban_create` to fan out into child tasks — one "
+    "per specialist, each with an explicit `assignee` and `parents=[...]` to "
+    "express dependencies. Then `kanban_complete` your own task with a summary "
+    "of the decomposition. Do NOT execute the work yourself; your job is "
+    "routing, not implementation.\n"
+    "\n"
+    "## Do NOT\n"
+    "\n"
+    "- Do not shell out to `hermes kanban <verb>` for board operations. Use "
+    "the `kanban_*` tools — they work across all terminal backends.\n"
+    "- Do not complete a task you didn't actually finish. Block it.\n"
+    "- Do not assign follow-up work to yourself. Assign it to the right "
+    "specialist profile.\n"
+    "- Do not call `delegate_task` as a board substitute. `delegate_task` is "
+    "for short reasoning subtasks inside your own run; board tasks are for "
+    "cross-agent handoffs that outlive one API loop."
 )
 
 TOOL_USE_ENFORCEMENT_GUIDANCE = (
@@ -455,6 +527,12 @@ PLATFORM_HINTS = {
         "image and is the WRONG path. Bare Unicode emoji in text is also not a substitute "
         "— when a sticker is the right response, use yb_send_sticker."
     ),
+    "api_server": (
+        "You're responding through an API server. The rendering layer is unknown — "
+        "assume plain text. No markdown formatting (no asterisks, bullets, headers, "
+        "code fences). Treat this like a conversation, not a document. Keep responses "
+        "brief and natural."
+    ),
 }
 
 # ---------------------------------------------------------------------------
@@ -651,9 +729,29 @@ def _skill_should_show(
     return True
 
 
+def _skill_matches_agent(
+    frontmatter_name: str,
+    category: str,
+    agent_id: str | None,
+    agent_profile_skills: set[str] | None,
+) -> bool:
+    """方案 A bidirectional lock: skill is shown to agent_id only when
+    the agent's registry profile lists this skill in its ``skills`` array.
+
+    When *agent_id* is None (main agent without whitelist) or either side
+    has empty/no filtering, the skill passes (backward compatible).
+    """
+    if agent_id is None:
+        return True  # No scoping — show everything
+    if agent_profile_skills is None:
+        return True  # No agent-side filtering — show everything
+    return frontmatter_name in agent_profile_skills
+
+
 def build_skills_system_prompt(
     available_tools: "set[str] | None" = None,
     available_toolsets: "set[str] | None" = None,
+    agent_id: "str | None" = None,
 ) -> str:
     """Build a compact skill index for the system prompt.
 
@@ -685,6 +783,17 @@ def build_skills_system_prompt(
         or ""
     )
     disabled = get_disabled_skill_names()
+
+    # ── Agent-scoped skill filtering ──────────────────────────────
+    agent_profile_skills: set[str] | None = None
+    if agent_id is not None:
+        profile_skills = get_agent_profile_skills(agent_id)
+        if profile_skills:
+            agent_profile_skills = set(profile_skills)
+        # P2: Main-agent whitelist — agent_id="hermes" only loads core skills
+        if agent_id == "hermes":
+            agent_profile_skills = HERMES_CORE_SKILLS
+
     cache_key = (
         str(skills_dir.resolve()),
         tuple(str(d) for d in external_dirs),
@@ -692,6 +801,7 @@ def build_skills_system_prompt(
         tuple(sorted(str(ts) for ts in (available_toolsets or set()))),
         _platform_hint,
         tuple(sorted(disabled)),
+        agent_id,
     )
     with _SKILLS_PROMPT_CACHE_LOCK:
         cached = _SKILLS_PROMPT_CACHE.get(cache_key)
@@ -718,6 +828,10 @@ def build_skills_system_prompt(
                 continue
             if frontmatter_name in disabled or skill_name in disabled:
                 continue
+            if agent_id is not None and not _skill_matches_agent(
+                frontmatter_name, category, agent_id, agent_profile_skills
+            ):
+                continue
             if not _skill_should_show(
                 entry.get("conditions") or {},
                 available_tools,
@@ -742,6 +856,10 @@ def build_skills_system_prompt(
                 continue
             skill_name = entry["skill_name"]
             if entry["frontmatter_name"] in disabled or skill_name in disabled:
+                continue
+            if agent_id is not None and not _skill_matches_agent(
+                entry["frontmatter_name"], entry["category"], agent_id, agent_profile_skills
+            ):
                 continue
             if not _skill_should_show(
                 extract_skill_conditions(frontmatter),
@@ -797,6 +915,10 @@ def build_skills_system_prompt(
                 if frontmatter_name in seen_skill_names:
                     continue
                 if frontmatter_name in disabled or skill_name in disabled:
+                    continue
+                if agent_id is not None and not _skill_matches_agent(
+                    frontmatter_name, entry["category"], agent_id, agent_profile_skills
+                ):
                     continue
                 if not _skill_should_show(
                     extract_skill_conditions(frontmatter),

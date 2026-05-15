@@ -23,6 +23,7 @@ Public API (signatures preserved from the original 2,400-line version):
 import json
 import asyncio
 import logging
+import re
 import threading
 import time
 from typing import Dict, Any, List, Optional, Tuple
@@ -320,7 +321,15 @@ def get_tool_definitions(
 
     result = _compute_tool_definitions(enabled_toolsets, disabled_toolsets, quiet_mode)
     if quiet_mode:
+        # Cache the freshly-computed list, but hand callers a shallow copy so
+        # downstream mutations (e.g. run_agent appending memory/LCM tool
+        # schemas to self.tools) don't poison the cache. Without this, a
+        # long-lived Gateway process accumulates duplicate tool names across
+        # agent inits and providers that enforce unique tool names
+        # (DeepSeek, Xiaomi MiMo, Moonshot Kimi) reject the request with
+        # HTTP 400. Mirrors the cache-hit path above. (issue #17335)
         _tool_defs_cache[cache_key] = result
+        return list(result)
     return result
 
 
@@ -348,12 +357,17 @@ def _compute_tool_definitions(
             else:
                 if not quiet_mode:
                     print(f"⚠️  Unknown toolset: {toolset_name}")
-
-    elif disabled_toolsets:
+    else:
+        # Default: start with everything
         from toolsets import get_all_toolsets
         for ts_name in get_all_toolsets():
             tools_to_include.update(resolve_toolset(ts_name))
 
+    # Always apply disabled toolsets as a subtraction step at the end.
+    # This ensures that even if a composite toolset (like hermes-cli)
+    # is enabled, any tools belonging to a disabled toolset are strictly
+    # stripped out. See issue #17309.
+    if disabled_toolsets:
         for toolset_name in disabled_toolsets:
             if validate_toolset(toolset_name):
                 resolved = resolve_toolset(toolset_name)
@@ -368,10 +382,6 @@ def _compute_tool_definitions(
             else:
                 if not quiet_mode:
                     print(f"⚠️  Unknown toolset: {toolset_name}")
-    else:
-        from toolsets import get_all_toolsets
-        for ts_name in get_all_toolsets():
-            tools_to_include.update(resolve_toolset(ts_name))
 
     # Plugin-registered tools are now resolved through the normal toolset
     # path — validate_toolset() / resolve_toolset() / get_all_toolsets()
@@ -488,6 +498,396 @@ _READ_SEARCH_TOOLS = {"read_file", "search_files"}
 
 
 # =========================================================================
+# Tool Input Repair Layer
+#
+# Validates-then-repairs model tool arguments for common structural and
+# semantic errors produced by open-weight LLMs (DeepSeek, Qwen, GLM, etc.).
+# Prevents the "repeat the same broken call forever" failure mode.
+#
+# Design:
+#   1. validate-then-repair — pass through unchanged if valid
+#   2. 4 basic structural fixers + semantic per-tool fixers
+#   3. No jsonschema dependency — all hand-written rules
+#   4. repair_log is injected into tool result for model feedback
+# =========================================================================
+
+# ── Sentinel for "remove this parameter entirely" ──
+_UNSET = object()
+
+
+# ── Basic structural repair functions ──
+
+def _repair_strip_null(value, schema, param_name):
+    """If a parameter is optional and value is None → _UNSET (remove it)."""
+    if value is None:
+        required = schema.get("_required", False) if isinstance(schema, dict) else False
+        if not required:
+            return _UNSET
+    return value
+
+
+def _repair_parse_json_array(value, schema, param_name):
+    """If schema expects an array but value is a JSON-stringified array → parse it."""
+    if not isinstance(value, str):
+        return value
+    expected_type = schema.get("type") if isinstance(schema, dict) else None
+    if expected_type != "array" and (not isinstance(expected_type, list) or "array" not in expected_type):
+        return value
+    stripped = value.strip()
+    if stripped.startswith("[") and stripped.endswith("]"):
+        try:
+            parsed = json.loads(stripped)
+            if isinstance(parsed, list):
+                return parsed
+        except (ValueError, TypeError):
+            pass
+    return value
+
+
+def _repair_unwrap_empty_object(value, schema, param_name):
+    """If schema expects an array and value is {} → [] (common LLM error)."""
+    if value == {}:
+        expected_type = schema.get("type") if isinstance(schema, dict) else None
+        if expected_type == "array" or (isinstance(expected_type, list) and "array" in expected_type):
+            return []
+    return value
+
+
+def _repair_wrap_bare_string(value, schema, param_name):
+    """If schema expects string[] and value is a bare string → wrap in list."""
+    if not isinstance(value, str):
+        return value
+    expected_type = schema.get("type") if isinstance(schema, dict) else None
+    items_schema = schema.get("items", {}) if isinstance(schema, dict) else {}
+    items_type = items_schema.get("type") if isinstance(items_schema, dict) else None
+    if expected_type == "array" and items_type == "string":
+        stripped = value.strip()
+        if not stripped.startswith("["):
+            return [stripped]
+    return value
+
+
+# ── Repair rules registry (priority-ordered) ──
+_REPAIR_RULES = [
+    ("stripNull", _repair_strip_null),
+    ("parseJsonArray", _repair_parse_json_array),
+    ("unwrapEmptyObject", _repair_unwrap_empty_object),
+    ("wrapBareString", _repair_wrap_bare_string),
+]
+
+
+def _repair_tool_args(tool_name: str, args: Dict[str, Any]) -> tuple:
+    """Apply structural repair rules to tool arguments.
+
+    Returns:
+        (repaired_args, repair_log_or_None)
+    """
+    if not args or not isinstance(args, dict):
+        return args, None
+
+    schema = registry.get_schema(tool_name)
+    if not schema:
+        return args, None
+
+    properties = (schema.get("parameters") or {}).get("properties")
+    required = (schema.get("parameters") or {}).get("required", [])
+    if not properties:
+        return args, None
+
+    repair_log = None
+    repaired = dict(args)
+
+    for key, value in list(repaired.items()):
+        prop_schema = properties.get(key)
+        if prop_schema is None:
+            continue
+
+        # Inject required info so repair functions can use it
+        if isinstance(prop_schema, dict):
+            prop_schema = {**prop_schema, "_required": key in required}
+
+        for rule_name, rule_fn in _REPAIR_RULES:
+            try:
+                repaired_value = rule_fn(repaired.get(key, _UNSET), prop_schema, key)
+            except Exception:
+                continue
+
+            if repaired_value is _UNSET:
+                if repair_log is None:
+                    repair_log = []
+                repair_log.append({
+                    "param": key,
+                    "from": value,
+                    "to": None,
+                    "repair": rule_name,
+                })
+                del repaired[key]
+                break
+            elif repaired_value is not repaired.get(key):
+                if repair_log is None:
+                    repair_log = []
+                repair_log.append({
+                    "param": key,
+                    "from": value,
+                    "to": repaired_value,
+                    "repair": rule_name,
+                })
+                repaired[key] = repaired_value
+                break
+
+    return repaired, repair_log
+
+
+# ── Semantic repair functions ──
+
+_MD_LINK_RE = re.compile(r'^\[([^\]]+)\]\([^)]*\)$')
+_PATH_TRAVERSAL_RE = re.compile(r'(\.\./|\.\.\\)')
+
+
+def _repair_markdown_link(value):
+    """Detect ``[real_path](display_text)`` pattern and extract real_path."""
+    if not isinstance(value, str):
+        return value
+    m = _MD_LINK_RE.match(value.strip())
+    if m:
+        return m.group(1).strip()
+    return value
+
+
+def _repair_expand_user(value):
+    """Expand ``~`` to the user's home directory."""
+    if not isinstance(value, str):
+        return value
+    if value.startswith("~"):
+        import os
+        return os.path.expanduser(value)
+    return value
+
+
+def _repair_check_path_traversal(value):
+    """Check for path traversal patterns and log a warning if found."""
+    if not isinstance(value, str):
+        return value
+    if _PATH_TRAVERSAL_RE.search(value):
+        logger.warning("Path traversal pattern detected: %s", repr(value[:200]))
+    return value
+
+
+def _repair_strip_shell_prompt(value):
+    """Strip shell prompt prefixes (``$ ``, ``> ``, etc.) from values."""
+    if not isinstance(value, str):
+        return value
+    stripped = value.lstrip()
+    for prefix in ("$ ", "> ", "% ", "# "):
+        if stripped.startswith(prefix):
+            return stripped[len(prefix):]
+    return value
+
+
+def _repair_fix_double_escape(value):
+    """Fix double-escaped backslashes in command strings (2 backslashes → 1)."""
+    if not isinstance(value, str):
+        return value
+    return value.replace('\\\\', '\\')
+
+
+# ── Desktop-tool semantic repair functions for OpenClaw (GLM-5-Turbo) ──
+
+
+def _repair_desktop_coord_int(value):
+    """Convert float or string coordinates to int for desktop_click/desktop_move.
+
+    GLM-5-Turbo occasionally emits coordinates as floats (``100.0``) or
+    string digits (``"500"``) instead of plain ints.
+    """
+    # Bug fix: bool is int subclass in Python — True -> 1, False -> 0
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        try:
+            # Bug fix: handle float strings like "100.5" -> 100
+            f = float(value.strip())
+            if f != f or f == float("inf") or f == float("-inf"):
+                return value
+            return int(f)
+        except (ValueError, TypeError):
+            return value
+    # None stays None — required param, let handler produce a clear error
+    return value
+
+
+def _repair_desktop_clipboard_action(value):
+    """Fix ``action: null`` → ``action: "read"`` for desktop_clipboard.
+
+    ``action`` is a required param.  GLM-5-Turbo sometimes sends null
+    for required string enums; defaulting to ``"read"`` is safe because
+    read is side-effect-free.
+    """
+    if value is None:
+        return "read"
+    return value
+
+
+def _repair_desktop_clipboard_text_string(value):
+    """Convert non-string ``text`` to string for desktop_clipboard write.
+
+    GLM-5-Turbo occasionally passes ``text: 123`` (int) instead of
+    ``text: "123"`` (string).  The existing coerce layer only converts
+    *string → target_type*, not the reverse, so this covers the gap.
+    """
+    # Bug fix: None must not become "None" — handler validates null text
+    # and returns a clear error.
+    if value is None:
+        return value
+    if not isinstance(value, str):
+        return str(value)
+    return value
+
+
+def _repair_desktop_scroll_amount(value):
+    """Convert float or string ``amount`` to int for desktop_scroll.
+
+    ``coerce_tool_args`` handles string→int, but float→int is missed
+    because the coerce layer only acts on string values.  This catches
+    ``amount: 5.0`` emitted as a JSON number by the model.
+    """
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        try:
+            # Bug fix: handle float strings like "-3.5" -> -3
+            f = float(value.strip())
+            if f != f or f == float("inf") or f == float("-inf"):
+                return value
+            return int(f)
+        except (ValueError, TypeError):
+            return value
+    return value
+
+
+# ── Semantic repair map (per-tool, per-parameter) ──
+# Keyed by (tool_name, param_name) tuple.
+_SEMANTIC_REPAIR_MAP = {
+    ("read_file", "path"): [
+        ("strip_markdown_link", _repair_markdown_link),
+        ("expand_tilde", _repair_expand_user),
+    ],
+    ("write_file", "path"): [
+        ("strip_markdown_link", _repair_markdown_link),
+        ("expand_tilde", _repair_expand_user),
+    ],
+    ("terminal", "command"): [
+        ("fix_double_escape", _repair_fix_double_escape),
+        ("strip_shell_prompt", _repair_strip_shell_prompt),
+    ],
+    ("patch", "path"): [
+        ("strip_markdown_link", _repair_markdown_link),
+        ("expand_tilde", _repair_expand_user),
+    ],
+    ("search_files", "path"): [
+        ("strip_markdown_link", _repair_markdown_link),
+        ("expand_tilde", _repair_expand_user),
+    ],
+    # ── Desktop tools (OpenClaw / GLM-5-Turbo) ──
+    # desktop_type.text must NEVER be modified — content is user-authored text
+    ("desktop_type", "text"): [
+        ("safeguard_desktop_type_text", lambda v: v),
+    ],
+    ("desktop_click", "x"): [
+        ("fix_coord_type", _repair_desktop_coord_int),
+    ],
+    ("desktop_click", "y"): [
+        ("fix_coord_type", _repair_desktop_coord_int),
+    ],
+    ("desktop_move", "x"): [
+        ("fix_coord_type", _repair_desktop_coord_int),
+    ],
+    ("desktop_move", "y"): [
+        ("fix_coord_type", _repair_desktop_coord_int),
+    ],
+    ("desktop_clipboard", "action"): [
+        ("fix_clipboard_action_null", _repair_desktop_clipboard_action),
+    ],
+    ("desktop_clipboard", "text"): [
+        ("fix_clipboard_text_type", _repair_desktop_clipboard_text_string),
+    ],
+    ("desktop_scroll", "amount"): [
+        ("fix_amount_type", _repair_desktop_scroll_amount),
+    ],
+}
+
+
+def _repair_semantic_args(tool_name: str, args: Dict[str, Any]) -> tuple:
+    """Apply per-tool, per-parameter semantic repairs.
+
+    Returns:
+        (repaired_args, repair_log_or_None)
+    """
+    if not args or not isinstance(args, dict):
+        return args, None
+
+    repair_log = None
+    repaired = dict(args)
+
+    for (tname, pname), rules in _SEMANTIC_REPAIR_MAP.items():
+        if tname != tool_name:
+            continue
+        if pname not in repaired:
+            continue
+        value = repaired[pname]
+        original = value
+        for rule_name, rule_fn in rules:
+            try:
+                new_value = rule_fn(value)
+            except Exception:
+                continue
+            if new_value is not value:
+                if repair_log is None:
+                    repair_log = []
+                repair_log.append({
+                    "param": pname,
+                    "from": value,
+                    "to": new_value,
+                    "repair": rule_name,
+                })
+                value = new_value
+        if value is not original:
+            repaired[pname] = value
+
+    return repaired, repair_log
+
+
+# ── Error formatting for model-facing error messages ──
+
+def _format_tool_error_for_model(e: Exception, function_name: str, function_args: dict) -> str:
+    """Format a Python tool error into a model-readable message."""
+    error_str = str(e)
+    if len(error_str) > 500:
+        error_str = error_str[:500] + "... (truncated)"
+    return (
+        f"Exception type: {type(e).__name__}\n"
+        f"Message: {error_str}\n"
+        f"Arguments: {json.dumps(function_args, ensure_ascii=False, default=str)[:300]}"
+    )
+
+
+def _get_repair_hint(function_name: str, function_args: dict) -> str:
+    """Generate a repair hint for common error patterns."""
+    hints = []
+    for key, value in function_args.items():
+        if isinstance(value, str) and value.strip().startswith("["):
+            hints.append(
+                f"Parameter '{key}' looks like a JSON array string. "
+                "Try passing it as a native array instead of a string."
+            )
+    if hints:
+        return " | ".join(hints)
+    return "Check parameter types and values."
+
+
+# =========================================================================
 # Tool argument type coercion
 # =========================================================================
 
@@ -502,6 +902,12 @@ def coerce_tool_args(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
 
     Handles ``"type": "integer"``, ``"type": "number"``, ``"type": "boolean"``,
     and union types (``"type": ["integer", "string"]``).
+
+    Also wraps bare scalar values in a single-element list when the schema
+    declares ``"type": "array"``.  Open-weight models (DeepSeek, Qwen, GLM)
+    sometimes emit ``{"urls": "https://a.com"}`` when the tool expects
+    ``{"urls": ["https://a.com"]}``; wrapping here avoids a confusing tool
+    failure on what is otherwise a well-formed call.
     """
     if not args or not isinstance(args, dict):
         return args
@@ -514,13 +920,42 @@ def coerce_tool_args(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
     if not properties:
         return args
 
-    for key, value in args.items():
-        if not isinstance(value, str):
-            continue
+    for key, value in list(args.items()):
         prop_schema = properties.get(key)
         if not prop_schema:
             continue
         expected = prop_schema.get("type")
+
+        # Wrap bare non-list values when the schema declares ``array``.
+        # Strings still go through _coerce_value first so JSON-encoded
+        # arrays (``'["a","b"]'``) get parsed and nullable ``"null"``
+        # becomes ``None`` rather than ``["null"]``.
+        # ``None`` itself is preserved — we don't know whether the model
+        # meant "omit" or "empty list", and tools with sensible defaults
+        # (e.g. read_file's normalize_read_pagination) already handle it.
+        if expected == "array" and value is not None and not isinstance(value, (list, tuple)):
+            if isinstance(value, str):
+                coerced = _coerce_value(value, expected, schema=prop_schema)
+                if coerced is not value:
+                    # _coerce_value handled it (JSON-parsed list or
+                    # nullable "null" → None).
+                    args[key] = coerced
+                    continue
+                args[key] = [value]
+                logger.info(
+                    "coerce_tool_args: wrapped bare string in list for %s.%s",
+                    tool_name, key,
+                )
+                continue
+            args[key] = [value]
+            logger.info(
+                "coerce_tool_args: wrapped bare %s in list for %s.%s",
+                type(value).__name__, tool_name, key,
+            )
+            continue
+
+        if not isinstance(value, str):
+            continue
         if not expected and not _schema_allows_null(prop_schema):
             continue
         coerced = _coerce_value(value, expected, schema=prop_schema)
@@ -658,6 +1093,35 @@ def handle_function_call(
     Returns:
         Function result as a JSON string.
     """
+    # ── Tool Input Repair: structural + semantic (before coerce) ──
+    # Since both repair passes return (repaired, log) and we want a single
+    # merged log, we apply semantic first, then structural, then merge.
+    function_args, sem_repair_log = _repair_semantic_args(function_name, function_args)
+    function_args, struct_repair_log = _repair_tool_args(function_name, function_args)
+
+    # Merge repair logs
+    repair_log = None
+    if struct_repair_log or sem_repair_log:
+        repair_log = []
+        if sem_repair_log:
+            repair_log.extend(sem_repair_log)
+        if struct_repair_log:
+            repair_log.extend(struct_repair_log)
+
+    # Log repair events to the session event store (event logging is optional)
+    if repair_log and session_id and task_id:
+        try:
+            from agent.session_event_log import EventLog
+            el = EventLog()
+            el.log_tool_input_repaired(
+                task_id=task_id,
+                session_id=session_id,
+                tool_name=function_name,
+                repair_log=repair_log,
+            )
+        except Exception:
+            pass
+
     # Coerce string arguments to their schema-declared types (e.g. "42"→42)
     function_args = coerce_tool_args(function_name, function_args)
 
@@ -668,6 +1132,13 @@ def handle_function_call(
         # Check plugin hooks for a block directive (unless caller already
         # checked — e.g. run_agent._invoke_tool passes skip=True to
         # avoid double-firing the hook).
+        #
+        # Single-fire contract: pre_tool_call fires exactly once per tool
+        # execution. get_pre_tool_call_block_message() internally calls
+        # invoke_hook("pre_tool_call", ...) and returns the first block
+        # directive (if any), so observer plugins see the hook on that same
+        # pass. When skip=True, the caller already fired it — do nothing
+        # here.
         if not skip_pre_tool_call_hook:
             block_message: Optional[str] = None
             try:
@@ -679,26 +1150,11 @@ def handle_function_call(
                     session_id=session_id or "",
                     tool_call_id=tool_call_id or "",
                 )
-            except Exception:
-                pass
+            except Exception as _hook_err:
+                logger.debug("pre_tool_call hook error: %s", _hook_err)
 
             if block_message is not None:
                 return json.dumps({"error": block_message}, ensure_ascii=False)
-        else:
-            # Still fire the hook for observers — just don't check for blocking
-            # (the caller already did that).
-            try:
-                from hermes_cli.plugins import invoke_hook
-                invoke_hook(
-                    "pre_tool_call",
-                    tool_name=function_name,
-                    args=function_args,
-                    task_id=task_id or "",
-                    session_id=session_id or "",
-                    tool_call_id=tool_call_id or "",
-                )
-            except Exception:
-                pass
 
         # Notify the read-loop tracker when a non-read/search tool runs,
         # so the *consecutive* counter resets (reads after other work are fine).
@@ -746,8 +1202,8 @@ def handle_function_call(
                 tool_call_id=tool_call_id or "",
                 duration_ms=duration_ms,
             )
-        except Exception:
-            pass
+        except Exception as _hook_err:
+            logger.debug("post_tool_call hook error: %s", _hook_err)
 
         # Generic tool-result canonicalization seam: plugins receive the
         # final result string (JSON, usually) and may replace it by
@@ -771,15 +1227,44 @@ def handle_function_call(
                 if isinstance(hook_result, str):
                     result = hook_result
                     break
-        except Exception:
-            pass
+        except Exception as _hook_err:
+            logger.debug("transform_tool_result hook error: %s", _hook_err)
+
+        # ── Inject repair_log into tool result (feedback loop) ──
+        if repair_log:
+            try:
+                # If result is already a JSON string, append _repair field
+                parsed = json.loads(result) if isinstance(result, str) else result
+                if isinstance(parsed, dict):
+                    parsed["_repair"] = repair_log
+                    result = json.dumps(parsed, ensure_ascii=False)
+                elif isinstance(parsed, list):
+                    result = json.dumps({
+                        "result": parsed,
+                        "_repair": repair_log,
+                    }, ensure_ascii=False)
+            except (ValueError, TypeError):
+                # Non-JSON result — wrap it
+                result = json.dumps({
+                    "result": result,
+                    "_repair": repair_log,
+                }, ensure_ascii=False)
 
         return result
 
     except Exception as e:
-        error_msg = f"Error executing {function_name}: {str(e)}"
-        logger.exception(error_msg)
-        return json.dumps({"error": error_msg}, ensure_ascii=False)
+        error_detail = _format_tool_error_for_model(e, function_name, function_args)
+        error_msg = f"Tool '{function_name}' execution failed."
+        logger.exception("Error executing %s: %s", function_name, str(e))
+        result_dict = {
+            "error": error_msg,
+            "detail": error_detail,
+            "hint": _get_repair_hint(function_name, function_args),
+        }
+        # Include repair_log in error responses too
+        if repair_log:
+            result_dict["_repair"] = repair_log
+        return json.dumps(result_dict, ensure_ascii=False)
 
 
 # =============================================================================

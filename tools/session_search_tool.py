@@ -3,7 +3,9 @@
 Session Search Tool - Long-Term Conversation Recall
 
 Searches past session transcripts in SQLite via FTS5, then summarizes the top
-matching sessions using a cheap/fast model (same pattern as web_extract).
+matching sessions using the configured auxiliary session_search model (same
+pattern as web_extract). By default, auxiliary "auto" routing uses the main
+chat provider/model unless the user overrides auxiliary.session_search.
 Returns focused summaries of past conversations rather than raw transcripts,
 keeping the main model's context window clean.
 
@@ -11,7 +13,7 @@ Flow:
   1. FTS5 search finds matching messages ranked by relevance
   2. Groups by session, takes the top N unique sessions (default 3)
   3. Loads each session's conversation, truncates to ~100k chars centered on matches
-  4. Sends to Gemini Flash with a focused summarization prompt
+  4. Sends to the configured auxiliary model with a focused summarization prompt
   5. Returns per-session summaries with metadata
 """
 
@@ -266,7 +268,11 @@ _HIDDEN_SESSION_SOURCES = ("tool",)
 def _list_recent_sessions(db, limit: int, current_session_id: str = None) -> str:
     """Return metadata for the most recent sessions (no LLM calls)."""
     try:
-        sessions = db.list_sessions_rich(limit=limit + 5, exclude_sources=list(_HIDDEN_SESSION_SOURCES))  # fetch extra to skip current
+        sessions = db.list_sessions_rich(
+            limit=limit + 5,
+            exclude_sources=list(_HIDDEN_SESSION_SOURCES),
+            order_by_last_active=True,
+        )  # fetch extra to skip current
 
         # Resolve current session lineage to exclude it
         current_root = None
@@ -326,7 +332,8 @@ def session_search(
     """
     Search past sessions and return focused summaries of matching conversations.
 
-    Uses FTS5 to find matches, then summarizes the top sessions with Gemini Flash.
+    Uses FTS5 to find matches, then summarizes the top sessions with the
+    configured auxiliary session_search model.
     The current session is excluded from results since the agent already has that context.
     """
     if db is None:
@@ -479,7 +486,7 @@ def session_search(
             }, ensure_ascii=False)
 
         summaries = []
-        for (session_id, match_info, conversation_text, _), result in zip(tasks, results):
+        for (session_id, match_info, conversation_text, session_meta), result in zip(tasks, results):
             if isinstance(result, Exception):
                 logging.warning(
                     "Failed to summarize session %s: %s",
@@ -487,11 +494,18 @@ def session_search(
                 )
                 result = None
 
+            # Prefer resolved parent session metadata over FTS5 match metadata.
+            # match_info carries source/model from the *child* session that contained
+            # the FTS5 hit; after _resolve_to_parent() the session_id points to the
+            # root, so session_meta has the authoritative platform/source for the
+            # session the user actually cares about (#15909).
             entry = {
                 "session_id": session_id,
-                "when": _format_timestamp(match_info.get("session_started")),
-                "source": match_info.get("source", "unknown"),
-                "model": match_info.get("model"),
+                "when": _format_timestamp(
+                    session_meta.get("started_at") or match_info.get("session_started")
+                ),
+                "source": session_meta.get("source") or match_info.get("source", "unknown"),
+                "model": session_meta.get("model") or match_info.get("model"),
             }
 
             if result:
@@ -571,6 +585,63 @@ SESSION_SEARCH_SCHEMA = {
         "required": [],
     },
 }
+
+
+# ── Hermes 2.8: Task-centric search ──
+
+def search_by_task_id(
+    task_id: str,
+    db=None,
+) -> str:
+    """Search events.db for all events related to a task_id.
+
+    Returns the event chain and replay summary if events exist.
+    """
+    try:
+        from agent.session_event_log import EventLog
+        event_log = EventLog()
+        try:
+            summary = event_log.build_replay_summary(task_id)
+            if "error" in summary:
+                return json.dumps({"success": False, "error": summary["error"]}, ensure_ascii=False)
+            return json.dumps({"success": True, "replay_summary": summary}, ensure_ascii=False)
+        finally:
+            event_log.close()
+    except Exception as e:
+        return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)
+
+
+def search_replay_chain(
+    task_id: str,
+    db=None,
+) -> str:
+    """Return the full chronological event chain for a task.
+
+    Returns each event with timestamp, type, and payload for replay/debugging.
+    """
+    try:
+        from agent.session_event_log import EventLog
+        event_log = EventLog()
+        try:
+            events = event_log.get_events_for_task(task_id)
+            chain = [
+                {
+                    "timestamp": e["timestamp"],
+                    "event_type": e["type"],
+                    "payload": e.get("payload", {}),
+                }
+                for e in events
+            ]
+            return json.dumps({
+                "success": True,
+                "task_id": task_id,
+                "event_count": len(chain),
+                "chain": chain,
+            }, ensure_ascii=False)
+        finally:
+            event_log.close()
+    except Exception as e:
+        return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)
 
 
 # --- Registry ---

@@ -5,6 +5,7 @@ heavy dependency chain.  It is safe to import at module level without triggering
 tool registration or provider resolution.
 """
 
+import json
 import logging
 import os
 import re
@@ -24,7 +25,7 @@ PLATFORM_MAP = {
     "windows": "win32",
 }
 
-EXCLUDED_SKILL_DIRS = frozenset((".git", ".github", ".hub"))
+EXCLUDED_SKILL_DIRS = frozenset((".git", ".github", ".hub", ".archive"))
 
 # ── Lazy YAML loader ─────────────────────────────────────────────────────
 
@@ -440,7 +441,7 @@ def extract_skill_description(frontmatter: Dict[str, Any]) -> str:
 def iter_skill_index_files(skills_dir: Path, filename: str):
     """Walk skills_dir yielding sorted paths matching *filename*.
 
-    Excludes ``.git``, ``.github``, ``.hub`` directories.
+    Excludes ``.git``, ``.github``, ``.hub``, ``.archive`` directories.
     """
     matches = []
     for root, dirs, files in os.walk(skills_dir, followlinks=True):
@@ -471,3 +472,170 @@ def is_valid_namespace(candidate: Optional[str]) -> bool:
     if not candidate:
         return False
     return bool(_NAMESPACE_RE.match(candidate))
+
+
+# ── Hermes 2.8: Skill Permission MVP ────────────────────────────────────────
+
+# Trust levels
+BUNDLED = "bundled"       # shipped with Hermes, fully trusted
+INSTALLED = "installed"   # user-installed, default trust
+UNTRUSTED = "untrusted"   # third-party, restricted
+
+TRUST_LEVELS = (BUNDLED, INSTALLED, UNTRUSTED)
+
+# UNTRUSTED skill restrictions
+UNTRUSTED_RESTRICTIONS = {
+    "network": "网络请求需用户确认",
+    "file_write": "文件写入限于 workspace",
+    "env_passthrough": "环境变量仅传白名单",
+    "no_transform_hook": "不能注册 transform hook",
+}
+
+# Permission fields in skill manifest
+PERMISSION_FIELDS = ("tools", "network", "env", "hooks")
+
+
+def parse_skill_manifest(frontmatter: Dict[str, Any]) -> Dict[str, Any]:
+    """Extract trust and permission info from a skill's YAML frontmatter.
+
+    Returns a manifest dict with:
+      - trust: "bundled" | "installed" | "untrusted"
+      - permissions: {tools: [...], network: bool, env: [...], hooks: [...]}
+      - triggers: [...]
+      - version: str
+    """
+    trust = frontmatter.get("trust", INSTALLED)
+    if trust not in TRUST_LEVELS:
+        trust = UNTRUSTED  # unknown trust level → restricted
+
+    permissions = {}
+    if "permissions" in frontmatter:
+        raw = frontmatter["permissions"]
+        if isinstance(raw, dict):
+            for field in PERMISSION_FIELDS:
+                if field in raw:
+                    permissions[field] = raw[field]
+        else:
+            permissions = {"tools": [], "network": False}
+
+    triggers = frontmatter.get("triggers", [])
+
+    return {
+        "trust": trust,
+        "permissions": permissions,
+        "triggers": triggers if isinstance(triggers, list) else [],
+        "version": str(frontmatter.get("version", "1.0")),
+    }
+
+
+def get_skill_restrictions(trust: str, permissions: Dict[str, Any] = None) -> List[str]:
+    """Return applicable restriction descriptions for the given trust level.
+
+    Filters restrictions to only those relevant to the skill's actual permissions.
+    """
+    if trust in (BUNDLED, INSTALLED):
+        return []
+    if permissions is None:
+        permissions = {}
+
+    restrictions = []
+    tools = permissions.get("tools", [])
+    if isinstance(tools, list) and ("bash" in tools or "terminal" in tools):
+        restrictions.append(UNTRUSTED_RESTRICTIONS.get("file_write", ""))
+    if permissions.get("network"):
+        restrictions.append(UNTRUSTED_RESTRICTIONS.get("network", ""))
+    if permissions.get("env"):
+        restrictions.append(UNTRUSTED_RESTRICTIONS.get("env_passthrough", ""))
+    if permissions.get("hooks"):
+        restrictions.append(UNTRUSTED_RESTRICTIONS.get("no_transform_hook", ""))
+    return restrictions
+
+
+def check_skill_permission_risk(manifest: Dict[str, Any]) -> List[str]:
+    """Return risk warnings for a skill based on its manifest."""
+    risks = []
+    trust = manifest.get("trust", UNTRUSTED)
+    perms = manifest.get("permissions", {})
+
+    if trust == UNTRUSTED:
+        risks.append("⚠️ 第三方 Skill，受限运行")
+        if perms.get("network"):
+            risks.append("⚠️ 请求网络权限（UNTRUSTED skill 的网络请求需用户确认）")
+        if "bash" in perms.get("tools", []) or "terminal" in perms.get("tools", []):
+            risks.append("⚠️ 请求 shell 执行权限")
+        if perms.get("hooks"):
+            risks.append("⚠️ 请求 hook 权限（UNTRUSTED skill 不能注册 transform hook）")
+
+    return risks
+
+
+def extract_skill_agents(frontmatter: dict) -> list[str]:
+    """Extract the ``agents`` list from parsed skill frontmatter.
+
+    Skills declare agent eligibility via a top-level ``agents`` list.
+    Returns an empty list when the field is absent or invalid.
+    """
+    agents = frontmatter.get("agents")
+    if not agents:
+        return []
+    if isinstance(agents, str):
+        agents = [agents]
+    if not isinstance(agents, list):
+        return []
+    return [str(a).strip() for a in agents if str(a).strip()]
+
+
+def get_agent_profile_skills(
+    agent_id: str,
+    registry_path: str | Path | None = None,
+) -> list[str]:
+    """Read the ``skills`` list from an agent's subagent_profile.
+
+    Args:
+        agent_id: The agent identifier (matches the key in agent-registry.json).
+        registry_path: Optional explicit path to agent-registry.json.
+                       Defaults to ``~/.hermes/config/agent-registry.json`` via get_hermes_home().
+
+    Returns:
+        A list of skill names, or an empty list if the agent has no skills
+        declared or the registry file is missing/invalid.
+    """
+    if registry_path is None:
+        try:
+            from hermes_constants import get_hermes_home
+            hermes_home = get_hermes_home()
+        except Exception:
+            hermes_home = Path.home() / ".hermes"
+        registry_path = hermes_home / "config" / "agent-registry.json"
+
+    registry_path = Path(registry_path)
+    if not registry_path.exists():
+        logger.warning("Agent registry not found: %s", registry_path)
+        return []
+
+    try:
+        raw = registry_path.read_text(encoding="utf-8")
+        registry = json.loads(raw)
+    except (OSError, json.JSONDecodeError) as e:
+        logger.warning("Failed to read agent registry: %s", e)
+        return []
+
+    agents = registry.get("agents", {})
+    agent_config = agents.get(agent_id)
+    if not agent_config:
+        logger.debug("Agent '%s' not found in registry", agent_id)
+        return []
+
+    profile = agent_config.get("subagent_profile")
+    if not profile:
+        return []
+
+    skills = profile.get("skills")
+    if not skills:
+        return []
+    if isinstance(skills, str):
+        skills = [skills]
+    if not isinstance(skills, list):
+        return []
+    return [str(s).strip() for s in skills if str(s).strip()]
+
