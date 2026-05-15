@@ -10,7 +10,7 @@ from hermes_cli.main import cmd_update, PROJECT_ROOT
 
 
 def _make_run_side_effect(
-    branch="main", verify_ok=True, commit_count="0", tracking_ref="origin/main"
+    branch="main", verify_ok=True, commit_count="0", tracking_ref="origin/main", clean_status=True
 ):
     """Build a side_effect function for subprocess.run that simulates git commands."""
 
@@ -32,6 +32,11 @@ def _make_run_side_effect(
             rc = 0 if verify_ok else 128
             return subprocess.CompletedProcess(cmd, rc, stdout="", stderr="")
 
+        # git status --porcelain
+        if "status --porcelain" in joined:
+            stdout = "" if clean_status else " M hermes_cli/main.py\n"
+            return subprocess.CompletedProcess(cmd, 0, stdout=stdout, stderr="")
+
         # git rev-list HEAD..origin/{branch} --count
         if "rev-list" in joined:
             return subprocess.CompletedProcess(cmd, 0, stdout=f"{commit_count}\n", stderr="")
@@ -50,6 +55,11 @@ def mock_args():
 @pytest.fixture
 def mock_upstream_args():
     return SimpleNamespace(upstream=True)
+
+
+@pytest.fixture
+def mock_sync_fork_args():
+    return SimpleNamespace(sync_fork=True)
 
 
 class TestCmdUpdateBranchFallback:
@@ -158,6 +168,55 @@ class TestCmdUpdateBranchFallback:
         pull_cmds = [c for c in commands if "pull" in c]
         assert len(pull_cmds) == 1
         assert "upstream main" in pull_cmds[0]
+
+
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_update_sync_fork_merges_upstream_and_pushes_tracking_branch(
+        self, mock_run, _mock_which, mock_sync_fork_args, capsys
+    ):
+        mock_run.side_effect = _make_run_side_effect(
+            branch="batumi/live-deploy",
+            tracking_ref="myfork/batumi/live",
+            commit_count="0",
+        )
+
+        cmd_update(mock_sync_fork_args)
+
+        commands = [" ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list]
+
+        assert "git remote get-url upstream" in commands
+        assert "git status --porcelain" in commands
+        assert "git fetch upstream main" in commands
+        assert "git fetch myfork batumi/live" in commands
+        assert any(c.startswith("git branch backup/pre-sync-fork-") for c in commands)
+        assert "git merge --no-edit upstream/main" in commands
+        assert "git push myfork batumi/live-deploy:batumi/live" in commands
+
+        captured = capsys.readouterr()
+        assert "Synced myfork/batumi/live with upstream/main" in captured.out
+
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_update_sync_fork_requires_clean_working_tree(
+        self, mock_run, _mock_which, mock_sync_fork_args, capsys
+    ):
+        mock_run.side_effect = _make_run_side_effect(
+            branch="batumi/live-deploy",
+            tracking_ref="myfork/batumi/live",
+            clean_status=False,
+        )
+
+        with pytest.raises(SystemExit):
+            cmd_update(mock_sync_fork_args)
+
+        commands = [" ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list]
+        assert "git status --porcelain" in commands
+        assert all("merge --no-edit upstream/main" not in c for c in commands)
+        assert all("push myfork" not in c for c in commands)
+
+        captured = capsys.readouterr()
+        assert "requires a clean working tree" in captured.out
 
     @patch("shutil.which", return_value=None)
     @patch("subprocess.run")

@@ -6718,6 +6718,136 @@ def _sync_with_upstream_if_needed(git_cmd: list[str], cwd: Path) -> None:
         print("    Your local repo is updated, but your fork on GitHub may be behind.")
 
 
+def _sync_tracking_branch_with_upstream(
+    git_cmd: list[str],
+    cwd: Path,
+    *,
+    current_branch: str,
+    target: dict[str, str | bool],
+) -> None:
+    """Merge official upstream/main into the current branch and push tracking ref.
+
+    This backs the explicit ``hermes update --sync-fork`` workflow for curated
+    deploy branches such as ``batumi/live-deploy`` tracking
+    ``myfork/batumi/live``. Plain ``hermes update`` must not mutate a fork
+    remote, so this helper is only called behind that flag.
+    """
+    if current_branch == "HEAD":
+        print("✗ --sync-fork requires a checked-out branch (not detached HEAD).")
+        sys.exit(1)
+
+    if bool(target.get("force_upstream")):
+        print("✗ --sync-fork cannot be combined with --upstream.")
+        sys.exit(1)
+
+    if not bool(target.get("uses_tracking")):
+        print("✗ --sync-fork requires the current branch to track a remote branch.")
+        print("  Configure tracking first, e.g. git branch --set-upstream-to=<remote>/<branch>")
+        sys.exit(1)
+
+    remote = str(target["remote"])
+    branch = str(target["branch"])
+    remote_ref = str(target["remote_ref"])
+
+    if remote == "upstream" and branch == "main":
+        print("✗ --sync-fork needs a fork/deploy tracking branch, not upstream/main.")
+        sys.exit(1)
+
+    if not _ensure_upstream_remote(git_cmd, cwd):
+        print("✗ Could not add upstream remote for NousResearch/hermes-agent.")
+        sys.exit(1)
+
+    status = subprocess.run(
+        git_cmd + ["status", "--porcelain"],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+    )
+    if status.returncode != 0:
+        print("✗ Could not inspect working tree before --sync-fork.")
+        sys.exit(1)
+    if status.stdout.strip():
+        print("✗ --sync-fork requires a clean working tree before merging upstream.")
+        print("  Commit, stash, or revert local changes first.")
+        sys.exit(1)
+
+    print("→ Syncing fork tracking branch with official upstream...")
+    print("  → Fetching upstream/main")
+    upstream_fetch = subprocess.run(
+        git_cmd + ["fetch", "upstream", "main"],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+    )
+    if upstream_fetch.returncode != 0:
+        print("✗ Failed to fetch upstream/main.")
+        if upstream_fetch.stderr.strip():
+            print(f"  {upstream_fetch.stderr.strip().splitlines()[0]}")
+        sys.exit(1)
+
+    print(f"  → Fetching tracking branch {remote_ref}")
+    tracking_fetch = subprocess.run(
+        git_cmd + ["fetch", remote, branch],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+    )
+    if tracking_fetch.returncode != 0:
+        print(f"✗ Failed to fetch {remote_ref}.")
+        if tracking_fetch.stderr.strip():
+            print(f"  {tracking_fetch.stderr.strip().splitlines()[0]}")
+        sys.exit(1)
+
+    stamp = _time.strftime("%Y%m%d-%H%M%S")
+    backup_branch = f"backup/pre-sync-fork-{stamp}"
+    backup = subprocess.run(
+        git_cmd + ["branch", backup_branch],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+    )
+    if backup.returncode == 0:
+        print(f"  ✓ Backup branch: {backup_branch}")
+    else:
+        print("  ⚠ Could not create backup branch; continuing with merge guarded by git.")
+
+    print("  → Merging upstream/main")
+    merge = subprocess.run(
+        git_cmd + ["merge", "--no-edit", "upstream/main"],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+    )
+    if merge.returncode != 0:
+        subprocess.run(
+            git_cmd + ["merge", "--abort"],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+        )
+        print("✗ Could not merge upstream/main cleanly; merge was aborted.")
+        print("  Resolve manually, test, then push your fork tracking branch.")
+        if merge.stderr.strip():
+            print(f"  {merge.stderr.strip().splitlines()[0]}")
+        sys.exit(1)
+
+    print(f"  → Pushing {current_branch} to {remote_ref}")
+    push = subprocess.run(
+        git_cmd + ["push", remote, f"{current_branch}:{branch}"],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+    )
+    if push.returncode != 0:
+        print(f"✗ Merge succeeded locally, but failed to push to {remote_ref}.")
+        print(f"  Push manually with: git push {remote} {current_branch}:{branch}")
+        if push.stderr.strip():
+            print(f"  {push.stderr.strip().splitlines()[0]}")
+        sys.exit(1)
+
+    print(f"  ✓ Synced {remote_ref} with upstream/main")
+
+
 def _invalidate_update_cache():
     """Delete the update-check cache for ALL profiles so no banner
     reports a stale "commits behind" count after a successful update.
@@ -7618,6 +7748,10 @@ def _cmd_update_impl(args, gateway_mode: bool):
     )
     assume_yes = bool(getattr(args, "yes", False))
     force_upstream = bool(getattr(args, "upstream", False))
+    sync_fork = bool(getattr(args, "sync_fork", False))
+    if force_upstream and sync_fork:
+        print("✗ --sync-fork cannot be combined with --upstream.")
+        sys.exit(1)
 
     print("⚕ Updating Hermes Agent...")
     print()
@@ -7701,6 +7835,13 @@ def _cmd_update_impl(args, gateway_mode: bool):
         target = _resolve_update_target(
             git_cmd, PROJECT_ROOT, current_branch, force_upstream=force_upstream
         )
+        if sync_fork:
+            _sync_tracking_branch_with_upstream(
+                git_cmd,
+                PROJECT_ROOT,
+                current_branch=current_branch,
+                target=target,
+            )
         remote = str(target["remote"])
         branch = str(target["branch"])
         remote_ref = str(target["remote_ref"])
@@ -11688,6 +11829,12 @@ Examples:
         action="store_true",
         default=False,
         help="Update/check against official NousResearch/main instead of the current branch's configured git upstream",
+    )
+    update_parser.add_argument(
+        "--sync-fork",
+        action="store_true",
+        default=False,
+        help="Explicitly merge official upstream/main into the current branch and push it to the configured tracking fork branch before updating",
     )
     update_parser.add_argument(
         "--no-backup",
