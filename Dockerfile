@@ -25,6 +25,14 @@ COPY --chmod=0755 --from=uv_source /usr/local/bin/uv /usr/local/bin/uvx /usr/loc
 
 WORKDIR /opt/hermes
 
+# Pre-create mutable runtime trees and hand them to the hermes user BEFORE the
+# expensive dependency installs. This keeps the later npm / uv writes owned by
+# hermes without a massive recursive chown over populated node_modules/.venv.
+# The chown contract stays in place for #18800, but now runs on mostly-empty
+# directories instead of hundreds of thousands of files.
+RUN mkdir -p /opt/hermes/.venv /opt/hermes/ui-tui /opt/hermes/node_modules && \
+    chown -R hermes:hermes /opt/hermes/.venv /opt/hermes/ui-tui /opt/hermes/node_modules
+
 # ---------- Layer-cached dependency install ----------
 # Copy only package manifests first so npm install + Playwright are cached
 # unless the lockfiles themselves change.
@@ -33,10 +41,10 @@ WORKDIR /opt/hermes
 # because it is referenced as a `file:` workspace dependency from
 # ui-tui/package.json.  Copying the tree up front lets npm resolve the
 # workspace to real content instead of stopping at a bare package.json.
-COPY package.json package-lock.json ./
-COPY web/package.json web/package-lock.json web/
-COPY ui-tui/package.json ui-tui/package-lock.json ui-tui/
-COPY ui-tui/packages/hermes-ink/ ui-tui/packages/hermes-ink/
+COPY --chown=hermes:hermes package.json package-lock.json ./
+COPY --chown=hermes:hermes web/package.json web/package-lock.json web/
+COPY --chown=hermes:hermes ui-tui/package.json ui-tui/package-lock.json ui-tui/
+COPY --chown=hermes:hermes ui-tui/packages/hermes-ink/ ui-tui/packages/hermes-ink/
 
 # `npm_config_install_links=false` forces npm to install `file:` deps as
 # symlinks (the npm 10+ default) even on Debian's older bundled npm 9.x,
@@ -49,11 +57,16 @@ COPY ui-tui/packages/hermes-ink/ ui-tui/packages/hermes-ink/
 # fails with EACCES (node_modules/ is root-owned from build time).
 ENV npm_config_install_links=false
 
+USER hermes
+
 RUN npm install --prefer-offline --no-audit && \
-    npx playwright install --with-deps chromium --only-shell && \
     (cd web && npm install --prefer-offline --no-audit) && \
     (cd ui-tui && npm install --prefer-offline --no-audit) && \
     npm cache clean --force
+
+USER root
+
+RUN npx playwright install --with-deps chromium --only-shell
 
 # ---------- Layer-cached Python dependency install ----------
 # Copy only pyproject.toml + uv.lock so the Python dep resolve + wheel
@@ -74,7 +87,8 @@ RUN npm install --prefer-offline --no-audit && \
 # redundancy), none of which belong in the published container.
 #
 # The editable link is created after the source copy below.
-COPY pyproject.toml uv.lock ./
+COPY --chown=hermes:hermes pyproject.toml uv.lock ./
+USER hermes
 RUN touch ./README.md
 RUN uv sync --frozen --no-install-project --extra all
 
@@ -86,28 +100,14 @@ COPY --chown=hermes:hermes . .
 RUN cd web && npm run build && \
     cd ../ui-tui && npm run build
 
-# ---------- Permissions ----------
-# Make install dir world-readable so any HERMES_UID can read it at runtime.
-# The venv needs to be traversable too.
-# node_modules trees additionally need to be writable by the hermes user
-# so the runtime `npm install` triggered by _tui_need_npm_install() in
-# hermes_cli/main.py succeeds (see #18800). /opt/hermes/web is build-time
-# only (HERMES_WEB_DIST points at hermes_cli/web_dist) and is intentionally
-# not chowned here.
-# The .venv MUST be hermes-writable so lazy_deps.py can install platform
-# packages (discord.py, telegram, slack, etc.) at first gateway boot.
-# Without this, `uv pip install` fails with EACCES and all messaging
-# adapters silently fail to load.  See tools/lazy_deps.py.
-USER root
-RUN chmod -R a+rX /opt/hermes && \
-    chown -R hermes:hermes /opt/hermes/.venv /opt/hermes/ui-tui /opt/hermes/node_modules
-# Start as root so the entrypoint can usermod/groupmod + gosu.
-# If HERMES_UID is unset, the entrypoint drops to the default hermes user (10000).
-
 # ---------- Link hermes-agent itself (editable) ----------
 # Deps are already installed in the cached layer above; `--no-deps` makes
 # this a fast (~1s) egg-link creation with no resolution or downloads.
 RUN uv pip install --no-cache-dir --no-deps -e "."
+
+# Start as root so the entrypoint can usermod/groupmod + gosu.
+# If HERMES_UID is unset, the entrypoint drops to the default hermes user (10000).
+USER root
 
 # ---------- Runtime ----------
 ENV HERMES_WEB_DIST=/opt/hermes/hermes_cli/web_dist
