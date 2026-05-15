@@ -3743,6 +3743,56 @@ class AIAgent:
         )
         return content
 
+    def _promote_content_json_tool_call(self, assistant_message) -> bool:
+        """Promote narrow Ollama-style JSON content into a structured tool call."""
+        if getattr(assistant_message, "tool_calls", None):
+            return False
+        content = getattr(assistant_message, "content", None)
+        if not isinstance(content, str):
+            return False
+
+        stripped = self._strip_think_blocks(content).strip()
+        if not stripped.startswith("{") or not stripped.endswith("}"):
+            return False
+
+        try:
+            payload = json.loads(stripped)
+        except json.JSONDecodeError:
+            return False
+        if not isinstance(payload, dict):
+            return False
+
+        raw_tool_name = payload.get("name")
+        if not isinstance(raw_tool_name, str):
+            return False
+        tool_name = (
+            raw_tool_name
+            if raw_tool_name in self.valid_tool_names
+            else self._repair_tool_call(raw_tool_name)
+        )
+        if not tool_name:
+            return False
+
+        arguments = payload.get("arguments", {})
+        if arguments is None:
+            arguments = {}
+        if isinstance(arguments, str):
+            arguments_text = arguments.strip() or "{}"
+        else:
+            arguments_text = json.dumps(arguments, ensure_ascii=False)
+
+        call_id = self._deterministic_call_id(tool_name, arguments_text, 0)
+        assistant_message.tool_calls = [
+            SimpleNamespace(
+                id=call_id,
+                call_id=call_id,
+                type="function",
+                function=SimpleNamespace(name=tool_name, arguments=arguments_text),
+            )
+        ]
+        assistant_message.content = None
+        return True
+
     @staticmethod
     def _has_natural_response_ending(content: str) -> bool:
         """Heuristic: does visible assistant text look intentionally finished?"""
@@ -14726,7 +14776,10 @@ class AIAgent:
                 elif hasattr(self, "_codex_incomplete_retries"):
                     self._codex_incomplete_retries = 0
                 
-                # Check for tool calls
+                # Check for tool calls. Some Ollama-hosted models serialize a
+                # single tool call as JSON in content instead of using the
+                # OpenAI-compatible tool_calls field.
+                self._promote_content_json_tool_call(assistant_message)
                 if assistant_message.tool_calls:
                     if not self.quiet_mode:
                         self._vprint(f"{self.log_prefix}🔧 Processing {len(assistant_message.tool_calls)} tool call(s)...")
