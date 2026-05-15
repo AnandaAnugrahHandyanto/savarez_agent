@@ -13,6 +13,7 @@ import re
 import ssl
 import time
 from email.utils import formatdate
+from pathlib import Path
 from typing import Dict, Optional
 
 from agent.redact import redact_sensitive_text
@@ -68,6 +69,49 @@ def _sanitize_error_text(text) -> str:
 def _error(message: str) -> dict:
     """Build a standardized error payload with redacted content."""
     return {"error": _sanitize_error_text(message)}
+
+
+def _signal_attachment_roots() -> list[Path]:
+    """Return Hermes-managed cache roots that may be sent as Signal attachments."""
+    from hermes_constants import get_hermes_dir, get_hermes_home
+
+    roots = [
+        get_hermes_dir("cache/images", "image_cache"),
+        get_hermes_dir("cache/audio", "audio_cache"),
+        get_hermes_dir("cache/documents", "document_cache"),
+        get_hermes_dir("cache/screenshots", "browser_screenshots"),
+        get_hermes_home() / "browser_screenshots",
+    ]
+    resolved: list[Path] = []
+    for root in roots:
+        try:
+            resolved.append(Path(root).resolve())
+        except OSError:
+            continue
+    return resolved
+
+
+def _validate_signal_attachment_path(media_path: str) -> tuple[str | None, str | None]:
+    """Validate a Signal MEDIA path before handing it to signal-cli.
+
+    Returns:
+        A tuple of ``(resolved_path, skip_reason)``. Exactly one item is set.
+    """
+    from gateway.platforms.signal import SIGNAL_MAX_ATTACHMENT_SIZE
+
+    try:
+        path = Path(media_path).expanduser().resolve(strict=True)
+        if not path.is_file():
+            return None, "not a regular file"
+        if not any(path == root or root in path.parents for root in _signal_attachment_roots()):
+            return None, "outside Hermes media cache"
+        if path.stat().st_size > SIGNAL_MAX_ATTACHMENT_SIZE:
+            return None, "exceeds Signal attachment size limit"
+    except FileNotFoundError:
+        return None, "unavailable"
+    except OSError:
+        return None, "unavailable"
+    return str(path), None
 
 
 def _telegram_retry_delay(exc: Exception, attempt: int) -> float | None:
@@ -1204,11 +1248,14 @@ async def _send_signal(extra, chat_id, message, media_files=None):
 
         valid_media = media_files or []
         attachment_paths = []
+        skipped_media_count = 0
         for media_path, _is_voice in valid_media:
-            if os.path.exists(media_path):
-                attachment_paths.append(media_path)
+            attachment_path, skip_reason = _validate_signal_attachment_path(media_path)
+            if attachment_path:
+                attachment_paths.append(attachment_path)
             else:
-                logger.warning("Signal media file not found, skipping: %s", media_path)
+                skipped_media_count += 1
+                logger.warning("Signal media file skipped (%s)", skip_reason or "invalid")
 
         # Chunk attachments. With no attachments we still emit one batch
         # (text only). With attachments, the text rides on batch #0 so the
@@ -1330,8 +1377,8 @@ async def _send_signal(extra, chat_id, message, media_files=None):
                     )
 
         warnings = []
-        if len(attachment_paths) < len(valid_media):
-            warnings.append("Some media files were skipped (not found on disk)")
+        if skipped_media_count:
+            warnings.append("Some Signal media files were skipped because they were invalid or unavailable")
         if failed_batches:
             warnings.append(
                 f"Signal rate-limited {len(failed_batches)} batch(es) "
