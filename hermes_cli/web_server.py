@@ -1430,6 +1430,14 @@ _OAUTH_PROVIDER_CATALOG: tuple[Dict[str, Any], ...] = (
         "status_fn": None,  # dispatched via auth.get_codex_auth_status
     },
     {
+        "id": "openai-oauth",
+        "name": "OpenAI (OAuth via OpenCode)",
+        "flow": "external",
+        "cli_command": "hermes model",
+        "docs_url": "https://platform.openai.com/docs/models/gpt-5.4",
+        "status_fn": None,  # dispatched via auth.get_openai_oauth_auth_status
+    },
+    {
         "id": "qwen-oauth",
         "name": "Qwen (via Qwen CLI)",
         "flow": "external",
@@ -1482,6 +1490,16 @@ def _resolve_provider_status(provider_id: str, status_fn) -> Dict[str, Any]:
                 "expires_at": None,
                 "has_refresh_token": False,
                 "last_refresh": raw.get("last_refresh"),
+            }
+        if provider_id == "openai-oauth":
+            raw = hauth.get_openai_oauth_auth_status()
+            return {
+                "logged_in": bool(raw.get("logged_in")),
+                "source": raw.get("source") or "opencode_auth",
+                "source_label": raw.get("auth_file") or "OpenCode auth.json",
+                "token_preview": _truncate_token(raw.get("api_key")),
+                "expires_at": raw.get("expires_at_ms"),
+                "has_refresh_token": bool(raw.get("has_refresh_token")),
             }
         if provider_id == "qwen-oauth":
             raw = hauth.get_qwen_auth_status()

@@ -1343,6 +1343,14 @@ def list_authenticated_providers(
                     has_creds = True
             except Exception as exc:
                 logger.debug("Anthropic external creds check failed: %s", exc)
+        if not has_creds and hermes_slug == "openai-oauth":
+            try:
+                from hermes_cli.auth import get_openai_oauth_auth_status
+
+                if get_openai_oauth_auth_status().get("logged_in"):
+                    has_creds = True
+            except Exception as exc:
+                logger.debug("OpenAI OAuth external creds check failed: %s", exc)
         if not has_creds:
             continue
 

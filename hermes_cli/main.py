@@ -1932,6 +1932,8 @@ def select_provider_and_model(args=None):
         _model_flow_nous(config, current_model, args=args)
     elif selected_provider == "openai-codex":
         _model_flow_openai_codex(config, current_model)
+    elif selected_provider == "openai-oauth":
+        _model_flow_openai_oauth(config, current_model)
     elif selected_provider == "qwen-oauth":
         _model_flow_qwen_oauth(config, current_model)
     elif selected_provider == "minimax-oauth":
@@ -2858,6 +2860,49 @@ def _model_flow_qwen_oauth(_config, current_model=""):
         _save_model_choice(selected)
         _update_config_for_provider("qwen-oauth", DEFAULT_QWEN_BASE_URL)
         print(f"Default model set to: {selected} (via Qwen OAuth)")
+    else:
+        print("No change.")
+
+
+def _model_flow_openai_oauth(_config, current_model=""):
+    """OpenAI direct API via external OAuth token (reuses OpenCode login)."""
+    from hermes_cli.auth import (
+        DEFAULT_OPENAI_OAUTH_BASE_URL,
+        get_openai_oauth_auth_status,
+        resolve_openai_oauth_runtime_credentials,
+        _prompt_model_selection,
+        _save_model_choice,
+        _update_config_for_provider,
+    )
+    from hermes_cli.models import _PROVIDER_MODELS
+
+    status = get_openai_oauth_auth_status()
+    if not status.get("logged_in"):
+        print("Not logged into OpenAI OAuth via OpenCode.")
+        auth_file = status.get("auth_file")
+        if auth_file:
+            print(f"Expected credentials file: {auth_file}")
+        if status.get("error"):
+            print(f"Error: {status.get('error')}")
+        return
+
+    try:
+        creds = resolve_openai_oauth_runtime_credentials(refresh_if_expiring=False)
+    except Exception as exc:
+        print(f"Failed to resolve OpenAI OAuth credentials: {exc}")
+        return
+
+    account_id = creds.get("account_id")
+    if account_id:
+        print(f"  Using OpenAI OAuth account: {account_id}")
+
+    models = list(_PROVIDER_MODELS.get("openai-oauth") or _PROVIDER_MODELS.get("openai") or [])
+    default = current_model or (models[0] if models else "gpt-5.4")
+    selected = _prompt_model_selection(models, current_model=default)
+    if selected:
+        _save_model_choice(selected)
+        _update_config_for_provider("openai-oauth", DEFAULT_OPENAI_OAUTH_BASE_URL)
+        print(f"Default model set to: {selected} (via OpenAI OAuth)")
     else:
         print("No change.")
 
@@ -9400,7 +9445,7 @@ def _build_provider_choices() -> list[str]:
     except Exception:
         # Fallback: static list guarantees the CLI always works
         return [
-            "auto", "openrouter", "nous", "openai-codex", "copilot-acp", "copilot",
+            "auto", "openrouter", "nous", "openai-codex", "openai-oauth", "copilot-acp", "copilot",
             "anthropic", "gemini", "google-gemini-cli", "xai", "bedrock", "azure-foundry",
             "ollama-cloud", "huggingface", "zai", "kimi-coding", "kimi-coding-cn",
             "stepfun", "minimax", "minimax-cn", "kilocode", "novita", "xiaomi", "arcee",
@@ -9977,7 +10022,7 @@ def main():
     )
     logout_parser.add_argument(
         "--provider",
-        choices=["nous", "openai-codex", "spotify"],
+        choices=["nous", "openai-codex", "openai-oauth", "spotify"],
         default=None,
         help="Provider to log out from (default: active provider)",
     )

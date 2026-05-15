@@ -72,6 +72,7 @@ DEFAULT_AGENT_KEY_MIN_TTL_SECONDS = 30 * 60  # 30 minutes
 ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 120       # refresh 2 min before expiry
 DEVICE_AUTH_POLL_INTERVAL_CAP_SECONDS = 1     # poll at most every 1s
 DEFAULT_CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex"
+DEFAULT_OPENAI_OAUTH_BASE_URL = "https://api.openai.com/v1"
 MINIMAX_OAUTH_CLIENT_ID = "78257093-7e40-4613-99e0-527b14b39113"
 MINIMAX_OAUTH_SCOPE = "group_id profile model.completion"
 MINIMAX_OAUTH_GRANT_TYPE = "urn:ietf:params:oauth:grant-type:user_code"
@@ -89,6 +90,7 @@ STEPFUN_STEP_PLAN_CN_BASE_URL = "https://api.stepfun.com/step_plan/v1"
 CODEX_OAUTH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 CODEX_OAUTH_TOKEN_URL = "https://auth.openai.com/oauth/token"
 CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 120
+OPENAI_OAUTH_ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 60
 QWEN_OAUTH_CLIENT_ID = "f0304373b74a44d2b584a3fb70ca9e56"
 QWEN_OAUTH_TOKEN_URL = "https://chat.qwen.ai/api/v1/oauth2/token"
 QWEN_ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 120
@@ -161,6 +163,12 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         name="OpenAI Codex",
         auth_type="oauth_external",
         inference_base_url=DEFAULT_CODEX_BASE_URL,
+    ),
+    "openai-oauth": ProviderConfig(
+        id="openai-oauth",
+        name="OpenAI (OAuth)",
+        auth_type="oauth_external",
+        inference_base_url=DEFAULT_OPENAI_OAUTH_BASE_URL,
     ),
     "qwen-oauth": ProviderConfig(
         id="qwen-oauth",
@@ -1363,6 +1371,8 @@ def resolve_provider(
     _PROVIDER_ALIASES = {
         "glm": "zai", "z-ai": "zai", "z.ai": "zai", "zhipu": "zai",
         "google": "gemini", "google-gemini": "gemini", "google-ai-studio": "gemini",
+        "openai-oauth": "openai-oauth", "openai-subscription": "openai-oauth",
+        "chatgpt-oauth": "openai-oauth", "opencode-openai": "openai-oauth",
         "x-ai": "xai", "x.ai": "xai", "grok": "xai",
         "kimi": "kimi-coding", "kimi-for-coding": "kimi-coding", "moonshot": "kimi-coding",
         "kimi-cn": "kimi-coding-cn", "moonshot-cn": "kimi-coding-cn",
@@ -1541,6 +1551,83 @@ def _qwen_cli_auth_path() -> Path:
     return Path.home() / ".qwen" / "oauth_creds.json"
 
 
+def _openai_oauth_auth_path() -> Path:
+    override = os.getenv("HERMES_OPENAI_OAUTH_AUTH_PATH", "").strip()
+    if override:
+        return Path(override).expanduser()
+    return Path.home() / ".local" / "share" / "opencode" / "auth.json"
+
+
+def _openai_oauth_access_token_is_expiring(expires_at_ms: Any, skew_seconds: int) -> bool:
+    try:
+        expires_ms = int(expires_at_ms)
+    except Exception:
+        return False
+    return expires_ms <= int((time.time() + max(0, int(skew_seconds))) * 1000)
+
+
+def _read_openai_oauth_tokens() -> Dict[str, Any]:
+    """Read OpenCode/OpenAI OAuth tokens from the local auth store."""
+    auth_path = _openai_oauth_auth_path()
+    if not auth_path.is_file():
+        raise AuthError(
+            "OpenAI OAuth auth file not found. Log into OpenCode first, or set HERMES_OPENAI_OAUTH_AUTH_PATH.",
+            provider="openai-oauth",
+            code="openai_oauth_auth_missing",
+            relogin_required=True,
+        )
+    try:
+        payload = json.loads(auth_path.read_text())
+    except Exception as exc:
+        raise AuthError(
+            f"OpenAI OAuth auth file at {auth_path} is unreadable: {exc}",
+            provider="openai-oauth",
+            code="openai_oauth_auth_invalid_json",
+            relogin_required=True,
+        ) from exc
+
+    state = payload.get("openai") if isinstance(payload, dict) else None
+    if not isinstance(state, dict):
+        raise AuthError(
+            "OpenAI OAuth auth file is missing the 'openai' credential block.",
+            provider="openai-oauth",
+            code="openai_oauth_auth_missing_provider",
+            relogin_required=True,
+        )
+
+    access_token = str(state.get("access") or "").strip()
+    if not access_token:
+        raise AuthError(
+            "OpenAI OAuth auth file is missing the access token. Reauthenticate in OpenCode.",
+            provider="openai-oauth",
+            code="openai_oauth_access_missing",
+            relogin_required=True,
+        )
+
+    claims = _decode_jwt_claims(access_token)
+    expires_at_ms = state.get("expires")
+    try:
+        expires_at_ms = int(expires_at_ms)
+    except Exception:
+        exp = claims.get("exp")
+        expires_at_ms = int(float(exp) * 1000) if isinstance(exp, (int, float)) else None
+
+    auth_claims = claims.get("https://api.openai.com/auth")
+    account_id = state.get("accountId")
+    if not account_id and isinstance(auth_claims, dict):
+        account_id = auth_claims.get("chatgpt_account_id")
+
+    refresh_token = str(state.get("refresh") or "").strip() or None
+    return {
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "expires_at_ms": expires_at_ms,
+        "account_id": str(account_id or "").strip() or None,
+        "auth_file": auth_path,
+        "claims": claims,
+    }
+
+
 def _read_qwen_cli_tokens() -> Dict[str, Any]:
     auth_path = _qwen_cli_auth_path()
     if not auth_path.exists():
@@ -1709,6 +1796,73 @@ def resolve_qwen_runtime_credentials(
         "expires_at_ms": tokens.get("expiry_date"),
         "auth_file": str(_qwen_cli_auth_path()),
     }
+
+
+def resolve_openai_oauth_runtime_credentials(
+    *,
+    force_refresh: bool = False,
+    refresh_if_expiring: bool = True,
+    refresh_skew_seconds: int = OPENAI_OAUTH_ACCESS_TOKEN_REFRESH_SKEW_SECONDS,
+) -> Dict[str, Any]:
+    """Resolve runtime credentials for direct OpenAI OAuth.
+
+    Hermes reuses the external OpenCode auth store in read-only mode. When the
+    token is expired (or nearly expired), the caller must refresh it through
+    OpenCode because Hermes does not own this OAuth flow.
+    """
+    del force_refresh  # best effort only: re-read the external auth file below
+    data = _read_openai_oauth_tokens()
+    if refresh_if_expiring and _openai_oauth_access_token_is_expiring(
+        data.get("expires_at_ms"), refresh_skew_seconds,
+    ):
+        data = _read_openai_oauth_tokens()
+        if _openai_oauth_access_token_is_expiring(
+            data.get("expires_at_ms"), refresh_skew_seconds,
+        ):
+            raise AuthError(
+                "OpenAI OAuth access token is expired or expiring soon. Refresh it in OpenCode and try again.",
+                provider="openai-oauth",
+                code="openai_oauth_token_expired",
+                relogin_required=True,
+            )
+
+    base_url = (
+        os.getenv("HERMES_OPENAI_OAUTH_BASE_URL", "").strip().rstrip("/")
+        or DEFAULT_OPENAI_OAUTH_BASE_URL
+    )
+    return {
+        "provider": "openai-oauth",
+        "base_url": base_url,
+        "api_key": data["access_token"],
+        "source": "opencode-auth",
+        "expires_at_ms": data.get("expires_at_ms"),
+        "auth_file": str(data["auth_file"]),
+        "account_id": data.get("account_id"),
+        "refresh_token": data.get("refresh_token"),
+    }
+
+
+def get_openai_oauth_auth_status() -> Dict[str, Any]:
+    auth_path = _openai_oauth_auth_path()
+    try:
+        creds = resolve_openai_oauth_runtime_credentials(refresh_if_expiring=False)
+        return {
+            "logged_in": True,
+            "provider": "openai-oauth",
+            "auth_file": creds.get("auth_file"),
+            "source": creds.get("source"),
+            "api_key": creds.get("api_key"),
+            "expires_at_ms": creds.get("expires_at_ms"),
+            "account_id": creds.get("account_id"),
+            "has_refresh_token": bool(creds.get("refresh_token")),
+        }
+    except AuthError as exc:
+        return {
+            "logged_in": False,
+            "provider": "openai-oauth",
+            "auth_file": str(auth_path),
+            "error": str(exc),
+        }
 
 
 def get_qwen_auth_status() -> Dict[str, Any]:
@@ -4100,6 +4254,8 @@ def get_auth_status(provider_id: Optional[str] = None) -> Dict[str, Any]:
         return get_nous_auth_status()
     if target == "openai-codex":
         return get_codex_auth_status()
+    if target == "openai-oauth":
+        return get_openai_oauth_auth_status()
     if target == "qwen-oauth":
         return get_qwen_auth_status()
     if target == "google-gemini-cli":

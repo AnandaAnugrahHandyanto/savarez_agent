@@ -189,6 +189,16 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "gpt-4o",
         "gpt-4o-mini",
     ],
+    "openai-oauth": [
+        "gpt-5.4",
+        "gpt-5.4-mini",
+        "gpt-5-mini",
+        "gpt-5.3-codex",
+        "gpt-5.2-codex",
+        "gpt-4.1",
+        "gpt-4o",
+        "gpt-4o-mini",
+    ],
     "openai-codex": _codex_curated_models(),
     "copilot-acp": [
         "copilot-acp",
@@ -918,6 +928,7 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("anthropic",      "Anthropic",                "Anthropic (Claude models — API key or Claude Code)"),
     ProviderEntry("openai-codex",   "OpenAI Codex",             "OpenAI Codex"),
     ProviderEntry("alibaba",        "Qwen Cloud",               "Qwen Cloud / DashScope Coding (Qwen + multi-provider)"),
+    ProviderEntry("openai-oauth",   "OpenAI (OAuth)",           "OpenAI direct API via external OAuth token (reuses OpenCode login)"),
     ProviderEntry("xiaomi",         "Xiaomi MiMo",              "Xiaomi MiMo (MiMo-V2.5 and V2 models — pro, omni, flash)"),
     ProviderEntry("tencent-tokenhub", "Tencent TokenHub",       "Tencent TokenHub (Hy3 Preview — direct API via tokenhub.tencentmaas.com)"),
     ProviderEntry("nvidia",         "NVIDIA NIM",               "NVIDIA NIM (Nemotron models — build.nvidia.com or local NIM)"),
@@ -1018,6 +1029,9 @@ _PROVIDER_ALIASES = {
     "qwen": "alibaba",
     "alibaba-cloud": "alibaba",
     "qwen-portal": "qwen-oauth",
+    "openai-subscription": "openai-oauth",
+    "chatgpt-oauth": "openai-oauth",
+    "opencode-openai": "openai-oauth",
     "gemini-cli": "google-gemini-cli",
     "gemini-oauth": "google-gemini-cli",
     "hf": "huggingface",
@@ -2166,6 +2180,8 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
         except Exception:
             access_token = None
         return get_codex_model_ids(access_token=access_token)
+    if normalized == "openai-oauth":
+        return list(_PROVIDER_MODELS.get("openai-oauth", []))
     if normalized in {"copilot", "copilot-acp"}:
         try:
             live = _fetch_github_models(_resolve_copilot_catalog_api_key())
@@ -3479,6 +3495,43 @@ def validate_requested_model(
                 "message": (
                     f"Note: `{requested}` was not found in the OpenAI Codex model listing. "
                     "It may still work if your ChatGPT/Codex account has access to a newer or hidden model ID."
+                    f"{suggestion_text}"
+                ),
+            }
+
+    # Direct OpenAI OAuth tokens (for example, reused from OpenCode) may not
+    # have permission to call /v1/models even when inference works, so validate
+    # against the static OpenAI catalog instead of probing the endpoint.
+    if normalized == "openai-oauth":
+        oauth_models = list(_PROVIDER_MODELS.get("openai-oauth", []))
+        if oauth_models:
+            if requested_for_lookup in set(oauth_models):
+                return {
+                    "accepted": True,
+                    "persist": True,
+                    "recognized": True,
+                    "message": None,
+                }
+            auto = get_close_matches(requested_for_lookup, oauth_models, n=1, cutoff=0.9)
+            if auto:
+                return {
+                    "accepted": True,
+                    "persist": True,
+                    "recognized": True,
+                    "corrected_model": auto[0],
+                    "message": f"Auto-corrected `{requested}` → `{auto[0]}`",
+                }
+            suggestions = get_close_matches(requested_for_lookup, oauth_models, n=3, cutoff=0.5)
+            suggestion_text = ""
+            if suggestions:
+                suggestion_text = "\n  Similar models: " + ", ".join(f"`{s}`" for s in suggestions)
+            return {
+                "accepted": True,
+                "persist": True,
+                "recognized": False,
+                "message": (
+                    f"Note: `{requested}` was not found in the OpenAI OAuth model catalog. "
+                    "The OAuth token may still work for other direct OpenAI model IDs, but Hermes cannot verify them via /v1/models on this provider."
                     f"{suggestion_text}"
                 ),
             }
