@@ -547,6 +547,9 @@ def remove_board(slug: str, *, archive: bool = True) -> dict:
         return {"slug": normed, "action": "archived", "new_path": str(target)}
     else:
         import shutil
+        # Evict from the connect() init cache so stale entries don't
+        # interfere if the slug is later re-created.
+        _INITIALIZED_PATHS.discard(str((d / "kanban.db").resolve()))
         shutil.rmtree(d)
         return {"slug": normed, "action": "deleted", "new_path": ""}
 
@@ -916,7 +919,22 @@ def connect(
         path = db_path
     else:
         path = kanban_db_path(board=board)
-    path.parent.mkdir(parents=True, exist_ok=True)
+    # Only auto-create the directory for the default board (legacy path)
+    # or when an explicit db_path was given.  For named boards the
+    # directory is created by create_board(); if it was deleted via
+    # remove_board(archive=False) we must *not* silently recreate it --
+    # otherwise the gateway notifier/dispatcher tick resurrects deleted
+    # boards within seconds.  (Fixes #26046.)
+    _resolved_board = board
+    if db_path is None and _resolved_board is None:
+        _resolved_board = get_current_board()
+    if db_path is not None or _resolved_board == DEFAULT_BOARD:
+        path.parent.mkdir(parents=True, exist_ok=True)
+    elif not path.parent.is_dir():
+        raise FileNotFoundError(
+            f"Board directory {path.parent} does not exist -- "
+            "board may have been deleted"
+        )
     resolved = str(path.resolve())
     needs_init = resolved not in _INITIALIZED_PATHS
     conn = sqlite3.connect(str(path), isolation_level=None, timeout=30)
