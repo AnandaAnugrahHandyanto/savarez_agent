@@ -1415,6 +1415,13 @@ DEFAULT_CONFIG = {
         # same task/profile (spawn_failed, timed_out, or crashed). Reassignment
         # resets the streak for the new profile.
         "failure_limit": 2,
+
+        # Which profile-created subscriptions this gateway should deliver.
+        # Default: only handle subscriptions created by this profile itself.
+        #   ["*"]          — accept all profiles (notification center)
+        #   ["a", "b"]     — only accept subscriptions created by profile a or b
+        #   [] / missing   — same as [self] (legacy behaviour, profile-isolated)
+        "notification_sources": None,
     },
 
     # execute_code settings — controls the tool used for programmatic tool calls.

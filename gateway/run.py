@@ -4188,6 +4188,31 @@ class GatewayRunner:
             notifier_profile = self._active_profile_name()
             self._kanban_notifier_profile = notifier_profile
 
+        # Read notification_sources config once at boot. Controls which
+        # profile-owned subscriptions this gateway is allowed to deliver.
+        # Defaults to the current profile only (preserves legacy behaviour).
+        # Set to ["*"] to accept all profiles, or list specific names.
+        _notification_sources: set[str] = set()
+        try:
+            from hermes_cli.config import load_config as _load_config_for_sub_filter
+        except Exception:
+            pass
+        else:
+            try:
+                _cfg = _load_config_for_sub_filter()
+                _kcfg = _cfg.get("kanban", {}) if isinstance(_cfg, dict) else {}
+                _raw = _kcfg.get("notification_sources")
+                if isinstance(_raw, str):
+                    # Support comma-separated string e.g. "zilor-ppt,webmaster"
+                    _notification_sources = {s.strip() for s in _raw.split(",") if s.strip()}
+                elif isinstance(_raw, list):
+                    _notification_sources = {str(s).strip() for s in _raw if str(s).strip()}
+            except Exception:
+                pass
+        if not _notification_sources:
+            _notification_sources = {notifier_profile}
+        self._kanban_notification_sources = _notification_sources
+
         # Initial delay so the gateway can finish wiring adapters.
         await asyncio.sleep(5)
 
@@ -4250,10 +4275,13 @@ class GatewayRunner:
                                 logger.debug("kanban notifier: board %s has no subscriptions", slug)
                             for sub in subs:
                                 owner_profile = sub.get("notifier_profile") or None
-                                if owner_profile and owner_profile != notifier_profile:
+                                sources = getattr(self, "_kanban_notification_sources", {notifier_profile})
+                                if "*" not in sources and owner_profile and owner_profile not in sources:
                                     logger.debug(
-                                        "kanban notifier: subscription for %s owned by profile %s; current profile %s skipping",
+                                        "kanban notifier: subscription for %s owned by profile %s; "
+                                        "current profile %s sources %s — skipping",
                                         sub.get("task_id"), owner_profile, notifier_profile,
+                                        sorted(sources),
                                     )
                                     continue
                                 platform = (sub.get("platform") or "").lower()
