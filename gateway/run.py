@@ -8336,7 +8336,16 @@ class GatewayRunner:
         hasn't set ``allow_admin_from`` for the scope, the policy returns
         ``enabled=False`` and this method always returns None.
         """
-        from gateway.slash_access import policy_for_source as _policy_for_source
+        try:
+            from gateway.slash_access import policy_for_source as _policy_for_source
+        except ModuleNotFoundError as exc:
+            if exc.name != "gateway.slash_access":
+                raise
+            logger.warning(
+                "Slash access module is unavailable; allowing /%s for legacy checkout compatibility",
+                canonical_cmd,
+            )
+            return None
 
         if not canonical_cmd:
             return None
@@ -8374,7 +8383,23 @@ class GatewayRunner:
         (admin / user / unrestricted), and the slash commands they can
         actually run on this scope.
         """
-        from gateway.slash_access import policy_for_source as _policy_for_source
+        try:
+            from gateway.slash_access import policy_for_source as _policy_for_source
+        except ModuleNotFoundError as exc:
+            if exc.name != "gateway.slash_access":
+                raise
+            source = event.source
+            platform = source.platform.value if source and source.platform else "?"
+            chat_type = (source.chat_type if source else "") or "dm"
+            scope = "DM" if chat_type.lower() in {"dm", "direct", "private", ""} else "group/channel"
+            user_id = (source.user_id if source else None) or "?"
+            logger.warning("Slash access module is unavailable; treating /whoami as unrestricted")
+            return (
+                f"**You** — {platform} ({scope})\n"
+                f"User ID: `{user_id}`\n"
+                f"Tier: unrestricted (slash access module unavailable on this checkout)\n"
+                f"Slash commands: all available"
+            )
 
         source = event.source
         policy = _policy_for_source(self.config, source)

@@ -148,6 +148,27 @@ async def test_whoami_non_admin_lists_runnable_commands():
     assert "/model" in result
 
 
+@pytest.mark.asyncio
+async def test_slash_access_module_missing_keeps_basic_slash_commands_usable(monkeypatch):
+    """Mixed-version rollouts without gateway.slash_access should not break /new."""
+    runner = _make_runner(platform_extra={"allow_admin_from": ["111"]})
+    source = _make_source(user_id="999")
+    event = _make_event("/whoami", source)
+    real_import = __import__
+
+    def _fake_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "gateway.slash_access":
+            raise ModuleNotFoundError("No module named 'gateway.slash_access'", name=name)
+        return real_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr("builtins.__import__", _fake_import)
+
+    assert runner._check_slash_access(source, "new") is None
+    whoami = await runner._handle_whoami_command(event)
+    assert "Tier: unrestricted" in whoami
+    assert "slash access module unavailable" in whoami
+
+
 # ---------------------------------------------------------------------------
 # Gate denial — admin-only command attempted by non-admin
 # ---------------------------------------------------------------------------
