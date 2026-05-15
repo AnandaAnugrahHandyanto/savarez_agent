@@ -768,7 +768,18 @@ class TlonSSEClient:
                 except Exception as e:
                     logger.error("[tlon] Event handler error: %s", e)
         elif event_json is not None:
-            logger.debug("[tlon] Ignoring event with unknown sub_id=%s", sub_id)
+            # Some %channels/%groups events arrive without a usable
+            # subscription id. OpenClaw broadcasts these to all handlers and
+            # lets each handler filter by event shape; do the same so group
+            # mentions do not disappear before _handle_channel_event sees them.
+            logger.debug("[tlon] Broadcasting event with unknown sub_id=%s", sub_id)
+            for handler in list(self._event_handlers.values()):
+                if not handler.get("event"):
+                    continue
+                try:
+                    await handler["event"](event_json)
+                except Exception as e:
+                    logger.error("[tlon] Event handler error: %s", e)
 
     async def _ack(self, event_id: int) -> None:
         """Acknowledge events up to event_id."""
@@ -1106,6 +1117,7 @@ class TlonAdapter(BasePlatformAdapter):
         self._channel_to_group: Dict[str, str] = {}
         self._group_names: Dict[str, str] = {}
         self._participated_threads: Set[Tuple[str, str]] = set()
+        self._blob_retry_delay = self._env_float("TLON_BLOB_RETRY_DELAY", 5.0)
 
     @staticmethod
     def _env_float(name: str, default: float) -> float:
@@ -2321,27 +2333,70 @@ class TlonAdapter(BasePlatformAdapter):
             inviter = _normalize_ship(
                 str(invite.get("ship") or invite.get("inviter") or invite.get("invitedBy") or "")
             )
-            if allowlist and inviter not in allowlist and not self._is_owner(inviter):
-                continue
             group_flag = invite.get("groupFlag")
             if not isinstance(group_flag, str):
                 continue
-            try:
-                await self._sse.poke(
-                    app="groups",
-                    mark="group-join",
-                    json_data={"flag": group_flag, "join-all": True},
+            if self._is_owner(inviter):
+                await self._accept_group_invite(group_flag)
+                continue
+            if not self.auto_accept_group_invites:
+                await self._queue_group_invite_approval(inviter, invite)
+                continue
+            if not allowlist:
+                logger.info(
+                    "[tlon] Rejected group invite from %s to %s (empty group invite allowlist)",
+                    inviter or "(unknown)",
+                    group_flag,
                 )
-                logger.info("[tlon] Auto-accepted group invite to %s", group_flag)
-            except Exception as e:
-                logger.debug("[tlon] Failed to accept group invite %s: %s", group_flag, e)
+                await self._queue_group_invite_approval(inviter, invite)
+                continue
+            if inviter not in allowlist:
+                logger.info(
+                    "[tlon] Rejected group invite from %s to %s (not in group invite allowlist)",
+                    inviter or "(unknown)",
+                    group_flag,
+                )
+                await self._queue_group_invite_approval(inviter, invite)
+                continue
+            await self._accept_group_invite(group_flag)
+
+    async def _accept_group_invite(self, group_flag: str) -> None:
+        if not self._sse:
+            return
+        try:
+            await self._sse.poke(
+                app="groups",
+                mark="group-join",
+                json_data={"flag": group_flag, "join-all": True},
+            )
+            logger.info("[tlon] Auto-accepted group invite to %s", group_flag)
+        except Exception as e:
+            logger.debug("[tlon] Failed to accept group invite %s: %s", group_flag, e)
+
+    async def _queue_group_invite_approval(self, inviter: str, invite: Dict[str, Any]) -> None:
+        if not self.owner_ship or not inviter:
+            return
+        group_flag = invite.get("groupFlag")
+        if not isinstance(group_flag, str):
+            return
+        approval = create_pending_approval(
+            approval_type="group",
+            requesting_ship=inviter,
+            group_flag=group_flag,
+            group_title=(
+                invite.get("groupTitle")
+                if isinstance(invite.get("groupTitle"), str)
+                else None
+            ),
+            existing_ids=[item.id for item in self.pending_approvals],
+        )
+        await self._queue_approval(approval)
 
     async def _handle_group_foreigns_event(self, event: Any) -> None:
         """Handle OpenClaw-compatible groups /v1/foreigns updates."""
         if not isinstance(event, dict):
             return
-        if self.auto_accept_group_invites:
-            await self._handle_group_invites(event)
+        await self._handle_group_invites(event)
 
     async def _handle_groups_ui_event(self, event: Any) -> None:
         """
@@ -2558,9 +2613,30 @@ class TlonAdapter(BasePlatformAdapter):
             parent_id = seal.get("parent-id") or seal.get("parent")
 
             raw_text = _extract_message_text(content.get("content"))
+            effective_blob = content.get("blob")
+
+            # Thread replies often arrive as memo events without blob metadata.
+            # Use the v5 reply-essay scry OpenClaw uses before deciding the
+            # event is empty.
+            if is_thread_reply and not effective_blob and not raw_text.strip() and msg_id and effective_id:
+                effective_blob = await self._fetch_reply_blob(nest, msg_id, effective_id)
+
+            # Top-level file/image uploads can race the SSE event. If the
+            # message has no text/blob yet, wait briefly and retry through v4,
+            # which preserves essay.blob.
+            if (
+                not is_thread_reply
+                and not effective_blob
+                and not raw_text.strip()
+                and effective_id
+                and self._blob_retry_delay > 0
+            ):
+                await asyncio.sleep(self._blob_retry_delay)
+                effective_blob = await self._fetch_post_blob(nest, effective_id)
+
             text, media_urls, media_types, message_type = await self._prepare_media_context(
                 story_content=content.get("content"),
-                blob=content.get("blob"),
+                blob=effective_blob,
                 text=raw_text,
             )
             if not text.strip() and not media_urls:
@@ -2570,10 +2646,35 @@ class TlonAdapter(BasePlatformAdapter):
                        sender, nest, text[:80])
 
             mentioned = self._is_bot_mentioned(text)
+            owner_listen = self._should_owner_listen(sender, nest)
+
+            # If a text message already triggers the bot, do one delayed blob
+            # retry so captioned file/PDF uploads are visible to the agent too.
+            if (
+                not is_thread_reply
+                and not effective_blob
+                and raw_text.strip()
+                and (mentioned or owner_listen)
+                and self._blob_retry_delay > 0
+            ):
+                await asyncio.sleep(self._blob_retry_delay)
+                retry_blob = await self._fetch_post_blob(nest, effective_id)
+                if retry_blob:
+                    effective_blob = retry_blob
+                    text, media_urls, media_types, message_type = await self._prepare_media_context(
+                        story_content=content.get("content"),
+                        blob=effective_blob,
+                        text=raw_text,
+                    )
+                    mentioned = self._is_bot_mentioned(text)
+
             thread_key = (nest, _normalize_post_id(parent_id)) if parent_id else None
             in_participated_thread = bool(thread_key and thread_key in self._participated_threads)
-            owner_blob_only = bool(self._is_owner(sender) and media_urls and not raw_text.strip())
-            owner_listen = self._should_owner_listen(sender, nest)
+            owner_blob_only = bool(
+                self._is_owner(sender)
+                and (media_urls or effective_blob)
+                and not raw_text.strip()
+            )
 
             # In group channels, respond to mentions, participated threads, or
             # owner messages when owner-listen is enabled.
@@ -2655,6 +2756,107 @@ class TlonAdapter(BasePlatformAdapter):
 
         except Exception as e:
             logger.error("[tlon] Channel event error: %s", e, exc_info=True)
+
+    async def _fetch_post_blob(self, nest: str, post_id: Any) -> Optional[str]:
+        """Fetch a top-level post blob through channels v4.
+
+        Tlon's firehose can arrive before upload metadata has propagated, and
+        older/lightweight scries can strip blobs. OpenClaw uses channels v4
+        around/post scries here because they preserve essay.blob.
+        """
+        if not self._sse or not nest or not post_id:
+            return None
+        formatted_id = self._format_scry_post_id(post_id)
+        if not formatted_id:
+            return None
+        try:
+            data = await self._sse.scry(
+                f"/channels/v4/{nest}/posts/around/{formatted_id}/1/post"
+            )
+        except Exception as e:
+            logger.debug("[tlon] Blob post scry failed for %s/%s: %s", nest, post_id, e)
+            return None
+
+        posts = self._posts_from_scry_response(data)
+        wanted = _normalize_post_id(post_id)
+        for post in posts:
+            seal = post.get("seal") if isinstance(post, dict) else {}
+            essay = post.get("essay") if isinstance(post, dict) else None
+            if not isinstance(essay, dict):
+                r_post = post.get("r-post", {}) if isinstance(post, dict) else {}
+                set_data = r_post.get("set", {}) if isinstance(r_post, dict) else {}
+                essay = set_data.get("essay") if isinstance(set_data, dict) else None
+                seal = set_data.get("seal", seal) if isinstance(set_data, dict) else seal
+            seal_id = _normalize_post_id((seal or {}).get("id") if isinstance(seal, dict) else "")
+            if wanted and seal_id and seal_id != wanted and len(posts) != 1:
+                continue
+            blob = essay.get("blob") if isinstance(essay, dict) else None
+            if blob is not None:
+                return blob if isinstance(blob, str) else json.dumps(blob)
+        return None
+
+    async def _fetch_reply_blob(self, nest: str, parent_id: Any, reply_id: Any) -> Optional[str]:
+        """Fetch a thread reply blob through channels v5 reply essays."""
+        if not self._sse or not nest or not parent_id or not reply_id:
+            return None
+        formatted_parent = self._format_scry_post_id(parent_id)
+        if not formatted_parent:
+            return None
+        try:
+            data = await self._sse.scry(
+                f"/channels/v5/{nest}/posts/post/id/{formatted_parent}/replies/newest/5"
+            )
+        except Exception as e:
+            logger.debug(
+                "[tlon] Blob reply scry failed for %s/%s/%s: %s",
+                nest,
+                parent_id,
+                reply_id,
+                e,
+            )
+            return None
+
+        replies = self._posts_from_scry_response(data)
+        wanted = _normalize_post_id(reply_id)
+        for reply in replies:
+            if not isinstance(reply, dict):
+                continue
+            seal = reply.get("seal") or {}
+            essay = reply.get("reply-essay") or reply.get("memo")
+            r_reply = reply.get("r-reply")
+            if isinstance(r_reply, dict):
+                set_data = r_reply.get("set", {})
+                if isinstance(set_data, dict):
+                    essay = essay or set_data.get("reply-essay") or set_data.get("memo")
+                    seal = seal or set_data.get("seal", {})
+            seal_id = _normalize_post_id(seal.get("id") if isinstance(seal, dict) else "")
+            if wanted and seal_id and seal_id != wanted and len(replies) != 1:
+                continue
+            blob = essay.get("blob") if isinstance(essay, dict) else None
+            if blob is not None:
+                return blob if isinstance(blob, str) else json.dumps(blob)
+        return None
+
+    @staticmethod
+    def _posts_from_scry_response(data: Any) -> List[Dict[str, Any]]:
+        if isinstance(data, list):
+            return [item for item in data if isinstance(item, dict)]
+        if not isinstance(data, dict):
+            return []
+        for key in ("posts", "replies", "writs"):
+            value = data.get(key)
+            if isinstance(value, list):
+                return [item for item in value if isinstance(item, dict)]
+            if isinstance(value, dict):
+                return [item for item in value.values() if isinstance(item, dict)]
+        return [item for item in data.values() if isinstance(item, dict)]
+
+    @staticmethod
+    def _format_scry_post_id(post_id: Any) -> str:
+        bare = str(post_id or "").split("/")[-1].replace(".", "")
+        if bare.isdigit():
+            return _format_ud(int(bare))
+        return str(post_id or "")
 
     async def _handle_dm_event(self, event: Any) -> None:
         """Handle a chat firehose (/v3) event."""

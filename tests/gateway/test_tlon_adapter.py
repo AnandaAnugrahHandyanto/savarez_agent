@@ -4,9 +4,10 @@ from unittest.mock import AsyncMock
 import pytest
 
 from gateway.config import PlatformConfig
-from gateway.platforms.base import SendResult
+from gateway.platforms.base import MessageType, SendResult
 from gateway.platforms.tlon import (
     TlonAdapter,
+    TlonSSEClient,
     _extract_message_text,
     _text_to_story,
 )
@@ -158,6 +159,41 @@ def test_parse_settings_response_reads_tlon_bucket():
     assert settings.owner_ship == "~ten"
     assert settings.owner_listen_enabled is False
     assert settings.owner_listen_disabled_channels == ["chat/~host/noisy"]
+
+
+@pytest.mark.asyncio
+async def test_sse_broadcasts_unknown_subscription_id_like_openclaw():
+    client = TlonSSEClient("http://ship.test", "code", "~bot-palnet")
+    seen = []
+
+    async def channel_handler(event):
+        seen.append(("channels", event))
+
+    async def dm_handler(event):
+        seen.append(("chat", event))
+
+    await client.subscribe(
+        app="channels",
+        path="/v2",
+        on_event=channel_handler,
+        on_error=None,
+        on_quit=None,
+    )
+    await client.subscribe(
+        app="chat",
+        path="/v3",
+        on_event=dm_handler,
+        on_error=None,
+        on_quit=None,
+    )
+
+    await client._process_event(
+        'id: 1\n'
+        'data: {"json":{"nest":"chat/~host/general","response":{"post":{}}}}\n'
+    )
+
+    assert [name for name, _event in seen] == ["channels", "chat"]
+    assert seen[0][1]["nest"] == "chat/~host/general"
 
 
 def test_approval_formatting_lists_pending_request():
@@ -314,6 +350,70 @@ async def test_foreigns_event_auto_accepts_group_invites(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_foreigns_event_empty_allowlist_is_fail_closed(monkeypatch):
+    monkeypatch.setenv("TLON_SHIP_NAME", "~bot-palnet")
+    adapter = TlonAdapter(PlatformConfig())
+    adapter.auto_accept_group_invites = True
+    adapter._settings.group_invite_allowlist = []
+    adapter.owner_ship = "~malmur-halmex"
+    adapter._sse = AsyncMock()
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="~bot/170.141"))
+    adapter._put_settings_entry = AsyncMock()
+
+    await adapter._handle_group_foreigns_event({
+        "~host/group": {
+            "invites": [{"valid": True, "ship": "~zod"}],
+        }
+    })
+
+    adapter._sse.poke.assert_not_awaited()
+    assert len(adapter.pending_approvals) == 1
+    assert adapter.pending_approvals[0].type == "group"
+    assert adapter.pending_approvals[0].requesting_ship == "~zod"
+
+
+@pytest.mark.asyncio
+async def test_foreigns_event_queues_approval_when_auto_accept_disabled(monkeypatch):
+    monkeypatch.setenv("TLON_SHIP_NAME", "~bot-palnet")
+    adapter = TlonAdapter(PlatformConfig())
+    adapter.auto_accept_group_invites = False
+    adapter._settings.group_invite_allowlist = ["~zod"]
+    adapter.owner_ship = "~malmur-halmex"
+    adapter._sse = AsyncMock()
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="~bot/170.141"))
+    adapter._put_settings_entry = AsyncMock()
+
+    await adapter._handle_group_foreigns_event({
+        "~host/group": {
+            "preview": {"meta": {"title": "Test Group"}},
+            "invites": [{"valid": True, "ship": "~zod"}],
+        }
+    })
+
+    adapter._sse.poke.assert_not_awaited()
+    assert len(adapter.pending_approvals) == 1
+    assert adapter.pending_approvals[0].group_flag == "~host/group"
+    assert adapter.pending_approvals[0].group_title == "Test Group"
+
+
+@pytest.mark.asyncio
+async def test_foreigns_event_accepts_owner_invite_even_without_auto_accept(monkeypatch):
+    monkeypatch.setenv("TLON_SHIP_NAME", "~bot-palnet")
+    adapter = TlonAdapter(PlatformConfig())
+    adapter.auto_accept_group_invites = False
+    adapter.owner_ship = "~malmur-halmex"
+    adapter._sse = AsyncMock()
+
+    await adapter._handle_group_foreigns_event({
+        "~host/group": {
+            "invites": [{"valid": True, "ship": "~malmur-halmex"}],
+        }
+    })
+
+    adapter._sse.poke.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_channel_event_routes_top_level_mentions(monkeypatch):
     monkeypatch.setenv("TLON_SHIP_NAME", "~bot-palnet")
     monkeypatch.setenv("TLON_ALLOW_ALL_USERS", "true")
@@ -420,6 +520,115 @@ async def test_channel_event_routes_owner_without_mention(monkeypatch):
     adapter.handle_message.assert_awaited_once()
     event = adapter.handle_message.await_args.args[0]
     assert event.text == "hello without mention"
+
+
+@pytest.mark.asyncio
+async def test_channel_event_retries_delayed_top_level_blob(monkeypatch):
+    monkeypatch.setenv("TLON_SHIP_NAME", "~bot-palnet")
+    monkeypatch.setenv("TLON_OWNER_SHIP", "~zod")
+    monkeypatch.setattr("gateway.platforms.tlon.asyncio.sleep", AsyncMock())
+    adapter = TlonAdapter(PlatformConfig())
+    adapter.monitored_channels = {"chat/~host/test"}
+    adapter.handle_message = AsyncMock()
+    adapter._fetch_post_blob = AsyncMock(
+        return_value='[{"type":"file","fileUri":"https://example.com/a.pdf","name":"a.pdf","mimeType":"application/pdf"}]'
+    )
+
+    async def fake_prepare(*, story_content, blob, text):
+        if blob:
+            return (
+                '[file: a.pdf (application/pdf, unknown size)] https://example.com/a.pdf',
+                ["/tmp/a.pdf"],
+                ["application/pdf"],
+                MessageType.DOCUMENT,
+            )
+        return text, [], [], MessageType.TEXT
+
+    adapter._prepare_media_context = fake_prepare
+
+    await adapter._handle_channel_event({
+        "nest": "chat/~host/test",
+        "response": {
+            "post": {
+                "id": "170141184507864167403996323545639550976",
+                "r-post": {
+                    "set": {
+                        "seal": {"id": "170141184507864167403996323545639550976"},
+                        "essay": {
+                            "author": "~zod",
+                            "sent": 1_700_000_000_000,
+                            "content": [],
+                        },
+                    }
+                },
+            }
+        },
+    })
+
+    adapter._fetch_post_blob.assert_awaited_once()
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.message_type == MessageType.DOCUMENT
+    assert event.media_urls == ["/tmp/a.pdf"]
+    assert "a.pdf" in event.text
+
+
+@pytest.mark.asyncio
+async def test_channel_event_fetches_thread_reply_blob(monkeypatch):
+    monkeypatch.setenv("TLON_SHIP_NAME", "~bot-palnet")
+    monkeypatch.setenv("TLON_OWNER_SHIP", "~zod")
+    adapter = TlonAdapter(PlatformConfig())
+    adapter.monitored_channels = {"chat/~host/test"}
+    adapter.handle_message = AsyncMock()
+    adapter._fetch_reply_blob = AsyncMock(
+        return_value='[{"type":"file","fileUri":"https://example.com/thread.pdf","name":"thread.pdf","mimeType":"application/pdf"}]'
+    )
+
+    async def fake_prepare(*, story_content, blob, text):
+        if blob:
+            return (
+                '[file: thread.pdf (application/pdf, unknown size)] https://example.com/thread.pdf',
+                ["/tmp/thread.pdf"],
+                ["application/pdf"],
+                MessageType.DOCUMENT,
+            )
+        return text, [], [], MessageType.TEXT
+
+    adapter._prepare_media_context = fake_prepare
+
+    await adapter._handle_channel_event({
+        "nest": "chat/~host/test",
+        "response": {
+            "post": {
+                "id": "parent-post",
+                "r-post": {
+                    "reply": {
+                        "id": "reply-post",
+                        "r-reply": {
+                            "set": {
+                                "seal": {"parent-id": "parent-post"},
+                                "memo": {
+                                    "author": "~zod",
+                                    "sent": 1_700_000_000_000,
+                                    "content": [],
+                                },
+                            }
+                        },
+                    }
+                },
+            }
+        },
+    })
+
+    adapter._fetch_reply_blob.assert_awaited_once_with(
+        "chat/~host/test",
+        "parent-post",
+        "reply-post",
+    )
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.reply_to_message_id == "parent-post"
+    assert event.media_urls == ["/tmp/thread.pdf"]
 
 
 @pytest.mark.asyncio
