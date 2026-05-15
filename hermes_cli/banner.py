@@ -151,6 +151,22 @@ def _check_via_rev(local_rev: str) -> Optional[int]:
     return 0 if upstream_rev == local_rev else UPDATE_AVAILABLE_NO_COUNT
 
 
+def _git_rev(repo_dir: Path, rev: str) -> Optional[str]:
+    """Return the full git SHA for ``rev`` in ``repo_dir``."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", rev],
+            capture_output=True, text=True, timeout=5,
+            cwd=str(repo_dir),
+        )
+    except Exception:
+        return None
+    if result.returncode != 0:
+        return None
+    value = (result.stdout or "").strip()
+    return value or None
+
+
 def _check_via_local_git(repo_dir: Path) -> Optional[int]:
     """Count commits behind origin/main in a local checkout."""
     try:
@@ -189,23 +205,10 @@ def check_for_updates() -> Optional[int]:
     hermes_home = get_hermes_home()
     cache_file = hermes_home / ".update_check"
     embedded_rev = os.environ.get("HERMES_REVISION") or None
+    repo_dir: Optional[Path] = None
+    local_head: Optional[str] = None
 
-    # Read cache — invalidate if the embedded rev has changed since last check
-    now = time.time()
-    try:
-        if cache_file.exists():
-            cached = json.loads(cache_file.read_text())
-            if (
-                now - cached.get("ts", 0) < _UPDATE_CHECK_CACHE_SECONDS
-                and cached.get("rev") == embedded_rev
-            ):
-                return cached.get("behind")
-    except Exception:
-        pass
-
-    if embedded_rev:
-        behind = _check_via_rev(embedded_rev)
-    else:
+    if not embedded_rev:
         # Prefer the running code's location over the profile-scoped path.
         # $HERMES_HOME/hermes-agent/ may be a stale copy from --clone-all;
         # Path(__file__) always resolves to the actual installed checkout.
@@ -214,10 +217,38 @@ def check_for_updates() -> Optional[int]:
             repo_dir = hermes_home / "hermes-agent"
         if not (repo_dir / ".git").exists():
             return None
+        assert repo_dir is not None
+        local_head = _git_rev(repo_dir, "HEAD")
+
+    # Read cache — invalidate if the embedded rev or local git HEAD has
+    # changed since last check. Without the HEAD key, rebasing/switching a
+    # git install can leave a stale "N commits behind" banner for six hours.
+    now = time.time()
+    try:
+        if cache_file.exists():
+            cached = json.loads(cache_file.read_text())
+            if (
+                now - cached.get("ts", 0) < _UPDATE_CHECK_CACHE_SECONDS
+                and cached.get("rev") == embedded_rev
+                and cached.get("head") == local_head
+            ):
+                return cached.get("behind")
+    except Exception:
+        pass
+
+    if embedded_rev:
+        behind = _check_via_rev(embedded_rev)
+    else:
+        assert repo_dir is not None
         behind = _check_via_local_git(repo_dir)
 
     try:
-        cache_file.write_text(json.dumps({"ts": now, "behind": behind, "rev": embedded_rev}))
+        cache_file.write_text(json.dumps({
+            "ts": now,
+            "behind": behind,
+            "rev": embedded_rev,
+            "head": local_head,
+        }))
     except Exception:
         pass
 
