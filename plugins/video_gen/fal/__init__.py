@@ -281,6 +281,16 @@ def _clamp_duration(family: Dict[str, Any], duration: Optional[int]) -> Optional
     return min(durations, key=lambda d: abs(d - duration))
 
 
+def _payload_duration(family: Dict[str, Any], duration: Optional[int]) -> Any:
+    clamped = _clamp_duration(family, duration)
+    if clamped is None:
+        return None
+    suffix = family.get("duration_suffix", "")
+    if suffix:
+        return f"{clamped}{suffix}"
+    return clamped
+
+
 def _duration_seconds(value: Any) -> int:
     if isinstance(value, bool):
         return 0
@@ -390,10 +400,10 @@ def _build_payload(
             payload["resolution"] = resolution
         # else: let the endpoint default
 
-    clamped = _clamp_duration(family, duration)
-    if clamped is not None and family.get("durations"):
-        suffix = family.get("duration_suffix", "")
-        payload["duration"] = f"{clamped}{suffix}"
+    if family.get("durations"):
+        payload_duration = _payload_duration(family, duration)
+        if payload_duration is not None:
+            payload["duration"] = payload_duration
 
     if family.get("audio") and audio is not None:
         payload["generate_audio"] = bool(audio)
@@ -585,7 +595,7 @@ def _infer_source_aspect_ratio(source: Optional[str]) -> Optional[str]:
 
 
 def _should_preserve_source_aspect(aspect_ratio: str) -> bool:
-    return not aspect_ratio or aspect_ratio == "16:9" or aspect_ratio == "auto"
+    return not aspect_ratio or aspect_ratio == "auto"
 
 
 # ---------------------------------------------------------------------------
@@ -948,11 +958,16 @@ class FALVideoGenProvider(VideoGenProvider):
                 provider="fal", model=family_id, prompt=prompt,
             )
 
+        aspect_ratio = (aspect_ratio or "").strip()
         if image_url_norm and _should_preserve_source_aspect(aspect_ratio):
             inferred_aspect_ratio = _infer_source_aspect_ratio(image_url_norm)
             family_aspect_ratios = family.get("aspect_ratios") or ()
             if inferred_aspect_ratio and inferred_aspect_ratio in family_aspect_ratios:
                 aspect_ratio = inferred_aspect_ratio
+            elif "auto" in family_aspect_ratios:
+                aspect_ratio = "auto"
+        if not aspect_ratio:
+            aspect_ratio = "16:9"
 
         try:
             image_url_norm = _prepare_fal_file_url(image_url_norm, fal_client)

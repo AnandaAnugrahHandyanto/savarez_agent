@@ -136,10 +136,10 @@ VIDEO_GENERATE_SCHEMA: Dict[str, Any] = {
                 "type": "string",
                 "enum": list(COMMON_ASPECT_RATIOS),
                 "description": (
-                    "Output aspect ratio. Providers clamp to their supported "
-                    "set."
+                    "Output aspect ratio. For image-to-video, omit this "
+                    "to preserve or infer the source image aspect ratio. "
+                    "Providers clamp to their supported set."
                 ),
-                "default": DEFAULT_ASPECT_RATIO,
             },
             "resolution": {
                 "type": "string",
@@ -342,7 +342,16 @@ def _handle_video_generate(args: Dict[str, Any], **_kw: Any) -> str:
     video_url = (args.get("video_url") or "").strip() or None
     reference_image_urls = _normalize_reference_images(args.get("reference_image_urls"))
     duration = _coerce_int(args.get("duration"))
-    aspect_ratio = (args.get("aspect_ratio") or DEFAULT_ASPECT_RATIO).strip() or DEFAULT_ASPECT_RATIO
+    raw_aspect_ratio = args.get("aspect_ratio")
+    if isinstance(raw_aspect_ratio, str) and raw_aspect_ratio.strip():
+        aspect_ratio = raw_aspect_ratio.strip()
+    elif image_url:
+        # Do not inject the text-to-video landscape default into image-to-video
+        # calls. Providers that support source-preserving behavior can map this
+        # to their native "auto" handling or infer from the input image.
+        aspect_ratio = "auto"
+    else:
+        aspect_ratio = DEFAULT_ASPECT_RATIO
     resolution = (args.get("resolution") or DEFAULT_RESOLUTION).strip() or DEFAULT_RESOLUTION
     negative_prompt = (args.get("negative_prompt") or "").strip() or None
     audio = _coerce_bool(args.get("audio"))
@@ -592,6 +601,7 @@ def _build_dynamic_video_schema() -> Dict[str, Any]:
 
     if caps.get("aspect_ratios"):
         parts.append(f"- aspect_ratio choices: {', '.join(caps['aspect_ratios'])}")
+        parts.append("- image-to-video: omit aspect_ratio to preserve/infer the source image aspect")
     if caps.get("resolutions"):
         parts.append(f"- resolution choices: {', '.join(caps['resolutions'])}")
     if caps.get("min_duration") and caps.get("max_duration"):

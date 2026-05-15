@@ -228,15 +228,14 @@ FAL_MODELS: Dict[str, Dict[str, Any]] = {
         "strengths": "SOTA text rendering + CJK, world-aware photorealism",
         "price": "$0.04–0.06/image",
         # GPT Image 2 uses FAL's standard preset enum (unlike 1.5's literal
-        # dimensions). We map to the 4:3 variants — the 16:9 presets
-        # (1024x576) fall below GPT-Image-2's 655,360 min-pixel requirement
-        # and would be rejected. 4:3 keeps us above the minimum on all
-        # three aspect ratios.
+        # dimensions). The FAL schema exposes both 4:3 and 16:9 presets; keep
+        # Hermes' landscape/portrait aliases consistent with the rest of the
+        # image tool surface.
         "size_style": "image_size_preset",
         "sizes": {
-            "landscape": "landscape_4_3",   # 1024x768
+            "landscape": "landscape_16_9",  # 1024x576
             "square": "square_hd",            # 1024x1024
-            "portrait": "portrait_4_3",       # 768x1024
+            "portrait": "portrait_16_9",       # 576x1024
         },
         "defaults": {
             # Same quality pinning as gpt-image-1.5: medium keeps Nous
@@ -1108,10 +1107,12 @@ def _build_fal_edit_payload(
     if isinstance(image_size, str) and image_size.strip() and image_sizes:
         size = image_size.strip()
         size_aliases = {
-            "landscape": "landscape_4_3",
+            "landscape": "landscape_16_9",
             "wide": "landscape_16_9",
-            "portrait": "portrait_4_3",
+            "standard_landscape": "landscape_4_3",
+            "portrait": "portrait_16_9",
             "vertical": "portrait_16_9",
+            "standard_portrait": "portrait_4_3",
             "square": "square_hd",
         }
         size = size_aliases.get(size.lower(), size)
@@ -1427,6 +1428,8 @@ def image_edit_tool(
             raise ValueError(message)
 
         image_urls = _prepare_image_edit_urls(image_urls)
+        if isinstance(mask_url, str) and mask_url.strip():
+            mask_url = _prepare_image_edit_urls([mask_url.strip()])[0]
 
         arguments = _build_fal_edit_payload(
             model_id,

@@ -140,20 +140,20 @@ class TestGptLiteralFamily:
 
 class TestGptImage2Presets:
     """GPT Image 2 uses preset enum sizes (not literal strings like 1.5).
-    Mapped to 4:3 variants so we stay above the 655,360 min-pixel floor
-    (16:9 presets at 1024x576 = 589,824 would be rejected)."""
+    FAL's current schema exposes both 4:3 and 16:9 presets, so Hermes'
+    landscape/portrait aliases stay consistent with other image models."""
 
-    def test_gpt2_landscape_uses_4_3_preset(self, image_tool):
+    def test_gpt2_landscape_uses_16_9_preset(self, image_tool):
         p = image_tool._build_fal_payload("fal-ai/gpt-image-2", "hello", "landscape")
-        assert p["image_size"] == "landscape_4_3"
+        assert p["image_size"] == "landscape_16_9"
 
     def test_gpt2_square_uses_square_hd(self, image_tool):
         p = image_tool._build_fal_payload("fal-ai/gpt-image-2", "hello", "square")
         assert p["image_size"] == "square_hd"
 
-    def test_gpt2_portrait_uses_4_3_preset(self, image_tool):
+    def test_gpt2_portrait_uses_16_9_preset(self, image_tool):
         p = image_tool._build_fal_payload("fal-ai/gpt-image-2", "hello", "portrait")
-        assert p["image_size"] == "portrait_4_3"
+        assert p["image_size"] == "portrait_16_9"
 
     def test_gpt2_quality_pinned_to_medium(self, image_tool):
         p = image_tool._build_fal_payload("fal-ai/gpt-image-2", "hi", "square")
@@ -459,7 +459,7 @@ class TestFalImageEditPayload:
             num_images=2,
         )
         assert payload["image_urls"] == ["https://example.com/product.png"]
-        assert payload["image_size"] == "landscape_4_3"
+        assert payload["image_size"] == "landscape_16_9"
         assert payload["quality"] == "medium"
         assert payload["output_format"] == "webp"
         assert payload["mask_url"] == "https://example.com/mask.png"
@@ -565,6 +565,51 @@ class TestFalImageEditDispatch:
         assert result["provider"] == "fal"
         assert captured["model"] == "fal-ai/nano-banana/edit"
         assert captured["arguments"]["image_urls"] == ["https://example.com/car.png"]
+
+    def test_image_edit_uploads_local_mask_before_submit(self, image_tool, tmp_path: Path, monkeypatch):
+        source = tmp_path / "source.png"
+        mask = tmp_path / "mask.png"
+        source.write_bytes(b"fake source")
+        mask.write_bytes(b"fake mask")
+        captured = {}
+
+        class Handle:
+            def get(self):
+                return {"images": [{"url": "https://fal.example/edited.png"}]}
+
+        class FakeFalClient:
+            @staticmethod
+            def upload_file(path):
+                return f"https://v3.fal.media/uploaded/{path.name}"
+
+        def fake_submit(model, arguments):
+            captured["model"] = model
+            captured["arguments"] = arguments
+            return Handle()
+
+        monkeypatch.setattr(image_tool, "fal_key_is_configured", lambda: True)
+        monkeypatch.setattr(image_tool, "_resolve_managed_fal_gateway", lambda: None)
+        monkeypatch.setattr(image_tool, "_read_configured_image_provider", lambda: None)
+        monkeypatch.setattr(image_tool, "_load_fal_client", lambda: FakeFalClient)
+        monkeypatch.setattr(image_tool, "fal_client", FakeFalClient)
+        monkeypatch.setattr(image_tool, "_submit_fal_request", fake_submit)
+
+        raw = image_tool._handle_image_edit({
+            "prompt": "change only the masked area",
+            "image_path": str(source),
+            "mask_url": str(mask),
+            "model": "openai/gpt-image-2/edit",
+            "quality": "low",
+            "image_size": "portrait",
+        })
+        result = json.loads(raw)
+
+        assert result["success"] is True
+        assert captured["model"] == "openai/gpt-image-2/edit"
+        assert captured["arguments"]["image_urls"] == ["https://v3.fal.media/uploaded/source.png"]
+        assert captured["arguments"]["mask_url"] == "https://v3.fal.media/uploaded/mask.png"
+        assert captured["arguments"]["quality"] == "low"
+        assert captured["arguments"]["image_size"] == "portrait_16_9"
 
     def test_image_edit_rejects_non_fal_configured_provider(self, image_tool, monkeypatch):
         monkeypatch.setattr(image_tool, "_read_configured_image_provider", lambda: "openai")

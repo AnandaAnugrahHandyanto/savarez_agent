@@ -16,16 +16,12 @@ the two surfaces stay learnable together.
 
 Unified surface
 ---------------
-One tool — ``video_generate`` — covers **text-to-video** and **image-to-video**.
-The router is the presence of ``image_url``: if it's set, the provider routes
-to its image-to-video endpoint; if it's omitted, the provider routes to
-text-to-video. Users pick one **model family** (e.g. Pixverse v6, Veo 3.1,
-Kling O3 Standard); the provider handles which underlying FAL/xAI endpoint
-to hit.
-
-Video edit and video extend are intentionally NOT exposed in this surface —
-the inconsistency across backends is too large for one unified tool. If
-those use cases warrant attention later they can ship as separate tools.
+One tool — ``video_generate`` — covers **text-to-video**, **image-to-video**,
+video edit, and video extend. The generate router is the presence of
+``image_url``: if it's set, the provider routes to its image-to-video endpoint;
+if it's omitted, the provider routes to text-to-video. Users pick one **model
+family** (e.g. Pixverse v6, Veo 3.1, Kling v3 Standard); the provider handles
+which underlying FAL/xAI endpoint to hit.
 
 Response shape
 --------------
@@ -36,7 +32,7 @@ All providers return a dict built by :func:`success_response` /
     video           str | None      URL or absolute file path
     model           str             provider-specific model identifier
     prompt          str             echoed prompt
-    modality        str             "text" | "image" (which mode was used)
+    modality        str             "text" | "image" | "reference" | "edit" | "extend"
     aspect_ratio    str             provider-native (e.g. "16:9") or ""
     duration        int             seconds (0 if not applicable)
     provider        str             provider name (for diagnostics)

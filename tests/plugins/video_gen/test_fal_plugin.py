@@ -257,12 +257,17 @@ class TestFamilyRouting:
             "make it move",
             model="grok-imagine-video",
             image_url="https://example.com/frame.png",
-            duration=6,
+            duration=5,
+            aspect_ratio="9:16",
             resolution="720p",
         )
         assert result["success"] is True
         assert with_fake_fal["endpoint"] == "xai/grok-imagine-video/image-to-video"
         assert with_fake_fal["arguments"]["image_url"] == "https://example.com/frame.png"
+        assert with_fake_fal["arguments"]["duration"] == 5
+        assert isinstance(with_fake_fal["arguments"]["duration"], int)
+        assert with_fake_fal["arguments"]["aspect_ratio"] == "9:16"
+        assert with_fake_fal["arguments"]["resolution"] == "720p"
 
     def test_local_image_url_is_uploaded_before_i2v(self, tmp_path, with_fake_fal):
         from plugins.video_gen.fal import FALVideoGenProvider
@@ -275,11 +280,16 @@ class TestFamilyRouting:
             model="grok-imagine-video",
             image_url=str(source),
             duration=5,
+            aspect_ratio="9:16",
+            resolution="720p",
         )
         assert result["success"] is True
         assert with_fake_fal["arguments"]["image_url"] == "https://fake/uploads/frame.png"
+        assert with_fake_fal["arguments"]["duration"] == 5
+        assert with_fake_fal["arguments"]["aspect_ratio"] == "9:16"
+        assert with_fake_fal["arguments"]["resolution"] == "720p"
 
-    def test_portrait_source_overrides_default_landscape_ar(self, tmp_path, with_fake_fal):
+    def test_portrait_source_with_auto_aspect_infers_portrait_ar(self, tmp_path, with_fake_fal):
         from plugins.video_gen.fal import FALVideoGenProvider
 
         source = tmp_path / "portrait.png"
@@ -289,12 +299,28 @@ class TestFamilyRouting:
             "animate this vertical still",
             model="grok-imagine-video",
             image_url=str(source),
-            aspect_ratio="16:9",
+            aspect_ratio="auto",
             duration=5,
         )
         assert result["success"] is True
         assert with_fake_fal["arguments"]["aspect_ratio"] == "9:16"
         assert result["aspect_ratio"] == "9:16"
+
+    def test_explicit_landscape_aspect_is_not_rewritten(self, tmp_path, with_fake_fal):
+        from plugins.video_gen.fal import FALVideoGenProvider
+
+        source = tmp_path / "portrait.png"
+        source.write_bytes(_png_bytes(9, 16))
+
+        result = FALVideoGenProvider().generate(
+            "animate this vertical still as landscape",
+            model="grok-imagine-video",
+            image_url=str(source),
+            aspect_ratio="16:9",
+            duration=5,
+        )
+        assert result["success"] is True
+        assert with_fake_fal["arguments"]["aspect_ratio"] == "16:9"
 
     def test_happy_horse_uses_alibaba_image_endpoint(self, with_fake_fal):
         from plugins.video_gen.fal import FALVideoGenProvider
@@ -323,6 +349,43 @@ class TestFamilyRouting:
         assert with_fake_fal["endpoint"] == "bytedance/seedance-2.0/reference-to-video"
         assert with_fake_fal["arguments"]["image_urls"] == ["https://example.com/ref.png"]
 
+    def test_local_reference_images_are_uploaded_before_reference_to_video(self, tmp_path, with_fake_fal):
+        from plugins.video_gen.fal import FALVideoGenProvider
+
+        ref = tmp_path / "ref.png"
+        ref.write_bytes(_png_bytes(16, 9))
+
+        result = FALVideoGenProvider().generate(
+            "animate @Image1",
+            model="seedance-2.0",
+            reference_image_urls=[str(ref)],
+        )
+        assert result["success"] is True
+        assert result["modality"] == "reference"
+        assert with_fake_fal["arguments"]["image_urls"] == ["https://fake/uploads/ref.png"]
+
+    def test_local_start_and_end_frames_are_uploaded_before_i2v(self, tmp_path, with_fake_fal):
+        from plugins.video_gen.fal import FALVideoGenProvider
+
+        start = tmp_path / "start.png"
+        end = tmp_path / "end.png"
+        start.write_bytes(_png_bytes(16, 9))
+        end.write_bytes(_png_bytes(16, 9))
+
+        result = FALVideoGenProvider().generate(
+            "move from start to end frame",
+            model="seedance-2.0",
+            image_url=str(start),
+            end_image_url=str(end),
+            duration=5,
+            aspect_ratio="16:9",
+            resolution="720p",
+        )
+        assert result["success"] is True
+        assert with_fake_fal["arguments"]["image_url"] == "https://fake/uploads/start.png"
+        assert with_fake_fal["arguments"]["end_image_url"] == "https://fake/uploads/end.png"
+        assert with_fake_fal["arguments"]["duration"] == 5
+
     def test_happy_horse_video_edit_endpoint(self, with_fake_fal):
         from plugins.video_gen.fal import FALVideoGenProvider
 
@@ -338,6 +401,26 @@ class TestFamilyRouting:
         assert with_fake_fal["endpoint"] == "alibaba/happy-horse/video-edit"
         assert with_fake_fal["arguments"]["video_url"] == "https://example.com/source.mp4"
         assert with_fake_fal["arguments"]["reference_image_urls"] == ["https://example.com/ref.png"]
+
+    def test_local_video_edit_inputs_are_uploaded_before_edit(self, tmp_path, with_fake_fal):
+        from plugins.video_gen.fal import FALVideoGenProvider
+
+        source = tmp_path / "source.mp4"
+        ref = tmp_path / "ref.png"
+        source.write_bytes(b"fake mp4 bytes")
+        ref.write_bytes(_png_bytes(16, 9))
+
+        result = FALVideoGenProvider().edit(
+            "recolor the sky",
+            model="happy-horse",
+            video_url=str(source),
+            resolution="720p",
+            reference_image_urls=[str(ref)],
+        )
+        assert result["success"] is True
+        assert result["modality"] == "edit"
+        assert with_fake_fal["arguments"]["video_url"] == "https://fake/uploads/source.mp4"
+        assert with_fake_fal["arguments"]["reference_image_urls"] == ["https://fake/uploads/ref.png"]
 
     def test_grok_video_extend_endpoint(self, with_fake_fal):
         from plugins.video_gen.fal import FALVideoGenProvider
@@ -405,7 +488,7 @@ class TestPayloadBuilder:
             audio=None,
             seed=None,
         )
-        assert p["duration"] == "15"
+        assert p["duration"] == 15
 
     def test_kling_4k_clamps_below_min(self):
         from plugins.video_gen.fal import FAL_FAMILIES, _build_payload
@@ -422,7 +505,7 @@ class TestPayloadBuilder:
             audio=None,
             seed=None,
         )
-        assert p["duration"] == "3"
+        assert p["duration"] == 3
 
     def test_ltx_omits_duration_aspect_resolution(self):
         """LTX 2.3 doesn't declare duration/aspect/resolution enums —
@@ -466,7 +549,7 @@ class TestPayloadBuilder:
         )
         assert p == {
             "prompt": "a horse galloping",
-            "duration": "8",
+            "duration": 8,
             "aspect_ratio": "16:9",
             "resolution": "720p",
         }

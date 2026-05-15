@@ -127,10 +127,30 @@ class TestUnifiedDispatch:
         result = self._run({
             "prompt": "animate this",
             "image_url": "https://example.com/img.png",
+            "duration": 5,
+            "aspect_ratio": "9:16",
+            "resolution": "720p",
+            "audio": True,
+            "model": "grok-imagine-video",
         })
         assert result["success"] is True
         assert result["modality"] == "image"
+        assert provider.last_kwargs["model"] == "grok-imagine-video"
         assert provider.last_kwargs["image_url"] == "https://example.com/img.png"
+        assert provider.last_kwargs["duration"] == 5
+        assert provider.last_kwargs["aspect_ratio"] == "9:16"
+        assert provider.last_kwargs["resolution"] == "720p"
+        assert provider.last_kwargs["audio"] is True
+
+    def test_image_to_video_omitted_aspect_uses_auto_not_landscape_default(self):
+        provider = _RecordingProvider("rec")
+        video_gen_registry.register_provider(provider)
+        result = self._run({
+            "prompt": "animate this",
+            "image_url": "https://example.com/img.png",
+        })
+        assert result["success"] is True
+        assert provider.last_kwargs["aspect_ratio"] == "auto"
 
     def test_edit_operation_routes_to_provider_edit(self):
         provider = _RecordingProvider("rec")
