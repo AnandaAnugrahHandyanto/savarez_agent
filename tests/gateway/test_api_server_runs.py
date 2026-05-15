@@ -364,7 +364,7 @@ class TestRunEvents:
                 first_run_id = (await first_resp.json())["run_id"]
                 second_run_id = (await second_resp.json())["run_id"]
 
-                agent_ready.wait(timeout=3.0)
+                assert agent_ready.wait(timeout=3.0)
                 await asyncio.sleep(0.1)
 
                 first_key = adapter._run_approval_sessions[first_run_id]
