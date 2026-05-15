@@ -58,6 +58,7 @@ jobs:
           OPENROUTER_API_KEY: ''
           OPENAI_API_KEY: ''
           NOUS_API_KEY: ''
+          LD_LIBRARY_PATH: ${{ env.pythonLocation }}/lib:${{ env.LD_LIBRARY_PATH }}
         run: |
           . .venv/bin/activate
           python -m pytest tests/ -q --ignore=tests/integration --ignore=tests/e2e --tb=short -n 3
