@@ -182,8 +182,9 @@ def check_scanblitz() -> bool:
 SCANBLITZ_CREATE_QR_SCHEMA = {
     "name": "scanblitz_create_qr",
     "description": (
-        "Create a trackable QR code via ScanBlitz. Returns a short_id and "
-        "scan_url that tracks every scan with device, location, and referrer data. "
+        "Create a trackable QR code via ScanBlitz. Returns a short_id, "
+        "scan_url, and a receipt confirming who created it and when. "
+        "Every scan is tracked with device, location, and referrer data. "
         "Save the short_id to check analytics or update the destination later."
     ),
     "parameters": {
@@ -221,7 +222,8 @@ SCANBLITZ_GET_ANALYTICS_SCHEMA = {
     "name": "scanblitz_get_analytics",
     "description": (
         "Get scan analytics for a QR code: total scans, device breakdown, "
-        "country distribution, and daily scan counts."
+        "country distribution, daily scan counts, and the last scan event. "
+        "Includes a receipt confirming retrieval."
     ),
     "parameters": {
         "type": "object",
