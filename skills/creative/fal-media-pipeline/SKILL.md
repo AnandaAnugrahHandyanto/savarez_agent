@@ -30,8 +30,8 @@ replace tool configuration, API keys, or user review of generated assets.
 - `image_generate`, `image_edit`, and `video_generate` must be available.
 - Hermes Image Generation and Video Generation should be configured for FAL,
   either through direct FAL credentials or the managed gateway.
-- Local image files can be passed to `image_edit`; Hermes uploads them to FAL
-  storage before calling the edit endpoint.
+- Local files can be passed to `image_edit` and FAL `video_generate`; Hermes
+  uploads them to FAL storage before calling the edit/video endpoint.
 
 ## How to Run
 
@@ -51,7 +51,7 @@ hermes --toolsets image_gen,video_gen -q "Use the FAL media pipeline to create a
 | Edit local images | `image_edit` | `prompt`, `image_path` or `image_paths` |
 | Mask-guided edit | `image_edit` | `model=openai/gpt-image-2/edit`, `mask_url` |
 | Fast semantic edit | `image_edit` | `model=fal-ai/nano-banana-2/edit` |
-| Animate a still | `video_generate` | `prompt`, `image_url`, `duration`, `audio` |
+| Animate a still | `video_generate` | `prompt`, `image_url` or local path, `duration`, `audio` |
 | Use a final frame | `video_generate` | `image_url`, `end_image_url` |
 | Edit a video | `video_generate` | `operation=edit`, `video_url` |
 | Extend a video | `video_generate` | `operation=extend`, `video_url` |
@@ -82,8 +82,9 @@ hermes --toolsets image_gen,video_gen -q "Use the FAL media pipeline to create a
   first with `image_edit`.
 - Do not skip the edit step when a start frame has bad framing, unreadable
   text, inconsistent character identity, or the wrong aspect ratio.
-- Do not pass local file paths directly to FAL video endpoints; use
-  `image_edit` upload support first or provide public URLs.
+- FAL `video_generate` accepts local `image_url`, `video_url`, final-frame, and
+  reference paths; Hermes uploads them before calling FAL. Do not use
+  no-op `image_edit` as a file-hosting workaround.
 - Some FAL families expose native audio without an `audio` toggle; do not
   assume every backend honors `audio=true`.
 - Some video edit and extend endpoints are family-specific; if one family

@@ -2,9 +2,26 @@
 
 from __future__ import annotations
 
+import struct
+import zlib
+
 import pytest
 
 from agent import video_gen_registry
+
+
+def _png_bytes(width: int, height: int) -> bytes:
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        return (
+            struct.pack(">I", len(data))
+            + kind
+            + data
+            + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
+        )
+
+    ihdr = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+    rows = b"".join(b"\x00" + (b"\x00\x00\x00" * width) for _ in range(height))
+    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b"")
 
 
 @pytest.fixture(autouse=True)
@@ -118,6 +135,11 @@ class TestFamilyRouting:
             captured["arguments"] = arguments
             return {"video": {"url": "https://fake/out.mp4"}}
         fake.subscribe = _subscribe  # type: ignore
+        fake.uploads = []  # type: ignore
+        def _upload_file(path):
+            fake.uploads.append(path)
+            return f"https://fake/uploads/{getattr(path, 'name', 'file')}"
+        fake.upload_file = _upload_file  # type: ignore
         monkeypatch.setitem(sys.modules, "fal_client", fake)
 
         # Reset the lazy global so it picks up our stub
@@ -241,6 +263,38 @@ class TestFamilyRouting:
         assert result["success"] is True
         assert with_fake_fal["endpoint"] == "xai/grok-imagine-video/image-to-video"
         assert with_fake_fal["arguments"]["image_url"] == "https://example.com/frame.png"
+
+    def test_local_image_url_is_uploaded_before_i2v(self, tmp_path, with_fake_fal):
+        from plugins.video_gen.fal import FALVideoGenProvider
+
+        source = tmp_path / "frame.png"
+        source.write_bytes(_png_bytes(16, 9))
+
+        result = FALVideoGenProvider().generate(
+            "make it move",
+            model="grok-imagine-video",
+            image_url=str(source),
+            duration=5,
+        )
+        assert result["success"] is True
+        assert with_fake_fal["arguments"]["image_url"] == "https://fake/uploads/frame.png"
+
+    def test_portrait_source_overrides_default_landscape_ar(self, tmp_path, with_fake_fal):
+        from plugins.video_gen.fal import FALVideoGenProvider
+
+        source = tmp_path / "portrait.png"
+        source.write_bytes(_png_bytes(9, 16))
+
+        result = FALVideoGenProvider().generate(
+            "animate this vertical still",
+            model="grok-imagine-video",
+            image_url=str(source),
+            aspect_ratio="16:9",
+            duration=5,
+        )
+        assert result["success"] is True
+        assert with_fake_fal["arguments"]["aspect_ratio"] == "9:16"
+        assert result["aspect_ratio"] == "9:16"
 
     def test_happy_horse_uses_alibaba_image_endpoint(self, with_fake_fal):
         from plugins.video_gen.fal import FALVideoGenProvider

@@ -34,7 +34,11 @@ from __future__ import annotations
 
 import logging
 import os
+import struct
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import unquote, urlparse
+from urllib.request import urlopen
 
 from agent.video_gen_provider import (
     VideoGenProvider,
@@ -424,6 +428,166 @@ def _load_fal_client() -> Any:
     return fal_client
 
 
+def _is_http_source(value: str) -> bool:
+    parsed = urlparse(value)
+    return parsed.scheme.lower() in {"http", "https"} and bool(parsed.netloc)
+
+
+def _local_source_path(value: str) -> Path:
+    parsed = urlparse(value)
+    if parsed.scheme.lower() == "file":
+        return Path(unquote(parsed.path)).expanduser()
+    return Path(value).expanduser()
+
+
+def _upload_fal_local_file(source: str, fal_client: Any) -> str:
+    """Upload a local file to FAL storage and return the public URL."""
+    path = _local_source_path(source)
+    if not path.is_file():
+        raise ValueError(f"Local file not found: {source}")
+    upload_file = getattr(fal_client, "upload_file", None)
+    if upload_file is None:
+        raise RuntimeError(
+            "fal_client.upload_file is unavailable; upgrade fal-client or "
+            "pass a public URL."
+        )
+    return upload_file(path)
+
+
+def _prepare_fal_file_url(source: Optional[str], fal_client: Any) -> Optional[str]:
+    """Preserve HTTP(S) URLs; upload local files so FAL can fetch them."""
+    if not source:
+        return None
+    clean = source.strip()
+    if not clean:
+        return None
+    if _is_http_source(clean):
+        return clean
+    return _upload_fal_local_file(clean, fal_client)
+
+
+def _prepare_fal_file_urls(sources: Optional[List[str]], fal_client: Any) -> Optional[List[str]]:
+    if not sources:
+        return None
+    prepared = [_prepare_fal_file_url(source, fal_client) for source in sources]
+    return [url for url in prepared if url]
+
+
+def _dimensions_from_png(raw: bytes) -> Optional[Tuple[int, int]]:
+    if raw.startswith(b"\x89PNG\r\n\x1a\n") and len(raw) >= 24:
+        width, height = struct.unpack(">II", raw[16:24])
+        return int(width), int(height)
+    return None
+
+
+def _dimensions_from_jpeg(raw: bytes) -> Optional[Tuple[int, int]]:
+    if not raw.startswith(b"\xff\xd8"):
+        return None
+    offset = 2
+    size = len(raw)
+    while offset + 9 < size:
+        if raw[offset] != 0xFF:
+            offset += 1
+            continue
+        marker = raw[offset + 1]
+        offset += 2
+        if marker in {0xD8, 0xD9, 0x01} or 0xD0 <= marker <= 0xD7:
+            continue
+        if offset + 2 > size:
+            return None
+        segment_len = struct.unpack(">H", raw[offset:offset + 2])[0]
+        if segment_len < 2:
+            return None
+        if marker in {
+            0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7,
+            0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF,
+        }:
+            if offset + 7 > size:
+                return None
+            height, width = struct.unpack(">HH", raw[offset + 3:offset + 7])
+            return int(width), int(height)
+        offset += segment_len
+    return None
+
+
+def _dimensions_from_webp(raw: bytes) -> Optional[Tuple[int, int]]:
+    if len(raw) < 30 or raw[:4] != b"RIFF" or raw[8:12] != b"WEBP":
+        return None
+    chunk = raw[12:16]
+    if chunk == b"VP8 " and len(raw) >= 30:
+        width = struct.unpack("<H", raw[26:28])[0] & 0x3FFF
+        height = struct.unpack("<H", raw[28:30])[0] & 0x3FFF
+        return int(width), int(height)
+    if chunk == b"VP8L" and len(raw) >= 25:
+        bits = int.from_bytes(raw[21:25], "little")
+        width = (bits & 0x3FFF) + 1
+        height = ((bits >> 14) & 0x3FFF) + 1
+        return int(width), int(height)
+    if chunk == b"VP8X" and len(raw) >= 30:
+        width = int.from_bytes(raw[24:27], "little") + 1
+        height = int.from_bytes(raw[27:30], "little") + 1
+        return int(width), int(height)
+    return None
+
+
+def _dimensions_from_image_bytes(raw: bytes) -> Optional[Tuple[int, int]]:
+    return (
+        _dimensions_from_png(raw)
+        or _dimensions_from_jpeg(raw)
+        or _dimensions_from_webp(raw)
+    )
+
+
+def _read_image_dimensions(source: str) -> Optional[Tuple[int, int]]:
+    try:
+        if _is_http_source(source):
+            with urlopen(source, timeout=10) as response:  # nosec B310 - user-selected media URL
+                raw = response.read(8 * 1024 * 1024)
+        else:
+            raw = _local_source_path(source).read_bytes()
+    except Exception as exc:
+        logger.debug("Could not inspect source image dimensions for %s: %s", source, exc)
+        return None
+    return _dimensions_from_image_bytes(raw)
+
+
+def _aspect_ratio_from_dimensions(width: int, height: int) -> Optional[str]:
+    if width <= 0 or height <= 0:
+        return None
+    ratio = width / height
+    candidates = {
+        "16:9": 16 / 9,
+        "9:16": 9 / 16,
+        "4:3": 4 / 3,
+        "3:4": 3 / 4,
+        "3:2": 3 / 2,
+        "2:3": 2 / 3,
+        "1:1": 1.0,
+    }
+    closest = min(candidates, key=lambda key: abs(candidates[key] - ratio))
+    closest_ratio = candidates[closest]
+    if abs(ratio - closest_ratio) / closest_ratio <= 0.08:
+        return closest
+    if height > width:
+        return "9:16"
+    if width > height:
+        return "16:9"
+    return "1:1"
+
+
+def _infer_source_aspect_ratio(source: Optional[str]) -> Optional[str]:
+    if not source:
+        return None
+    dimensions = _read_image_dimensions(source)
+    if not dimensions:
+        return None
+    return _aspect_ratio_from_dimensions(*dimensions)
+
+
+def _should_preserve_source_aspect(aspect_ratio: str) -> bool:
+    return not aspect_ratio or aspect_ratio == "16:9" or aspect_ratio == "auto"
+
+
 # ---------------------------------------------------------------------------
 # Provider
 # ---------------------------------------------------------------------------
@@ -570,6 +734,18 @@ class FALVideoGenProvider(VideoGenProvider):
             return error_response(
                 error=f"video_url is required for video {operation}.",
                 error_type="missing_video_url",
+                provider="fal",
+                model=family_id,
+                prompt=prompt,
+            )
+
+        try:
+            video_url_norm = _prepare_fal_file_url(video_url_norm, fal_client) or video_url_norm
+            reference_image_urls = _prepare_fal_file_urls(reference_image_urls, fal_client)
+        except Exception as exc:
+            return error_response(
+                error=f"Could not prepare local file for FAL video {operation}: {exc}",
+                error_type="local_upload_failed",
                 provider="fal",
                 model=family_id,
                 prompt=prompt,
@@ -770,6 +946,24 @@ class FALVideoGenProvider(VideoGenProvider):
                 error="prompt is required.",
                 error_type="missing_prompt",
                 provider="fal", model=family_id, prompt=prompt,
+            )
+
+        if image_url_norm and _should_preserve_source_aspect(aspect_ratio):
+            inferred_aspect_ratio = _infer_source_aspect_ratio(image_url_norm)
+            family_aspect_ratios = family.get("aspect_ratios") or ()
+            if inferred_aspect_ratio and inferred_aspect_ratio in family_aspect_ratios:
+                aspect_ratio = inferred_aspect_ratio
+
+        try:
+            image_url_norm = _prepare_fal_file_url(image_url_norm, fal_client)
+            end_image_url = _prepare_fal_file_url(end_image_url, fal_client)
+            refs = _prepare_fal_file_urls(refs, fal_client) or []
+        except Exception as exc:
+            return error_response(
+                error=f"Could not prepare local file for FAL video generation: {exc}",
+                error_type="local_upload_failed",
+                provider="fal", model=family_id, prompt=prompt,
+                aspect_ratio=aspect_ratio,
             )
 
         payload = _build_payload(

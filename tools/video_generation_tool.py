@@ -80,11 +80,11 @@ VIDEO_GENERATE_SCHEMA: Dict[str, Any] = {
             "image_url": {
                 "type": "string",
                 "description": (
-                    "Optional public URL of a still image. When provided, "
+                    "Optional public URL or local file path of a still image. When provided, "
                     "the active backend routes to its image-to-video "
                     "endpoint (animate the image); when omitted, it routes "
-                    "to text-to-video. Pass either a URL the user supplied "
-                    "or a path/URL from the conversation."
+                    "to text-to-video. FAL uploads local paths to FAL storage "
+                    "before generation."
                 ),
             },
             "end_image_url": {
@@ -108,17 +108,20 @@ VIDEO_GENERATE_SCHEMA: Dict[str, Any] = {
             "video_url": {
                 "type": "string",
                 "description": (
-                    "Source video URL for operation=edit or operation=extend."
+                    "Source video URL or local file path for operation=edit "
+                    "or operation=extend. FAL uploads local paths to FAL "
+                    "storage before generation."
                 ),
             },
             "reference_image_urls": {
                 "type": "array",
                 "items": {"type": "string"},
                 "description": (
-                    "Optional list of reference image URLs (style or "
+                    "Optional list of reference image URLs or local file paths (style or "
                     "character refs). Only supported by some backends; "
                     "the active backend's description below indicates whether "
-                    "this is honored and what the max is."
+                    "this is honored and what the max is. FAL uploads local "
+                    "paths to FAL storage before generation."
                 ),
             },
             "duration": {
