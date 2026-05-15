@@ -327,6 +327,9 @@ class TestPostSetup:
 
         profile_env = user_home / ".hindsight" / "profiles" / "hermes.env"
         assert profile_env.exists()
+        assert (user_home / ".hindsight").stat().st_mode & 0o777 == 0o700
+        assert profile_env.parent.stat().st_mode & 0o777 == 0o700
+        assert profile_env.stat().st_mode & 0o777 == 0o600
         assert profile_env.read_text() == (
             "HINDSIGHT_API_LLM_PROVIDER=openai\n"
             "HINDSIGHT_API_LLM_API_KEY=sk-local-test\n"
@@ -381,6 +384,7 @@ class TestPostSetup:
 
         profile_env = user_home / ".hindsight" / "profiles" / "hermes.env"
         assert profile_env.exists()
+        assert profile_env.stat().st_mode & 0o777 == 0o600
         assert "HINDSIGHT_API_LLM_API_KEY=existing-key\n" in profile_env.read_text()
 
 
