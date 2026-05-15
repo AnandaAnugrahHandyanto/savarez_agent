@@ -7676,7 +7676,7 @@ class HermesCLI:
                 "This clears the screen and starts a new session.\n"
                 "The current conversation history will be discarded.",
             ) is None:
-                return
+                return True
             self.new_session(silent=True)
             _clear_output_history()
             # Clear terminal screen.  Inside the TUI, Rich's console.clear()
@@ -7806,7 +7806,7 @@ class HermesCLI:
                 "This starts a fresh session.\n"
                 "The current conversation history will be discarded.",
             ) is None:
-                return
+                return True
             self.new_session(title=title)
         elif canonical == "resume":
             self._handle_resume_command(cmd_original)
@@ -7832,7 +7832,7 @@ class HermesCLI:
                 "undo",
                 "This removes the last user/assistant exchange from history.",
             ) is None:
-                return
+                return True
             self.undo_last()
         elif canonical == "branch":
             self._handle_branch_command(cmd_original)
