@@ -21,6 +21,8 @@ Avoid synchronous `delegate_task` for long research because parent interruption 
 
 - Use the exact Hermes CLI form `hermes -p research chat -q ...` (or `hermes chat -q ...` when already inside the research profile).
 - Do not use bare `hermes -q ...` without the `chat` subcommand.
+- For manual Telegram research, the parent session should only verify that the child was launched successfully. It must not sit in long `process wait` / log-inspection / session-inspection loops after a successful launch.
+- After one quick verification that the child is really running, the parent should stop and leave completion/publication to the child.
 - Publish as an existing-format `research.briankeefe.dev` page.
 - Verify the public URL is reachable.
 - Final response contains only the public URL or `PUBLISH_FAILED: <brief reason>`.

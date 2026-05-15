@@ -2263,22 +2263,30 @@ class TelegramAdapter(BasePlatformAdapter):
                 # Telegram caps callback_data at 64 bytes; keep "cl:<id>:<idx>"
                 # short.  Button label is also capped (~64 chars in practice).
                 rows = []
+                _normalized_choices = [str(c).strip().lower() for c in choices]
+                _is_rigor_row = _normalized_choices == ["brief", "standard", "deep"]
+                _rigor_buttons = []
                 for idx, choice in enumerate(choices):
                     label = str(choice)
                     if len(label) > 60:
                         label = label[:57] + "..."
+                    button = InlineKeyboardButton(
+                        label if _is_rigor_row else f"{idx + 1}. {label}",
+                        callback_data=f"cl:{clarify_id}:{idx}",
+                    )
+                    if _is_rigor_row:
+                        _rigor_buttons.append(button)
+                    else:
+                        rows.append([button])
+                if _is_rigor_row:
+                    rows.append(_rigor_buttons)
+                else:
                     rows.append([
                         InlineKeyboardButton(
-                            f"{idx + 1}. {label}",
-                            callback_data=f"cl:{clarify_id}:{idx}",
+                            "✏️ Other (type answer)",
+                            callback_data=f"cl:{clarify_id}:other",
                         )
                     ])
-                rows.append([
-                    InlineKeyboardButton(
-                        "✏️ Other (type answer)",
-                        callback_data=f"cl:{clarify_id}:other",
-                    )
-                ])
                 kwargs["reply_markup"] = InlineKeyboardMarkup(rows)
 
             reply_to_id = self._reply_to_message_id_for_send(None, metadata)
