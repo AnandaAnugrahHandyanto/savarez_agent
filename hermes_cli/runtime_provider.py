@@ -1146,7 +1146,7 @@ def resolve_runtime_provider(
             creds = resolve_openai_oauth_runtime_credentials()
             base_url = creds.get("base_url", "").rstrip("/")
             configured_mode = _parse_api_mode(model_cfg.get("api_mode"))
-            api_mode = configured_mode or _detect_api_mode_for_url(base_url) or "chat_completions"
+            api_mode = configured_mode or "codex_responses"
             return {
                 "provider": "openai-oauth",
                 "api_mode": api_mode,
