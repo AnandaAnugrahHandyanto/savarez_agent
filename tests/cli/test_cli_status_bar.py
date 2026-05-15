@@ -335,8 +335,8 @@ class TestCLIStatusBar:
     def test_input_rules_remain_visible_after_resize_recovery(self):
         """Resize recovery clears stale chrome, then redraws live input rules.
 
-        Since _recover_after_resize now clears the visible screen and
-        scrollback before replaying history, it should not suppress the input
+        Since _recover_after_resize now clears the visible screen before
+        replaying history, it should not suppress the input
         prompt/chrome until the next keystroke; that made the prompt appear to
         disappear after resize.
         """

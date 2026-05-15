@@ -2992,22 +2992,22 @@ class HermesCLI:
         those old-width rows remain visible and the next live redraw can look
         like duplicated input/status/output boxes.
 
-        Clear the visible screen and scrollback, reset prompt_toolkit's
-        cached screen/cursor state, replay Hermes-owned recent output
-        history, then let prompt_toolkit recalculate/redraw the live prompt
-        for the new size.  Clearing scrollback is intentional here: without
-        ESC[3J, every resize replay appends another copy of the previous
-        transcript to the terminal's real scrollback, making the visible
-        history grow longer on each resize.  Resume panels are stored as
-        width-aware history entries, so ``hermes -c`` can re-render them at
-        the current width instead of keeping the stale startup width.
+        Clear the visible screen, reset prompt_toolkit's cached screen/cursor
+        state, replay Hermes-owned recent output history, then let
+        prompt_toolkit recalculate/redraw the live prompt for the new size.
+        Do not clear the terminal emulator's real scrollback here: Hermes only
+        records a bounded recent history for replay, so ESC[3J would discard
+        older user-visible transcript that Hermes cannot restore.  Resume
+        panels are stored as width-aware history entries, so ``hermes -c`` can
+        re-render them at the current width instead of keeping the stale
+        startup width.
 
-        The visible screen/scrollback clear removes the stale-width input
-        chrome too, so the live prompt should be redrawn immediately at the
-        new width instead of being suppressed until the next keystroke.
+        The visible-screen clear removes stale-width input chrome from the
+        active viewport, so the live prompt should be redrawn immediately at
+        the new width instead of being suppressed until the next keystroke.
         """
         self._status_bar_suppressed_after_resize = False
-        self._clear_prompt_toolkit_screen(app, rebuild_scrollback=True)
+        self._clear_prompt_toolkit_screen(app, rebuild_scrollback=False)
         _replay_output_history()
         original_on_resize()
         try:

@@ -81,9 +81,9 @@ class TestForceFullRedraw:
         screen, reset prompt_toolkit's cache, replay Hermes-owned history at
         the current width, then let prompt_toolkit recalculate layout.
 
-        We intentionally clear scrollback (ESC[3J) because otherwise every
-        resize replay appends another copy of the previous transcript to the
-        real terminal history.
+        Resize recovery must not clear the terminal emulator's real
+        scrollback: Hermes only records a bounded recent output history, so an
+        ESC[3J clear would discard older transcript that cannot be replayed.
         """
         app = MagicMock()
         out = app.renderer.output
@@ -107,7 +107,6 @@ class TestForceFullRedraw:
         assert events == [
             "reset_attrs",
             "erase",
-            "write_raw:'\\x1b[3J'",
             "home",
             "flush",
             "renderer_reset",
@@ -119,7 +118,7 @@ class TestForceFullRedraw:
         ]
         out.erase_screen.assert_called_once()
         out.cursor_goto.assert_called_once_with(0, 0)
-        out.write_raw.assert_called_once_with("\x1b[3J")
+        out.write_raw.assert_not_called()
         assert app.renderer.reset.call_count == 2
         app.renderer.reset.assert_any_call(leave_alternate_screen=False)
         # The prompt/input chrome must be visible immediately after resize.
