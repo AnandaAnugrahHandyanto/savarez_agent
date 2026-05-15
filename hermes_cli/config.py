@@ -1228,6 +1228,10 @@ DEFAULT_CONFIG = {
         # External hub installs (trusted/community sources) are always
         # scanned regardless of this setting.
         "guard_agent_created": False,
+        # When true, the background self-improvement review returns a
+        # structured approval request instead of writing skills directly.
+        # Foreground user-directed skill_manage calls are unchanged.
+        "creation_requires_approval": False,
     },
 
     # Curator — background skill maintenance.

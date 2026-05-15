@@ -537,6 +537,9 @@ skills:
   # Every N tool-calling iterations, remind the model to consider saving a skill.
   # Set to 0 to disable.
   creation_nudge_interval: 15
+  # Require explicit approval before the background self-improvement review
+  # writes skills. Foreground user-directed skill_manage calls are unchanged.
+  creation_requires_approval: false
 
   # External skill directories — share skills across tools/agents without
   # copying them into ~/.hermes/skills/.  Each path is expanded (~ and ${VAR})
