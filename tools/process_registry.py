@@ -648,9 +648,15 @@ class ProcessRegistry:
         quoted_log_path = shlex.quote(log_path)
         quoted_pid_path = shlex.quote(pid_path)
         quoted_exit_path = shlex.quote(exit_path)
+        # Important: use a NON-login child shell here. `env.execute()` already
+        # runs inside the backend's prepared shell/session snapshot, so the
+        # detached child inherits the correct PATH, auth env, cwd, and mounts.
+        # Re-wrapping the command in `bash -lc` starts a fresh login shell that
+        # may rebuild PATH from profile files and drop Hermes-managed bins again,
+        # causing nested research workers to fail with `hermes: command not found`.
         bg_command = (
             f"mkdir -p {quoted_temp_dir} && "
-            f"( nohup bash -lc {quoted_command} > {quoted_log_path} 2>&1; "
+            f"( nohup bash -c {quoted_command} > {quoted_log_path} 2>&1; "
             f"rc=$?; printf '%s\\n' \"$rc\" > {quoted_exit_path} ) & "
             f"echo $! > {quoted_pid_path} && cat {quoted_pid_path}"
         )
