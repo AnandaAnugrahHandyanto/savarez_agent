@@ -258,6 +258,27 @@ TOOLSETS = {
         "includes": [],
     },
 
+    "cloudflare": {
+        "description": (
+            "Cloudflare developer-platform tools (opt-in, not in default "
+            "toolset). KV / R2 / D1 / Vectorize / AI Search / Workers AI / "
+            "Browser Rendering / Email Sending. Gated on CLOUDFLARE_API_TOKEN "
+            "and CLOUDFLARE_ACCOUNT_ID."
+        ),
+        "tools": [
+            "cloudflare_workers_ai_chat", "cloudflare_workers_ai_embed", "cloudflare_image_generate",
+            "cloudflare_kv_put", "cloudflare_kv_get", "cloudflare_kv_delete", "cloudflare_kv_list",
+            "cloudflare_r2_put", "cloudflare_r2_get", "cloudflare_r2_delete", "cloudflare_r2_list",
+            "cloudflare_d1_query",
+            "cloudflare_vectorize_query", "cloudflare_vectorize_upsert",
+            "cloudflare_ai_search",
+            "cloudflare_browser_screenshot", "cloudflare_browser_pdf", "cloudflare_browser_content",
+            "cloudflare_browser_markdown", "cloudflare_browser_links", "cloudflare_browser_scrape",
+            "cloudflare_email_send",
+        ],
+        "includes": [],
+    },
+
     "discord": {
         "description": "Discord read and participate tools (fetch messages, search members, create threads)",
         "tools": ["discord"],
