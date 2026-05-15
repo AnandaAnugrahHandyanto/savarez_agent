@@ -221,6 +221,15 @@ TOOL_CATEGORIES = {
                 "tts_provider": "gemini",
             },
             {
+                "name": "Inworld TTS",
+                "badge": "preview",
+                "tag": "#1 on Artificial Analysis TTS Arena, 100+ languages, sub-200ms latency",
+                "env_vars": [
+                    {"key": "INWORLD_API_KEY", "prompt": "Inworld API key (Basic Base64 from portal)", "url": "https://platform.inworld.ai"},
+                ],
+                "tts_provider": "inworld",
+            },
+            {
                 "name": "KittenTTS",
                 "badge": "local · free",
                 "tag": "Lightweight local ONNX TTS (~25MB), no API key",

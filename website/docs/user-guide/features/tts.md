@@ -14,7 +14,7 @@ If you have a paid [Nous Portal](https://portal.nousresearch.com) subscription, 
 
 ## Text-to-Speech
 
-Convert text to speech with ten providers:
+Convert text to speech with eleven providers:
 
 | Provider | Quality | Cost | API Key |
 |----------|---------|------|---------|
@@ -24,6 +24,7 @@ Convert text to speech with ten providers:
 | **MiniMax TTS** | Excellent | Paid | `MINIMAX_API_KEY` |
 | **Mistral (Voxtral TTS)** | Excellent | Paid | `MISTRAL_API_KEY` |
 | **Google Gemini TTS** | Excellent | Free tier | `GEMINI_API_KEY` |
+| **Inworld TTS** | #1 on [Artificial Analysis TTS Arena](https://artificialanalysis.ai/speech/arena) | Paid | `INWORLD_API_KEY` |
 | **xAI TTS** | Excellent | Paid | `XAI_API_KEY` |
 | **NeuTTS** | Good | Free (local) | None needed |
 | **KittenTTS** | Good | Free (local) | None needed |
@@ -43,7 +44,7 @@ Convert text to speech with ten providers:
 ```yaml
 # In ~/.hermes/config.yaml
 tts:
-  provider: "edge"              # "edge" | "elevenlabs" | "openai" | "minimax" | "mistral" | "gemini" | "xai" | "neutts" | "kittentts" | "piper"
+  provider: "edge"              # "edge" | "elevenlabs" | "openai" | "minimax" | "mistral" | "gemini" | "inworld" | "xai" | "neutts" | "kittentts" | "piper"
   speed: 1.0                    # Global speed multiplier (provider-specific settings override this)
   edge:
     voice: "en-US-AriaNeural"   # 322 voices, 74 languages
@@ -68,6 +69,10 @@ tts:
   gemini:
     model: "gemini-2.5-flash-preview-tts"  # or gemini-2.5-pro-preview-tts
     voice: "Kore"               # 30 prebuilt voices: Zephyr, Puck, Kore, Enceladus, Gacrux, etc.
+  inworld:
+    model: "inworld-tts-2"        # inworld-tts-2 (default, 100+ langs, supports [steering] tags) | inworld-tts-1.5-max (<200ms p50, 15 langs) | inworld-tts-1.5-mini (~120ms p50, lowest latency)
+    voice_id: "Sarah"             # Browse voices at https://platform.inworld.ai/voices
+    # base_url: "https://api.inworld.ai/tts/v1/voice"   # Override via INWORLD_BASE_URL env var
   xai:
     voice_id: "eve"             # or a custom voice ID — see docs below
     language: "en"              # ISO 639-1 code
@@ -142,6 +147,7 @@ Telegram voice bubbles require Opus/OGG audio format:
 - **Edge TTS** (default) outputs MP3 and needs **ffmpeg** to convert:
 - **MiniMax TTS** outputs MP3 and needs **ffmpeg** to convert for Telegram voice bubbles
 - **Google Gemini TTS** outputs raw PCM and uses **ffmpeg** to encode Opus directly for Telegram voice bubbles
+- **Inworld TTS** natively returns MP3, OGG_OPUS, or LINEAR16 depending on the requested output extension — no ffmpeg roundtrip needed for the common formats
 - **xAI TTS** outputs MP3 and needs **ffmpeg** to convert for Telegram voice bubbles
 - **NeuTTS** outputs WAV and also needs **ffmpeg** to convert for Telegram voice bubbles
 - **KittenTTS** outputs WAV and also needs **ffmpeg** to convert for Telegram voice bubbles
