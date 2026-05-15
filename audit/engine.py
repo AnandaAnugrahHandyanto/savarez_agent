@@ -286,10 +286,14 @@ def setup_audit_logging(
 
     # Create backend
     log_config = audit_config.get("log", {})
+    rotation_config = log_config.get("rotation", {})
     backend = LogBackend(
         log_path=log_path,
-        max_size_mb=log_config.get("rotation", {}).get("max_size_mb", 500),
-        backup_count=log_config.get("rotation", {}).get("backup_count", 10),
+        max_size_mb=rotation_config.get("max_size_mb", 100),
+        max_age_hours=rotation_config.get("max_age_hours", 24),
+        max_backups=rotation_config.get("max_backups", 720),
+        compress=rotation_config.get("compress", True),
+        timezone_name=rotation_config.get("timezone_name", "Asia/Shanghai"),
     )
 
     # Create hash chain if enabled

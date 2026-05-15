@@ -1,10 +1,12 @@
 """Async batched JSONL file backend for audit events."""
 
+import gzip
 import logging
 import os
 import queue
 import threading
 import time
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -12,20 +14,35 @@ from audit.backends.base import AuditBackend
 
 logger = logging.getLogger(__name__)
 
+# Default rotation settings (can be overridden via config/env)
+DEFAULT_MAX_SIZE_MB = 100
+DEFAULT_MAX_AGE_HOURS = 24
+DEFAULT_MAX_BACKUPS = 720
+DEFAULT_COMPRESS = True
+DEFAULT_TIMEZONE = "Asia/Shanghai"
+
 
 class LogBackend(AuditBackend):
     """
-    Async batched JSONL file backend.
+    Async batched JSONL file backend with time + size based rotation.
 
     Events are queued and written in batches to minimize I/O overhead.
     Uses a background thread for non-blocking writes.
+
+    Rotation logic:
+    - Size-based: rotates when file exceeds max_size_mb
+    - Naming: {basename}.{timestamp}.gz (compressed after rotation)
+    - Cleanup: removes files older than max_age_hours or exceeding max_backups
     """
 
     def __init__(
         self,
         log_path: str,
-        max_size_mb: int = 500,
-        backup_count: int = 10,
+        max_size_mb: int = DEFAULT_MAX_SIZE_MB,
+        max_age_hours: int = DEFAULT_MAX_AGE_HOURS,
+        max_backups: int = DEFAULT_MAX_BACKUPS,
+        compress: bool = DEFAULT_COMPRESS,
+        timezone_name: str = DEFAULT_TIMEZONE,
         batch_size: int = 100,
         flush_interval: float = 5.0,
     ):
@@ -33,22 +50,64 @@ class LogBackend(AuditBackend):
         Initialize log backend.
 
         Args:
-            log_path: Directory for audit log files
+            log_path: Directory for audit log files, or full file path for single-file mode.
+                     If contains a filename (e.g., "/logs/audit.jsonl"), uses that directly.
+                     If is a directory (e.g., "/logs/audit/"), writes date-based files.
             max_size_mb: Max size per file before rotation (MB)
-            backup_count: Number of backup files to keep
+            max_age_hours: Max hours to retain backup files
+            max_backups: Number of backup files to keep (0 = keep all)
+            compress: Whether to gzip compress rotated files
+            timezone_name: Timezone for timestamp formatting
             batch_size: Number of events per batch write
             flush_interval: Max seconds between flushes
         """
         self._log_path = Path(log_path).expanduser().resolve()
         self._max_bytes = max_size_mb * 1024 * 1024
-        self._backup_count = backup_count
+        self._max_age_hours = max_age_hours
+        self._max_backups = max_backups
+        self._compress = compress
         self._batch_size = batch_size
         self._flush_interval = flush_interval
+
+        # Determine if we're in directory mode or single-file mode
+        if self._log_path.suffix and "." in self._log_path.name:
+            # Has extension - treat as a file path, use its directory + basename
+            self._base_dir = self._log_path.parent
+            self._base_name = self._log_path.stem  # filename without extension
+            self._suffix = self._log_path.suffix  # .jsonl
+        else:
+            # Directory mode - will use date-based naming inside this directory
+            self._base_dir = self._log_path
+            self._base_name = "audit"
+            self._suffix = ".jsonl"
+
+        # Get timezone
+        try:
+            self._tz = timezone(timedelta(hours=8))  # Default Asia/Shanghai
+            if timezone_name != DEFAULT_TIMEZONE:
+                import zoneinfo
+                self._tz = zoneinfo.ZoneInfo(timezone_name)
+        except Exception:
+            self._tz = timezone(timedelta(hours=8))
 
         self._queue: queue.Queue = queue.Queue()
         self._running = True
         self._worker = threading.Thread(target=self._flush_loop, daemon=True)
         self._worker.start()
+
+    def _get_current_file(self) -> Path:
+        """Get the current active log file path."""
+        return self._base_dir / f"{self._base_name}{self._suffix}"
+
+    def _get_timestamp(self) -> str:
+        """Get current timestamp for rotation naming."""
+        now = datetime.now(self._tz)
+        return now.strftime("%Y-%m-%dT%H-%M-%S")
+
+    def _format_event(self, event: Dict[str, Any]) -> str:
+        """Format event as JSON string."""
+        import json
+        return json.dumps(event, ensure_ascii=False, sort_keys=False)
 
     def emit(self, event: Dict[str, Any]) -> None:
         """Queue event for async batch writing."""
@@ -103,73 +162,85 @@ class LogBackend(AuditBackend):
             return
 
         try:
-            self._log_path.mkdir(parents=True, exist_ok=True)
-            log_file = self._get_log_file()
+            self._base_dir.mkdir(parents=True, exist_ok=True)
+            log_file = self._get_current_file()
 
-            # Check rotation
-            self._rotate_if_needed(log_file)
+            # Check rotation (size-based)
+            if log_file.exists() and log_file.stat().st_size >= self._max_bytes:
+                self._rotate()
 
             # Append to file
             with open(log_file, "a", encoding="utf-8") as f:
                 for event in batch:
                     f.write(self._format_event(event) + "\n")
 
+            # Cleanup old files (run occasionally)
+            self._cleanup_old_files()
+
         except Exception as e:
             logger.error("Failed to write audit batch: %s", e)
 
-    def _get_log_file(self) -> Path:
-        """Get the current log file path (date-based)."""
-        from datetime import datetime
-        date_str = datetime.now().strftime("%Y-%m-%d")
-        return self._log_path / f"audit-{date_str}.jsonl"
-
-    def _format_event(self, event: Dict[str, Any]) -> str:
-        """Format event as JSON string."""
-        import json
-        return json.dumps(event, ensure_ascii=False, sort_keys=False)
-
-    def _rotate_if_needed(self, log_file: Path) -> None:
-        """Rotate log file if it exceeds max size."""
-        if not log_file.exists():
+    def _rotate(self) -> None:
+        """Rotate the current log file with timestamp naming and optional compression."""
+        current_file = self._get_current_file()
+        if not current_file.exists():
             return
 
+        timestamp = self._get_timestamp()
+        rotated_name = f"{self._base_name}{self._suffix}.{timestamp}"
+        rotated_file = self._base_dir / rotated_name
+
         try:
-            size = log_file.stat().st_size
-            if size >= self._max_bytes:
-                self._rotate_file(log_file)
-        except OSError as e:
-            logger.warning("Failed to check log file size: %s", e)
+            # Read content and write compressed
+            if self._compress:
+                with open(current_file, "rb") as f_in:
+                    with gzip.open(rotated_file.with_suffix(".gz"), "wb") as f_out:
+                        f_out.write(f_in.read())
+                # Remove original uncompressed file
+                current_file.unlink()
+            else:
+                os.rename(current_file, rotated_file)
 
-    def _rotate_file(self, log_file: Path) -> None:
-        """Rotate a log file."""
-        if not log_file.exists():
-            return
+            self._chmod_if_needed(rotated_file if not self._compress else rotated_file.with_suffix(".gz"))
+            logger.info("Rotated audit log to %s", rotated_file.with_suffix(".gz") if self._compress else rotated_file)
+        except Exception as e:
+            logger.warning("Failed to rotate audit log file: %s", e)
 
-        # Find next available rotation number
-        for i in range(1, self._backup_count + 1):
-            rotated = log_file.with_suffix(f".jsonl.{i}")
-            if not rotated.exists():
-                try:
-                    os.rename(log_file, rotated)
-                    self._chmod_if_needed(rotated)
-                    return
-                except OSError as e:
-                    logger.warning("Failed to rotate log file: %s", e)
-                    return
-
-        # All rotations full, delete oldest and rotate
-        oldest = log_file.with_suffix(f".jsonl.{self._backup_count}")
+    def _cleanup_old_files(self) -> None:
+        """Remove files older than max_age_hours or exceeding max_backups."""
         try:
-            oldest.unlink()
-            for i in range(self._backup_count - 1, 0, -1):
-                src = log_file.with_suffix(f".jsonl.{i}")
-                dst = log_file.with_suffix(f".jsonl.{i + 1}")
-                if src.exists():
-                    os.rename(src, dst)
-            os.rename(log_file, log_file.with_suffix(".jsonl.1"))
-            self._chmod_if_needed(log_file.with_suffix(".jsonl.1"))
-        except OSError as e:
-            logger.warning("Failed to rotate log file: %s", e)
+            cutoff_time = time.time() - (self._max_age_hours * 3600)
+            rotated_files = []
+
+            # Find all rotated files (matching pattern)
+            pattern = f"{self._base_name}{self._suffix}.*"
+            for f in self._base_dir.glob(pattern):
+                rotated_files.append((f.stat().st_mtime, f))
+
+            # Sort by modification time (oldest first)
+            rotated_files.sort(key=lambda x: x[0])
+
+            # Check age-based cleanup
+            for mtime, f in rotated_files:
+                if mtime < cutoff_time:
+                    try:
+                        f.unlink()
+                        logger.debug("Removed old audit log: %s", f)
+                    except OSError:
+                        pass
+
+            # Check count-based cleanup (keep max_backups most recent)
+            if self._max_backups > 0 and len(rotated_files) > self._max_backups:
+                # Remove oldest beyond max_backups
+                for mtime, f in rotated_files[:-self._max_backups]:
+                    try:
+                        f.unlink()
+                        logger.debug("Removed excess audit log: %s", f)
+                    except OSError:
+                        pass
+
+        except Exception as e:
+            logger.warning("Failed to cleanup old audit log files: %s", e)
 
     def _chmod_if_needed(self, path: Path) -> None:
         """Apply group-writable permissions in managed mode."""

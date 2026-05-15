@@ -128,9 +128,11 @@ class AuditPolicy:
 
     # Backend settings
     log_path: str = "~/.hermes/logs/audit/"
-    rotation_max_size_mb: int = 500
-    rotation_backup_count: int = 10
-    retention_days: int = 180
+    max_size_mb: int = 100
+    max_age_hours: int = 24
+    max_backups: int = 720
+    compress: bool = True
+    timezone_name: str = "Asia/Shanghai"
 
     # Tamper protection
     tamper_protection_enabled: bool = True
@@ -196,9 +198,11 @@ class AuditPolicy:
         return cls(
             rules=rules,
             log_path=log_config.get("path", "~/.hermes/logs/audit/"),
-            rotation_max_size_mb=log_config.get("rotation", {}).get("max_size_mb", 500),
-            rotation_backup_count=log_config.get("rotation", {}).get("backup_count", 10),
-            retention_days=log_config.get("retention_days", 180),
+            max_size_mb=log_config.get("rotation", {}).get("max_size_mb", 100),
+            max_age_hours=log_config.get("rotation", {}).get("max_age_hours", 24),
+            max_backups=log_config.get("rotation", {}).get("max_backups", 720),
+            compress=log_config.get("rotation", {}).get("compress", True),
+            timezone_name=log_config.get("rotation", {}).get("timezone_name", "Asia/Shanghai"),
             tamper_protection_enabled=tamper.get("enabled", True),
         )
 
