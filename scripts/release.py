@@ -534,6 +534,7 @@ AUTHOR_MAP = {
     "hcn518@gmail.com": "pedh",
     "haileymarshall005@gmail.com": "haileymarshall",
     "bennet.yr.wang@gmail.com": "BennetYrWang",
+    "liftaris@gmail.com": "liftaris",
     "greer.guthrie@gmail.com": "g-guthrie",
     "kennyx102@gmail.com": "bobashopcashier",
     "77253505+bobashopcashier@users.noreply.github.com": "bobashopcashier",

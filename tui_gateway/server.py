@@ -168,6 +168,44 @@ _pool = concurrent.futures.ThreadPoolExecutor(
 )
 atexit.register(lambda: _pool.shutdown(wait=False, cancel_futures=True))
 
+# Background-process completion delivery (notify_on_complete / watch_patterns).
+#
+# Producer: ``tools.process_registry`` enqueues `completion`, `watch_match`, and
+# `watch_disabled` events onto ``process_registry.completion_queue`` whenever a
+# background process exits or a watch pattern fires.  The CLI and messaging
+# gateway each drain this queue between agent turns (cli.py, gateway/run.py).
+# This TUI gateway historically had no consumer — events landed silently.
+#
+# Design: one router thread blocks on the queue with no timeout.  For each
+# event it spawns a short-lived dispatcher thread via ``_notify_pool`` (the
+# same per-request-thread idiom used elsewhere in this module).  Each
+# dispatcher waits for its owning session's ``idle`` Event, then synthesizes
+# a ``prompt.submit`` that mirrors how real user turns are handled.
+#
+# All waits are on ``threading.Event`` / blocking ``queue.get()`` — no polling.
+try:
+    _notify_pool_workers = max(
+        2, int(os.environ.get("HERMES_TUI_NOTIFY_POOL_WORKERS") or "16")
+    )
+except (ValueError, TypeError):
+    _notify_pool_workers = 16
+_notify_pool = concurrent.futures.ThreadPoolExecutor(
+    max_workers=_notify_pool_workers,
+    thread_name_prefix="tui-notify",
+)
+atexit.register(lambda: _notify_pool.shutdown(wait=False, cancel_futures=True))
+_notify_router_thread: threading.Thread | None = None
+_notify_router_lock = threading.Lock()
+# Bound on how long a dispatcher waits for a busy session to go idle before
+# giving up.  5 minutes is well past any reasonable single-turn duration; a
+# turn that runs that long has a real problem and the notification is stale.
+try:
+    _NOTIFY_IDLE_TIMEOUT_SECONDS = float(
+        os.environ.get("HERMES_TUI_NOTIFY_IDLE_TIMEOUT") or "300"
+    )
+except (ValueError, TypeError):
+    _NOTIFY_IDLE_TIMEOUT_SECONDS = 300.0
+
 # Reserve real stdout for JSON-RPC only; redirect Python's stdout to stderr
 # so stray print() from libraries/tools becomes harmless gateway.stderr instead
 # of corrupting the JSON protocol.
@@ -715,6 +753,247 @@ def _enable_gateway_prompts() -> None:
     os.environ["HERMES_GATEWAY_SESSION"] = "1"
     os.environ["HERMES_EXEC_ASK"] = "1"
     os.environ["HERMES_INTERACTIVE"] = "1"
+
+
+# ── Background-process notification delivery ────────────────────────
+#
+# Completion events and watch matches for background processes flow through
+# ``tools.process_registry.completion_queue``.  A router thread blocks on the
+# queue, and each event is dispatched in a short-lived worker that waits on
+# the owning session's ``idle`` Event before synthesizing a ``prompt.submit``.
+# Entirely event-driven — see the module-top ``_notify_pool`` block for the
+# design rationale.
+
+
+def _format_process_notification(evt: dict) -> str | None:
+    """Render a queued background-process event as an agent-facing prompt."""
+    evt_type = evt.get("type", "completion")
+    pid = evt.get("session_id", "unknown")
+    cmd = evt.get("command", "unknown")
+
+    if evt_type == "watch_disabled":
+        msg = evt.get("message", "")
+        return f"[SYSTEM: {msg}]" if msg else None
+
+    if evt_type == "watch_match":
+        pattern = evt.get("pattern", "?")
+        output = evt.get("output", "")
+        suppressed = evt.get("suppressed", 0)
+        text = (
+            f"[SYSTEM: Background process {pid} matched "
+            f'watch pattern "{pattern}".\n'
+            f"Command: {cmd}\n"
+            f"Matched output:\n{output}"
+        )
+        if suppressed:
+            text += f"\n({suppressed} earlier matches were suppressed by rate limit)"
+        return text + "]"
+
+    # Default: completion
+    exit_code = evt.get("exit_code", "?")
+    output = evt.get("output", "")
+    return (
+        f"[SYSTEM: Background process {pid} completed "
+        f"(exit code {exit_code}).\n"
+        f"Command: {cmd}\n"
+        f"Output:\n{output}]"
+    )
+
+
+def _session_for_process_event(evt: dict) -> tuple[str, dict] | None:
+    """Resolve the TUI session that owns a given process event.
+
+    Events of type ``completion`` carry no ``session_key`` directly
+    (see tools/process_registry.py::_move_to_finished), so we fall back
+    to looking up the owning ``ProcessSession`` in the registry.  Watch
+    events include ``session_key`` on the event itself.
+    """
+    key = str(evt.get("session_key") or "")
+    pid = str(evt.get("session_id") or "")
+    if not key and pid:
+        try:
+            from tools.process_registry import process_registry
+
+            proc = process_registry.get(pid)
+            key = str(getattr(proc, "session_key", "") or "")
+        except Exception:
+            return None
+    if not key:
+        return None
+
+    # list(...) — ``_sessions`` is mutated concurrently from other threads.
+    for sid, session in list(_sessions.items()):
+        if session.get("session_key") == key:
+            return sid, session
+    return None
+
+
+def _dispatch_process_notification(evt: dict) -> None:
+    """Deliver one queued background-process event to its owning TUI session.
+
+    Runs in a short-lived worker thread from ``_notify_pool``.  Blocks on
+    ``session['idle']`` — no polling.  Drops the event if:
+      - the session has already been closed
+      - the overall deadline (``_NOTIFY_IDLE_TIMEOUT_SECONDS``) elapses
+      - the completion was already consumed via ``wait/poll/log``
+
+    ``prompt.submit`` can race with a goal-continuation turn or a user
+    prompt that re-claims the slot between ``idle.set()`` and our
+    dispatch; on a 4009 "session busy" response we re-wait on ``idle``
+    and retry, bounded by the same overall deadline.
+    """
+    evt_type = evt.get("type", "completion")
+    pid = str(evt.get("session_id") or "")
+
+    # Early short-circuit: consumed-completion events are redundant because
+    # the agent already saw the output via a direct tool result.  Watch
+    # events can't be consumed this way, so only check for completions.
+    if evt_type == "completion" and pid:
+        try:
+            from tools.process_registry import process_registry
+
+            if process_registry.is_completion_consumed(pid):
+                return
+        except Exception:
+            pass
+
+    match = _session_for_process_event(evt)
+    if match is None:
+        logger.debug(
+            "Dropping process notification with no matching TUI session: %s",
+            pid or "unknown",
+        )
+        return
+    sid, session = match
+
+    text = _format_process_notification(evt)
+    if not text:
+        return
+
+    idle = session.get("idle")
+    deadline = time.monotonic() + _NOTIFY_IDLE_TIMEOUT_SECONDS
+
+    while True:
+        # Wait for the agent to finish its current turn.  ``idle`` is set
+        # at session creation and flipped around every ``prompt.submit``
+        # turn.  Absent (legacy session): assume idle to preserve delivery.
+        if idle is not None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0 or not idle.wait(timeout=remaining):
+                logger.warning(
+                    "Dropping process notification for %s: session %s busy for >%ss",
+                    pid or "unknown",
+                    sid,
+                    _NOTIFY_IDLE_TIMEOUT_SECONDS,
+                )
+                return
+
+        # Re-check everything after the wait — the session may have been
+        # closed, or an explicit wait/poll/log may have consumed the
+        # completion while we were sleeping.
+        if _sessions.get(sid) is not session:
+            return
+        if evt_type == "completion" and pid:
+            try:
+                from tools.process_registry import process_registry
+
+                if process_registry.is_completion_consumed(pid):
+                    return
+            except Exception:
+                pass
+
+        resp = handle_request(
+            {
+                "id": f"process-notify-{uuid.uuid4().hex[:8]}",
+                "method": "prompt.submit",
+                "params": {"session_id": sid, "text": text},
+            }
+        )
+        err = (resp or {}).get("error")
+        if not err:
+            return
+        # Lost the race to a goal-continuation turn or a real user prompt.
+        # Re-wait on the next idle edge, bounded by the overall deadline.
+        # Without an ``idle`` Event we have nothing to wait on, so bail
+        # rather than busy-spin.
+        if err.get("code") == 4009 and idle is not None:
+            logger.debug(
+                "Process notification for %s deferred: session %s busy, "
+                "re-waiting on idle",
+                pid or "unknown",
+                sid,
+            )
+            continue
+        logger.warning(
+            "Process notification dispatch failed for %s: %s",
+            pid or "unknown",
+            err.get("message", err),
+        )
+        return
+
+
+def _process_notification_router() -> None:
+    """Block on completion_queue and hand each event to a dispatcher.
+
+    One thread total, started lazily by ``_ensure_notification_router``.
+    No polling — ``queue.get()`` blocks on the queue's internal condition
+    variable until the producer side calls ``.put()``.
+    """
+    from tools.process_registry import process_registry
+
+    while True:
+        try:
+            evt = process_registry.completion_queue.get()
+        except Exception as exc:
+            # A queue.get() from a healthy Queue shouldn't raise.  If it does
+            # (interpreter shutdown, for instance), retry once then bail.
+            logger.debug("notification router queue error: %s", exc)
+            return
+        if not isinstance(evt, dict):
+            continue
+        try:
+            _notify_pool.submit(_dispatch_process_notification, evt)
+        except RuntimeError:
+            # Pool shut down during atexit.  Nothing to deliver.
+            return
+        except Exception as exc:
+            logger.warning("notification dispatch submit error: %s", exc)
+
+
+def _ensure_notification_router() -> None:
+    """Start the notification router thread if not already running.
+
+    Idempotent; called from ``_init_session`` and the ``session.create`` RPC
+    handler so the router only spins up once a TUI session actually exists.
+    """
+    global _notify_router_thread
+    with _notify_router_lock:
+        if _notify_router_thread is not None and _notify_router_thread.is_alive():
+            return
+        _notify_router_thread = threading.Thread(
+            target=_process_notification_router,
+            name="tui-notify-router",
+            daemon=True,
+        )
+        _notify_router_thread.start()
+
+
+def _set_session_running(session: dict, running: bool) -> None:
+    """Flip a session's ``running`` flag and mirror it onto ``idle``.
+
+    ``idle`` is the threading.Event the notification dispatcher waits on to
+    fire between turns.  Keeping the two in sync at every transition site is
+    what turns notification delivery from polling into an event edge.
+    Callers must already hold ``session['history_lock']``.
+    """
+    session["running"] = running
+    idle = session.get("idle")
+    if idle is None:
+        return
+    if running:
+        idle.clear()
+    else:
+        idle.set()
 
 
 # ── Blocking prompt factory ──────────────────────────────────────────
@@ -1841,7 +2120,7 @@ def _reset_session_agent(sid: str, session: dict) -> dict:
     session["attached_images"] = []
     session["edit_snapshots"] = {}
     session["image_counter"] = 0
-    session["running"] = False
+    _set_session_running(session, False)
     session["show_reasoning"] = _load_show_reasoning()
     session["tool_progress_mode"] = _load_tool_progress_mode()
     session["tool_started_at"] = {}
@@ -1908,12 +2187,15 @@ def _make_agent(sid: str, key: str, session_id: str | None = None):
 
 
 def _init_session(sid: str, key: str, agent, history: list, cols: int = 80):
+    idle = threading.Event()
+    idle.set()
     _sessions[sid] = {
         "agent": agent,
         "session_key": key,
         "history": history,
         "history_lock": threading.Lock(),
         "history_version": 0,
+        "idle": idle,
         "running": False,
         "attached_images": [],
         "image_counter": 0,
@@ -1956,6 +2238,7 @@ def _init_session(sid: str, key: str, agent, history: list, cols: int = 80):
         pass
     _wire_callbacks(sid)
     _notify_session_boundary("on_session_reset", key)
+    _ensure_notification_router()
     _emit("session.info", sid, _session_info(agent))
 
 
@@ -2095,6 +2378,8 @@ def _(rid, params: dict) -> dict:
     _enable_gateway_prompts()
 
     ready = threading.Event()
+    idle = threading.Event()
+    idle.set()
 
     _sessions[sid] = {
         "agent": None,
@@ -2106,6 +2391,7 @@ def _(rid, params: dict) -> dict:
         "history": [],
         "history_lock": threading.Lock(),
         "history_version": 0,
+        "idle": idle,
         "image_counter": 0,
         "pending_title": None,
         "running": False,
@@ -2116,6 +2402,7 @@ def _(rid, params: dict) -> dict:
         "tool_started_at": {},
         "transport": current_transport() or _stdio_transport,
     }
+    _ensure_notification_router()
 
     # Return the lightweight session immediately so Ink can paint the composer
     # + skeleton panel, then build the real AIAgent just after this response is
@@ -3002,7 +3289,7 @@ def _(rid, params: dict) -> dict:
     with session["history_lock"]:
         if session.get("running"):
             return _err(rid, 4009, "session busy")
-        session["running"] = True
+        _set_session_running(session, True)
 
     _start_agent_build(sid, session)
 
@@ -3019,7 +3306,7 @@ def _(rid, params: dict) -> dict:
                 },
             )
             with session["history_lock"]:
-                session["running"] = False
+                _set_session_running(session, False)
             return
         _run_prompt_submit(rid, sid, session, text)
 
@@ -3358,7 +3645,7 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                 pass
             _clear_session_context(session_tokens)
             with session["history_lock"]:
-                session["running"] = False
+                _set_session_running(session, False)
 
         # Chain a goal-continuation turn if the judge said so. We do
         # this AFTER the finally releases session["running"], so the
@@ -3372,7 +3659,7 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                     # User already sent something — their turn wins,
                     # the judge will re-run on the next turn anyway.
                     return
-                session["running"] = True
+                _set_session_running(session, True)
             try:
                 _emit("message.start", sid)
                 _run_prompt_submit(rid, sid, session, goal_followup)
@@ -3383,7 +3670,7 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                     file=sys.stderr,
                 )
                 with session["history_lock"]:
-                    session["running"] = False
+                    _set_session_running(session, False)
 
     threading.Thread(target=run, daemon=True).start()
 

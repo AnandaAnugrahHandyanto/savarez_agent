@@ -4649,3 +4649,541 @@ def test_config_show_displays_nested_max_turns(monkeypatch):
     )
 
     assert ["Max Turns", "120"] in agent_rows
+
+
+# ── Background-process notification delivery ─────────────────────────
+#
+# Covers the tui_gateway completion_queue consumer: the router thread drains
+# process_registry.completion_queue and dispatches each event to a worker
+# from _notify_pool that waits on session['idle'] before synthesizing a
+# prompt.submit.  The design is entirely event-driven (Event.wait +
+# queue.get) with no polling.
+#
+# Tests below intentionally bypass the router thread and call the dispatcher
+# directly where possible — routing is trivial (a queue.get in a loop), the
+# interesting contract lives in _dispatch_process_notification.
+
+import queue as _queue_mod
+
+
+def _drain_process_completion_queue(process_registry):
+    while True:
+        try:
+            process_registry.completion_queue.get_nowait()
+        except _queue_mod.Empty:
+            break
+
+
+class _StubProcessRegistry:
+    """Minimal stand-in for tools.process_registry.process_registry."""
+
+    def __init__(self, session_key: str = "session-key"):
+        self._consumed: set[str] = set()
+        self._session_key = session_key
+
+    def get(self, session_id):
+        return types.SimpleNamespace(session_key=self._session_key)
+
+    def is_completion_consumed(self, session_id):
+        return session_id in self._consumed
+
+    def mark_consumed(self, session_id):
+        self._consumed.add(session_id)
+
+
+def _install_stub_registry(monkeypatch, stub):
+    import tools.process_registry as _pr
+
+    monkeypatch.setattr(_pr, "process_registry", stub)
+    return stub
+
+
+def _make_session(sid: str, session_key: str, *, running: bool = False) -> dict:
+    """Construct the minimum session dict the dispatcher reads."""
+    idle = threading.Event()
+    if not running:
+        idle.set()
+    return {
+        "session_key": session_key,
+        "running": running,
+        "idle": idle,
+        "history_lock": threading.Lock(),
+    }
+
+
+def test_notification_fires_after_idle_set_without_polling(monkeypatch):
+    """Core event-driven contract: the dispatcher waits on idle, not a sleep loop.
+
+    Proof by blocking behavior: the worker thread must remain alive (blocked
+    on ``idle.wait()``) while the session is busy, and dispatch within a few
+    ms of ``idle.set()``.
+    """
+    stub = _install_stub_registry(monkeypatch, _StubProcessRegistry())
+    dispatched: list[dict] = []
+    monkeypatch.setattr(
+        server,
+        "handle_request",
+        lambda req: dispatched.append(req) or {"result": {}},
+    )
+
+    server._sessions.clear()
+    session = _make_session("sid", stub._session_key, running=True)
+    server._sessions["sid"] = session
+    try:
+        worker = threading.Thread(
+            target=server._dispatch_process_notification,
+            args=(
+                {
+                    "type": "completion",
+                    "session_id": "proc_evt",
+                    "command": "python -c 'print(42)'",
+                    "exit_code": 0,
+                    "output": "42\n",
+                },
+            ),
+            daemon=True,
+        )
+        worker.start()
+
+        # Worker should be blocked on idle.wait() — no dispatch yet.
+        worker.join(timeout=0.1)
+        assert worker.is_alive()
+        assert dispatched == []
+
+        # Flip the edge. Worker must wake and dispatch.
+        server._set_session_running(session, False)
+        worker.join(timeout=2.0)
+        assert not worker.is_alive()
+        assert len(dispatched) == 1
+        assert dispatched[0]["method"] == "prompt.submit"
+        assert dispatched[0]["params"]["session_id"] == "sid"
+        assert dispatched[0]["params"]["text"].startswith(
+            "[SYSTEM: Background process proc_evt completed"
+        )
+    finally:
+        server._sessions.clear()
+
+
+def test_notification_dropped_when_session_closed_mid_wait(monkeypatch):
+    """Session teardown during idle.wait must not crash; dispatcher drops silently."""
+    stub = _install_stub_registry(monkeypatch, _StubProcessRegistry())
+    dispatched: list[dict] = []
+    monkeypatch.setattr(
+        server,
+        "handle_request",
+        lambda req: dispatched.append(req) or {"result": {}},
+    )
+
+    server._sessions.clear()
+    session = _make_session("sid", stub._session_key, running=True)
+    server._sessions["sid"] = session
+    try:
+        worker = threading.Thread(
+            target=server._dispatch_process_notification,
+            args=(
+                {
+                    "type": "completion",
+                    "session_id": "proc_teardown",
+                    "command": "x",
+                    "exit_code": 0,
+                    "output": "",
+                },
+            ),
+            daemon=True,
+        )
+        worker.start()
+
+        # Close the session while the worker is blocked on idle.wait().
+        server._sessions.pop("sid", None)
+        server._set_session_running(session, False)  # release the wait
+
+        worker.join(timeout=2.0)
+        assert not worker.is_alive()
+        # Post-wait recheck sees _sessions.get("sid") is not session → drop.
+        assert dispatched == []
+    finally:
+        server._sessions.clear()
+
+
+def test_concurrent_sessions_dispatch_in_parallel(monkeypatch):
+    """Two sessions with simultaneous completions: busy A must not block idle B.
+
+    HoL (head-of-line) blocking was the core weakness of the single-worker
+    polling design.  Per-event dispatcher threads make this impossible.
+    """
+
+    class _Routing:
+        """Unified process_registry stand-in that routes by process sid."""
+
+        def __init__(self):
+            self._consumed: set[str] = set()
+
+        def get(self, session_id):
+            if session_id.endswith("_a"):
+                return types.SimpleNamespace(session_key="key-A")
+            if session_id.endswith("_b"):
+                return types.SimpleNamespace(session_key="key-B")
+            return types.SimpleNamespace(session_key="")
+
+        def is_completion_consumed(self, session_id):
+            return session_id in self._consumed
+
+    routing = _Routing()
+    _install_stub_registry(monkeypatch, routing)
+
+    dispatched: list[str] = []
+    dispatched_lock = threading.Lock()
+
+    def _fake_handle(req):
+        with dispatched_lock:
+            dispatched.append(req["params"]["session_id"])
+        return {"result": {}}
+
+    monkeypatch.setattr(server, "handle_request", _fake_handle)
+
+    server._sessions.clear()
+    # Session A is busy; B is idle.
+    session_a = _make_session("sid-A", "key-A", running=True)
+    session_b = _make_session("sid-B", "key-B", running=False)
+    server._sessions["sid-A"] = session_a
+    server._sessions["sid-B"] = session_b
+    try:
+        # Fire both events.
+        worker_a = threading.Thread(
+            target=server._dispatch_process_notification,
+            args=(
+                {
+                    "type": "completion",
+                    "session_id": "proc_a",
+                    "command": "ca",
+                    "exit_code": 0,
+                    "output": "",
+                },
+            ),
+            daemon=True,
+        )
+        worker_b = threading.Thread(
+            target=server._dispatch_process_notification,
+            args=(
+                {
+                    "type": "completion",
+                    "session_id": "proc_b",
+                    "command": "cb",
+                    "exit_code": 0,
+                    "output": "",
+                },
+            ),
+            daemon=True,
+        )
+        worker_a.start()
+        worker_b.start()
+
+        # B is idle — should dispatch immediately and exit without waiting for A.
+        worker_b.join(timeout=2.0)
+        assert not worker_b.is_alive(), (
+            "session B's dispatcher HoL-blocked on session A"
+        )
+        with dispatched_lock:
+            assert dispatched == ["sid-B"]
+        # A is still busy.
+        assert worker_a.is_alive()
+
+        # Release A.
+        server._set_session_running(session_a, False)
+        worker_a.join(timeout=2.0)
+        assert not worker_a.is_alive()
+        with dispatched_lock:
+            assert sorted(dispatched) == ["sid-A", "sid-B"]
+    finally:
+        server._sessions.clear()
+
+
+def test_notification_dropped_when_session_key_unresolvable(monkeypatch):
+    """Events for a session_key that no TUI session owns: drop cleanly."""
+    _install_stub_registry(monkeypatch, _StubProcessRegistry(session_key="ghost"))
+    dispatched: list[dict] = []
+    monkeypatch.setattr(
+        server,
+        "handle_request",
+        lambda req: dispatched.append(req) or {"result": {}},
+    )
+
+    server._sessions.clear()
+    try:
+        server._dispatch_process_notification(
+            {
+                "type": "completion",
+                "session_id": "proc_orphan",
+                "command": "x",
+                "exit_code": 0,
+                "output": "",
+            }
+        )
+        assert dispatched == []
+    finally:
+        server._sessions.clear()
+
+
+def test_notification_skipped_when_completion_already_consumed(monkeypatch):
+    """Double-check path: if the agent consumed the completion via wait/poll
+    before the dispatcher fires, don't send a redundant synthetic turn.
+    """
+    stub = _install_stub_registry(monkeypatch, _StubProcessRegistry())
+    stub.mark_consumed("proc_consumed")
+    dispatched: list[dict] = []
+    monkeypatch.setattr(
+        server,
+        "handle_request",
+        lambda req: dispatched.append(req) or {"result": {}},
+    )
+
+    server._sessions.clear()
+    server._sessions["sid"] = _make_session("sid", stub._session_key)
+    try:
+        server._dispatch_process_notification(
+            {
+                "type": "completion",
+                "session_id": "proc_consumed",
+                "command": "x",
+                "exit_code": 0,
+                "output": "",
+            }
+        )
+        assert dispatched == []
+    finally:
+        server._sessions.clear()
+
+
+def test_idle_timeout_drops_notification_and_warns(monkeypatch, caplog):
+    """A turn that never ends (5min+) must not hang the dispatcher forever."""
+    stub = _install_stub_registry(monkeypatch, _StubProcessRegistry())
+    dispatched: list[dict] = []
+    monkeypatch.setattr(
+        server,
+        "handle_request",
+        lambda req: dispatched.append(req) or {"result": {}},
+    )
+    # Collapse the 5-minute timeout to something testable.
+    monkeypatch.setattr(server, "_NOTIFY_IDLE_TIMEOUT_SECONDS", 0.05)
+
+    server._sessions.clear()
+    server._sessions["sid"] = _make_session("sid", stub._session_key, running=True)
+    try:
+        with caplog.at_level("WARNING", logger=server.logger.name):
+            server._dispatch_process_notification(
+                {
+                    "type": "completion",
+                    "session_id": "proc_timeout",
+                    "command": "x",
+                    "exit_code": 0,
+                    "output": "",
+                }
+            )
+        assert dispatched == []
+        assert any("busy" in rec.getMessage() for rec in caplog.records)
+    finally:
+        server._sessions.clear()
+
+
+def test_formatter_renders_completion_watch_and_disabled_events():
+    """Event formatter parity with gateway/cli text shapes."""
+    # Completion
+    out = server._format_process_notification(
+        {
+            "type": "completion",
+            "session_id": "p1",
+            "command": "echo hi",
+            "exit_code": 0,
+            "output": "hi\n",
+        }
+    )
+    assert out is not None
+    assert "Background process p1 completed" in out
+    assert "exit code 0" in out
+    assert "hi\n" in out
+
+    # Watch match
+    out = server._format_process_notification(
+        {
+            "type": "watch_match",
+            "session_id": "p2",
+            "command": "tail -f log",
+            "pattern": "ERROR",
+            "output": "ERROR: boom",
+            "suppressed": 3,
+        }
+    )
+    assert out is not None
+    assert 'matched watch pattern "ERROR"' in out
+    assert "3 earlier matches were suppressed" in out
+
+    # Watch disabled
+    out = server._format_process_notification(
+        {"type": "watch_disabled", "message": "watch disabled"}
+    )
+    assert out == "[SYSTEM: watch disabled]"
+
+    # Watch-disabled with no message: no synthetic prompt
+    assert server._format_process_notification({"type": "watch_disabled"}) is None
+
+
+def test_dispatch_uses_synthetic_request_id(monkeypatch):
+    """Request IDs are stable-prefixed so they can be filtered from logs."""
+    stub = _install_stub_registry(monkeypatch, _StubProcessRegistry())
+    dispatched: list[dict] = []
+    monkeypatch.setattr(
+        server,
+        "handle_request",
+        lambda req: dispatched.append(req) or {"result": {}},
+    )
+
+    server._sessions.clear()
+    server._sessions["sid"] = _make_session("sid", stub._session_key)
+    try:
+        server._dispatch_process_notification(
+            {
+                "type": "completion",
+                "session_id": "proc_id",
+                "command": "x",
+                "exit_code": 0,
+                "output": "",
+            }
+        )
+        assert len(dispatched) == 1
+        assert dispatched[0]["id"].startswith("process-notify-")
+        assert dispatched[0]["method"] == "prompt.submit"
+    finally:
+        server._sessions.clear()
+
+
+def test_set_session_running_keeps_running_and_idle_in_sync():
+    """The helper is the single source of truth for the running/idle invariant."""
+    session = _make_session("sid", "key", running=False)
+    assert session["running"] is False
+    assert session["idle"].is_set()
+
+    server._set_session_running(session, True)
+    assert session["running"] is True
+    assert not session["idle"].is_set()
+
+    server._set_session_running(session, False)
+    assert session["running"] is False
+    assert session["idle"].is_set()
+
+    # Missing idle must not crash — legacy session compatibility.
+    session_no_idle = {"running": False, "history_lock": threading.Lock()}
+    server._set_session_running(session_no_idle, True)
+    assert session_no_idle["running"] is True
+    server._set_session_running(session_no_idle, False)
+    assert session_no_idle["running"] is False
+
+
+def test_router_and_dispatch_end_to_end(monkeypatch):
+    """Integration: enqueue on completion_queue, observe prompt.submit."""
+    from tools.process_registry import process_registry
+
+    _drain_process_completion_queue(process_registry)
+    server._sessions.clear()
+
+    dispatched: list[dict] = []
+    dispatched_evt = threading.Event()
+
+    def _fake_handle(req):
+        dispatched.append(req)
+        dispatched_evt.set()
+        return {"result": {}}
+
+    monkeypatch.setattr(server, "handle_request", _fake_handle)
+
+    idle = threading.Event()
+    idle.set()
+    server._sessions["sid"] = {
+        "session_key": "end-to-end",
+        "running": False,
+        "idle": idle,
+        "history_lock": threading.Lock(),
+    }
+
+    original_get = process_registry.get
+
+    def _fake_get(session_id):
+        if session_id == "proc_e2e":
+            return types.SimpleNamespace(session_key="end-to-end")
+        return original_get(session_id)
+
+    monkeypatch.setattr(process_registry, "get", _fake_get)
+
+    try:
+        # Start the router if it isn't running (no TUI session has initialised
+        # it in this test process).
+        server._ensure_notification_router()
+        process_registry.completion_queue.put(
+            {
+                "type": "completion",
+                "session_id": "proc_e2e",
+                "command": "python -c 'print(1)'",
+                "exit_code": 0,
+                "output": "1\n",
+            }
+        )
+        assert dispatched_evt.wait(timeout=3.0), "router+dispatch never completed"
+        assert len(dispatched) == 1
+        assert "proc_e2e completed" in dispatched[0]["params"]["text"]
+    finally:
+        _drain_process_completion_queue(process_registry)
+        server._sessions.clear()
+
+
+def test_dispatch_retries_after_4009_until_idle(monkeypatch):
+    """A goal-continuation / user prompt can reclaim the slot between
+    ``idle.set()`` and the dispatcher's ``prompt.submit``.  The dispatcher
+    must re-wait on the next idle edge and retry, not drop the event.
+    """
+    _install_stub_registry(monkeypatch, _StubProcessRegistry())
+    session = _make_session("sid", "session-key", running=False)
+    calls: list[dict] = []
+
+    def _fake_handle(req):
+        calls.append(req)
+        # First attempt: pretend a goal-continuation grabbed the slot.
+        if len(calls) == 1:
+            server._set_session_running(session, True)
+            return {"error": {"code": 4009, "message": "session busy"}}
+        return {"result": {}}
+
+    monkeypatch.setattr(server, "handle_request", _fake_handle)
+
+    server._sessions.clear()
+    server._sessions["sid"] = session
+    try:
+        worker = threading.Thread(
+            target=server._dispatch_process_notification,
+            args=(
+                {
+                    "type": "completion",
+                    "session_id": "proc_race",
+                    "command": "x",
+                    "exit_code": 0,
+                    "output": "",
+                },
+            ),
+            daemon=True,
+        )
+        worker.start()
+
+        # First call fires immediately (idle was set), gets 4009,
+        # dispatcher re-waits on idle.
+        deadline = time.monotonic() + 2.0
+        while len(calls) < 1 and time.monotonic() < deadline:
+            worker.join(timeout=0.01)
+        assert len(calls) == 1
+        assert worker.is_alive(), "dispatcher dropped instead of re-waiting on idle"
+
+        # Release the slot.  Second attempt succeeds and the worker exits.
+        server._set_session_running(session, False)
+        worker.join(timeout=2.0)
+        assert not worker.is_alive()
+        assert len(calls) == 2
+        assert calls[1]["method"] == "prompt.submit"
+    finally:
+        server._sessions.clear()
