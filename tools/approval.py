@@ -1017,14 +1017,45 @@ def _format_tirith_description(tirith_result: dict) -> str:
     return "Security scan — " + "; ".join(parts)
 
 
+def _clean_approval_context(approval_context: dict | None) -> dict:
+    """Normalize optional model-supplied approval context."""
+    if not isinstance(approval_context, dict):
+        return {}
+    allowed = {
+        "purpose": "purpose",
+        "effect": "effect",
+        "risk": "risk",
+        "approval_purpose": "purpose",
+        "approval_effect": "effect",
+        "approval_risk": "risk",
+    }
+    cleaned = {}
+    for src, dst in allowed.items():
+        value = approval_context.get(src)
+        if isinstance(value, str):
+            value = value.strip()
+            if value:
+                cleaned[dst] = value[:1000]
+    return cleaned
+
+
+def _approval_context_or_fallback(approval_context: dict | None) -> dict:
+    """Return normalized model-supplied approval context, if provided."""
+    return _clean_approval_context(approval_context)
+
+
 def check_all_command_guards(command: str, env_type: str,
-                             approval_callback=None) -> dict:
+                             approval_callback=None,
+                             approval_context: dict | None = None) -> dict:
     """Run all pre-exec security checks and return a single approval decision.
 
     Gathers findings from tirith and dangerous-command detection, then
     presents them as a single combined approval request. This prevents
     a gateway force=True replay from bypassing one check when only the
     other was shown to the user.
+
+    ``approval_context`` is optional model-supplied context explaining why the
+    command is being run. It is only surfaced when approval is required.
     """
     # Skip containers for both checks
     if env_type in {"docker", "singularity", "modal", "daytona", "vercel_sandbox"}:
@@ -1152,6 +1183,7 @@ def check_all_command_guards(command: str, env_type: str,
 
     # Combine descriptions for a single approval prompt
     combined_desc = "; ".join(desc for _, desc, _ in warnings)
+    approval_explanation = _approval_context_or_fallback(approval_context)
     primary_key = warnings[0][0]
     all_keys = [key for key, _, _ in warnings]
     has_tirith = any(is_t for _, _, is_t in warnings)
@@ -1174,6 +1206,7 @@ def check_all_command_guards(command: str, env_type: str,
                 "pattern_key": primary_key,
                 "pattern_keys": all_keys,
                 "description": combined_desc,
+                "explanation": approval_explanation,
             }
             entry = _ApprovalEntry(approval_data)
             with _lock:
@@ -1305,6 +1338,7 @@ def check_all_command_guards(command: str, env_type: str,
             "pattern_key": primary_key,
             "pattern_keys": all_keys,
             "description": combined_desc,
+            "explanation": approval_explanation,
         })
         return {
             "approved": False,

@@ -15337,6 +15337,30 @@ class GatewayRunner:
 
                 cmd = approval_data.get("command", "")
                 desc = approval_data.get("description", "dangerous command")
+                explanation = approval_data.get("explanation") or {}
+                purpose = explanation.get("purpose") if isinstance(explanation, dict) else None
+                effect = explanation.get("effect") if isinstance(explanation, dict) else None
+                risk = explanation.get("risk") if isinstance(explanation, dict) else None
+                followup_msg = ""
+                if purpose or effect or risk:
+                    followup_msg = (
+                        "Command approval context:\n\n"
+                        f"Purpose: {purpose or 'Not provided'}\n\n"
+                        f"Effect: {effect or 'Not provided'}\n\n"
+                        f"Risk: {risk or 'Not provided'}"
+                    )
+
+                def _send_approval_context_followup() -> None:
+                    if not followup_msg:
+                        return
+                    asyncio.run_coroutine_threadsafe(
+                        _status_adapter.send(
+                            _status_chat_id,
+                            followup_msg,
+                            metadata=_status_thread_metadata,
+                        ),
+                        _loop_for_step,
+                    ).result(timeout=15)
 
                 # Prefer button-based approval when the adapter supports it.
                 # Check the *class* for the method, not the instance — avoids
@@ -15354,6 +15378,7 @@ class GatewayRunner:
                             _loop_for_step,
                         ).result(timeout=15)
                         if _approval_result.success:
+                            _send_approval_context_followup()
                             return
                         logger.warning(
                             "Button-based approval failed (send returned error), falling back to text: %s",
@@ -15382,6 +15407,7 @@ class GatewayRunner:
                         ),
                         _loop_for_step,
                     ).result(timeout=15)
+                    _send_approval_context_followup()
                 except Exception as _e:
                     logger.error("Failed to send approval request: %s", _e)
 
