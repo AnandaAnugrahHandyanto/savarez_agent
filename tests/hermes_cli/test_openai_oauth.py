@@ -1,6 +1,7 @@
 import base64
 import json
 import time
+from pathlib import Path
 
 import pytest
 
@@ -31,6 +32,31 @@ def test_provider_registry_contains_openai_oauth():
     cfg = PROVIDER_REGISTRY["openai-oauth"]
     assert cfg.auth_type == "oauth_external"
     assert cfg.inference_base_url == "https://api.openai.com/v1"
+
+
+def test_openai_oauth_auth_path_falls_back_to_home_brian(monkeypatch, tmp_path):
+    import hermes_cli.auth as auth_mod
+
+    mounted = tmp_path / "home" / "brian" / ".local" / "share" / "opencode"
+    mounted.mkdir(parents=True)
+    auth_file = mounted / "auth.json"
+    auth_file.write_text("{}", encoding="utf-8")
+
+    monkeypatch.delenv("HERMES_OPENAI_OAUTH_AUTH_PATH", raising=False)
+    monkeypatch.setattr(auth_mod.Path, "home", lambda: Path("/root"))
+
+    original_exists = auth_mod.Path.exists
+
+    def _exists(self):
+        if str(self) == "/home/brian/.local/share/opencode/auth.json":
+            return True
+        if str(self) == "/root/.local/share/opencode/auth.json":
+            return False
+        return original_exists(self)
+
+    monkeypatch.setattr(auth_mod.Path, "exists", _exists, raising=False)
+
+    assert auth_mod._openai_oauth_auth_path() == Path("/home/brian/.local/share/opencode/auth.json")
 
 
 def test_resolve_openai_oauth_runtime_credentials_reads_auth_file(tmp_path, monkeypatch):
