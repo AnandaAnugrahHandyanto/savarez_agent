@@ -8779,7 +8779,8 @@ class AIAgent:
             # source of the 429 so the cooldown should not be reset/extended.
             fallback_already_active = bool(getattr(self, "_fallback_activated", False))
             current_provider = (getattr(self, "provider", "") or "").strip().lower()
-            primary_provider = ((self._primary_runtime or {}).get("provider") or "").strip().lower()
+            primary_runtime = getattr(self, "_primary_runtime", None) or {}
+            primary_provider = (primary_runtime.get("provider") or "").strip().lower()
             if (not fallback_already_active) or (primary_provider and current_provider == primary_provider):
                 self._rate_limited_until = time.monotonic() + 60
         if self._fallback_index >= len(self._fallback_chain):
@@ -8907,10 +8908,11 @@ class AIAgent:
                 self._transport_cache.clear()
             self._fallback_activated = True
             self._active_fallback_extra_body = fb_extra_body
+            primary_runtime = getattr(self, "_primary_runtime", None) or {}
             base_request_overrides = dict(
-                (self._primary_runtime or {}).get(
+                primary_runtime.get(
                     "request_overrides",
-                    self.request_overrides,
+                    getattr(self, "request_overrides", None),
                 )
                 or {}
             )
