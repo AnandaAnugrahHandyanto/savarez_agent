@@ -2612,6 +2612,59 @@ class TestAdapterBehavior(unittest.TestCase):
         )
 
     @patch.dict(os.environ, {}, clear=True)
+    def test_send_renders_markdown_tables_via_post(self):
+        """Markdown tables should be sent via post/md format, not plain text."""
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        captured = {}
+
+        class _MessageAPI:
+            def create(self, request):
+                captured["request"] = request
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(message_id="om_table"),
+                )
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(
+                v1=SimpleNamespace(
+                    message=_MessageAPI(),
+                )
+            )
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        table_content = (
+            "| Name | Age |\n"
+            "|------|-----|\n"
+            "| Alice | 30 |\n"
+            "| Bob | 25 |"
+        )
+
+        with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct):
+            result = asyncio.run(
+                adapter.send(
+                    chat_id="oc_chat",
+                    content=table_content,
+                )
+            )
+
+        self.assertTrue(result.success)
+        # Table content should be sent as post (not text), so Feishu renders it
+        self.assertEqual(captured["request"].request_body.msg_type, "post")
+        payload = json.loads(captured["request"].request_body.content)
+        elements = payload["zh_cn"]["content"][0]
+        self.assertEqual(
+            elements,
+            [{"tag": "md", "text": table_content}],
+        )
+
+    @patch.dict(os.environ, {}, clear=True)
     def test_build_post_payload_keeps_fence_like_code_lines_inside_code_block(self):
         from gateway.config import PlatformConfig
         from gateway.platforms.feishu import FeishuAdapter
