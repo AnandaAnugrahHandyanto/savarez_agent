@@ -577,24 +577,11 @@ inkbox.tunnels.update("tunnel-uuid", metadata={"env": "prod"})
 signed = inkbox.tunnels.sign_csr("tunnel-uuid", csr_pem=csr_pem_string)  # PEM as str
 ```
 
-To open the data plane from your own code use `inkbox.tunnels.connect(...)` (the resource method forwards to `from inkbox.tunnels.client import connect`); auth is the SDK client's API key sent as `x-api-key`. No per-tunnel connect secret to mint or rotate. The key must be admin-scoped in the tunnel's org, or agent-scoped to the tunnel's owning identity.
+To open the data plane from your own code use `inkbox.tunnels.connect(...)` (the resource method forwards to `from inkbox.tunnels.client import connect`); auth is the SDK client's API key sent as `x-api-key`. No per-tunnel connect secret to mint or rotate. Your identity-scoped key already has the authority to connect to its own tunnel.
 
-### API Keys (`inkbox.api_keys`)
+### API Keys (`inkbox.api_keys`) — admin / JWT only
 
-```python
-# Mint a fresh API key. Admin-scoped callers MUST pass scoped_identity_id
-# (admin keys cannot mint other admin keys — JWT only). Agent-scoped keys
-# are bound to a single identity for the life of the key.
-created = inkbox.api_keys.create(
-    label="Hermes gateway · sales-agent",
-    description="Auto-minted by hermes setup",
-    scoped_identity_id=identity.id,        # None → admin-scoped (JWT only)
-)
-print(created.api_key)     # the full secret — shown once, save immediately
-print(created.record.id)   # ApiKey record metadata
-```
-
-The minted key is what `tunnels.connect()` sends as `x-api-key` on the data plane, so the per-identity key from this call is exactly what a gateway running as one identity should hold on disk.
+Minting new API keys requires an admin key or a human JWT; identity-scoped keys (what this agent runs as) get 403 here. The resource exists, but in normal operation the agent doesn't call it — its own key was minted by `hermes setup` before the gateway started and is the only key the data plane needs.
 
 ### Phone Numbers (`inkbox.phone_numbers`)
 
