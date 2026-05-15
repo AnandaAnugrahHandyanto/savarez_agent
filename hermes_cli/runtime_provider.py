@@ -86,6 +86,13 @@ def _detect_api_mode_for_url(base_url: str) -> Optional[str]:
     return None
 
 
+def _model_prefers_responses_api(model: str) -> bool:
+    m = (model or "").strip().lower()
+    if "/" in m:
+        m = m.rsplit("/", 1)[-1]
+    return m.startswith("gpt-5")
+
+
 def _auto_detect_local_model(base_url: str) -> str:
     """Query a local server for its model name when only one model is loaded."""
     if not base_url:
@@ -373,6 +380,7 @@ def _try_resolve_from_custom_pool(
     provider_label: str,
     api_mode_override: Optional[str] = None,
     provider_name: Optional[str] = None,
+    model_name: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     """Check if a credential pool exists for a custom endpoint and return a runtime dict if so."""
     pool_key = get_custom_provider_pool_key(base_url, provider_name=provider_name)
@@ -390,7 +398,12 @@ def _try_resolve_from_custom_pool(
             return None
         return {
             "provider": provider_label,
-            "api_mode": api_mode_override or _detect_api_mode_for_url(base_url) or "chat_completions",
+            "api_mode": (
+                api_mode_override
+                or _detect_api_mode_for_url(base_url)
+                or ("codex_responses" if _model_prefers_responses_api(model_name or "") else None)
+                or "chat_completions"
+            ),
             "base_url": base_url,
             "api_key": pool_api_key,
             "source": f"pool:{pool_key}",
@@ -538,6 +551,7 @@ def _resolve_named_custom_runtime(
     requested_provider: str,
     explicit_api_key: Optional[str] = None,
     explicit_base_url: Optional[str] = None,
+    target_model: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     # Bare `provider="custom"` with an explicit base_url (e.g. propagated
     # from a `model_aliases:` direct-alias resolution) — build a runtime
@@ -582,7 +596,14 @@ def _resolve_named_custom_runtime(
         return None
 
     # Check if a credential pool exists for this custom endpoint
-    pool_result = _try_resolve_from_custom_pool(base_url, "custom", custom_provider.get("api_mode"), provider_name=custom_provider.get("name"))
+    model_name = str(custom_provider.get("model") or target_model or "").strip()
+    pool_result = _try_resolve_from_custom_pool(
+        base_url,
+        "custom",
+        custom_provider.get("api_mode"),
+        provider_name=custom_provider.get("name"),
+        model_name=model_name,
+    )
     if pool_result:
         # Propagate the model name even when using pooled credentials —
         # the pool doesn't know about the custom_providers model field.
@@ -600,11 +621,16 @@ def _resolve_named_custom_runtime(
     ]
     api_key = next((candidate for candidate in api_key_candidates if has_usable_secret(candidate)), "")
 
+    api_mode = (
+        custom_provider.get("api_mode")
+        or _detect_api_mode_for_url(base_url)
+        or ("codex_responses" if _model_prefers_responses_api(model_name) else None)
+        or "chat_completions"
+    )
+
     result = {
         "provider": "custom",
-        "api_mode": custom_provider.get("api_mode")
-        or _detect_api_mode_for_url(base_url)
-        or "chat_completions",
+        "api_mode": api_mode,
         "base_url": base_url,
         "api_key": api_key or "no-key-required",
         "source": f"custom_provider:{custom_provider.get('name', requested_provider)}",
@@ -1011,6 +1037,7 @@ def resolve_runtime_provider(
         requested_provider=requested_provider,
         explicit_api_key=explicit_api_key,
         explicit_base_url=explicit_base_url,
+        target_model=target_model,
     )
     if custom_runtime:
         custom_runtime["requested_provider"] = requested_provider
