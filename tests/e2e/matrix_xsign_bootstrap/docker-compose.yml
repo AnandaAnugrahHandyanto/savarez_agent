@@ -1,6 +1,7 @@
 services:
   homeserver:
-    image: ghcr.io/continuwuity/continuwuity:latest
+    # latest pinned 2026-05-13; verified with registry API + docker manifest inspect.
+    image: ghcr.io/continuwuity/continuwuity:latest@sha256:b77b1da1622e948bb8bd50ebe185cba68677b32f6969a5d7171dc54613e59bc6
     environment:
       CONTINUWUITY_SERVER_NAME: localhost
       CONTINUWUITY_DATABASE_PATH: /var/lib/conduwuit/conduwuit.db
