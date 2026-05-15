@@ -292,7 +292,6 @@ AUTHOR_MAP = {
     "uzmpsk.dilekakbas@gmail.com": "dlkakbs",
     "beliefanx@gmail.com": "BeliefanX",
     "changchun989@proton.me": "changchun989",
-    "jefferson@heimdallstrategy.com": "Mind-Dragon",
     "44753291+Nanako0129@users.noreply.github.com": "Nanako0129",
     "steve.westerhouse@origami-analytics.com": "westers",
     "yeyitech@users.noreply.github.com": "yeyitech",
