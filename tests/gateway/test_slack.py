@@ -1922,6 +1922,37 @@ class TestReactions:
         adapter._app.client.reactions_remove.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_reactions_added_for_free_response_channel(self, adapter):
+        """Untagged messages in free_response_channels should still get reactions.
+
+        free_response_channels is opt-in per channel — the operator has
+        explicitly said 'treat every message here like a DM'. The
+        noise-avoidance reasoning behind skipping reactions in plain
+        listen-all channels doesn't apply, and without an immediate
+        :eyes: ack the human can't tell a slow agent reply from an
+        ignored message.
+        """
+        adapter.config.extra["free_response_channels"] = ["C_FREE"]
+        adapter._app.client.reactions_add = AsyncMock()
+        adapter._app.client.reactions_remove = AsyncMock()
+        adapter._app.client.users_info = AsyncMock(return_value={
+            "user": {"profile": {"display_name": "Tyler"}}
+        })
+
+        event = {
+            "text": "hello",
+            "user": "U_USER",
+            "channel": "C_FREE",
+            "channel_type": "channel",
+            "ts": "1234567890.000005",
+        }
+        await adapter._handle_slack_message(event)
+
+        # Should register for reactions even though it's a non-mention
+        # channel message, because the channel is opt-in free-response.
+        assert "1234567890.000005" in adapter._reacting_message_ids
+
+    @pytest.mark.asyncio
     async def test_reactions_disabled_via_env(self, adapter, monkeypatch):
         """SLACK_REACTIONS=false should suppress all reaction lifecycle."""
         monkeypatch.setenv("SLACK_REACTIONS", "false")

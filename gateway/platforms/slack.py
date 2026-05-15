@@ -2228,10 +2228,16 @@ class SlackAdapter(BasePlatformAdapter):
             auto_skill=_auto_skill,
         )
 
-        # Only react when bot is directly addressed (DM or @mention).
-        # In listen-all channels (require_mention=false), reacting to every
-        # casual message would be noisy.
-        _should_react = (is_dm or is_mentioned) and self._reactions_enabled()
+        # React when the bot is directly addressed (DM or @mention), or
+        # when the channel is opt-in free-response (operator has explicitly
+        # said "treat every message here like a DM"). Skipped in plain
+        # listen-all channels (require_mention=false without per-channel
+        # opt-in) where reacting to every casual message would be noisy.
+        _should_react = (
+            is_dm
+            or is_mentioned
+            or channel_id in self._slack_free_response_channels()
+        ) and self._reactions_enabled()
         if _should_react:
             self._reacting_message_ids.add(ts)
 
