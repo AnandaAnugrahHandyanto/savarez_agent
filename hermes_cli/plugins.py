@@ -43,6 +43,7 @@ import os
 import sys
 import threading
 import types
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set, Union
@@ -125,6 +126,8 @@ _install_plugin_debug_handler()
 # Constants
 # ---------------------------------------------------------------------------
 
+VALID_SANDBOX_MODES = {"none", "subprocess"}
+
 VALID_HOOKS: Set[str] = {
     "pre_tool_call",
     "post_tool_call",
@@ -170,6 +173,46 @@ VALID_HOOKS: Set[str] = {
 ENTRY_POINTS_GROUP = "hermes_agent.plugins"
 
 _NS_PARENT = "hermes_plugins"
+
+HOOK_TIMEOUT = 30  # seconds — max time a single hook callback may run
+
+
+class _HookTimeoutError(TimeoutError):
+    """Raised when a plugin hook callback exceeds HOOK_TIMEOUT."""
+
+
+@contextmanager
+def _timeout_guard(seconds: float):
+    """Raise _HookTimeoutError if the enclosed block runs longer than *seconds*.
+
+    Uses SIGALRM on Unix. On Windows, logs a warning (SIGALRM unavailable).
+    """
+    if sys.platform == "win32":
+        logger.warning(
+            "Hook timeout enforcement not available on Windows "
+            "(SIGALRM not supported). Consider using WSL."
+        )
+        yield
+        return
+
+    import signal as _signal
+
+    def _handler(signum, frame):
+        raise _HookTimeoutError(f"Hook callback timed out after {seconds}s")
+
+    old = _signal.signal(_signal.SIGALRM, _handler)
+    _signal.alarm(int(seconds))
+    try:
+        yield
+    finally:
+        _signal.alarm(0)
+        _signal.signal(_signal.SIGALRM, old)
+
+
+def set_hook_timeout(callback: Callable, seconds: float = HOOK_TIMEOUT) -> Callable:
+    """Annotate a hook callback with a timeout value (enforced by invoke_hook)."""
+    callback.__HERMES_HOOK_TIMEOUT__ = seconds
+    return callback
 
 
 def _env_enabled(name: str) -> bool:
@@ -243,28 +286,14 @@ class PluginManifest:
     provides_hooks: List[str] = field(default_factory=list)
     source: str = ""        # "user", "project", or "entrypoint"
     path: Optional[str] = None
-    # Plugin kind — see plugins.py module docstring for semantics.
-    # ``standalone`` (default): hooks/tools of its own; opt-in via
-    #                           ``plugins.enabled``.
-    # ``backend``: pluggable backend for an existing core tool (e.g.
-    #              image_gen). Built-in (bundled) backends auto-load;
-    #              user-installed still gated by ``plugins.enabled``.
-    # ``exclusive``: category with exactly one active provider (memory).
-    #              Selection via ``<category>.provider`` config key; the
-    #              category's own discovery system handles loading and the
-    #              general scanner skips these.
-    # ``platform``: gateway messaging platform adapter (e.g. IRC). Bundled
-    #              platform plugins auto-load so every shipped platform is
-    #              available out of the box; user-installed platform plugins
-    #              in ~/.hermes/plugins/ still gated by ``plugins.enabled``
-    #              (untrusted code).
     kind: str = "standalone"
-    # Registry key — path-derived, used by ``plugins.enabled``/``disabled``
-    # lookups and by ``hermes plugins list``. For a flat plugin at
-    # ``plugins/disk-cleanup/`` the key is ``disk-cleanup``; for a nested
-    # category plugin at ``plugins/image_gen/openai/`` the key is
-    # ``image_gen/openai``. When empty, falls back to ``name``.
     key: str = ""
+    # Sandbox mode — "none" (default, in-process), "subprocess" (isolated)
+    sandbox: str = "none"
+    # Declared capabilities — checked at tool/hook registration time.
+    # Default: "all" for backward compatibility with existing plugins.
+    # Restrictive plugins should list only what they need.
+    capabilities: List[str] = field(default_factory=lambda: ["all"])
 
 
 @dataclass
@@ -326,7 +355,8 @@ class PluginContext:
         description: str = "",
         emoji: str = "",
     ) -> None:
-        """Register a tool in the global registry **and** track it as plugin-provided."""
+        """Register a tool — checks plugin has 'tools' capability."""
+        self.require_capability("tools")
         from tools.registry import registry
 
         registry.register(
@@ -656,11 +686,8 @@ class PluginContext:
     # -- hook registration --------------------------------------------------
 
     def register_hook(self, hook_name: str, callback: Callable) -> None:
-        """Register a lifecycle hook callback.
-
-        Unknown hook names produce a warning but are still stored so
-        forward-compatible plugins don't break.
-        """
+        """Register a lifecycle hook callback with auto-timeout."""
+        self.require_capability("hooks")
         if hook_name not in VALID_HOOKS:
             logger.warning(
                 "Plugin '%s' registered unknown hook '%s' "
@@ -669,6 +696,7 @@ class PluginContext:
                 hook_name,
                 ", ".join(sorted(VALID_HOOKS)),
             )
+        set_hook_timeout(callback)
         self._manager._hooks.setdefault(hook_name, []).append(callback)
         logger.debug("Plugin %s registered hook: %s", self.manifest.name, hook_name)
 
@@ -718,6 +746,53 @@ class PluginContext:
             "Plugin %s registered skill: %s",
             self.manifest.name, qualified,
         )
+
+    # -- state persistence ---------------------------------------------------
+
+    @property
+    def state_dir(self) -> Path:
+        """Plugin-scoped state directory path (directory created on first write)."""
+        return get_hermes_home() / "plugins" / self.manifest.name
+
+    def load_state(self, key: str, default: Any = None) -> Any:
+        """Load a JSON state file from the plugin's state directory."""
+        path = self.state_dir / f"{key}.json"
+        if path.exists():
+            try:
+                import json as _json
+                return _json.loads(path.read_text(encoding="utf-8"))
+            except Exception:
+                logger.warning("Plugin %s: corrupt state file %s", self.manifest.name, key)
+        return default
+
+    def save_state(self, key: str, data: Any) -> None:
+        """Save a JSON state file to the plugin's state directory."""
+        import json as _json
+        self.state_dir.mkdir(parents=True, exist_ok=True)
+        path = self.state_dir / f"{key}.json"
+        tmp = path.with_suffix(f".{os.getpid()}.tmp")
+        try:
+            tmp.write_text(_json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+            tmp.replace(path)
+        except Exception:
+            if tmp.exists():
+                tmp.unlink()
+            raise
+
+    # -- permission checking -------------------------------------------------
+
+    def check_capability(self, capability: str) -> bool:
+        """Check if the plugin has declared a given capability."""
+        caps = self.manifest.capabilities
+        return "all" in caps or capability in caps
+
+    def require_capability(self, capability: str) -> None:
+        """Raise if the plugin hasn't declared the required capability."""
+        if not self.check_capability(capability):
+            raise PermissionError(
+                f"Plugin '{self.manifest.name}' needs '{capability}' capability. "
+                f"Add it to plugin.yaml: capabilities: [{capability}]"
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -1068,6 +1143,13 @@ class PluginManager:
                 "Parsed manifest: key=%s name=%s kind=%s source=%s path=%s",
                 key, name, kind, source, plugin_dir,
             )
+            raw_sandbox = data.get("sandbox", "none")
+            sandbox = raw_sandbox if raw_sandbox in VALID_SANDBOX_MODES else "none"
+            if raw_sandbox != sandbox:
+                logger.warning(
+                    "Plugin '%s': invalid sandbox '%s', falling back to 'none'. "
+                    "Valid: %s", name, raw_sandbox, sorted(VALID_SANDBOX_MODES),
+                )
             return PluginManifest(
                 name=name,
                 version=str(data.get("version", "")),
@@ -1080,6 +1162,8 @@ class PluginManager:
                 path=str(plugin_dir),
                 kind=kind,
                 key=key,
+                sandbox=sandbox,
+                capabilities=data.get("capabilities", ["all"]),
             )
         except Exception as exc:
             logger.warning(
@@ -1274,7 +1358,12 @@ class PluginManager:
         results: List[Any] = []
         for cb in callbacks:
             try:
-                ret = cb(**kwargs)
+                if hasattr(cb, "__HERMES_HOOK_TIMEOUT__"):
+                    timeout = cb.__HERMES_HOOK_TIMEOUT__
+                    with _timeout_guard(timeout):
+                        ret = cb(**kwargs)
+                else:
+                    ret = cb(**kwargs)
                 if ret is not None:
                     results.append(ret)
             except Exception as exc:
