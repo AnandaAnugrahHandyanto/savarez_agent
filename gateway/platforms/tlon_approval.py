@@ -11,6 +11,30 @@ from typing import Any, Dict, List, Optional
 APPROVAL_TTL_SECONDS = 48 * 60 * 60
 
 
+def emoji_to_approval_action(emoji: str) -> Optional[str]:
+    """Map OpenClaw-style approval reactions to approval actions."""
+    if emoji == "👍":
+        return "approve"
+    if emoji == "👎":
+        return "deny"
+    if emoji == "🛑":
+        return "block"
+    return None
+
+
+def normalize_notification_id(message_id: Any) -> str:
+    """Normalize Tlon writ/post ids for reaction approval comparisons.
+
+    send() may return ``~ship/170.141...`` while firehose events may provide
+    either the same writ id or a bare/dotted @ud. Strip the optional ship
+    prefix and dots so both forms compare equal.
+    """
+    value = str(message_id or "")
+    if value.startswith("~") and "/" in value:
+        value = value.split("/", 1)[1]
+    return value.replace(".", "")
+
+
 @dataclass
 class PendingApproval:
     id: str
@@ -135,6 +159,8 @@ def format_approval_request(approval: PendingApproval) -> str:
         [
             subject,
             preview,
+            "",
+            "React to this message: 👍 approve · 👎 deny · 🛑 block",
             "",
             f"Pending approval id: {approval.id}",
             "",

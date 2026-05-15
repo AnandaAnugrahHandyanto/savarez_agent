@@ -119,6 +119,7 @@ async def test_group_create_owned_creates_group_and_assigns_admin():
 
     assert result["success"] is True
     assert result["owner_ship"] == "~malmur-halmex"
+    assert result["admin_ships"] == ["~malmur-halmex"]
     assert client.threads[0]["desk"] == "groups"
     assert client.threads[0]["input_mark"] == "group-create-thread"
     assert client.threads[0]["body"]["guestList"] == ["~malmur-halmex"]
@@ -187,6 +188,27 @@ async def test_group_create_owned_creates_group_and_assigns_admin():
     )
     assert result["admin_assigned"] is True
     assert result["admin_assignment"]["promoted"] == ["~malmur-halmex"]
+
+
+@pytest.mark.asyncio
+async def test_group_create_with_admins_force_adds_admin_seats():
+    client = FakeTlonClient()
+    groups = TlonGroups(client)
+
+    result = await groups.handle(
+        "group_create_with_admins",
+        {
+            "title": "Hermes Group",
+            "ships": ["~malmur-halmex", "~nec"],
+        },
+    )
+
+    assert result["success"] is True
+    assert result["admin_ships"] == ["~malmur-halmex", "~nec"]
+    assert client.threads[0]["body"]["guestList"] == ["~malmur-halmex", "~nec"]
+    for ship in ["~malmur-halmex", "~nec"]:
+        assert ship in result["admin_assignment"]["promoted"]
+        assert client.group["seats"][ship]["roles"] == ["admin"]
 
 
 @pytest.mark.asyncio

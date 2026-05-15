@@ -49,7 +49,10 @@ TLON_SCHEMA = {
         "post reactions/edits/deletes, activity, expose controls, and raw "
         "scry/poke/thread calls. For ordinary message sending, use send_message; "
         "for creating a group or channel, inviting ships, or making someone admin, "
-        "use this tool."
+        "use this tool. When asked to create a group and make a ship admin in "
+        "one request, use group_create_with_admins or group_create_owned with "
+        "ship/ships; it force-adds seats and assigns admin directly, so do not "
+        "ask the user to accept/join first."
     ),
     "parameters": {
         "type": "object",
@@ -64,6 +67,7 @@ TLON_SCHEMA = {
                     "group_info",
                     "group_create",
                     "group_create_owned",
+                    "group_create_with_admins",
                     "group_invite",
                     "group_leave",
                     "group_join",
@@ -184,8 +188,8 @@ TLON_SCHEMA = {
             "description": {"type": "string", "description": "Group/channel/role description."},
             "image": {"type": "string", "description": "Image URL for metadata/profile."},
             "cover": {"type": "string", "description": "Cover URL for metadata/profile."},
-            "ship": {"type": "string", "description": "Single ship, e.g. ~zod."},
-            "ships": {"type": "array", "items": {"type": "string"}, "description": "Ship list."},
+            "ship": {"type": "string", "description": "Single ship, e.g. ~zod. For group_create_with_admins/group_create_owned this ship becomes admin."},
+            "ships": {"type": "array", "items": {"type": "string"}, "description": "Ship list. For group_create_with_admins/group_create_owned these ships become admins."},
             "role_id": {"type": "string", "description": "Group role id."},
             "privacy": {"type": "string", "enum": ["public", "private", "secret"], "description": "Group privacy."},
             "post_id": {"type": "string", "description": "Post id, dotted or bare @ud. For DMs, include ~author/id when possible."},
@@ -490,25 +494,33 @@ class TlonGroups:
                     requested_group_id=group_id,
                     channel_id=channel_id,
                 )
-        if action in {"group_create", "group_create_owned"}:
-            owner = _normalize_ship(str(args.get("ship") or args.get("owner") or os.getenv("TLON_OWNER_SHIP", "")))
-            members = _ships(args)
-            if action == "group_create_owned" and owner:
-                members = _unique_ships([owner, *members])
+        if action in {"group_create", "group_create_owned", "group_create_with_admins"}:
+            create_with_admins = action in {"group_create_owned", "group_create_with_admins"}
+            owner = _normalize_ship(str(args.get("owner") or args.get("ship") or os.getenv("TLON_OWNER_SHIP", "")))
+            admin_ships = _ships(args)
+            if create_with_admins and owner:
+                admin_ships = _unique_ships([*admin_ships, owner])
+            if action == "group_create_with_admins" and not admin_ships:
+                raise TlonToolError("group_create_with_admins requires ship or ships")
+            members = _unique_ships(admin_ships if create_with_admins else _ships(args))
             created = await self.create_group(
                 title=_required(args, "title"),
                 description=str(args.get("description") or ""),
                 member_ids=members,
             )
-            if action == "group_create_owned" and owner:
+            if create_with_admins and admin_ships:
                 admin_result = await self.promote_admins(
                     created["group_id"],
-                    [owner],
+                    admin_ships,
                     add_missing_seats=True,
                 )
-                created["owner_ship"] = owner
+                if owner:
+                    created["owner_ship"] = owner
+                created["admin_ships"] = admin_ships
                 created["admin_role"] = _ADMIN_ROLE_ID
-                created["admin_assigned"] = owner in admin_result["promoted"]
+                created["admin_assigned"] = all(
+                    ship in admin_result["promoted"] for ship in admin_ships
+                )
                 created["admin_assignment"] = admin_result
             return _ok(action, **created)
         if action == "group_invite":
@@ -736,9 +748,11 @@ class TlonGroups:
 
         if still_missing:
             raise TlonToolError(
-                "Admin assignment did not verify for "
+                "Direct admin assignment did not verify for "
                 f"{', '.join(still_missing)} in {group_id}. "
-                "The group was updated, but the admin role is not visible in group state."
+                "The group was updated, but the admin role is not visible in group state. "
+                "Do not ask the user to accept an invite first; retry group_promote "
+                "or inspect group_info."
             )
 
         return {

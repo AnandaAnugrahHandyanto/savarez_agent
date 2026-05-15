@@ -20,6 +20,7 @@ Environment variables:
   TLON_AUTO_DISCOVER - Set to "true" to auto-discover all group channels
   TLON_BOT_ALIASES - Comma-separated names that count as mentions (default: Hermes)
   TLON_OWNER_LISTEN_ENABLED - Set to "false" to require mentions from owner in groups
+  TLON_CHANNEL_REFRESH_INTERVAL - Seconds between group/channel discovery refreshes (default: 120)
 """
 
 import asyncio
@@ -45,12 +46,14 @@ from gateway.platforms.base import (
 from gateway.platforms.tlon_approval import (
     PendingApproval,
     create_pending_approval,
+    emoji_to_approval_action,
     find_pending_approval,
     format_approval_request,
     format_blocked_list,
     format_confirmation,
     format_pending_list,
     has_duplicate_pending,
+    normalize_notification_id,
     prune_expired,
 )
 from gateway.platforms.tlon_discovery import (
@@ -1060,6 +1063,9 @@ class TlonAdapter(BasePlatformAdapter):
         )
         self.channel_rules: Dict[str, Dict[str, Any]] = self._load_channel_rules_from_env()
         self.pending_approvals: List[PendingApproval] = []
+        self._exec_approval_prompts: Dict[str, Dict[str, str]] = {}
+        self._exec_approval_prompt_by_session: Dict[str, str] = {}
+        self._processed_approval_reactions: Set[str] = set()
 
         # SSE client
         self._sse: Optional[TlonSSEClient] = None
@@ -1070,6 +1076,23 @@ class TlonAdapter(BasePlatformAdapter):
         self._processed_ids: Set[str] = set()
         self._processed_dm_invites: Set[str] = set()
         self._max_processed = 2000
+        self._dm_poll_task: Optional[asyncio.Task] = None
+        self._channel_refresh_task: Optional[asyncio.Task] = None
+        self._dm_poll_initialized: Set[str] = set()
+        self.dm_poll_enabled = (
+            os.getenv("TLON_DM_POLL_ENABLED", "true").lower()
+            not in ("false", "0", "no")
+        )
+        self.dm_poll_interval = self._env_float("TLON_DM_POLL_INTERVAL", 10.0)
+        self.dm_poll_limit = max(1, self._env_int("TLON_DM_POLL_LIMIT", 20))
+        self.dm_poll_initial_catchup_seconds = max(
+            0.0,
+            self._env_float("TLON_DM_POLL_INITIAL_CATCHUP_SECONDS", 1800.0),
+        )
+        self.channel_refresh_interval = self._env_float(
+            "TLON_CHANNEL_REFRESH_INTERVAL",
+            120.0,
+        )
 
         # Bot nickname cache
         self._bot_nickname: Optional[str] = None
@@ -1083,6 +1106,28 @@ class TlonAdapter(BasePlatformAdapter):
         self._channel_to_group: Dict[str, str] = {}
         self._group_names: Dict[str, str] = {}
         self._participated_threads: Set[Tuple[str, str]] = set()
+
+    @staticmethod
+    def _env_float(name: str, default: float) -> float:
+        raw = os.getenv(name, "")
+        if not raw:
+            return default
+        try:
+            return float(raw)
+        except ValueError:
+            logger.warning("[tlon] Ignoring invalid %s=%r", name, raw)
+            return default
+
+    @staticmethod
+    def _env_int(name: str, default: int) -> int:
+        raw = os.getenv(name, "")
+        if not raw:
+            return default
+        try:
+            return int(raw)
+        except ValueError:
+            logger.warning("[tlon] Ignoring invalid %s=%r", name, raw)
+            return default
 
     def _load_channel_rules_from_env(self) -> Dict[str, Dict[str, Any]]:
         raw = os.getenv("TLON_CHANNEL_RULES", "")
@@ -1248,10 +1293,34 @@ class TlonAdapter(BasePlatformAdapter):
                 on_quit=lambda: logger.info("[tlon] Settings subscription quit received"),
             )
 
+            # Match OpenClaw's group read side: subscribe to groups-ui for
+            # live channel/group membership changes, and foreigns for group
+            # invite updates. These are best-effort; channels/chat firehoses
+            # remain the primary inbound message streams.
+            await self._sse.subscribe(
+                app="groups",
+                path="/groups/ui",
+                on_event=self._handle_groups_ui_event,
+                on_error=lambda e: logger.error("[tlon] Groups-ui error: %s", e),
+                on_quit=lambda: logger.info("[tlon] Groups-ui quit received"),
+            )
+            logger.info("[tlon] Subscribed to groups-ui for real-time channel detection")
+
+            await self._sse.subscribe(
+                app="groups",
+                path="/v1/foreigns",
+                on_event=self._handle_group_foreigns_event,
+                on_error=lambda e: logger.error("[tlon] Foreigns error: %s", e),
+                on_quit=lambda: logger.info("[tlon] Foreigns quit received"),
+            )
+            logger.info("[tlon] Subscribed to foreigns (/v1/foreigns) for group invites")
+
             # Connect and start streaming
             await self._sse.connect()
 
             self._running = True
+            self._start_dm_history_poller()
+            self._start_channel_refresh()
             logger.info("[tlon] Connected and listening!")
             return True
 
@@ -1262,10 +1331,283 @@ class TlonAdapter(BasePlatformAdapter):
     async def disconnect(self) -> None:
         """Disconnect from the Tlon ship."""
         self._running = False
+        if self._dm_poll_task:
+            self._dm_poll_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._dm_poll_task
+            self._dm_poll_task = None
+        if self._channel_refresh_task:
+            self._channel_refresh_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._channel_refresh_task
+            self._channel_refresh_task = None
         if self._sse:
             await self._sse.close()
             self._sse = None
         logger.info("[tlon] Disconnected")
+
+    def _start_channel_refresh(self) -> None:
+        if (
+            not self.auto_discover
+            or self.channel_refresh_interval <= 0
+            or (self._channel_refresh_task and not self._channel_refresh_task.done())
+        ):
+            return
+        self._channel_refresh_task = asyncio.create_task(self._channel_refresh_loop())
+        logger.info(
+            "[tlon] Channel discovery refresh enabled every %.1fs",
+            self.channel_refresh_interval,
+        )
+
+    async def _channel_refresh_loop(self) -> None:
+        try:
+            while self._running:
+                await asyncio.sleep(self.channel_refresh_interval)
+                await self._refresh_discovered_channels()
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.error("[tlon] Channel discovery refresh stopped: %s", e, exc_info=True)
+
+    async def _refresh_discovered_channels(self) -> None:
+        if not self._sse or not self.auto_discover:
+            return
+        discovered = await self._discover_channels()
+        for nest in sorted(discovered):
+            if nest not in self.monitored_channels:
+                self.monitored_channels.add(nest)
+                logger.info("[tlon] Now watching new channel: %s", nest)
+
+    def _dm_poll_targets(self) -> Set[str]:
+        """Return explicit DM partners worth polling as an SSE fallback."""
+        targets: Set[str] = set()
+        for ship in (
+            [self.owner_ship]
+            + list(self.allowed_users)
+            + list(self.dm_allowlist)
+            + list(self.default_authorized_ships)
+        ):
+            normalized = _normalize_ship(ship)
+            if normalized and normalized != self.ship_name:
+                targets.add(normalized)
+        return targets
+
+    def _start_dm_history_poller(self) -> None:
+        if (
+            not self.dm_poll_enabled
+            or self.dm_poll_interval <= 0
+            or not self._dm_poll_targets()
+            or (self._dm_poll_task and not self._dm_poll_task.done())
+        ):
+            return
+        self._dm_poll_task = asyncio.create_task(self._dm_history_poll_loop())
+        logger.info(
+            "[tlon] DM history fallback poller enabled for %d target(s) every %.1fs",
+            len(self._dm_poll_targets()),
+            self.dm_poll_interval,
+        )
+
+    async def _dm_history_poll_loop(self) -> None:
+        try:
+            while self._running:
+                await self._poll_dm_histories()
+                await asyncio.sleep(self.dm_poll_interval)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.error("[tlon] DM history fallback poller stopped: %s", e, exc_info=True)
+
+    async def _poll_dm_histories(self) -> None:
+        if not self._sse or not self._sse._connected:
+            return
+        for partner in sorted(self._dm_poll_targets()):
+            try:
+                await self._poll_dm_history(partner)
+            except Exception as e:
+                logger.debug("[tlon] DM history poll failed for %s: %s", partner, e)
+
+    async def _poll_dm_history(self, partner: str) -> None:
+        posts = await self._fetch_dm_history_posts(partner)
+        if partner not in self._dm_poll_initialized:
+            await self._initialize_dm_history(partner, posts)
+            self._dm_poll_initialized.add(partner)
+            return
+
+        for post in posts:
+            if self._should_process_dm_history_post(post):
+                await self._process_dm_history_post(partner, post)
+
+    async def _fetch_dm_history_posts(self, partner: str) -> List[Dict[str, Any]]:
+        if not self._sse:
+            return []
+        data = await self._sse.scry(
+            f"/chat/v4/dm/{partner}/writs/newest/{self.dm_poll_limit}/heavy"
+        )
+        posts = self._extract_dm_history_posts(data)
+        posts.sort(key=lambda post: self._dm_history_sent(post) or 0)
+        return posts
+
+    @staticmethod
+    def _extract_dm_history_posts(data: Any) -> List[Dict[str, Any]]:
+        if not isinstance(data, dict):
+            return []
+        writs = data.get("writs")
+        if isinstance(writs, dict):
+            posts: List[Dict[str, Any]] = []
+            for key, value in writs.items():
+                if isinstance(value, dict):
+                    post = dict(value)
+                    post.setdefault("_history_key", key)
+                    posts.append(post)
+            return posts
+        if isinstance(writs, list):
+            return [post for post in writs if isinstance(post, dict)]
+        return []
+
+    async def _initialize_dm_history(
+        self,
+        partner: str,
+        posts: List[Dict[str, Any]],
+    ) -> None:
+        """Seed old history and catch up at most one recent unanswered DM."""
+        now_ms = int(time.time() * 1000)
+        catchup_after_ms = now_ms - int(self.dm_poll_initial_catchup_seconds * 1000)
+        latest_own_sent = max(
+            (
+                sent
+                for post in posts
+                if self._dm_history_author(post) == self.ship_name
+                and not self._is_dm_history_status_notice(post)
+                for sent in [self._dm_history_sent(post)]
+                if sent is not None
+            ),
+            default=0,
+        )
+
+        catchup: List[Dict[str, Any]] = []
+        for post in posts:
+            msg_id = self._dm_history_id(post)
+            if not msg_id:
+                continue
+            author = self._dm_history_author(post)
+            sent = self._dm_history_sent(post)
+            if (
+                author
+                and author != self.ship_name
+                and sent is not None
+                and sent >= catchup_after_ms
+                and sent > latest_own_sent
+            ):
+                catchup.append(post)
+                continue
+            self._mark_processed(msg_id)
+
+        if not catchup:
+            return
+
+        # Process only the newest recent unanswered DM on startup. If several
+        # old user commands accumulated while the gateway was down, avoid
+        # replaying side-effectful requests unexpectedly.
+        selected = max(catchup, key=lambda post: self._dm_history_sent(post) or 0)
+        selected_id = self._dm_history_id(selected)
+        for post in catchup:
+            msg_id = self._dm_history_id(post)
+            if msg_id and msg_id != selected_id:
+                self._mark_processed(msg_id)
+
+        logger.info(
+            "[tlon] DM history fallback catching up latest unanswered DM from %s",
+            partner,
+        )
+        await self._process_dm_history_post(partner, selected)
+
+    def _should_process_dm_history_post(self, post: Dict[str, Any]) -> bool:
+        msg_id = self._dm_history_id(post)
+        if not msg_id or msg_id in self._processed_ids:
+            return False
+        author = self._dm_history_author(post)
+        return bool(author and author != self.ship_name)
+
+    async def _process_dm_history_post(
+        self,
+        partner: str,
+        post: Dict[str, Any],
+    ) -> None:
+        event = self._dm_history_event(partner, post)
+        if event:
+            await self._handle_dm_event(event)
+
+    def _dm_history_event(
+        self,
+        partner: str,
+        post: Dict[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        essay = self._dm_history_essay(post)
+        msg_id = self._dm_history_id(post)
+        if not essay or not msg_id:
+            return None
+        return {
+            "whom": partner,
+            "id": msg_id,
+            "response": {"add": {"essay": essay}},
+        }
+
+    @staticmethod
+    def _dm_history_essay(post: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        essay = post.get("essay") or post.get("memo")
+        return essay if isinstance(essay, dict) else None
+
+    def _dm_history_author(self, post: Dict[str, Any]) -> str:
+        essay = self._dm_history_essay(post)
+        if essay:
+            return _extract_author_ship(essay.get("author"))
+        return _extract_author_ship(post.get("author"))
+
+    def _dm_history_text(self, post: Dict[str, Any]) -> str:
+        essay = self._dm_history_essay(post)
+        if not essay:
+            return ""
+        return _extract_message_text(essay.get("content"))
+
+    def _is_dm_history_status_notice(self, post: Dict[str, Any]) -> bool:
+        text = self._dm_history_text(post)
+        return (
+            "Gateway shutting down" in text
+            or "Gateway online" in text
+            or "Gateway restarted" in text
+        )
+
+    def _dm_history_sent(self, post: Dict[str, Any]) -> Optional[int]:
+        essay = self._dm_history_essay(post)
+        raw = (essay or {}).get("sent") if essay else None
+        if raw is None:
+            raw = post.get("sent") or post.get("sentAt")
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            return None
+
+    def _dm_history_id(self, post: Dict[str, Any]) -> str:
+        seal = post.get("seal") if isinstance(post.get("seal"), dict) else {}
+        msg_id = (
+            post.get("id")
+            or seal.get("id")
+            or post.get("writId")
+            or post.get("_history_key")
+        )
+        if msg_id:
+            msg_id = str(msg_id)
+            if "/" in msg_id:
+                return msg_id
+            author = self._dm_history_author(post)
+            return f"{author}/{msg_id}" if author else msg_id
+
+        essay = self._dm_history_essay(post)
+        sent = self._dm_history_sent(post)
+        author = _extract_author_ship((essay or {}).get("author")) if essay else ""
+        if author and sent is not None:
+            return f"{author}/{_da_from_unix(sent)}"
+        return ""
 
     async def handle_message(self, event) -> None:
         """Override base adapter's handle_message to bypass the pending-message
@@ -1347,7 +1689,7 @@ class TlonAdapter(BasePlatformAdapter):
             if chat_id.startswith("~"):
                 # DM — pass reply_to for thread replies
                 # reply_to should be the parent writ-id (e.g. "~ship/170.141...")
-                await self._send_dm(chat_id, story, sent_at, reply_to=reply_to)
+                msg_id = await self._send_dm(chat_id, story, sent_at, reply_to=reply_to)
             else:
                 # Channel post — pass reply_to for thread replies
                 # reply_to should be the parent post ID (bare or @ud formatted)
@@ -1359,11 +1701,10 @@ class TlonAdapter(BasePlatformAdapter):
                         formatted_reply = _format_ud(int(bare))
                     else:
                         formatted_reply = str(reply_to)
-                await self._send_channel_post(chat_id, story, sent_at, reply_to=formatted_reply)
+                msg_id = await self._send_channel_post(chat_id, story, sent_at, reply_to=formatted_reply)
                 if formatted_reply:
                     self._participated_threads.add((chat_id, _normalize_post_id(formatted_reply)))
 
-            msg_id = f"{self.ship_name}/{sent_at}"
             logger.info("[tlon] ✓ Message sent: %s", msg_id)
             return SendResult(success=True, message_id=msg_id)
 
@@ -1377,7 +1718,7 @@ class TlonAdapter(BasePlatformAdapter):
         story: list,
         sent_at: int,
         reply_to: Optional[str] = None,
-    ) -> None:
+    ) -> str:
         """Send a DM via %chat poke."""
         to_ship = _normalize_ship(to_ship)
         # Author uses ~ prefix (matching @tloncorp/api)
@@ -1441,6 +1782,52 @@ class TlonAdapter(BasePlatformAdapter):
             mark=os.getenv("TLON_DM_ACTION_MARK", "chat-dm-action-1"),
             json_data=dm_json,
         )
+        return writ_id
+
+    async def send_exec_approval(
+        self,
+        chat_id: str,
+        command: str,
+        session_key: str,
+        description: str = "dangerous command",
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send a Tlon reaction-based dangerous-command approval prompt.
+
+        Tlon has no gateway-native buttons, so mirror OpenClaw's approval UX:
+        the owner reacts to the prompt with 👍, 👎, or 🛑. The prompt is sent
+        to the configured owner DM when available so command status does not
+        leak into group channels.
+        """
+        cmd_preview = command[:2000] + "..." if len(command) > 2000 else command
+        text = (
+            "⚠️ Dangerous command requires approval:\n"
+            f"```\n{cmd_preview}\n```\n"
+            f"Reason: {description}\n\n"
+            "React to this message: 👍 approve once · 👎 deny · 🛑 deny/stop\n\n"
+            "Or reply `/approve`, `/approve session`, `/approve always`, or `/deny`."
+        )
+
+        target_chat_id = self.owner_ship or chat_id
+        result = await self.send(target_chat_id, text, metadata=metadata)
+        if not result.success or not result.message_id:
+            return result
+
+        normalized_id = normalize_notification_id(result.message_id)
+        old_id = self._exec_approval_prompt_by_session.get(session_key)
+        if old_id:
+            self._exec_approval_prompts.pop(old_id, None)
+        self._exec_approval_prompts[normalized_id] = {
+            "session_key": session_key,
+            "chat_id": target_chat_id,
+        }
+        self._exec_approval_prompt_by_session[session_key] = normalized_id
+        logger.info(
+            "[tlon] Registered reaction approval prompt %s for session %s",
+            normalized_id,
+            session_key,
+        )
+        return result
 
     async def _send_channel_post(
         self,
@@ -1448,7 +1835,7 @@ class TlonAdapter(BasePlatformAdapter):
         story: list,
         sent_at: int,
         reply_to: Optional[str] = None,
-    ) -> None:
+    ) -> str:
         """Send a post to a channel (chat, heap, diary)."""
         # Author field WITH ~ prefix (matching @tloncorp/api convention)
         author = self.ship_name if self.ship_name.startswith("~") else f"~{self.ship_name}"
@@ -1507,6 +1894,7 @@ class TlonAdapter(BasePlatformAdapter):
             mark=os.getenv("TLON_CHANNEL_ACTION_MARK", "channel-action-1"),
             json_data=action_json,
         )
+        return _da_from_unix(sent_at)
 
     async def send_image(
         self,
@@ -1534,10 +1922,10 @@ class TlonAdapter(BasePlatformAdapter):
         sent_at = int(time.time() * 1000)
         try:
             if chat_id.startswith("~"):
-                await self._send_dm(chat_id, story, sent_at, reply_to)
+                msg_id = await self._send_dm(chat_id, story, sent_at, reply_to)
             else:
-                await self._send_channel_post(chat_id, story, sent_at, reply_to)
-            return SendResult(success=True, message_id=f"{self.ship_name}/{sent_at}")
+                msg_id = await self._send_channel_post(chat_id, story, sent_at, reply_to)
+            return SendResult(success=True, message_id=msg_id)
         except Exception as e:
             return SendResult(success=False, error=str(e))
 
@@ -1709,16 +2097,18 @@ class TlonAdapter(BasePlatformAdapter):
             logger.info("[tlon] Approval already pending for %s", approval.requesting_ship)
             return
 
+        try:
+            result = await self.send(self.owner_ship, format_approval_request(approval))
+            if result.success and result.message_id:
+                approval.notification_message_id = normalize_notification_id(result.message_id)
+            logger.info("[tlon] Queued approval %s for %s", approval.id, approval.requesting_ship)
+        except Exception as e:
+            logger.debug("[tlon] Failed to notify owner about approval %s: %s", approval.id, e)
         self.pending_approvals.append(approval)
         await self._put_settings_entry(
             "pendingApprovals",
             json.dumps([item.to_dict() for item in self.pending_approvals]),
         )
-        try:
-            await self.send(self.owner_ship, format_approval_request(approval))
-            logger.info("[tlon] Queued approval %s for %s", approval.id, approval.requesting_ship)
-        except Exception as e:
-            logger.debug("[tlon] Failed to notify owner about approval %s: %s", approval.id, e)
 
     async def _handle_owner_command(self, sender: str, text: str) -> Optional[str]:
         if not self._is_owner(sender) or not text.startswith("/"):
@@ -1754,9 +2144,99 @@ class TlonAdapter(BasePlatformAdapter):
 
         approval = find_pending_approval(self.pending_approvals, arg)
         if not approval:
+            if command in {"/approve", "/deny"}:
+                return None
             return "No matching pending Tlon approval."
 
         return await self._execute_approval_action(approval, action)
+
+    async def _handle_dm_reaction_event(self, event: Dict[str, Any], response: Dict[str, Any]) -> bool:
+        """Handle OpenClaw-style approval reactions on owner DM prompts.
+
+        Returns True when the event was a reaction event and should not fall
+        through to normal message handling.
+        """
+        add_react = response.get("add-react")
+        del_react = response.get("del-react")
+        if not add_react and not del_react:
+            return False
+        if not isinstance(add_react, dict):
+            return True
+
+        react_author = _extract_author_ship(add_react.get("author") or add_react.get("ship"))
+        react_emoji = str(add_react.get("react") or add_react.get("emoji") or "")
+        if not react_author or react_author == self.ship_name:
+            return True
+
+        message_id = normalize_notification_id(event.get("id"))
+        reaction_key = f"{message_id}:{react_author}:{react_emoji}"
+        if reaction_key in self._processed_approval_reactions:
+            return True
+        self._processed_approval_reactions.add(reaction_key)
+        if len(self._processed_approval_reactions) > self._max_processed:
+            self._processed_approval_reactions = set(
+                list(self._processed_approval_reactions)[-self._max_processed:]
+            )
+
+        action = emoji_to_approval_action(react_emoji)
+        if not action:
+            return True
+
+        if not self._is_owner(react_author):
+            logger.info(
+                "[tlon] Ignoring approval reaction %s from non-owner %s",
+                react_emoji,
+                react_author,
+            )
+            return True
+
+        pending = next(
+            (
+                approval
+                for approval in prune_expired(self.pending_approvals)
+                if approval.notification_message_id == message_id
+            ),
+            None,
+        )
+        if pending:
+            logger.info(
+                "[tlon] Reaction-based Tlon approval: %s -> %s for %s",
+                react_emoji,
+                action,
+                pending.id,
+            )
+            confirmation = await self._execute_approval_action(pending, action)
+            await self.send(self.owner_ship or react_author, confirmation)
+            return True
+
+        prompt = self._exec_approval_prompts.get(message_id)
+        if not prompt:
+            return True
+
+        choice = "once" if action == "approve" else "deny"
+        session_key = prompt.get("session_key", "")
+        try:
+            from tools.approval import resolve_gateway_approval
+
+            count = resolve_gateway_approval(session_key, choice)
+        except Exception as exc:
+            logger.error("[tlon] Failed to resolve exec approval reaction: %s", exc)
+            return True
+
+        if count:
+            self._exec_approval_prompts.pop(message_id, None)
+            self._exec_approval_prompt_by_session.pop(session_key, None)
+            logger.info(
+                "[tlon] Reaction resolved %d exec approval(s) for session %s choice=%s",
+                count,
+                session_key,
+                choice,
+            )
+            if choice == "once":
+                await self.send(self.owner_ship or react_author, "Approved command once. Continuing.")
+            else:
+                await self.send(self.owner_ship or react_author, "Denied command. Continuing.")
+        return True
 
     async def _execute_approval_action(self, approval: PendingApproval, action: str) -> str:
         if action == "approve":
@@ -1856,14 +2336,106 @@ class TlonAdapter(BasePlatformAdapter):
             except Exception as e:
                 logger.debug("[tlon] Failed to accept group invite %s: %s", group_flag, e)
 
+    async def _handle_group_foreigns_event(self, event: Any) -> None:
+        """Handle OpenClaw-compatible groups /v1/foreigns updates."""
+        if not isinstance(event, dict):
+            return
+        if self.auto_accept_group_invites:
+            await self._handle_group_invites(event)
+
+    async def _handle_groups_ui_event(self, event: Any) -> None:
+        """
+        Handle OpenClaw-compatible groups /groups/ui updates.
+
+        OpenClaw uses this stream to notice new channels after group joins or
+        invite acceptance. It watches chat/heap channels from either
+        ``event.channels`` or ``event.join.channels``.
+        """
+        if not isinstance(event, dict):
+            return
+
+        group_flag = self._groups_ui_group_flag(event)
+
+        channels = event.get("channels")
+        if isinstance(channels, dict):
+            for channel_nest in channels.keys():
+                await self._watch_group_channel(
+                    channel_nest,
+                    group_flag=group_flag,
+                    reason="new channel (invite accepted)",
+                    persist=self.auto_accept_group_invites,
+                )
+
+        join = event.get("join")
+        if isinstance(join, dict):
+            join_group = join.get("group")
+            if isinstance(join_group, str):
+                group_flag = join_group
+            join_channels = join.get("channels")
+            if isinstance(join_channels, list):
+                for channel_nest in join_channels:
+                    await self._watch_group_channel(
+                        channel_nest,
+                        group_flag=group_flag,
+                        reason="joined channel",
+                        persist=self.auto_accept_group_invites,
+                    )
+
+    @staticmethod
+    def _groups_ui_group_flag(event: Dict[str, Any]) -> Optional[str]:
+        flag = event.get("flag")
+        if isinstance(flag, str):
+            return flag
+        group = event.get("group")
+        if isinstance(group, dict):
+            group_flag = group.get("flag") or group.get("id")
+            if isinstance(group_flag, str):
+                return group_flag
+        return None
+
+    async def _watch_group_channel(
+        self,
+        channel_nest: Any,
+        *,
+        group_flag: Optional[str],
+        reason: str,
+        persist: bool = False,
+    ) -> bool:
+        if not isinstance(channel_nest, str):
+            return False
+        if not channel_nest.startswith(("chat/", "heap/")):
+            return False
+        if group_flag:
+            self._channel_to_group[channel_nest] = group_flag
+        if channel_nest in self.monitored_channels:
+            return False
+
+        self.monitored_channels.add(channel_nest)
+        logger.info("[tlon] Auto-detected %s: %s", reason, channel_nest)
+        if persist:
+            await self._persist_group_channel(channel_nest)
+        return True
+
+    async def _persist_group_channel(self, channel_nest: str) -> None:
+        current = list(self._settings.group_channels or [])
+        if channel_nest in current:
+            return
+        current.append(channel_nest)
+        self._settings.group_channels = current
+        await self._put_settings_entry("groupChannels", current)
+        logger.info("[tlon] Persisted %s to settings store", channel_nest)
+
     async def _discover_channels(self) -> Set[str]:
         """Discover channels from groups the bot is a member of."""
         discovered = TlonDiscovery()
-        try:
-            init_data = await self._sse.scry("/groups-ui/v7/init.json")
-            discovered = parse_groups_ui_init(init_data)
-        except Exception as e:
-            logger.debug("[tlon] groups-ui discovery failed: %s", e)
+        for path in ("/groups-ui/v6/init.json", "/groups-ui/v7/init.json"):
+            try:
+                init_data = await self._sse.scry(path)
+                discovered = parse_groups_ui_init(init_data)
+                break
+            except Exception as e:
+                logger.debug("[tlon] groups-ui discovery failed at %s: %s", path, e)
+        else:
             try:
                 groups = await self._sse.scry("/groups/v1/groups.json")
                 discovered = parse_legacy_groups(groups)
@@ -1914,11 +2486,12 @@ class TlonAdapter(BasePlatformAdapter):
             if not nest:
                 return
 
-            # Auto-watch channels from firehose
+            # Match OpenClaw: if the channels firehose delivers a chat/heap
+            # event, the bot is in that channel, so watch it immediately.
             if nest not in self.monitored_channels:
-                if self.auto_discover and (nest.startswith("chat/") or nest.startswith("heap/")):
+                if nest.startswith(("chat/", "heap/")):
                     self.monitored_channels.add(nest)
-                    logger.info("[tlon] Auto-watching channel: %s", nest)
+                    logger.info("[tlon] Auto-watching channel from firehose: %s", nest)
                 else:
                     return
 
@@ -2134,6 +2707,8 @@ class TlonAdapter(BasePlatformAdapter):
             whom = event["whom"]
             msg_id = event.get("id")
             response = event["response"]
+            if isinstance(response, dict) and await self._handle_dm_reaction_event(event, response):
+                return
 
             # Extract message content
             essay = response.get("add", {}).get("essay") if isinstance(response.get("add"), dict) else None

@@ -4,12 +4,18 @@ from unittest.mock import AsyncMock
 import pytest
 
 from gateway.config import PlatformConfig
+from gateway.platforms.base import SendResult
 from gateway.platforms.tlon import (
     TlonAdapter,
     _extract_message_text,
     _text_to_story,
 )
-from gateway.platforms.tlon_approval import create_pending_approval, format_pending_list
+from gateway.platforms.tlon_approval import (
+    create_pending_approval,
+    format_approval_request,
+    format_pending_list,
+    normalize_notification_id,
+)
 from gateway.platforms.tlon_discovery import parse_groups_ui_init
 from gateway.platforms.tlon_media import (
     TlonDownloadedAttachment,
@@ -165,6 +171,146 @@ def test_approval_formatting_lists_pending_request():
     pending = format_pending_list([approval])
     assert approval.id in pending
     assert "~zod" in pending
+
+
+@pytest.mark.asyncio
+async def test_connect_subscribes_to_openclaw_group_and_channel_read_paths(monkeypatch):
+    monkeypatch.setenv("TLON_SHIP_URL", "http://ship.test")
+    monkeypatch.setenv("TLON_SHIP_NAME", "~bot-palnet")
+    monkeypatch.setenv("TLON_SHIP_CODE", "code")
+
+    class FakeTlonSSE:
+        instances = []
+
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+            self.subscriptions = []
+            self._connected = False
+            FakeTlonSSE.instances.append(self)
+
+        async def authenticate(self):
+            return None
+
+        async def scry(self, path):
+            if path == "/contacts/v1/self.json":
+                return {}
+            if path == "/settings/all.json":
+                return {}
+            return {}
+
+        async def subscribe(self, *, app, path, on_event, on_error, on_quit):
+            self.subscriptions.append((app, path))
+
+        async def connect(self):
+            self._connected = True
+
+        async def close(self):
+            self._connected = False
+
+    monkeypatch.setattr("gateway.platforms.tlon.TlonSSEClient", FakeTlonSSE)
+
+    adapter = TlonAdapter(PlatformConfig())
+    assert await adapter.connect() is True
+
+    subscriptions = FakeTlonSSE.instances[0].subscriptions
+    assert ("channels", "/v2") in subscriptions
+    assert ("chat", "/v3") in subscriptions
+    assert ("groups", "/groups/ui") in subscriptions
+    assert ("groups", "/v1/foreigns") in subscriptions
+
+    await adapter.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_channel_event_auto_watches_chat_and_heap_like_openclaw(monkeypatch):
+    monkeypatch.setenv("TLON_SHIP_NAME", "~bot-palnet")
+    monkeypatch.setenv("TLON_ALLOW_ALL_USERS", "true")
+    monkeypatch.setenv("TLON_AUTO_DISCOVER", "false")
+    adapter = TlonAdapter(PlatformConfig())
+    adapter.monitored_channels = set()
+    adapter.handle_message = AsyncMock()
+
+    await adapter._handle_channel_event({
+        "nest": "chat/~host/new",
+        "response": {
+            "post": {
+                "id": "auto-watch-post",
+                "r-post": {
+                    "set": {
+                        "seal": {"id": "auto-watch-post"},
+                        "essay": {
+                            "author": "~zod",
+                            "sent": 1_700_000_000_000,
+                            "content": [{"inline": [{"ship": "~bot-palnet"}, " hello"]}],
+                        },
+                    }
+                },
+            }
+        },
+    })
+
+    assert "chat/~host/new" in adapter.monitored_channels
+    adapter.handle_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_groups_ui_event_watches_joined_chat_and_heap_channels(monkeypatch):
+    monkeypatch.setenv("TLON_SHIP_NAME", "~bot-palnet")
+    adapter = TlonAdapter(PlatformConfig())
+    adapter.auto_accept_group_invites = True
+    adapter._sse = AsyncMock()
+
+    await adapter._handle_groups_ui_event({
+        "flag": "~host/group",
+        "channels": {
+            "chat/~host/general": {},
+            "heap/~host/gallery": {},
+            "diary/~host/blog": {},
+        },
+        "join": {
+            "group": "~host/group",
+            "channels": ["chat/~host/joined", "diary/~host/notes"],
+        },
+    })
+
+    assert adapter.monitored_channels == {
+        "chat/~host/general",
+        "heap/~host/gallery",
+        "chat/~host/joined",
+    }
+    assert adapter._channel_to_group["chat/~host/general"] == "~host/group"
+    assert adapter._channel_to_group["heap/~host/gallery"] == "~host/group"
+    assert adapter._channel_to_group["chat/~host/joined"] == "~host/group"
+    values = [
+        call.kwargs["json_data"]["put-entry"]["value"]
+        for call in adapter._sse.poke.await_args_list
+    ]
+    assert values[-1] == [
+        "chat/~host/general",
+        "heap/~host/gallery",
+        "chat/~host/joined",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_foreigns_event_auto_accepts_group_invites(monkeypatch):
+    monkeypatch.setenv("TLON_SHIP_NAME", "~bot-palnet")
+    adapter = TlonAdapter(PlatformConfig())
+    adapter.auto_accept_group_invites = True
+    adapter._settings.group_invite_allowlist = ["~zod"]
+    adapter._sse = AsyncMock()
+
+    await adapter._handle_group_foreigns_event({
+        "~host/group": {
+            "invites": [{"valid": True, "ship": "~zod"}],
+        }
+    })
+
+    adapter._sse.poke.assert_awaited_once()
+    call = adapter._sse.poke.await_args.kwargs
+    assert call["app"] == "groups"
+    assert call["mark"] == "group-join"
+    assert call["json_data"] == {"flag": "~host/group", "join-all": True}
 
 
 @pytest.mark.asyncio
@@ -509,7 +655,7 @@ async def test_unauthorized_dm_queues_owner_approval(monkeypatch):
     monkeypatch.setenv("TLON_OWNER_SHIP", "~ten")
     adapter = TlonAdapter(PlatformConfig())
     adapter.handle_message = AsyncMock()
-    adapter.send = AsyncMock()
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="~bot-palnet/170.141"))
 
     await adapter._handle_dm_event({
         "whom": "~zod",
@@ -528,4 +674,180 @@ async def test_unauthorized_dm_queues_owner_approval(monkeypatch):
     adapter.handle_message.assert_not_awaited()
     assert len(adapter.pending_approvals) == 1
     assert adapter.pending_approvals[0].requesting_ship == "~zod"
+    assert adapter.pending_approvals[0].notification_message_id == "170141"
     adapter.send.assert_awaited_once()
+
+
+def test_tlon_approval_request_mentions_reactions():
+    approval = create_pending_approval(
+        approval_type="dm",
+        requesting_ship="~zod",
+        existing_ids=[],
+        message_preview="hello",
+    )
+
+    text = format_approval_request(approval)
+
+    assert "React to this message: 👍 approve · 👎 deny · 🛑 block" in text
+
+
+@pytest.mark.asyncio
+async def test_owner_reaction_approves_pending_tlon_dm(monkeypatch):
+    monkeypatch.setenv("TLON_SHIP_NAME", "~bot-palnet")
+    monkeypatch.setenv("TLON_OWNER_SHIP", "~ten")
+    adapter = TlonAdapter(PlatformConfig())
+    adapter._put_settings_entry = AsyncMock()
+    adapter._dispatch_pending_message = AsyncMock()
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="~bot-palnet/2"))
+    approval = create_pending_approval(
+        approval_type="dm",
+        requesting_ship="~zod",
+        existing_ids=[],
+    )
+    approval.notification_message_id = normalize_notification_id("~bot-palnet/170.141")
+    adapter.pending_approvals = [approval]
+
+    await adapter._handle_dm_event({
+        "whom": "~ten",
+        "id": "~bot-palnet/170.141",
+        "response": {
+            "add-react": {
+                "author": "~ten",
+                "react": "👍",
+            }
+        },
+    })
+
+    assert "~zod" in adapter.dm_allowlist
+    assert adapter.pending_approvals == []
+    adapter._dispatch_pending_message.assert_awaited_once_with(approval)
+    adapter.send.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_send_exec_approval_registers_owner_dm_reaction_prompt(monkeypatch):
+    monkeypatch.setenv("TLON_SHIP_NAME", "~bot-palnet")
+    monkeypatch.setenv("TLON_OWNER_SHIP", "~ten")
+    adapter = TlonAdapter(PlatformConfig())
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="~bot-palnet/170.141"))
+
+    result = await adapter.send_exec_approval(
+        "chat/~host/general",
+        "rm -rf /tmp/example",
+        "tlon:chat/~host/general:~ten",
+        "dangerous command",
+    )
+
+    assert result.success
+    adapter.send.assert_awaited_once()
+    assert adapter.send.await_args.args[0] == "~ten"
+    normalized = normalize_notification_id("~bot-palnet/170.141")
+    assert adapter._exec_approval_prompts[normalized]["session_key"] == "tlon:chat/~host/general:~ten"
+
+
+@pytest.mark.asyncio
+async def test_owner_reaction_resolves_exec_approval(monkeypatch):
+    monkeypatch.setenv("TLON_SHIP_NAME", "~bot-palnet")
+    monkeypatch.setenv("TLON_OWNER_SHIP", "~ten")
+    adapter = TlonAdapter(PlatformConfig())
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="~bot-palnet/2"))
+    normalized = normalize_notification_id("~bot-palnet/170.141")
+    adapter._exec_approval_prompts[normalized] = {
+        "session_key": "tlon:~ten:~ten",
+        "chat_id": "~ten",
+    }
+    adapter._exec_approval_prompt_by_session["tlon:~ten:~ten"] = normalized
+    calls = []
+
+    def fake_resolve(session_key, choice, resolve_all=False):
+        calls.append((session_key, choice, resolve_all))
+        return 1
+
+    monkeypatch.setattr("tools.approval.resolve_gateway_approval", fake_resolve)
+
+    await adapter._handle_dm_event({
+        "whom": "~ten",
+        "id": "~bot-palnet/170.141",
+        "response": {
+            "add-react": {
+                "author": "~ten",
+                "react": "🛑",
+            }
+        },
+    })
+
+    assert calls == [("tlon:~ten:~ten", "deny", False)]
+    assert normalized not in adapter._exec_approval_prompts
+    assert "tlon:~ten:~ten" not in adapter._exec_approval_prompt_by_session
+
+
+def _dm_history_post(author: str, sent: int, text: str, post_id: str):
+    return {
+        "seal": {"id": post_id},
+        "essay": {
+            "author": author,
+            "sent": sent,
+            "kind": "/chat",
+            "blob": None,
+            "content": [{"inline": [text]}],
+            "meta": None,
+        },
+        "type": "post",
+    }
+
+
+@pytest.mark.asyncio
+async def test_dm_history_initial_catchup_only_routes_newest_unanswered(monkeypatch):
+    monkeypatch.setenv("TLON_SHIP_NAME", "~bot-palnet")
+    monkeypatch.setenv("TLON_OWNER_SHIP", "~zod")
+    adapter = TlonAdapter(PlatformConfig())
+    adapter.handle_message = AsyncMock()
+    adapter.dm_poll_initial_catchup_seconds = 600
+
+    now_ms = 1_700_001_000_000
+    monkeypatch.setattr("gateway.platforms.tlon.time.time", lambda: now_ms / 1000)
+
+    await adapter._initialize_dm_history(
+        "~zod",
+        [
+            _dm_history_post("~bot-palnet", now_ms - 500_000, "old reply", "~bot-palnet/1"),
+            _dm_history_post("~zod", now_ms - 300_000, "make a group", "~zod/2"),
+            _dm_history_post("~zod", now_ms - 100_000, "hello", "~zod/3"),
+            _dm_history_post(
+                "~bot-palnet",
+                now_ms - 50_000,
+                "Gateway shutting down - Your current task will be interrupted.",
+                "~bot-palnet/status",
+            ),
+        ],
+    )
+
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.text == "hello"
+    assert event.message_id == "~zod/3"
+    assert "~zod/2" in adapter._processed_ids
+
+
+@pytest.mark.asyncio
+async def test_dm_history_poll_routes_new_unprocessed_messages(monkeypatch):
+    monkeypatch.setenv("TLON_SHIP_NAME", "~bot-palnet")
+    monkeypatch.setenv("TLON_OWNER_SHIP", "~zod")
+    adapter = TlonAdapter(PlatformConfig())
+    adapter.handle_message = AsyncMock()
+    adapter._sse = AsyncMock()
+    adapter._sse.scry.return_value = {
+        "writs": {
+            "1": _dm_history_post("~zod", 1_700_000_000_000, "one", "~zod/1"),
+            "2": _dm_history_post("~zod", 1_700_000_001_000, "two", "~zod/2"),
+        }
+    }
+    adapter._dm_poll_initialized.add("~zod")
+
+    await adapter._poll_dm_history("~zod")
+
+    assert adapter.handle_message.await_count == 2
+    assert [call.args[0].text for call in adapter.handle_message.await_args_list] == [
+        "one",
+        "two",
+    ]
