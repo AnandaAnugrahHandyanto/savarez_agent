@@ -4387,6 +4387,7 @@ class AIAgent:
                         review_agent.close()
                     except Exception:
                         pass
+                    review_messages = list(getattr(review_agent, "_session_messages", []))
                     review_agent = None
 
                 # Scan the review agent's messages for successful tool actions

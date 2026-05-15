@@ -16,6 +16,16 @@ from run_agent import AIAgent
 from agent.context_compressor import ContextCompressor
 
 
+@pytest.fixture(autouse=True)
+def _stable_aux_provider_config():
+    """Keep feasibility tests independent from the developer's config.yaml."""
+    with patch(
+        "agent.auxiliary_client._resolve_task_provider_model",
+        return_value=("auto", None, None, None, None),
+    ):
+        yield
+
+
 def _make_agent(
     *,
     compression_enabled: bool = True,
@@ -41,6 +51,7 @@ def _make_agent(
     agent.tool_progress_callback = None
     agent._compression_warning = None
     agent._aux_compression_context_length_config = None
+    agent._custom_providers = []
     agent.tools = []
     agent._custom_providers = []
 

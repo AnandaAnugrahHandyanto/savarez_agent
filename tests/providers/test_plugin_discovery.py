@@ -46,7 +46,7 @@ def test_bundled_plugins_discovered():
         assert (child / "plugin.yaml").exists(), f"{child.name} missing plugin.yaml"
 
 
-def test_all_33_profiles_register():
+def test_all_34_profiles_register():
     """After discovery, the registry must contain exactly 34 distinct profiles."""
     _clear_provider_caches()
     from providers import list_providers

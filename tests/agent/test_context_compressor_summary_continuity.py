@@ -30,8 +30,10 @@ def _messages_with_handoff(summary_body: str):
         {"role": "assistant", "content": "earlier response before handoff"},
         {"role": "user", "content": f"{SUMMARY_PREFIX}\n{summary_body}"},
         {"role": "assistant", "content": "response acknowledging handoff"},
+        {"role": "assistant", "content": "handoff acknowledged after resume"},
         {"role": "user", "content": "new user turn after resume"},
         {"role": "assistant", "content": "latest tail response"},
+        {"role": "user", "content": "final active request stays in protected tail"},
     ]
 
 

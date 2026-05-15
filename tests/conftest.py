@@ -476,9 +476,10 @@ def _reset_module_state():
     except Exception:
         pass
 
-    # --- agent.auxiliary_client — runtime main provider/model override +
-    # unhealthy-provider TTL cache.  Both are process-global and leak between
-    # tests on the same xdist worker unless explicitly cleared.
+    # --- agent.auxiliary_client — runtime main provider/model override and
+    #     payment-error health cache. Both are process-global in production;
+    #     reset them per test so one worker's fallback/402 test does not make
+    #     later auxiliary-client tests skip otherwise-available providers.
     try:
         from agent import auxiliary_client as _aux_mod
         _aux_mod.clear_runtime_main()
