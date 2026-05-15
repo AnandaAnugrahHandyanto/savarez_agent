@@ -190,11 +190,11 @@ def test_successful_completion_stores_result():
     assert handle2.cancel_requested is False
 
 
-def test_non_string_runner_return_is_coerced_to_str():
+def test_non_string_runner_return_is_preserved_as_structured_result():
     lane = ThreadWorkerLane(runner=_instant_runner({"k": "v"}))
     handle = lane.start(WorkerSpec(goal="dict result"))
     assert lane.wait(handle.worker_id, timeout=TIMEOUT)
-    assert lane.result(handle.worker_id).result == str({"k": "v"})
+    assert lane.result(handle.worker_id).result == {"k": "v"}
 
     lane2 = ThreadWorkerLane(runner=_instant_runner(None))
     h2 = lane2.start(WorkerSpec(goal="none result"))
