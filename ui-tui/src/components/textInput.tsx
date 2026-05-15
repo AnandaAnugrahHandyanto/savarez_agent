@@ -4,7 +4,7 @@ import { type MutableRefObject, useEffect, useMemo, useRef, useState } from 'rea
 
 import { setInputSelection } from '../app/inputSelectionStore.js'
 import { readClipboardText, writeClipboardText } from '../lib/clipboard.js'
-import { cursorLayout, offsetFromPosition } from '../lib/inputMetrics.js'
+import { cursorLayout, offsetFromPosition, projectComposerInput } from '../lib/inputMetrics.js'
 import {
   DEFAULT_VOICE_RECORD_KEY,
   isActionMod,
@@ -323,6 +323,7 @@ export function TextInput({
   onPaste,
   onSubmit,
   mask,
+  maxVisualLines,
   mouseApiRef,
   voiceRecordKey = DEFAULT_VOICE_RECORD_KEY,
   placeholder = '',
@@ -360,7 +361,13 @@ export function TextInput({
   cbPaste.current = onPaste
 
   const raw = self.current ? vRef.current : value
-  const display = mask ? raw.replace(/[^\n]/g, mask[0] ?? '*') : raw
+  const sourceDisplay = mask ? raw.replace(/[^\n]/g, mask[0] ?? '*') : raw
+  const projection = useMemo(
+    () => projectComposerInput(sourceDisplay, cur, columns, maxVisualLines),
+    [columns, cur, maxVisualLines, sourceDisplay]
+  )
+  const display = projection.value
+  const displayCursor = projection.cursor
 
   const selected = useMemo(
     () =>
@@ -368,19 +375,21 @@ export function TextInput({
     [sel]
   )
 
-  const layout = useMemo(() => cursorLayout(display, cur, columns), [columns, cur, display])
+  const visualSelected = projection.collapsed ? null : selected
+
+  const layout = useMemo(() => cursorLayout(display, displayCursor, columns), [columns, display, displayCursor])
 
   const boxRef = useDeclaredCursor({
     line: layout.line,
     column: layout.column,
-    active: focus && termFocus && !selected
+    active: focus && termFocus && !visualSelected
   })
 
   // Hide the hardware cursor while a selection is active (prevents
   // auto-wrap onto the next row when inverted text fills the column
   // exactly) or when the terminal loses focus (suppresses the hollow-rect
   // ghost most terminals draw at the parked position).
-  const hideHardwareCursor = focus && !!stdout?.isTTY && (!!selected || !termFocus)
+  const hideHardwareCursor = focus && !!stdout?.isTTY && (!!visualSelected || !termFocus)
 
   useEffect(() => {
     if (!hideHardwareCursor || !stdout) {
@@ -394,7 +403,7 @@ export function TextInput({
     }
   }, [hideHardwareCursor, stdout])
 
-  const nativeCursor = focus && termFocus && !selected && !!stdout?.isTTY
+  const nativeCursor = focus && termFocus && !visualSelected && !!stdout?.isTTY
 
   // Placeholder text is just a hint, not a selection — render it dim
   // without inverse styling. In a TTY the hardware cursor parks at column
@@ -409,12 +418,12 @@ export function TextInput({
       return nativeCursor ? dim(placeholder) : invert(placeholder[0] ?? ' ') + dim(placeholder.slice(1))
     }
 
-    if (selected) {
-      return renderWithSelection(display, selected.start, selected.end)
+    if (visualSelected) {
+      return renderWithSelection(display, visualSelected.start, visualSelected.end)
     }
 
-    return nativeCursor ? display || ' ' : renderWithCursor(display, cur)
-  }, [cur, display, focus, nativeCursor, placeholder, selected])
+    return nativeCursor ? display || ' ' : renderWithCursor(display, displayCursor)
+  }, [display, displayCursor, focus, nativeCursor, placeholder, visualSelected])
 
   useEffect(() => {
     if (self.current) {
@@ -748,7 +757,7 @@ export function TextInput({
   }
 
   const offsetAt = (e: { localCol?: number; localRow?: number }) =>
-    offsetFromPosition(display, e.localRow ?? 0, e.localCol ?? 0, columns)
+    projection.sourceOffsetFromDisplayOffset(offsetFromPosition(display, e.localRow ?? 0, e.localCol ?? 0, columns))
 
   const isMultiClickAt = (offset: number) => {
     const now = Date.now()
@@ -760,7 +769,7 @@ export function TextInput({
 
   if (mouseApiRef) {
     mouseApiRef.current = {
-      dragAt: (row, col) => dragMouseSelection(offsetFromPosition(display, row, col, columns)),
+      dragAt: (row, col) => dragMouseSelection(offsetAt({ localRow: row, localCol: col })),
       end: endMouseSelection,
       startAtBeginning: () => startMouseSelection(0)
     }
@@ -1102,6 +1111,7 @@ interface TextInputProps {
   columns?: number
   focus?: boolean
   mask?: string
+  maxVisualLines?: number
   mouseApiRef?: MutableRefObject<null | TextInputMouseApi>
   onChange: (v: string) => void
   onPaste?: (
