@@ -26,10 +26,11 @@ def _response(content: str):
 def _messages_with_handoff(summary_body: str):
     return [
         {"role": "system", "content": "system prompt"},
+        {"role": "user", "content": "earlier turn before handoff"},
+        {"role": "assistant", "content": "earlier response before handoff"},
         {"role": "user", "content": f"{SUMMARY_PREFIX}\n{summary_body}"},
+        {"role": "assistant", "content": "response acknowledging handoff"},
         {"role": "user", "content": "new user turn after resume"},
-        {"role": "assistant", "content": "new assistant work after resume"},
-        {"role": "user", "content": "more new work after resume"},
         {"role": "assistant", "content": "latest tail response"},
     ]
 
