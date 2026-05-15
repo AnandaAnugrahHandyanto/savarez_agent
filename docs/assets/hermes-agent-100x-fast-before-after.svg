@@ -1,9 +1,9 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1200" height="760" viewBox="0 0 1200 760" role="img" aria-labelledby="title desc">
-  <title id="title">Hermes Agent 10x Fast Phase 1 benchmark before and after</title>
+  <title id="title">Hermes Agent 100X Fast Phase 1 benchmark before and after</title>
   <desc id="desc">Before and after bar chart showing faster cold startup paths on the performance branch.</desc>
   <rect width="1200" height="760" fill="#0e1116"/>
   <rect x="40" y="40" width="1120" height="680" rx="18" fill="#151a22" stroke="#2d3748"/>
-  <text x="80" y="105" fill="#f8fafc" font-family="Segoe UI, Arial, sans-serif" font-size="42" font-weight="700">Hermes Agent 10x Fast - Phase 1</text>
+  <text x="80" y="105" fill="#f8fafc" font-family="Segoe UI, Arial, sans-serif" font-size="42" font-weight="700">Hermes Agent 100X Fast - Phase 1</text>
   <text x="80" y="145" fill="#aeb8c7" font-family="Segoe UI, Arial, sans-serif" font-size="20">Cold startup benchmark, median of 7 subprocess runs</text>
 
   <g font-family="Segoe UI, Arial, sans-serif" font-size="18">

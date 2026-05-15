@@ -1,7 +1,7 @@
-# Hermes 10x Fast Regression Log
+# Hermes 100X Fast Regression Log
 
 Date: 2026-05-15
-Branch: `codex/hermes-agent-10x-fast`
+Branch: `codex/hermes-agent-100x-fast`
 
 This note records what was implemented, what was tested, the latest local
 benchmark results, and the playbook for the next upstream Hermes release.
@@ -59,7 +59,7 @@ benchmark results, and the playbook for the next upstream Hermes release.
 
 - Added README performance section with tagged visual before/after gallery.
 - Added macro promotional comparison image:
-  `docs/assets/10x-fast/generated/macro-original-vs-10x-fast.png`.
+  `docs/assets/100x-fast/generated/macro-original-vs-100x-fast.png`.
 - Added deterministic SVG comparisons for each measured item.
 - Added `runtime-openrouter-metadata-cache.svg` for the model metadata
   offline-cache comparison.
@@ -211,15 +211,15 @@ python scripts\benchmark_startup_perf.py -n 3
   `.venv` flow and Hermes CI runs on Ubuntu with Python 3.11.
 - Startup subprocess timings vary on Windows with filesystem cache and
   antivirus activity. Treat benchmark medians as local measurements.
-- The 10x claim is scoped to dead local/custom endpoint initialization and
-  related subagent construction, not every Hermes operation.
+- The 100x branding is scoped to specific avoided-wait/runtime bottlenecks and
+  the repo's optimization track, not every Hermes operation.
 - `docs/contribution_scout/` is intentionally left untracked and untouched.
 
 ## Next Upstream Version Playbook
 
 When NousResearch publishes a new Hermes release or important upstream commits:
 
-1. Fetch upstream and create a fresh `codex/hermes-agent-10x-fast-*` branch.
+1. Fetch upstream and create a fresh `codex/hermes-agent-100x-fast-*` branch.
 2. Compare changed files against this branch, especially:
    `model_tools.py`, `tools/registry.py`, `toolsets.py`, `hermes_state.py`,
    `run_agent.py`, `agent/model_metadata.py`, `tools/delegate_tool.py`,
@@ -228,7 +228,7 @@ When NousResearch publishes a new Hermes release or important upstream commits:
 4. Re-run the focused regression suite listed above.
 5. Re-run both benchmark scripts and update README/PR visuals with old, new,
    and gain for every image.
-6. Keep new performance images in `docs/assets/10x-fast/` and ensure each one
+6. Keep new performance images in `docs/assets/100x-fast/` and ensure each one
    has tags plus old/new/gain in the README gallery.
 7. Open or update the PR with exact benchmark numbers, not broad claims.
 

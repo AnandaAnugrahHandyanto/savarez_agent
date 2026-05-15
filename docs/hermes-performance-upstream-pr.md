@@ -25,27 +25,27 @@ Main outcomes:
 
 Macro comparison for repository promotion:
 
-![Hermes Agent 10x Fast macro comparison](https://raw.githubusercontent.com/wesleysimplicio/hermes-agent/codex/hermes-agent-10x-fast/docs/assets/10x-fast/generated/macro-original-vs-10x-fast.png)
+![Hermes Agent 100X Fast macro comparison](https://raw.githubusercontent.com/wesleysimplicio/hermes-agent/codex/hermes-agent-100x-fast/docs/assets/100x-fast/generated/macro-original-vs-100x-fast.png)
 
 Runtime benchmark overview:
 
-![Hermes runtime benchmark suite](https://raw.githubusercontent.com/wesleysimplicio/hermes-agent/codex/hermes-agent-10x-fast/docs/assets/10x-fast/runtime-benchmark-suite.svg)
+![Hermes runtime benchmark suite](https://raw.githubusercontent.com/wesleysimplicio/hermes-agent/codex/hermes-agent-100x-fast/docs/assets/100x-fast/runtime-benchmark-suite.svg)
 
 Delegation and parallel guard comparison:
 
-![Delegate task and parallel guard comparison](https://raw.githubusercontent.com/wesleysimplicio/hermes-agent/codex/hermes-agent-10x-fast/docs/assets/10x-fast/phase-7-delegate-parallel-guard.svg)
+![Delegate task and parallel guard comparison](https://raw.githubusercontent.com/wesleysimplicio/hermes-agent/codex/hermes-agent-100x-fast/docs/assets/100x-fast/phase-7-delegate-parallel-guard.svg)
 
 SQLite batch-write comparison:
 
-![SQLite session batch write comparison](https://raw.githubusercontent.com/wesleysimplicio/hermes-agent/codex/hermes-agent-10x-fast/docs/assets/10x-fast/perf-session-batch-writes.svg)
+![SQLite session batch write comparison](https://raw.githubusercontent.com/wesleysimplicio/hermes-agent/codex/hermes-agent-100x-fast/docs/assets/100x-fast/perf-session-batch-writes.svg)
 
 Dead local endpoint fast path:
 
-![Runtime local endpoint fast path comparison](https://raw.githubusercontent.com/wesleysimplicio/hermes-agent/codex/hermes-agent-10x-fast/docs/assets/10x-fast/runtime-local-endpoint-fast-path.svg)
+![Runtime local endpoint fast path comparison](https://raw.githubusercontent.com/wesleysimplicio/hermes-agent/codex/hermes-agent-100x-fast/docs/assets/100x-fast/runtime-local-endpoint-fast-path.svg)
 
 OpenRouter model metadata disk cache:
 
-![OpenRouter metadata disk cache comparison](https://raw.githubusercontent.com/wesleysimplicio/hermes-agent/codex/hermes-agent-10x-fast/docs/assets/10x-fast/runtime-openrouter-metadata-cache.svg)
+![OpenRouter metadata disk cache comparison](https://raw.githubusercontent.com/wesleysimplicio/hermes-agent/codex/hermes-agent-100x-fast/docs/assets/100x-fast/runtime-openrouter-metadata-cache.svg)
 
 ## Why This Was Slow
 
@@ -263,7 +263,7 @@ Expected effect:
 - Faster repeated Hermes starts/subagent builds that need model metadata, and
   more reliable offline/provider-outage behavior.
 
-![OpenRouter metadata disk cache comparison](https://raw.githubusercontent.com/wesleysimplicio/hermes-agent/codex/hermes-agent-10x-fast/docs/assets/10x-fast/runtime-openrouter-metadata-cache.svg)
+![OpenRouter metadata disk cache comparison](https://raw.githubusercontent.com/wesleysimplicio/hermes-agent/codex/hermes-agent-100x-fast/docs/assets/100x-fast/runtime-openrouter-metadata-cache.svg)
 
 ## Benchmarks
 
@@ -308,7 +308,7 @@ python scripts\benchmark_runtime_usage.py -n 3
 
 Important scope note:
 
-- The 10x-class claim is specific to dead local/custom endpoint initialization
+- The 100x-class claim is specific to dead local/custom endpoint initialization
   and related child-agent construction scenarios.
 - Other wins on this branch are mostly in the 2x-25x range depending on the
   hot path.
@@ -405,6 +405,6 @@ lands.
 
 ## Supporting Docs
 
-- [Regression log and next-upstream-release playbook](https://github.com/wesleysimplicio/hermes-agent/blob/codex/hermes-agent-10x-fast/docs/hermes-10x-fast-regression-log.md)
-- [Detailed implementation notes](https://github.com/wesleysimplicio/hermes-agent/blob/codex/hermes-agent-10x-fast/docs/hermes-agent-10x-fast-pr.md)
-- [Runtime research mapping](https://github.com/wesleysimplicio/hermes-agent/blob/codex/hermes-agent-10x-fast/docs/runtime-performance-investigation-2026-05-15.md)
+- [Regression log and next-upstream-release playbook](https://github.com/wesleysimplicio/hermes-agent/blob/codex/hermes-agent-100x-fast/docs/hermes-100x-fast-regression-log.md)
+- [Detailed implementation notes](https://github.com/wesleysimplicio/hermes-agent/blob/codex/hermes-agent-100x-fast/docs/hermes-agent-100x-fast-pr.md)
+- [Runtime research mapping](https://github.com/wesleysimplicio/hermes-agent/blob/codex/hermes-agent-100x-fast/docs/runtime-performance-investigation-2026-05-15.md)

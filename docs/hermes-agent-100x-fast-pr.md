@@ -1,4 +1,4 @@
-# Hermes Agent 10x Fast PR - Phase 1 + 2
+# Hermes Agent 100X Fast PR - Phase 1 + 2
 
 Date: 2026-05-15
 
@@ -11,7 +11,7 @@ This PR is the first concrete performance pass from
 Windows workstation, while preserving the full gateway/platform path for
 callers that need it.
 
-The "10x fast" target is still a multi-PR goal. These phases remove several
+The "100X Fast" target is still a multi-PR goal. These phases remove several
 large startup and persistence costs and add repeatable benchmarks so future PRs
 can keep compounding the gains without guessing.
 
@@ -74,15 +74,15 @@ Baseline was measured from detached `main` at
 
 Visual summary:
 
-![Hermes Agent 10x Fast Phase 1](assets/hermes-agent-10x-fast-before-after.svg)
+![Hermes Agent 100X Fast Phase 1](assets/hermes-agent-100x-fast-before-after.svg)
 
 Generated visual:
 
-![Hermes Agent 10x Fast generated PR visual](assets/10x-fast/hermes-agent-10x-fast-phase-1.png)
+![Hermes Agent 100X Fast generated PR visual](assets/100x-fast/hermes-agent-100x-fast-phase-1.png)
 
 Macro promotional comparison:
 
-![Hermes Agent 10x Fast macro original vs branch comparison](assets/10x-fast/generated/macro-original-vs-10x-fast.png)
+![Hermes Agent 100X Fast macro original vs branch comparison](assets/100x-fast/generated/macro-original-vs-100x-fast.png)
 
 ## Image Comparison Contract
 
@@ -92,7 +92,7 @@ The table below is the canonical mapping for review.
 
 | Image | Old | New | Gain |
 | --- | ---: | ---: | ---: |
-| `generated/macro-original-vs-10x-fast.png` | original branch across six criteria | 10x Fast branch across six criteria | up to 24.21x |
+| `generated/macro-original-vs-100x-fast.png` | original branch across six criteria | 100X Fast branch across six criteria | up to 24.21x |
 | `perf-startup-model-tools.svg` | `import_model_tools` 2.0847s | 0.8419s | 2.48x |
 | `perf-tool-definitions-startup.svg` | `import_and_get_tool_definitions` 1.8782s | 0.8741s | 2.15x |
 | `perf-plugin-discovery.svg` | full platform discovery 0.5571s | deferred fast path 0.1930s | 2.89x |
@@ -155,28 +155,28 @@ The table below is the canonical mapping for review.
     Hermes cache directory, keyed by `tools/` filename, mtime, and size. A warm
     startup can skip source scanning unless a tool file changed.
 
-![Phase 2 tool discovery cache](assets/10x-fast/phase-2-tool-discovery-cache.svg)
+![Phase 2 tool discovery cache](assets/100x-fast/phase-2-tool-discovery-cache.svg)
 
 12. Memoized recursive toolset resolution.
     `toolsets.py` now caches resolved toolsets, toolset names, and merged
     toolset maps by registry object + generation. Dynamic plugin toolsets still
     invalidate when the registry changes.
 
-![Phase 3 toolset memoization](assets/10x-fast/phase-3-toolset-cache.svg)
+![Phase 3 toolset memoization](assets/100x-fast/phase-3-toolset-cache.svg)
 
 13. Batched session message persistence.
     `SessionDB.append_messages()` inserts a completed flush in one SQLite write
     transaction and updates session counters once. `AIAgent` now uses the batch
     path when available and falls back to the old per-message method if needed.
 
-![Phase 4 SQLite batch writes](assets/10x-fast/phase-4-sqlite-batch-writes.svg)
+![Phase 4 SQLite batch writes](assets/100x-fast/phase-4-sqlite-batch-writes.svg)
 
 14. Made TUI config polling MCP-aware.
     `config.get mtime` now returns an `mcp_servers` fingerprint. The TUI still
     hydrates display/voice changes on any config mtime change, but it only calls
     `reload.mcp` when the MCP fingerprint changes.
 
-![Phase 5 TUI MCP fingerprint](assets/10x-fast/phase-5-tui-mcp-fingerprint.svg)
+![Phase 5 TUI MCP fingerprint](assets/100x-fast/phase-5-tui-mcp-fingerprint.svg)
 
 15. Expanded the benchmark harness.
     `scripts/benchmark_startup_perf.py` now includes toolset memoization and
@@ -190,7 +190,7 @@ The table below is the canonical mapping for review.
     The import phase remains ordered and serial so tool registration side
     effects stay deterministic.
 
-![Phase 6 adaptive parallel scan](assets/10x-fast/phase-6-adaptive-parallel-scan.svg)
+![Phase 6 adaptive parallel scan](assets/100x-fast/phase-6-adaptive-parallel-scan.svg)
 
 ### Phase 3 - Runtime Use Path
 
@@ -200,7 +200,7 @@ The table below is the canonical mapping for review.
     construction, `delegate_task` scheduling, parallel tool execution, no-op
     tool dispatch, parallel safety checks, and batched session writes.
 
-![Runtime benchmark suite](assets/10x-fast/runtime-benchmark-suite.svg)
+![Runtime benchmark suite](assets/100x-fast/runtime-benchmark-suite.svg)
 
 18. Added a dead-loopback endpoint fast path.
     `agent/model_metadata.py` now performs a short TCP reachability preflight
@@ -208,7 +208,7 @@ The table below is the canonical mapping for review.
     local custom endpoint is down, Hermes caches that negative reachability
     result briefly and falls back immediately to the default context length.
 
-![Runtime local endpoint fast path](assets/10x-fast/runtime-local-endpoint-fast-path.svg)
+![Runtime local endpoint fast path](assets/100x-fast/runtime-local-endpoint-fast-path.svg)
 
 19. Added regression coverage for the new fast path.
     `tests/agent/test_model_metadata_local_ctx.py` verifies that dead numeric
@@ -219,17 +219,17 @@ The table below is the canonical mapping for review.
     `docs/runtime-performance-investigation-2026-05-15.md` maps official Hermes
     docs and efficient LLM papers to the concrete optimization choices.
 
-![Research principles map](assets/10x-fast/research-principles-map.svg)
+![Research principles map](assets/100x-fast/research-principles-map.svg)
 
 Generated visuals for README/PR:
 
-![Generated runtime before/after](assets/10x-fast/generated/runtime-before-after.png)
+![Generated runtime before/after](assets/100x-fast/generated/runtime-before-after.png)
 
-![Generated runtime before/after alternate](assets/10x-fast/generated/runtime-before-after-alt.png)
+![Generated runtime before/after alternate](assets/100x-fast/generated/runtime-before-after-alt.png)
 
-![Generated research to code](assets/10x-fast/generated/research-to-code.png)
+![Generated research to code](assets/100x-fast/generated/research-to-code.png)
 
-![Generated parallel runtime](assets/10x-fast/generated/parallel-runtime.png)
+![Generated parallel runtime](assets/100x-fast/generated/parallel-runtime.png)
 
 ### Phase 4 - Message And Delegation Runtime Tightening
 
@@ -249,7 +249,7 @@ Generated visuals for README/PR:
     and parsed guard arguments are cached on the tool call object so the
     concurrent executor does not parse the same JSON again.
 
-![Delegate task and parallel guard comparison](assets/10x-fast/phase-7-delegate-parallel-guard.svg)
+![Delegate task and parallel guard comparison](assets/100x-fast/phase-7-delegate-parallel-guard.svg)
 
 24. Added offline-first OpenRouter model metadata caching.
     `agent/model_metadata.py` now writes versioned context/pricing metadata to
@@ -258,7 +258,7 @@ Generated visuals for README/PR:
     back to stale disk metadata if refresh fails. `force_refresh=True` still
     bypasses the disk cache.
 
-![OpenRouter metadata disk cache comparison](assets/10x-fast/runtime-openrouter-metadata-cache.svg)
+![OpenRouter metadata disk cache comparison](assets/100x-fast/runtime-openrouter-metadata-cache.svg)
 
 ## Latest Local Benchmark
 
@@ -305,14 +305,14 @@ Results after Phase 3:
 | `tool_dispatch_noop` | 0.0992s | 0.0308ms per dispatch over 3000 calls |
 | `openrouter_metadata_disk_cache` | 0.7499s | 100 cold memory resets over 500 models; ~0.0073s per disk lookup |
 | `parallel_guard_read_files` | 1.6403s | 0.1673ms per 8-tool safety decision; 4.26x lower median than the prior 6.9878s |
-| `session_append_messages_batch` | 0.0192s | 22.10x faster than loop writes for 240 messages |
+| `session_append_messages_batch` | 0.0192s | 22.100X Faster than loop writes for 240 messages |
 
-This is the first true 10x-class runtime win in the branch, but it is scoped:
+This is the first true 100x-class runtime win in the branch, but it is scoped:
 it applies to the dead local endpoint path that previously made agent and
 subagent construction appear stuck before any model call was made. It is not a
-blanket "every Hermes operation is 10x faster" claim.
+blanket "every Hermes operation is 100X Faster" claim.
 
-## Follow-Up PRs Toward 10x
+## Follow-Up PRs Toward 100x
 
 1. Generate a persistent tool manifest so schema metadata can load without
    importing every tool module.

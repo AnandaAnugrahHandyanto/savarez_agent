@@ -28,7 +28,7 @@ Use any model you want — [Nous Portal](https://portal.nousresearch.com), [Open
 
 ---
 
-## Hermes Agent 10x Fast - Performance Comparisons
+## Hermes Agent 100X Fast - Performance Comparisons
 
 This branch documents a measured performance pass focused on startup hot paths,
 tool discovery, SQLite session persistence, TUI MCP reloads, adaptive
@@ -41,13 +41,13 @@ universal guarantees.
 Full PR documentation:
 
 - [Upstream PR draft](docs/hermes-performance-upstream-pr.md)
-- [10x Fast implementation notes](docs/hermes-agent-10x-fast-pr.md)
-- [Regression log and next-version playbook](docs/hermes-10x-fast-regression-log.md)
+- [100X Fast implementation notes](docs/hermes-agent-100x-fast-pr.md)
+- [Regression log and next-version playbook](docs/hermes-100x-fast-regression-log.md)
 - [Runtime performance investigation](docs/runtime-performance-investigation-2026-05-15.md)
 
-![Hermes Agent 10x Fast performance dashboard](docs/assets/10x-fast/perf-summary-dashboard.svg)
+![Hermes Agent 100X Fast performance dashboard](docs/assets/100x-fast/perf-summary-dashboard.svg)
 
-![Hermes Agent 10x Fast macro original vs branch comparison](docs/assets/10x-fast/generated/macro-original-vs-10x-fast.png)
+![Hermes Agent 100X Fast macro original vs branch comparison](docs/assets/100x-fast/generated/macro-original-vs-100x-fast.png)
 
 ### Visual Before/After Gallery
 
@@ -60,50 +60,50 @@ specific benchmark claim it represents.
 
 | Visual | Tags | Old | New | Gain |
 | --- | --- | ---: | ---: | ---: |
-| <img src="docs/assets/10x-fast/generated/macro-original-vs-10x-fast.png" width="320" alt="macro comparison original vs 10x fast branch showing speed gains across startup plugin discovery sqlite endpoint guard and parallel tools"> | `#macro` `#promo` `#overview` `#generated` | original branch across six criteria | 10x Fast branch across six criteria | **up to 24.21x** |
-| <img src="docs/assets/10x-fast/perf-startup-model-tools.svg" width="320" alt="model_tools startup old 2.0847s new 0.8419s gain 2.48x"> | `#startup` `#model-tools` | 2.0847s | 0.8419s | **2.48x** |
-| <img src="docs/assets/10x-fast/perf-tool-definitions-startup.svg" width="320" alt="tool definitions startup old 1.8782s new 0.8741s gain 2.15x"> | `#startup` `#tool-schema` | 1.8782s | 0.8741s | **2.15x** |
-| <img src="docs/assets/10x-fast/perf-plugin-discovery.svg" width="320" alt="plugin discovery old 0.5571s new 0.1930s gain 2.89x"> | `#plugin-discovery` `#startup` | 0.5571s | 0.1930s | **2.89x** |
-| <img src="docs/assets/10x-fast/perf-session-batch-writes.svg" width="320" alt="SQLite session writes old 0.6329s new 0.0240s gain 24.21x"> | `#sqlite` `#session-db` | 0.6329s | 0.0240s | **24.21x** |
-| <img src="docs/assets/10x-fast/runtime-local-endpoint-fast-path.svg" width="320" alt="dead local endpoint old 51.4181s new 5.5563s gain 9.25x"> | `#runtime` `#local-endpoint` | 51.4181s | 5.5563s | **9.25x** |
-| <img src="docs/assets/10x-fast/runtime-openrouter-metadata-cache.svg" width="320" alt="OpenRouter model metadata cold process old network timeout path 10 seconds new disk cache 0.0073 seconds gain up to 1378x"> | `#runtime` `#metadata` `#offline-cache` | up to 10.0000s | 0.0073s | **up to 1378x** |
-| <img src="docs/assets/10x-fast/phase-7-delegate-parallel-guard.svg" width="320" alt="parallel guard old 6.9878s new 1.6403s gain 4.26x"> | `#delegation` `#parallel-tools` | 6.9878s | 1.6403s | **4.26x** |
-| <img src="docs/assets/10x-fast/runtime-benchmark-suite.svg" width="320" alt="runtime benchmark suite showing gains up to 22.10x"> | `#runtime` `#benchmark-suite` | mixed hot paths | latest medians | **up to 22.10x** |
-| <img src="docs/assets/10x-fast/generated/parallel-runtime.png" width="320" alt="parallel runtime generated comparison old 0.3036s new 0.0590s gain 5.14x"> | `#parallel-tools` `#generated` | 0.3036s | 0.0590s | **5.14x** |
-| <img src="docs/assets/10x-fast/generated/runtime-before-after.png" width="320" alt="runtime before after generated comparison old 51.4181s new 5.5563s gain 9.25x"> | `#runtime` `#generated` | 51.4181s | 5.5563s | **9.25x** |
-| <img src="docs/assets/10x-fast/generated/runtime-before-after-alt.png" width="320" alt="runtime before after alternate generated comparison old 51.4181s new 5.5563s gain 9.25x"> | `#runtime` `#generated` | 51.4181s | 5.5563s | **9.25x** |
-| <img src="docs/assets/10x-fast/generated/research-to-code.png" width="320" alt="research to code visual mapping cache batch route and fast fail ideas to measured gains"> | `#research-to-code` `#systems` | repeated probes/work | cache, batch, route, fast-fail | **up to 24.21x** |
-| <img src="docs/assets/10x-fast/hermes-agent-10x-fast-phase-1.png" width="320" alt="generated 10x fast overview visual with measured gains up to 24.21x"> | `#overview` `#generated` | baseline hot paths | optimized hot paths | **up to 24.21x** |
+| <img src="docs/assets/100x-fast/generated/macro-original-vs-100x-fast.png" width="320" alt="macro comparison original vs 100X Fast branch showing speed gains across startup plugin discovery sqlite endpoint guard and parallel tools"> | `#macro` `#promo` `#overview` `#generated` | original branch across six criteria | 100X Fast branch across six criteria | **up to 24.21x** |
+| <img src="docs/assets/100x-fast/perf-startup-model-tools.svg" width="320" alt="model_tools startup old 2.0847s new 0.8419s gain 2.48x"> | `#startup` `#model-tools` | 2.0847s | 0.8419s | **2.48x** |
+| <img src="docs/assets/100x-fast/perf-tool-definitions-startup.svg" width="320" alt="tool definitions startup old 1.8782s new 0.8741s gain 2.15x"> | `#startup` `#tool-schema` | 1.8782s | 0.8741s | **2.15x** |
+| <img src="docs/assets/100x-fast/perf-plugin-discovery.svg" width="320" alt="plugin discovery old 0.5571s new 0.1930s gain 2.89x"> | `#plugin-discovery` `#startup` | 0.5571s | 0.1930s | **2.89x** |
+| <img src="docs/assets/100x-fast/perf-session-batch-writes.svg" width="320" alt="SQLite session writes old 0.6329s new 0.0240s gain 24.21x"> | `#sqlite` `#session-db` | 0.6329s | 0.0240s | **24.21x** |
+| <img src="docs/assets/100x-fast/runtime-local-endpoint-fast-path.svg" width="320" alt="dead local endpoint old 51.4181s new 5.5563s gain 9.25x"> | `#runtime` `#local-endpoint` | 51.4181s | 5.5563s | **9.25x** |
+| <img src="docs/assets/100x-fast/runtime-openrouter-metadata-cache.svg" width="320" alt="OpenRouter model metadata cold process old network timeout path 10 seconds new disk cache 0.0073 seconds gain up to 1378x"> | `#runtime` `#metadata` `#offline-cache` | up to 10.0000s | 0.0073s | **up to 1378x** |
+| <img src="docs/assets/100x-fast/phase-7-delegate-parallel-guard.svg" width="320" alt="parallel guard old 6.9878s new 1.6403s gain 4.26x"> | `#delegation` `#parallel-tools` | 6.9878s | 1.6403s | **4.26x** |
+| <img src="docs/assets/100x-fast/runtime-benchmark-suite.svg" width="320" alt="runtime benchmark suite showing gains up to 22.10x"> | `#runtime` `#benchmark-suite` | mixed hot paths | latest medians | **up to 22.10x** |
+| <img src="docs/assets/100x-fast/generated/parallel-runtime.png" width="320" alt="parallel runtime generated comparison old 0.3036s new 0.0590s gain 5.14x"> | `#parallel-tools` `#generated` | 0.3036s | 0.0590s | **5.14x** |
+| <img src="docs/assets/100x-fast/generated/runtime-before-after.png" width="320" alt="runtime before after generated comparison old 51.4181s new 5.5563s gain 9.25x"> | `#runtime` `#generated` | 51.4181s | 5.5563s | **9.25x** |
+| <img src="docs/assets/100x-fast/generated/runtime-before-after-alt.png" width="320" alt="runtime before after alternate generated comparison old 51.4181s new 5.5563s gain 9.25x"> | `#runtime` `#generated` | 51.4181s | 5.5563s | **9.25x** |
+| <img src="docs/assets/100x-fast/generated/research-to-code.png" width="320" alt="research to code visual mapping cache batch route and fast fail ideas to measured gains"> | `#research-to-code` `#systems` | repeated probes/work | cache, batch, route, fast-fail | **up to 24.21x** |
+| <img src="docs/assets/100x-fast/hermes-agent-100x-fast-phase-1.png" width="320" alt="generated 100X Fast overview visual with measured gains up to 24.21x"> | `#overview` `#generated` | baseline hot paths | optimized hot paths | **up to 24.21x** |
 
 ### Startup And Tool Schema
 
-![model_tools startup comparison](docs/assets/10x-fast/perf-startup-model-tools.svg)
+![model_tools startup comparison](docs/assets/100x-fast/perf-startup-model-tools.svg)
 
-![tool definitions startup comparison](docs/assets/10x-fast/perf-tool-definitions-startup.svg)
+![tool definitions startup comparison](docs/assets/100x-fast/perf-tool-definitions-startup.svg)
 
-![plugin discovery comparison](docs/assets/10x-fast/perf-plugin-discovery.svg)
+![plugin discovery comparison](docs/assets/100x-fast/perf-plugin-discovery.svg)
 
 ### Runtime Hot Paths
 
-![runtime local endpoint fast path comparison](docs/assets/10x-fast/runtime-local-endpoint-fast-path.svg)
+![runtime local endpoint fast path comparison](docs/assets/100x-fast/runtime-local-endpoint-fast-path.svg)
 
-![OpenRouter metadata disk cache comparison](docs/assets/10x-fast/runtime-openrouter-metadata-cache.svg)
+![OpenRouter metadata disk cache comparison](docs/assets/100x-fast/runtime-openrouter-metadata-cache.svg)
 
-![runtime benchmark suite](docs/assets/10x-fast/runtime-benchmark-suite.svg)
+![runtime benchmark suite](docs/assets/100x-fast/runtime-benchmark-suite.svg)
 
-![delegate task and parallel guard comparison](docs/assets/10x-fast/phase-7-delegate-parallel-guard.svg)
+![delegate task and parallel guard comparison](docs/assets/100x-fast/phase-7-delegate-parallel-guard.svg)
 
-![SQLite session batch write comparison](docs/assets/10x-fast/perf-session-batch-writes.svg)
+![SQLite session batch write comparison](docs/assets/100x-fast/perf-session-batch-writes.svg)
 
-![toolset cache comparison](docs/assets/10x-fast/perf-toolset-cache.svg)
+![toolset cache comparison](docs/assets/100x-fast/perf-toolset-cache.svg)
 
-![TUI MCP reload avoidance comparison](docs/assets/10x-fast/perf-mcp-reload-avoidance.svg)
+![TUI MCP reload avoidance comparison](docs/assets/100x-fast/perf-mcp-reload-avoidance.svg)
 
-![adaptive parallel tool scan comparison](docs/assets/10x-fast/perf-adaptive-parallel-scan.svg)
+![adaptive parallel tool scan comparison](docs/assets/100x-fast/perf-adaptive-parallel-scan.svg)
 
 ### Research To Code
 
-![research principles mapped to Hermes optimizations](docs/assets/10x-fast/research-principles-map.svg)
+![research principles mapped to Hermes optimizations](docs/assets/100x-fast/research-principles-map.svg)
 
 This runtime pass cross-checked the official Hermes docs for the
 [agent loop](https://hermes-agent.nousresearch.com/docs/developer-guide/agent-loop/),
@@ -120,17 +120,17 @@ signal.
 
 ### Architecture Diagrams
 
-![tool discovery cache architecture](docs/assets/10x-fast/phase-2-tool-discovery-cache.svg)
+![tool discovery cache architecture](docs/assets/100x-fast/phase-2-tool-discovery-cache.svg)
 
-![toolset memoization architecture](docs/assets/10x-fast/phase-3-toolset-cache.svg)
+![toolset memoization architecture](docs/assets/100x-fast/phase-3-toolset-cache.svg)
 
-![SQLite batch write architecture](docs/assets/10x-fast/phase-4-sqlite-batch-writes.svg)
+![SQLite batch write architecture](docs/assets/100x-fast/phase-4-sqlite-batch-writes.svg)
 
-![TUI MCP fingerprint architecture](docs/assets/10x-fast/phase-5-tui-mcp-fingerprint.svg)
+![TUI MCP fingerprint architecture](docs/assets/100x-fast/phase-5-tui-mcp-fingerprint.svg)
 
-![adaptive parallel scan architecture](docs/assets/10x-fast/phase-6-adaptive-parallel-scan.svg)
+![adaptive parallel scan architecture](docs/assets/100x-fast/phase-6-adaptive-parallel-scan.svg)
 
-![delegate task config and parallel guard architecture](docs/assets/10x-fast/phase-7-delegate-parallel-guard.svg)
+![delegate task config and parallel guard architecture](docs/assets/100x-fast/phase-7-delegate-parallel-guard.svg)
 
 ---
 

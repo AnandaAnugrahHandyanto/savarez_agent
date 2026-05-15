@@ -1,8 +1,8 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1200" height="675" viewBox="0 0 1200 675" role="img" aria-labelledby="title desc">
   <title id="title">Hermes performance comparison dashboard</title>
-  <desc id="desc">Summary dashboard of measured Hermes performance improvements in the 10x fast branch.</desc>
+  <desc id="desc">Summary dashboard of measured Hermes performance improvements in the 100X Fast branch.</desc>
   <rect width="1200" height="675" fill="#0f1720"/>
-  <text x="60" y="72" fill="#f8fafc" font-family="Arial, sans-serif" font-size="34" font-weight="700">Hermes Agent 10x Fast - Performance Dashboard</text>
+  <text x="60" y="72" fill="#f8fafc" font-family="Arial, sans-serif" font-size="34" font-weight="700">Hermes Agent 100X Fast - Performance Dashboard</text>
   <text x="60" y="112" fill="#b8c4d5" font-family="Arial, sans-serif" font-size="18">Local Windows measurements from benchmark_startup_perf.py. Numbers are measured, not universal guarantees.</text>
   <g font-family="Arial, sans-serif" font-size="20">
     <rect x="70" y="165" width="500" height="85" rx="10" fill="#1e2b3a" stroke="#60a5fa" stroke-width="2"/>
