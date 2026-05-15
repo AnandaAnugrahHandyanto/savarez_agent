@@ -47,6 +47,11 @@ def mock_args():
     return SimpleNamespace()
 
 
+@pytest.fixture
+def mock_upstream_args():
+    return SimpleNamespace(upstream=True)
+
+
 class TestCmdUpdateBranchFallback:
     """cmd_update falls back to main when current branch has no remote counterpart."""
 
@@ -125,6 +130,34 @@ class TestCmdUpdateBranchFallback:
         # Custom fork branches must not be implicitly synced from upstream/main.
         assert all("fetch upstream" not in c for c in commands)
         assert all("pull --ff-only upstream main" not in c for c in commands)
+
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_update_upstream_flag_targets_official_upstream_main(
+        self, mock_run, _mock_which, mock_upstream_args, capsys
+    ):
+        mock_run.side_effect = _make_run_side_effect(
+            branch="batumi/live-deploy",
+            tracking_ref="myfork/batumi/live",
+            commit_count="2",
+        )
+
+        cmd_update(mock_upstream_args)
+
+        commands = [" ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list]
+
+        assert "git remote get-url upstream" in commands
+        fetch_cmds = [c for c in commands if c.startswith("git fetch")]
+        assert fetch_cmds == ["git fetch upstream"]
+
+        rev_list_cmds = [c for c in commands if "rev-list" in c]
+        assert len(rev_list_cmds) == 1
+        assert "HEAD..upstream/main" in rev_list_cmds[0]
+        assert "myfork/batumi/live" not in rev_list_cmds[0]
+
+        pull_cmds = [c for c in commands if "pull" in c]
+        assert len(pull_cmds) == 1
+        assert "upstream main" in pull_cmds[0]
 
     @patch("shutil.which", return_value=None)
     @patch("subprocess.run")

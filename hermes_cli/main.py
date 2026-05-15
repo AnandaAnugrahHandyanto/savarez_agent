@@ -6470,6 +6470,11 @@ def _add_upstream_remote(git_cmd: list[str], cwd: Path) -> bool:
         return False
 
 
+def _ensure_upstream_remote(git_cmd: list[str], cwd: Path) -> bool:
+    """Ensure the official ``upstream`` remote exists for explicit upstream updates."""
+    return _has_upstream_remote(git_cmd, cwd) or _add_upstream_remote(git_cmd, cwd)
+
+
 def _count_commits_between(git_cmd: list[str], cwd: Path, base: str, head: str) -> int:
     """Count commits on `head` that are not on `base`. Returns -1 on error."""
     try:
@@ -6519,15 +6524,29 @@ def _split_remote_ref(ref: str) -> tuple[str, str] | None:
 
 
 def _resolve_update_target(
-    git_cmd: list[str], cwd: Path, current_branch: str
+    git_cmd: list[str], cwd: Path, current_branch: str, *, force_upstream: bool = False
 ) -> dict[str, str | bool]:
     """Resolve the git remote/branch that ``hermes update`` should use.
 
-    Preferred path: use the current branch's configured upstream. This makes
+    With ``force_upstream=True``, target the official ``upstream/main`` ref
+    explicitly. This is for fork/deploy checkouts whose configured tracking
+    branch is intentionally not the official repo, but where the operator wants
+    to compare/update against NousResearch/main.
+
+    Preferred default path: use the current branch's configured upstream. This makes
     fork/deploy branches first-class and keeps ``hermes update`` pointed at the
     same source of truth as ``git pull``. Legacy fallback remains ``origin/main``
     when detached or no upstream is configured.
     """
+    if force_upstream:
+        return {
+            "remote": "upstream",
+            "branch": "main",
+            "remote_ref": "upstream/main",
+            "uses_tracking": False,
+            "force_upstream": True,
+        }
+
     if current_branch != "HEAD":
         tracking_ref = _get_tracking_ref(git_cmd, cwd)
         if tracking_ref:
@@ -6539,6 +6558,7 @@ def _resolve_update_target(
                     "branch": branch,
                     "remote_ref": tracking_ref,
                     "uses_tracking": True,
+                    "force_upstream": False,
                 }
 
     return {
@@ -6546,6 +6566,7 @@ def _resolve_update_target(
         "branch": "main",
         "remote_ref": "origin/main",
         "uses_tracking": False,
+        "force_upstream": False,
     }
 
 
@@ -7304,7 +7325,7 @@ def _finalize_update_output(state):
             pass
 
 
-def _cmd_update_check():
+def _cmd_update_check(args=None):
     """Implement ``hermes update --check``: fetch and report without installing."""
     git_dir = PROJECT_ROOT / ".git"
     if not git_dir.exists():
@@ -7323,7 +7344,13 @@ def _cmd_update_check():
         check=True,
     )
     current_branch = current_branch_result.stdout.strip()
-    target = _resolve_update_target(git_cmd, PROJECT_ROOT, current_branch)
+    force_upstream = bool(getattr(args, "upstream", False))
+    if force_upstream and not _ensure_upstream_remote(git_cmd, PROJECT_ROOT):
+        print("✗ Could not add upstream remote for NousResearch/hermes-agent.")
+        sys.exit(1)
+    target = _resolve_update_target(
+        git_cmd, PROJECT_ROOT, current_branch, force_upstream=force_upstream
+    )
     remote = str(target["remote"])
     compare_branch = str(target["remote_ref"])
 
@@ -7565,7 +7592,7 @@ def cmd_update(args):
         return
 
     if getattr(args, "check", False):
-        _cmd_update_check()
+        _cmd_update_check(args)
         return
 
     gateway_mode = getattr(args, "gateway", False)
@@ -7590,6 +7617,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         else None
     )
     assume_yes = bool(getattr(args, "yes", False))
+    force_upstream = bool(getattr(args, "upstream", False))
 
     print("⚕ Updating Hermes Agent...")
     print()
@@ -7664,8 +7692,15 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
         # Resolve the update target before fetching so a branch that tracks a
         # non-origin remote (for example myfork/batumi/live) fetches the right
-        # remote instead of always fetching origin/main.
-        target = _resolve_update_target(git_cmd, PROJECT_ROOT, current_branch)
+        # remote instead of always fetching origin/main. --upstream explicitly
+        # targets NousResearch/main instead, useful for deploy branches whose
+        # tracking branch is the live fork feed.
+        if force_upstream and not _ensure_upstream_remote(git_cmd, PROJECT_ROOT):
+            print("✗ Could not add upstream remote for NousResearch/hermes-agent.")
+            sys.exit(1)
+        target = _resolve_update_target(
+            git_cmd, PROJECT_ROOT, current_branch, force_upstream=force_upstream
+        )
         remote = str(target["remote"])
         branch = str(target["branch"])
         remote_ref = str(target["remote_ref"])
@@ -7698,6 +7733,8 @@ def _cmd_update_impl(args, gateway_mode: bool):
         auto_stash_ref = _stash_local_changes_if_needed(git_cmd, PROJECT_ROOT)
         if uses_tracking:
             print(f"  → Updating from configured upstream: {remote_ref}")
+        elif force_upstream:
+            print("  → Updating from official upstream: upstream/main")
         elif current_branch == "HEAD":
             print("  ⚠ Detached HEAD — using fallback update target origin/main")
         elif current_branch != "main":
@@ -11645,6 +11682,12 @@ Examples:
         action="store_true",
         default=False,
         help="Check whether an update is available without installing anything",
+    )
+    update_parser.add_argument(
+        "--upstream",
+        action="store_true",
+        default=False,
+        help="Update/check against official NousResearch/main instead of the current branch's configured git upstream",
     )
     update_parser.add_argument(
         "--no-backup",
