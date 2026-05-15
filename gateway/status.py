@@ -594,9 +594,10 @@ def acquire_scoped_lock(scope: str, identity: str, metadata: Optional[dict[str, 
                     and current_start != existing.get("start_time")
                 ):
                     stale = True
-                # Check if process is stopped (Ctrl+Z / SIGTSTP) — stopped
-                # processes still appear alive to _pid_exists but are not
-                # actually running. Treat them as stale so --replace works.
+                # Check if process is stopped (Ctrl+Z / SIGTSTP) or a zombie
+                # (<defunct>) — both still appear alive to _pid_exists but
+                # are not actually running. Treat them as stale so
+                # --replace works and gateway restart doesn't deadlock.
                 if not stale:
                     try:
                         _proc_status = Path(f"/proc/{existing_pid}/status")
@@ -604,7 +605,7 @@ def acquire_scoped_lock(scope: str, identity: str, metadata: Optional[dict[str, 
                             for _line in _proc_status.read_text(encoding="utf-8").splitlines():
                                 if _line.startswith("State:"):
                                     _state = _line.split()[1]
-                                    if _state in {"T", "t"}:  # stopped or tracing stop
+                                    if _state in {"T", "t", "Z", "z"}:  # stopped, tracing stop, or zombie
                                         stale = True
                                     break
                     except (OSError, PermissionError):
