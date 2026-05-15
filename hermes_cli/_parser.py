@@ -132,7 +132,8 @@ def build_top_level_parser():
             "Applies to -z/--oneshot and --tui. Also settable via HERMES_INFERENCE_PROVIDER env var."
         ),
     )
-    parser.add_argument(
+    _inherited_flag(
+        parser,
         "-t",
         "--toolsets",
         default=None,
@@ -246,7 +247,8 @@ def build_top_level_parser():
         chat_parser,
         "-m", "--model", help="Model to use (e.g., anthropic/claude-sonnet-4)",
     )
-    chat_parser.add_argument(
+    _inherited_flag(
+        chat_parser,
         "-t", "--toolsets", help="Comma-separated toolsets to enable"
     )
     _inherited_flag(
