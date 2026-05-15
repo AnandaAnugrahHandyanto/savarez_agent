@@ -9622,6 +9622,43 @@ class AIAgent:
                     content[-1]["cache_control"] = {"type": "ephemeral"}
                 break
 
+    def _emit_model_request_trace(self, *, api_kwargs: dict | None, effective_task_id: str | None, api_call_count: int) -> None:
+        """Emit safe metadata proving which model/provider path is about to run.
+
+        Never include prompts, messages, API keys, auth headers, or the full
+        base URL.  Runtime observability must be best-effort and must not alter
+        the model-call path.
+        """
+        try:
+            from agent.runtime_trace import emit_runtime_event
+
+            tools = []
+            if isinstance(api_kwargs, dict) and isinstance(api_kwargs.get("tools"), list):
+                tools = api_kwargs.get("tools") or []
+            elif isinstance(getattr(self, "tools", None), list):
+                tools = self.tools or []
+
+            base_url_host = getattr(self, "_base_url_hostname", "") or ""
+            if not base_url_host and getattr(self, "base_url", None):
+                try:
+                    base_url_host = urlparse(str(self.base_url)).hostname or ""
+                except Exception:
+                    base_url_host = ""
+
+            emit_runtime_event(
+                "model.request",
+                session_id=self.session_id or "default",
+                task_id=effective_task_id or "",
+                provider=self.provider,
+                model=self.model,
+                api_mode=self.api_mode,
+                base_url_host=base_url_host,
+                tool_count=len(tools),
+                api_call_count=api_call_count,
+            )
+        except Exception:
+            pass
+
     def _build_api_kwargs(self, api_messages: list) -> dict:
         """Build the keyword arguments dict for the active API mode."""
         tools_for_api = self.tools
@@ -11495,6 +11532,7 @@ class AIAgent:
                         session_id=self.session_id or "",
                         enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
                         skip_pre_tool_call_hook=True,
+                        parent_agent=self,
                     )
                     _spinner_result = function_result
                 except Exception as tool_error:
@@ -11515,6 +11553,7 @@ class AIAgent:
                         session_id=self.session_id or "",
                         enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
                         skip_pre_tool_call_hook=True,
+                        parent_agent=self,
                     )
                 except Exception as tool_error:
                     function_result = f"Error executing tool '{function_name}': {tool_error}"
@@ -12710,6 +12749,12 @@ class AIAgent:
                         _sanitize_structure_non_ascii(api_kwargs)
                     if self.api_mode == "codex_responses":
                         api_kwargs = self._get_transport().preflight_kwargs(api_kwargs, allow_stream=False)
+
+                    self._emit_model_request_trace(
+                        api_kwargs=api_kwargs,
+                        effective_task_id=effective_task_id,
+                        api_call_count=api_call_count,
+                    )
 
                     try:
                         from hermes_cli.plugins import invoke_hook as _invoke_hook
