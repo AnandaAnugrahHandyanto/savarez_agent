@@ -429,6 +429,48 @@ class TestTzdataDependencyDeclared:
 
 
 # ---------------------------------------------------------------------------
+# Windows installer Git download hardening
+# ---------------------------------------------------------------------------
+
+
+class TestWindowsInstallerGitDownloadHardening:
+    """The installer must verify bundled Git downloads before executing them."""
+
+    def test_git_download_uses_pinned_release_not_latest_api(self):
+        root = Path(__file__).resolve().parents[2]
+        source = (root / "scripts" / "install.ps1").read_text(encoding="utf-8")
+
+        assert "releases/latest" not in source
+        assert '$gitReleaseTag = "v' in source
+        assert "github.com/git-for-windows/git/releases/download/$gitReleaseTag" in source
+
+    def test_git_download_verifies_sha256_before_extracting_or_running(self):
+        root = Path(__file__).resolve().parents[2]
+        source = (root / "scripts" / "install.ps1").read_text(encoding="utf-8")
+
+        hash_pos = source.index("Get-FileHash -Algorithm SHA256")
+        mismatch_pos = source.index("checksum mismatch")
+        cleanup_pos = source.index("Remove-Item -Force $tmpFile", hash_pos)
+
+        extraction_markers = [
+            "Expand-Archive -Path $tmpFile",
+            "Start-Process -FilePath $tmpFile",
+        ]
+        extraction_positions = [
+            source.index(marker) for marker in extraction_markers if marker in source
+        ]
+        assert extraction_positions, (
+            "install.ps1 must extract or execute the downloaded Git artifact "
+            "after SHA-256 verification"
+        )
+        extract_pos = min(extraction_positions)
+        run_pos = source.index("$version = & $gitExe --version")
+
+        assert "Sha256 =" in source
+        assert hash_pos < cleanup_pos < mismatch_pos < extract_pos < run_pos
+
+
+# ---------------------------------------------------------------------------
 # README / docs consistency
 # ---------------------------------------------------------------------------
 
