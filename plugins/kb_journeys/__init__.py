@@ -397,6 +397,25 @@ def _preview_text(decision: str, proposal_ids: list[str], payload: Any) -> str:
     return f"Queue {decision} preview\nProposal ids: {', '.join(proposal_ids[:5])}"
 
 
+def _preview_allows_confirmation(payload: Any) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    if payload.get("error") or payload.get("isError"):
+        return False
+    if payload.get("ok") is False:
+        return False
+    status = str(payload.get("status") or payload.get("state") or "").strip().lower()
+    if status in {
+        "blocked",
+        "error",
+        "failed",
+        "operator_blocked",
+        "validation_failed",
+    }:
+        return False
+    return True
+
+
 def _confirmed_text(decision: str, payload: Any) -> str:
     if isinstance(payload, dict) and payload.get("error"):
         return f"Queue {decision} failed\n{payload['error']}"
@@ -466,17 +485,17 @@ def _queue_decision_action(ctx: Any, target: str, item: dict[str, Any], decision
             )
             return _confirmed_text(decision, confirmed_payload)
 
-        return {
-            "text": _preview_text(decision, proposal_ids, preview_payload),
-            "actions": [
+        actions: list[Any] = []
+        if _preview_allows_confirmation(preview_payload):
+            actions.append(
                 _kb_action(
                     f"Confirm {decision}",
                     f"queue.confirm.{decision}",
                     _confirm,
                     {"proposal_ids": proposal_ids, "decision": decision},
                 )
-            ],
-        }
+            )
+        return {"text": _preview_text(decision, proposal_ids, preview_payload), "actions": actions}
 
     return _kb_action(
         f"Preview {decision}",
@@ -827,6 +846,7 @@ async def _send_card(adapter: Any, event: Any, card: dict[str, Any]) -> None:
             chat_id,
             card["text"],
             card.get("actions", []),
+            reply_to=reply_to,
             metadata=metadata,
         )
     else:

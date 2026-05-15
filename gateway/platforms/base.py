@@ -1755,6 +1755,7 @@ class BasePlatformAdapter(ABC):
         text: str,
         actions: list,
         metadata: Optional[Dict[str, Any]] = None,
+        reply_to: Optional[str] = None,
     ) -> SendResult:
         """Send a generic KB action card.
 
@@ -1772,7 +1773,7 @@ class BasePlatformAdapter(ABC):
         fallback_text = text
         if labels:
             fallback_text = f"{text}\n\nActions: {', '.join(labels)}"
-        return await self.send(chat_id, fallback_text, metadata=metadata)
+        return await self.send(chat_id, fallback_text, reply_to=reply_to, metadata=metadata)
 
     async def send_clarify(
         self,

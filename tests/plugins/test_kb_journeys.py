@@ -34,13 +34,14 @@ class FakeAdapter:
 
 
 class FakeKbActionsAdapter(FakeAdapter):
-    async def send_kb_actions(self, chat_id, text, actions, metadata=None):
+    async def send_kb_actions(self, chat_id, text, actions, metadata=None, reply_to=None):
         self.sent.append(
             {
                 "chat_id": chat_id,
                 "text": text,
                 "actions": actions,
                 "metadata": metadata,
+                "reply_to": reply_to,
             }
         )
 
@@ -114,6 +115,7 @@ def test_kb_command_renders_attention_cockpit_with_native_adapter(monkeypatch):
     assert "published" in text
     assert "Review 3 proposals" in text
     assert adapter.sent[0]["actions"] == []
+    assert adapter.sent[0]["reply_to"] == "m1"
 
 
 def test_queue_command_uses_real_queue_summary_and_preview_then_confirm(monkeypatch):
@@ -165,6 +167,7 @@ def test_queue_command_uses_real_queue_summary_and_preview_then_confirm(monkeypa
         "Preview reject",
         "Preview archive",
     ]
+    assert adapter.sent[0]["reply_to"] == "m1"
 
     preview = asyncio.run(
         adapter.sent[0]["actions"][1].handler(
@@ -195,6 +198,51 @@ def test_queue_command_uses_real_queue_summary_and_preview_then_confirm(monkeypa
     assert ctx.calls[-2][1]["decision"] == "reject"
     assert ctx.calls[-1][0] == "mcp_kb_engine_prod_queue_batch_decide_confirmed"
     assert ctx.calls[-1][1]["user_confirmation"]["confirmed"] is True
+
+
+def test_queue_preview_failure_does_not_offer_confirm(monkeypatch):
+    from plugins.kb_journeys import build_pre_gateway_dispatch_hook
+    from tools.kb_callback_registry import KbCallbackContext
+
+    monkeypatch.setenv("HERMES_KB_MCP_TARGET", "kb-engine-prod")
+    ctx = FakeContext(
+        {
+            "mcp_kb_engine_prod_queue_summary": {
+                "result": {
+                    "total": 1,
+                    "items": [
+                        {
+                            "item_id": "accounts/acme",
+                            "title": "Risky proposal",
+                            "raw": {"proposal_ids": ["act_fail"]},
+                        }
+                    ],
+                }
+            },
+            "mcp_kb_engine_prod_queue_decision_preview": {
+                "result": {"error": "preview precondition failed"}
+            },
+        }
+    )
+    adapter = FakeKbActionsAdapter()
+    hook = build_pre_gateway_dispatch_hook(ctx)
+
+    result = hook(event=_event("/queue"), gateway=_authorized_gateway(adapter), session_store=None)
+    _drain_scheduled_tasks()
+
+    assert result == {"action": "skip", "reason": "kb_journeys"}
+    preview = asyncio.run(
+        adapter.sent[0]["actions"][0].handler(
+            KbCallbackContext(
+                callback_id="cb_preview",
+                action_id="queue.preview.approve",
+                actor_id="777",
+                actor_name="Ada",
+            )
+        )
+    )
+    assert "Queue approve preview failed" in preview["text"]
+    assert preview["actions"] == []
 
 
 def test_run_command_previews_and_starts_with_confirmed_envelope(monkeypatch):

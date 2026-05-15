@@ -123,9 +123,9 @@ async def resolve(
         expected_thread_id = entry.get("thread_id")
         actual_chat_id = str(chat_id) if chat_id is not None else None
         actual_thread_id = str(thread_id) if thread_id is not None else None
-        if expected_chat_id is not None and actual_chat_id is not None and expected_chat_id != actual_chat_id:
+        if expected_chat_id is not None and actual_chat_id != expected_chat_id:
             return "This KB action belongs to a different chat."
-        if expected_thread_id is not None and actual_thread_id is not None and expected_thread_id != actual_thread_id:
+        if expected_thread_id is not None and actual_thread_id != expected_thread_id:
             return "This KB action belongs to a different topic."
         _pending.pop(callback_id, None)
         handler = entry.get("handler")
@@ -152,7 +152,7 @@ async def resolve(
             exc,
             exc_info=True,
         )
-        return f"Error handling KB action: {exc}"
+        return "KB action failed. Check gateway logs for details."
     if isinstance(result, str) or isinstance(result, Mapping) or result is None:
         return result
     return None

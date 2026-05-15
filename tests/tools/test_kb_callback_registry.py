@@ -102,8 +102,8 @@ async def test_handler_exception_is_safe_error_text():
     result = await kb_callbacks.resolve(callback_id, actor_id="1")
 
     assert result is not None
-    assert "Error handling KB action" in result
-    assert "kaboom" in result
+    assert result == "KB action failed. Check gateway logs for details."
+    assert "kaboom" not in result
     assert kb_callbacks.get_pending(callback_id) is None
 
 
@@ -151,6 +151,14 @@ async def test_callback_is_scoped_to_chat_and_topic():
 
     wrong_topic = await kb_callbacks.resolve(callback_id, chat_id="chat-a", thread_id="topic-b")
     assert wrong_topic == "This KB action belongs to a different topic."
+    assert kb_callbacks.get_pending(callback_id) is not None
+
+    missing_chat = await kb_callbacks.resolve(callback_id, thread_id="topic-a")
+    assert missing_chat == "This KB action belongs to a different chat."
+    assert kb_callbacks.get_pending(callback_id) is not None
+
+    missing_topic = await kb_callbacks.resolve(callback_id, chat_id="chat-a")
+    assert missing_topic == "This KB action belongs to a different topic."
     assert kb_callbacks.get_pending(callback_id) is not None
 
     result = await kb_callbacks.resolve(callback_id, chat_id="chat-a", thread_id="topic-a")

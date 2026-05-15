@@ -2231,6 +2231,7 @@ class TelegramAdapter(BasePlatformAdapter):
         text: str,
         actions: list,
         metadata: Optional[Dict[str, Any]] = None,
+        reply_to: Optional[str] = None,
     ) -> SendResult:
         """Render a generic KB action card with opaque inline callbacks."""
         if not self._bot:
@@ -2302,7 +2303,7 @@ class TelegramAdapter(BasePlatformAdapter):
             if rows:
                 kwargs["reply_markup"] = InlineKeyboardMarkup(rows)
 
-            reply_to_id = self._reply_to_message_id_for_send(None, metadata)
+            reply_to_id = self._reply_to_message_id_for_send(reply_to, metadata)
             kwargs["reply_to_message_id"] = reply_to_id
             kwargs.update(
                 self._thread_kwargs_for_send(
@@ -3101,7 +3102,7 @@ class TelegramAdapter(BasePlatformAdapter):
             except Exception as exc:
                 logger.error("[%s] KB callback failed: %s", self.name, exc, exc_info=True)
                 try:
-                    await query.answer(text=f"Action failed: {exc}")
+                    await query.answer(text="KB action failed. Check gateway logs for details.")
                 except Exception:
                     pass
             return

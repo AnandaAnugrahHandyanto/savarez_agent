@@ -88,6 +88,7 @@ async def test_send_kb_actions_renders_short_opaque_buttons_in_thread():
             text="*KB actions*",
             actions=actions,
             metadata={"thread_id": "999"},
+            reply_to="44",
         )
 
     assert result.success is True
@@ -96,6 +97,7 @@ async def test_send_kb_actions_renders_short_opaque_buttons_in_thread():
     kwargs = adapter._bot.send_message.call_args[1]
     assert kwargs["chat_id"] == 12345
     assert kwargs["message_thread_id"] == 999
+    assert kwargs["reply_to_message_id"] == 44
     assert "MARKDOWN" in repr(kwargs["parse_mode"])
     assert kwargs.get("disable_web_page_preview") is True or kwargs.get("link_preview_options") is not None
     assert kwargs.get("disable_notification") is True
@@ -195,3 +197,40 @@ async def test_kb_callback_rejects_unauthorized_user_without_resolving():
     assert "not authorized" in query.answer.call_args[1]["text"].lower()
     query.edit_message_reply_markup.assert_not_called()
     assert kb_callbacks.get_pending(callback_id) is not None
+
+
+@pytest.mark.asyncio
+async def test_kb_callback_dispatch_errors_are_redacted_to_user():
+    adapter = _make_adapter()
+    adapter.send_kb_actions = AsyncMock(side_effect=RuntimeError("secret /tmp/path"))
+
+    async def handler(ctx):
+        return {
+            "text": "Preview ready",
+            "actions": [kb_callbacks.KbAction(label="Confirm", action_id="confirm", handler=lambda _ctx: "ok")],
+        }
+
+    callback_id = kb_callbacks.register("preview", handler, chat_id="12345")
+
+    query = AsyncMock()
+    query.data = f"kb:{callback_id}"
+    query.message = MagicMock()
+    query.message.chat_id = 12345
+    query.message.message_id = 44
+    query.message.message_thread_id = None
+    query.message.chat.type = "private"
+    query.from_user = MagicMock()
+    query.from_user.id = "777"
+    query.from_user.first_name = "Ada"
+    query.answer = AsyncMock()
+    query.edit_message_reply_markup = AsyncMock()
+
+    update = MagicMock()
+    update.callback_query = query
+
+    with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False):
+        await adapter._handle_callback_query(update, MagicMock())
+
+    query.answer.assert_any_call(text="Action received.")
+    query.answer.assert_any_call(text="KB action failed. Check gateway logs for details.")
+    assert "secret" not in query.answer.call_args[1]["text"]

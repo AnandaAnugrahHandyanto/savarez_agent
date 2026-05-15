@@ -41,15 +41,26 @@ fi
 
 PYTHON="$VENV/bin/python"
 
-# ── Ensure pytest-split is installed (required for shard-equivalent runs) ──
+# ── Ensure pytest runner plugins are installed ──────────────────────────────
+missing_pytest_plugins=()
 if ! "$PYTHON" -c "import pytest_split" 2>/dev/null; then
-  echo "→ installing pytest-split into $VENV"
+  missing_pytest_plugins+=("pytest-split>=0.9,<1")
+fi
+if ! "$PYTHON" -c "import xdist" 2>/dev/null; then
+  missing_pytest_plugins+=("pytest-xdist>=3,<4")
+fi
+if ! "$PYTHON" -c "import pytest_asyncio" 2>/dev/null; then
+  missing_pytest_plugins+=("pytest-asyncio>=0.23,<1")
+fi
+
+if [ "${#missing_pytest_plugins[@]}" -gt 0 ]; then
+  echo "→ installing pytest runner plugins into $VENV: ${missing_pytest_plugins[*]}"
   if command -v uv >/dev/null 2>&1; then
-    uv pip install --python "$PYTHON" --quiet "pytest-split>=0.9,<1"
+    uv pip install --python "$PYTHON" --quiet "${missing_pytest_plugins[@]}"
   elif "$PYTHON" -m pip --version >/dev/null 2>&1; then
-    "$PYTHON" -m pip install --quiet "pytest-split>=0.9,<1"
+    "$PYTHON" -m pip install --quiet "${missing_pytest_plugins[@]}"
   else
-    echo "error: neither uv nor pip is available in $VENV — pytest-split is missing" >&2
+    echo "error: neither uv nor pip is available in $VENV — pytest runner plugins are missing" >&2
     echo "  fix: run  uv pip install -e \".[dev]\"  from $REPO_ROOT" >&2
     exit 1
   fi

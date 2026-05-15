@@ -543,13 +543,14 @@ class TestKbActionsFallback:
                 KbAction(label="Dismiss", action_id="dismiss", handler=noop),
             ],
             metadata={"thread_id": "t1"},
+            reply_to="m0",
         )
 
         assert result.success is True
         assert adapter.sent == (
             "c1",
             "Review this\n\nActions: Approve, Dismiss",
-            None,
+            "m0",
             {"thread_id": "t1"},
         )
 
