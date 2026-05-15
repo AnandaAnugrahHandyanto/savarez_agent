@@ -579,7 +579,7 @@ def _queue_item_text(item: dict[str, Any], *, index: int) -> str:
     if proposal_ids:
         lines.append("")
         lines.append(f"Proposal ids: {', '.join(proposal_ids[:5])}")
-        lines.append("Decision buttons apply only this item.")
+        lines.append("Decision buttons preview only this item; confirmation is still required.")
         lines.append(
             f"Text: /kbqueue approve {index} | /kbqueue reject {index} | /kbqueue archive {index}"
         )
@@ -1138,7 +1138,7 @@ def _render_queue(data: Any, *, ctx: Any | None = None, target: str | None = Non
         ]
         if actions:
             lines.append("")
-            lines.append("Tap Review N to inspect one item before choosing a decision.")
+            lines.append("Tap Review N or send /kbqueue review N to inspect one item before choosing a decision.")
     return {"title": "KB Queue", "text": "\n".join(lines), "actions": actions}
 
 

@@ -307,6 +307,7 @@ def test_kbqueue_dashboard_reviews_one_item_before_preview_and_confirm(monkeypat
     assert "9" in text
     assert "Admit Stanford DAS Lab" in text
     assert "Tap Review N" in text
+    assert "/kbqueue review N" in text
     assert [action.label for action in adapter.sent[0]["actions"]] == ["Review 1"]
     assert adapter.sent[0]["reply_to"] == "m1"
 
@@ -323,7 +324,7 @@ def test_kbqueue_dashboard_reviews_one_item_before_preview_and_confirm(monkeypat
     assert "Queue Item 1" in detail["text"]
     assert "Admit Stanford DAS Lab" in detail["text"]
     assert "Would update existing entity." in detail["text"]
-    assert "Decision buttons apply only this item." in detail["text"]
+    assert "Decision buttons preview only this item" in detail["text"]
     assert [action.label for action in detail["actions"]] == [
         "Preview approve",
         "Preview reject",
