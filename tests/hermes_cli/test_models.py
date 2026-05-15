@@ -277,6 +277,22 @@ class TestDetectProviderForModel:
         assert result[0] == "openrouter"
         assert result[1] == "anthropic/claude-opus-4.6"
 
+    def test_zai_native_slug_detected_from_other_provider(self):
+        """zai/glm-* should route to direct Z.AI, not the current provider."""
+        with patch(
+            "hermes_cli.models.fetch_openrouter_models",
+            side_effect=AssertionError("OpenRouter lookup should not run"),
+        ):
+            result = detect_provider_for_model("zai/glm-5.1", "ollama-launch")
+        assert result == ("zai", "glm-5.1")
+
+    def test_z_ai_openrouter_slug_still_uses_openrouter(self):
+        """OpenRouter's z-ai/* vendor slug should keep routing through OpenRouter."""
+        catalog = LIVE_OPENROUTER_MODELS + [("z-ai/glm-5.1", "")]
+        with patch("hermes_cli.models.fetch_openrouter_models", return_value=catalog):
+            result = detect_provider_for_model("z-ai/glm-5.1", "ollama-launch")
+        assert result == ("openrouter", "z-ai/glm-5.1")
+
     def test_bare_name_gets_openrouter_slug(self, monkeypatch):
         for env_var in (
             "ANTHROPIC_API_KEY",

@@ -1826,6 +1826,23 @@ def detect_static_provider_for_model(
     if _model_in_provider_catalog(name_lower, current_keys):
         return None
 
+    # Z.AI direct uses Hermes provider id ``zai`` with bare native model IDs,
+    # while OpenRouter uses vendor slug ``z-ai/...``. If a user supplies
+    # ``zai/glm-*`` from another provider, route to direct Z.AI and let the
+    # provider normalizer strip the prefix before the API call.
+    if "/" in name:
+        prefix, remainder = name.split("/", 1)
+        if (
+            prefix.strip().lower() == "zai"
+            and "zai" not in current_keys
+            and remainder.strip()
+            and any(
+                remainder.strip().lower() == model.lower()
+                for model in _PROVIDER_MODELS.get("zai", [])
+            )
+        ):
+            return ("zai", remainder.strip())
+
     # --- Step 1: check static provider catalogs for a direct match ---
     for pid, models in _PROVIDER_MODELS.items():
         if pid in current_keys or pid in _AGGREGATOR_PROVIDERS:
