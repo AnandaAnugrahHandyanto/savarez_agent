@@ -1405,12 +1405,12 @@ def _cmd_diagnostics(args: argparse.Namespace) -> int:
         # request must also surface `error` and `critical`).
         sev = getattr(args, "severity", None)
         if sev:
-            threshold = kd.SEVERITY_ORDER.index(sev)
+            severity_rank = {s: i for i, s in enumerate(kd.SEVERITY_ORDER)}
+            threshold = severity_rank[sev]
             for tid in list(diags_by_task.keys()):
                 kept = [
                     d for d in diags_by_task[tid]
-                    if d.severity in kd.SEVERITY_ORDER
-                    and kd.SEVERITY_ORDER.index(d.severity) >= threshold
+                    if severity_rank.get(d.severity, -1) >= threshold
                 ]
                 if kept:
                     diags_by_task[tid] = kept

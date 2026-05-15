@@ -5,12 +5,14 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 from pathlib import Path
 
 import pytest
 
 from hermes_cli import kanban as kc
 from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_diagnostics as kd
 
 
 @pytest.fixture
@@ -414,10 +416,7 @@ def test_run_slash_board_override_restores_prior_env(kanban_home, monkeypatch):
 # ---------------------------------------------------------------------------
 
 def _seed_three_severity_diagnostics(kanban_home, monkeypatch):
-    from hermes_cli import kanban_diagnostics as kd
-
     out = kc.run_slash("create 'noisy task' --assignee alice")
-    import re
     tid = re.search(r"(t_[a-f0-9]+)", out).group(1)
 
     diags = [
@@ -454,9 +453,6 @@ def test_diagnostics_severity_filter_is_threshold_not_exact_match(
 
     out = kc.run_slash(f"diagnostics {flag} --json".strip())
     payload = json.loads(out)
-    if not expected_severities:
-        assert payload == []
-        return
     assert len(payload) == 1
     assert payload[0]["task_id"] == tid
     got = {d["severity"] for d in payload[0]["diagnostics"]}
@@ -466,10 +462,7 @@ def test_diagnostics_severity_filter_is_threshold_not_exact_match(
 def test_diagnostics_severity_filter_drops_task_when_no_match(
     kanban_home, monkeypatch,
 ):
-    from hermes_cli import kanban_diagnostics as kd
-
     out = kc.run_slash("create 'warning only' --assignee alice")
-    import re
     tid = re.search(r"(t_[a-f0-9]+)", out).group(1)
 
     def fake_compute(task, events, runs, *, now=None, config=None):
