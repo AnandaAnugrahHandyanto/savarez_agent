@@ -24,6 +24,8 @@ class TlonSettings:
     owner_ship: Optional[str] = None
     pending_approvals: Optional[List[Dict[str, Any]]] = None
     show_model_signature: Optional[bool] = None
+    owner_listen_enabled: Optional[bool] = None
+    owner_listen_disabled_channels: Optional[List[str]] = None
 
 
 def parse_settings_response(raw: Any) -> TlonSettings:
@@ -44,6 +46,8 @@ def parse_settings_response(raw: Any) -> TlonSettings:
     settings.owner_ship = bucket.get("ownerShip") if isinstance(bucket.get("ownerShip"), str) else None
     settings.pending_approvals = _pending_approvals(bucket.get("pendingApprovals"))
     settings.show_model_signature = _bool_or_none(bucket.get("showModelSig"))
+    settings.owner_listen_enabled = _bool_or_none(bucket.get("ownerListenEnabled"))
+    settings.owner_listen_disabled_channels = _string_list(bucket.get("ownerListenDisabledChannels"))
     return settings
 
 
@@ -84,6 +88,8 @@ def apply_settings_update(current: TlonSettings, key: str, value: Any) -> TlonSe
         "owner_ship": current.owner_ship,
         "pending_approvals": current.pending_approvals,
         "show_model_signature": current.show_model_signature,
+        "owner_listen_enabled": current.owner_listen_enabled,
+        "owner_listen_disabled_channels": current.owner_listen_disabled_channels,
     }
 
     if key == "groupChannels":
@@ -108,6 +114,10 @@ def apply_settings_update(current: TlonSettings, key: str, value: Any) -> TlonSe
         data["pending_approvals"] = _pending_approvals(value)
     elif key == "showModelSig":
         data["show_model_signature"] = _bool_or_none(value)
+    elif key == "ownerListenEnabled":
+        data["owner_listen_enabled"] = _bool_or_none(value)
+    elif key == "ownerListenDisabledChannels":
+        data["owner_listen_disabled_channels"] = _string_list(value)
 
     return TlonSettings(**data)
 

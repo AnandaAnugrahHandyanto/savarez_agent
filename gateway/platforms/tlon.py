@@ -18,6 +18,8 @@ Environment variables:
   TLON_ALLOWED_USERS - Comma-separated ships allowed to interact
   TLON_ALLOW_ALL_USERS - Set to "true" to allow all users (default: false)
   TLON_AUTO_DISCOVER - Set to "true" to auto-discover all group channels
+  TLON_BOT_ALIASES - Comma-separated names that count as mentions (default: Hermes)
+  TLON_OWNER_LISTEN_ENABLED - Set to "false" to require mentions from owner in groups
 """
 
 import asyncio
@@ -93,6 +95,11 @@ def _normalize_ship(ship: str) -> str:
     if ship and not ship.startswith("~"):
         ship = "~" + ship
     return ship
+
+
+def _parse_csv(value: str) -> List[str]:
+    """Parse a comma-separated env value into non-empty stripped strings."""
+    return [item.strip() for item in value.split(",") if item.strip()]
 
 
 def _parse_channel_nest(nest: str) -> Optional[Dict[str, str]]:
@@ -1039,6 +1046,18 @@ class TlonAdapter(BasePlatformAdapter):
             for s in os.getenv("TLON_BLOCKED_SHIPS", "").split(",")
             if s.strip()
         )
+        alias_values = _parse_csv(os.getenv("TLON_BOT_ALIASES", "Hermes"))
+        self.bot_aliases: List[str] = []
+        for alias in alias_values:
+            if alias and alias.lower() not in {item.lower() for item in self.bot_aliases}:
+                self.bot_aliases.append(alias)
+        self.owner_listen_enabled = (
+            os.getenv("TLON_OWNER_LISTEN_ENABLED", "true").lower()
+            not in ("false", "0", "no")
+        )
+        self.owner_listen_disabled_channels: Set[str] = set(
+            _parse_csv(os.getenv("TLON_OWNER_LISTEN_DISABLED_CHANNELS", ""))
+        )
         self.channel_rules: Dict[str, Dict[str, Any]] = self._load_channel_rules_from_env()
         self.pending_approvals: List[PendingApproval] = []
 
@@ -1130,6 +1149,12 @@ class TlonAdapter(BasePlatformAdapter):
                 for item in settings.pending_approvals
                 if isinstance(item, dict)
             ]
+        if settings.owner_listen_enabled is not None:
+            self.owner_listen_enabled = settings.owner_listen_enabled
+        if settings.owner_listen_disabled_channels is not None:
+            self.owner_listen_disabled_channels = {
+                item for item in settings.owner_listen_disabled_channels if item
+            }
 
     async def _put_settings_entry(self, key: str, value: Any) -> None:
         if not self._sse:
@@ -1533,33 +1558,45 @@ class TlonAdapter(BasePlatformAdapter):
 
     def _is_bot_mentioned(self, text: str) -> bool:
         """Check if the bot is mentioned in the text."""
-        text_lower = text.lower()
-        # Check ship name mention
-        if self.ship_name.lower() in text_lower:
-            return True
-        # Check nickname mention
-        if self._bot_nickname and self._bot_nickname.lower() in text_lower:
-            return True
+        for name in self._bot_mention_names():
+            if self._mention_name_matches(text, name):
+                return True
         return False
 
     def _strip_bot_mention(self, text: str) -> str:
         """Remove bot mentions from text."""
-        # Remove ship name
-        text = re.sub(
-            re.escape(self.ship_name),
-            "",
-            text,
-            flags=re.IGNORECASE,
-        ).strip()
-        # Remove nickname if set
-        if self._bot_nickname:
-            text = re.sub(
-                re.escape(self._bot_nickname),
-                "",
-                text,
-                flags=re.IGNORECASE,
-            ).strip()
-        return text
+        for name in self._bot_mention_names():
+            text = self._remove_mention_name(text, name)
+        return text.strip()
+
+    def _bot_mention_names(self) -> List[str]:
+        names = [self.ship_name, self._bot_nickname, *self.bot_aliases]
+        result: List[str] = []
+        seen: Set[str] = set()
+        for name in names:
+            if not name:
+                continue
+            key = name.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            result.append(name)
+        return result
+
+    def _mention_name_matches(self, text: str, name: str) -> bool:
+        pattern = self._mention_pattern(name)
+        return bool(re.search(pattern, text, flags=re.IGNORECASE))
+
+    def _remove_mention_name(self, text: str, name: str) -> str:
+        pattern = self._mention_pattern(name, allow_trailing_punctuation=True)
+        return re.sub(pattern, "", text, flags=re.IGNORECASE).strip()
+
+    @staticmethod
+    def _mention_pattern(name: str, *, allow_trailing_punctuation: bool = False) -> str:
+        suffix = r"(?:[:,]\s*)?" if allow_trailing_punctuation else ""
+        if name.startswith("~"):
+            return rf"(?<![\w~]){re.escape(name)}(?![\w-]){suffix}"
+        return rf"(?<![\w~]){re.escape(name)}(?![\w-]){suffix}"
 
     def _mark_processed(self, msg_id: str) -> bool:
         """
@@ -1622,6 +1659,13 @@ class TlonAdapter(BasePlatformAdapter):
 
     def _is_owner(self, ship: str) -> bool:
         return bool(self.owner_ship and _normalize_ship(ship) == self.owner_ship)
+
+    def _should_owner_listen(self, ship: str, nest: str) -> bool:
+        return (
+            self.owner_listen_enabled
+            and self._is_owner(ship)
+            and nest not in self.owner_listen_disabled_channels
+        )
 
     def _is_blocked(self, ship: str) -> bool:
         return _normalize_ship(ship) in self.blocked_ships
@@ -1956,10 +2000,11 @@ class TlonAdapter(BasePlatformAdapter):
             thread_key = (nest, _normalize_post_id(parent_id)) if parent_id else None
             in_participated_thread = bool(thread_key and thread_key in self._participated_threads)
             owner_blob_only = bool(self._is_owner(sender) and media_urls and not raw_text.strip())
+            owner_listen = self._should_owner_listen(sender, nest)
 
             # In group channels, respond to mentions, participated threads, or
-            # owner blob-only messages.
-            if not (mentioned or in_participated_thread or owner_blob_only):
+            # owner messages when owner-listen is enabled.
+            if not (mentioned or in_participated_thread or owner_blob_only or owner_listen):
                 logger.debug("[tlon] Not mentioned, ignoring")
                 return
 

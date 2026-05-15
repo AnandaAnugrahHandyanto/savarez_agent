@@ -137,6 +137,8 @@ def test_parse_settings_response_reads_tlon_bucket():
                     "channelRules": '{"chat/~host/general":{"mode":"restricted","allowedShips":["~nec"]}}',
                     "defaultAuthorizedShips": ["~bus"],
                     "ownerShip": "~ten",
+                    "ownerListenEnabled": False,
+                    "ownerListenDisabledChannels": ["chat/~host/noisy"],
                 }
             }
         }
@@ -148,6 +150,8 @@ def test_parse_settings_response_reads_tlon_bucket():
     assert settings.channel_rules["chat/~host/general"]["allowedShips"] == ["~nec"]
     assert settings.default_authorized_ships == ["~bus"]
     assert settings.owner_ship == "~ten"
+    assert settings.owner_listen_enabled is False
+    assert settings.owner_listen_disabled_channels == ["chat/~host/noisy"]
 
 
 def test_approval_formatting_lists_pending_request():
@@ -204,6 +208,104 @@ async def test_channel_event_routes_top_level_mentions(monkeypatch):
     assert event.source.chat_name == "Test Group / test"
     assert event.source.user_id == "~zod"
     assert isinstance(event.timestamp, datetime)
+
+
+@pytest.mark.asyncio
+async def test_channel_event_routes_bot_alias_mentions(monkeypatch):
+    monkeypatch.setenv("TLON_SHIP_NAME", "~bot-palnet")
+    monkeypatch.setenv("TLON_BOT_ALIASES", "Hermes")
+    monkeypatch.setenv("TLON_ALLOW_ALL_USERS", "true")
+    adapter = TlonAdapter(PlatformConfig())
+    adapter.monitored_channels = {"chat/~host/test"}
+    adapter.handle_message = AsyncMock()
+
+    await adapter._handle_channel_event({
+        "nest": "chat/~host/test",
+        "response": {
+            "post": {
+                "id": "alias-post",
+                "r-post": {
+                    "set": {
+                        "seal": {"id": "alias-post"},
+                        "essay": {
+                            "author": "~zod",
+                            "sent": 1_700_000_000_000,
+                            "content": [{"inline": ["Hermes: hello"]}],
+                        },
+                    }
+                },
+            }
+        },
+    })
+
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.text == "hello"
+
+
+@pytest.mark.asyncio
+async def test_channel_event_routes_owner_without_mention(monkeypatch):
+    monkeypatch.setenv("TLON_SHIP_NAME", "~bot-palnet")
+    monkeypatch.setenv("TLON_OWNER_SHIP", "~zod")
+    monkeypatch.setenv("TLON_OWNER_LISTEN_ENABLED", "true")
+    adapter = TlonAdapter(PlatformConfig())
+    adapter.monitored_channels = {"chat/~host/test"}
+    adapter.handle_message = AsyncMock()
+
+    await adapter._handle_channel_event({
+        "nest": "chat/~host/test",
+        "response": {
+            "post": {
+                "id": "owner-listen-post",
+                "r-post": {
+                    "set": {
+                        "seal": {"id": "owner-listen-post"},
+                        "essay": {
+                            "author": "~zod",
+                            "sent": 1_700_000_000_000,
+                            "content": [{"inline": ["hello without mention"]}],
+                        },
+                    }
+                },
+            }
+        },
+    })
+
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.text == "hello without mention"
+
+
+@pytest.mark.asyncio
+async def test_channel_event_ignores_owner_when_owner_listen_disabled_for_channel(monkeypatch):
+    monkeypatch.setenv("TLON_SHIP_NAME", "~bot-palnet")
+    monkeypatch.setenv("TLON_OWNER_SHIP", "~zod")
+    monkeypatch.setenv("TLON_OWNER_LISTEN_ENABLED", "true")
+    monkeypatch.setenv("TLON_OWNER_LISTEN_DISABLED_CHANNELS", "chat/~host/test")
+    adapter = TlonAdapter(PlatformConfig())
+    adapter.monitored_channels = {"chat/~host/test"}
+    adapter.handle_message = AsyncMock()
+
+    await adapter._handle_channel_event({
+        "nest": "chat/~host/test",
+        "response": {
+            "post": {
+                "id": "owner-listen-disabled-post",
+                "r-post": {
+                    "set": {
+                        "seal": {"id": "owner-listen-disabled-post"},
+                        "essay": {
+                            "author": "~zod",
+                            "sent": 1_700_000_000_000,
+                            "content": [{"inline": ["hello without mention"]}],
+                        },
+                    }
+                },
+            }
+        },
+    })
+
+    adapter.handle_message.assert_not_awaited()
 
 
 @pytest.mark.asyncio
