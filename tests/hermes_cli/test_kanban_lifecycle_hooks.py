@@ -27,6 +27,8 @@ def kanban_home(tmp_path, monkeypatch):
 def captured_events(monkeypatch):
     events: list[dict] = []
 
+    monkeypatch.setattr(plugins, "discover_plugins", lambda force=False: None)
+
     def fake_invoke_hook(name: str, **kwargs):
         assert name == "on_kanban_event"
         events.append(kwargs["event"])
@@ -42,8 +44,13 @@ def test_valid_hooks_contains_kanban_lifecycle_hook():
 
 def test_create_task_emits_after_commit_and_uses_task_event_id(kanban_home, monkeypatch):
     observed: list[tuple[dict, str]] = []
+    call_order: list[str] = []
+
+    def fake_discover_plugins(force: bool = False):
+        call_order.append("discover")
 
     def fake_invoke_hook(name: str, **kwargs):
+        call_order.append("invoke")
         assert name == "on_kanban_event"
         event = kwargs["event"]
         with kb.connect() as read_conn:
@@ -52,6 +59,7 @@ def test_create_task_emits_after_commit_and_uses_task_event_id(kanban_home, monk
         observed.append((event, committed.status))
         return []
 
+    monkeypatch.setattr(plugins, "discover_plugins", fake_discover_plugins)
     monkeypatch.setattr(plugins, "invoke_hook", fake_invoke_hook)
 
     with kb.connect() as conn:
@@ -64,6 +72,7 @@ def test_create_task_emits_after_commit_and_uses_task_event_id(kanban_home, monk
         row_event = kb.list_events(conn, tid)[0]
 
     assert len(observed) == 1
+    assert call_order == ["discover", "invoke"]
     event, committed_status = observed[0]
     assert committed_status == "ready"
     assert event["schema_version"] == 1
@@ -83,6 +92,7 @@ def test_hook_failure_does_not_break_lifecycle_operations(kanban_home, monkeypat
         calls.append(kwargs["event"]["event_type"])
         raise RuntimeError("observer exploded")
 
+    monkeypatch.setattr(plugins, "discover_plugins", lambda force=False: None)
     monkeypatch.setattr(plugins, "invoke_hook", failing_hook)
 
     with kb.connect() as conn:

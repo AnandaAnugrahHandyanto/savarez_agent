@@ -1924,8 +1924,11 @@ def _build_kanban_lifecycle_event(
 
 def _emit_kanban_event(event: dict[str, Any]) -> None:
     try:
-        from hermes_cli.plugins import invoke_hook
+        from hermes_cli.plugins import discover_plugins, invoke_hook
 
+        # Kanban mutations also happen from direct CLI commands, not only the
+        # agent/gateway startup paths that already discover plugins.
+        discover_plugins()
         invoke_hook(_KANBAN_LIFECYCLE_HOOK, event=event)
     except Exception as exc:
         logger.warning(
