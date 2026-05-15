@@ -6241,6 +6241,10 @@ class GatewayRunner:
             if _cmd_def_inner and _cmd_def_inner.name == "agents":
                 return await self._handle_agents_command(event)
 
+            # /cron-list is read-only and should stay available during a run.
+            if _cmd_def_inner and _cmd_def_inner.name == "cron-list":
+                return await self._handle_cron_list_command(event)
+
             # /background must bypass the running-agent guard — it starts a
             # parallel task and must never interrupt the active conversation.
             # /btw is an alias of /background and resolves to the same canonical
@@ -6546,6 +6550,9 @@ class GatewayRunner:
 
         if canonical == "platform":
             return await self._handle_platform_command(event)
+
+        if canonical == "cron-list":
+            return await self._handle_cron_list_command(event)
 
         if canonical == "restart":
             return await self._handle_restart_command(event)
@@ -8664,6 +8671,16 @@ class GatewayRunner:
         ])
 
         return "\n".join(lines)
+
+    async def _handle_cron_list_command(self, event: MessageEvent) -> str:
+        """Handle /cron-list without invoking shell/terminal tools."""
+        raw_args = event.get_command_args().strip().lower()
+        if raw_args and raw_args not in {"--all", "-a", "all"}:
+            return "Usage: /cron-list [--all]"
+
+        from hermes_cli.cron import cron_list_gateway_text
+
+        return await asyncio.to_thread(cron_list_gateway_text, show_all=True)
 
     async def _handle_agents_command(self, event: MessageEvent) -> str:
         """Handle /agents command - list active agents and running tasks."""

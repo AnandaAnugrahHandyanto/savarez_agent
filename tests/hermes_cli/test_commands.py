@@ -188,6 +188,10 @@ class TestGatewayKnownCommands:
         assert "bg" in GATEWAY_KNOWN_COMMANDS
         assert "background" in GATEWAY_KNOWN_COMMANDS
 
+    def test_cron_list_gateway_command_registered(self):
+        assert "cron-list" in GATEWAY_KNOWN_COMMANDS
+        assert "cron_list" in GATEWAY_KNOWN_COMMANDS
+
     def test_is_frozenset(self):
         assert isinstance(GATEWAY_KNOWN_COMMANDS, frozenset)
 
@@ -213,6 +217,10 @@ class TestGatewayHelpLines:
         bg_line = [l for l in lines if "/background" in l]
         assert len(bg_line) == 1
         assert "/bg" in bg_line[0]
+
+    def test_includes_cron_list_command(self):
+        lines = gateway_help_lines()
+        assert any("/cron-list" in line for line in lines)
 
 
 class TestTelegramBotCommands:

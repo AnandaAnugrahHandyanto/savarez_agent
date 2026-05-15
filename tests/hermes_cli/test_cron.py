@@ -5,7 +5,7 @@ from argparse import Namespace
 import pytest
 
 from cron.jobs import create_job, get_job, list_jobs
-from hermes_cli.cron import cron_command
+from hermes_cli.cron import cron_command, cron_list_gateway_text
 
 
 @pytest.fixture()
@@ -105,3 +105,16 @@ class TestCronCommandLifecycle:
         assert len(jobs) == 1
         assert jobs[0]["skills"] == ["blogwatcher", "maps"]
         assert jobs[0]["name"] == "Skill combo"
+
+    def test_gateway_list_text_includes_required_inventory_fields(self, tmp_cron_dir):
+        job = create_job(prompt="Audit cron jobs", schedule="every 1h", name="Cron audit")
+
+        out = cron_list_gateway_text()
+
+        assert "Scheduled cron jobs:" in out
+        assert f"job_id: {job['id']}" in out
+        assert "name: Cron audit" in out
+        assert "schedule: every 60m" in out
+        assert "status: scheduled" in out
+        assert "last_run: -" in out
+        assert "next_run:" in out
