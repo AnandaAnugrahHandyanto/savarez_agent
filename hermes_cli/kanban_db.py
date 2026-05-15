@@ -3931,6 +3931,18 @@ def _default_spawn(
     prompt = f"work kanban task {task.id}"
     env = dict(os.environ)
 
+    def _lift_terminal_timeout(name: str, minimum_timeout: int) -> None:
+        raw = str(env.get(name, "") or "").strip()
+        if raw:
+            try:
+                existing = int(raw)
+            except ValueError:
+                existing = None
+            else:
+                if existing >= minimum_timeout:
+                    return
+        env[name] = str(minimum_timeout)
+
     # Inject HERMES_HOME so the worker reads the profile-scoped config.yaml
     # (fallback_providers, toolsets, agent settings, etc.) instead of the root
     # config.  Without this, `env = dict(os.environ)` copies only the parent's
@@ -3970,6 +3982,10 @@ def _default_spawn(
     # board slug still forces it to the right directory.
     resolved_board = _normalize_board_slug(board) or get_current_board()
     env["HERMES_KANBAN_BOARD"] = resolved_board
+    if task.max_runtime_seconds:
+        terminal_budget = max(1, int(task.max_runtime_seconds) - 30)
+        _lift_terminal_timeout("TERMINAL_TIMEOUT", terminal_budget)
+        _lift_terminal_timeout("TERMINAL_MAX_FOREGROUND_TIMEOUT", terminal_budget)
     # HERMES_PROFILE is the author the kanban_comment tool defaults to.
     # `hermes -p <assignee>` activates the profile, but the env var is
     # what the tool reads — set it explicitly here so comments are

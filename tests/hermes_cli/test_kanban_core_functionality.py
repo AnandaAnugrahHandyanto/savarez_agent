@@ -2679,6 +2679,74 @@ def test_default_spawn_auto_loads_kanban_worker_skill(kanban_home, monkeypatch):
     assert env.get("HERMES_PROFILE") == "some-profile"
 
 
+def test_default_spawn_raises_terminal_timeouts_to_task_budget(kanban_home, monkeypatch):
+    """Kanban max_runtime_seconds should lift worker terminal defaults."""
+    captured = {}
+
+    class FakeProc:
+        pid = 12345
+
+    def fake_popen(cmd, **kwargs):
+        captured["env"] = kwargs.get("env", {})
+        return FakeProc()
+
+    monkeypatch.setattr("subprocess.Popen", fake_popen)
+    monkeypatch.setenv("TERMINAL_TIMEOUT", "180")
+    monkeypatch.setenv("TERMINAL_MAX_FOREGROUND_TIMEOUT", "240")
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(
+            conn,
+            title="long worker",
+            assignee="backend-worker",
+            max_runtime_seconds=3600,
+        )
+        task = kb.get_task(conn, tid)
+        workspace = kb.resolve_workspace(task)
+        kb._default_spawn(task, str(workspace))
+    finally:
+        conn.close()
+
+    env = captured["env"]
+    assert env["TERMINAL_TIMEOUT"] == "3570"
+    assert env["TERMINAL_MAX_FOREGROUND_TIMEOUT"] == "3570"
+
+
+def test_default_spawn_preserves_higher_terminal_timeouts(kanban_home, monkeypatch):
+    """Explicitly higher terminal env values should not be lowered."""
+    captured = {}
+
+    class FakeProc:
+        pid = 12346
+
+    def fake_popen(cmd, **kwargs):
+        captured["env"] = kwargs.get("env", {})
+        return FakeProc()
+
+    monkeypatch.setattr("subprocess.Popen", fake_popen)
+    monkeypatch.setenv("TERMINAL_TIMEOUT", "5000")
+    monkeypatch.setenv("TERMINAL_MAX_FOREGROUND_TIMEOUT", "5000")
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(
+            conn,
+            title="very long worker",
+            assignee="backend-worker",
+            max_runtime_seconds=3600,
+        )
+        task = kb.get_task(conn, tid)
+        workspace = kb.resolve_workspace(task)
+        kb._default_spawn(task, str(workspace))
+    finally:
+        conn.close()
+
+    env = captured["env"]
+    assert env["TERMINAL_TIMEOUT"] == "5000"
+    assert env["TERMINAL_MAX_FOREGROUND_TIMEOUT"] == "5000"
+
+
 
 # ---------------------------------------------------------------------------
 # Per-task force-loaded skills
