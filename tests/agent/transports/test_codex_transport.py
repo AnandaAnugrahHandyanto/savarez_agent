@@ -45,11 +45,11 @@ class TestCodexBuildKwargs:
             {"role": "user", "content": "Hello"},
         ]
         kw = transport.build_kwargs(
-            model="gpt-5.4",
+            model="test-model",
             messages=messages,
             tools=[],
         )
-        assert kw["model"] == "gpt-5.4"
+        assert kw["model"] == "test-model"
         assert kw["instructions"] == "You are helpful."
         assert "input" in kw
         assert kw["store"] is False
@@ -59,18 +59,18 @@ class TestCodexBuildKwargs:
             {"role": "system", "content": "Custom system prompt"},
             {"role": "user", "content": "Hi"},
         ]
-        kw = transport.build_kwargs(model="gpt-5.4", messages=messages, tools=[])
+        kw = transport.build_kwargs(model="test-model", messages=messages, tools=[])
         assert kw["instructions"] == "Custom system prompt"
 
     def test_no_system_uses_default(self, transport):
         messages = [{"role": "user", "content": "Hi"}]
-        kw = transport.build_kwargs(model="gpt-5.4", messages=messages, tools=[])
+        kw = transport.build_kwargs(model="test-model", messages=messages, tools=[])
         assert kw["instructions"]  # should be non-empty default
 
     def test_reasoning_config(self, transport):
         messages = [{"role": "user", "content": "Hi"}]
         kw = transport.build_kwargs(
-            model="gpt-5.4", messages=messages, tools=[],
+            model="test-model", messages=messages, tools=[],
             reasoning_config={"effort": "high"},
         )
         assert kw.get("reasoning", {}).get("effort") == "high"
@@ -78,7 +78,7 @@ class TestCodexBuildKwargs:
     def test_reasoning_disabled(self, transport):
         messages = [{"role": "user", "content": "Hi"}]
         kw = transport.build_kwargs(
-            model="gpt-5.4", messages=messages, tools=[],
+            model="test-model", messages=messages, tools=[],
             reasoning_config={"enabled": False},
         )
         assert "reasoning" not in kw or kw.get("include") == []
@@ -86,15 +86,31 @@ class TestCodexBuildKwargs:
     def test_session_id_sets_cache_key(self, transport):
         messages = [{"role": "user", "content": "Hi"}]
         kw = transport.build_kwargs(
-            model="gpt-5.4", messages=messages, tools=[],
+            model="test-model", messages=messages, tools=[],
             session_id="test-session-123",
         )
         assert kw.get("prompt_cache_key") == "test-session-123"
 
+    def test_long_session_id_sets_bounded_stable_cache_key(self, transport):
+        messages = [{"role": "user", "content": "Hi"}]
+        session_id = "cron_mdjob_agentfile-maintenance--agents-md-review_20260508_050008"
+
+        first = transport.build_kwargs(
+            model="test-model", messages=messages, tools=[], session_id=session_id
+        )
+        second = transport.build_kwargs(
+            model="test-model", messages=messages, tools=[], session_id=session_id
+        )
+
+        assert len(session_id) == 66
+        assert first["prompt_cache_key"] == second["prompt_cache_key"]
+        assert len(first["prompt_cache_key"]) <= 64
+        assert first["prompt_cache_key"] != session_id
+
     def test_github_responses_no_cache_key(self, transport):
         messages = [{"role": "user", "content": "Hi"}]
         kw = transport.build_kwargs(
-            model="gpt-5.4", messages=messages, tools=[],
+            model="test-model", messages=messages, tools=[],
             session_id="test-session",
             is_github_responses=True,
         )
@@ -103,7 +119,7 @@ class TestCodexBuildKwargs:
     def test_max_tokens(self, transport):
         messages = [{"role": "user", "content": "Hi"}]
         kw = transport.build_kwargs(
-            model="gpt-5.4", messages=messages, tools=[],
+            model="test-model", messages=messages, tools=[],
             max_tokens=4096,
         )
         assert kw.get("max_output_tokens") == 4096
@@ -111,7 +127,7 @@ class TestCodexBuildKwargs:
     def test_codex_backend_no_max_output_tokens(self, transport):
         messages = [{"role": "user", "content": "Hi"}]
         kw = transport.build_kwargs(
-            model="gpt-5.4", messages=messages, tools=[],
+            model="test-model", messages=messages, tools=[],
             max_tokens=4096,
             is_codex_backend=True,
         )
@@ -143,7 +159,7 @@ class TestCodexBuildKwargs:
     def test_minimal_effort_clamped(self, transport):
         messages = [{"role": "user", "content": "Hi"}]
         kw = transport.build_kwargs(
-            model="gpt-5.4", messages=messages, tools=[],
+            model="test-model", messages=messages, tools=[],
             reasoning_config={"effort": "minimal"},
         )
         # "minimal" should be clamped to "low"
