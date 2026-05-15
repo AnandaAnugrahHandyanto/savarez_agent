@@ -2371,6 +2371,17 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
         base_lower = configured_base_url.lower()
         provider = "custom"
         api_mode = "chat_completions"
+        try:
+            from hermes_cli.runtime_provider import _detect_api_mode_for_url
+
+            detected_api_mode = _detect_api_mode_for_url(configured_base_url)
+        except Exception as exc:
+            logger.debug(
+                "Could not infer delegation API mode from base_url '%s': %s",
+                configured_base_url,
+                exc,
+            )
+            detected_api_mode = None
         if (
             base_url_hostname(configured_base_url) == "chatgpt.com"
             and "/backend-api/codex" in base_lower
@@ -2383,6 +2394,8 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
         elif "api.kimi.com/coding" in base_lower:
             provider = "custom"
             api_mode = "anthropic_messages"
+        elif detected_api_mode:
+            api_mode = detected_api_mode
 
         return {
             "model": configured_model,

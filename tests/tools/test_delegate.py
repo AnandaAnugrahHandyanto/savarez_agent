@@ -922,6 +922,20 @@ class TestDelegationCredentialResolution(unittest.TestCase):
         self.assertIsNone(creds["api_key"])
         self.assertEqual(creds["provider"], "custom")
 
+    def test_direct_endpoint_detects_deepseek_anthropic_api_mode(self):
+        parent = _make_mock_parent(depth=0)
+        cfg = {
+            "model": "deepseek-v4-pro",
+            "provider": "deepseek",
+            "base_url": "https://api.deepseek.com/anthropic",
+        }
+        creds = _resolve_delegation_credentials(cfg, parent)
+        self.assertEqual(creds["model"], "deepseek-v4-pro")
+        self.assertEqual(creds["provider"], "custom")
+        self.assertEqual(creds["base_url"], "https://api.deepseek.com/anthropic")
+        self.assertIsNone(creds["api_key"])
+        self.assertEqual(creds["api_mode"], "anthropic_messages")
+
 
     @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
     def test_provider_resolution_failure_raises_valueerror(self, mock_resolve):
