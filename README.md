@@ -43,6 +43,7 @@ Full PR documentation:
 - [Upstream PR draft](docs/hermes-performance-upstream-pr.md)
 - [100X Fast implementation notes](docs/hermes-agent-100x-fast-pr.md)
 - [Regression log and next-version playbook](docs/hermes-100x-fast-regression-log.md)
+- [Reapply playbook for future Hermes updates](docs/hermes-100x-fast-reapply-playbook.md)
 - [Runtime performance investigation](docs/runtime-performance-investigation-2026-05-15.md)
 
 ![Hermes Agent 100X Fast performance dashboard](docs/assets/100x-fast/perf-summary-dashboard.svg)

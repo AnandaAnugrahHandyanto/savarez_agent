@@ -217,6 +217,10 @@ python scripts\benchmark_startup_perf.py -n 3
 
 ## Next Upstream Version Playbook
 
+The detailed reapply guide lives in
+`docs/hermes-100x-fast-reapply-playbook.md`. Use that document as the
+source of truth when porting this branch onto a new upstream Hermes release.
+
 When NousResearch publishes a new Hermes release or important upstream commits:
 
 1. Fetch upstream and create a fresh `codex/hermes-agent-100x-fast-*` branch.
@@ -231,6 +235,16 @@ When NousResearch publishes a new Hermes release or important upstream commits:
 6. Keep new performance images in `docs/assets/100x-fast/` and ensure each one
    has tags plus old/new/gain in the README gallery.
 7. Open or update the PR with exact benchmark numbers, not broad claims.
+
+Minimum carry-forward checklist:
+
+- Start from `upstream/main`, not from the old performance branch.
+- Use `origin/codex/hermes-agent-100x-fast` as the reference branch.
+- Port one optimization group at a time and run its focused tests immediately.
+- Preserve profile-aware cache paths via `get_hermes_home()`.
+- Keep `force_refresh` and fail-open/fallback behavior intact.
+- Update README, PR docs, benchmark tables, and image paths in the same commit
+  as any visual rename or measurement change.
 
 ## Current PRs
 

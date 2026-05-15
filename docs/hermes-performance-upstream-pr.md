@@ -403,8 +403,20 @@ This PR does not attempt to implement:
 Those remain good follow-up optimization targets once this safer hot-path pass
 lands.
 
+## Future Upstream Updates
+
+The carry-forward process is documented in
+[`docs/hermes-100x-fast-reapply-playbook.md`](https://github.com/wesleysimplicio/hermes-agent/blob/codex/hermes-agent-100x-fast/docs/hermes-100x-fast-reapply-playbook.md).
+
+For the next Hermes release, start from fresh `upstream/main`, compare each
+optimization group against the new upstream code, re-apply only the groups that
+are still missing, and run the focused tests before updating README visuals or
+PR benchmark claims. The playbook also lists the reference commits, affected
+files, validation commands, and Markdown image-path check.
+
 ## Supporting Docs
 
 - [Regression log and next-upstream-release playbook](https://github.com/wesleysimplicio/hermes-agent/blob/codex/hermes-agent-100x-fast/docs/hermes-100x-fast-regression-log.md)
+- [Reapply playbook for future Hermes updates](https://github.com/wesleysimplicio/hermes-agent/blob/codex/hermes-agent-100x-fast/docs/hermes-100x-fast-reapply-playbook.md)
 - [Detailed implementation notes](https://github.com/wesleysimplicio/hermes-agent/blob/codex/hermes-agent-100x-fast/docs/hermes-agent-100x-fast-pr.md)
 - [Runtime research mapping](https://github.com/wesleysimplicio/hermes-agent/blob/codex/hermes-agent-100x-fast/docs/runtime-performance-investigation-2026-05-15.md)

@@ -314,6 +314,11 @@ blanket "every Hermes operation is 100X Faster" claim.
 
 ## Follow-Up PRs Toward 100x
 
+For future upstream releases, use
+[`docs/hermes-100x-fast-reapply-playbook.md`](hermes-100x-fast-reapply-playbook.md)
+before opening the next PR. It maps every optimization to its files, reference
+commits, tests, benchmarks, and visual refresh steps.
+
 1. Generate a persistent tool manifest so schema metadata can load without
    importing every tool module.
 2. Cache plugin manifest scans by directory fingerprint and entry-point
