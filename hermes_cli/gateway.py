@@ -28,6 +28,7 @@ from hermes_cli.config import (
     is_managed,
     managed_error,
     read_raw_config,
+    remove_env_value,
     save_env_value,
 )
 # display_hermes_home is imported lazily at call sites to avoid ImportError
@@ -3487,6 +3488,9 @@ _PLATFORMS = [
              "help": "The AppKey from your DingTalk application credentials."},
             {"name": "DINGTALK_CLIENT_SECRET", "prompt": "AppSecret (Client Secret)", "password": True,
              "help": "The AppSecret from your DingTalk application credentials."},
+            {"name": "DINGTALK_ALLOWED_USERS", "prompt": "Allowed DingTalk user IDs (comma-separated staff_id or sender_id)", "password": False,
+             "is_allowlist": True,
+             "help": "Only messages from these DingTalk users will be processed. Use staff_id or sender_id values."},
         ],
     },
     {
@@ -3932,6 +3936,43 @@ def _setup_sms():
     _setup_standard_platform(sms_platform)
 
 
+def _configure_dingtalk_access() -> None:
+    """Prompt for DingTalk access control after credentials are configured."""
+    print()
+    print_info("  The gateway DENIES all users by default for security.")
+    print_info("  Enter DingTalk staff_id or sender_id values to create an allowlist,")
+    print_info("  or leave empty and choose DM pairing or explicit open access next.")
+    allowed_users = prompt(
+        "  Allowed DingTalk user IDs (comma-separated staff_id or sender_id)",
+        password=False,
+    ).replace(" ", "")
+    if allowed_users:
+        save_env_value("DINGTALK_ALLOWED_USERS", allowed_users)
+        remove_env_value("DINGTALK_ALLOW_ALL_USERS")
+        print_success("  Saved — only these DingTalk users can interact with the bot.")
+        return
+
+    access_idx = prompt_choice(
+        "  How should unauthorized DingTalk users be handled?",
+        [
+            "Enable open access (any DingTalk user who can reach the bot)",
+            "Use DM pairing (unknown users request access, you approve with 'hermes pairing approve')",
+            "Skip for now (bot will deny all users until configured)",
+        ],
+        1,
+    )
+    if access_idx == 0:
+        save_env_value("DINGTALK_ALLOW_ALL_USERS", "true")
+        print_warning("  Open access enabled — any DingTalk user who can reach the bot can use it!")
+    else:
+        remove_env_value("DINGTALK_ALLOW_ALL_USERS")
+        if access_idx == 1:
+            print_success("  DM pairing mode — users will receive a code to request access.")
+            print_info("  Approve with: hermes pairing approve dingtalk <code>")
+        else:
+            print_info("  Skipped — configure later with 'hermes gateway setup'")
+
+
 def _setup_dingtalk():
     """Configure DingTalk — QR scan (recommended) or manual credential entry."""
     from hermes_cli.setup import (
@@ -3980,15 +4021,12 @@ def _setup_dingtalk():
         client_id, client_secret = result
         save_env_value("DINGTALK_CLIENT_ID", client_id)
         save_env_value("DINGTALK_CLIENT_SECRET", client_secret)
-        save_env_value("DINGTALK_ALLOW_ALL_USERS", "true")
+        _configure_dingtalk_access()
         print()
         print_success(f"{emoji} {label} configured via QR scan!")
     else:
         # ── Manual entry ──
         _setup_standard_platform(dingtalk_platform)
-        # Also enable allow-all by default for convenience
-        if get_env_value("DINGTALK_CLIENT_ID"):
-            save_env_value("DINGTALK_ALLOW_ALL_USERS", "true")
 
 
 def _setup_wecom():

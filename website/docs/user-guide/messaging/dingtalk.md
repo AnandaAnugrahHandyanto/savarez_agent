@@ -102,7 +102,7 @@ hermes gateway setup
 
 Select **DingTalk** when prompted. The setup wizard can authorize via one of two paths:
 
-- **QR-code device flow (recommended).** Scan the QR that prints in your terminal with the DingTalk mobile app — your Client ID and Client Secret are returned automatically and written to `~/.hermes/.env`. No developer-console trip needed.
+- **QR-code device flow (recommended).** Scan the QR that prints in your terminal with the DingTalk mobile app — your Client ID and Client Secret are returned automatically and written to `~/.hermes/.env`. No developer-console trip needed. After credentials are saved, the wizard asks you to configure `DINGTALK_ALLOWED_USERS`, DM pairing, or explicit open access; it does not silently enable allow-all access.
 - **Manual paste.** If you already have credentials (or QR scanning isn't convenient), paste your Client ID, Client Secret, and allowed user IDs when prompted.
 
 :::note openClaw branding disclosure
