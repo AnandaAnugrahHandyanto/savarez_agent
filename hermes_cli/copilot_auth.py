@@ -24,6 +24,9 @@ import os
 import shutil
 import subprocess
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 from pathlib import Path
 from typing import Optional
 
@@ -64,6 +67,59 @@ def validate_copilot_token(token: str) -> tuple[bool, str]:
     return True, "OK"
 
 
+def _infer_instance_github_token_key() -> str:
+    """Infer which Vault GitHub token key should be used for this runtime."""
+    instance = os.getenv("HERMES_INSTANCE", "").strip().lower()
+    if instance in {"claw-dev", "claw_dev", "dev", "docker"}:
+        return "claw_dev_github_token"
+
+    hermes_home = os.getenv("HERMES_HOME", "")
+    lowered_home = hermes_home.lower()
+    if "claw-dev" in lowered_home or "claw_dev" in lowered_home:
+        return "claw_dev_github_token"
+
+    return "claw_github_token"
+
+
+
+def _try_vault_github_token() -> tuple[str, str]:
+    """Return a Copilot-capable GitHub token from Vault when configured."""
+    vault_token = os.getenv("HERMES_VAULT_TOKEN", "").strip()
+    if not vault_token:
+        return "", ""
+
+    vault_addr = os.getenv("HERMES_VAULT_ADDR", "http://127.0.0.1:8200").strip().rstrip("/")
+    secret_path = os.getenv("HERMES_GITHUB_SECRET_PATH", "dev/github").strip().strip("/")
+    token_key = os.getenv("HERMES_GITHUB_TOKEN_KEY", "").strip() or _infer_instance_github_token_key()
+    fallback_key = "claw_dev_github_token" if token_key == "claw_github_token" else "claw_github_token"
+
+    url = f"{vault_addr}/v1/secret/data/{secret_path}"
+    try:
+        req = urllib.request.Request(url, headers={"X-Vault-Token": vault_token})
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+        secrets = payload.get("data", {}).get("data", {})
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, json.JSONDecodeError) as exc:
+        logger.debug("Vault GitHub token lookup failed: %s", exc)
+        return "", ""
+    except Exception as exc:
+        logger.debug("Unexpected Vault GitHub token lookup failure: %s", exc)
+        return "", ""
+
+    for key in (token_key, fallback_key):
+        candidate = str(secrets.get(key) or "").strip()
+        if not candidate:
+            continue
+        valid, msg = validate_copilot_token(candidate)
+        if not valid:
+            logger.warning("Token from Vault key %s is not supported: %s", key, msg)
+            continue
+        return candidate, f"vault:{secret_path}:{key}"
+
+    return "", ""
+
+
+
 def resolve_copilot_token() -> tuple[str, str]:
     """Resolve a GitHub token suitable for Copilot API use.
 
@@ -82,7 +138,12 @@ def resolve_copilot_token() -> tuple[str, str]:
                 continue
             return val, env_var
 
-    # 2. Fall back to gh auth token
+    # 2. Fall back to Vault-backed per-instance GitHub token
+    token, source = _try_vault_github_token()
+    if token:
+        return token, source
+
+    # 3. Fall back to gh auth token
     token = _try_gh_cli_token()
     if token:
         valid, msg = validate_copilot_token(token)
