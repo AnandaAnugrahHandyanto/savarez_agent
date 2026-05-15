@@ -28,6 +28,57 @@ Use any model you want — [Nous Portal](https://portal.nousresearch.com), [Open
 
 ---
 
+## Hermes Agent 10x Fast - Performance Comparisons
+
+This branch documents a measured performance pass focused on startup hot paths,
+tool discovery, SQLite session persistence, TUI MCP reloads, and adaptive
+parallelism. The numbers below are local Windows benchmark results from
+`scripts/benchmark_startup_perf.py`; they are measurements for this branch, not
+universal guarantees.
+
+Full PR documentation:
+
+- [Upstream PR draft](docs/hermes-performance-upstream-pr.md)
+- [10x Fast implementation notes](docs/hermes-agent-10x-fast-pr.md)
+
+![Hermes Agent 10x Fast performance dashboard](docs/assets/10x-fast/perf-summary-dashboard.svg)
+
+![Phase 1 before and after summary](docs/assets/hermes-agent-10x-fast-before-after.svg)
+
+![Generated 10x Fast visual](docs/assets/10x-fast/hermes-agent-10x-fast-phase-1.png)
+
+### Startup And Tool Schema
+
+![model_tools startup comparison](docs/assets/10x-fast/perf-startup-model-tools.svg)
+
+![tool definitions startup comparison](docs/assets/10x-fast/perf-tool-definitions-startup.svg)
+
+![plugin discovery comparison](docs/assets/10x-fast/perf-plugin-discovery.svg)
+
+### Runtime Hot Paths
+
+![SQLite session batch write comparison](docs/assets/10x-fast/perf-session-batch-writes.svg)
+
+![toolset cache comparison](docs/assets/10x-fast/perf-toolset-cache.svg)
+
+![TUI MCP reload avoidance comparison](docs/assets/10x-fast/perf-mcp-reload-avoidance.svg)
+
+![adaptive parallel tool scan comparison](docs/assets/10x-fast/perf-adaptive-parallel-scan.svg)
+
+### Architecture Diagrams
+
+![tool discovery cache architecture](docs/assets/10x-fast/phase-2-tool-discovery-cache.svg)
+
+![toolset memoization architecture](docs/assets/10x-fast/phase-3-toolset-cache.svg)
+
+![SQLite batch write architecture](docs/assets/10x-fast/phase-4-sqlite-batch-writes.svg)
+
+![TUI MCP fingerprint architecture](docs/assets/10x-fast/phase-5-tui-mcp-fingerprint.svg)
+
+![adaptive parallel scan architecture](docs/assets/10x-fast/phase-6-adaptive-parallel-scan.svg)
+
+---
+
 ## Quick Install
 
 ### Linux, macOS, WSL2, Termux
