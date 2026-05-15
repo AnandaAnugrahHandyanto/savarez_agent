@@ -36,7 +36,7 @@ jobs:
           . .venv/bin/activate
           ruff check .
 
-  tests-targeted:
+  smoke-gate:
     runs-on: [self-hosted, linux, x64, hermes-heavy]
     timeout-minutes: 30
     steps:
@@ -53,7 +53,52 @@ jobs:
           uv venv .venv --python 3.11
           . .venv/bin/activate
           uv pip install -e ".[all,dev]"
-      - name: Run targeted tests
+      - name: Preflight Python linkage
+        env:
+          LD_LIBRARY_PATH: ${{ env.pythonLocation }}/lib:${{ env.LD_LIBRARY_PATH }}
+        run: |
+          . .venv/bin/activate
+          python -c "import sys; print(sys.executable)"
+          ldd .venv/bin/python
+      - name: Run smoke gate tests
+        env:
+          OPENROUTER_API_KEY: ''
+          OPENAI_API_KEY: ''
+          NOUS_API_KEY: ''
+          LD_LIBRARY_PATH: ${{ env.pythonLocation }}/lib:${{ env.LD_LIBRARY_PATH }}
+        run: |
+          . .venv/bin/activate
+          python -m pytest -q --tb=short -n 3 \
+            tests/gateway/test_telegram_send_locks.py \
+            tests/gateway/test_telegram_retry_backoff.py \
+            tests/test_run_agent_kanban_lifecycle_guard.py
+
+  broad-diagnostic:
+    runs-on: [self-hosted, linux, x64, hermes-heavy]
+    timeout-minutes: 30
+    continue-on-error: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+      - name: Install dependencies
+        run: |
+          uv venv .venv --python 3.11
+          . .venv/bin/activate
+          uv pip install -e ".[all,dev]"
+      - name: Preflight Python linkage
+        env:
+          LD_LIBRARY_PATH: ${{ env.pythonLocation }}/lib:${{ env.LD_LIBRARY_PATH }}
+        run: |
+          . .venv/bin/activate
+          python -c "import sys; print(sys.executable)"
+          ldd .venv/bin/python
+      - name: Run broad diagnostic tests
         env:
           OPENROUTER_API_KEY: ''
           OPENAI_API_KEY: ''
