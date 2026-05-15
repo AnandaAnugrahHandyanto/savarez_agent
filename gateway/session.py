@@ -914,8 +914,23 @@ class SessionStore:
                 auto_reset_reason = None
                 reset_had_activity = False
 
+            # Restart recovery: session_key not in _entries (never seen or
+            # sessions.json was cleared). Before creating a brand-new session,
+            # check the DB for a recent active session on this source and
+            # resume it instead. This repairs sessions that were lost after a
+            # gateway crash/restart where the session was never written to
+            # sessions.json.
+            recovered_session_id = None
+            if self._db:
+                try:
+                    db_row = self._db.get_recent_active_session(source.platform.value)
+                    if db_row is not None:
+                        recovered_session_id = db_row["id"]
+                except Exception:
+                    pass  # DB unavailable or schema mismatch — create new
+
             # Create new session
-            session_id = f"{now.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
+            session_id = recovered_session_id or f"{now.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
 
             entry = SessionEntry(
                 session_key=session_key,
@@ -1249,11 +1264,24 @@ class SessionStore:
         return entries
     
     def get_transcript_path(self, session_id: str) -> Path:
-        """Get the path to a session's legacy transcript file."""
+        """Get the path to a session's transcript file.
+
+        New format: ``sessions/<sid>/messages.jsonl``
+        Falls back to legacy ``sessions/<sid>.jsonl`` for backward compat.
+        """
+        new_path = self.sessions_dir / session_id / "messages.jsonl"
+        if new_path.exists():
+            return new_path
+        # Legacy fallback for unmigrated sessions
         return self.sessions_dir / f"{session_id}.jsonl"
     
+    def _transcript_path(self, session_id: str) -> Path:
+        """Get transcript path, creating subdirectory if needed for new sessions."""
+        subdir = self.sessions_dir / session_id
+        return subdir / "messages.jsonl"
+
     def append_to_transcript(self, session_id: str, message: Dict[str, Any], skip_db: bool = False) -> None:
-        """Append a message to a session's transcript (SQLite + legacy JSONL).
+        """Append a message to a session's transcript (SQLite + JSONL).
 
         Args:
             skip_db: When True, only write to JSONL and skip the SQLite write.
@@ -1279,7 +1307,6 @@ class SessionStore:
                 )
             except Exception as e:
                 logger.debug("Session DB operation failed: %s", e)
-        
         # Also write legacy JSONL (keeps existing tooling working during transition)
         transcript_path = self.get_transcript_path(session_id)
         try:
@@ -1290,12 +1317,11 @@ class SessionStore:
             # Disk full / read-only fs / permission errors must not crash the
             # message handler — the SQLite write above is the primary store.
             logger.debug("Failed to write JSONL transcript for %s: %s", session_id, e)
-    
     def rewrite_transcript(self, session_id: str, messages: List[Dict[str, Any]]) -> None:
         """Replace the entire transcript for a session with new messages.
-        
+
         Used by /retry, /undo, and /compress to persist modified conversation history.
-        Rewrites both SQLite and legacy JSONL storage.
+        Rewrites both SQLite and JSONL storage.
         """
         # SQLite: replace atomically so a mid-rewrite failure doesn't leave
         # the session half-empty in the DB while JSONL still has history.
@@ -1304,9 +1330,10 @@ class SessionStore:
                 self._db.replace_messages(session_id, messages)
             except Exception as e:
                 logger.debug("Failed to rewrite transcript in DB: %s", e)
-        
-        # JSONL: overwrite the file
-        transcript_path = self.get_transcript_path(session_id)
+
+        # JSONL: write to new subdirectory location
+        transcript_path = self._transcript_path(session_id)
+        transcript_path.parent.mkdir(parents=True, exist_ok=True)
         with open(transcript_path, "w", encoding="utf-8") as f:
             for msg in messages:
                 f.write(json.dumps(msg, ensure_ascii=False) + "\n")

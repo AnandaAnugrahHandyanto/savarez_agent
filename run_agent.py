@@ -1979,10 +1979,11 @@ class AIAgent:
                 if self._memory_enabled or self._user_profile_enabled:
                     from tools.memory_tool import MemoryStore
                     self._memory_store = MemoryStore(
+                        session_db=self._session_db,
                         memory_char_limit=mem_config.get("memory_char_limit", 2200),
                         user_char_limit=mem_config.get("user_char_limit", 1375),
                     )
-                    self._memory_store.load_from_disk()
+                    self._memory_store.load_from_db()
             except Exception:
                 pass  # Memory is optional -- don't break agent init
         
@@ -6495,7 +6496,7 @@ class AIAgent:
         """
         self._cached_system_prompt = None
         if self._memory_store:
-            self._memory_store.load_from_disk()
+            self._memory_store.refresh()
 
     @staticmethod
     def _deterministic_call_id(fn_name: str, arguments: str, index: int = 0) -> str:

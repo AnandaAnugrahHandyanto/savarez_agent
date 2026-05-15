@@ -4096,6 +4096,56 @@ class GatewayRunner:
                 except Exception as _e:
                     logger.debug("Idle agent sweep failed: %s", _e)
 
+                # ── Memory health check (叠加在 session expiry watcher 上) ──
+                # 每 interval 秒检查一次，memory_chars 超 2000 则归档最旧 sections 到 ARCHIVE.md
+                try:
+                    from pathlib import Path as _Path
+                    _mem_path = _Path.home() / ".hermes" / "memories" / "memory.md"
+                    _archive_path = _Path.home() / ".hermes" / "memories" / "ARCHIVE.md"
+                    if _mem_path.exists():
+                        _now_ts = int(time.time())
+                        _raw = _mem_path.read_text()
+                        _chars = len(_raw)
+                        _THRESHOLD = 2000
+                        if _chars > _THRESHOLD:
+                            _sections = _raw.split("§")
+                            # 保留最后 50% sections（最新的）
+                            _keep_count = max(1, len(_sections) // 2)
+                            _to_archive = _sections[:-(_keep_count)]
+                            _kept = _sections[-(_keep_count):]
+                            if _to_archive:
+                                _archived_content = "§".join(_to_archive)
+                                _existing_archive = _archive_path.read_text() if _archive_path.exists() else ""
+                                _archive_path.write_text(
+                                    _archived_content + "\n§\n" + _existing_archive
+                                )
+                                _new_mem = "§".join(_kept)
+                                _mem_path.write_text(_new_mem)
+                                logger.info(
+                                    "Memory archive: %d sections (%.0f chars) → ARCHIVE.md, "
+                                    "kept %d sections in memory.md",
+                                    len(_to_archive), len(_archived_content), _keep_count,
+                                )
+                                _chars = len(_new_mem)
+                        # 更新 DB（只更新当前活跃 session）
+                        _active_sid = getattr(self, "_current_session_id", None)
+                        if _active_sid:
+                            try:
+                                import sqlite3 as _sqlite3
+                                _db_path = _Path.home() / ".hermes" / "state.db"
+                                _conn = _sqlite3.connect(str(_db_path))
+                                _conn.execute(
+                                    "UPDATE sessions SET memory_chars = ?, last_memory_check = ? "
+                                    "WHERE id = ?",
+                                    (_chars, _now_ts, _active_sid),
+                                )
+                                _conn.commit()
+                                _conn.close()
+                            except Exception:
+                                pass
+                except Exception as _e:
+                    logger.debug("Memory health check failed: %s", _e)
+
                 # Periodically prune stale SessionStore entries.  The
                 # in-memory dict (and sessions.json) would otherwise grow
                 # unbounded in gateways serving many rotating chats /
@@ -4913,6 +4963,8 @@ class GatewayRunner:
                 "Stopping gateway%s...",
                 " for restart" if self._restart_requested else "",
             )
+
+
             _stop_started_at = time.monotonic()
 
             def _phase_elapsed() -> float:
@@ -5116,25 +5168,28 @@ class GatewayRunner:
             remove_pid_file()
             release_gateway_runtime_lock()
 
-            # Write a clean-shutdown marker so the next startup knows this
-            # wasn't a crash.  suspend_recently_active() only needs to run
-            # after unexpected exits.  However, if the drain timed out and
-            # agents were force-interrupted, their sessions may be in an
-            # incomplete state (trailing tool response, no final assistant
-            # message).  Skip the marker in that case so the next startup
-            # suspends those sessions — giving users a clean slate instead
-            # of resuming a half-finished tool loop.
-            if not timed_out:
-                try:
-                    (_hermes_home / ".clean_shutdown").touch()
-                except Exception:
-                    pass
-            else:
-                logger.info(
-                    "Skipping .clean_shutdown marker — drain timed out with "
-                    "interrupted agents; next startup will suspend recently "
-                    "active sessions."
-                )
+            # Always write .clean_shutdown — even after drain timeout.
+            #
+            # When drain times out, mark_resume_pending() was already called
+            # on each running agent's session (line 3778), setting the
+            # resume_pending flag.  On next startup, get_or_create_session()
+            # checks resume_pending first and returns the old entry with the
+            # original session_id, preserving the full transcript.
+            #
+            # If .clean_shutdown were NOT written after drain timeout,
+            # suspend_recently_active() would run on startup.  While it does
+            # skip resume_pending=True entries, it could still catch sessions
+            # that finished normally just before the restart window (updated
+            # within max_age_seconds=120 but not in _running_agents).
+            #
+            # The stuck-loop counter (_suspend_stuck_loop_sessions, line 2766)
+            # runs AFTER suspend_recently_active() and independently catches
+            # sessions that have been interrupted across 3+ consecutive
+            # restarts — the original safety net is preserved.
+            try:
+                (_hermes_home / ".clean_shutdown").touch()
+            except Exception:
+                pass
 
             # Track sessions that were active at shutdown for stuck-loop
             # detection (#7536).  On each restart, the counter increments
@@ -7585,6 +7640,41 @@ class GatewayRunner:
         if message_text is None:
             return
 
+        # === 每日认证检查 ===
+        import subprocess
+        auth_script = os.path.expanduser("~/.hermes/scripts/daily_auth.py")
+
+        # "233" 本身是通行口令，直接放行并完成验证
+        if message_text.strip() == "233":
+            verify_result = subprocess.run(
+                ["python3", auth_script, "verify", "233"],
+                capture_output=True, text=True
+            ).stdout.strip()
+            adapter = self.adapters.get(source.platform)
+            if adapter and verify_result == "AUTH_OK":
+                await adapter.send(
+                    source.chat_id,
+                    "✅ 验证通过，今日可正常对话",
+                    metadata={"thread_id": source.thread_id} if getattr(source, "thread_id", None) else None
+                )
+            return  # 验证完成，不重复处理
+
+        auth_status = subprocess.run(
+            ["python3", auth_script],
+            capture_output=True, text=True
+        ).stdout.strip()
+
+        if auth_status.startswith("NEED_AUTH"):
+            adapter = self.adapters.get(source.platform)
+            if adapter:
+                await adapter.send(
+                    source.chat_id,
+                    "🔒 请先输入今日口令：",
+                    metadata={"thread_id": source.thread_id} if getattr(source, "thread_id", None) else None
+                )
+            return
+        # === 认证检查结束 ===
+
         # Bind this gateway run generation to the adapter's active-session
         # event so deferred post-delivery callbacks can be released by the
         # same run that registered them.
@@ -8768,7 +8858,7 @@ class GatewayRunner:
         # restarts us.  The detached subprocess approach (setsid + bash)
         # doesn't work under systemd because KillMode=mixed kills all
         # processes in the cgroup, including the detached helper.
-        _under_service = bool(os.environ.get("INVOCATION_ID"))  # systemd sets this
+        _under_service = bool(os.environ.get("INVOCATION_ID")) or sys.platform == "darwin"  # systemd sets INVOCATION_ID; macOS uses launchd
         if _under_service:
             self.request_restart(detached=False, via_service=True)
         else:
@@ -13018,6 +13108,7 @@ class GatewayRunner:
             return None
         finally:
             notify_path.unlink(missing_ok=True)
+
 
     async def _send_home_channel_startup_notifications(
         self,
