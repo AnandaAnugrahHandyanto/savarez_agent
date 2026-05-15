@@ -688,7 +688,10 @@ class APIServerAdapter(BasePlatformAdapter):
 
     def _check_auth(self, request: "web.Request") -> Optional["web.Response"]:
         """
-        Validate Bearer token from Authorization header.
+        Validate Bearer token from Authorization header or ``?token=`` query
+        parameter.  Query-param auth is needed for EventSource / SSE clients
+        that cannot set custom headers (e.g. browser EventSource, Node
+        eventsource library).
 
         Returns None if auth is OK, or a 401 web.Response on failure.
         If no API key is configured, all requests are allowed (only when API
@@ -697,11 +700,17 @@ class APIServerAdapter(BasePlatformAdapter):
         if not self._api_key:
             return None  # No key configured — allow all (local-only use)
 
+        # 1. Try Authorization header first
         auth_header = request.headers.get("Authorization", "")
         if auth_header.startswith("Bearer "):
             token = auth_header[7:].strip()
             if hmac.compare_digest(token, self._api_key):
                 return None  # Auth OK
+
+        # 2. Fall back to ?token= query parameter (for SSE / EventSource)
+        query_token = request.query.get("token", "")
+        if query_token and hmac.compare_digest(query_token, self._api_key):
+            return None  # Auth OK
 
         return web.json_response(
             {"error": {"message": "Invalid API key", "type": "invalid_request_error", "code": "invalid_api_key"}},
