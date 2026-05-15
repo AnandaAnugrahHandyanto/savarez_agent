@@ -2630,6 +2630,7 @@ class HermesCLI:
         self._image_counter = 0
         self.preloaded_skills: list[str] = []
         self._startup_skills_line_shown = False
+        self._interaction_mode: str | None = None
 
         # Voice mode state (also reinitialized inside run() for interactive TUI).
         self._voice_lock = threading.Lock()
@@ -5621,6 +5622,7 @@ class HermesCLI:
         self.conversation_history = []
         self._pending_title = None
         self._resumed = False
+        self._interaction_mode = None
 
         if self.agent:
             self.agent.session_id = self.session_id
@@ -5907,6 +5909,7 @@ class HermesCLI:
         self.session_id = target_id
         self._resumed = True
         self._pending_title = None
+        self._interaction_mode = None
 
         # Load conversation history (strip transcript-only metadata entries)
         restored = self._session_db.get_messages_as_conversation(target_id)
@@ -6079,6 +6082,7 @@ class HermesCLI:
         self.session_id = new_session_id
         self.session_start = now
         self._pending_title = None
+        self._interaction_mode = None
         self._resumed = True  # Prevents auto-title generation
 
         # Sync the agent
@@ -7627,6 +7631,8 @@ class HermesCLI:
             self._handle_reasoning_command(cmd_original)
         elif canonical == "fast":
             self._handle_fast_command(cmd_original)
+        elif canonical in ("9010", "transparency", "normal"):
+            self._handle_interaction_mode_command(canonical)
         elif canonical == "compress":
             self._manual_compress(cmd_original)
         elif canonical == "usage":
@@ -8802,6 +8808,16 @@ class HermesCLI:
             _cprint(f"  {_ACCENT}✓ {feature_name} set to {label} (saved to config){_RST}")
         else:
             _cprint(f"  {_ACCENT}✓ {feature_name} set to {label} (session only){_RST}")
+
+    def _handle_interaction_mode_command(self, mode: str):
+        """Handle /9010, /transparency, and /normal session modes."""
+        from hermes_cli.interaction_modes import mode_label, normalize_mode
+
+        self._interaction_mode = normalize_mode(mode)
+        if self._interaction_mode:
+            _cprint(f"  {_ACCENT}✓ Active mode: {mode_label(self._interaction_mode)}{_RST}")
+        else:
+            _cprint(f"  {_ACCENT}✓ Active mode cleared: normal mode{_RST}")
 
     def _on_reasoning(self, reasoning_text: str):
         """Callback for intermediate reasoning display during tool-call loops."""
@@ -10667,6 +10683,16 @@ class HermesCLI:
                 except Exception:
                     pass
                 agent_message = _voice_prefix + message if _voice_prefix else message
+                _persist_clean_message = message if _voice_prefix else None
+                _mode_prompt = ""
+                try:
+                    from hermes_cli.interaction_modes import mode_prompt
+                    _mode_prompt = mode_prompt(getattr(self, "_interaction_mode", None))
+                except Exception:
+                    _mode_prompt = ""
+                if _mode_prompt:
+                    agent_message = _mode_prompt + "\n\n" + agent_message
+                    _persist_clean_message = message
                 # Prepend pending model switch note so the model knows about the switch
                 _msn = getattr(self, '_pending_model_switch_note', None)
                 if _msn:
@@ -10685,7 +10711,7 @@ class HermesCLI:
                         conversation_history=self.conversation_history[:-1],  # Exclude the message we just added
                         stream_callback=stream_callback,
                         task_id=self.session_id,
-                        persist_user_message=message if _voice_prefix else None,
+                        persist_user_message=_persist_clean_message,
                     )
                 except Exception as exc:
                     logging.error("run_conversation raised: %s", exc, exc_info=True)

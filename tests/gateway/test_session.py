@@ -1,12 +1,14 @@
 """Tests for gateway session management."""
 
 import json
+from datetime import datetime
 import pytest
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 from gateway.config import Platform, HomeChannel, GatewayConfig, PlatformConfig
 from gateway.platforms.base import MessageEvent
 from gateway.session import (
+    SessionEntry,
     SessionSource,
     SessionStore,
     build_session_context,
@@ -98,6 +100,34 @@ class TestSessionSourceRoundtrip:
         """
         with pytest.raises(ValueError):
             SessionSource.from_dict({"platform": "nonexistent", "chat_id": "1"})
+
+
+class TestSessionEntryRoundtrip:
+    def test_interaction_mode_roundtrip_and_normalization(self):
+        entry = SessionEntry(
+            session_key="agent:main:telegram:dm:123",
+            session_id="sid-1",
+            created_at=datetime.fromisoformat("2026-05-10T08:00:00"),
+            updated_at=datetime.fromisoformat("2026-05-10T08:01:00"),
+            interaction_mode="/transparency",
+        )
+
+        restored = SessionEntry.from_dict(entry.to_dict())
+
+        assert restored.interaction_mode == "transparency"
+
+    def test_unknown_interaction_mode_loads_as_normal(self):
+        data = {
+            "session_key": "agent:main:telegram:dm:123",
+            "session_id": "sid-1",
+            "created_at": "2026-05-10T08:00:00",
+            "updated_at": "2026-05-10T08:01:00",
+            "interaction_mode": "future-mode",
+        }
+
+        restored = SessionEntry.from_dict(data)
+
+        assert restored.interaction_mode is None
 
 
 class TestSessionSourceDescription:

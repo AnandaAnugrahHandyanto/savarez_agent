@@ -6462,6 +6462,9 @@ class GatewayRunner:
         if canonical == "fast":
             return await self._handle_fast_command(event)
 
+        if canonical in ("9010", "transparency", "normal"):
+            return await self._handle_interaction_mode_command(event, canonical)
+
         if canonical == "verbose":
             return await self._handle_verbose_command(event)
 
@@ -7105,6 +7108,13 @@ class GatewayRunner:
 
         # Build the context prompt to inject
         context_prompt = build_session_context_prompt(context, redact_pii=_redact_pii)
+        try:
+            from hermes_cli.interaction_modes import mode_prompt
+            _mode_prompt = mode_prompt(getattr(session_entry, "interaction_mode", None))
+            if _mode_prompt:
+                context_prompt += "\n\n## Active Interaction Mode\n" + _mode_prompt
+        except Exception as _mode_exc:
+            logger.debug("interaction mode prompt injection failed: %s", _mode_exc)
         
         # If the previous session expired and was auto-reset, prepend a notice
         # so the agent knows this is a fresh conversation (not an intentional /reset).
@@ -10722,6 +10732,22 @@ class GatewayRunner:
             return t("gateway.fast.saved", label=label)
         return t("gateway.fast.session_only", label=label)
 
+    async def _handle_interaction_mode_command(self, event: MessageEvent, command: str) -> str:
+        """Handle /9010, /transparency, and /normal gateway modes."""
+        from hermes_cli.interaction_modes import mode_label, normalize_mode
+
+        source = event.source
+        if source is None:
+            return "Could not resolve session for this chat."
+        session_entry = self.session_store.get_or_create_session(source)
+        mode = normalize_mode(command)
+        self.session_store.set_interaction_mode(session_entry.session_key, mode)
+        # Drop cached agent so the next turn rebuilds with the fresh context prompt.
+        self._evict_cached_agent(session_entry.session_key)
+        if mode:
+            return f"✓ Active mode: **{mode_label(mode)}**\nSend `/normal` to clear it."
+        return "✓ Active mode cleared: **normal mode**"
+
     async def _handle_yolo_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:
         """Handle /yolo — toggle dangerous command approval bypass for this session only."""
         from tools.approval import (
@@ -12195,11 +12221,16 @@ class GatewayRunner:
             if choice == "always":
                 try:
                     from cli import save_config_value
-                    save_config_value("approvals.destructive_slash_confirm", False)
-                    logger.info(
-                        "User opted out of destructive slash confirm (session=%s)",
-                        session_key,
-                    )
+                    saved = save_config_value("approvals.destructive_slash_confirm", False)
+                    if saved:
+                        logger.info(
+                            "User opted out of destructive slash confirm (session=%s)",
+                            session_key,
+                        )
+                    else:
+                        logger.warning(
+                            "Failed to persist destructive_slash_confirm=false (save_config_value returned False)"
+                        )
                 except Exception as exc:
                     logger.warning(
                         "Failed to persist destructive_slash_confirm=false: %s", exc,
