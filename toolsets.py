@@ -70,6 +70,8 @@ _HERMES_CORE_TOOLS = [
     "kanban_unblock",
     # Computer use (macOS, gated on cua-driver being installed via check_fn)
     "computer_use",
+    # Code search and indexing tools
+    "code_index", "symbol_search",
 ]
 
 
@@ -86,6 +88,12 @@ TOOLSETS = {
     "search": {
         "description": "Web search only (no content extraction/scraping)",
         "tools": ["web_search"],
+        "includes": []
+    },
+
+    "code_search": {
+        "description": "Code search and indexing: build code index, search symbols, find usages",
+        "tools": ["code_index", "symbol_search"],
         "includes": []
     },
     
