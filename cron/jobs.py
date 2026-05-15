@@ -43,6 +43,8 @@ JOBS_FILE = CRON_DIR / "jobs.json"
 # concurrent mark_job_run / advance_next_run calls can clobber each other.
 _jobs_file_lock = threading.Lock()
 OUTPUT_DIR = CRON_DIR / "output"
+PENDING_DELIVERIES_FILE = CRON_DIR / "pending_deliveries.json"
+_pending_deliveries_file_lock = threading.Lock()
 ONESHOT_GRACE_SECONDS = 120
 
 
@@ -444,6 +446,133 @@ def save_jobs(jobs: List[Dict[str, Any]]):
         except OSError:
             pass
         raise
+
+
+# =============================================================================
+# Pending delivery retry queue
+# =============================================================================
+
+def _delivery_job_snapshot(job: Dict[str, Any]) -> Dict[str, Any]:
+    """Return the small routing-only job shape needed to retry delivery.
+
+    Pending delivery records must survive the source job being completed or
+    removed, but they should not persist prompts, scripts, skills, model
+    configuration, or other execution fields. Delivery only needs the job id,
+    display name, deliver setting, and origin routing metadata.
+    """
+    snapshot: Dict[str, Any] = {
+        "id": str(job.get("id", "")),
+        "name": job.get("name"),
+        "deliver": job.get("deliver", "local"),
+        "origin": copy.deepcopy(job.get("origin")),
+    }
+    # Keep the JSON compact for jobs without a name/origin while preserving the
+    # expected default delivery behavior.
+    return {k: v for k, v in snapshot.items() if v is not None and v != ""}
+
+
+def _load_pending_deliveries_unlocked() -> List[Dict[str, Any]]:
+    ensure_dirs()
+    if not PENDING_DELIVERIES_FILE.exists():
+        return []
+
+    try:
+        with open(PENDING_DELIVERIES_FILE, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+    except json.JSONDecodeError:
+        try:
+            with open(PENDING_DELIVERIES_FILE, 'r', encoding='utf-8') as f:
+                data = json.loads(f.read(), strict=False)
+            deliveries = data.get("pending_deliveries", []) if isinstance(data, dict) else []
+            if deliveries:
+                _save_pending_deliveries_unlocked(deliveries)
+                logger.warning("Auto-repaired pending_deliveries.json (had invalid control characters)")
+            return [d for d in deliveries if isinstance(d, dict)]
+        except Exception as e:
+            logger.error("Failed to auto-repair pending_deliveries.json: %s", e)
+            raise RuntimeError(f"Cron pending-delivery database corrupted and unrepairable: {e}") from e
+    except IOError as e:
+        logger.error("IOError reading pending_deliveries.json: %s", e)
+        raise RuntimeError(f"Failed to read cron pending-delivery database: {e}") from e
+
+    deliveries = data.get("pending_deliveries", []) if isinstance(data, dict) else []
+    return [d for d in deliveries if isinstance(d, dict)]
+
+
+def _save_pending_deliveries_unlocked(deliveries: List[Dict[str, Any]]):
+    ensure_dirs()
+    fd, tmp_path = tempfile.mkstemp(
+        dir=str(PENDING_DELIVERIES_FILE.parent), suffix='.tmp', prefix='.pending_deliveries_'
+    )
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8') as f:
+            json.dump(
+                {"pending_deliveries": deliveries, "updated_at": _hermes_now().isoformat()},
+                f,
+                indent=2,
+            )
+            f.flush()
+            os.fsync(f.fileno())
+        atomic_replace(tmp_path, PENDING_DELIVERIES_FILE)
+        _secure_file(PENDING_DELIVERIES_FILE)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
+def load_pending_deliveries() -> List[Dict[str, Any]]:
+    """Load durable cron delivery retry records."""
+    with _pending_deliveries_file_lock:
+        return copy.deepcopy(_load_pending_deliveries_unlocked())
+
+
+def enqueue_pending_delivery(job: Dict[str, Any], content: str, error: Optional[str] = None) -> Dict[str, Any]:
+    """Persist a failed cron delivery so future ticks retry until success."""
+    now = _hermes_now().isoformat()
+    record = {
+        "id": uuid.uuid4().hex,
+        "job_id": str(job.get("id", "")),
+        "job_name": job.get("name") or job.get("id") or "cron job",
+        "job": _delivery_job_snapshot(job),
+        "content": str(content or ""),
+        "attempts": 1,
+        "created_at": now,
+        "last_attempt_at": now,
+        "last_error": error,
+    }
+    with _pending_deliveries_file_lock:
+        deliveries = _load_pending_deliveries_unlocked()
+        deliveries.append(record)
+        _save_pending_deliveries_unlocked(deliveries)
+    return copy.deepcopy(record)
+
+
+def record_pending_delivery_attempt(delivery_id: str, error: Optional[str]) -> bool:
+    """Record another failed attempt for a queued cron delivery."""
+    with _pending_deliveries_file_lock:
+        deliveries = _load_pending_deliveries_unlocked()
+        for delivery in deliveries:
+            if delivery.get("id") == delivery_id:
+                delivery["attempts"] = int(delivery.get("attempts") or 0) + 1
+                delivery["last_attempt_at"] = _hermes_now().isoformat()
+                delivery["last_error"] = error
+                _save_pending_deliveries_unlocked(deliveries)
+                return True
+    return False
+
+
+def remove_pending_delivery(delivery_id: str) -> bool:
+    """Remove a queued cron delivery after it sends successfully."""
+    with _pending_deliveries_file_lock:
+        deliveries = _load_pending_deliveries_unlocked()
+        kept = [d for d in deliveries if d.get("id") != delivery_id]
+        if len(kept) == len(deliveries):
+            return False
+        _save_pending_deliveries_unlocked(kept)
+        return True
 
 
 def _normalize_workdir(workdir: Optional[str]) -> Optional[str]:

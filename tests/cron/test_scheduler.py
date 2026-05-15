@@ -429,8 +429,14 @@ class TestRoutingIntents:
 
     def test_all_token_case_insensitive(self, monkeypatch):
         """'ALL' / 'All' / 'all' are all recognized."""
-        from cron.scheduler import _resolve_delivery_targets
+        from cron.scheduler import (
+            _HOME_TARGET_ENV_VARS,
+            _LEGACY_HOME_TARGET_ENV_VARS,
+            _resolve_delivery_targets,
+        )
 
+        for env_var in set(_HOME_TARGET_ENV_VARS.values()) | set(_LEGACY_HOME_TARGET_ENV_VARS.values()):
+            monkeypatch.delenv(env_var, raising=False)
         monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "-111")
         monkeypatch.setenv("DISCORD_HOME_CHANNEL", "-222")
 
@@ -803,6 +809,86 @@ class TestDeliverResultErrorReturns:
         result = _deliver_result(job, "Output.")
         assert result is not None
         assert "no delivery target" in result
+
+
+class TestPendingDeliveryRetries:
+    """tick() retries durable failed-delivery records until they send successfully."""
+
+    def _isolate_pending_store(self, tmp_path, monkeypatch):
+        import cron.jobs as jobs
+
+        cron_dir = tmp_path / "cron"
+        monkeypatch.setattr(jobs, "CRON_DIR", cron_dir)
+        monkeypatch.setattr(jobs, "JOBS_FILE", cron_dir / "jobs.json")
+        monkeypatch.setattr(jobs, "OUTPUT_DIR", cron_dir / "output")
+        monkeypatch.setattr(jobs, "PENDING_DELIVERIES_FILE", cron_dir / "pending_deliveries.json")
+        return jobs
+
+    def test_tick_retries_existing_pending_delivery_until_success(self, tmp_path, monkeypatch):
+        import cron.scheduler as sched
+
+        jobs = self._isolate_pending_store(tmp_path, monkeypatch)
+        pending_job = {
+            "id": "job-1",
+            "name": "daily",
+            "deliver": "origin",
+            "origin": {"platform": "discord", "chat_id": "chan"},
+        }
+        jobs.enqueue_pending_delivery(pending_job, "body", "initial outage")
+
+        attempts = []
+        outcomes = iter(["still down", None])
+
+        def fake_deliver(job, content, adapters=None, loop=None):
+            attempts.append((job, content))
+            return next(outcomes)
+
+        monkeypatch.setattr(sched, "get_due_jobs", lambda: [])
+        monkeypatch.setattr(sched, "_deliver_result", fake_deliver)
+
+        assert sched.tick(verbose=False) == 0
+        queued = jobs.load_pending_deliveries()
+        assert len(queued) == 1
+        assert queued[0]["attempts"] == 2
+        assert queued[0]["last_error"] == "still down"
+        assert attempts == [(pending_job, "body")]
+
+        assert sched.tick(verbose=False) == 0
+        assert jobs.load_pending_deliveries() == []
+        assert attempts == [(pending_job, "body"), (pending_job, "body")]
+
+    def test_tick_enqueues_new_delivery_failure_for_later_retry(self, tmp_path, monkeypatch):
+        import cron.scheduler as sched
+
+        jobs = self._isolate_pending_store(tmp_path, monkeypatch)
+        due_job = {
+            "id": "due-1",
+            "name": "due report",
+            "deliver": "origin",
+            "origin": {"platform": "discord", "chat_id": "chan", "thread_id": "thread"},
+        }
+        marks = []
+
+        monkeypatch.setattr(sched, "get_due_jobs", lambda: [due_job])
+        monkeypatch.setattr(sched, "advance_next_run", lambda _job_id: False)
+        monkeypatch.setattr(sched, "run_job", lambda _job: (True, "full doc", "final body", None))
+        monkeypatch.setattr(sched, "save_job_output", lambda _job_id, _output: tmp_path / "out.md")
+        monkeypatch.setattr(sched, "_deliver_result", lambda *_args, **_kwargs: "network down")
+        monkeypatch.setattr(sched, "mark_job_run", lambda *args, **kwargs: marks.append((args, kwargs)))
+
+        assert sched.tick(verbose=False) == 1
+
+        queued = jobs.load_pending_deliveries()
+        assert len(queued) == 1
+        assert queued[0]["content"] == "final body"
+        assert queued[0]["last_error"] == "network down"
+        assert queued[0]["job"] == {
+            "id": "due-1",
+            "name": "due report",
+            "deliver": "origin",
+            "origin": {"platform": "discord", "chat_id": "chan", "thread_id": "thread"},
+        }
+        assert marks[0][1]["delivery_error"] == "network down"
 
 
 class TestRunJobSessionPersistence:

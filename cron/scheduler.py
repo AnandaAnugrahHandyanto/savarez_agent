@@ -122,7 +122,16 @@ _LEGACY_HOME_TARGET_ENV_VARS = {
     "QQBOT_HOME_CHANNEL": "QQ_HOME_CHANNEL",
 }
 
-from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_run
+from cron.jobs import (
+    get_due_jobs,
+    mark_job_run,
+    save_job_output,
+    advance_next_run,
+    enqueue_pending_delivery,
+    load_pending_deliveries,
+    record_pending_delivery_attempt,
+    remove_pending_delivery,
+)
 
 # Sentinel: when a cron agent has nothing new to report, it can start its
 # response with this marker to suppress delivery.  Output is still saved
@@ -654,6 +663,54 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     if delivery_errors:
         return "; ".join(delivery_errors)
     return None
+
+
+def _retry_pending_deliveries(adapters=None, loop=None) -> int:
+    """Retry durable cron delivery failures once per scheduler tick.
+
+    Failed sends are not allowed to vanish: each queued record is retried on
+    every tick until _deliver_result reports success, then it is removed. A
+    failed retry only updates attempts/last_error and remains queued.
+    """
+    try:
+        pending = load_pending_deliveries()
+    except Exception as exc:
+        logger.error("Failed to load pending cron deliveries: %s", exc)
+        return 0
+
+    attempted = 0
+    for delivery in pending:
+        delivery_id = delivery.get("id")
+        job = delivery.get("job")
+        content = delivery.get("content", "")
+        if not delivery_id or not isinstance(job, dict) or not content:
+            logger.warning("Skipping malformed pending cron delivery record: %s", delivery)
+            continue
+
+        attempted += 1
+        try:
+            delivery_error = _deliver_result(job, str(content), adapters=adapters, loop=loop)
+        except Exception as exc:
+            delivery_error = str(exc)
+            logger.error("Pending delivery %s failed: %s", delivery_id, exc)
+
+        if delivery_error:
+            record_pending_delivery_attempt(str(delivery_id), delivery_error)
+            logger.warning(
+                "Pending delivery %s for job %s still failing: %s",
+                delivery_id,
+                delivery.get("job_id") or job.get("id", "?"),
+                delivery_error,
+            )
+        else:
+            remove_pending_delivery(str(delivery_id))
+            logger.info(
+                "Pending delivery %s for job %s delivered successfully",
+                delivery_id,
+                delivery.get("job_id") or job.get("id", "?"),
+            )
+
+    return attempted
 
 
 _DEFAULT_SCRIPT_TIMEOUT = 120  # seconds
@@ -1688,10 +1745,18 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
         return 0
 
     try:
+        pending_retries = _retry_pending_deliveries(adapters=adapters, loop=loop)
         due_jobs = get_due_jobs()
 
         if verbose and not due_jobs:
-            logger.info("%s - No jobs due", _hermes_now().strftime('%H:%M:%S'))
+            if pending_retries:
+                logger.info(
+                    "%s - No jobs due; retried %d pending delivery(s)",
+                    _hermes_now().strftime('%H:%M:%S'),
+                    pending_retries,
+                )
+            else:
+                logger.info("%s - No jobs due", _hermes_now().strftime('%H:%M:%S'))
             return 0
 
         if verbose:
@@ -1754,6 +1819,21 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
                     except Exception as de:
                         delivery_error = str(de)
                         logger.error("Delivery failed for job %s: %s", job["id"], de)
+
+                    if delivery_error:
+                        try:
+                            enqueue_pending_delivery(job, deliver_content, delivery_error)
+                            logger.warning(
+                                "Job '%s': delivery failed; queued for retry until success: %s",
+                                job["id"],
+                                delivery_error,
+                            )
+                        except Exception as qe:
+                            logger.error(
+                                "Job '%s': failed to queue delivery retry after send failure: %s",
+                                job["id"],
+                                qe,
+                            )
 
                 # Treat empty final_response as a soft failure so last_status
                 # is not "ok" — the agent ran but produced nothing useful.

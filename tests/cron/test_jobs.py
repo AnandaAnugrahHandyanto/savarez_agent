@@ -24,6 +24,10 @@ from cron.jobs import (
     advance_next_run,
     get_due_jobs,
     save_job_output,
+    enqueue_pending_delivery,
+    load_pending_deliveries,
+    record_pending_delivery_attempt,
+    remove_pending_delivery,
 )
 
 
@@ -186,6 +190,7 @@ def tmp_cron_dir(tmp_path, monkeypatch):
     monkeypatch.setattr("cron.jobs.CRON_DIR", tmp_path / "cron")
     monkeypatch.setattr("cron.jobs.JOBS_FILE", tmp_path / "cron" / "jobs.json")
     monkeypatch.setattr("cron.jobs.OUTPUT_DIR", tmp_path / "cron" / "output")
+    monkeypatch.setattr("cron.jobs.PENDING_DELIVERIES_FILE", tmp_path / "cron" / "pending_deliveries.json")
     return tmp_path
 
 
@@ -558,6 +563,44 @@ class TestMarkJobRun:
         assert updated["next_run_at"] is None
         assert updated["enabled"] is False
         assert updated["state"] == "completed"
+
+
+class TestPendingDeliveries:
+    """Durable retry queue for cron outputs whose platform delivery failed."""
+
+    def test_enqueue_retry_and_remove_pending_delivery(self, tmp_cron_dir):
+        job = {
+            "id": "job-1",
+            "name": "daily report",
+            "deliver": "origin",
+            "origin": {"platform": "discord", "chat_id": "chan-1", "thread_id": "thread-9"},
+            # Non-routing execution fields should not be copied into retry records.
+            "prompt": "expensive agent prompt",
+        }
+
+        pending = enqueue_pending_delivery(job, "report body", "HTTP 503")
+
+        queued = load_pending_deliveries()
+        assert len(queued) == 1
+        assert queued[0]["id"] == pending["id"]
+        assert queued[0]["content"] == "report body"
+        assert queued[0]["attempts"] == 1
+        assert queued[0]["last_error"] == "HTTP 503"
+        assert queued[0]["job"] == {
+            "id": "job-1",
+            "name": "daily report",
+            "deliver": "origin",
+            "origin": {"platform": "discord", "chat_id": "chan-1", "thread_id": "thread-9"},
+        }
+
+        record_pending_delivery_attempt(pending["id"], "still down")
+        queued = load_pending_deliveries()
+        assert queued[0]["attempts"] == 2
+        assert queued[0]["last_error"] == "still down"
+        assert queued[0]["last_attempt_at"] is not None
+
+        assert remove_pending_delivery(pending["id"]) is True
+        assert load_pending_deliveries() == []
 
 
 class TestAdvanceNextRun:
