@@ -64,6 +64,64 @@ _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT = 30.0
 _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT = 5.0
 _TELEGRAM_COMMAND_MENTION_RE = re.compile(r"(?<![\w:/])/([A-Za-z0-9][A-Za-z0-9_-]*)")
 
+_RESEARCH_RIGOR_CHOICES = ("brief", "standard", "deep")
+
+
+def _normalize_research_rigor(text: str) -> str:
+    lower = (text or "").strip().lower()
+    if not lower:
+        return ""
+    if lower in _RESEARCH_RIGOR_CHOICES:
+        return lower
+    if re.search(r"\brigor\s*tier\s*:\s*(brief|standard|deep)\b", lower):
+        return re.search(r"\brigor\s*tier\s*:\s*(brief|standard|deep)\b", lower).group(1)
+    if re.search(r"\b(brief|standard|deep)\b", lower):
+        return re.search(r"\b(brief|standard|deep)\b", lower).group(1)
+    return ""
+
+
+def _looks_like_manual_research_request(text: str) -> bool:
+    lower = (text or "").strip().lower()
+    if not lower.startswith("research "):
+        return False
+    research_signals = (
+        " better than ",
+        " competition",
+        " compare ",
+        " versus ",
+        " vs ",
+        " what most researchers believe",
+        " what researchers believe",
+        " what experts think",
+        " in 10 years",
+        " future of ",
+        " publish ",
+        " report",
+        " memo",
+        " deep research",
+        " evidence",
+    )
+    return any(sig in lower for sig in research_signals)
+
+
+def _tool_progress_label(tool_name: str | None, *, with_emoji: bool = True) -> str:
+    name = (tool_name or "").strip().lower()
+    emoji = "🧠"
+    label = "thinking"
+    if any(tok in name for tok in ("web", "browser")):
+        emoji, label = "🌐", "browsing"
+    elif any(tok in name for tok in ("terminal", "process", "execute_code")):
+        emoji, label = "🛠️", "tinkering"
+    elif any(tok in name for tok in ("file", "read", "write", "patch", "grep", "glob", "search_files")):
+        emoji, label = "💾", "filing"
+    elif any(tok in name for tok in ("memory", "session_search")):
+        emoji, label = "🧠", "remembering"
+    elif any(tok in name for tok in ("clarify", "todo", "plan")):
+        emoji, label = "📝", "scribbling"
+    elif any(tok in name for tok in ("skill",)):
+        emoji, label = "📚", "skimming"
+    return f"{emoji} {label}" if with_emoji else label
+
 
 def _telegramize_command_mentions(text: str, platform: Any) -> str:
     """Rewrite slash-command mentions to Telegram-valid command names.
@@ -1287,6 +1345,9 @@ class GatewayRunner:
         # Track pending exec approvals per session
         # Key: session_key, Value: {"command": str, "pattern_key": str, ...}
         self._pending_approvals: Dict[str, Dict[str, Any]] = {}
+        # Track manual Telegram research prompts waiting on a rigor choice.
+        # Key: session_key, Value: original user prompt text.
+        self._pending_research_rigor: Dict[str, str] = {}
 
         # Track platforms that failed to connect for background reconnection.
         # Key: Platform enum, Value: {"config": platform_config, "attempts": int, "next_retry": float}
@@ -2624,7 +2685,7 @@ class GatewayRunner:
                 if max_iter:
                     status_parts.append(f"iteration {iteration}/{max_iter}")
                 if current_tool:
-                    status_parts.append(f"running: {current_tool}")
+                    status_parts.append(_tool_progress_label(current_tool))
             except Exception:
                 pass
 
@@ -5859,6 +5920,27 @@ class GatewayRunner:
                         e,
                     )
                 _update_prompts.pop(_quick_key, None)
+
+        # Manual Telegram research rigor gate.
+        # For deep/manual research requests, force a rigor choice before the
+        # agent can gather sources or spawn a child worker. This keeps the
+        # active chat deterministic and prevents inline web-search leakage.
+        if source.platform == Platform.TELEGRAM and not event.is_command():
+            _pending_research = self._pending_research_rigor.get(_quick_key)
+            _rigor = _normalize_research_rigor(event.text or "")
+            if _pending_research:
+                if _rigor:
+                    self._pending_research_rigor.pop(_quick_key, None)
+                    event.text = (
+                        f"{_pending_research}\n\n"
+                        f"Rigor tier: {_rigor}. For Brian/Telegram, do not ask for rigor again. "
+                        f"Do not do the research inline; use the background research workflow."
+                    )
+                else:
+                    return "Choose rigor first: Brief, Standard, or Deep."
+            elif _looks_like_manual_research_request(event.text or "") and not _rigor:
+                self._pending_research_rigor[_quick_key] = (event.text or "").strip()
+                return "Choose rigor: Brief, Standard, or Deep."
 
         # Intercept messages that are responses to a pending clarify
         # request that is awaiting free-form text (either an open-ended
@@ -14517,6 +14599,17 @@ class GatewayRunner:
                 return
             last_tool[0] = tool_name
             
+            if source.platform == Platform.TELEGRAM:
+                msg = _tool_progress_label(tool_name)
+                if msg == last_progress_msg[0]:
+                    repeat_count[0] += 1
+                    progress_queue.put(("__dedup__", msg, repeat_count[0]))
+                    return
+                last_progress_msg[0] = msg
+                repeat_count[0] = 0
+                progress_queue.put(msg)
+                return
+
             # Build progress message with primary argument preview
             from agent.display import get_tool_emoji
             emoji = get_tool_emoji(tool_name, default="⚙️")

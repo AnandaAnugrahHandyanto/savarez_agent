@@ -8,6 +8,7 @@ from unittest.mock import patch as mock_patch
 import tools.approval as approval_module
 from tools.approval import (
     _get_approval_mode,
+    _is_safe_hermes_research_spawn,
     _smart_approve,
     approve_session,
     detect_dangerous_command,
@@ -125,6 +126,18 @@ class TestSafeCommand:
         assert is_dangerous is False
         assert key is None
         assert desc is None
+
+
+class TestSafeHermesResearchSpawn:
+    def test_research_spawn_command_is_allowlisted(self):
+        cmd = (
+            "hermes -p research chat -q 'Publish to https://research.briankeefe.dev/foo "
+            "and return only the URL'"
+        )
+        assert _is_safe_hermes_research_spawn(cmd) is True
+
+    def test_non_research_hermes_command_not_allowlisted(self):
+        assert _is_safe_hermes_research_spawn("hermes gateway restart") is False
 
 
 def _clear_session(key):

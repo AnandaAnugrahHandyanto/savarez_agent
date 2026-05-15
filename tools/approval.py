@@ -444,6 +444,24 @@ def _normalize_command_for_detection(command: str) -> str:
     return command
 
 
+def _is_safe_hermes_research_spawn(command: str) -> bool:
+    """Return True for safe nested Hermes research-chat spawns.
+
+    These commands are used to launch a child Hermes session under the dedicated
+    `research` profile. They are operationally important for Telegram research
+    UX and can trip tirith on the embedded public `research.briankeefe.dev`
+    URL even though the command itself is benign.
+    """
+    normalized = _normalize_command_for_detection(command)
+    lower = normalized.lower()
+    if "research.briankeefe.dev" not in lower:
+        return False
+    # Exact child-run shape only: hermes chat query, optionally with -p research.
+    if re.match(r"^\s*(?:\S+/)?hermes\s+(?:-p\s+research\s+)?chat\b", lower):
+        return True
+    return False
+
+
 def detect_dangerous_command(command: str) -> tuple:
     """Check if a command matches any dangerous patterns.
 
@@ -915,6 +933,9 @@ def check_dangerous_command(command: str, env_type: str,
         logger.warning("Hardline block: %s (command: %s)", hardline_desc, command[:200])
         return _hardline_block_result(hardline_desc)
 
+    if _is_safe_hermes_research_spawn(command):
+        return {"approved": True, "message": None}
+
     # --yolo: bypass all approval prompts. Gateway /yolo is session-scoped;
     # CLI --yolo remains process-scoped via the env var for local use.
     if is_truthy_value(os.getenv("HERMES_YOLO_MODE")) or is_current_session_yolo_enabled():
@@ -1038,6 +1059,9 @@ def check_all_command_guards(command: str, env_type: str,
     if is_hardline:
         logger.warning("Hardline block: %s (command: %s)", hardline_desc, command[:200])
         return _hardline_block_result(hardline_desc)
+
+    if _is_safe_hermes_research_spawn(command):
+        return {"approved": True, "message": None}
 
     # == Sudo stdin guard ==
     # Like the hardline floor above, this is unconditional: there is never a
