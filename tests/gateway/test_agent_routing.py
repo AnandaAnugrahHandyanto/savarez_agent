@@ -188,3 +188,177 @@ class TestResolveAgentId:
             {"match": {"platform": "telegram", "chat_id": "-1001234", "thread_id": "42"}, "agent": "coder"},
         ]
         assert resolve_agent_id(source, bad_routes) == "research"
+
+
+class TestMatrixRouting:
+    """Matrix -> code agent routing (E2E scenario TC-01 / TC-02)."""
+
+    def test_matrix_dm_routes_to_code(self):
+        source = SessionSource(
+            platform=Platform.MATRIX,
+            chat_id="!u00jd7u1b1WqHly1:localhost",
+            chat_type="dm",
+            user_id="@testuser:localhost",
+        )
+        routes = [
+            {"match": {"platform": "wecom"}, "agent": "wecom-agent"},
+            {"match": {"platform": "matrix"}, "agent": "code"},
+        ]
+        assert resolve_agent_id(source, routes, default="main") == "code"
+
+    def test_matrix_room_routes_to_code(self):
+        source = SessionSource(
+            platform=Platform.MATRIX,
+            chat_id="#test-room:localhost",
+            chat_type="channel",
+            user_id="@testuser:localhost",
+        )
+        routes = [
+            {"match": {"platform": "matrix"}, "agent": "code"},
+        ]
+        assert resolve_agent_id(source, routes, default="main") == "code"
+
+    def test_weixin_still_routes_to_main(self):
+        """Regression: weixin must continue using default main agent."""
+        source = SessionSource(
+            platform=Platform.WEIXIN,
+            chat_id="wx123456",
+            chat_type="dm",
+            user_id="wxuser_abc",
+        )
+        routes = [
+            {"match": {"platform": "wecom"}, "agent": "wecom-agent"},
+            {"match": {"platform": "matrix"}, "agent": "code"},
+        ]
+        assert resolve_agent_id(source, routes, default="main") == "main"
+
+    def test_wecom_still_routes_to_wecom_agent(self):
+        """Regression: explicit wecom route must remain intact."""
+        source = SessionSource(
+            platform=Platform.WECOM,
+            chat_id="wc123456",
+            chat_type="dm",
+            user_id="wcuser_abc",
+        )
+        routes = [
+            {"match": {"platform": "wecom"}, "agent": "wecom-agent"},
+            {"match": {"platform": "matrix"}, "agent": "code"},
+        ]
+        assert resolve_agent_id(source, routes, default="main") == "wecom-agent"
+
+    def test_matrix_user_id_specific_route(self):
+        """VIP user on Matrix gets premium agent, others get code."""
+        routes = [
+            {"match": {"platform": "matrix", "user_id": "@boss:localhost"}, "agent": "premium"},
+            {"match": {"platform": "matrix"}, "agent": "code"},
+        ]
+        vip = SessionSource(
+            platform=Platform.MATRIX,
+            chat_id="!room:localhost",
+            user_id="@boss:localhost",
+        )
+        regular = SessionSource(
+            platform=Platform.MATRIX,
+            chat_id="!room:localhost",
+            user_id="@peon:localhost",
+        )
+        assert resolve_agent_id(vip, routes) == "premium"
+        assert resolve_agent_id(regular, routes) == "code"
+
+
+class TestProfileIsolation:
+    """AgentProfile home_dir / ContextVar / session path isolation."""
+
+    def test_agent_profile_resolved_home(self, tmp_path):
+        from agent.profile import AgentProfile
+        profile = AgentProfile(id="code", home_dir=tmp_path / "code")
+        assert profile.resolved_home == tmp_path / "code"
+        assert profile.soul_md_path == tmp_path / "code" / "SOUL.md"
+        assert profile.memory_dir == tmp_path / "code" / "memories"
+        assert profile.skills_dir == tmp_path / "code" / "skills"
+        assert profile.sessions_path == tmp_path / "code" / "sessions.json"
+
+    def test_main_profile_falls_back_to_process_home(self, monkeypatch):
+        from agent.profile import AgentProfile, get_hermes_home
+        monkeypatch.setenv("HERMES_HOME", "/fake/hermes")
+        profile = AgentProfile(id="main")
+        assert profile.resolved_home == get_hermes_home()
+
+    def test_contextvar_scopes_profile(self):
+        from agent.profile import AgentProfile, use_profile, get_active_profile
+        code_profile = AgentProfile(id="code", home_dir="/tmp/code")
+        main_profile = AgentProfile(id="main", home_dir="/tmp/main")
+
+        # Default is None
+        assert get_active_profile() is None
+
+        with use_profile(code_profile):
+            assert get_active_profile() == code_profile
+            # Nested override
+            with use_profile(main_profile):
+                assert get_active_profile() == main_profile
+            assert get_active_profile() == code_profile
+
+        assert get_active_profile() is None
+
+    def test_load_agent_registry_from_config(self):
+        from agent.profile import load_agent_registry, AgentProfile, DEFAULT_AGENT_ID
+
+        class FakeConfig:
+            agents = {
+                "main": {},
+                "code": {
+                    "model": "kimi-for-coding",
+                    "provider": "moonshot",
+                    "home_dir": "/root/.hermes/profiles/code",
+                },
+                "wecom-agent": {
+                    "home_dir": "/root/.hermes/profiles/wecom-agent",
+                },
+            }
+
+        registry = load_agent_registry(FakeConfig())
+        assert set(registry.keys()) == {"main", "code", "wecom-agent"}
+        assert registry["code"].model == "kimi-for-coding"
+        assert registry["code"].provider == "moonshot"
+        assert str(registry["code"].home_dir) == "/root/.hermes/profiles/code"
+
+    def test_load_agent_registry_ensures_default(self):
+        from agent.profile import load_agent_registry, DEFAULT_AGENT_ID
+
+        class FakeConfig:
+            agents = {"code": {}}
+
+        registry = load_agent_registry(FakeConfig())
+        assert DEFAULT_AGENT_ID in registry
+
+    def test_load_agent_registry_skips_non_dict_entries(self):
+        from agent.profile import load_agent_registry
+
+        class FakeConfig:
+            agents = {"bad": "not-a-dict", "good": {}}
+
+        registry = load_agent_registry(FakeConfig())
+        assert "bad" not in registry
+        assert "good" in registry
+        assert "main" in registry
+
+
+class TestBackwardCompatibility:
+    """Legacy single-agent installs must see zero behavioral change."""
+
+    def test_no_routes_no_agents_returns_main(self):
+        source = SessionSource(platform=Platform.TELEGRAM, chat_id="123")
+        assert resolve_agent_id(source, [], default="main") == "main"
+
+    def test_session_source_agent_id_field_exists(self):
+        """SessionSource must carry agent_id for downstream session key building."""
+        source = SessionSource(platform=Platform.MATRIX, chat_id="!room:localhost")
+        assert hasattr(source, "agent_id")
+        assert source.agent_id is None  # Default before routing
+
+    def test_empty_config_registry_has_main(self):
+        from agent.profile import load_agent_registry, DEFAULT_AGENT_ID
+        registry = load_agent_registry(None)
+        assert DEFAULT_AGENT_ID in registry
+        assert registry[DEFAULT_AGENT_ID].home_dir is None

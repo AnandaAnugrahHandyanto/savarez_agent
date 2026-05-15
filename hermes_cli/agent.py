@@ -178,9 +178,7 @@ def cmd_agent_add(args) -> int:
 
     # If cloning from an existing profile, copy directory
     if args.from_profile:
-        src = get_hermes_home()
-        if args.from_profile != "main":
-            src = src / "profiles" / args.from_profile
+        src = get_hermes_home() / "profiles" / args.from_profile
         dst = get_hermes_home() / "profiles" / agent_id
 
         if not src.exists():

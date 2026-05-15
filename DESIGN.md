@@ -345,6 +345,33 @@ Inbound Message
 
 ---
 
+## Interaction with Existing Subsystems
+
+### Kanban Multi-Agent Coordination
+
+The Kanban subsystem (`hermes_cli/kanban_db.py`, `gateway/run.py` embedded dispatcher/notifier) is **cross-profile by design** and requires **no code changes**.
+
+**Why it works without changes:**
+
+1. **Shared data layer** — `kanban_home()` resolves through `get_default_hermes_root()`, not `get_hermes_home()`. The board DB lives at `<root>/kanban.db` regardless of which agent is active. This is intentional: Kanban is the coordination primitive *across* agents, not per-agent state.
+
+2. **Worker isolation via subprocess** — The dispatcher spawns workers via `hermes -p <assignee> chat -q ...` (`_default_spawn`). Each worker is an independent OS process with its own `HERMES_HOME`, fully isolated from the gateway's ContextVar.
+
+3. **Gateway background tasks are agent-agnostic** — `_kanban_notifier_watcher` and `_kanban_dispatcher_watcher` run as asyncio background tasks. They read/write the Kanban DB directly and never consult `agent_id` or the active ContextVar.
+
+**Configuration convention:**
+
+Kanban task `assignee` must name a **valid Hermes profile** (i.e. `hermes -p <assignee>` must succeed). When using multi-agent configs, ensure the `assignee` matches either:
+
+- A traditional profile directory (`~/.hermes/profiles/<name>/`), or
+- An `agents:` key that the CLI can resolve to a runnable configuration
+
+If the assignee does not resolve, the dispatcher records a spawn failure; after `failure_limit` consecutive failures the task is auto-blocked.
+
+**Notifier identity:** The Kanban notifier uses `self._active_profile_name()` (the gateway's default profile) as the sender identity. This is a display-name concern only — the actual notification delivery routes correctly because subscriptions are keyed by `(platform, chat_id, thread_id)`.
+
+---
+
 ## Risks & Mitigations
 
 | Risk | Mitigation |
