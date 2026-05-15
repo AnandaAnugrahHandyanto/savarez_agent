@@ -31,6 +31,7 @@ WORKDIR /opt/hermes
 # The chown contract stays in place for #18800, but now runs on mostly-empty
 # directories instead of hundreds of thousands of files.
 RUN mkdir -p /opt/hermes/.venv /opt/hermes/ui-tui /opt/hermes/node_modules && \
+    chown hermes:hermes /opt/hermes && \
     chown -R hermes:hermes /opt/hermes/.venv /opt/hermes/ui-tui /opt/hermes/node_modules
 
 # ---------- Layer-cached dependency install ----------
