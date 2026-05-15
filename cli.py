@@ -6977,6 +6977,15 @@ class HermesCLI:
                 _cprint("  /model --provider <slug>             switch provider")
                 return
 
+            # Show fallback status if active (issue #25852)
+            if getattr(self, "_fallback_activated", False):
+                _primary = ((self._primary_runtime or {}).get("model") or "unknown")
+                _cprint(
+                    f"  [dim]⚡ Fallback active: {_primary} → {model_display} "
+                    f"({provider_display})[/]"
+                )
+                _cprint("")
+
             self._open_model_picker(
                 providers,
                 model_display,
