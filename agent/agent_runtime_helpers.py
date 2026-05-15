@@ -1989,7 +1989,7 @@ def extract_api_error_context(error: Exception) -> Dict[str, Any]:
     if "reset_at" not in context:
         message = context.get("message") or ""
         if isinstance(message, str):
-            delay_match = re.search(r"quotaResetDelay[:\s\"]+(\\d+(?:\\.\\d+)?)(ms|s)", message, re.IGNORECASE)
+            delay_match = re.search(r"quotaResetDelay[:\s\"]+(\d+(?:\.\d+)?)(ms|s)", message, re.IGNORECASE)
             if delay_match:
                 value = float(delay_match.group(1))
                 seconds = value / 1000.0 if delay_match.group(2).lower() == "ms" else value
@@ -2002,6 +2002,26 @@ def extract_api_error_context(error: Exception) -> Dict[str, Any]:
                 )
                 if sec_match:
                     context["reset_at"] = time.time() + float(sec_match.group(1))
+                else:
+                    # Handle providers that embed an absolute reset timestamp in
+                    # the error message, e.g. MiniMax: "resets at 2026-05-18T00:00:00Z".
+                    # Without this, the credential pool falls back to the 1-hour
+                    # default TTL and rotates the key back in well before the
+                    # provider's actual weekly/daily quota resets.
+                    iso_match = re.search(
+                        r"resets?\s+at\s+(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z?(?:[+-]\d{2}:?\d{2})?)",
+                        message,
+                        re.IGNORECASE,
+                    )
+                    if iso_match:
+                        try:
+                            from datetime import datetime
+                            raw = iso_match.group(1).replace("Z", "+00:00")
+                            reset_ts = datetime.fromisoformat(raw).timestamp()
+                            if reset_ts > time.time():
+                                context["reset_at"] = reset_ts
+                        except (ValueError, OverflowError):
+                            pass
 
     return context
 
