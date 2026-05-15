@@ -26,6 +26,11 @@ PLATFORM_MAP = {
 
 EXCLUDED_SKILL_DIRS = frozenset((".git", ".github", ".hub", ".archive"))
 
+
+def is_excluded_skill_dir(name: str) -> bool:
+    """Return True when a directory should be skipped during skill indexing."""
+    return name in EXCLUDED_SKILL_DIRS or name.startswith(".")
+
 # ── Lazy YAML loader ─────────────────────────────────────────────────────
 
 _yaml_load_fn = None
@@ -478,11 +483,12 @@ def extract_skill_description(frontmatter: Dict[str, Any]) -> str:
 def iter_skill_index_files(skills_dir: Path, filename: str):
     """Walk skills_dir yielding sorted paths matching *filename*.
 
-    Excludes ``.git``, ``.github``, ``.hub``, ``.archive`` directories.
+    Excludes hidden workspace/metadata directories such as ``.git``,
+    ``.github``, ``.hub``, ``.archive``, ``.cursor``, and ``.opencode``.
     """
     matches = []
     for root, dirs, files in os.walk(skills_dir, followlinks=True):
-        dirs[:] = [d for d in dirs if d not in EXCLUDED_SKILL_DIRS]
+        dirs[:] = [d for d in dirs if not is_excluded_skill_dir(d)]
         if filename in files:
             matches.append(Path(root) / filename)
     for path in sorted(matches, key=lambda p: str(p.relative_to(skills_dir))):

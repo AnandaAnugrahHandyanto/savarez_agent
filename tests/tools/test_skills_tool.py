@@ -8,6 +8,7 @@ from unittest.mock import patch
 import pytest
 
 import tools.skills_tool as skills_tool_module
+from agent.skill_utils import iter_skill_index_files
 from tools.skills_tool import (
     _get_required_environment_variables,
     _parse_frontmatter,
@@ -266,6 +267,28 @@ class TestFindAllSkills:
             skills = _find_all_skills()
         assert len(skills) == 1
         assert skills[0]["name"] == "real-skill"
+
+    def test_skips_hidden_workspace_directories(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "real-skill")
+            hidden_dir = tmp_path / ".cursor" / "skills" / "fake-skill"
+            hidden_dir.mkdir(parents=True)
+            (hidden_dir / "SKILL.md").write_text(
+                "---\nname: fake\ndescription: x\n---\n\nBody.\n"
+            )
+            skills = _find_all_skills()
+        assert len(skills) == 1
+        assert skills[0]["name"] == "real-skill"
+
+    def test_iter_skill_index_files_skips_hidden_directories(self, tmp_path):
+        real_skill = _make_skill(tmp_path, "real-skill") / "SKILL.md"
+        hidden_dir = tmp_path / ".opencode" / "skills" / "fake-skill"
+        hidden_dir.mkdir(parents=True)
+        (hidden_dir / "SKILL.md").write_text(
+            "---\nname: fake\ndescription: x\n---\n\nBody.\n"
+        )
+
+        assert list(iter_skill_index_files(tmp_path, "SKILL.md")) == [real_skill]
 
     def test_finds_skills_in_symlinked_category_dir(self, tmp_path):
         external_root = tmp_path / "repo"

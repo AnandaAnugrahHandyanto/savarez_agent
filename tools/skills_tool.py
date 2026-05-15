@@ -101,6 +101,12 @@ _PLATFORM_MAP = {
 }
 _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _EXCLUDED_SKILL_DIRS = frozenset((".git", ".github", ".hub", ".archive"))
+
+
+def _is_excluded_skill_dir(name: str) -> bool:
+    """Return True for skill-tree directories that should not be indexed."""
+    return name in _EXCLUDED_SKILL_DIRS or name.startswith(".")
+
 _REMOTE_ENV_BACKENDS = frozenset(
     {"docker", "singularity", "modal", "ssh", "daytona", "vercel_sandbox"}
 )
@@ -573,7 +579,7 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
 
     for scan_dir in dirs_to_scan:
         for skill_md in iter_skill_index_files(scan_dir, "SKILL.md"):
-            if any(part in _EXCLUDED_SKILL_DIRS for part in skill_md.parts):
+            if any(_is_excluded_skill_dir(part) for part in skill_md.relative_to(scan_dir).parts):
                 continue
 
             skill_dir = skill_md.parent
