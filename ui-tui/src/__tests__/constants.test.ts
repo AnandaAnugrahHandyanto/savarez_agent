@@ -32,6 +32,11 @@ describe('constants', () => {
     expect(hotkey?.[1]).toBe('redraw / repaint')
   })
 
+  it('documents Ctrl+D as the portable exit shortcut', () => {
+    expect(HOTKEYS.find(([k]) => k === 'Ctrl+D')?.[1]).toBe('exit')
+    expect(HOTKEYS.some(([k]) => k === 'Cmd+D')).toBe(false)
+  })
+
   it('TOOL_VERBS maps known tools (verb-only, no emoji)', () => {
     expect(TOOL_VERBS.terminal).toBe('terminal')
     expect(TOOL_VERBS.read_file).toBe('reading')
