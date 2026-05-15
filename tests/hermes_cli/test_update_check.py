@@ -151,3 +151,46 @@ def test_invalidate_update_cache_no_profiles_dir(tmp_path):
         _invalidate_update_cache()
 
     assert not (default_home / ".update_check").exists()
+
+
+
+def test_check_for_updates_release_channel_uses_tags(tmp_path, monkeypatch):
+    """Release channel update checks should use release tags, not main commits."""
+    import hermes_cli.banner as banner
+
+    repo_dir = tmp_path / "hermes-agent"
+    repo_dir.mkdir()
+    (repo_dir / ".git").mkdir()
+    fake_banner = repo_dir / "hermes_cli" / "banner.py"
+    fake_banner.parent.mkdir(parents=True, exist_ok=True)
+    fake_banner.touch()
+
+    def fake_run(cmd, **kwargs):
+        joined = " ".join(str(c) for c in cmd)
+        if "fetch upstream --tags" in joined:
+            return MagicMock(returncode=0, stdout="", stderr="")
+        if "fetch origin --tags" in joined:
+            return MagicMock(returncode=0, stdout="", stderr="")
+        if "ls-remote --tags --refs upstream v*" in joined:
+            return MagicMock(
+                returncode=0,
+                stdout="abc123\trefs/tags/v2026.5.7\ndef456\trefs/tags/v2026.4.30\n",
+                stderr="",
+            )
+        if "tag --list v* --sort=-version:refname" in joined:
+            return MagicMock(returncode=0, stdout="v2026.5.7\nv2026.4.30\n", stderr="")
+        if "merge-base --is-ancestor v2026.5.7 HEAD" in joined:
+            return MagicMock(returncode=1, stdout="", stderr="")
+        raise AssertionError(f"unexpected command: {joined}")
+
+    monkeypatch.setattr(banner, "__file__", str(fake_banner))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    with patch("hermes_cli.config.load_config", return_value={"updates": {"channel": "release"}}), \
+         patch("hermes_cli.banner.subprocess.run", side_effect=fake_run) as mock_run:
+        result = banner.check_for_updates()
+
+    assert result == banner.UPDATE_AVAILABLE_NO_COUNT
+    commands = [" ".join(str(a) for a in call.args[0]) for call in mock_run.call_args_list]
+    assert any("fetch upstream --tags" in c for c in commands)
+    assert any("ls-remote --tags --refs upstream v*" in c for c in commands)
+    assert not any("rev-list" in c for c in commands)

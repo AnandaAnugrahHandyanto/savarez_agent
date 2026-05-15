@@ -7363,7 +7363,95 @@ def _finalize_update_output(state):
             pass
 
 
-def _cmd_update_check():
+def _latest_release_tag_from_git(git_cmd: list[str], cwd: Path) -> Optional[str]:
+    """Return the newest fetched v* tag by version sort."""
+    result = subprocess.run(
+        git_cmd + ["tag", "--list", "v*", "--sort=-version:refname"],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return None
+    for line in (result.stdout or "").splitlines():
+        tag = line.strip()
+        if tag:
+            return tag
+    return None
+
+
+def _release_tag_sort_key(tag: str) -> tuple:
+    """Sort v* release tags without trusting lexicographic order."""
+    import re
+
+    parts = re.split(r"(\d+)", tag.lstrip("vV"))
+    return tuple((0, int(part)) if part.isdigit() else (1, part) for part in parts)
+
+
+def _latest_release_tag_from_remote(
+    git_cmd: list[str], cwd: Path, remote: Optional[str]
+) -> Optional[str]:
+    """Return the newest v* tag advertised by ``remote`` only."""
+    if not remote:
+        return None
+    result = subprocess.run(
+        git_cmd + ["ls-remote", "--tags", "--refs", remote, "v*"],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return None
+    tags: list[str] = []
+    for line in (result.stdout or "").splitlines():
+        ref = line.strip().split()[-1] if line.strip() else ""
+        prefix = "refs/tags/"
+        if ref.startswith(prefix):
+            tags.append(ref[len(prefix):])
+    return max(tags, key=_release_tag_sort_key) if tags else None
+
+
+def _head_contains_ref(git_cmd: list[str], cwd: Path, ref: str) -> bool:
+    """Return True when HEAD already contains ``ref``."""
+    result = subprocess.run(
+        git_cmd + ["merge-base", "--is-ancestor", ref, "HEAD"],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+    )
+    return result.returncode == 0
+
+
+def _fetch_release_tags(git_cmd: list[str], cwd: Path) -> tuple[Optional[str], subprocess.CompletedProcess]:
+    """Fetch release tags from the canonical remote, falling back to origin."""
+    last_result: Optional[subprocess.CompletedProcess] = None
+    for remote in ("upstream", "origin"):
+        result = subprocess.run(
+            git_cmd + ["fetch", remote, "--tags", "--force"],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0:
+            return remote, result
+        last_result = result
+    return None, last_result or subprocess.CompletedProcess(git_cmd, 1, stdout="", stderr="")
+
+
+def _create_pre_update_snapshot() -> None:
+    """Create a best-effort pre-update state snapshot."""
+    try:
+        from hermes_cli.backup import create_quick_snapshot
+
+        snap_id = create_quick_snapshot(label="pre-update")
+        if snap_id:
+            print(f"  ✓ Pre-update snapshot: {snap_id}")
+    except Exception as exc:
+        # Never let a snapshot failure block an update.
+        logger.debug("Pre-update snapshot failed: %s", exc)
+
+
+def _cmd_update_check(args=None):
     """Implement ``hermes update --check``: fetch and report without installing."""
     git_dir = PROJECT_ROOT / ".git"
     if not git_dir.exists():
@@ -7373,6 +7461,43 @@ def _cmd_update_check():
     git_cmd = ["git"]
     if sys.platform == "win32":
         git_cmd = ["git", "-c", "windows.appendAtomically=false"]
+
+    from hermes_cli.config import get_update_channel
+
+    channel = get_update_channel(getattr(args, "channel", None))
+    if channel == "release":
+        print("→ Fetching release tags...")
+        release_remote, fetch_result = _fetch_release_tags(git_cmd, PROJECT_ROOT)
+        if fetch_result.returncode != 0:
+            stderr = fetch_result.stderr.strip()
+            if "Could not resolve host" in stderr or "unable to access" in stderr:
+                print("✗ Network error — cannot reach the remote repository.")
+            elif "Authentication failed" in stderr or "could not read Username" in stderr:
+                print("✗ Authentication failed — check your git credentials or SSH key.")
+            else:
+                print("✗ Failed to fetch release tags.")
+                if stderr:
+                    print(f"  {stderr.splitlines()[0]}")
+            sys.exit(1)
+
+        latest_tag = _latest_release_tag_from_remote(
+            git_cmd, PROJECT_ROOT, release_remote
+        ) or _latest_release_tag_from_git(git_cmd, PROJECT_ROOT)
+        if not latest_tag:
+            print("✗ No release tags found.")
+            sys.exit(1)
+        if _head_contains_ref(git_cmd, PROJECT_ROOT, latest_tag):
+            print(f"✓ Already up to date with latest release {latest_tag}.")
+        else:
+            source = f" from {release_remote}" if release_remote else ""
+            print(f"⚕ Release update available: {latest_tag}{source}.")
+            from hermes_cli.config import recommended_update_command
+
+            install_cmd = recommended_update_command()
+            if getattr(args, "channel", None):
+                install_cmd = f"{install_cmd} --channel {channel}"
+            print(f"  Run '{install_cmd}' to install.")
+        return
 
     # Fetch both origin and upstream; prefer upstream as the canonical reference
     print("→ Fetching from upstream...")
@@ -7391,10 +7516,8 @@ def _cmd_update_check():
             capture_output=True,
             text=True,
         )
-        upstream_exists = False
         compare_branch = "origin/main"
     else:
-        upstream_exists = True
         compare_branch = "upstream/main"
 
     if fetch_result.returncode != 0:
@@ -7627,7 +7750,7 @@ def cmd_update(args):
         return
 
     if getattr(args, "check", False):
-        _cmd_update_check()
+        _cmd_update_check(args)
         return
 
     gateway_mode = getattr(args, "gateway", False)
@@ -7652,8 +7775,12 @@ def _cmd_update_impl(args, gateway_mode: bool):
         else None
     )
     assume_yes = bool(getattr(args, "yes", False))
+    from hermes_cli.config import get_update_channel
+
+    update_channel = get_update_channel(getattr(args, "channel", None))
 
     print("⚕ Updating Hermes Agent...")
+    print(f"→ Update channel: {update_channel}")
     print()
 
     # Pre-update backup — runs before any git/file mutation so users can
@@ -7715,12 +7842,16 @@ def _cmd_update_impl(args, gateway_mode: bool):
     try:
 
         print("→ Fetching updates...")
-        fetch_result = subprocess.run(
-            git_cmd + ["fetch", "origin"],
-            cwd=PROJECT_ROOT,
-            capture_output=True,
-            text=True,
-        )
+        if update_channel == "release":
+            release_remote, fetch_result = _fetch_release_tags(git_cmd, PROJECT_ROOT)
+        else:
+            release_remote = None
+            fetch_result = subprocess.run(
+                git_cmd + ["fetch", "origin"],
+                cwd=PROJECT_ROOT,
+                capture_output=True,
+                text=True,
+            )
         if fetch_result.returncode != 0:
             stderr = fetch_result.stderr.strip()
             if "Could not resolve host" in stderr or "unable to access" in stderr:
@@ -7777,19 +7908,48 @@ def _cmd_update_impl(args, gateway_mode: bool):
             and (gateway_mode or (sys.stdin.isatty() and sys.stdout.isatty()))
         )
 
-        # Check if there are updates
-        result = subprocess.run(
-            git_cmd + ["rev-list", f"HEAD..origin/{branch}", "--count"],
-            cwd=PROJECT_ROOT,
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-        commit_count = int(result.stdout.strip())
-
-        if commit_count == 0:
-            _invalidate_update_cache()
-            # Restore stash and switch back to original branch if we moved
+        if update_channel == "release":
+            latest_tag = _latest_release_tag_from_remote(
+                git_cmd, PROJECT_ROOT, release_remote
+            ) or _latest_release_tag_from_git(git_cmd, PROJECT_ROOT)
+            if not latest_tag:
+                print("✗ No release tags found.")
+                sys.exit(1)
+            if _head_contains_ref(git_cmd, PROJECT_ROOT, latest_tag):
+                _invalidate_update_cache()
+                if auto_stash_ref is not None:
+                    _restore_stashed_changes(
+                        git_cmd,
+                        PROJECT_ROOT,
+                        auto_stash_ref,
+                        prompt_user=prompt_for_restore,
+                        input_fn=gw_input_fn,
+                    )
+                if current_branch not in {"main", "HEAD"}:
+                    subprocess.run(
+                        git_cmd + ["checkout", current_branch],
+                        cwd=PROJECT_ROOT,
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                    )
+                print(f"✓ Already up to date with latest release {latest_tag}!")
+                return
+            source = f" from {release_remote}" if release_remote else ""
+            print(f"→ Found release update: {latest_tag}{source}")
+            _create_pre_update_snapshot()
+            print("→ Moving main to latest release tag...")
+            reset_result = subprocess.run(
+                git_cmd + ["reset", "--hard", latest_tag],
+                cwd=PROJECT_ROOT,
+                capture_output=True,
+                text=True,
+            )
+            if reset_result.returncode != 0:
+                print(f"✗ Failed to reset to release {latest_tag}.")
+                if reset_result.stderr.strip():
+                    print(f"  {reset_result.stderr.strip()}")
+                sys.exit(1)
             if auto_stash_ref is not None:
                 _restore_stashed_changes(
                     git_cmd,
@@ -7798,76 +7958,22 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     prompt_user=prompt_for_restore,
                     input_fn=gw_input_fn,
                 )
-            if current_branch not in {"main", "HEAD"}:
-                subprocess.run(
-                    git_cmd + ["checkout", current_branch],
-                    cwd=PROJECT_ROOT,
-                    capture_output=True,
-                    text=True,
-                    check=False,
-                )
-            print("✓ Already up to date!")
-            return
-
-        print(f"→ Found {commit_count} new commit(s)")
-
-        # Snapshot critical state (state.db, config, pairing JSONs, etc.)
-        # before pulling so a user can recover if something goes wrong.
-        # Issue #15733 reported missing pairing data after an update; even
-        # though `git pull` can't touch $HERMES_HOME, this is cheap
-        # belt-and-suspenders insurance and gives the user something to
-        # restore from via `/snapshot list` / `/snapshot restore <id>`.
-        try:
-            from hermes_cli.backup import create_quick_snapshot
-
-            snap_id = create_quick_snapshot(label="pre-update")
-            if snap_id:
-                print(f"  ✓ Pre-update snapshot: {snap_id}")
-        except Exception as exc:
-            # Never let a snapshot failure block an update.
-            logger.debug("Pre-update snapshot failed: %s", exc)
-
-        print("→ Pulling updates...")
-        update_succeeded = False
-        try:
-            pull_result = subprocess.run(
-                git_cmd + ["pull", "--ff-only", "origin", branch],
+            _invalidate_update_cache()
+        else:
+            # Check if there are updates
+            result = subprocess.run(
+                git_cmd + ["rev-list", f"HEAD..origin/{branch}", "--count"],
                 cwd=PROJECT_ROOT,
                 capture_output=True,
                 text=True,
+                check=True,
             )
-            if pull_result.returncode != 0:
-                # ff-only failed — local and remote have diverged (e.g. upstream
-                # force-pushed or rebase).  Since local changes are already
-                # stashed, reset to match the remote exactly.
-                print(
-                    "  ⚠ Fast-forward not possible (history diverged), resetting to match remote..."
-                )
-                reset_result = subprocess.run(
-                    git_cmd + ["reset", "--hard", f"origin/{branch}"],
-                    cwd=PROJECT_ROOT,
-                    capture_output=True,
-                    text=True,
-                )
-                if reset_result.returncode != 0:
-                    print(f"✗ Failed to reset to origin/{branch}.")
-                    if reset_result.stderr.strip():
-                        print(f"  {reset_result.stderr.strip()}")
-                    print(
-                        "  Try manually: git fetch origin && git reset --hard origin/main"
-                    )
-                    sys.exit(1)
-            update_succeeded = True
-        finally:
-            if auto_stash_ref is not None:
-                # Don't attempt stash restore if the code update itself failed —
-                # working tree is in an unknown state.
-                if not update_succeeded:
-                    print(
-                        f"  ℹ️  Local changes preserved in stash (ref: {auto_stash_ref})"
-                    )
-                    print(f"  Restore manually with: git stash apply")
-                else:
+            commit_count = int(result.stdout.strip())
+
+            if commit_count == 0:
+                _invalidate_update_cache()
+                # Restore stash and switch back to original branch if we moved
+                if auto_stash_ref is not None:
                     _restore_stashed_changes(
                         git_cmd,
                         PROJECT_ROOT,
@@ -7875,8 +7981,85 @@ def _cmd_update_impl(args, gateway_mode: bool):
                         prompt_user=prompt_for_restore,
                         input_fn=gw_input_fn,
                     )
+                if current_branch not in {"main", "HEAD"}:
+                    subprocess.run(
+                        git_cmd + ["checkout", current_branch],
+                        cwd=PROJECT_ROOT,
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                    )
+                print("✓ Already up to date!")
+                return
 
-        _invalidate_update_cache()
+            print(f"→ Found {commit_count} new commit(s)")
+
+            # Snapshot critical state (state.db, config, pairing JSONs, etc.)
+            # before pulling so a user can recover if something goes wrong.
+            # Issue #15733 reported missing pairing data after an update; even
+            # though `git pull` can't touch $HERMES_HOME, this is cheap
+            # belt-and-suspenders insurance and gives the user something to
+            # restore from via `/snapshot list` / `/snapshot restore <id>`.
+            try:
+                from hermes_cli.backup import create_quick_snapshot
+
+                snap_id = create_quick_snapshot(label="pre-update")
+                if snap_id:
+                    print(f"  ✓ Pre-update snapshot: {snap_id}")
+            except Exception as exc:
+                # Never let a snapshot failure block an update.
+                logger.debug("Pre-update snapshot failed: %s", exc)
+
+            print("→ Pulling updates...")
+            update_succeeded = False
+            try:
+                pull_result = subprocess.run(
+                    git_cmd + ["pull", "--ff-only", "origin", branch],
+                    cwd=PROJECT_ROOT,
+                    capture_output=True,
+                    text=True,
+                )
+                if pull_result.returncode != 0:
+                    # ff-only failed — local and remote have diverged (e.g. upstream
+                    # force-pushed or rebase).  Since local changes are already
+                    # stashed, reset to match the remote exactly.
+                    print(
+                        "  ⚠ Fast-forward not possible (history diverged), resetting to match remote..."
+                    )
+                    reset_result = subprocess.run(
+                        git_cmd + ["reset", "--hard", f"origin/{branch}"],
+                        cwd=PROJECT_ROOT,
+                        capture_output=True,
+                        text=True,
+                    )
+                    if reset_result.returncode != 0:
+                        print(f"✗ Failed to reset to origin/{branch}.")
+                        if reset_result.stderr.strip():
+                            print(f"  {reset_result.stderr.strip()}")
+                        print(
+                            "  Try manually: git fetch origin && git reset --hard origin/main"
+                        )
+                        sys.exit(1)
+                update_succeeded = True
+            finally:
+                if auto_stash_ref is not None:
+                    # Don't attempt stash restore if the code update itself failed —
+                    # working tree is in an unknown state.
+                    if not update_succeeded:
+                        print(
+                            f"  ℹ️  Local changes preserved in stash (ref: {auto_stash_ref})"
+                        )
+                        print(f"  Restore manually with: git stash apply")
+                    else:
+                        _restore_stashed_changes(
+                            git_cmd,
+                            PROJECT_ROOT,
+                            auto_stash_ref,
+                            prompt_user=prompt_for_restore,
+                            input_fn=gw_input_fn,
+                        )
+
+            _invalidate_update_cache()
 
         # Clear stale .pyc bytecode cache — prevents ImportError on gateway
         # restart when updated source references names that didn't exist in
@@ -7887,8 +8070,8 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 f"  ✓ Cleared {removed} stale __pycache__ director{'y' if removed == 1 else 'ies'}"
             )
 
-        # Fork upstream sync logic (only for main branch on forks)
-        if is_fork and branch == "main":
+        # Fork upstream sync logic (only for main-channel updates on forks)
+        if update_channel == "main" and is_fork and branch == "main":
             _sync_with_upstream_if_needed(git_cmd, PROJECT_ROOT)
 
         # Reinstall Python dependencies. Prefer .[all], but if one optional extra
@@ -11733,6 +11916,12 @@ Examples:
         action="store_true",
         default=False,
         help="Check whether an update is available without installing anything",
+    )
+    update_parser.add_argument(
+        "--channel",
+        choices=("main", "release"),
+        default=None,
+        help="Update channel override: main tracks commits, release tracks tagged releases",
     )
     update_parser.add_argument(
         "--no-backup",

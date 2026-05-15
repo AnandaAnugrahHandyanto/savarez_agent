@@ -175,6 +175,83 @@ def _check_via_local_git(repo_dir: Path) -> Optional[int]:
     return None
 
 
+def _fetch_release_tags(repo_dir: Path) -> Optional[str]:
+    """Best-effort release tag fetch from upstream, then origin."""
+    for remote in ("upstream", "origin"):
+        try:
+            result = subprocess.run(
+                ["git", "fetch", remote, "--tags", "--force", "--quiet"],
+                capture_output=True, timeout=10,
+                cwd=str(repo_dir),
+            )
+            if result.returncode == 0:
+                return remote
+        except Exception:
+            continue
+    return None
+
+
+def _release_tag_sort_key(tag: str) -> tuple:
+    """Sort v* release tags without trusting lexicographic order."""
+    import re
+
+    parts = re.split(r"(\d+)", tag.lstrip("vV"))
+    return tuple((0, int(part)) if part.isdigit() else (1, part) for part in parts)
+
+
+def _latest_release_tag(repo_dir: Path, remote: Optional[str] = None) -> Optional[str]:
+    """Return the newest v* release tag, preferring the fetched remote."""
+    if remote:
+        try:
+            result = subprocess.run(
+                ["git", "ls-remote", "--tags", "--refs", remote, "v*"],
+                capture_output=True, text=True, timeout=5,
+                cwd=str(repo_dir),
+            )
+            if result.returncode == 0:
+                tags: list[str] = []
+                for line in (result.stdout or "").splitlines():
+                    ref = line.strip().split()[-1] if line.strip() else ""
+                    prefix = "refs/tags/"
+                    if ref.startswith(prefix):
+                        tags.append(ref[len(prefix):])
+                if tags:
+                    return max(tags, key=_release_tag_sort_key)
+        except Exception:
+            pass
+    try:
+        result = subprocess.run(
+            ["git", "tag", "--list", "v*", "--sort=-version:refname"],
+            capture_output=True, text=True, timeout=5,
+            cwd=str(repo_dir),
+        )
+        if result.returncode == 0:
+            for line in (result.stdout or "").splitlines():
+                tag = line.strip()
+                if tag:
+                    return tag
+    except Exception:
+        pass
+    return None
+
+
+def _check_via_local_release_tag(repo_dir: Path) -> Optional[int]:
+    """Return whether HEAD contains the latest tagged release."""
+    remote = _fetch_release_tags(repo_dir)
+    tag = _latest_release_tag(repo_dir, remote=remote)
+    if not tag:
+        return None
+    try:
+        result = subprocess.run(
+            ["git", "merge-base", "--is-ancestor", tag, "HEAD"],
+            capture_output=True, text=True, timeout=5,
+            cwd=str(repo_dir),
+        )
+        return 0 if result.returncode == 0 else UPDATE_AVAILABLE_NO_COUNT
+    except Exception:
+        return None
+
+
 def check_for_updates() -> Optional[int]:
     """Check whether a Hermes update is available.
 
@@ -190,7 +267,14 @@ def check_for_updates() -> Optional[int]:
     cache_file = hermes_home / ".update_check"
     embedded_rev = os.environ.get("HERMES_REVISION") or None
 
-    # Read cache — invalidate if the embedded rev has changed since last check
+    try:
+        from hermes_cli.config import get_update_channel
+
+        update_channel = get_update_channel()
+    except Exception:
+        update_channel = "main"
+
+    # Read cache — invalidate if the embedded rev or update channel has changed since last check
     now = time.time()
     try:
         if cache_file.exists():
@@ -198,26 +282,37 @@ def check_for_updates() -> Optional[int]:
             if (
                 now - cached.get("ts", 0) < _UPDATE_CHECK_CACHE_SECONDS
                 and cached.get("rev") == embedded_rev
+                and cached.get("channel", "main") == update_channel
             ):
                 return cached.get("behind")
     except Exception:
         pass
 
-    if embedded_rev:
+    # Prefer the running code's location over the profile-scoped path.
+    # $HERMES_HOME/hermes-agent/ may be a stale copy from --clone-all;
+    # Path(__file__) always resolves to the actual installed checkout.
+    repo_dir = Path(__file__).parent.parent.resolve()
+    if not (repo_dir / ".git").exists():
+        repo_dir = hermes_home / "hermes-agent"
+
+    if embedded_rev and update_channel != "release":
         behind = _check_via_rev(embedded_rev)
     else:
-        # Prefer the running code's location over the profile-scoped path.
-        # $HERMES_HOME/hermes-agent/ may be a stale copy from --clone-all;
-        # Path(__file__) always resolves to the actual installed checkout.
-        repo_dir = Path(__file__).parent.parent.resolve()
-        if not (repo_dir / ".git").exists():
-            repo_dir = hermes_home / "hermes-agent"
         if not (repo_dir / ".git").exists():
             return None
-        behind = _check_via_local_git(repo_dir)
+        if update_channel == "release":
+            behind = _check_via_local_release_tag(repo_dir)
+        else:
+            behind = _check_via_local_git(repo_dir)
 
     try:
-        cache_file.write_text(json.dumps({"ts": now, "behind": behind, "rev": embedded_rev}))
+        payload = {
+            "ts": now,
+            "behind": behind,
+            "rev": embedded_rev,
+            "channel": update_channel,
+        }
+        cache_file.write_text(json.dumps(payload))
     except Exception:
         pass
 
@@ -624,9 +719,10 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
                 # exists but not by how much, and we don't know how the user
                 # installed it (nix run, profile, system flake, home-manager).
                 managed_cmd = get_managed_update_command()
+                update_cmd = managed_cmd or recommended_update_command()
                 line = "[bold yellow]⚠ update available[/]"
-                if managed_cmd:
-                    line += f"[dim yellow] — run [bold]{managed_cmd}[/bold][/]"
+                if update_cmd:
+                    line += f"[dim yellow] — run [bold]{update_cmd}[/bold][/]"
                 right_lines.append(line)
     except Exception:
         pass  # Never break the banner over an update check

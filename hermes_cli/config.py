@@ -199,6 +199,30 @@ def get_managed_update_command() -> Optional[str]:
     return None
 
 
+VALID_UPDATE_CHANNELS = {"main", "release"}
+
+
+def get_update_channel(override: Optional[str] = None) -> str:
+    """Return the configured Hermes update channel.
+
+    ``main`` preserves the historical commit-tracking behavior. ``release``
+    only updates when a tagged release advances.
+    """
+    channel = override
+    if channel is None:
+        try:
+            cfg = load_config()
+        except Exception:
+            cfg = {}
+        updates_cfg = cfg.get("updates", {}) if isinstance(cfg, dict) else {}
+        channel = updates_cfg.get("channel", "main")
+    channel = str(channel or "main").strip().lower()
+    if channel not in VALID_UPDATE_CHANNELS:
+        valid = ", ".join(sorted(VALID_UPDATE_CHANNELS))
+        raise ValueError(f"Invalid updates.channel {channel!r}; expected one of: {valid}")
+    return channel
+
+
 def recommended_update_command() -> str:
     """Return the best update command for the current installation."""
     return get_managed_update_command() or "hermes update"
@@ -1513,6 +1537,11 @@ DEFAULT_CONFIG = {
         # on large HERMES_HOME directories the zip can add minutes to every
         # update.  Set to true to re-enable, or pass ``--backup`` to opt in
         # for a single update run.
+        # Update source. ``main`` preserves the historical commit-tracking
+        # behavior. ``release`` only updates when a tagged release advances;
+        # use ``hermes update --channel main`` for emergency hotfixes between
+        # releases.
+        "channel": "main",
         "pre_update_backup": False,
         # How many pre-update backup zips to retain.  Older ones are pruned
         # automatically after each successful backup.  Values below 1 are

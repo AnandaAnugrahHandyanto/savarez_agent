@@ -286,3 +286,72 @@ termux = ["rich>=14"]
 
     assert hm._load_installable_optional_extras(group="all") == ["mcp"]
     assert hm._load_installable_optional_extras(group="termux-all") == ["termux", "mcp"]
+
+
+
+def _make_release_run_side_effect(branch="main", latest_tag="v2026.5.7", contains_latest=False):
+    """Simulate release-channel git commands for cmd_update tests."""
+
+    def side_effect(cmd, **kwargs):
+        joined = " ".join(str(c) for c in cmd)
+        if "remote get-url origin" in joined:
+            return subprocess.CompletedProcess(
+                cmd, 0, stdout="https://github.com/NousResearch/hermes-agent.git\n", stderr=""
+            )
+        if "fetch upstream --tags" in joined:
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        if "fetch origin --tags" in joined:
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        if "ls-remote --tags --refs upstream v*" in joined:
+            return subprocess.CompletedProcess(
+                cmd,
+                0,
+                stdout=f"abc123\trefs/tags/{latest_tag}\ndef456\trefs/tags/v2026.4.30\n",
+                stderr="",
+            )
+        if "rev-parse --abbrev-ref HEAD" in joined:
+            return subprocess.CompletedProcess(cmd, 0, stdout=f"{branch}\n", stderr="")
+        if "tag --list v* --sort=-version:refname" in joined:
+            return subprocess.CompletedProcess(
+                cmd, 0, stdout=f"{latest_tag}\nv2026.4.30\n", stderr=""
+            )
+        if f"merge-base --is-ancestor {latest_tag} HEAD" in joined:
+            rc = 0 if contains_latest else 1
+            return subprocess.CompletedProcess(cmd, rc, stdout="", stderr="")
+        if f"reset --hard {latest_tag}" in joined:
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    return side_effect
+
+
+@patch("shutil.which", return_value=None)
+@patch("subprocess.run")
+def test_update_release_channel_resets_to_latest_tag(mock_run, _mock_which, capsys):
+    mock_run.side_effect = _make_release_run_side_effect(contains_latest=False)
+
+    cmd_update(SimpleNamespace(channel="release"))
+
+    commands = [" ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list]
+    assert any("fetch upstream --tags" in c for c in commands)
+    assert any("ls-remote --tags --refs upstream v*" in c for c in commands)
+    assert any("reset --hard v2026.5.7" in c for c in commands)
+    assert not any("pull --ff-only origin main" in c for c in commands)
+    assert "Found release update: v2026.5.7" in capsys.readouterr().out
+
+
+@patch("shutil.which", return_value=None)
+@patch("subprocess.run")
+def test_update_release_channel_skips_when_latest_tag_is_reachable(
+    mock_run, _mock_which, capsys
+):
+    mock_run.side_effect = _make_release_run_side_effect(contains_latest=True)
+
+    cmd_update(SimpleNamespace(channel="release"))
+
+    commands = [" ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list]
+    assert any("fetch upstream --tags" in c for c in commands)
+    assert any("ls-remote --tags --refs upstream v*" in c for c in commands)
+    assert not any("reset --hard" in c for c in commands)
+    assert not any("pull --ff-only origin main" in c for c in commands)
+    assert "Already up to date" in capsys.readouterr().out
