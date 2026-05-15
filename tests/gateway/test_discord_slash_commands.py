@@ -326,6 +326,7 @@ async def test_config_custom_slash_command_emits_discord_hook(adapter):
         guild=SimpleNamespace(id=999, name="Guild"),
         user=SimpleNamespace(id=42, display_name="Sumanth"),
         response=response,
+        edit_original_response=AsyncMock(),
     )
 
     with patch("hermes_cli.plugins.invoke_hook", return_value=[_listener(
@@ -357,7 +358,8 @@ async def test_config_custom_slash_command_emits_discord_hook(adapter):
     assert hook_kwargs["user_id"] == "42"
     assert hook_kwargs["interaction"] is interaction
     channel.edit.assert_awaited_once_with(name="✅ Finished")
-    response.send_message.assert_awaited_once_with("Handled /done", ephemeral=True)
+    response.send_message.assert_not_awaited()
+    interaction.edit_original_response.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -385,12 +387,39 @@ async def test_config_custom_slash_command_defers_before_hook(adapter):
 
     async def _listener(**kwargs):
         assert deferred is True
+        await kwargs["interaction"].edit_original_response(content="Plugin handled /open")
 
-    with patch("hermes_cli.plugins.invoke_hook", return_value=[_listener()]) as invoke_hook:
+    with patch("hermes_cli.plugins.invoke_hook", side_effect=lambda *args, **kwargs: [_listener(**kwargs)]) as invoke_hook:
         await adapter._client.tree.commands["open"].callback(interaction)
 
     response.defer.assert_awaited_once_with(ephemeral=True)
     invoke_hook.assert_called_once()
+    interaction.edit_original_response.assert_awaited_once_with(content="Plugin handled /open")
+
+
+@pytest.mark.asyncio
+async def test_config_custom_slash_command_no_listener_gets_fallback(adapter):
+    adapter.config.extra["custom_slash_commands"] = ["open"]
+    adapter._register_slash_commands()
+
+    deferred = False
+
+    async def _defer(ephemeral=True):
+        nonlocal deferred
+        deferred = True
+
+    interaction = SimpleNamespace(
+        channel=SimpleNamespace(id=555),
+        channel_id=555,
+        guild=None,
+        user=SimpleNamespace(id=42, display_name="Sumanth"),
+        response=SimpleNamespace(defer=AsyncMock(side_effect=_defer), is_done=lambda: deferred),
+        edit_original_response=AsyncMock(),
+    )
+
+    with patch("hermes_cli.plugins.invoke_hook", return_value=[]):
+        await adapter._client.tree.commands["open"].callback(interaction)
+
     interaction.edit_original_response.assert_awaited_once_with(content="Handled /open")
 
 

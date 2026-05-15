@@ -3374,9 +3374,16 @@ class DiscordAdapter(BasePlatformAdapter):
             )
             return
 
-        await self._send_custom_slash_fallback_response(
-            interaction, f"Handled /{command}", ephemeral=True
-        )
+        if not hook_results:
+            await self._send_custom_slash_fallback_response(
+                interaction, f"Handled /{command}", ephemeral=True
+            )
+        else:
+            logger.debug(
+                "[Discord] custom slash /%s handled by %d plugin hook(s); skipping fallback response",
+                command,
+                len(hook_results),
+            )
 
     async def _send_custom_slash_fallback_response(
         self, interaction: discord.Interaction, message: str, *, ephemeral: bool = True
