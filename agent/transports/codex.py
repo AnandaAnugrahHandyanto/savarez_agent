@@ -127,7 +127,13 @@ class ResponsesApiTransport(ProviderTransport):
 
         request_overrides = params.get("request_overrides")
         if request_overrides:
-            kwargs.update(request_overrides)
+            kwargs.update(
+                {
+                    key: value
+                    for key, value in request_overrides.items()
+                    if not str(key).startswith("_")
+                }
+            )
 
         if is_codex_backend:
             prompt_cache_key = kwargs.get("prompt_cache_key")

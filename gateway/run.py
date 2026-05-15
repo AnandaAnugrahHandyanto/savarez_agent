@@ -1207,6 +1207,8 @@ class GatewayRunner:
         self._ephemeral_system_prompt = self._load_ephemeral_system_prompt()
         self._reasoning_config = self._load_reasoning_config()
         self._service_tier = self._load_service_tier()
+        self._api_service_tier = self._load_api_service_tier()
+        self._api_service_tier_fallback = self._load_api_service_tier_fallback()
         self._show_reasoning = self._load_show_reasoning()
         self._busy_input_mode = self._load_busy_input_mode()
         self._restart_drain_timeout = self._load_restart_drain_timeout()
@@ -1926,6 +1928,17 @@ class GatewayRunner:
             ),
         }
 
+        api_service_tier = getattr(self, "_api_service_tier", None)
+        if base_url_host_matches(runtime.get("base_url") or "", "api.openai.com"):
+            if api_service_tier == "flex":
+                overrides = {"service_tier": "flex"}
+                if getattr(self, "_api_service_tier_fallback", None) == "standard":
+                    overrides["_fallback_request_overrides"] = {}
+                route["request_overrides"] = overrides
+            else:
+                route["request_overrides"] = {}
+            return route
+
         service_tier = getattr(self, "_service_tier", None)
         if not service_tier:
             route["request_overrides"] = {}
@@ -2347,6 +2360,50 @@ class GatewayRunner:
         if value in {"fast", "priority", "on"}:
             return "priority"
         logger.warning("Unknown service_tier '%s', ignoring", raw)
+        return None
+
+    @staticmethod
+    def _load_api_service_tier() -> str | None:
+        """Load direct OpenAI API service-tier setting from config.yaml."""
+        raw = ""
+        try:
+            import yaml as _y
+            cfg_path = _hermes_home / "config.yaml"
+            if cfg_path.exists():
+                with open(cfg_path, encoding="utf-8") as _f:
+                    cfg = _y.safe_load(_f) or {}
+                raw = str(cfg_get(cfg, "agent", "api_service_tier", default="") or "").strip()
+        except Exception:
+            pass
+
+        value = raw.lower()
+        if not value or value in {"standard", "normal", "default", "auto", "off", "none"}:
+            return None
+        if value == "flex":
+            return "flex"
+        logger.warning("Unknown api_service_tier '%s', using standard", raw)
+        return None
+
+    @staticmethod
+    def _load_api_service_tier_fallback() -> str | None:
+        """Load direct OpenAI API service-tier fallback setting from config.yaml."""
+        raw = ""
+        try:
+            import yaml as _y
+            cfg_path = _hermes_home / "config.yaml"
+            if cfg_path.exists():
+                with open(cfg_path, encoding="utf-8") as _f:
+                    cfg = _y.safe_load(_f) or {}
+                raw = str(cfg_get(cfg, "agent", "api_service_tier_fallback", default="") or "").strip()
+        except Exception:
+            pass
+
+        value = raw.lower()
+        if not value or value in {"off", "none", "false", "disabled"}:
+            return None
+        if value in {"standard", "normal", "default", "auto"}:
+            return "standard"
+        logger.warning("Unknown api_service_tier_fallback '%s', disabling service-tier fallback", raw)
         return None
 
     @staticmethod
@@ -10432,6 +10489,8 @@ class GatewayRunner:
             reasoning_config = self._resolve_session_reasoning_config(source=source)
             self._reasoning_config = reasoning_config
             self._service_tier = self._load_service_tier()
+            self._api_service_tier = self._load_api_service_tier()
+            self._api_service_tier_fallback = self._load_api_service_tier_fallback()
             turn_route = self._resolve_turn_agent_config(prompt, model, runtime_kwargs)
 
             # Enrich the prompt with image descriptions so the background
@@ -14933,6 +14992,8 @@ class GatewayRunner:
             )
             self._reasoning_config = reasoning_config
             self._service_tier = self._load_service_tier()
+            self._api_service_tier = self._load_api_service_tier()
+            self._api_service_tier_fallback = self._load_api_service_tier_fallback()
             # Set up stream consumer for token streaming or interim commentary.
             _stream_consumer = None
             _stream_delta_cb = None
@@ -15116,7 +15177,13 @@ class GatewayRunner:
             agent.status_callback = _status_callback_sync
             agent.reasoning_config = reasoning_config
             agent.service_tier = self._service_tier
-            agent.request_overrides = turn_route.get("request_overrides") or {}
+            if hasattr(agent, "set_request_overrides"):
+                agent.set_request_overrides(
+                    turn_route.get("request_overrides"),
+                    update_primary_runtime=True,
+                )
+            else:
+                agent.request_overrides = turn_route.get("request_overrides") or {}
 
             _bg_review_release = threading.Event()
             _bg_review_pending: list[str] = []
