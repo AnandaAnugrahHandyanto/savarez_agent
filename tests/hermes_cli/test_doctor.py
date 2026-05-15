@@ -490,7 +490,7 @@ def _run_doctor_with_openrouter_config(monkeypatch, tmp_path):
     monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
     monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", project)
     monkeypatch.setattr(doctor_mod, "_DHH", str(home))
-    doctor_mod._APIKEY_PROVIDERS_CACHE = []
+    monkeypatch.setattr(doctor_mod, "_APIKEY_PROVIDERS_CACHE", [])
 
     fake_model_tools = types.SimpleNamespace(
         check_tool_availability=lambda *a, **kw: ([], []),
