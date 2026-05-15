@@ -3027,6 +3027,105 @@ def _(rid, params: dict) -> dict:
     return _ok(rid, {"status": "streaming"})
 
 
+def _notification_poller_loop(
+    stop_event: threading.Event, sid: str, session: dict
+) -> None:
+    """Poll completion_queue and dispatch notifications autonomously.
+
+    Runs in a daemon thread started by _init_session(). Emits a
+    status.update (kind=process) for user visibility, then chains an
+    agent turn via _run_prompt_submit if the session is idle.
+
+    NOTE: The completion_queue is global (one per process). If multiple
+    TUI sessions coexist, whichever poller wakes first grabs the event,
+    even if the process was started by a different session. This matches
+    CLI/gateway behavior (single session per process).
+    """
+    from tools.process_registry import process_registry, format_process_notification
+
+    while not stop_event.is_set() and not session.get("_finalized"):
+        try:
+            evt = process_registry.completion_queue.get(timeout=0.5)
+        except Exception:
+            continue
+
+        _evt_sid = evt.get("session_id", "")
+        if evt.get("type") == "completion" and process_registry.is_completion_consumed(_evt_sid):
+            continue
+
+        text = format_process_notification(evt)
+        if not text:
+            continue
+
+        _emit("status.update", sid, {"kind": "process", "text": text})
+
+        with session["history_lock"]:
+            if session.get("running"):
+                process_registry.completion_queue.put(evt)
+                continue
+            session["running"] = True
+
+        rid = f"__notif__{int(time.time() * 1000)}"
+        try:
+            _emit("message.start", sid)
+            _run_prompt_submit(rid, sid, session, text)
+        except Exception as exc:
+            print(
+                f"[tui_gateway] notification poller dispatch failed: "
+                f"{type(exc).__name__}: {exc}",
+                file=sys.stderr,
+            )
+            with session["history_lock"]:
+                session["running"] = False
+
+    # Drain any remaining events after stop signal (process all pending
+    # before exiting so nothing is lost on shutdown).
+    while not process_registry.completion_queue.empty():
+        try:
+            evt = process_registry.completion_queue.get_nowait()
+        except Exception:
+            break
+        _evt_sid = evt.get("session_id", "")
+        if evt.get("type") == "completion" and process_registry.is_completion_consumed(_evt_sid):
+            continue
+        text = format_process_notification(evt)
+        if not text:
+            continue
+
+        _emit("status.update", sid, {"kind": "process", "text": text})
+
+        with session["history_lock"]:
+            if session.get("running"):
+                process_registry.completion_queue.put(evt)
+                break
+            session["running"] = True
+
+        rid = f"__notif__{int(time.time() * 1000)}"
+        try:
+            _emit("message.start", sid)
+            _run_prompt_submit(rid, sid, session, text)
+        except Exception as exc:
+            print(
+                f"[tui_gateway] notification poller dispatch failed: "
+                f"{type(exc).__name__}: {exc}",
+                file=sys.stderr,
+            )
+            with session["history_lock"]:
+                session["running"] = False
+
+
+def _start_notification_poller(sid: str, session: dict) -> threading.Event:
+    """Start the background notification poller for a TUI session."""
+    stop = threading.Event()
+    t = threading.Thread(
+        target=_notification_poller_loop,
+        args=(stop, sid, session),
+        daemon=True,
+    )
+    t.start()
+    return stop
+
+
 def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
     with session["history_lock"]:
         history = list(session["history"])
