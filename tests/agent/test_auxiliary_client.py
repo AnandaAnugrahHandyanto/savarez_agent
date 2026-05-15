@@ -563,9 +563,10 @@ class TestExplicitProviderRouting:
             "hermes_cli.auth.resolve_openai_oauth_runtime_credentials",
             return_value={
                 "provider": "openai-oauth",
-                "base_url": "https://api.openai.com/v1",
+                "base_url": "https://chatgpt.com/backend-api/codex",
                 "api_key": "oauth-token",
                 "source": "opencode-auth",
+                "account_id": "acct-123",
             },
         ), patch("agent.auxiliary_client.OpenAI") as mock_openai:
             client, model = resolve_provider_client("openai-oauth", "gpt-5.4")
@@ -573,7 +574,9 @@ class TestExplicitProviderRouting:
         assert client is not None
         assert model == "gpt-5.4"
         assert mock_openai.call_args.kwargs["api_key"] == "oauth-token"
-        assert mock_openai.call_args.kwargs["base_url"] == "https://api.openai.com/v1"
+        assert mock_openai.call_args.kwargs["base_url"] == "https://chatgpt.com/backend-api/codex"
+        assert mock_openai.call_args.kwargs["default_headers"]["originator"] == "opencode"
+        assert mock_openai.call_args.kwargs["default_headers"]["ChatGPT-Account-Id"] == "acct-123"
 
     def test_explicit_openai_oauth_requires_model(self, caplog):
         with caplog.at_level(logging.WARNING, logger="agent.auxiliary_client"):
