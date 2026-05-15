@@ -148,11 +148,13 @@ class _FakeClient:
         self.vms = _FakeVms(self.events)
         self.snapshots = _FakeSnapshots(self.events)
         self.upload_calls: list[tuple[str, str, str]] = []
+        self.upload_payloads: list[bytes] = []
         self.download_calls: list[tuple[str, str, str]] = []
         self.download_bytes = b""
 
     def upload(self, vm_id: str, local_path: str, remote_path: str):
         self.upload_calls.append((vm_id, local_path, remote_path))
+        self.upload_payloads.append(Path(local_path).read_bytes())
 
     def download(self, vm_id: str, remote_path: str, local_path: str):
         self.download_calls.append((vm_id, remote_path, local_path))
@@ -167,6 +169,15 @@ def _tar_bytes(entries: dict[str, bytes]) -> bytes:
             info.size = len(content)
             tar.addfile(info, io.BytesIO(content))
     return buffer.getvalue()
+
+
+def _tar_payload_entries(payload: bytes) -> dict[str, bytes]:
+    with tarfile.open(fileobj=io.BytesIO(payload), mode="r:*") as tar:
+        return {
+            member.name: tar.extractfile(member).read()
+            for member in tar.getmembers()
+            if member.isfile()
+        }
 
 
 @pytest.fixture()
@@ -429,9 +440,64 @@ def test_uploads_managed_files_under_remote_home(make_env, monkeypatch, tmp_path
 
     _env, client = make_env()
 
-    assert client.upload_calls == [
-        ("vm-1", str(src), "/root/.hermes/credentials/token.txt")
+    assert len(client.upload_calls) == 1
+    vm_id, local_tar, remote_tar = client.upload_calls[0]
+    assert vm_id == "vm-1"
+    assert not Path(local_tar).exists()
+    assert remote_tar.startswith("/tmp/.hermes_upload.")
+    assert _tar_payload_entries(client.upload_payloads[0]) == {
+        "root/.hermes/credentials/token.txt": b"secret-token"
+    }
+
+
+def test_fastvm_bulk_upload_packages_selected_files_once(make_env, tmp_path):
+    env, client = make_env()
+    client.upload_calls.clear()
+    client.upload_payloads.clear()
+    client.vms.run_calls.clear()
+    first = tmp_path / "first.txt"
+    nested = tmp_path / "nested" / "second.txt"
+    nested.parent.mkdir()
+    first.write_text("alpha", encoding="utf-8")
+    nested.write_text("beta", encoding="utf-8")
+
+    env._fastvm_bulk_upload([
+        (str(first), "/root/.hermes/first.txt"),
+        (str(nested), "/root/.hermes/nested/second.txt"),
+    ])
+
+    assert len(client.upload_calls) == 1
+    vm_id, local_tar, remote_tar = client.upload_calls[0]
+    assert vm_id == "vm-1"
+    assert not Path(local_tar).exists()
+    assert remote_tar.startswith("/tmp/.hermes_upload.")
+    assert _tar_payload_entries(client.upload_payloads[0]) == {
+        "root/.hermes/first.txt": b"alpha",
+        "root/.hermes/nested/second.txt": b"beta",
+    }
+    scripts = [call[1][-1] for call in client.vms.run_calls]
+    assert any("mkdir -p" in script and "/root/.hermes/nested" in script for script in scripts)
+    assert [script for script in scripts if f"tar xzf {remote_tar}" in script] == [
+        f"tar xzf {remote_tar} -C /"
     ]
+    assert [script for script in scripts if f"rm -f {remote_tar}" in script] == [
+        f"rm -f {remote_tar}"
+    ]
+
+
+def test_fastvm_bulk_upload_rejects_unsafe_remote_paths(make_env, tmp_path):
+    env, client = make_env()
+    client.upload_calls.clear()
+    client.upload_payloads.clear()
+    client.vms.run_calls.clear()
+    src = tmp_path / "secret.txt"
+    src.write_text("secret", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="Unsafe FastVM upload path"):
+        env._fastvm_bulk_upload([(str(src), "/root/.hermes/../escape")])
+
+    assert client.upload_calls == []
+    assert client.vms.run_calls == []
 
 
 def test_bulk_download_creates_remote_tar_and_downloads(make_env, tmp_path):

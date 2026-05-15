@@ -15,10 +15,12 @@ import math
 import os
 import shlex
 import socket
+import tarfile
+import tempfile
 import threading
 import time
 import uuid
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 try:
@@ -273,6 +275,20 @@ def _prune_stale_leases(record: dict[str, Any], *, now: datetime, hostname: str)
 def _safe_task_label(task_id: str) -> str:
     label = "".join(ch if ch.isalnum() or ch in "-_" else "-" for ch in task_id)
     return (label or "default")[:24]
+
+
+def _safe_upload_member(remote_path: str) -> str:
+    if "\x00" in remote_path:
+        raise RuntimeError(f"Unsafe FastVM upload path: {remote_path!r}")
+    posix = PurePosixPath(remote_path)
+    if not posix.is_absolute():
+        raise RuntimeError(f"Unsafe FastVM upload path: {remote_path}")
+    if any(part == ".." for part in posix.parts):
+        raise RuntimeError(f"Unsafe FastVM upload path: {remote_path}")
+    member = posix.as_posix().lstrip("/")
+    if not member:
+        raise RuntimeError(f"Unsafe FastVM upload path: {remote_path}")
+    return member
 
 
 class FastVMEnvironment(BaseEnvironment):
@@ -657,10 +673,15 @@ class FastVMEnvironment(BaseEnvironment):
     def _fastvm_bulk_upload(self, files: list[tuple[str, str]]) -> None:
         if not files:
             return
+        archive_entries = [
+            (host_path, _safe_upload_member(remote_path))
+            for host_path, remote_path in files
+        ]
+        vm_id = self._vm_id()
         parents = unique_parent_dirs(files)
         if parents:
             result = self._client.vms.run(
-                self._vm_id(),
+                vm_id,
                 command=["bash", "-lc", quoted_mkdir_command(parents)],
                 timeout_sec=30,
                 timeout=60,
@@ -670,8 +691,47 @@ class FastVMEnvironment(BaseEnvironment):
                     f"FastVM mkdir failed: {getattr(result, 'stderr', '') or getattr(result, 'stdout', '')}"
                 )
 
-        for host_path, remote_path in files:
-            self._client.upload(self._vm_id(), host_path, remote_path)
+        remote_tar = f"/tmp/.hermes_upload.{os.getpid()}.{time.monotonic_ns()}.tar.gz"
+        local_tar_path: str | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                prefix="hermes-fastvm-upload-",
+                suffix=".tar.gz",
+                delete=False,
+            ) as tmp:
+                local_tar_path = tmp.name
+
+            with tarfile.open(local_tar_path, mode="w:gz", dereference=True) as tar:
+                for host_path, member in archive_entries:
+                    tar.add(host_path, arcname=member, recursive=False)
+
+            self._client.upload(vm_id, local_tar_path, remote_tar)
+            result = self._client.vms.run(
+                vm_id,
+                command=["bash", "-lc", f"tar xzf {shlex.quote(remote_tar)} -C /"],
+                timeout_sec=120,
+                timeout=180,
+            )
+            if int(getattr(result, "exit_code", 1)) != 0:
+                raise RuntimeError(
+                    "FastVM bulk upload extract failed: "
+                    f"{getattr(result, 'stderr', '') or getattr(result, 'stdout', '')}"
+                )
+        finally:
+            if local_tar_path:
+                try:
+                    Path(local_tar_path).unlink()
+                except OSError:
+                    pass
+            try:
+                self._client.vms.run(
+                    vm_id,
+                    command=["bash", "-lc", f"rm -f {shlex.quote(remote_tar)}"],
+                    timeout_sec=30,
+                    timeout=60,
+                )
+            except Exception:
+                pass
 
     def _fastvm_delete(self, remote_paths: list[str]) -> None:
         if not remote_paths:
