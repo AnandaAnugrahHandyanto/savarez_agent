@@ -2170,6 +2170,61 @@ async def _connect_server(name: str, config: dict) -> MCPServerTask:
 # Handler / check-fn factories
 # ---------------------------------------------------------------------------
 
+def _lazy_restart_mcp_server(server_name: str) -> bool:
+    """Attempt to reconnect or restart a single MCP server on demand.
+
+    Called from tool handlers when ``_servers[server_name]`` does not have
+    a ready session.  Two paths:
+
+    1. **Existing task, stale session** — the ``MCPServerTask`` object is in
+       ``_servers`` but ``session`` is ``None`` (process crashed / timed out
+       between cron ticks).  We signal ``_reconnect_event`` so the existing
+       lifecycle loop re-establishes a fresh MCP session.
+
+    2. **No task** — the server was never started (first cron tick in a
+       fresh process).  We call ``_discover_and_register_server`` to start
+       a new connection.
+
+    Returns ``True`` if the server has a session after the attempt,
+    ``False`` on failure.  Never raises.
+    """
+    try:
+        servers = _load_mcp_config()
+        if server_name not in servers:
+            return False
+        cfg = servers[server_name]
+        if not _parse_boolish(cfg.get("enabled", True), default=True):
+            return False
+
+        _ensure_mcp_loop()
+
+        async def _reconnect():
+            with _lock:
+                existing = _servers.get(server_name)
+            if existing is not None:
+                if hasattr(existing, "_reconnect_event"):
+                    existing._reconnect_event.set()
+                for _ in range(15):
+                    await asyncio.sleep(0.1)
+                    if getattr(existing, "session", None) is not None:
+                        return True
+                return False
+            try:
+                await _discover_and_register_server(server_name, cfg)
+                with _lock:
+                    fresh = _servers.get(server_name)
+                return fresh is not None and fresh.session is not None
+            except Exception:
+                return False
+
+        result = _run_on_mcp_loop(_reconnect(), timeout=30)
+        if result and _server_error_counts.get(server_name, 0) > 0:
+            _reset_server_error(server_name)
+        return bool(result)
+    except Exception:
+        return False
+
+
 def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
     """Return a sync handler that calls an MCP tool via the background loop.
 
@@ -2207,10 +2262,21 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
         with _lock:
             server = _servers.get(server_name)
         if not server or not server.session:
-            _bump_server_error(server_name)
-            return json.dumps({
-                "error": f"MCP server '{server_name}' is not connected"
-            }, ensure_ascii=False)
+            if _lazy_restart_mcp_server(server_name):
+                with _lock:
+                    server = _servers.get(server_name)
+                if server and server.session:
+                    pass
+                else:
+                    _bump_server_error(server_name)
+                    return json.dumps({
+                        "error": f"MCP server '{server_name}' reconnected but session is still unavailable"
+                    }, ensure_ascii=False)
+            else:
+                _bump_server_error(server_name)
+                return json.dumps({
+                    "error": f"MCP server '{server_name}' is not connected"
+                }, ensure_ascii=False)
 
         async def _call():
             async with server._rpc_lock:
