@@ -43,6 +43,35 @@ class TestCreateSession:
         state = manager.create_session(cwd="/tmp/work")
         assert calls == [(state.session_id, "/tmp/work")]
 
+    def test_create_session_preloads_startup_skills(self, tmp_path, monkeypatch):
+        captured_kwargs = {}
+
+        class FakeAgent:
+            model = "test-model"
+
+            def __init__(self, **kwargs):
+                captured_kwargs.update(kwargs)
+
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"model": "test-model"})
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            lambda requested=None: {},
+        )
+        monkeypatch.setattr(
+            "agent.skill_commands.build_preloaded_skills_prompt",
+            lambda skills, task_id=None: ("PRELOADED SKILL PROMPT", ["plan"], []),
+        )
+
+        manager = SessionManager(
+            db=SessionDB(tmp_path / "state.db"),
+            preloaded_skills=["plan"],
+        )
+        with patch("run_agent.AIAgent", FakeAgent):
+            state = manager.create_session(cwd="/tmp/work")
+
+        assert captured_kwargs["ephemeral_system_prompt"] == "PRELOADED SKILL PROMPT"
+        assert state.agent.preloaded_skills == ["plan"]
+
 
     def test_register_task_cwd_translates_windows_drive_for_wsl_tools(self, monkeypatch):
         captured = {}

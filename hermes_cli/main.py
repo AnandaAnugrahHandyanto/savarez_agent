@@ -11829,6 +11829,8 @@ Examples:
                 acp_argv.append("--setup-browser")
             if getattr(args, "assume_yes", False):
                 acp_argv.append("--yes")
+            for skill in getattr(args, "skills", None) or []:
+                acp_argv.extend(["--skills", skill])
             acp_main(acp_argv)
         except ImportError:
             print("ACP dependencies not installed.", file=sys.stderr)

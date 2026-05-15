@@ -138,7 +138,28 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Accept all prompts (currently used by --setup-browser to skip the "
              "~400 MB Chromium download confirmation).",
     )
+    parser.add_argument(
+        "--skills",
+        "-s",
+        action="append",
+        default=None,
+        help="Preload one or more skills for every ACP session (repeat flag or comma-separate)",
+    )
     return parser.parse_args(argv)
+
+
+def _parse_skills_argument(skills: list[str] | None) -> list[str]:
+    """Normalize repeated/comma-separated ACP --skills flags."""
+    parsed: list[str] = []
+    seen: set[str] = set()
+    for raw in skills or []:
+        for part in str(raw).split(","):
+            normalized = part.strip()
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            parsed.append(normalized)
+    return parsed
 
 
 def _print_version() -> None:
@@ -265,6 +286,7 @@ def main(argv: list[str] | None = None) -> None:
 
     import acp
     from .server import HermesACPAgent
+    from .session import SessionManager
 
     # MCP tool discovery from config.yaml — run before asyncio.run() so
     # it's safe to use blocking waits.  (ACP also registers per-session
@@ -277,7 +299,8 @@ def main(argv: list[str] | None = None) -> None:
     except Exception:
         logger.debug("MCP tool discovery failed at ACP startup", exc_info=True)
 
-    agent = HermesACPAgent()
+    startup_skills = _parse_skills_argument(args.skills)
+    agent = HermesACPAgent(session_manager=SessionManager(preloaded_skills=startup_skills))
     try:
         asyncio.run(acp.run_agent(agent, use_unstable_protocol=True))
     except KeyboardInterrupt:

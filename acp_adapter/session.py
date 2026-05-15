@@ -191,7 +191,7 @@ class SessionManager:
     via ``session_search``.
     """
 
-    def __init__(self, agent_factory=None, db=None):
+    def __init__(self, agent_factory=None, db=None, preloaded_skills: List[str] | None = None):
         """
         Args:
             agent_factory: Optional callable that creates an AIAgent-like object.
@@ -199,11 +199,13 @@ class SessionManager:
                            using the current Hermes runtime provider configuration.
             db:            Optional SessionDB instance. When omitted, the default
                            SessionDB (``~/.hermes/state.db``) is lazily created.
+            preloaded_skills: Skill identifiers to inject into every ACP session.
         """
         self._sessions: Dict[str, SessionState] = {}
         self._lock = Lock()
         self._agent_factory = agent_factory
         self._db_instance = db  # None → lazy-init on first use
+        self._preloaded_skills = list(preloaded_skills or [])
 
     # ---- public API ---------------------------------------------------------
 
@@ -574,6 +576,7 @@ class SessionManager:
             return self._agent_factory()
 
         from run_agent import AIAgent
+        from agent.skill_commands import build_preloaded_skills_prompt
         from hermes_cli.config import load_config
         from hermes_cli.runtime_provider import resolve_runtime_provider
 
@@ -605,6 +608,17 @@ class SessionManager:
             "model": model or default_model,
         }
 
+        if self._preloaded_skills:
+            skills_prompt, loaded_skills, missing_skills = build_preloaded_skills_prompt(
+                self._preloaded_skills,
+                task_id=session_id,
+            )
+            if missing_skills:
+                missing_display = ", ".join(missing_skills)
+                raise ValueError(f"Unknown skill(s): {missing_display}")
+            if skills_prompt:
+                kwargs["ephemeral_system_prompt"] = skills_prompt
+
         try:
             runtime = resolve_runtime_provider(requested=requested_provider or config_provider)
             kwargs.update(
@@ -622,6 +636,8 @@ class SessionManager:
 
         _register_task_cwd(session_id, cwd)
         agent = AIAgent(**kwargs)
+        if self._preloaded_skills:
+            agent.preloaded_skills = loaded_skills
         # ACP stdio transport requires stdout to remain protocol-only JSON-RPC.
         # Route any incidental human-readable agent output to stderr instead.
         agent._print_fn = _acp_stderr_print

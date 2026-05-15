@@ -12,6 +12,7 @@ def test_main_enables_unstable_protocol(monkeypatch):
     calls = {}
 
     async def fake_run_agent(agent, **kwargs):
+        calls["agent"] = agent
         calls["kwargs"] = kwargs
 
     monkeypatch.setattr(entry, "_setup_logging", lambda: None)
@@ -21,6 +22,30 @@ def test_main_enables_unstable_protocol(monkeypatch):
     entry.main([])
 
     assert calls["kwargs"]["use_unstable_protocol"] is True
+
+
+def test_main_passes_startup_skills_to_session_manager(monkeypatch):
+    calls = {}
+
+    class FakeSessionManager:
+        def __init__(self, *, preloaded_skills=None):
+            calls["preloaded_skills"] = preloaded_skills
+
+    async def fake_run_agent(agent, **kwargs):
+        calls["agent"] = agent
+
+    monkeypatch.setattr(entry, "_setup_logging", lambda: None)
+    monkeypatch.setattr(entry, "_load_env", lambda: None)
+    monkeypatch.setattr("acp_adapter.session.SessionManager", FakeSessionManager)
+    monkeypatch.setattr(acp, "run_agent", fake_run_agent)
+
+    entry.main(["--skills", "plan,github-pr-workflow", "-s", "hermes-agent"])
+
+    assert calls["preloaded_skills"] == [
+        "plan",
+        "github-pr-workflow",
+        "hermes-agent",
+    ]
 
 
 def test_main_version_prints_without_starting_server(monkeypatch, capsys):
