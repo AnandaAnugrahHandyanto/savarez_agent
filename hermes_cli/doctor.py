@@ -1448,6 +1448,13 @@ def run_doctor(args):
             }
             if base_url_host_matches(base, "api.kimi.com"):
                 headers["User-Agent"] = "claude-code/0.1.0"
+            # Google Gemini's native v1beta surface uses ?key= query auth, not
+            # Bearer headers. Without this, Bearer always returns 401 even for
+            # a valid key, producing a false "invalid API key" verdict.
+            if "generativelanguage.googleapis.com" in (url or ""):
+                sep = "&" if "?" in url else "?"
+                url = f"{url}{sep}key={key}"
+                headers.pop("Authorization", None)
             r = httpx.get(url, headers=headers, timeout=10)
             if (
                 pname == "Alibaba/DashScope"
