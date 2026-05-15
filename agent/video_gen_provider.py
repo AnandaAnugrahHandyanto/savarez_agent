@@ -63,7 +63,7 @@ logger = logging.getLogger(__name__)
 COMMON_ASPECT_RATIOS: Tuple[str, ...] = ("16:9", "9:16", "1:1", "4:3", "3:4", "3:2", "2:3")
 DEFAULT_ASPECT_RATIO = "16:9"
 
-COMMON_RESOLUTIONS: Tuple[str, ...] = ("480p", "540p", "720p", "1080p")
+COMMON_RESOLUTIONS: Tuple[str, ...] = ("480p", "540p", "720p", "1080p", "4k")
 DEFAULT_RESOLUTION = "720p"
 
 
