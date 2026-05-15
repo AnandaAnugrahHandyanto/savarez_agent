@@ -635,3 +635,78 @@ class TestMigrate:
         assert "Migrated 2 MCP server(s)" in summary
         assert "- a" in summary
         assert "- b" in summary
+
+class TestHERMESHomeSanity:
+    """Bug #26250-C: HERMES_HOME should not leak pytest tempdir into config.toml."""
+
+    def test_pytest_tempdir_blocked(self, tmp_path, monkeypatch):
+        """When HERMES_HOME points at a pytest tempdir, it should NOT be written."""
+        import os
+
+        # Simulate pytest monkeypatch setting HERMES_HOME to a tempdir
+        fake_tempdir = tmp_path / "pytest-of-test123"
+        fake_tempdir.mkdir(exist_ok=True)
+
+        # Save original HERMES_HOME
+        original_hermes_home = os.environ.get("HERMES_HOME")
+        output_content = None
+        try:
+            monkeypatch.setenv("HERMES_HOME", str(fake_tempdir))
+            report = migrate(
+                {"mcp_servers": {"test-server": {"command": "echo"}}},
+                codex_home=tmp_path,
+                expose_hermes_tools=False,
+            )
+            # Cache output before pytest cleans up tmp_path
+            output_content = (tmp_path / "config.toml").read_text()
+        finally:
+            # Restore original HERMES_HOME
+            if original_hermes_home is None:
+                os.environ.pop("HERMES_HOME", None)
+            else:
+                os.environ["HERMES_HOME"] = original_hermes_home
+
+        # Verify migration succeeded
+        assert report.written
+        # BUT HERMES_HOME from tempdir should NOT be in the output
+        assert output_content is not None
+        assert "HERMES_HOME" not in output_content, (
+            "HERMES_HOME from pytest tempdir leaked into config.toml"
+        )
+        # The test-server entry should still be there
+        assert "[mcp_servers.test-server]" in output_content
+
+    def test_nonexistent_hermes_home_blocked(self, tmp_path, monkeypatch):
+        """When HERMES_HOME points at a nonexistent path, it should NOT be written."""
+        import os
+
+        fake_path = tmp_path / "does-not-exist" / ".hermes"
+
+        # Save original HERMES_HOME
+        original_hermes_home = os.environ.get("HERMES_HOME")
+        output_content = None
+        try:
+            monkeypatch.setenv("HERMES_HOME", str(fake_path))
+            report = migrate(
+                {"mcp_servers": {"test-server": {"command": "echo"}}},
+                codex_home=tmp_path,
+                expose_hermes_tools=False,
+            )
+            # Cache output before pytest cleans up tmp_path
+            output_content = (tmp_path / "config.toml").read_text()
+        finally:
+            # Restore original HERMES_HOME
+            if original_hermes_home is None:
+                os.environ.pop("HERMES_HOME", None)
+            else:
+                os.environ["HERMES_HOME"] = original_hermes_home
+
+        # Verify migration succeeded
+        assert report.written
+        # BUT HERMES_HOME for a nonexistent path should NOT be in the output
+        assert output_content is not None
+        assert "HERMES_HOME" not in output_content, (
+            "HERMES_HOME for nonexistent path leaked into config.toml"
+        )
+        # The test-server entry should still be there
+        assert "[mcp_servers.test-server]" in output_content

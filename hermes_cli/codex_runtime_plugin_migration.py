@@ -42,6 +42,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
+from hermes_constants import get_hermes_home
+
 logger = logging.getLogger(__name__)
 
 
@@ -445,9 +447,16 @@ def _build_hermes_tools_mcp_entry() -> dict:
     env: dict[str, str] = {}
     # HERMES_HOME passes through if set so the MCP subprocess sees the
     # same config / auth / sessions DB as the parent CLI.
-    hermes_home = os.environ.get("HERMES_HOME")
+    # Derive HERMES_HOME canonically from get_hermes_home() rather than
+    # reading os.environ at migrate-time. This prevents pytest tempdir
+    # leakage into user's real ~/.codex/config.toml (Bug #26250-C).
+    # Sanity check: the path must exist and not be a pytest tempdir.
+    hermes_home = str(get_hermes_home())
     if hermes_home:
-        env["HERMES_HOME"] = hermes_home
+        # Sanity checks: path must exist and not be a pytest tempdir
+        hermes_path = Path(hermes_home)
+        if hermes_path.exists() and "pytest-of-" not in hermes_home:
+            env["HERMES_HOME"] = hermes_home
     # PYTHONPATH passes through so a worktree-launched hermes finds the
     # branch's modules instead of the installed package.
     pythonpath = os.environ.get("PYTHONPATH")
