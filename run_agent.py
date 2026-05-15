@@ -10583,18 +10583,18 @@ class AIAgent:
                 force=True,
             )
 
-        # Update token estimate after compaction so pressure calculations
-        # use the post-compression count, not the stale pre-compression one.
-        # Use estimate_request_tokens_rough() so tool schemas are included —
-        # with 50+ tools enabled, schemas alone can add 20-30K tokens, and
-        # omitting them delays the next compression cycle far past the
-        # configured threshold (issue #14695).
+        # Estimate post-compression tokens for logging.  Only overwrite
+        # last_prompt_tokens when no precise API-returned value exists
+        # (value == 0).  Overwriting a precise value with an estimate causes
+        # premature compression on the next turn because estimates can be
+        # significantly inflated (issue #23902).
         _compressed_est = estimate_request_tokens_rough(
             compressed,
             system_prompt=new_system_prompt or "",
             tools=self.tools or None,
         )
-        self.context_compressor.last_prompt_tokens = _compressed_est
+        if self.context_compressor.last_prompt_tokens == 0:
+            self.context_compressor.last_prompt_tokens = _compressed_est
         self.context_compressor.last_completion_tokens = 0
 
         # Clear the file-read dedup cache.  After compression the original
