@@ -1,0 +1,43 @@
+name: Deploy Poseidon
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - 'docs/**'
+      - '**/*.md'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-poseidon
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    if: github.repository == 'briankeefe/hermes-brian'
+    runs-on: [self-hosted, Linux, X64, poseidon, hermes-brian]
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          submodules: recursive
+          clean: true
+
+      - name: Verify host tools
+        run: |
+          docker --version
+          docker compose version
+
+      - name: Deploy Hermes on poseidon
+        env:
+          GITHUB_SHA: ${{ github.sha }}
+          GITHUB_WORKSPACE: ${{ github.workspace }}
+          COMPOSE_DIR: /home/brian/hermes-docker
+          SERVICE_NAME: hermes
+          WAIT_TIMEOUT: 180
+        run: bash scripts/deploy_poseidon.sh
