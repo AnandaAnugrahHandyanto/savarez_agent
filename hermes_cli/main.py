@@ -1984,6 +1984,7 @@ def select_provider_and_model(args=None):
         "xiaomi",
         "arcee",
         "gmi",
+        "aether",
         "nvidia",
         "ollama-cloud",
         "tencent-tokenhub",
@@ -9404,7 +9405,7 @@ def _build_provider_choices() -> list[str]:
             "anthropic", "gemini", "google-gemini-cli", "xai", "bedrock", "azure-foundry",
             "ollama-cloud", "huggingface", "zai", "kimi-coding", "kimi-coding-cn",
             "stepfun", "minimax", "minimax-cn", "kilocode", "novita", "xiaomi", "arcee",
-            "nvidia", "deepseek", "alibaba", "qwen-oauth", "opencode-zen", "opencode-go",
+            "nvidia", "aether", "deepseek", "alibaba", "qwen-oauth", "opencode-zen", "opencode-go",
         ]
 
 
