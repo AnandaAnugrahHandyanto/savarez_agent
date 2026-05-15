@@ -899,6 +899,19 @@ def _strip_images_from_messages(messages: list) -> bool:
         if not isinstance(msg, dict):
             continue
         content = msg.get("content")
+        # Multimodal tool-result envelope (computer_use screenshots)
+        if isinstance(content, dict) and content.get("_multimodal") is True:
+            inner = content.get("content")
+            if isinstance(inner, list):
+                stripped = [p for p in inner if not (isinstance(p, dict) and p.get("type") in ("image_url", "image", "input_image"))]
+                if len(stripped) < len(inner):
+                    found = True
+                    if stripped:
+                        content["content"] = stripped
+                    else:
+                        # Replace with text placeholder to preserve tool_call_id linkage
+                        msg["content"] = "[image content removed — server does not support images]"
+            continue
         if not isinstance(content, list):
             continue
         new_parts = []
@@ -8770,6 +8783,9 @@ class AIAgent:
 
     @staticmethod
     def _content_has_image_parts(content: Any) -> bool:
+        # Unwrap multimodal tool-result envelope (computer_use etc.)
+        if isinstance(content, dict) and content.get("_multimodal") is True:
+            content = content.get("content")
         if not isinstance(content, list):
             return False
         for part in content:
@@ -8878,13 +8894,31 @@ class AIAgent:
         except Exception:
             return False
 
+    def _provider_is_known_non_vision(self) -> bool:
+        """Return True if the active provider is known to have no vision support.
+
+        Consults the hard-coded ``_PROVIDERS_WITHOUT_VISION`` set from
+        ``auxiliary_client``, which is maintained explicitly for vision routing
+        decisions.  This acts as an override signal so ``_prepare_messages_for_non_vision_model``
+        strips images even when the models.dev cache misreports vision support.
+        """
+        try:
+            from agent.auxiliary_client import _PROVIDERS_WITHOUT_VISION
+            return (getattr(self, "provider", "") or "") in _PROVIDERS_WITHOUT_VISION
+        except Exception:
+            return False
+
     def _preprocess_anthropic_content(self, content: Any, role: str) -> Any:
-        if not self._content_has_image_parts(content):
+        # Unwrap multimodal tool-result envelope (computer_use screenshots)
+        _is_multimodal = isinstance(content, dict) and content.get("_multimodal") is True
+        _parts = (content.get("content") or []) if _is_multimodal else content
+
+        if not self._content_has_image_parts(_parts):
             return content
 
         text_parts: List[str] = []
         image_notes: List[str] = []
-        for part in content:
+        for part in _parts:
             if isinstance(part, str):
                 if part.strip():
                     text_parts.append(part.strip())
@@ -8914,13 +8948,19 @@ class AIAgent:
 
         prefix = "\n\n".join(note for note in image_notes if note).strip()
         suffix = "\n".join(text for text in text_parts if text).strip()
+        result: str
         if prefix and suffix:
-            return f"{prefix}\n\n{suffix}"
-        if prefix:
-            return prefix
-        if suffix:
-            return suffix
-        return "[A multimodal message was converted to text for Anthropic compatibility.]"
+            result = f"{prefix}\n\n{suffix}"
+        elif prefix:
+            result = prefix
+        elif suffix:
+            result = suffix
+        else:
+            result = "[image content removed — server does not support images]"
+
+        if _is_multimodal:
+            return result
+        return result
 
     def _get_transport(self, api_mode: str = None):
         """Return the cached transport for the given (or current) api_mode.
@@ -8983,7 +9023,7 @@ class AIAgent:
         ):
             return api_messages
 
-        if self._model_supports_vision():
+        if self._model_supports_vision() and not self._provider_is_known_non_vision():
             return api_messages
 
         transformed = copy.deepcopy(api_messages)
@@ -9356,9 +9396,12 @@ class AIAgent:
             if _ephemeral_out is not None:
                 self._ephemeral_max_output_tokens = None
 
+            # Strip image parts for non-vision models (no-op when vision-capable).
+            _msgs_for_profile = self._prepare_messages_for_non_vision_model(api_messages)
+
             return _ct.build_kwargs(
                 model=self.model,
-                messages=api_messages,
+                messages=_msgs_for_profile,
                 tools=self.tools,
                 base_url=self.base_url,
                 timeout=self._resolved_api_call_timeout(),
@@ -12229,6 +12272,42 @@ class AIAgent:
                     if self.api_mode == "codex_responses":
                         api_kwargs = self._get_transport().preflight_kwargs(api_kwargs, allow_stream=False)
 
+                    # ── Proactive image stripping for known non-vision providers ──
+                    # DeepSeek's Rust-serde Chat Completions API rejects image_url
+                    # content with HTTP 400 ("unknown variant image_url, expected
+                    # text").  The reactive fallback (catch → strip → retry) can fail
+                    # when the error classification misroutes to provider-fallback
+                    # instead of image-strip + retry.  This preflight catch strips
+                    # images from every message before the wire call, so the sand
+                    # never hits DeepSeek's schema validator at all.
+                    _provider_check_result = self._provider_is_known_non_vision()
+                    logger.info("[IMAGE_STRIP_DEBUG] provider=%r known_non_vision=%r",
+                                getattr(self, "provider", None), _provider_check_result)
+                    if _provider_check_result:
+                        _msgs = api_kwargs.get("messages")
+                        if isinstance(_msgs, list) and _msgs:
+                            _img_count_before = sum(
+                                1 for m in _msgs
+                                if isinstance(m, dict) and isinstance(m.get("content"), list)
+                                for p in m["content"]
+                                if isinstance(p, dict) and p.get("type") in ("image_url", "image", "input_image")
+                            )
+                            _stripped = _strip_images_from_messages(_msgs)
+                            _img_count_after = sum(
+                                1 for m in _msgs
+                                if isinstance(m, dict) and isinstance(m.get("content"), list)
+                                for p in m["content"]
+                                if isinstance(p, dict) and p.get("type") in ("image_url", "image", "input_image")
+                            )
+                            logger.info("[IMAGE_STRIP_DEBUG] proactive strip: images_before=%d images_after=%d stripped=%s msg_count=%d",
+                                        _img_count_before, _img_count_after, _stripped, len(_msgs))
+                        else:
+                            logger.info("[IMAGE_STRIP_DEBUG] proactive strip: messages=%r type=%s",
+                                        type(_msgs).__name__ if _msgs is not None else "None",
+                                        type(_msgs).__name__ if _msgs is not None else "N/A")
+                    else:
+                        logger.info("[IMAGE_STRIP_DEBUG] SKIP — provider not in _PROVIDERS_WITHOUT_VISION")
+
                     try:
                         from hermes_cli.plugins import invoke_hook as _invoke_hook
                         _invoke_hook(
@@ -13096,9 +13175,10 @@ class AIAgent:
                     # provider wordings are observed in the wild.
                     _err_body = ""
                     try:
-                        _err_body = str(getattr(api_error, "body", None) or
-                                        getattr(api_error, "message", None) or
-                                        str(api_error))
+                        _body_part = str(getattr(api_error, "body", None) or "")
+                        _msg_part = str(getattr(api_error, "message", None) or "")
+                        _raw_part = str(api_error)
+                        _err_body = _body_part + " " + _msg_part + " " + _raw_part
                     except Exception:
                         pass
                     _err_status = getattr(api_error, "status_code", None)
@@ -13117,11 +13197,19 @@ class AIAgent:
                         "does not support multimodal",
                         "does not support vision",
                         "model does not support image",
+                        # DeepSeek Rust-serde error — "unknown variant `image_url`, expected `text`"
+                        "unknown variant",
+                        "failed to deserialize",
                     )
                     _err_lower = _err_body.lower()
                     _looks_like_image_rejection = any(
                         p in _err_lower for p in _IMAGE_REJECTION_PHRASES
                     )
+                    logger.info("[IMAGE_STRIP_DEBUG] reactive fallback: vision_supported=%r err_body_trunc=%r looks_like_image_rejection=%r status=%r",
+                                getattr(self, "_vision_supported", "UNSET"),
+                                _err_body[:200],
+                                _looks_like_image_rejection,
+                                _err_status)
                     # 4xx-only gate: never interpret 5xx/timeout as "server
                     # said no to images" — those are transient and must
                     # route to the normal retry path.
@@ -13135,6 +13223,7 @@ class AIAgent:
                         _imgs_removed = _strip_images_from_messages(messages)
                         if isinstance(api_messages, list):
                             _strip_images_from_messages(api_messages)
+                        logger.info("[IMAGE_STRIP_DEBUG] IMAGE-RETRY TRIGGERED! imgs_removed=%r", _imgs_removed)
                         self._vprint(
                             f"{self.log_prefix}⚠️  Server rejected image content — "
                             f"switching to text-only mode for this session"
