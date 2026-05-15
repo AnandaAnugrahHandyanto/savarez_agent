@@ -1,7 +1,9 @@
 """Tests for backend-specific bulk download implementations and cleanup() wiring."""
 
 import asyncio
+import io
 import subprocess
+import tarfile
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
@@ -10,6 +12,7 @@ import pytest
 from tools.environments import ssh as ssh_env
 from tools.environments import modal as modal_env
 from tools.environments import daytona as daytona_env
+from tools.environments import novita as novita_env
 from tools.environments.ssh import SSHEnvironment
 
 
@@ -93,6 +96,54 @@ def _make_mock_daytona_env():
     env._task_id = "test"
     env._daytona = MagicMock()
     return env
+
+
+# ── Novita helpers ───────────────────────────────────────────────────
+
+
+def _make_mock_novita_env():
+    """Create a minimal NovitaEnvironment without calling __init__."""
+    env = object.__new__(novita_env.NovitaEnvironment)
+    env._sandbox = MagicMock()
+    env._remote_home = "/home/user"
+    env._sync_manager = None
+    env._lock = __import__("threading").Lock()
+    env._persistent = True
+    env._task_id = "test"
+    return env
+
+
+# =====================================================================
+# Novita bulk upload
+# =====================================================================
+
+
+class TestNovitaBulkUpload:
+    """Unit tests for _novita_bulk_upload."""
+
+    def test_novita_bulk_upload_writes_tarball_and_extracts(self, tmp_path):
+        env = _make_mock_novita_env()
+        source = tmp_path / "SKILL.md"
+        source.write_text("hello from skill", encoding="utf-8")
+
+        env._novita_bulk_upload([(str(source), "/home/user/.hermes/skills/demo/SKILL.md")])
+
+        env._sandbox.files.write.assert_called_once()
+        remote_tar, tar_bytes = env._sandbox.files.write.call_args[0]
+        assert remote_tar.startswith("/tmp/.hermes_upload.")
+        assert remote_tar.endswith(".tar.gz")
+
+        with tarfile.open(fileobj=io.BytesIO(tar_bytes), mode="r:gz") as tar:
+            names = tar.getnames()
+            assert names == ["home/user/.hermes/skills/demo/SKILL.md"]
+            extracted = tar.extractfile(names[0])
+            assert extracted is not None
+            assert extracted.read() == b"hello from skill"
+
+        run_calls = [call.args[0] for call in env._sandbox.commands.run.call_args_list]
+        assert any("tar -xzf" in cmd and "-C /" in cmd for cmd in run_calls)
+        assert any("rm -f" in cmd and remote_tar in cmd for cmd in run_calls)
+        env._sandbox.files.write_files.assert_not_called()
 
 
 # =====================================================================
@@ -403,6 +454,108 @@ class TestDaytonaCleanup:
 
 
 # =====================================================================
+# Novita bulk download
+# =====================================================================
+
+
+class TestNovitaBulkDownload:
+    """Unit tests for _novita_bulk_download."""
+
+    def test_novita_bulk_download_creates_tar_and_reads_bytes(self, tmp_path):
+        """commands.run and files.read should both be called."""
+        env = _make_mock_novita_env()
+        env._sandbox.files.read.return_value = bytearray(b"tar-data")
+        dest = tmp_path / "backup.tar"
+
+        env._novita_bulk_download(dest)
+
+        assert env._sandbox.commands.run.call_count == 2
+        tar_cmd = env._sandbox.commands.run.call_args_list[0][0][0]
+        assert "tar" in tar_cmd
+        assert "-czf" in tar_cmd
+        assert "--exclude" not in tar_cmd
+        assert "/tmp/.hermes_sync." in tar_cmd
+        assert ".tar.gz" in tar_cmd
+        assert "home/user/.hermes" in tar_cmd
+        assert env._sandbox.commands.run.call_args_list[0].kwargs.get("timeout") == 120
+
+        env._sandbox.files.read.assert_called_once()
+        read_args = env._sandbox.files.read.call_args
+        assert read_args[0][0].startswith("/tmp/.hermes_sync.")
+        assert read_args[0][0].endswith(".tar.gz")
+        assert read_args.kwargs.get("format") == "bytes"
+        assert read_args.kwargs.get("request_timeout") == 120
+        assert dest.read_bytes() == b"tar-data"
+
+        cleanup_cmd = env._sandbox.commands.run.call_args_list[1][0][0]
+        assert "rm -f" in cleanup_cmd
+        assert "/tmp/.hermes_sync." in cleanup_cmd
+
+    def test_novita_bulk_download_uses_remote_home(self, tmp_path):
+        """The tar command should use the env's _remote_home."""
+        env = _make_mock_novita_env()
+        env._remote_home = "/root"
+        env._sandbox.files.read.return_value = b"tar-data"
+        dest = tmp_path / "backup.tar"
+
+        env._novita_bulk_download(dest)
+
+        tar_cmd = env._sandbox.commands.run.call_args_list[0][0][0]
+        assert "root/.hermes" in tar_cmd
+
+
+class TestNovitaCleanup:
+    """Verify Novita cleanup() calls sync_back() before pause/kill."""
+
+    def test_novita_cleanup_calls_sync_back_before_pause(self):
+        """Persistent cleanup should sync back before beta_pause()."""
+        env = _make_mock_novita_env()
+
+        call_order = []
+        sync_mgr = MagicMock()
+        sync_mgr.sync_back = lambda: call_order.append("sync_back")
+        env._sync_manager = sync_mgr
+        env._sandbox.beta_pause = lambda: call_order.append("pause")
+
+        env.cleanup()
+
+        assert "sync_back" in call_order
+        assert "pause" in call_order
+        assert call_order.index("sync_back") < call_order.index("pause")
+
+    def test_novita_cleanup_calls_sync_back_before_kill(self):
+        """Non-persistent cleanup should sync back before kill()."""
+        env = _make_mock_novita_env()
+        env._persistent = False
+
+        call_order = []
+        sync_mgr = MagicMock()
+        sync_mgr.sync_back = lambda: call_order.append("sync_back")
+        env._sync_manager = sync_mgr
+        env._sandbox.kill = lambda: call_order.append("kill")
+
+        env.cleanup()
+
+        assert "sync_back" in call_order
+        assert "kill" in call_order
+        assert call_order.index("sync_back") < call_order.index("kill")
+
+    def test_novita_cleanup_continues_when_sync_back_raises(self):
+        """A sync_back failure should not block sandbox cleanup."""
+        env = _make_mock_novita_env()
+
+        call_order = []
+        sync_mgr = MagicMock()
+        sync_mgr.sync_back.side_effect = RuntimeError("download failed")
+        env._sync_manager = sync_mgr
+        env._sandbox.beta_pause = lambda: call_order.append("pause")
+
+        env.cleanup()
+
+        assert call_order == ["pause"]
+
+
+# =====================================================================
 # FileSyncManager wiring: bulk_download_fn passed by each backend
 # =====================================================================
 
@@ -489,6 +642,33 @@ class TestBulkDownloadWiring:
             delete_fn=env._daytona_delete,
             bulk_upload_fn=env._daytona_bulk_upload,
             bulk_download_fn=env._daytona_bulk_download,
+        )
+
+        assert "bulk_download_fn" in captured_kwargs
+        assert callable(captured_kwargs["bulk_download_fn"])
+
+    def test_novita_passes_bulk_download_fn(self, monkeypatch):
+        """NovitaEnvironment should pass _novita_bulk_download to FileSyncManager."""
+        captured_kwargs = {}
+
+        def capture_fsm(**kwargs):
+            captured_kwargs.update(kwargs)
+            return type("M", (), {"sync": lambda self, **k: None})()
+
+        monkeypatch.setattr(novita_env, "FileSyncManager", capture_fsm)
+
+        env = object.__new__(novita_env.NovitaEnvironment)
+        env._sandbox = MagicMock()
+        env._remote_home = "/home/user"
+
+        # Replicate the wiring done in __init__
+        from tools.environments.file_sync import iter_sync_files
+        env._sync_manager = novita_env.FileSyncManager(
+            get_files_fn=lambda: iter_sync_files(f"{env._remote_home}/.hermes"),
+            upload_fn=env._novita_upload,
+            delete_fn=env._novita_delete,
+            bulk_upload_fn=env._novita_bulk_upload,
+            bulk_download_fn=env._novita_bulk_download,
         )
 
         assert "bulk_download_fn" in captured_kwargs

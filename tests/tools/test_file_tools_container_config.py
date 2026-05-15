@@ -11,6 +11,7 @@ def _make_env_config(**overrides):
         "singularity_image": "docker://test",
         "modal_image": "test",
         "daytona_image": "test",
+        "novita_image": "code-interpreter-v1",
         "cwd": "/workspace",
         "host_cwd": None,
         "timeout": 180,
@@ -63,3 +64,9 @@ class TestFileToolsContainerConfig:
         del cfg["docker_forward_env"]
         cc = self._run(cfg, "t4")
         assert cc.get("docker_forward_env") == []
+
+    def test_novita_gets_container_config(self):
+        """Novita should receive the same persistent/container config path as Daytona."""
+        cc = self._run(_make_env_config(env_type="novita"), "t5")
+        assert cc.get("container_persistent") is False
+        assert cc.get("container_memory") == 4096

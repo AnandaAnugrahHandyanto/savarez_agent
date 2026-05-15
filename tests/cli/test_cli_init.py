@@ -477,6 +477,30 @@ class TestRootLevelProviderOverride:
         assert cfg["terminal"]["vercel_runtime"] == "python3.13"
         assert os.environ["TERMINAL_VERCEL_RUNTIME"] == "python3.13"
 
+    def test_terminal_novita_image_bridged_to_env(self, tmp_path, monkeypatch):
+        """Classic CLI must expose terminal.novita_image to terminal_tool.py."""
+        import yaml
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("TERMINAL_NOVITA_IMAGE", raising=False)
+
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(yaml.safe_dump({
+            "terminal": {
+                "backend": "novita",
+                "novita_image": "code-interpreter-v1",
+            },
+        }))
+
+        import cli
+        monkeypatch.setattr(cli, "_hermes_home", hermes_home)
+        cfg = cli.load_cli_config()
+
+        assert cfg["terminal"]["novita_image"] == "code-interpreter-v1"
+        assert os.environ["TERMINAL_NOVITA_IMAGE"] == "code-interpreter-v1"
+
     def test_normalize_root_model_keys_moves_to_model(self):
         """_normalize_root_model_keys migrates root keys into model section."""
         from hermes_cli.config import _normalize_root_model_keys
