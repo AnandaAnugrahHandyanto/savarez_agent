@@ -86,6 +86,22 @@ def _telegramize_command_mentions(text: str, platform: Any) -> str:
     return _TELEGRAM_COMMAND_MENTION_RE.sub(_replace, text)
 
 
+def _extract_media_paths_from_tool_content(content: str) -> tuple[list[str], bool]:
+    """Extract MEDIA paths from persisted tool output.
+
+    Tool outputs are often JSON strings, so a simple ``MEDIA:(\\S+)`` regex
+    truncates paths containing spaces before BasePlatformAdapter gets a chance
+    to deliver them. Reuse the platform extractor here so Unicode filenames and
+    local paths with spaces round-trip through the post-run media scan.
+    """
+    if not isinstance(content, str) or "MEDIA:" not in content:
+        return [], False
+    media, _cleaned = BasePlatformAdapter.extract_media(content)
+    paths = [path for path, _is_voice in media if path]
+    has_voice = any(is_voice for _path, is_voice in media)
+    return paths, has_voice
+
+
 # Only auto-continue interrupted gateway turns while the interruption is fresh.
 # Stale tool-tail/resume markers can otherwise revive an unrelated old task
 # after a gateway restart when the user's next message starts new work.
@@ -15499,8 +15515,7 @@ class GatewayRunner:
                 if _hm.get("role") in {"tool", "function"}:
                     _hc = _hm.get("content", "")
                     if "MEDIA:" in _hc:
-                        for _match in re.finditer(r'MEDIA:(\S+)', _hc):
-                            _p = _match.group(1).strip().rstrip('",}')
+                        for _p in _extract_media_paths_from_tool_content(_hc)[0]:
                             if _p:
                                 _history_media_paths.add(_p)
             
@@ -15788,11 +15803,11 @@ class GatewayRunner:
                     if msg.get("role") in {"tool", "function"}:
                         content = msg.get("content", "")
                         if "MEDIA:" in content:
-                            for match in re.finditer(r'MEDIA:(\S+)', content):
-                                path = match.group(1).strip().rstrip('",}')
+                            paths, has_voice = _extract_media_paths_from_tool_content(content)
+                            for path in paths:
                                 if path and path not in _history_media_paths:
                                     media_tags.append(f"MEDIA:{path}")
-                            if "[[audio_as_voice]]" in content:
+                            if has_voice:
                                 has_voice_directive = True
                 
                 if media_tags:
