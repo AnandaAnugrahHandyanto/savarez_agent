@@ -2,7 +2,7 @@
 name: fal-media-pipeline
 description: Create images, edits, and videos with FAL.
 version: 1.0.0
-author: axAilotl, Hermes Agent
+author: Hermes Agent
 license: MIT
 metadata:
   hermes:
