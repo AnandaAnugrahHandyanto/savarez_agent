@@ -208,6 +208,68 @@ class TestGatewayPidState:
         assert not pid_path.exists()
         assert not lock_path.exists()
 
+    def test_get_running_pid_accepts_atomic_desktop_gateway_cmdline(self, tmp_path, monkeypatch):
+        """Atomic Hermes' bundled desktop-gateway.py shares HERMES_HOME with the CLI.
+
+        Regression for #22418: ``gateway run --replace`` must recognise it as
+        a gateway so the replace path runs (kill PID, release scoped locks);
+        otherwise the CLI proceeds without replacing, then trips the still-
+        held Discord token lock and the platform stays down.
+        """
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        pid_path = tmp_path / "gateway.pid"
+        pid_path.write_text(json.dumps({
+            "pid": os.getpid(),
+            "kind": "hermes-gateway",
+            "argv": [
+                "/Applications/Atomic Hermes.app/Contents/Resources/python-server/python",
+                "/Applications/Atomic Hermes.app/Contents/Resources/python-server/desktop-gateway.py",
+            ],
+            "start_time": 123,
+        }))
+
+        monkeypatch.setattr(status.os, "kill", lambda pid, sig: None)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 123)
+        monkeypatch.setattr(
+            status,
+            "_read_process_cmdline",
+            lambda pid: (
+                "/Applications/Atomic Hermes.app/Contents/Resources/python-server/python "
+                "/Applications/Atomic Hermes.app/Contents/Resources/python-server/desktop-gateway.py"
+            ),
+        )
+
+        assert status.acquire_gateway_runtime_lock() is True
+        try:
+            assert status.get_running_pid() == os.getpid()
+        finally:
+            status.release_gateway_runtime_lock()
+
+    def test_get_running_pid_accepts_desktop_gateway_metadata_when_cmdline_unavailable(
+        self, tmp_path, monkeypatch,
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        pid_path = tmp_path / "gateway.pid"
+        pid_path.write_text(json.dumps({
+            "pid": os.getpid(),
+            "kind": "hermes-gateway",
+            "argv": [
+                "/Applications/Atomic Hermes.app/Contents/Resources/python-server/python",
+                "/Applications/Atomic Hermes.app/Contents/Resources/python-server/desktop-gateway.py",
+            ],
+            "start_time": 123,
+        }))
+
+        monkeypatch.setattr(status.os, "kill", lambda pid, sig: None)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 123)
+        monkeypatch.setattr(status, "_read_process_cmdline", lambda pid: None)
+
+        assert status.acquire_gateway_runtime_lock() is True
+        try:
+            assert status.get_running_pid() == os.getpid()
+        finally:
+            status.release_gateway_runtime_lock()
+
     def test_get_running_pid_falls_back_to_live_lock_record(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         pid_path = tmp_path / "gateway.pid"

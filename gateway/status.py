@@ -164,20 +164,30 @@ def _read_process_cmdline(pid: int) -> Optional[str]:
     return None
 
 
+# Recognised gateway-process command-line fragments. ``desktop-gateway``
+# covers the Atomic Hermes desktop app's bundled runner
+# (``/Applications/Atomic Hermes.app/Contents/Resources/python-server/desktop-gateway.py``),
+# which shares HERMES_HOME with the CLI. Without it, a CLI ``gateway run
+# --replace`` does not recognise the desktop runner as a gateway, skips the
+# replacement path, and then collides with the desktop runner's still-held
+# scoped lock (e.g. ``Discord bot token already in use``). See #22418.
+_GATEWAY_CMDLINE_PATTERNS = (
+    "hermes_cli.main gateway",
+    "hermes_cli/main.py gateway",
+    "hermes gateway",
+    "hermes-gateway",
+    "gateway/run.py",
+    "desktop-gateway",
+)
+
+
 def _looks_like_gateway_process(pid: int) -> bool:
     """Return True when the live PID still looks like the Hermes gateway."""
     cmdline = _read_process_cmdline(pid)
     if not cmdline:
         return False
 
-    patterns = (
-        "hermes_cli.main gateway",
-        "hermes_cli/main.py gateway",
-        "hermes gateway",
-        "hermes-gateway",
-        "gateway/run.py",
-    )
-    return any(pattern in cmdline for pattern in patterns)
+    return any(pattern in cmdline for pattern in _GATEWAY_CMDLINE_PATTERNS)
 
 
 def _record_looks_like_gateway(record: dict[str, Any]) -> bool:
@@ -191,13 +201,7 @@ def _record_looks_like_gateway(record: dict[str, Any]) -> bool:
 
     # Normalize Windows backslashes so patterns match cross-platform.
     cmdline = " ".join(str(part) for part in argv).replace("\\", "/")
-    patterns = (
-        "hermes_cli.main gateway",
-        "hermes_cli/main.py gateway",
-        "hermes gateway",
-        "gateway/run.py",
-    )
-    return any(pattern in cmdline for pattern in patterns)
+    return any(pattern in cmdline for pattern in _GATEWAY_CMDLINE_PATTERNS)
 
 
 def _build_pid_record() -> dict:
