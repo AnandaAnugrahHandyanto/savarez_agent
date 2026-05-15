@@ -22,7 +22,7 @@ Required environment variables:
 Optional environment variables:
     SIMPLEX_ALLOWED_USERS      Comma-separated contact IDs (allowlist)
     SIMPLEX_ALLOW_ALL_USERS    Set 'true' to allow all contacts
-    SIMPLEX_HOME_CHANNEL       Default contact/group ID for cron delivery
+    SIMPLEX_HOME_CHANNEL       Default contact/group display name for cron delivery
     SIMPLEX_HOME_CHANNEL_NAME  Human label for the home channel
 
 The ``websockets`` Python package is imported lazily — the plugin is
@@ -32,11 +32,13 @@ is present, so the gateway will not attempt to instantiate the adapter.
 """
 
 import asyncio
+import inspect
 import json
 import logging
 import os
 import random
 import time
+from collections import OrderedDict
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -65,6 +67,7 @@ WS_RETRY_DELAY_INITIAL = 2.0
 WS_RETRY_DELAY_MAX = 60.0
 HEALTH_CHECK_INTERVAL = 30.0
 HEALTH_CHECK_STALE_THRESHOLD = 120.0
+CATCH_UP_TAIL_LIMIT = 50
 
 # Correlation ID prefix for requests we send so we can ignore our own echoes.
 _CORR_PREFIX = "hermes-"
@@ -133,6 +136,10 @@ class SimplexAdapter(BasePlatformAdapter):
         self._typing_tasks: Dict[str, asyncio.Task] = {}
         self._running = False
         self._last_ws_activity = 0.0
+        self._catch_up_primed = False
+        self._catch_up_pending = 0
+        self._catch_up_corr_ids: set[str] = set()
+        self._seen_item_ids: OrderedDict[str, None] = OrderedDict()
 
         # Track sent correlation IDs to filter echoes
         self._pending_corr_ids: set = set()
@@ -230,6 +237,7 @@ class SimplexAdapter(BasePlatformAdapter):
                     backoff = WS_RETRY_DELAY_INITIAL
                     self._last_ws_activity = time.time()
                     logger.info("SimpleX WS: connected")
+                    await self._request_catch_up()
 
                     async for raw in ws:
                         if not self._running:
@@ -269,23 +277,45 @@ class SimplexAdapter(BasePlatformAdapter):
     # ------------------------------------------------------------------
 
     async def _health_monitor(self) -> None:
-        """Force reconnect if the WebSocket has been idle too long."""
+        """Validate the WebSocket when no SimpleX events have arrived recently.
+
+        A quiet chat can legitimately produce no `newChatItem` frames for long
+        periods, so receive-side idleness alone is not a failure. Use a protocol
+        ping to verify the socket instead of force-closing a healthy stream.
+        The websockets client will close/reconnect on ping failure.
+        """
         while self._running:
             await asyncio.sleep(HEALTH_CHECK_INTERVAL)
             if not self._running:
                 break
 
             elapsed = time.time() - self._last_ws_activity
-            if elapsed > HEALTH_CHECK_STALE_THRESHOLD:
-                logger.warning(
-                    "SimpleX: WS idle for %.0fs, forcing reconnect", elapsed
+            if elapsed <= HEALTH_CHECK_STALE_THRESHOLD:
+                continue
+
+            ws = self._ws
+            if not ws:
+                continue
+
+            try:
+                maybe_pong_waiter = ws.ping()
+                pong_waiter = (
+                    await maybe_pong_waiter
+                    if inspect.isawaitable(maybe_pong_waiter)
+                    else maybe_pong_waiter
                 )
+                await asyncio.wait_for(pong_waiter, timeout=10)
                 self._last_ws_activity = time.time()
-                if self._ws:
-                    try:
-                        await self._ws.close()
-                    except Exception:
-                        pass
+                logger.debug("SimpleX: WS idle for %.0fs but ping succeeded", elapsed)
+            except Exception:
+                logger.warning(
+                    "SimpleX: WS idle for %.0fs and ping failed; forcing reconnect",
+                    elapsed,
+                )
+                try:
+                    await ws.close()
+                except Exception:
+                    pass
 
     # ------------------------------------------------------------------
     # Inbound event handling
@@ -293,7 +323,8 @@ class SimplexAdapter(BasePlatformAdapter):
 
     async def _handle_event(self, event: dict) -> None:
         """Dispatch a daemon event to the appropriate handler."""
-        resp_type = event.get("type") or event.get("resp", {}).get("type", "")
+        resp = event.get("resp") if isinstance(event.get("resp"), dict) else {}
+        resp_type = event.get("type") or resp.get("type", "")
 
         # Filter responses to our own commands (echoes)
         corr_id = event.get("corrId", "")
@@ -301,17 +332,228 @@ class SimplexAdapter(BasePlatformAdapter):
             self._pending_corr_ids.discard(corr_id)
             return
 
+        # SimpleX WebSocket events are usually wrapped as
+        # {"corrId": "", "resp": {"type": "newChatItem", ...}}.
+        # Normalize that wrapper and the nested AChatItem/ChatData variants
+        # before extracting chatInfo/chatItem.
+        payload = resp or event
         if resp_type == "newChatItem":
-            await self._handle_new_chat_item(event)
+            await self._handle_new_chat_item(self._normalize_chat_item_wrapper(payload))
         elif resp_type == "newChatItems":
-            # Batch variant — process each item
-            items = event.get("chatItems") or []
-            for item_wrapper in items:
+            # Batch variant — process each item.
+            for item_wrapper in self._normalize_chat_items_payload(payload):
                 await self._handle_new_chat_item(item_wrapper)
+        elif resp_type == "chatItems":
+            # Catch-up responses come from explicit `/tail @chat N` requests we
+            # send after the WebSocket connects/reconnects. They are not a
+            # continuous poll loop; the live stream remains the primary path.
+            await self._handle_catch_up_chat_items(
+                self._normalize_chat_items_payload(payload), corr_id=corr_id
+            )
+        elif resp_type == "chats":
+            # On connect/reconnect, request recent items for each chat once so
+            # messages that arrived while the socket was down are not lost.
+            await self._handle_catch_up_chats(payload.get("chats") or [])
+        elif corr_id in self._catch_up_corr_ids:
+            # Count error/unexpected responses to catch-up tail commands so the
+            # initial priming window cannot get stuck forever.
+            self._complete_catch_up_request(corr_id)
         # Ignore all other event types (delivery receipts, contact updates, etc.)
 
-    async def _handle_new_chat_item(self, wrapper: dict) -> None:
+    async def _request_catch_up(self) -> None:
+        """Ask the persistent WebSocket for chats once after connect/reconnect."""
+        ok = await self._send_ws({
+            "corrId": f"simplex-catchup-chats-{int(time.time() * 1000)}",
+            "cmd": "/chats",
+        }, persistent_only=True)
+        if not ok:
+            logger.debug("SimpleX: skipped catch-up request; persistent WS unavailable")
+
+    @staticmethod
+    def _quote_simplex_name(name: str) -> str:
+        """Quote a SimpleX text-command target component when needed."""
+        if not name:
+            return ""
+        if any(ch.isspace() for ch in name) or "'" in name:
+            return "'" + name.replace("'", "\\'") + "'"
+        return name
+
+    def _simplex_dm_ref(self, name: str) -> str:
+        return f"@{self._quote_simplex_name(name)}"
+
+    def _simplex_group_ref(self, name: str) -> str:
+        return f"#{self._quote_simplex_name(name)}"
+
+    def _normalize_chat_item_wrapper(self, payload: dict) -> dict:
+        """Normalize SimpleX AChatItem variants to {chatInfo, chatItem}."""
+        if not isinstance(payload, dict):
+            return {}
+
+        nested = payload.get("chatItem")
+        if isinstance(nested, dict):
+            # Some daemon responses wrap the actual item as:
+            # {type: newChatItem, chatItem: {chatInfo: ..., chatItem: ...}}
+            if isinstance(nested.get("chatInfo"), dict) and isinstance(nested.get("chatItem"), dict):
+                return nested
+            # Already normalized: {chatInfo: ..., chatItem: {content/meta...}}
+            if isinstance(payload.get("chatInfo"), dict):
+                return payload
+
+        if isinstance(payload.get("chatInfo"), dict) and isinstance(payload.get("item"), dict):
+            return {"chatInfo": payload["chatInfo"], "chatItem": payload["item"]}
+
+        return payload
+
+    def _normalize_chat_items_payload(self, payload: dict) -> list[dict]:
+        """Normalize `newChatItems`/`chatItems` response shapes to wrappers."""
+        raw = payload.get("chatItems") if isinstance(payload, dict) else []
+        if isinstance(raw, list):
+            return [self._normalize_chat_item_wrapper(item) for item in raw]
+
+        if isinstance(raw, dict):
+            shared_chat_info = raw.get("chatInfo") or raw.get("chat") or payload.get("chatInfo")
+            items = raw.get("chatItems") or raw.get("items") or []
+            normalized = []
+            for item in items if isinstance(items, list) else []:
+                if isinstance(item, dict) and (item.get("chatInfo") or item.get("chat")):
+                    normalized.append(self._normalize_chat_item_wrapper(item))
+                elif isinstance(item, dict) and shared_chat_info:
+                    normalized.append({"chatInfo": shared_chat_info, "chatItem": item})
+            return normalized
+
+        return []
+
+    def _simplex_chat_ref(self, chat: dict) -> Optional[str]:
+        """Return a SimpleX chat reference suitable for `/tail <ref> 50`."""
+        chat_info = chat.get("chatInfo") or chat.get("chat") or {}
+        chat_type = chat_info.get("type", "")
+
+        if chat_type in ("group", "groupInfo"):
+            group_info = chat_info.get("groupInfo") or chat_info.get("group") or {}
+            name = (
+                group_info.get("localDisplayName")
+                or group_info.get("displayName")
+                or (group_info.get("groupProfile") or {}).get("displayName")
+                or ""
+            )
+            return self._simplex_group_ref(str(name)) if name else None
+
+        contact_info = chat_info.get("contact") or {}
+        name = (
+            contact_info.get("localDisplayName")
+            or contact_info.get("displayName")
+            or (contact_info.get("profile") or {}).get("displayName")
+            or ""
+        )
+        return self._simplex_dm_ref(str(name)) if name else None
+
+    async def _handle_catch_up_chats(self, chats: list[dict]) -> None:
+        """Request recent items once for each chat returned by `/chats`."""
+        refs = [ref for chat in chats if (ref := self._simplex_chat_ref(chat))]
+        if not refs:
+            if not self._catch_up_primed:
+                self._catch_up_primed = True
+            return
+
+        if not self._catch_up_primed:
+            self._catch_up_pending = len(refs)
+
+        for ref in refs:
+            corr_id = f"simplex-catchup-tail-{int(time.time() * 1000)}-{random.randint(0, 9999)}"
+            if not self._catch_up_primed:
+                self._catch_up_corr_ids.add(corr_id)
+            ok = await self._send_ws({
+                "corrId": corr_id,
+                "cmd": f"/tail {ref} {CATCH_UP_TAIL_LIMIT}",
+            }, persistent_only=True)
+            if not ok and not self._catch_up_primed:
+                self._complete_catch_up_request(corr_id)
+
+        if not self._catch_up_primed and self._catch_up_pending == 0:
+            self._catch_up_primed = True
+
+    def _remember_seen_key(self, key: str) -> bool:
+        """Remember a de-dupe key, returning True when it was already seen."""
+        if key in self._seen_item_ids:
+            self._seen_item_ids.move_to_end(key)
+            return True
+        self._seen_item_ids[key] = None
+        while len(self._seen_item_ids) > 1000:
+            self._seen_item_ids.popitem(last=False)
+        return False
+
+    def _complete_catch_up_request(self, corr_id: str) -> None:
+        """Mark one catch-up tail request complete during initial priming."""
+        if self._catch_up_primed:
+            return
+        if corr_id and corr_id in self._catch_up_corr_ids:
+            self._catch_up_corr_ids.discard(corr_id)
+            self._catch_up_pending = max(0, self._catch_up_pending - 1)
+        elif not corr_id and self._catch_up_pending:
+            self._catch_up_pending = max(0, self._catch_up_pending - 1)
+        if self._catch_up_pending == 0:
+            self._catch_up_primed = True
+            self._catch_up_corr_ids.clear()
+
+    def _chat_item_seen_key(self, wrapper: dict) -> str:
+        """Return a stable per-chat key for de-duplicating chat items."""
+        chat_info = wrapper.get("chatInfo") or wrapper.get("chat") or {}
+        chat_item = wrapper.get("chatItem") or wrapper.get("item") or {}
+        meta = chat_item.get("meta") or {}
+        item_id = meta.get("itemId") or chat_item.get("id") or meta.get("itemSharedMsgId")
+
+        if chat_info.get("type", "") in ("group", "groupInfo"):
+            group_info = chat_info.get("groupInfo") or chat_info.get("group") or {}
+            chat_key = f"group:{group_info.get('groupId') or group_info.get('id') or ''}"
+        else:
+            contact_info = chat_info.get("contact") or {}
+            chat_key = f"direct:{contact_info.get('contactId') or contact_info.get('id') or contact_info.get('localDisplayName') or ''}"
+
+        return f"{chat_key}:{item_id or meta.get('itemTs') or meta.get('createdAt') or json.dumps(meta, sort_keys=True)}"
+
+    def _is_sent_by_us(self, wrapper: dict) -> bool:
+        """Return True for items generated by the local SimpleX profile."""
+        chat_item = wrapper.get("chatItem") or wrapper.get("item") or {}
+        meta = chat_item.get("meta") or {}
+        status_type = ((meta.get("itemStatus") or {}).get("type") or "").lower()
+        content_type = ((chat_item.get("content") or {}).get("type") or "").lower()
+        return status_type.startswith("snd") or content_type.startswith("snd")
+
+    async def _handle_catch_up_chat_items(self, items: list[dict], *, corr_id: str = "") -> None:
+        """Handle one-shot `/tail` catch-up responses without replaying history."""
+        keyed_items = [(self._chat_item_seen_key(item), item) for item in items]
+
+        if not self._catch_up_primed:
+            for key, _ in keyed_items:
+                self._remember_seen_key(key)
+            self._complete_catch_up_request(corr_id)
+            logger.debug(
+                "SimpleX: priming catch-up with %d recent item(s), %d response(s) pending",
+                len(keyed_items),
+                self._catch_up_pending,
+            )
+            return
+
+        for key, item in keyed_items:
+            if self._remember_seen_key(key):
+                continue
+            if self._is_sent_by_us(item):
+                continue
+            await self._handle_new_chat_item(item, dedupe=False)
+
+    async def _handle_new_chat_item(self, wrapper: dict, *, dedupe: bool = True) -> None:
         """Process a single newChatItem event into a MessageEvent."""
+        wrapper = self._normalize_chat_item_wrapper(wrapper)
+        # The same SimpleX item can arrive twice: once as a live newChatItem
+        # and again from a connect/reconnect catch-up `/tail @contact N` response.
+        # Mark live items as seen so catch-up does not replay them into the
+        # gateway and generate a second assistant response.
+        if dedupe:
+            key = self._chat_item_seen_key(wrapper)
+            if self._remember_seen_key(key):
+                logger.debug("SimpleX: ignoring duplicate chat item %s", key)
+                return
+
         # The daemon wraps the chat item differently depending on version;
         # normalise both layouts.
         chat_info = wrapper.get("chatInfo") or wrapper.get("chat") or {}
@@ -326,7 +568,8 @@ class SimplexAdapter(BasePlatformAdapter):
         # Filter out messages sent by us (direction == "snd")
         meta = chat_item.get("meta") or {}
         direction = (meta.get("itemStatus") or {}).get("type", "")
-        if direction in ("sndSent", "sndSentDirect", "sndSentViaProxy", "sndNew"):
+        content_direction = (item_content.get("type") or "")
+        if direction.lower().startswith("snd") or content_direction.lower().startswith("snd"):
             return
 
         # Determine chat type and IDs
@@ -336,18 +579,29 @@ class SimplexAdapter(BasePlatformAdapter):
         if is_group:
             group_info = chat_info.get("groupInfo") or chat_info.get("group") or {}
             group_id = str(group_info.get("groupId") or group_info.get("id") or "")
-            group_name = group_info.get("displayName") or group_info.get("groupProfile", {}).get("displayName", "")
-            chat_id = f"group:{group_id}" if group_id else ""
-            chat_name = group_name
+            group_name = (
+                group_info.get("localDisplayName")
+                or group_info.get("displayName")
+                or group_info.get("groupProfile", {}).get("displayName", "")
+            )
+            # SimpleX text commands address groups by local display name. Keep
+            # the numeric/opaque group ID only as a fallback if no name exists.
+            group_target = group_name or group_id
+            chat_id = f"group:{group_target}" if group_target else ""
+            chat_name = group_name or group_target
         else:
             contact_info = chat_info.get("contact") or {}
             contact_id = str(contact_info.get("contactId") or contact_info.get("id") or "")
             contact_name = (
-                contact_info.get("displayName")
-                or contact_info.get("localDisplayName")
+                contact_info.get("localDisplayName")
+                or contact_info.get("displayName")
                 or contact_id
             )
-            chat_id = contact_id
+            # The simplex-chat text command interface sends to display names
+            # (e.g. `@alice hi`), not numeric contact IDs. Keep the opaque
+            # contact ID as the sender/user ID for authorization, but use the
+            # display name as the DM chat ID so replies route correctly.
+            chat_id = contact_name
             chat_name = contact_name
 
         if not chat_id:
@@ -364,7 +618,7 @@ class SimplexAdapter(BasePlatformAdapter):
                 or sender_id
             )
         else:
-            sender_id = chat_id
+            sender_id = contact_id if not is_group else chat_id
             sender_name = chat_name
 
         # Extract text
@@ -480,19 +734,56 @@ class SimplexAdapter(BasePlatformAdapter):
             self._pending_corr_ids -= set(to_remove)
         return corr_id
 
-    async def _send_ws(self, payload: dict) -> None:
-        """Send a JSON payload over the WebSocket, queuing if not yet connected."""
+    async def _send_ws(self, payload: dict, *, persistent_only: bool = False) -> bool:
+        """Send a JSON payload over WebSocket.
+
+        Prefer the persistent listener socket. For outbound chat messages, fall
+        back to a short-lived one-shot WebSocket rather than reporting fake
+        success. For commands whose response must be consumed by the listener
+        (for example `/chats` and `/tail` catch-up requests), pass
+        ``persistent_only=True`` so the response is not lost on an ephemeral
+        connection.
+        """
+        import websockets as _wsclient
         import websockets as _wsexc
+
+        async def _send_ephemeral() -> bool:
+            try:
+                async with _wsclient.connect(self.ws_url, open_timeout=10, close_timeout=5) as ws2:
+                    await ws2.send(json.dumps(payload))
+                    # Give simplex-chat a brief chance to ingest the command before
+                    # closing the one-shot connection.
+                    await asyncio.sleep(0.2)
+                self._last_ws_activity = time.time()
+                return True
+            except Exception as e:
+                logger.warning("SimpleX: ephemeral WS send failed: %s", e)
+                return False
+
         ws = self._ws
         if not ws:
-            logger.debug("SimpleX: WS not connected, dropping outbound command")
-            return
+            if persistent_only:
+                logger.debug("SimpleX: persistent WS not connected; skipping request")
+                return False
+            logger.info("SimpleX: persistent WS not connected; using one-shot send")
+            return await _send_ephemeral()
+
         try:
             await ws.send(json.dumps(payload))
+            self._last_ws_activity = time.time()
+            return True
         except _wsexc.ConnectionClosed:
-            logger.warning("SimpleX: WS closed while sending")
+            if persistent_only:
+                logger.warning("SimpleX: persistent WS closed while sending request")
+                return False
+            logger.warning("SimpleX: WS closed while sending; retrying one-shot send")
+            return await _send_ephemeral()
         except Exception as e:
-            logger.warning("SimpleX: WS send error: %s", e)
+            if persistent_only:
+                logger.warning("SimpleX: persistent WS request failed: %s", e)
+                return False
+            logger.warning("SimpleX: WS send error: %s; retrying one-shot send", e)
+            return await _send_ephemeral()
 
     async def send(
         self,
@@ -505,17 +796,19 @@ class SimplexAdapter(BasePlatformAdapter):
         corr_id = self._make_corr_id()
 
         if chat_id.startswith("group:"):
-            group_id = chat_id[6:]
-            cmd_str = f"#[{group_id}] {content}"
+            group_name = chat_id[6:]
+            cmd_str = f"{self._simplex_group_ref(group_name)} {content}"
         else:
-            cmd_str = f"@[{chat_id}] {content}"
+            cmd_str = f"{self._simplex_dm_ref(chat_id)} {content}"
 
         payload = {
             "corrId": corr_id,
             "cmd": cmd_str,
         }
 
-        await self._send_ws(payload)
+        ok = await self._send_ws(payload)
+        if not ok:
+            return SendResult(success=False, error="SimpleX send failed: daemon WebSocket unavailable")
         return SendResult(success=True)
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
@@ -634,16 +927,16 @@ async def _standalone_send(
         return {"error": "websockets not installed. Run: pip install websockets"}
 
     extra = getattr(pconfig, "extra", {}) or {}
-    ws_url = os.getenv("SIMPLEX_WS_URL") or extra.get("ws_url", "ws://127.0.0.1:5225")
+    ws_url = os.getenv("SIMPLEX_WS_URL") or extra.get("ws_url", "")
     if not ws_url:
         return {"error": "SimpleX standalone send: SIMPLEX_WS_URL is required"}
 
     try:
         if chat_id.startswith("group:"):
-            group_id = chat_id[6:]
-            cmd_str = f"#[{group_id}] {message}"
+            group_name = chat_id[6:]
+            cmd_str = f"#{SimplexAdapter._quote_simplex_name(group_name)} {message}"
         else:
-            cmd_str = f"@[{chat_id}] {message}"
+            cmd_str = f"@{SimplexAdapter._quote_simplex_name(chat_id)} {message}"
 
         payload = {
             "corrId": f"hermes-snd-{int(time.time() * 1000)}",

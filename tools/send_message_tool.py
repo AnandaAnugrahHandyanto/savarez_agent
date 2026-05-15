@@ -344,6 +344,14 @@ def _parse_target_ref(platform_name: str, target_ref: str):
         if target_ref.strip().isdigit():
             return f"group:{target_ref.strip()}", None, True
         return None, None, False
+    if platform_name == "simplex":
+        # SimpleX chat CLI sends to local display names (e.g. @alice) for DMs,
+        # and plugin group IDs are passed as group:<id>. Treat any non-empty
+        # target as explicit so contacts like "gdg" don't require channel
+        # directory resolution.
+        ref = target_ref.strip()
+        if ref:
+            return ref, None, True
     if platform_name in _PHONE_PLATFORMS:
         match = _E164_TARGET_RE.fullmatch(target_ref)
         if match:
