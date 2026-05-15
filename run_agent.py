@@ -162,6 +162,7 @@ from agent.subdirectory_hints import SubdirectoryHintTracker
 from agent.prompt_caching import apply_anthropic_cache_control
 from agent.prompt_builder import build_skills_system_prompt, build_context_files_prompt, build_environment_hints, load_soul_md, TOOL_USE_ENFORCEMENT_GUIDANCE, TOOL_USE_ENFORCEMENT_MODELS, GOOGLE_MODEL_OPERATIONAL_GUIDANCE, OPENAI_MODEL_EXECUTION_GUIDANCE
 from agent.usage_pricing import estimate_usage_cost, normalize_usage
+from agent.budget_guard import enforce_configured_budget
 from agent.codex_responses_adapter import (
     _derive_responses_function_call_id as _codex_derive_responses_function_call_id,
     _deterministic_call_id as _codex_deterministic_call_id,
@@ -7544,6 +7545,7 @@ class AIAgent:
         the main retry loop can try again with backoff / credential rotation /
         provider fallback.
         """
+        enforce_configured_budget(getattr(self, "session_estimated_cost_usd", 0.0))
         result = {"response": None, "error": None}
         request_client_holder = {"client": None}
 
@@ -8003,6 +8005,7 @@ class AIAgent:
                     pool=30.0,
                 ),
             }
+            enforce_configured_budget(getattr(self, "session_estimated_cost_usd", 0.0))
             request_client_holder["client"] = self._create_request_openai_client(
                 reason="chat_completion_stream_request",
                 api_kwargs=stream_kwargs,
