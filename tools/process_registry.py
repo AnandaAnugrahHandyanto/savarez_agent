@@ -650,13 +650,13 @@ class ProcessRegistry:
         quoted_exit_path = shlex.quote(exit_path)
         child_script = (
             f"{command} > {quoted_log_path} 2>&1; "
-            f"rc=$?; printf '%s\\\\n' \"$rc\" > {quoted_exit_path}"
+            f"rc=$?; printf '%s\\n' \"$rc\" > {quoted_exit_path}"
         )
         quoted_child_script = shlex.quote(child_script)
         launcher_script = (
             f"mkdir -p {quoted_temp_dir}; "
             f"nohup bash -c {quoted_child_script} >/dev/null 2>&1 & "
-            f"pid=$!; printf '%s\\\\n' \"$pid\" > {quoted_pid_path}; "
+            f"pid=$!; printf '%s\\n' \"$pid\" > {quoted_pid_path}; "
             f"cat {quoted_pid_path}"
         )
         quoted_launcher_script = shlex.quote(launcher_script)
