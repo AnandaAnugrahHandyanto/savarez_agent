@@ -18,6 +18,8 @@ Main outcomes:
 - Lower delegation overhead by reusing one config snapshot per `delegate_task`.
 - Faster parallel read-file safety checks and no duplicate JSON parse in the
   concurrent executor.
+- OpenRouter model metadata now has a disk cache for fresh-process reuse and
+  offline/stale fallback.
 
 ## Visual Summary
 
@@ -41,6 +43,10 @@ Dead local endpoint fast path:
 
 ![Runtime local endpoint fast path comparison](https://raw.githubusercontent.com/wesleysimplicio/hermes-agent/codex/hermes-agent-10x-fast/docs/assets/10x-fast/runtime-local-endpoint-fast-path.svg)
 
+OpenRouter model metadata disk cache:
+
+![OpenRouter metadata disk cache comparison](https://raw.githubusercontent.com/wesleysimplicio/hermes-agent/codex/hermes-agent-10x-fast/docs/assets/10x-fast/runtime-openrouter-metadata-cache.svg)
+
 ## Why This Was Slow
 
 Several hot paths were paying fixed costs over and over:
@@ -54,6 +60,8 @@ Several hot paths were paying fixed costs over and over:
 - The TUI MCP reload path treated any config edit as an MCP edit.
 - Dead local/custom loopback endpoints could burn tens of seconds in repeated
   HTTP metadata probing before the first real model call.
+- Fresh Hermes processes repeated OpenRouter `/models` metadata work even when
+  the same model/context/pricing metadata had just been fetched.
 - `delegate_task` reloaded config and recomputed child settings for the same
   batch.
 - The parallel `read_file` guard rebuilt path state and the concurrent tool
@@ -254,6 +262,8 @@ Expected effect:
 
 - Faster repeated Hermes starts/subagent builds that need model metadata, and
   more reliable offline/provider-outage behavior.
+
+![OpenRouter metadata disk cache comparison](https://raw.githubusercontent.com/wesleysimplicio/hermes-agent/codex/hermes-agent-10x-fast/docs/assets/10x-fast/runtime-openrouter-metadata-cache.svg)
 
 ## Benchmarks
 
