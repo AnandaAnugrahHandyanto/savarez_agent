@@ -22,9 +22,40 @@ class FakeTlonClient:
         self.pokes = []
         self.threads = []
         self.scries = []
+        self.group = {"roles": {}, "admins": [], "seats": {"~bot-palnet": {"roles": ["admin"]}}}
 
     async def poke(self, app, mark, json_data, **_kwargs):
         self.pokes.append({"app": app, "mark": mark, "json": json_data})
+        group_action = (
+            ((json_data or {}).get("group") or {}).get("a-group")
+            if isinstance(json_data, dict)
+            else None
+        )
+        if isinstance(group_action, dict):
+            role = group_action.get("role")
+            if isinstance(role, dict):
+                role_id = (role.get("roles") or [None])[0]
+                action = role.get("a-role") or {}
+                if role_id and "add" in action:
+                    self.group.setdefault("roles", {})[role_id] = action["add"]
+                if role_id and "set-admin" in action:
+                    admins = self.group.setdefault("admins", [])
+                    if role_id not in admins:
+                        admins.append(role_id)
+            seat = group_action.get("seat")
+            if isinstance(seat, dict):
+                ships = seat.get("ships") or []
+                action = seat.get("a-seat") or {}
+                if "add" in action:
+                    for ship in ships:
+                        self.group.setdefault("seats", {}).setdefault(ship, {"roles": []})
+                if "add-roles" in action:
+                    for ship in ships:
+                        seat_info = self.group.setdefault("seats", {}).setdefault(ship, {"roles": []})
+                        roles = seat_info.setdefault("roles", [])
+                        for role_id in action["add-roles"]:
+                            if role_id not in roles:
+                                roles.append(role_id)
         return {"success": True}
 
     async def thread(self, **kwargs):
@@ -43,7 +74,7 @@ class FakeTlonClient:
                 }
             }
         if app == "groups" and path.startswith("/v2/ui/groups/"):
-            return {"roles": {}, "admins": []}
+            return self.group
         if app == "channels-server" and path == "/v0/hooks":
             return {"hooks": {"0vabc": {"id": "0vabc", "name": "Old", "src": ":: old", "meta": {}}}}
         return {}
@@ -133,6 +164,20 @@ async def test_group_create_owned_creates_group_and_assigns_admin():
                 "a-group": {
                     "seat": {
                         "ships": ["~malmur-halmex"],
+                        "a-seat": {"add": None},
+                    }
+                },
+            }
+        }
+        for poke in client.pokes
+    )
+    assert any(
+        poke["json"] == {
+            "group": {
+                "flag": result["group_id"],
+                "a-group": {
+                    "seat": {
+                        "ships": ["~malmur-halmex"],
                         "a-seat": {"add-roles": ["admin"]},
                     }
                 },
@@ -140,6 +185,8 @@ async def test_group_create_owned_creates_group_and_assigns_admin():
         }
         for poke in client.pokes
     )
+    assert result["admin_assigned"] is True
+    assert result["admin_assignment"]["promoted"] == ["~malmur-halmex"]
 
 
 @pytest.mark.asyncio

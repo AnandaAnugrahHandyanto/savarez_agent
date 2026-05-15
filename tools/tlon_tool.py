@@ -8,6 +8,7 @@ escape hatches.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import mimetypes
 import os
@@ -500,10 +501,15 @@ class TlonGroups:
                 member_ids=members,
             )
             if action == "group_create_owned" and owner:
-                await self.ensure_admin_role(created["group_id"])
-                await self.assign_role(created["group_id"], _ADMIN_ROLE_ID, [owner])
+                admin_result = await self.promote_admins(
+                    created["group_id"],
+                    [owner],
+                    add_missing_seats=True,
+                )
                 created["owner_ship"] = owner
                 created["admin_role"] = _ADMIN_ROLE_ID
+                created["admin_assigned"] = owner in admin_result["promoted"]
+                created["admin_assignment"] = admin_result
             return _ok(action, **created)
         if action == "group_invite":
             group_id = _required(args, "group_id")
@@ -581,9 +587,13 @@ class TlonGroups:
             return _ok(action, group_id=group_id, role_id=role_id, meta=meta)
         if action in {"group_assign_role", "group_promote"}:
             group_id = _required(args, "group_id")
-            role_id = _ADMIN_ROLE_ID if action == "group_promote" else _required(args, "role_id")
-            await self.assign_role(group_id, role_id, _required_ships(args))
-            return _ok(action, group_id=group_id, role_id=role_id, ships=_required_ships(args))
+            ships = _required_ships(args)
+            if action == "group_promote":
+                result = await self.promote_admins(group_id, ships, add_missing_seats=True)
+                return _ok(action, group_id=group_id, role_id=_ADMIN_ROLE_ID, ships=ships, **result)
+            role_id = _required(args, "role_id")
+            await self.assign_role(group_id, role_id, ships)
+            return _ok(action, group_id=group_id, role_id=role_id, ships=ships)
         if action in {"group_remove_role", "group_demote"}:
             group_id = _required(args, "group_id")
             role_id = _ADMIN_ROLE_ID if action == "group_demote" else _required(args, "role_id")
@@ -664,6 +674,11 @@ class TlonGroups:
         if _ADMIN_ROLE_ID not in admins:
             await self._poke_group(group_id, {"role": {"roles": [_ADMIN_ROLE_ID], "a-role": {"set-admin": None}}})
 
+    async def add_members(self, group_id: str, ships: List[str]) -> None:
+        if not ships:
+            return
+        await self._poke_group(group_id, {"seat": {"ships": ships, "a-seat": {"add": None}}})
+
     async def add_role(self, group_id: str, role_id: str, title: str, description: str) -> None:
         await self._poke_group(
             group_id,
@@ -684,6 +699,52 @@ class TlonGroups:
 
     async def assign_role(self, group_id: str, role_id: str, ships: List[str]) -> None:
         await self._poke_group(group_id, {"seat": {"ships": ships, "a-seat": {"add-roles": [role_id]}}})
+
+    async def promote_admins(
+        self,
+        group_id: str,
+        ships: List[str],
+        *,
+        add_missing_seats: bool = False,
+    ) -> Dict[str, Any]:
+        ships = _unique_ships(ships)
+        await self.ensure_admin_role(group_id)
+
+        before = await self.client.scry("groups", f"/v2/ui/groups/{group_id}")
+        seats = before.get("seats") or {}
+        missing_seats = [ship for ship in ships if ship not in seats]
+        if missing_seats and add_missing_seats:
+            await self.add_members(group_id, missing_seats)
+
+        await self.assign_role(group_id, _ADMIN_ROLE_ID, ships)
+
+        promoted: List[str] = []
+        still_missing: List[str] = []
+        for attempt in range(6):
+            group = await self.client.scry("groups", f"/v2/ui/groups/{group_id}")
+            seats = group.get("seats") or {}
+            promoted = [
+                ship
+                for ship in ships
+                if _ADMIN_ROLE_ID in ((seats.get(ship) or {}).get("roles") or [])
+            ]
+            still_missing = [ship for ship in ships if ship not in promoted]
+            if not still_missing:
+                break
+            if attempt < 5:
+                await asyncio.sleep(0.5)
+
+        if still_missing:
+            raise TlonToolError(
+                "Admin assignment did not verify for "
+                f"{', '.join(still_missing)} in {group_id}. "
+                "The group was updated, but the admin role is not visible in group state."
+            )
+
+        return {
+            "promoted": promoted,
+            "added_seats": missing_seats if add_missing_seats else [],
+        }
 
     async def _role_action(self, action: str, args: Dict[str, Any], role_action: Dict[str, Any]) -> Dict[str, Any]:
         group_id = _required(args, "group_id")
