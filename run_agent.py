@@ -1275,7 +1275,7 @@ class AIAgent:
             self.api_mode = api_mode
         elif self.provider == "openai-codex":
             self.api_mode = "codex_responses"
-        elif self.provider == "xai":
+        elif self.provider in {"xai", "xai-oauth"}:
             self.api_mode = "codex_responses"
         elif (provider_name is None) and (
             self._base_url_hostname == "chatgpt.com"
@@ -1664,6 +1664,9 @@ class AIAgent:
                 if base_url_host_matches(effective_base, "openrouter.ai"):
                     from agent.auxiliary_client import build_or_headers
                     client_kwargs["default_headers"] = build_or_headers()
+                elif base_url_host_matches(effective_base, "integrate.api.nvidia.com"):
+                    from agent.auxiliary_client import build_nvidia_nim_headers
+                    client_kwargs["default_headers"] = build_nvidia_nim_headers(effective_base)
                 elif base_url_host_matches(effective_base, "api.routermint.com"):
                     client_kwargs["default_headers"] = _routermint_headers()
                 elif base_url_host_matches(effective_base, "api.githubcopilot.com"):
@@ -1702,9 +1705,15 @@ class AIAgent:
                     }
                     if _provider_timeout is not None:
                         client_kwargs["timeout"] = _provider_timeout
-                    # Preserve any default_headers the router set
-                    if hasattr(_routed_client, '_default_headers') and _routed_client._default_headers:
-                        client_kwargs["default_headers"] = dict(_routed_client._default_headers)
+                    # Preserve provider-specific headers the router set.  The
+                    # OpenAI SDK stores caller-provided default_headers in
+                    # _custom_headers; older/mocked clients may expose
+                    # _default_headers instead.
+                    _routed_headers = getattr(_routed_client, "_custom_headers", None)
+                    if not _routed_headers:
+                        _routed_headers = getattr(_routed_client, "_default_headers", None)
+                    if _routed_headers:
+                        client_kwargs["default_headers"] = dict(_routed_headers)
                 else:
                     # When the user explicitly chose a non-OpenRouter provider
                     # but no credentials were found, fail fast with a clear
@@ -1753,8 +1762,11 @@ class AIAgent:
                                 }
                                 if _provider_timeout is not None:
                                     client_kwargs["timeout"] = _provider_timeout
-                                if hasattr(_fb_client, "_default_headers") and _fb_client._default_headers:
-                                    client_kwargs["default_headers"] = dict(_fb_client._default_headers)
+                                _fb_headers = getattr(_fb_client, "_custom_headers", None)
+                                if not _fb_headers:
+                                    _fb_headers = getattr(_fb_client, "_default_headers", None)
+                                if _fb_headers:
+                                    client_kwargs["default_headers"] = dict(_fb_headers)
                                 _fb_resolved = True
                                 break
                         if not _fb_resolved:
@@ -7139,15 +7151,60 @@ class AIAgent:
         raise RuntimeError("Responses create(stream=True) fallback did not emit a terminal response.")
 
     def _try_refresh_codex_client_credentials(self, *, force: bool = True) -> bool:
-        if self.api_mode != "codex_responses" or self.provider != "openai-codex":
+        if self.api_mode != "codex_responses" or self.provider not in {"openai-codex", "xai-oauth"}:
+            return False
+
+        # Guard against silent account swap.
+        #
+        # When an agent is using a non-singleton credential — e.g. a manual
+        # pool entry (``hermes auth add xai-oauth``) whose tokens belong to
+        # a different account than the loopback_pkce singleton, or an agent
+        # constructed with an explicit ``api_key=`` arg — force-refreshing
+        # the singleton here and adopting its tokens silently re-routes the
+        # rest of the conversation onto the singleton's account.  The
+        # credential pool's reactive recovery (``_recover_with_credential_pool``)
+        # is the right channel for that case; this path is the
+        # singleton-only fallback used when the pool can't recover, and
+        # MUST only fire when the agent really is on singleton tokens.
+        try:
+            if self.provider == "openai-codex":
+                from hermes_cli.auth import resolve_codex_runtime_credentials
+
+                singleton_now = resolve_codex_runtime_credentials(
+                    refresh_if_expiring=False,
+                )
+            else:
+                from hermes_cli.auth import resolve_xai_oauth_runtime_credentials
+
+                singleton_now = resolve_xai_oauth_runtime_credentials(
+                    refresh_if_expiring=False,
+                )
+        except Exception as exc:
+            logger.debug("%s singleton read failed: %s", self.provider, exc)
+            return False
+
+        singleton_key = str(singleton_now.get("api_key") or "").strip()
+        active_key = str(self.api_key or "").strip()
+        if singleton_key and active_key and singleton_key != active_key:
+            logger.debug(
+                "%s singleton tokens differ from the active api_key; "
+                "skipping singleton force-refresh to avoid silent account swap. "
+                "Reactive credential rotation should go through the pool.",
+                self.provider,
+            )
             return False
 
         try:
-            from hermes_cli.auth import resolve_codex_runtime_credentials
+            if self.provider == "openai-codex":
+                from hermes_cli.auth import resolve_codex_runtime_credentials
 
-            creds = resolve_codex_runtime_credentials(force_refresh=force)
+                creds = resolve_codex_runtime_credentials(force_refresh=force)
+            else:
+                from hermes_cli.auth import resolve_xai_oauth_runtime_credentials
+
+                creds = resolve_xai_oauth_runtime_credentials(force_refresh=force)
         except Exception as exc:
-            logger.debug("Codex credential refresh failed: %s", exc)
+            logger.debug("%s credential refresh failed: %s", self.provider, exc)
             return False
 
         api_key = creds.get("api_key")
@@ -7162,7 +7219,7 @@ class AIAgent:
         self._client_kwargs["api_key"] = self.api_key
         self._client_kwargs["base_url"] = self.base_url
 
-        if not self._replace_primary_openai_client(reason="codex_credential_refresh"):
+        if not self._replace_primary_openai_client(reason=f"{self.provider}_credential_refresh"):
             return False
 
         return True
@@ -7289,12 +7346,18 @@ class AIAgent:
         return True
 
     def _apply_client_headers_for_base_url(self, base_url: str) -> None:
-        from agent.auxiliary_client import _AI_GATEWAY_HEADERS, build_or_headers
+        from agent.auxiliary_client import (
+            _AI_GATEWAY_HEADERS,
+            build_nvidia_nim_headers,
+            build_or_headers,
+        )
 
         if base_url_host_matches(base_url, "openrouter.ai"):
             self._client_kwargs["default_headers"] = build_or_headers()
         elif base_url_host_matches(base_url, "ai-gateway.vercel.sh"):
             self._client_kwargs["default_headers"] = dict(_AI_GATEWAY_HEADERS)
+        elif base_url_host_matches(base_url, "integrate.api.nvidia.com"):
+            self._client_kwargs["default_headers"] = build_nvidia_nim_headers(base_url)
         elif base_url_host_matches(base_url, "api.routermint.com"):
             self._client_kwargs["default_headers"] = _routermint_headers()
         elif base_url_host_matches(base_url, "api.githubcopilot.com"):
@@ -9631,7 +9694,7 @@ class AIAgent:
                     and "/backend-api/codex" in self._base_url_lower
                 )
             )
-            is_xai_responses = self.provider == "xai" or self._base_url_hostname == "api.x.ai"
+            is_xai_responses = self.provider in {"xai", "xai-oauth"} or self._base_url_hostname == "api.x.ai"
             _msgs_for_codex = self._prepare_messages_for_non_vision_model(api_messages)
             return _ct.build_kwargs(
                 model=self.model,
@@ -12207,7 +12270,7 @@ class AIAgent:
         codex_ack_continuations = 0
         length_continue_retries = 0
         truncated_tool_call_retries = 0
-        truncated_response_prefix = ""
+        truncated_response_parts: List[str] = []
         compression_attempts = 0
         _turn_exit_reason = "unknown"  # Diagnostic: why the loop ended
 
@@ -12668,16 +12731,30 @@ class AIAgent:
 
                     try:
                         from hermes_cli.plugins import invoke_hook as _invoke_hook
+                        request_messages = api_kwargs.get("messages")
+                        if not isinstance(request_messages, list):
+                            request_messages = api_kwargs.get("input")
+                        if not isinstance(request_messages, list):
+                            request_messages = api_messages
+                        # Shallow-copy the outer list so plugins that retain the
+                        # reference for async snapshotting don't observe later
+                        # mutations of api_messages.  The inner dicts are not
+                        # mutated by the agent loop, so a shallow copy is
+                        # sufficient; a deepcopy would walk every tool result
+                        # and base64 image on every API call.
                         _invoke_hook(
                             "pre_api_request",
                             task_id=effective_task_id,
                             session_id=self.session_id or "",
+                            user_message=original_user_message,
+                            conversation_history=list(messages),
                             platform=self.platform or "",
                             model=self.model,
                             provider=self.provider,
                             base_url=self.base_url,
                             api_mode=self.api_mode,
                             api_call_count=api_call_count,
+                            request_messages=list(request_messages) if isinstance(request_messages, list) else [],
                             message_count=len(api_messages),
                             tool_count=len(self.tools or []),
                             approx_input_tokens=approx_tokens,
@@ -13100,7 +13177,7 @@ class AIAgent:
                                 interim_msg = self._build_assistant_message(assistant_message, finish_reason)
                                 messages.append(interim_msg)
                                 if assistant_message.content:
-                                    truncated_response_prefix += assistant_message.content
+                                    truncated_response_parts.append(assistant_message.content)
 
                                 if length_continue_retries < 3:
                                     self._vprint(
@@ -13121,7 +13198,7 @@ class AIAgent:
                                     restart_with_length_continuation = True
                                     break
 
-                                partial_response = self._strip_think_blocks(truncated_response_prefix).strip()
+                                partial_response = self._strip_think_blocks("".join(truncated_response_parts)).strip()
                                 self._cleanup_task_resources(effective_task_id)
                                 self._persist_session(messages, conversation_history)
                                 return {
@@ -13686,13 +13763,14 @@ class AIAgent:
 
                     if (
                         self.api_mode == "codex_responses"
-                        and self.provider == "openai-codex"
+                        and self.provider in {"openai-codex", "xai-oauth"}
                         and status_code == 401
                         and not codex_auth_retry_attempted
                     ):
                         codex_auth_retry_attempted = True
                         if self._try_refresh_codex_client_credentials(force=True):
-                            self._vprint(f"{self.log_prefix}🔐 Codex auth refreshed after 401. Retrying request...")
+                            _label = "xAI OAuth" if self.provider == "xai-oauth" else "Codex"
+                            self._vprint(f"{self.log_prefix}🔐 {_label} auth refreshed after 401. Retrying request...")
                             continue
                     if (
                         self.api_mode == "chat_completions"
@@ -14332,11 +14410,15 @@ class AIAgent:
                         self._vprint(f"{self.log_prefix}   🌐 Endpoint: {_base}", force=True)
                         # Actionable guidance for common auth errors
                         if classified.is_auth or classified.reason == FailoverReason.billing:
-                            if _provider == "openai-codex" and status_code == 401:
-                                self._vprint(f"{self.log_prefix}   💡 Codex OAuth token was rejected (HTTP 401). Your token may have been", force=True)
-                                self._vprint(f"{self.log_prefix}      refreshed by another client (Codex CLI, VS Code). To fix:", force=True)
-                                self._vprint(f"{self.log_prefix}      1. Run `codex` in your terminal to generate fresh tokens.", force=True)
-                                self._vprint(f"{self.log_prefix}      2. Then run `hermes auth` to re-authenticate.", force=True)
+                            if _provider in {"openai-codex", "xai-oauth"} and status_code == 401:
+                                if _provider == "openai-codex":
+                                    self._vprint(f"{self.log_prefix}   💡 Codex OAuth token was rejected (HTTP 401). Your token may have been", force=True)
+                                    self._vprint(f"{self.log_prefix}      refreshed by another client (Codex CLI, VS Code). To fix:", force=True)
+                                    self._vprint(f"{self.log_prefix}      1. Run `codex` in your terminal to generate fresh tokens.", force=True)
+                                    self._vprint(f"{self.log_prefix}      2. Then run `hermes auth` to re-authenticate.", force=True)
+                                else:
+                                    self._vprint(f"{self.log_prefix}   💡 xAI OAuth token was rejected (HTTP 401). To fix:", force=True)
+                                    self._vprint(f"{self.log_prefix}      re-authenticate with xAI Grok OAuth (SuperGrok Subscription) from `hermes model`.", force=True)
                             else:
                                 self._vprint(f"{self.log_prefix}   💡 Your API key was rejected by the provider. Check:", force=True)
                                 self._vprint(f"{self.log_prefix}      • Is the key valid? Run: hermes setup", force=True)
@@ -14582,7 +14664,9 @@ class AIAgent:
                         finish_reason=finish_reason,
                         message_count=len(api_messages),
                         response_model=getattr(response, "model", None),
+                        response=response,
                         usage=self._usage_summary_for_api_request_hook(response),
+                        assistant_message=assistant_message,
                         assistant_content_chars=len(_assistant_text),
                         assistant_tool_call_count=len(_assistant_tool_calls),
                     )
@@ -15325,9 +15409,9 @@ class AIAgent:
 
                     codex_ack_continuations = 0
 
-                    if truncated_response_prefix:
-                        final_response = truncated_response_prefix + final_response
-                        truncated_response_prefix = ""
+                    if truncated_response_parts:
+                        final_response = "".join(truncated_response_parts) + final_response
+                        truncated_response_parts = []
                         length_continue_retries = 0
                     
                     final_response = self._strip_think_blocks(final_response).strip()
