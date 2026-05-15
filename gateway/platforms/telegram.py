@@ -11,6 +11,7 @@ import asyncio
 import json
 import logging
 import os
+import shutil
 import tempfile
 import html as _html
 import re
@@ -73,6 +74,7 @@ from gateway.platforms.base import (
     cache_audio_from_bytes,
     cache_video_from_bytes,
     cache_document_from_bytes,
+    get_document_cache_dir,
     resolve_proxy_url,
     SUPPORTED_VIDEO_TYPES,
     SUPPORTED_DOCUMENT_TYPES,
@@ -4127,15 +4129,43 @@ class TelegramAdapter(BasePlatformAdapter):
                         ext = mime_to_ext.get(doc_mime, "")
 
                 # Check file size early so image documents cannot bypass the
-                # document size limit by taking the image path.
-                MAX_DOC_BYTES = 20 * 1024 * 1024
-                if not doc.file_size or doc.file_size > MAX_DOC_BYTES:
-                    event.text = (
-                        "The document is too large or its size could not be verified. "
-                        "Maximum: 20 MB."
+                # document size limit by taking the image path. The limit is
+                # profile-configurable (platforms.telegram.extra.max_document_mb)
+                # because self-hosted/local Bot API deployments can safely handle
+                # files far above Telegram Cloud's 20 MB download limit.
+                max_document_mb_raw = self.config.extra.get("max_document_mb", 20)
+                try:
+                    max_document_mb = float(max_document_mb_raw)
+                except (TypeError, ValueError):
+                    logger.warning(
+                        "[Telegram] Invalid max_document_mb=%r; falling back to 20 MB",
+                        max_document_mb_raw,
                     )
-                    logger.info("[Telegram] Document too large: %s bytes", doc.file_size)
-                    await self.handle_message(event)
+                    max_document_mb = 20.0
+                max_doc_bytes = int(max_document_mb * 1024 * 1024)
+
+                if not doc.file_size:
+                    await self.send(
+                        event.source.chat_id,
+                        "Не смогла проверить размер документа, поэтому не скачиваю его. "
+                        "Перешлите PDF ещё раз; если повторится — пришлите файл меньшего размера.",
+                        reply_to=event.message_id,
+                    )
+                    logger.info("[Telegram] Document size could not be verified")
+                    return
+
+                if doc.file_size > max_doc_bytes:
+                    limit_label = f"{max_document_mb:g} MB"
+                    await self.send(
+                        event.source.chat_id,
+                        f"Документ слишком большой: {doc.file_size:,} bytes. Лимит этого бота: {limit_label}.",
+                        reply_to=event.message_id,
+                    )
+                    logger.info(
+                        "[Telegram] Document too large: %s bytes (limit=%s bytes)",
+                        doc.file_size,
+                        max_doc_bytes,
+                    )
                     return
 
                 # Telegram may deliver screenshots/photos as documents. If the
@@ -4195,11 +4225,48 @@ class TelegramAdapter(BasePlatformAdapter):
                     await self.handle_message(event)
                     return
 
-                # Download and cache
-                file_obj = await doc.get_file()
-                doc_bytes = await file_obj.download_as_bytearray()
-                raw_bytes = bytes(doc_bytes)
-                cached_path = cache_document_from_bytes(raw_bytes, original_filename or f"document{ext}")
+                # Download/cache. With a self-hosted Bot API in local_mode,
+                # get_file() returns a server-local file_path; copying it is faster
+                # and avoids large in-memory bytearrays/timeouts for 90MB+ PDFs.
+                file_obj = await doc.get_file(
+                    read_timeout=300,
+                    write_timeout=300,
+                    connect_timeout=30,
+                    pool_timeout=30,
+                )
+                raw_bytes: Optional[bytes] = None
+                local_file_path = getattr(file_obj, "file_path", None)
+                if local_file_path and not str(local_file_path).startswith(("http://", "https://")):
+                    source_path = _Path(str(local_file_path))
+                    if source_path.is_file():
+                        cache_dir = get_document_cache_dir()
+                        safe_name = _Path(original_filename or f"document{ext}").name.replace("\x00", "").strip()
+                        if not safe_name or safe_name in {".", ".."}:
+                            safe_name = f"document{ext}"
+                        cached_path_obj = cache_dir / f"doc_{file_obj.file_unique_id}_{safe_name}"
+                        if not cached_path_obj.resolve().is_relative_to(cache_dir.resolve()):
+                            raise ValueError(f"Path traversal rejected: {original_filename!r}")
+                        shutil.copyfile(source_path, cached_path_obj)
+                        cached_path = str(cached_path_obj)
+                    else:
+                        logger.warning("[Telegram] Local Bot API file path is not readable: %s", local_file_path)
+                        doc_bytes = await file_obj.download_as_bytearray(
+                            read_timeout=300,
+                            write_timeout=300,
+                            connect_timeout=30,
+                            pool_timeout=30,
+                        )
+                        raw_bytes = bytes(doc_bytes)
+                        cached_path = cache_document_from_bytes(raw_bytes, original_filename or f"document{ext}")
+                else:
+                    doc_bytes = await file_obj.download_as_bytearray(
+                        read_timeout=300,
+                        write_timeout=300,
+                        connect_timeout=30,
+                        pool_timeout=30,
+                    )
+                    raw_bytes = bytes(doc_bytes)
+                    cached_path = cache_document_from_bytes(raw_bytes, original_filename or f"document{ext}")
                 mime_type = SUPPORTED_DOCUMENT_TYPES[ext]
                 event.media_urls = [cached_path]
                 event.media_types = [mime_type]
@@ -4207,8 +4274,10 @@ class TelegramAdapter(BasePlatformAdapter):
 
                 # For text files, inject content into event.text (capped at 100 KB)
                 MAX_TEXT_INJECT_BYTES = 100 * 1024
-                if ext in {".md", ".txt"} and len(raw_bytes) <= MAX_TEXT_INJECT_BYTES:
+                if ext in {".md", ".txt"} and doc.file_size <= MAX_TEXT_INJECT_BYTES:
                     try:
+                        if raw_bytes is None:
+                            raw_bytes = _Path(cached_path).read_bytes()
                         text_content = raw_bytes.decode("utf-8")
                         display_name = original_filename or f"document{ext}"
                         display_name = re.sub(r'[^\w.\- ]', '_', display_name)
@@ -4225,6 +4294,13 @@ class TelegramAdapter(BasePlatformAdapter):
 
             except Exception as e:
                 logger.warning("[Telegram] Failed to cache document: %s", e, exc_info=True)
+                await self.send(
+                    event.source.chat_id,
+                    "Не смогла получить файл из Telegram. Файл не передан агенту, поэтому сжатие не запускала. "
+                    "Перешлите PDF ещё раз; если ошибка повторится — попробуем уменьшить лимит/размер или проверим Bot API.",
+                    reply_to=event.message_id,
+                )
+                return
 
         media_group_id = getattr(msg, "media_group_id", None)
         if media_group_id:
