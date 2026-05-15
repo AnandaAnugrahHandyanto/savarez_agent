@@ -49,6 +49,37 @@ def _make_adapter() -> TelegramAdapter:
 
 
 @pytest.mark.asyncio
+async def test_reconnect_self_schedules_when_updater_missing():
+    """
+    If the PTB Application survives a network interruption but its updater is
+    missing, reconnect should enter the normal retry ladder instead of raising
+    an AttributeError on self._app.updater.start_polling(...).
+    """
+    adapter = _make_adapter()
+    adapter._polling_network_error_count = 1
+
+    mock_app = MagicMock()
+    mock_app.updater = None
+    adapter._app = mock_app
+
+    with patch("asyncio.sleep", new_callable=AsyncMock):
+        await adapter._handle_polling_network_error(Exception("Bad Gateway"))
+
+    pending = [t for t in adapter._background_tasks if not t.done()]
+    assert len(pending) >= 1, (
+        "Expected reconnect ladder to self-schedule when updater is missing "
+        f"after network recovery, got {len(pending)} pending tasks"
+    )
+
+    for t in pending:
+        t.cancel()
+        try:
+            await t
+        except (asyncio.CancelledError, Exception):
+            pass
+
+
+@pytest.mark.asyncio
 async def test_reconnect_self_schedules_on_start_polling_failure():
     """
     When start_polling() raises during a network error retry, the adapter must

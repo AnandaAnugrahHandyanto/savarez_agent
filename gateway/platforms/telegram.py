@@ -477,6 +477,21 @@ class TelegramAdapter(BasePlatformAdapter):
                 self.name, exc_info=True,
             )
 
+    def _require_polling_updater(self) -> Any:
+        """Return the polling updater or raise a retryable reconnect error.
+
+        Reconnect paths run after partial teardown / transport failures, so the
+        PTB Application object can exist while its polling updater is absent.
+        Treat that as a normal reconnect failure and let the existing retry
+        ladder reschedule or escalate, rather than crashing on
+        ``self._app.updater.start_polling(...)``.
+        """
+        app = self._app
+        updater = getattr(app, "updater", None) if app is not None else None
+        if updater is None:
+            raise RuntimeError("Telegram polling updater is unavailable during reconnect")
+        return updater
+
     async def _handle_polling_network_error(self, error: Exception) -> None:
         """Reconnect polling after a transient network interruption.
 
@@ -516,16 +531,18 @@ class TelegramAdapter(BasePlatformAdapter):
         )
         await asyncio.sleep(delay)
 
+        updater = getattr(self._app, "updater", None) if self._app is not None else None
         try:
-            if self._app and self._app.updater and self._app.updater.running:
-                await self._app.updater.stop()
+            if updater and updater.running:
+                await updater.stop()
         except Exception:
             pass
 
         await self._drain_polling_connections()
 
         try:
-            await self._app.updater.start_polling(
+            updater = self._require_polling_updater()
+            await updater.start_polling(
                 allowed_updates=Update.ALL_TYPES,
                 drop_pending_updates=False,
                 error_callback=self._polling_error_callback_ref,
@@ -616,24 +633,30 @@ class TelegramAdapter(BasePlatformAdapter):
 
         if self._polling_conflict_count <= MAX_CONFLICT_RETRIES:
             logger.warning(
-                "[%s] Telegram polling conflict (%d/%d), will retry in %ds. Error: %s",
+                "[%s] Telegram polling conflict (attempt %d/%d), retrying in %ds. Error: %s",
                 self.name, self._polling_conflict_count, MAX_CONFLICT_RETRIES,
                 RETRY_DELAY, error,
             )
+            updater = getattr(self._app, "updater", None) if self._app is not None else None
             try:
-                if self._app and self._app.updater and self._app.updater.running:
-                    await self._app.updater.stop()
+                if updater and updater.running:
+                    await updater.stop()
             except Exception:
                 pass
             await asyncio.sleep(RETRY_DELAY)
             await self._drain_polling_connections()
             try:
-                await self._app.updater.start_polling(
+                updater = self._require_polling_updater()
+                await updater.start_polling(
                     allowed_updates=Update.ALL_TYPES,
                     drop_pending_updates=False,
                     error_callback=self._polling_error_callback_ref,
                 )
-                logger.info("[%s] Telegram polling resumed after conflict retry %d", self.name, self._polling_conflict_count)
+                logger.info(
+                    "[%s] Telegram polling resumed after conflict retry %d",
+                    self.name,
+                    self._polling_conflict_count,
+                )
                 self._polling_conflict_count = 0  # reset on success
                 return
             except Exception as retry_err:
