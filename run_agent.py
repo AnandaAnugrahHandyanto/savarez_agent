@@ -1677,8 +1677,20 @@ class AIAgent:
                 elif base_url_host_matches(effective_base, "portal.qwen.ai"):
                     client_kwargs["default_headers"] = _qwen_portal_headers()
                 elif base_url_host_matches(effective_base, "chatgpt.com"):
-                    from agent.auxiliary_client import _codex_cloudflare_headers
-                    client_kwargs["default_headers"] = _codex_cloudflare_headers(api_key)
+                    if self.provider == "openai-oauth":
+                        from agent.auxiliary_client import _openai_oauth_headers
+                        account_id = None
+                        try:
+                            from hermes_cli.auth import resolve_openai_oauth_runtime_credentials
+
+                            _oauth_creds = resolve_openai_oauth_runtime_credentials(refresh_if_expiring=False)
+                            account_id = _oauth_creds.get("account_id")
+                        except Exception:
+                            account_id = None
+                        client_kwargs["default_headers"] = _openai_oauth_headers(api_key, account_id)
+                    else:
+                        from agent.auxiliary_client import _codex_cloudflare_headers
+                        client_kwargs["default_headers"] = _codex_cloudflare_headers(api_key)
                 elif "default_headers" not in client_kwargs:
                     # Fall back to profile.default_headers for providers that
                     # declare custom headers (e.g. Vercel AI Gateway attribution,

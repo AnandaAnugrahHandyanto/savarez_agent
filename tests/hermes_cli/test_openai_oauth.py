@@ -31,7 +31,7 @@ def test_provider_registry_contains_openai_oauth():
     assert "openai-oauth" in PROVIDER_REGISTRY
     cfg = PROVIDER_REGISTRY["openai-oauth"]
     assert cfg.auth_type == "oauth_external"
-    assert cfg.inference_base_url == "https://api.openai.com/v1"
+    assert cfg.inference_base_url == "https://chatgpt.com/backend-api/codex"
 
 
 def test_openai_oauth_auth_path_falls_back_to_home_brian(monkeypatch, tmp_path):
@@ -80,7 +80,7 @@ def test_resolve_openai_oauth_runtime_credentials_reads_auth_file(tmp_path, monk
     creds = resolve_openai_oauth_runtime_credentials(refresh_if_expiring=False)
 
     assert creds["provider"] == "openai-oauth"
-    assert creds["base_url"] == "https://api.openai.com/v1"
+    assert creds["base_url"] == "https://chatgpt.com/backend-api/codex"
     assert creds["source"] == "opencode-auth"
     assert creds["account_id"] == "acct-file-456"
     assert creds["auth_file"] == str(auth_path)

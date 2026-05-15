@@ -180,7 +180,7 @@ def test_resolve_runtime_provider_openai_oauth(monkeypatch):
         "resolve_openai_oauth_runtime_credentials",
         lambda: {
             "provider": "openai-oauth",
-            "base_url": "https://api.openai.com/v1",
+            "base_url": "https://chatgpt.com/backend-api/codex",
             "api_key": "oauth-token",
             "source": "opencode-auth",
             "expires_at_ms": 1775640710946,
@@ -193,7 +193,7 @@ def test_resolve_runtime_provider_openai_oauth(monkeypatch):
 
     assert resolved["provider"] == "openai-oauth"
     assert resolved["api_mode"] == "codex_responses"
-    assert resolved["base_url"] == "https://api.openai.com/v1"
+    assert resolved["base_url"] == "https://chatgpt.com/backend-api/codex"
     assert resolved["api_key"] == "oauth-token"
     assert resolved["requested_provider"] == "openai-oauth"
 
@@ -205,7 +205,7 @@ def test_resolve_runtime_provider_openai_oauth_respects_config_api_mode(monkeypa
         "resolve_openai_oauth_runtime_credentials",
         lambda: {
             "provider": "openai-oauth",
-            "base_url": "https://api.openai.com/v1",
+            "base_url": "https://chatgpt.com/backend-api/codex",
             "api_key": "oauth-token",
             "source": "opencode-auth",
         },

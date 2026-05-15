@@ -465,6 +465,34 @@ def _codex_cloudflare_headers(access_token: str) -> Dict[str, str]:
     return headers
 
 
+def _openai_oauth_headers(access_token: str, account_id: Optional[str] = None) -> Dict[str, str]:
+    """Headers that mirror OpenCode's ChatGPT OAuth OpenAI provider path.
+
+    OpenCode routes its OAuth-backed OpenAI provider through the ChatGPT Codex
+    backend, not the public api.openai.com endpoint. Those requests include a
+    stable ``originator`` marker and the ChatGPT account id.
+    """
+    headers = {
+        "User-Agent": "opencode/hermes-agent",
+        "originator": "opencode",
+    }
+    acct_id = account_id
+    if (not acct_id) and isinstance(access_token, str) and access_token.strip():
+        try:
+            import base64
+
+            parts = access_token.split(".")
+            if len(parts) >= 2:
+                payload_b64 = parts[1] + "=" * (-len(parts[1]) % 4)
+                claims = json.loads(base64.urlsafe_b64decode(payload_b64))
+                acct_id = claims.get("https://api.openai.com/auth", {}).get("chatgpt_account_id")
+        except Exception:
+            acct_id = None
+    if isinstance(acct_id, str) and acct_id:
+        headers["ChatGPT-Account-Id"] = acct_id
+    return headers
+
+
 def _to_openai_base_url(base_url: str) -> str:
     """Normalize an Anthropic-style base URL to OpenAI-compatible format.
 
@@ -2871,19 +2899,24 @@ def resolve_provider_client(
             )
             return None, None
         final_model = _normalize_resolved_model(model, provider)
-        base_url = str(creds.get("base_url") or explicit_base_url or "https://api.openai.com/v1").rstrip("/")
+        base_url = str(creds.get("base_url") or explicit_base_url or _CODEX_AUX_BASE_URL).rstrip("/")
         api_key = str(creds.get("api_key") or explicit_api_key or "")
+        account_id = str(creds.get("account_id") or "").strip() or None
         # Direct OpenAI GPT-5 family calls should use Responses API unless the
         # user explicitly overrides api_mode. Mirror runtime_provider behavior.
         effective_mode = api_mode
-        if not effective_mode and base_url_hostname(base_url) == "api.openai.com":
+        if not effective_mode and (base_url_hostname(base_url) == "api.openai.com" or base_url_host_matches(base_url, "chatgpt.com")):
             lower = final_model.lower()
             if lower.startswith("gpt-5") or lower.startswith("o") or "codex" in lower:
                 effective_mode = "codex_responses"
         saved_api_mode = api_mode
         try:
             api_mode = effective_mode
-            client = OpenAI(api_key=api_key, base_url=base_url)
+            client = OpenAI(
+                api_key=api_key,
+                base_url=base_url,
+                default_headers=_openai_oauth_headers(api_key, account_id),
+            )
             client = _wrap_if_needed(client, final_model, base_url, api_key)
         finally:
             api_mode = saved_api_mode

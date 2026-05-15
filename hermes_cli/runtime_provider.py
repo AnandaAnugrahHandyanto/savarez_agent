@@ -246,9 +246,7 @@ def _resolve_runtime_from_pool_entry(
         if configured_mode:
             api_mode = configured_mode
         else:
-            detected = _detect_api_mode_for_url(base_url)
-            if detected:
-                api_mode = detected
+            api_mode = "codex_responses"
     elif provider == "qwen-oauth":
         api_mode = "chat_completions"
         base_url = base_url or DEFAULT_QWEN_BASE_URL
