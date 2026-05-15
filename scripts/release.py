@@ -1197,7 +1197,7 @@ def build_release_artifacts(semver: str) -> list[Path]:
     # Prefer uv build (matches CI workflow), fall back to python -m build.
     uv_bin = shutil.which("uv")
     if uv_bin:
-        cmd = [uv_bin, "build"]
+        cmd = [uv_bin, "build", "--sdist", "--wheel"]
     else:
         cmd = [sys.executable, "-m", "build", "--sdist", "--wheel"]
 
@@ -1340,7 +1340,7 @@ def get_commits(since_tag=None):
         entry = entry.strip()
         if not entry:
             continue
-        # Split on first null to separate "hash|name|email|subject" from "body"
+        # Split on first null to separate "hash<US>name<US>email<US>subject" from "body"
         if "\0" in entry:
             header, body = entry.split("\0", 1)
             body = body.strip()
