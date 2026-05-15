@@ -231,6 +231,20 @@ Generated visuals for README/PR:
 
 ![Generated parallel runtime](assets/100x-fast/generated/parallel-runtime.png)
 
+New GPT-image comparison visuals:
+
+![GPT-image 100X hero before/after](assets/100x-fast/generated/gpt-image-100x-hero-before-after.png)
+
+![GPT-image 100X runtime stack](assets/100x-fast/generated/gpt-image-100x-runtime-stack.png)
+
+![GPT-image 100X video cover](assets/100x-fast/generated/gpt-image-100x-video-cover.png)
+
+90-second launch video:
+
+[![Hermes Agent 100X Fast video poster](assets/100x-fast/video/hermes-100x-fast-poster.png)](assets/100x-fast/video/hermes-100x-fast-launch.mp4)
+
+The Remotion source and storyboard live under `docs/remotion/100x-fast/`.
+
 ### Phase 4 - Message And Delegation Runtime Tightening
 
 21. Reused one delegation config snapshot per `delegate_task` call.

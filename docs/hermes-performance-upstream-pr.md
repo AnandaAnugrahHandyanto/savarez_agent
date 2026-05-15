@@ -47,6 +47,15 @@ OpenRouter model metadata disk cache:
 
 ![OpenRouter metadata disk cache comparison](https://raw.githubusercontent.com/wesleysimplicio/hermes-agent/codex/hermes-agent-100x-fast/docs/assets/100x-fast/runtime-openrouter-metadata-cache.svg)
 
+90-second launch video with sound:
+
+[![Hermes Agent 100X Fast launch video poster](https://raw.githubusercontent.com/wesleysimplicio/hermes-agent/codex/hermes-agent-100x-fast/docs/assets/100x-fast/video/hermes-100x-fast-poster.png)](https://raw.githubusercontent.com/wesleysimplicio/hermes-agent/codex/hermes-agent-100x-fast/docs/assets/100x-fast/video/hermes-100x-fast-launch.mp4)
+
+Remotion source and storyboard:
+
+- [`docs/remotion/100x-fast/src/Hermes100xVideo.tsx`](https://github.com/wesleysimplicio/hermes-agent/blob/codex/hermes-agent-100x-fast/docs/remotion/100x-fast/src/Hermes100xVideo.tsx)
+- [`docs/remotion/100x-fast/STORYBOARD.md`](https://github.com/wesleysimplicio/hermes-agent/blob/codex/hermes-agent-100x-fast/docs/remotion/100x-fast/STORYBOARD.md)
+
 ## Why This Was Slow
 
 Several hot paths were paying fixed costs over and over:
@@ -333,6 +342,12 @@ python -m pytest tests\test_tui_gateway_server.py::test_config_get_mtime_include
 python -m pytest tests\tools\test_delegate.py tests\tools\test_delegate_subagent_timeout_diagnostic.py -q
 python -m pytest tests\run_agent\test_run_agent.py::TestConcurrentToolExecution tests\run_agent\test_run_agent.py::TestParallelScopePathNormalization tests\run_agent\test_tool_executor_contextvar_propagation.py tests\run_agent\test_concurrent_interrupt.py tests\run_agent\test_tool_call_guardrail_runtime.py -q
 python -m pytest tests\agent\test_model_metadata.py tests\agent\test_openrouter_response_cache.py::TestDefaultConfig -q
+cd docs\remotion\100x-fast
+npm install
+npm run audio
+npx tsc --noEmit
+npm run still
+npm run render
 ```
 
 Latest focused results:
@@ -342,6 +357,8 @@ Latest focused results:
 - Delegation + timeout diagnostics: `128 passed`
 - Concurrent tool execution + guardrails + interrupts: `40 passed`
 - Model metadata + OpenRouter default config: `99 passed`
+- Remotion media pipeline: TypeScript check passed, poster rendered, 90s MP4
+  rendered with generated stereo soundtrack.
 
 Total focused regression count in this pass:
 

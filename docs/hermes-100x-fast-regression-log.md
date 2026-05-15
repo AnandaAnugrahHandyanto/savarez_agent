@@ -63,6 +63,9 @@ benchmark results, and the playbook for the next upstream Hermes release.
 - Added deterministic SVG comparisons for each measured item.
 - Added `runtime-openrouter-metadata-cache.svg` for the model metadata
   offline-cache comparison.
+- Added three GPT-image generated comparison images for README/social use.
+- Added a Remotion 90-second launch video with generated stereo soundtrack:
+  `docs/assets/100x-fast/video/hermes-100x-fast-launch.mp4`.
 - Added PR docs mapping each image to old value, new value, and gain.
 - Updated upstream PR body docs and public-fork PR body.
 
@@ -106,6 +109,17 @@ python -m pytest tests\agent\test_model_metadata.py::TestFetchModelMetadata test
 ```
 
 Result: `11 passed`.
+
+```powershell
+cd docs\remotion\100x-fast
+npm run audio
+npx tsc --noEmit
+npm run still
+npm run render
+```
+
+Result: Remotion typecheck passed, poster rendered, and a 90-second H.264/AAC
+MP4 rendered at `docs/assets/100x-fast/video/hermes-100x-fast-launch.mp4`.
 
 ## Full Suite Attempt
 
@@ -201,6 +215,62 @@ python scripts\benchmark_startup_perf.py -n 3
 | `tool_discovery_source_scan_adaptive` | 0.0511s | current tree remains below parallel threshold |
 | `resolve_toolset_cached` | 0.1123s | warm path ~0.000001s |
 | `session_append_messages_batch` | 0.0144s | 19.64x vs loop write in this benchmark |
+
+## Media Refresh Validation
+
+After adding the GPT-image comparison images and the 90-second Remotion video,
+the following checks were rerun on 2026-05-15:
+
+```powershell
+npx tsc --noEmit
+```
+
+Result: Remotion TypeScript check passed.
+
+```powershell
+python -m py_compile agent\model_metadata.py hermes_cli\config.py scripts\benchmark_runtime_usage.py
+```
+
+Result: passed with no compile errors.
+
+```powershell
+python -m pytest tests\agent\test_model_metadata_local_ctx.py tests\agent\test_model_metadata.py tests\agent\test_openrouter_response_cache.py::TestDefaultConfig -q
+```
+
+Result: `124 passed`.
+
+```powershell
+python -m pytest tests\tools\test_delegate.py tests\tools\test_delegate_subagent_timeout_diagnostic.py -q
+```
+
+Result: `128 passed`.
+
+```powershell
+python -m pytest tests\run_agent\test_run_agent.py::TestConcurrentToolExecution tests\run_agent\test_run_agent.py::TestParallelScopePathNormalization tests\run_agent\test_tool_executor_contextvar_propagation.py tests\run_agent\test_concurrent_interrupt.py tests\run_agent\test_tool_call_guardrail_runtime.py -q
+```
+
+Result: `40 passed`.
+
+```powershell
+python scripts\benchmark_runtime_usage.py --case openrouter_metadata_disk_cache --samples 5
+```
+
+Result: median `0.4211s` for 100 cold memory resets over 500 models; sample
+reported ~`7.4728ms` per disk lookup and no network use.
+
+```powershell
+python scripts\benchmark_runtime_usage.py -n 1
+python scripts\benchmark_startup_perf.py -n 1
+```
+
+Result: benchmark suites completed. Notable current samples:
+
+- `parallel_tool_batch_sleep`: `5.20x` over sequential equivalent.
+- `session_append_messages_batch`: `37.74x` in runtime benchmark and `35.96x`
+  in startup benchmark.
+- `resolve_toolset_cached`: warm path around `0.000004s`.
+- `openrouter_metadata_disk_cache`: `0.4955s` for 100 cold memory resets in
+  the full runtime benchmark sample.
 
 ## Known Limits
 

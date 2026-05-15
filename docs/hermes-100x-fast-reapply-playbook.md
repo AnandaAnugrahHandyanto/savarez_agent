@@ -99,6 +99,8 @@ After benchmarks change, update all of these together:
 - `docs/hermes-agent-100x-fast-pr.md` detailed implementation notes.
 - `docs/assets/100x-fast/*.svg` and generated PNGs when numbers or labels
   change.
+- `docs/remotion/100x-fast/` and `docs/assets/100x-fast/video/` when the
+  launch video, poster, soundtrack, or storyboard should reflect new numbers.
 
 Run this local image-path check before committing docs:
 
@@ -119,6 +121,20 @@ foreach ($file in $files) {
 }
 if ($missing.Count) { $missing; exit 1 } else { 'all local markdown image paths exist' }
 ```
+
+For the video:
+
+```powershell
+cd docs\remotion\100x-fast
+npm install
+npm run audio
+npx tsc --noEmit
+npm run still
+npm run render
+```
+
+The render target is `docs/assets/100x-fast/video/hermes-100x-fast-launch.mp4`.
+The composition is 2700 frames at 30fps, so the expected duration is 90 seconds.
 
 ## PR Update Template
 

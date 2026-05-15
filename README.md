@@ -50,6 +50,17 @@ Full PR documentation:
 
 ![Hermes Agent 100X Fast macro original vs branch comparison](docs/assets/100x-fast/generated/macro-original-vs-100x-fast.png)
 
+### 90-Second Launch Video
+
+<video src="docs/assets/100x-fast/video/hermes-100x-fast-launch.mp4" controls poster="docs/assets/100x-fast/video/hermes-100x-fast-poster.png" width="100%"></video>
+
+[Watch the rendered MP4](docs/assets/100x-fast/video/hermes-100x-fast-launch.mp4) ·
+[Open the poster](docs/assets/100x-fast/video/hermes-100x-fast-poster.png) ·
+[Edit the Remotion source](docs/remotion/100x-fast/src/Hermes100xVideo.tsx) ·
+[Storyboard](docs/remotion/100x-fast/STORYBOARD.md)
+
+![Hermes Agent 100X Fast video poster](docs/assets/100x-fast/video/hermes-100x-fast-poster.png)
+
 ### Visual Before/After Gallery
 
 Every image below is tagged and tied to a measured old-vs-new comparison. The
@@ -61,6 +72,9 @@ specific benchmark claim it represents.
 
 | Visual | Tags | Old | New | Gain |
 | --- | --- | ---: | ---: | ---: |
+| <img src="docs/assets/100x-fast/generated/gpt-image-100x-hero-before-after.png" width="320" alt="GPT image generated premium before after comparison for Hermes Agent 100X Fast"> | `#gpt-image-2` `#hero` `#before-after` | repeated waits and slow probes | cached, batched, parallel runtime | **up to 1378x** |
+| <img src="docs/assets/100x-fast/generated/gpt-image-100x-runtime-stack.png" width="320" alt="GPT image generated runtime stack comparison with five measured optimization lanes"> | `#gpt-image-2` `#runtime-stack` `#technical` | network probes, row writes, serial waits | disk cache, batch writes, fast-fail, parallel tools | **2x-1378x by lane** |
+| <img src="docs/assets/100x-fast/generated/gpt-image-100x-video-cover.png" width="320" alt="GPT image generated video cover for Hermes Agent 100X Fast measured hot path gains"> | `#gpt-image-2` `#video-cover` `#promo` | baseline hot paths | 100X Fast track | **up to 1378x** |
 | <img src="docs/assets/100x-fast/generated/macro-original-vs-100x-fast.png" width="320" alt="macro comparison original vs 100X Fast branch showing speed gains across startup plugin discovery sqlite endpoint guard and parallel tools"> | `#macro` `#promo` `#overview` `#generated` | original branch across six criteria | 100X Fast branch across six criteria | **up to 24.21x** |
 | <img src="docs/assets/100x-fast/perf-startup-model-tools.svg" width="320" alt="model_tools startup old 2.0847s new 0.8419s gain 2.48x"> | `#startup` `#model-tools` | 2.0847s | 0.8419s | **2.48x** |
 | <img src="docs/assets/100x-fast/perf-tool-definitions-startup.svg" width="320" alt="tool definitions startup old 1.8782s new 0.8741s gain 2.15x"> | `#startup` `#tool-schema` | 1.8782s | 0.8741s | **2.15x** |
