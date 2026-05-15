@@ -287,6 +287,16 @@ display:
 
 Users can also change this per-session with the `/verbose` command in chat.
 
+### Visible Topic Delegates (Optional)
+
+If you want a parent session to spin up a visible child topic, Hermes now supports Telegram forum topic delegates.
+
+- `/spawn-topic <topic name> :: <prompt>` creates a new visible child topic
+- `/prompt-topic <telegram:chat_id:thread_id> :: <prompt>` sends a follow-up to an existing child
+- `/visible-sessions` lists current handles
+
+These topic delegates require the bot to be an admin with `can_manage_topics=true`. Hermes uses a trusted local synthetic prompt event to wake the child session; it does not depend on fake Telegram updates.
+
 ### Set Up a Personality with SOUL.md
 
 Customize how the bot communicates by editing `~/.hermes/SOUL.md`:

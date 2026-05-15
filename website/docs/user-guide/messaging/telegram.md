@@ -256,6 +256,40 @@ TELEGRAM_HOME_CHANNEL_NAME="My Notes"
 Group chat IDs are negative numbers (e.g., `-1001234567890`). Your personal DM chat ID is the same as your user ID.
 :::
 
+## Visible Topic Delegates
+
+Visible topic delegates let a parent Hermes session create a Telegram forum topic and seed a fresh child agent into it.
+
+Use these manual control surfaces:
+
+- `/spawn-topic <topic name> :: <prompt>` — create a new visible child topic and start the child agent. Alias: `/spawn`
+- `/prompt-topic <telegram:chat_id:thread_id> :: <prompt>` — send a follow-up prompt to an existing visible child. Alias: `/vprompt`
+- `/visible-sessions` — list visible topic delegate handles. Alias: `/vsessions`
+- `visible_session` tool — gateway-backed tool with `create`, `prompt`, `list`, `status`, and `close` actions. `close` retires the handle from Hermes control; it does not delete the Telegram topic or erase the transcript.
+
+How it works:
+
+- The bot must be an admin with `can_manage_topics=true` in the target supergroup/forum.
+- Telegram only provides the visible container; Hermes wakes the child through a trusted local synthetic event, not a fake Bot API update.
+- Handles use the format `telegram:<chat_id>:<thread_id>`.
+- Follow-up modes are `queue`, `interrupt`, `steer`, and `send_only`.
+- v1 supports session-local provider/model/reasoning overrides; `profile` and `workdir` are rejected unless your build explicitly implements them safely.
+- This feature is for visible, interactive child lanes. Do not rely on ordinary bot-authored messages to wake a Hermes session.
+
+Safety policy lives in the gateway config and defaults to same-parent Telegram spawns only:
+
+```yaml
+visible_sessions_enabled: true
+visible_sessions_allowed_platforms: [telegram]
+visible_sessions_allowed_parent_chats: []  # empty means only the current parent chat
+visible_sessions_allowed_parent_session_keys: []  # optional cross-parent control allowlist
+visible_sessions_allowed_parent_user_ids: []      # optional trusted-user control allowlist
+visible_sessions_max_active_per_parent: 10
+visible_sessions_allow_nested: false
+```
+
+Keep `visible_sessions_allow_nested` disabled unless you intentionally want child sessions to spawn their own visible children.
+
 ## Voice Messages
 
 ### Incoming Voice (Speech-to-Text)

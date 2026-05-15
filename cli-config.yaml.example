@@ -512,6 +512,19 @@ session_reset:
 # explicitly want one shared "room brain" per group/channel.
 group_sessions_per_user: true
 
+# Gateway-backed visible child sessions. These let a parent messaging session
+# create and prompt human-visible child lanes, with Telegram forum topics as the
+# first implementation. By default, spawns are limited to the same parent chat,
+# handles are scoped to the creating parent session/user, and child sessions
+# cannot recursively create more visible children.
+visible_sessions_enabled: true
+visible_sessions_allowed_platforms: [telegram]
+visible_sessions_allowed_parent_chats: []          # optional chat-id allowlist for cross-chat spawns
+visible_sessions_allowed_parent_session_keys: []   # optional session-key allowlist for cross-parent control
+visible_sessions_allowed_parent_user_ids: []       # optional trusted user-id allowlist
+visible_sessions_max_active_per_parent: 10
+visible_sessions_allow_nested: false
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Gateway Streaming
 # ─────────────────────────────────────────────────────────────────────────────

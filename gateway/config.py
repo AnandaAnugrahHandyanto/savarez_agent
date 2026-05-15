@@ -486,6 +486,15 @@ class GatewayConfig:
     # fresh session exactly as if the reset policy had fired.  0 = disabled.
     session_store_max_age_days: int = 90
 
+    # Visible-session policy controls (gateway-backed spawned topics/threads)
+    visible_sessions_enabled: bool = True
+    visible_sessions_allowed_platforms: List[str] = field(default_factory=lambda: ["telegram"])
+    visible_sessions_allowed_parent_chats: List[str] = field(default_factory=list)
+    visible_sessions_allowed_parent_session_keys: List[str] = field(default_factory=list)
+    visible_sessions_allowed_parent_user_ids: List[str] = field(default_factory=list)
+    visible_sessions_max_active_per_parent: int = 10
+    visible_sessions_allow_nested: bool = False
+
     def get_connected_platforms(self) -> List[Platform]:
         """Return list of platforms that are enabled and configured."""
         connected = []
@@ -579,6 +588,13 @@ class GatewayConfig:
             "unauthorized_dm_behavior": self.unauthorized_dm_behavior,
             "streaming": self.streaming.to_dict(),
             "session_store_max_age_days": self.session_store_max_age_days,
+            "visible_sessions_enabled": self.visible_sessions_enabled,
+            "visible_sessions_allowed_platforms": list(self.visible_sessions_allowed_platforms),
+            "visible_sessions_allowed_parent_chats": list(self.visible_sessions_allowed_parent_chats),
+            "visible_sessions_allowed_parent_session_keys": list(self.visible_sessions_allowed_parent_session_keys),
+            "visible_sessions_allowed_parent_user_ids": list(self.visible_sessions_allowed_parent_user_ids),
+            "visible_sessions_max_active_per_parent": self.visible_sessions_max_active_per_parent,
+            "visible_sessions_allow_nested": self.visible_sessions_allow_nested,
         }
     
     @classmethod
@@ -632,6 +648,36 @@ class GatewayConfig:
         except (TypeError, ValueError):
             session_store_max_age_days = 90
 
+        visible_sessions_allowed_platforms = data.get("visible_sessions_allowed_platforms", ["telegram"])
+        if not isinstance(visible_sessions_allowed_platforms, list):
+            visible_sessions_allowed_platforms = ["telegram"]
+        visible_sessions_allowed_platforms = [str(v).strip().lower() for v in visible_sessions_allowed_platforms if str(v).strip()]
+        if not visible_sessions_allowed_platforms:
+            visible_sessions_allowed_platforms = ["telegram"]
+
+        visible_sessions_allowed_parent_chats = data.get("visible_sessions_allowed_parent_chats", [])
+        if not isinstance(visible_sessions_allowed_parent_chats, list):
+            visible_sessions_allowed_parent_chats = []
+        visible_sessions_allowed_parent_chats = [str(v).strip() for v in visible_sessions_allowed_parent_chats if str(v).strip()]
+
+        visible_sessions_allowed_parent_session_keys = data.get("visible_sessions_allowed_parent_session_keys", [])
+        if not isinstance(visible_sessions_allowed_parent_session_keys, list):
+            visible_sessions_allowed_parent_session_keys = []
+        visible_sessions_allowed_parent_session_keys = [
+            str(v).strip() for v in visible_sessions_allowed_parent_session_keys if str(v).strip()
+        ]
+
+        visible_sessions_allowed_parent_user_ids = data.get("visible_sessions_allowed_parent_user_ids", [])
+        if not isinstance(visible_sessions_allowed_parent_user_ids, list):
+            visible_sessions_allowed_parent_user_ids = []
+        visible_sessions_allowed_parent_user_ids = [str(v).strip() for v in visible_sessions_allowed_parent_user_ids if str(v).strip()]
+
+        try:
+            visible_sessions_max_active_per_parent = int(data.get("visible_sessions_max_active_per_parent", 10))
+            visible_sessions_max_active_per_parent = max(1, visible_sessions_max_active_per_parent)
+        except (TypeError, ValueError):
+            visible_sessions_max_active_per_parent = 10
+
         return cls(
             platforms=platforms,
             default_reset_policy=default_policy,
@@ -647,6 +693,13 @@ class GatewayConfig:
             unauthorized_dm_behavior=unauthorized_dm_behavior,
             streaming=StreamingConfig.from_dict(data.get("streaming", {})),
             session_store_max_age_days=session_store_max_age_days,
+            visible_sessions_enabled=_coerce_bool(data.get("visible_sessions_enabled"), True),
+            visible_sessions_allowed_platforms=visible_sessions_allowed_platforms,
+            visible_sessions_allowed_parent_chats=visible_sessions_allowed_parent_chats,
+            visible_sessions_allowed_parent_session_keys=visible_sessions_allowed_parent_session_keys,
+            visible_sessions_allowed_parent_user_ids=visible_sessions_allowed_parent_user_ids,
+            visible_sessions_max_active_per_parent=visible_sessions_max_active_per_parent,
+            visible_sessions_allow_nested=_coerce_bool(data.get("visible_sessions_allow_nested"), False),
         )
 
     def get_unauthorized_dm_behavior(self, platform: Optional[Platform] = None) -> str:
@@ -753,6 +806,24 @@ def load_gateway_config() -> GatewayConfig:
                     yaml_cfg.get("unauthorized_dm_behavior"),
                     "pair",
                 )
+
+            # Visible-session policy controls are GatewayConfig fields. Keep
+            # top-level config.yaml keys as the canonical shape, but also honor
+            # a nested gateway: block for operators who group gateway settings.
+            gateway_cfg = yaml_cfg.get("gateway") if isinstance(yaml_cfg.get("gateway"), dict) else {}
+            for key in (
+                "visible_sessions_enabled",
+                "visible_sessions_allowed_platforms",
+                "visible_sessions_allowed_parent_chats",
+                "visible_sessions_allowed_parent_session_keys",
+                "visible_sessions_allowed_parent_user_ids",
+                "visible_sessions_max_active_per_parent",
+                "visible_sessions_allow_nested",
+            ):
+                if key in yaml_cfg:
+                    gw_data[key] = yaml_cfg[key]
+                elif key in gateway_cfg:
+                    gw_data[key] = gateway_cfg[key]
 
             # Merge platforms section from config.yaml into gw_data so that
             # nested keys like platforms.webhook.extra.routes are loaded.

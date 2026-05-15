@@ -13,6 +13,7 @@ import logging
 import os
 import tempfile
 import html as _html
+import inspect
 import re
 from typing import Dict, List, Optional, Any
 
@@ -63,6 +64,7 @@ from pathlib import Path as _Path
 sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
 
 from gateway.config import Platform, PlatformConfig
+from gateway.visible_sessions import format_visible_handle, sanitize_topic_name
 from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
@@ -983,6 +985,86 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
             return None
 
+    async def create_visible_thread(
+        self,
+        parent_chat_id: str,
+        name: str,
+    ) -> Dict[str, str]:
+        """Create a Telegram forum topic for a visible child session.
+
+        Unlike bot-authored seed messages, this only performs transport setup
+        and returns routing metadata. The gateway runner is responsible for
+        creating the Hermes session and injecting a trusted synthetic prompt.
+        """
+        if not self._bot:
+            raise RuntimeError("Telegram adapter is not connected")
+
+        try:
+            chat_id_int = int(parent_chat_id)
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError(f"Invalid Telegram chat id for visible session: {parent_chat_id!r}") from exc
+
+        topic_name = sanitize_topic_name(name)
+        get_me = getattr(self._bot, "get_me", None)
+        get_chat_member = getattr(self._bot, "get_chat_member", None)
+        if callable(get_me) and callable(get_chat_member):
+            try:
+                bot_user_result = get_me()
+                bot_user = await bot_user_result if inspect.isawaitable(bot_user_result) else bot_user_result
+                bot_user_id = getattr(bot_user, "id", None)
+                if bot_user_id is not None:
+                    member_result = get_chat_member(chat_id=chat_id_int, user_id=bot_user_id)
+                    member = await member_result if inspect.isawaitable(member_result) else member_result
+                    if getattr(member, "can_manage_topics", None) is False:
+                        raise RuntimeError(
+                            "Telegram bot cannot create forum topics in this chat. "
+                            "Grant the bot admin permission: Manage Topics."
+                        )
+            except RuntimeError:
+                raise
+            except Exception as exc:
+                logger.debug(
+                    "[%s] Unable to preflight Telegram topic permissions in chat %s: %s",
+                    self.name,
+                    parent_chat_id,
+                    exc,
+                )
+
+        try:
+            topic = await self._bot.create_forum_topic(
+                chat_id=chat_id_int,
+                name=topic_name,
+            )
+        except Exception as exc:
+            error_text = str(exc).lower()
+            if "not enough rights" in error_text or "create a topic" in error_text:
+                raise RuntimeError(
+                    "Telegram bot cannot create forum topics in this chat. "
+                    "Grant the bot admin permission: Manage Topics."
+                ) from exc
+            if "not a forum" in error_text or "forums_disabled" in error_text:
+                raise RuntimeError(
+                    "Telegram chat is not forum-enabled; enable Topics before spawning visible sessions."
+                ) from exc
+            if "topic_name_duplicate" in error_text or "already" in error_text:
+                raise RuntimeError(
+                    f"Telegram topic {topic_name!r} already exists, but Telegram Bot API did not return its thread id. "
+                    "Choose a unique topic name."
+                ) from exc
+            raise RuntimeError(
+                f"Failed to create Telegram topic {topic_name!r} in chat {parent_chat_id}: {exc}"
+            ) from exc
+
+        thread_id = str(topic.message_thread_id)
+        chat_id = str(parent_chat_id)
+        return {
+            "platform": "telegram",
+            "chat_id": chat_id,
+            "thread_id": thread_id,
+            "topic_name": topic_name,
+            "target": format_visible_handle("telegram", chat_id, thread_id),
+        }
+
     async def create_handoff_thread(
         self,
         parent_chat_id: str,
@@ -995,11 +1077,14 @@ class TelegramAdapter(BasePlatformAdapter):
         ``message_thread_id`` as a string, or ``None`` on failure.
         """
         try:
-            chat_id_int = int(parent_chat_id)
-        except (TypeError, ValueError):
+            metadata = await self.create_visible_thread(parent_chat_id, name)
+            return metadata["thread_id"]
+        except Exception as exc:
+            logger.warning(
+                "[%s] Failed to create handoff topic '%s' in chat %s: %s",
+                self.name, name, parent_chat_id, exc,
+            )
             return None
-        thread_id = await self._create_dm_topic(chat_id_int, name=name)
-        return str(thread_id) if thread_id else None
 
     async def rename_dm_topic(
         self,

@@ -1700,6 +1700,449 @@ class GatewayRunner:
             thread_sessions_per_user=getattr(config, "thread_sessions_per_user", False),
         )
 
+    def _visible_session_registry_file(self):
+        """Return the visible-session registry path for this runner."""
+        from gateway.visible_sessions import default_visible_session_registry_path
+
+        return getattr(self, "_visible_session_registry_path", None) or default_visible_session_registry_path()
+
+    def _load_visible_session_handles(self):
+        from gateway.visible_sessions import load_visible_session_handles
+
+        return load_visible_session_handles(self._visible_session_registry_file())
+
+    def _save_visible_session_handles(self, handles) -> None:
+        from gateway.visible_sessions import save_visible_session_handles
+
+        save_visible_session_handles(self._visible_session_registry_file(), list(handles))
+
+    def _visible_session_registry_lock(self) -> asyncio.Lock:
+        lock = getattr(self, "_visible_session_registry_async_lock", None)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._visible_session_registry_async_lock = lock
+        return lock
+
+    def _clear_visible_session_overrides(self, session_key: str | None) -> None:
+        if not session_key:
+            return
+        getattr(self, "_session_model_overrides", {}).pop(session_key, None)
+        getattr(self, "_session_reasoning_overrides", {}).pop(session_key, None)
+
+    def _upsert_visible_session_handle(self, handle) -> None:
+        handles = [h for h in self._load_visible_session_handles() if h.target != handle.target]
+        handles.append(handle)
+        self._save_visible_session_handles(handles)
+
+    def _remove_visible_session_handle(self, target: str) -> None:
+        handles = [h for h in self._load_visible_session_handles() if h.target != target]
+        self._save_visible_session_handles(handles)
+
+    def _register_visible_session_channel_directory(self, handle, parent_event: MessageEvent) -> None:
+        """Make a spawned visible topic available to send_message(action='list')."""
+        try:
+            from gateway.channel_directory import upsert_channel_directory_entry
+
+            base_name = getattr(parent_event.source, "chat_name", None) or str(handle.chat_id)
+            entry_id = f"{handle.chat_id}:{handle.thread_id}" if handle.thread_id else str(handle.chat_id)
+            upsert_channel_directory_entry(
+                handle.platform,
+                {
+                    "id": entry_id,
+                    "name": f"{base_name} / {handle.topic_name}",
+                    "type": getattr(parent_event.source, "chat_type", None) or "group",
+                    "thread_id": handle.thread_id,
+                },
+            )
+        except Exception as exc:
+            logger.debug("Visible session channel-directory upsert failed: %s", exc)
+
+    def list_visible_sessions(self, *, parent_event: MessageEvent | None = None) -> list:
+        """List known visible-session handles.
+
+        The v1 registry is intentionally small and safe: routing metadata only,
+        no prompts or secrets. Handles are filtered by parent-session ownership
+        unless an explicit allowlist grants cross-parent access.
+        """
+
+        handles = self._load_visible_session_handles()
+        if parent_event is None:
+            return handles
+        return [
+            item
+            for item in handles
+            if self._check_visible_session_handle_access(parent_event=parent_event, handle=item, action="list")
+        ]
+
+    def _check_visible_session_handle_access(self, *, parent_event: MessageEvent | None, handle, action: str) -> bool:
+        """Return whether ``parent_event`` is authorized to access ``handle``.
+
+        Default policy is deny-by-default across parent sessions: only the
+        creating parent session may list/prompt a handle. Optional config
+        allowlists may grant cross-parent access, but they are empty by default.
+        """
+        if parent_event is None:
+            return False
+
+        parent_source = getattr(parent_event, "source", None)
+        if parent_source is None:
+            return False
+
+        parent_session_key = self._session_key_for_source(parent_source)
+        owner_session_key = str(getattr(handle, "created_by_session_key", "") or "")
+        if owner_session_key and parent_session_key == owner_session_key:
+            owner_user = str(getattr(handle, "created_by_user_id", "") or "")
+            parent_user = str(getattr(parent_source, "user_id", "") or "")
+            if owner_user and parent_user and owner_user != parent_user:
+                return False
+            return True
+
+        config = getattr(self, "config", None)
+        allowlisted_session_keys = {
+            str(v).strip()
+            for v in (getattr(config, "visible_sessions_allowed_parent_session_keys", []) or [])
+            if str(v).strip()
+        }
+        if parent_session_key in allowlisted_session_keys:
+            return True
+
+        parent_user = str(getattr(parent_source, "user_id", "") or "")
+        allowlisted_user_ids = {
+            str(v).strip()
+            for v in (getattr(config, "visible_sessions_allowed_parent_user_ids", []) or [])
+            if str(v).strip()
+        }
+        if parent_user and parent_user in allowlisted_user_ids:
+            return True
+
+        logger.warning(
+            "Denied visible_session %s for parent_session_key=%s target=%s owner_session_key=%s owner_user_id=%s",
+            action,
+            parent_session_key,
+            getattr(handle, "target", "?"),
+            owner_session_key,
+            getattr(handle, "created_by_user_id", None),
+        )
+        return False
+
+    def _visible_sessions_policy(self) -> dict:
+        config = getattr(self, "config", None)
+        allowed_platforms = getattr(config, "visible_sessions_allowed_platforms", ["telegram"]) if config else ["telegram"]
+        allowed_parent_chats = getattr(config, "visible_sessions_allowed_parent_chats", []) if config else []
+        return {
+            "enabled": bool(getattr(config, "visible_sessions_enabled", True)) if config else True,
+            "allowed_platforms": {str(v).strip().lower() for v in (allowed_platforms or ["telegram"]) if str(v).strip()},
+            "allowed_parent_chats": {str(v).strip() for v in (allowed_parent_chats or []) if str(v).strip()},
+            "max_active_per_parent": max(1, int(getattr(config, "visible_sessions_max_active_per_parent", 10) or 10)),
+            "allow_nested": bool(getattr(config, "visible_sessions_allow_nested", False)) if config else False,
+        }
+
+    def _check_visible_session_create_policy(self, *, parent_event: MessageEvent, platform: Platform, parent_chat_id: str) -> None:
+        policy = self._visible_sessions_policy()
+        if not policy["enabled"]:
+            raise ValueError("Visible sessions are disabled by gateway policy")
+        if platform.value.lower() not in policy["allowed_platforms"]:
+            raise ValueError(f"Visible sessions are not allowed on platform: {platform.value}")
+
+        parent_source = parent_event.source
+        parent_chat = str(getattr(parent_source, "chat_id", "") or "")
+        requested_parent_chat = str(parent_chat_id or "")
+
+        allowlisted_chats = policy["allowed_parent_chats"]
+        if allowlisted_chats:
+            if requested_parent_chat not in allowlisted_chats:
+                raise ValueError(f"Visible sessions are not allowed in parent chat: {requested_parent_chat}")
+        elif requested_parent_chat != parent_chat:
+            raise ValueError("Visible sessions must be spawned in the same parent chat unless explicitly allowlisted")
+
+        parent_key = self._session_key_for_source(parent_source)
+        active_for_parent = sum(1 for item in self._load_visible_session_handles() if item.created_by_session_key == parent_key)
+        if active_for_parent >= policy["max_active_per_parent"]:
+            raise ValueError(f"Visible session limit reached for this parent session ({policy['max_active_per_parent']})")
+
+        if not policy["allow_nested"]:
+            source_thread_id = str(getattr(parent_source, "thread_id", "") or "")
+            for item in self._load_visible_session_handles():
+                if (
+                    item.platform == platform.value
+                    and str(item.chat_id) == parent_chat
+                    and str(item.thread_id or "") == source_thread_id
+                ):
+                    raise ValueError("Nested visible session spawns are disabled by gateway policy")
+
+    def _find_visible_session_handle(self, handle: str):
+        from gateway.visible_sessions import parse_visible_handle
+
+        ref = parse_visible_handle(handle)
+        wanted = f"{ref.platform}:{ref.chat_id}:{ref.thread_id}"
+        for item in self._load_visible_session_handles():
+            if item.target == wanted:
+                return item
+        raise ValueError(f"Visible session handle not found: {wanted}")
+
+    @staticmethod
+    def _platform_from_visible_name(platform: str) -> Platform:
+        value = str(platform or "").strip().lower()
+        if not value:
+            raise ValueError("platform is required")
+        try:
+            return Platform(value)
+        except Exception as exc:
+            raise ValueError(f"Unsupported visible-session platform: {platform}") from exc
+
+    def _visible_child_source(
+        self,
+        *,
+        platform: Platform,
+        parent_event: MessageEvent,
+        chat_id: str,
+        thread_id: str | None,
+        topic_name: str | None,
+        user_id: str | None = None,
+        user_name: str | None = None,
+    ) -> SessionSource:
+        parent_source = parent_event.source
+        return SessionSource(
+            platform=platform,
+            chat_id=str(chat_id),
+            chat_name=getattr(parent_source, "chat_name", None),
+            chat_type=getattr(parent_source, "chat_type", "group") or "group",
+            user_id=user_id if user_id is not None else getattr(parent_source, "user_id", None),
+            user_name=user_name if user_name is not None else getattr(parent_source, "user_name", None),
+            thread_id=str(thread_id) if thread_id is not None else None,
+            chat_topic=topic_name,
+            parent_chat_id=None,
+        )
+
+    async def create_visible_session(
+        self,
+        *,
+        parent_event: MessageEvent,
+        platform: str,
+        parent_chat_id: str,
+        topic_name: str,
+        prompt: str,
+        profile: str | None = None,
+        provider: str | None = None,
+        model: str | None = None,
+        reasoning_effort: str | None = None,
+        workdir: str | None = None,
+    ):
+        """Create a visible platform thread/topic, seed a child Hermes session, and persist its handle."""
+        from datetime import datetime, timezone
+        from gateway.visible_sessions import (
+            VisibleSessionHandle,
+            format_visible_handle,
+            format_visible_seed_prompt,
+            sanitize_topic_name,
+        )
+
+        if profile:
+            raise ValueError(
+                "Profiles are process-level today; choose provider/model for this visible session, "
+                "or enable v2 profile-backed child gateway workers."
+            )
+        if workdir:
+            raise ValueError("Visible session workdir overrides are not session-local in v1; use the prompt or a profile-backed v2 worker.")
+        prompt = str(prompt or "").strip()
+        if not prompt:
+            raise ValueError("visible session prompt is required")
+        platform_enum = self._platform_from_visible_name(platform)
+        adapter = self.adapters.get(platform_enum)
+        if adapter is None:
+            raise ValueError(f"No live gateway adapter for platform: {platform_enum.value}")
+        if not hasattr(adapter, "create_visible_thread"):
+            raise ValueError(f"Platform {platform_enum.value} does not support visible thread creation")
+
+        safe_topic_name = sanitize_topic_name(topic_name)
+        async with self._visible_session_registry_lock():
+            self._check_visible_session_create_policy(
+                parent_event=parent_event,
+                platform=platform_enum,
+                parent_chat_id=str(parent_chat_id),
+            )
+            thread_meta = await adapter.create_visible_thread(str(parent_chat_id), safe_topic_name)
+            chat_id = str(thread_meta.get("chat_id") or parent_chat_id)
+            thread_id = str(thread_meta.get("thread_id") or "")
+            if not thread_id:
+                raise ValueError("visible thread creation did not return a thread_id")
+            target = str(thread_meta.get("target") or format_visible_handle(platform_enum.value, chat_id, thread_id))
+
+            child_source = self._visible_child_source(
+                platform=platform_enum,
+                parent_event=parent_event,
+                chat_id=chat_id,
+                thread_id=thread_id,
+                topic_name=safe_topic_name,
+            )
+            child_entry = self.session_store.get_or_create_session(child_source, force_new=True)
+            child_session_key = getattr(child_entry, "session_key", None) or self._session_key_for_source(child_source)
+            self._clear_visible_session_overrides(child_session_key)
+
+            override = {}
+            if provider:
+                override["provider"] = str(provider).strip()
+            if model:
+                override["model"] = str(model).strip()
+            if override:
+                self._session_model_overrides[child_session_key] = override
+            if reasoning_effort:
+                self._set_session_reasoning_override(
+                    child_session_key,
+                    {"enabled": True, "effort": str(reasoning_effort).strip()},
+                )
+
+            parent_key = self._session_key_for_source(parent_event.source)
+            handle = VisibleSessionHandle(
+                platform=platform_enum.value,
+                chat_id=chat_id,
+                thread_id=thread_id,
+                topic_name=safe_topic_name,
+                session_key=child_session_key,
+                session_id=getattr(child_entry, "session_id", ""),
+                target=target,
+                created_by_session_key=parent_key,
+                created_by_user_id=getattr(parent_event.source, "user_id", None),
+                created_at=datetime.now(timezone.utc),
+            )
+            self._upsert_visible_session_handle(handle)
+            self._register_visible_session_channel_directory(handle, parent_event)
+
+        header = (
+            "Spawned visible child session\n"
+            f"Parent: {getattr(parent_event.source, 'chat_name', None) or parent_event.source.chat_id}"
+            f" / thread {getattr(parent_event.source, 'thread_id', None) or 'root'}\n"
+            f"Task: {safe_topic_name}\n"
+            "Controls: reply here normally, /stop to stop, /queue <prompt> for next turn, "
+            "/steer <prompt> for active run."
+        )
+        try:
+            await adapter.dispatch_synthetic_message(text=header, source=child_source, mode="send_only")
+        except Exception as exc:
+            logger.warning("Failed to show visible session header: %s", exc)
+        try:
+            await adapter.dispatch_synthetic_message(text=format_visible_seed_prompt(prompt), source=child_source, mode="send_only")
+        except Exception as exc:
+            logger.warning("Failed to show visible session seed prompt: %s", exc)
+        try:
+            await adapter.dispatch_synthetic_message(text=prompt, source=child_source, mode="interrupt")
+        except Exception:
+            async with self._visible_session_registry_lock():
+                self._remove_visible_session_handle(handle.target)
+                self._clear_visible_session_overrides(child_session_key)
+            logger.exception("Failed to dispatch visible session seed prompt; retired handle %s", handle.target)
+            raise
+        return handle
+
+    async def prompt_visible_session(
+        self,
+        *,
+        parent_event: MessageEvent,
+        handle: str,
+        prompt: str,
+        mode: str = "queue",
+    ):
+        """Prompt an existing visible child session by handle."""
+        prompt = str(prompt or "").strip()
+        if not prompt:
+            raise ValueError("visible session follow-up prompt is required")
+        normalized_mode = str(mode or "queue").strip().lower().replace("-", "_")
+        if normalized_mode not in {"queue", "interrupt", "steer", "send_only"}:
+            raise ValueError("visible session mode must be queue, interrupt, steer, or send_only")
+        item = self._find_visible_session_handle(handle)
+        if not self._check_visible_session_handle_access(parent_event=parent_event, handle=item, action="prompt"):
+            raise ValueError("Not authorized to prompt this visible session handle")
+        platform_enum = self._platform_from_visible_name(item.platform)
+        adapter = self.adapters.get(platform_enum)
+        if adapter is None:
+            raise ValueError(f"No live gateway adapter for platform: {platform_enum.value}")
+        child_source = self._visible_child_source(
+            platform=platform_enum,
+            parent_event=parent_event,
+            chat_id=item.chat_id,
+            thread_id=item.thread_id,
+            topic_name=item.topic_name,
+            user_id=getattr(item, "created_by_user_id", None),
+        )
+        await adapter.dispatch_synthetic_message(text=prompt, source=child_source, mode=normalized_mode)
+        return item
+
+    def status_visible_session(self, *, parent_event: MessageEvent, handle: str):
+        """Return a visible child session handle after ownership checks."""
+        item = self._find_visible_session_handle(handle)
+        if not self._check_visible_session_handle_access(parent_event=parent_event, handle=item, action="status"):
+            raise ValueError("Not authorized to inspect this visible session handle")
+        return item
+
+    async def close_visible_session(self, *, parent_event: MessageEvent, handle: str):
+        """Remove a visible-session handle from the registry.
+
+        This does not delete the Telegram topic or session transcript; it only
+        retires the parent-control handle so quota/nested-spawn policy reflects
+        currently managed child lanes rather than lifetime history.
+        """
+        async with self._visible_session_registry_lock():
+            item = self._find_visible_session_handle(handle)
+            if not self._check_visible_session_handle_access(parent_event=parent_event, handle=item, action="close"):
+                raise ValueError("Not authorized to close this visible session handle")
+            self._remove_visible_session_handle(item.target)
+            self._clear_visible_session_overrides(getattr(item, "session_key", None))
+            return item
+
+    def _format_visible_session_handle(self, handle) -> str:
+        return (
+            f"{handle.topic_name}\n"
+            f"Handle: `{handle.target}`\n"
+            f"Session: `{handle.session_id}`\n"
+            f"Key: `{handle.session_key}`"
+        )
+
+    async def _handle_spawn_topic_command(self, event: MessageEvent) -> str:
+        """Handle /spawn-topic <topic name> :: <prompt>."""
+        from gateway.visible_sessions import parse_spawn_topic_args
+
+        try:
+            topic_name, prompt = parse_spawn_topic_args(event.get_command_args())
+            handle = await self.create_visible_session(
+                parent_event=event,
+                platform=(event.source.platform.value if event.source.platform else "telegram"),
+                parent_chat_id=str(event.source.chat_id),
+                topic_name=topic_name,
+                prompt=prompt,
+            )
+        except Exception as exc:
+            return f"Could not spawn visible topic session: {exc}"
+        return "Spawned visible topic delegate:\n\n" + self._format_visible_session_handle(handle)
+
+    async def _handle_prompt_topic_command(self, event: MessageEvent) -> str:
+        """Handle /prompt-topic <handle> :: <prompt>."""
+        from gateway.visible_sessions import parse_prompt_topic_args
+
+        try:
+            handle_ref, prompt = parse_prompt_topic_args(event.get_command_args())
+            handle = await self.prompt_visible_session(
+                parent_event=event,
+                handle=handle_ref,
+                prompt=prompt,
+                mode="queue",
+            )
+        except Exception as exc:
+            return f"Could not prompt visible topic session: {exc}"
+        return "Queued follow-up for visible topic delegate:\n\n" + self._format_visible_session_handle(handle)
+
+    async def _handle_visible_sessions_command(self, event: MessageEvent) -> str:
+        """Handle /visible-sessions."""
+        try:
+            handles = self.list_visible_sessions(parent_event=event)
+        except Exception as exc:
+            return f"Could not list visible topic sessions: {exc}"
+        if not handles:
+            return "No visible topic delegates are registered yet."
+        lines = ["Visible topic delegates:"]
+        for idx, handle in enumerate(handles, start=1):
+            lines.append(f"\n{idx}. " + self._format_visible_session_handle(handle))
+        return "\n".join(lines)
+
     def _telegram_topic_mode_enabled(self, source: SessionSource) -> bool:
         """Return whether Telegram DM topic mode is active for this chat."""
         if source.platform != Platform.TELEGRAM or source.chat_type != "dm":
@@ -6431,6 +6874,15 @@ class GatewayRunner:
 
         if canonical == "topic":
             return await self._handle_topic_command(event)
+
+        if canonical == "spawn-topic":
+            return await self._handle_spawn_topic_command(event)
+
+        if canonical == "prompt-topic":
+            return await self._handle_prompt_topic_command(event)
+
+        if canonical == "visible-sessions":
+            return await self._handle_visible_sessions_command(event)
         
         if canonical == "help":
             return await self._handle_help_command(event)

@@ -255,6 +255,34 @@ def load_directory() -> Dict[str, Any]:
         return {"updated_at": None, "platforms": {}}
 
 
+def upsert_channel_directory_entry(platform: str, entry: Dict[str, Any]) -> Dict[str, Any]:
+    """Insert or replace one reachable target in the cached directory."""
+
+    platform_name = str(platform or "").strip().lower()
+    entry_id = str((entry or {}).get("id") or "").strip()
+    if not platform_name:
+        raise ValueError("platform is required")
+    if not entry_id:
+        raise ValueError("channel directory entry id is required")
+
+    directory = load_directory()
+    platforms = directory.setdefault("platforms", {})
+    channels = platforms.setdefault(platform_name, [])
+    next_entry = dict(entry)
+    next_entry["id"] = entry_id
+    replaced = False
+    for idx, existing in enumerate(list(channels)):
+        if str(existing.get("id") or "") == entry_id:
+            channels[idx] = next_entry
+            replaced = True
+            break
+    if not replaced:
+        channels.append(next_entry)
+    directory["updated_at"] = datetime.now().isoformat()
+    atomic_json_write(DIRECTORY_PATH, directory)
+    return directory
+
+
 def lookup_channel_type(platform_name: str, chat_id: str) -> Optional[str]:
     """Return the channel ``type`` string (e.g. ``"channel"``, ``"forum"``) for *chat_id*, or *None* if unknown."""
     directory = load_directory()

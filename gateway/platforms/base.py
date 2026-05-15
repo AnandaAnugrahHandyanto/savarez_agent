@@ -1605,6 +1605,63 @@ class BasePlatformAdapter(ABC):
         """
         return None
 
+    async def dispatch_synthetic_message(
+        self,
+        *,
+        text: str,
+        source: SessionSource,
+        mode: str = "interrupt",
+        channel_prompt: str | None = None,
+    ) -> str:
+        """Dispatch a trusted local prompt into a platform-backed session.
+
+        Visible session delegates use this to wake/process a child lane without
+        relying on bot-authored Telegram messages echoing back as inbound
+        updates. Normal/interrupt dispatch reuses ``handle_message()`` so the
+        existing session guards, typing indicators, streaming, and pending-drain
+        behavior remain the single source of truth.
+        """
+
+        if source is None:
+            raise ValueError("source is required for synthetic dispatch")
+        text = str(text or "")
+        if not text.strip():
+            raise ValueError("synthetic dispatch text must not be empty")
+
+        session_key = build_session_key(
+            source,
+            group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
+            thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
+        )
+        normalized_mode = str(mode or "interrupt").strip().lower().replace("-", "_")
+        if normalized_mode not in {"interrupt", "queue", "steer", "send_only"}:
+            raise ValueError("synthetic dispatch mode must be interrupt, queue, steer, or send_only")
+
+        if normalized_mode == "send_only":
+            await self._send_with_retry(
+                chat_id=source.chat_id,
+                content=text,
+                reply_to=None,
+                metadata=_thread_metadata_for_source(source, None),
+            )
+            return session_key
+
+        event_text = f"/steer {text}" if normalized_mode == "steer" else text
+        event = MessageEvent(
+            text=event_text,
+            message_type=MessageType.TEXT,
+            source=source,
+            channel_prompt=channel_prompt,
+            internal=True,
+        )
+
+        if normalized_mode == "queue" and session_key in self._active_sessions:
+            merge_pending_message_event(self._pending_messages, session_key, event)
+            return session_key
+
+        await self.handle_message(event)
+        return session_key
+
 
     async def edit_message(
         self,

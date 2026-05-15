@@ -11,6 +11,7 @@ avoid retrying with a partial topic route that can render outside the lane.
 import sys
 import types
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -1061,3 +1062,79 @@ async def test_send_retries_retry_after_errors():
     assert result.success is True
     assert result.message_id == "300"
     assert attempt[0] == 2
+
+
+@pytest.mark.asyncio
+async def test_create_visible_thread_returns_topic_routing_metadata():
+    """Visible sessions need a Bot API-created topic plus Hermes target handle."""
+    adapter = _make_adapter()
+    adapter._bot = SimpleNamespace(
+        create_forum_topic=AsyncMock(return_value=SimpleNamespace(message_thread_id=14))
+    )
+
+    result = await adapter.create_visible_thread(
+        parent_chat_id="-1003933169427",
+        name="  PR Review\nSafe Gateway Restart  ",
+    )
+
+    assert result == {
+        "platform": "telegram",
+        "chat_id": "-1003933169427",
+        "thread_id": "14",
+        "topic_name": "PR Review Safe Gateway Restart",
+        "target": "telegram:-1003933169427:14",
+    }
+    adapter._bot.create_forum_topic.assert_awaited_once_with(
+        chat_id=-1003933169427,
+        name="PR Review Safe Gateway Restart",
+    )
+
+
+@pytest.mark.asyncio
+async def test_create_visible_thread_reports_manage_topics_permission_error():
+    """Generic admin is not enough; Telegram requires Manage Topics."""
+    adapter = _make_adapter()
+    adapter._bot = SimpleNamespace(
+        create_forum_topic=AsyncMock(
+            side_effect=FakeBadRequest("Bad Request: not enough rights to create a topic")
+        )
+    )
+
+    with pytest.raises(RuntimeError, match="Manage Topics"):
+        await adapter.create_visible_thread(
+            parent_chat_id="-1003933169427",
+            name="Visible Delegate",
+        )
+
+
+@pytest.mark.asyncio
+async def test_create_visible_thread_preflights_manage_topics_permission():
+    """When available, permission preflight should fail before topic creation."""
+    adapter = _make_adapter()
+    adapter._bot = SimpleNamespace(
+        get_me=AsyncMock(return_value=SimpleNamespace(id=999)),
+        get_chat_member=AsyncMock(return_value=SimpleNamespace(can_manage_topics=False)),
+        create_forum_topic=AsyncMock(return_value=SimpleNamespace(message_thread_id=14)),
+    )
+
+    with pytest.raises(RuntimeError, match="Manage Topics"):
+        await adapter.create_visible_thread(
+            parent_chat_id="-1003933169427",
+            name="Visible Delegate",
+        )
+
+    adapter._bot.get_chat_member.assert_awaited_once_with(chat_id=-1003933169427, user_id=999)
+    adapter._bot.create_forum_topic.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_create_handoff_thread_keeps_legacy_thread_id_contract():
+    """Existing handoff callers should still receive only a thread id string."""
+    adapter = _make_adapter()
+    adapter._bot = SimpleNamespace(
+        create_forum_topic=AsyncMock(return_value=SimpleNamespace(message_thread_id=15))
+    )
+
+    result = await adapter.create_handoff_thread("-1003933169427", "Visible Delegate")
+
+    assert result == "15"

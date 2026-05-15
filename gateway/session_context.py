@@ -154,3 +154,31 @@ def get_session_env(name: str, default: str = "") -> str:
             return value
     # Fall back to os.environ for CLI, cron, and test compatibility
     return os.getenv(name, default)
+
+
+def get_trusted_session_context() -> dict[str, str] | None:
+    """Return gateway message context sourced only from task-local contextvars.
+
+    Deliberately avoids ``os.environ`` fallback for security-sensitive
+    authorization checks.
+    """
+
+    platform = _SESSION_PLATFORM.get()
+    chat_id = _SESSION_CHAT_ID.get()
+    thread_id = _SESSION_THREAD_ID.get()
+    user_id = _SESSION_USER_ID.get()
+    user_name = _SESSION_USER_NAME.get()
+    session_key = _SESSION_KEY.get()
+
+    required = (platform, chat_id, session_key)
+    if any(value is _UNSET or str(value).strip() == "" for value in required):
+        return None
+
+    return {
+        "platform": str(platform),
+        "chat_id": str(chat_id),
+        "thread_id": str(thread_id) if thread_id is not _UNSET else "",
+        "user_id": str(user_id) if user_id is not _UNSET else "",
+        "user_name": str(user_name) if user_name is not _UNSET else "",
+        "session_key": str(session_key),
+    }
