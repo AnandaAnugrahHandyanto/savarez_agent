@@ -1839,7 +1839,9 @@ class TestAzureFoundryResolution:
 
         resolved = rp.resolve_runtime_provider(requested="azure-foundry")
 
-        assert resolved["api_key"] == "entra-token"
+        token_provider = resolved["api_key"]
+        assert callable(token_provider)
+        assert token_provider() == "entra-token"
         assert resolved["auth_type"] == "azure_entra"
         assert "https://cognitiveservices.azure.com" in captured["command"]
 
@@ -1861,7 +1863,9 @@ class TestAzureFoundryResolution:
 
         resolved = rp.resolve_runtime_provider(requested="azure-foundry")
 
-        assert resolved["api_key"] == "configured-token"
+        token_provider = resolved["api_key"]
+        assert callable(token_provider)
+        assert token_provider() == "configured-token"
         assert resolved["auth_type"] == "bearer"
         assert captured["command"] == "az account get-access-token --query accessToken -o tsv"
 
@@ -1873,12 +1877,44 @@ class TestAzureFoundryResolution:
         cfg = self._make_cfg("https://my-resource.openai.azure.com/openai/v1")
         cfg["auth_type"] = "bearer"
         monkeypatch.setattr(rp, "_get_model_config", lambda: cfg)
-        monkeypatch.setattr(rp, "_run_azure_foundry_token_command", lambda command: (_ for _ in ()).throw(AssertionError("should not run token command")))
+        monkeypatch.setattr(
+            rp,
+            "_run_azure_foundry_token_command",
+            lambda command: (_ for _ in ()).throw(AssertionError("should not run token command")),
+        )
 
         resolved = rp.resolve_runtime_provider(requested="azure-foundry")
 
         assert resolved["api_key"] == "env-bearer-token"
         assert resolved["auth_type"] == "bearer"
+
+    def test_azure_foundry_token_command_provider_refreshes_after_ttl(self, monkeypatch):
+        calls = []
+
+        def fake_run(command):
+            calls.append(command)
+            return f"token-{len(calls)}"
+
+        monkeypatch.setattr(rp, "_run_azure_foundry_token_command", fake_run)
+        provider = rp._AzureFoundryTokenProvider("az token", ttl_seconds=0)
+
+        assert provider() == "token-1"
+        assert provider() == "token-2"
+        assert calls == ["az token", "az token"]
+
+    def test_azure_foundry_token_command_provider_caches_within_ttl(self, monkeypatch):
+        calls = []
+
+        def fake_run(command):
+            calls.append(command)
+            return f"token-{len(calls)}"
+
+        monkeypatch.setattr(rp, "_run_azure_foundry_token_command", fake_run)
+        provider = rp._AzureFoundryTokenProvider("az token", ttl_seconds=3000)
+
+        assert provider() == "token-1"
+        assert provider() == "token-1"
+        assert calls == ["az token"]
 
     def test_azure_foundry_missing_api_key_raises(self, monkeypatch):
         monkeypatch.delenv("AZURE_FOUNDRY_API_KEY", raising=False)

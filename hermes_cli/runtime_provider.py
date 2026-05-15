@@ -7,7 +7,9 @@ import os
 import re
 import shlex
 import subprocess
-from typing import Any, Dict, Optional
+import threading
+import time
+from typing import Any, Callable, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -760,7 +762,47 @@ def _run_azure_foundry_token_command(command: str) -> str:
     return (result.stdout or "").strip()
 
 
-def _resolve_azure_foundry_bearer_token(model_cfg: Dict[str, Any]) -> str:
+_AZURE_FOUNDRY_DEFAULT_TOKEN_COMMAND = (
+    "az account get-access-token --resource https://cognitiveservices.azure.com "
+    "--query accessToken -o tsv"
+)
+_AZURE_FOUNDRY_TOKEN_TTL_SECONDS = 50 * 60
+
+
+class _AzureFoundryTokenProvider:
+    """Callable OpenAI SDK api_key provider for short-lived Entra tokens.
+
+    Azure CLI access tokens commonly expire after one hour.  The OpenAI SDK
+    accepts ``api_key`` as a callable, so keep command-backed bearer auth
+    refreshable instead of snapshotting the token at Hermes startup.  A small
+    TTL cache avoids shelling out for every request while still refreshing well
+    before the usual 60-minute expiry.
+    """
+
+    def __init__(self, command: str, *, ttl_seconds: int = _AZURE_FOUNDRY_TOKEN_TTL_SECONDS):
+        self.command = command
+        self.ttl_seconds = ttl_seconds
+        self._token = ""
+        self._expires_at = 0.0
+        self._lock = threading.Lock()
+
+    def __call__(self) -> str:
+        now = time.monotonic()
+        if self._token and now < self._expires_at:
+            return self._token
+        with self._lock:
+            now = time.monotonic()
+            if self._token and now < self._expires_at:
+                return self._token
+            token = _run_azure_foundry_token_command(self.command)
+            if not token:
+                raise AuthError("Azure Foundry token_command returned an empty bearer token.")
+            self._token = token
+            self._expires_at = now + max(int(self.ttl_seconds), 0)
+            return token
+
+
+def _resolve_azure_foundry_bearer_token(model_cfg: Dict[str, Any]) -> str | Callable[[], str]:
     """Resolve Microsoft Entra/Bearer token auth for Azure Foundry."""
     configured_token = str(
         model_cfg.get("bearer_token")
@@ -772,16 +814,8 @@ def _resolve_azure_foundry_bearer_token(model_cfg: Dict[str, Any]) -> str:
     env_token = os.getenv("AZURE_FOUNDRY_BEARER_TOKEN", "").strip()
     if env_token:
         return env_token
-    token_command = str(model_cfg.get("token_command") or "").strip()
-    if not token_command:
-        token_command = (
-            "az account get-access-token --resource https://cognitiveservices.azure.com "
-            "--query accessToken -o tsv"
-        )
-    token = _run_azure_foundry_token_command(token_command)
-    if not token:
-        raise AuthError("Azure Foundry token_command returned an empty bearer token.")
-    return token
+    token_command = str(model_cfg.get("token_command") or "").strip() or _AZURE_FOUNDRY_DEFAULT_TOKEN_COMMAND
+    return _AzureFoundryTokenProvider(token_command)
 
 
 def _resolve_azure_foundry_runtime(
