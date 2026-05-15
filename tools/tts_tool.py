@@ -54,6 +54,7 @@ from typing import Callable, Dict, Any, Optional
 from urllib.parse import urljoin
 
 from hermes_constants import display_hermes_home
+from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
 def get_env_value(name, default=None):
@@ -417,6 +418,146 @@ def _resolve_command_provider_config(
     if _is_command_provider_config(config):
         return config
     return None
+
+
+def _detect_tts_language(text: str) -> Optional[str]:
+    """Detect a broad language family from Unicode script distribution."""
+    counts: Dict[str, int] = {}
+    for ch in text:
+        cp = ord(ch)
+        lang: Optional[str] = None
+        if 0x0400 <= cp <= 0x052F or 0x2DE0 <= cp <= 0x2DFF or 0xA640 <= cp <= 0xA69F:
+            lang = "ru"
+        elif 0x3040 <= cp <= 0x30FF or 0x31F0 <= cp <= 0x31FF:
+            lang = "ja"
+        elif 0xAC00 <= cp <= 0xD7AF or 0x1100 <= cp <= 0x11FF:
+            lang = "ko"
+        elif (
+            0x4E00 <= cp <= 0x9FFF
+            or 0x3400 <= cp <= 0x4DBF
+            or 0x20000 <= cp <= 0x2A6DF
+            or 0x2A700 <= cp <= 0x2B73F
+            or 0x2B740 <= cp <= 0x2B81F
+            or 0x2B820 <= cp <= 0x2CEAF
+        ):
+            lang = "zh"
+        elif 0x0600 <= cp <= 0x06FF or 0x0750 <= cp <= 0x077F or 0x08A0 <= cp <= 0x08FF:
+            lang = "ar"
+        elif 0x0590 <= cp <= 0x05FF:
+            lang = "he"
+        elif 0x0900 <= cp <= 0x097F:
+            lang = "hi"
+        elif 0x0E00 <= cp <= 0x0E7F:
+            lang = "th"
+        elif 0x0370 <= cp <= 0x03FF:
+            lang = "el"
+        elif (
+            0x0041 <= cp <= 0x005A
+            or 0x0061 <= cp <= 0x007A
+            or 0x00C0 <= cp <= 0x024F
+        ):
+            lang = "en"
+        if lang:
+            counts[lang] = counts.get(lang, 0) + 1
+    if not counts:
+        return None
+    winner, winner_count = max(counts.items(), key=lambda item: item[1])
+    if sum(1 for value in counts.values() if value == winner_count) > 1:
+        return None
+    return winner
+
+
+_TTS_VOICE_CONFIG_KEYS = {
+    "edge": "voice",
+    "openai": "voice",
+    "gemini": "voice",
+    "kittentts": "voice",
+    "piper": "voice",
+    "elevenlabs": "voice_id",
+    "minimax": "voice_id",
+    "mistral": "voice_id",
+    "xai": "voice_id",
+}
+
+
+def _get_auto_lang_voice_map(
+    tts_config: Dict[str, Any],
+    provider: str,
+) -> Dict[str, Any]:
+    """Return provider-specific auto-lang voices, falling back to tts.voices."""
+    provider_section: Dict[str, Any]
+    if provider.lower() in BUILTIN_TTS_PROVIDERS:
+        provider_section = _get_provider_section(tts_config, provider.lower())
+    else:
+        provider_section = _get_named_provider_config(tts_config, provider.lower())
+
+    provider_voices = provider_section.get("voices")
+    if isinstance(provider_voices, dict):
+        return provider_voices
+    voices = tts_config.get("voices")
+    return voices if isinstance(voices, dict) else {}
+
+
+def _select_auto_lang_voice(
+    text: str,
+    provider: str,
+    tts_config: Dict[str, Any],
+) -> tuple[Optional[str], Optional[str]]:
+    """Return ``(language, voice)`` for tts.auto_lang, or ``(None, None)``."""
+    if not is_truthy_value(tts_config.get("auto_lang"), default=False):
+        return None, None
+    voices = _get_auto_lang_voice_map(tts_config, provider)
+    if not voices:
+        return None, None
+    detected = _detect_tts_language(text)
+    raw_voice = voices.get(detected) if detected else None
+    if raw_voice is None:
+        raw_voice = voices.get("fallback") or voices.get("default")
+    if raw_voice is None:
+        return detected, None
+    voice = str(raw_voice).strip()
+    if not voice:
+        return detected, None
+    return detected or "fallback", voice
+
+
+def _with_auto_lang_voice(
+    tts_config: Dict[str, Any],
+    provider: str,
+    text: str,
+) -> Dict[str, Any]:
+    """Return config with the auto-lang voice applied when configured."""
+    language, voice = _select_auto_lang_voice(text, provider, tts_config)
+    if not voice:
+        return tts_config
+
+    key = _TTS_VOICE_CONFIG_KEYS.get(provider.lower(), "voice")
+    updated = dict(tts_config)
+
+    if provider.lower() in BUILTIN_TTS_PROVIDERS:
+        section = dict(_get_provider_section(updated, provider.lower()))
+        section[key] = voice
+        if provider.lower() == "xai" and language not in {None, "fallback"}:
+            section["language"] = language
+        updated[provider.lower()] = section
+    else:
+        providers = updated.get("providers")
+        if isinstance(providers, dict):
+            providers_copy = dict(providers)
+            for name, config in providers.items():
+                if isinstance(name, str) and name.lower() == provider.lower() and isinstance(config, dict):
+                    config_copy = dict(config)
+                    config_copy["voice"] = voice
+                    providers_copy[name] = config_copy
+                    updated["providers"] = providers_copy
+                    logger.info("TTS auto_lang selected %s voice for %s", language, provider)
+                    return updated
+        section = dict(_get_provider_section(updated, provider))
+        section["voice"] = voice
+        updated[provider] = section
+
+    logger.info("TTS auto_lang selected %s voice for %s", language, provider)
+    return updated
 
 
 def _iter_command_providers(tts_config: Dict[str, Any]):
@@ -1645,6 +1786,7 @@ def text_to_speech_tool(
 
     tts_config = _load_tts_config()
     provider = _get_provider(tts_config)
+    tts_config = _with_auto_lang_voice(tts_config, provider, text)
 
     # User-declared command provider (type: command under tts.providers.<name>)
     # resolves BEFORE the built-in dispatch. Built-in names short-circuit here
