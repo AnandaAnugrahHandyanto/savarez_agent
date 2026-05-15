@@ -1095,6 +1095,25 @@ def _qwen_portal_headers() -> dict:
     }
 
 
+def _deep_merge_extra_body(base: Dict[str, Any], overlay: Dict[str, Any]) -> Dict[str, Any]:
+    """Merge ``overlay`` on top of ``base`` one level deep.
+
+    OpenRouter-style nested keys like ``extra_body["provider"]`` need a nested
+    merge so a fallback chain entry setting ``provider.order`` /
+    ``allow_fallbacks`` does not clobber an existing
+    ``provider.require_parameters`` baked into ``request_overrides`` by the
+    primary configuration. Non-dict values follow shallow merge (overlay wins).
+    """
+    merged = dict(base)
+    for key, overlay_value in overlay.items():
+        existing = merged.get(key)
+        if isinstance(existing, dict) and isinstance(overlay_value, dict):
+            merged[key] = {**existing, **overlay_value}
+        else:
+            merged[key] = overlay_value
+    return merged
+
+
 class AIAgent:
     """
     AI Agent with tool calling capabilities.
@@ -1107,6 +1126,17 @@ class AIAgent:
         "[hermes-agent: tool call arguments were corrupted in this session and "
         "have been dropped to keep the conversation alive. See issue #15236.]"
     )
+
+    @staticmethod
+    def _snapshot_request_overrides(value: Any) -> Dict[str, Any]:
+        """Shallow-copy ``value`` for use as a ``request_overrides`` snapshot.
+
+        Non-dict values normalize to ``{}`` so the snapshot is always safe to
+        restore back into ``self.request_overrides`` without TypeError. Used
+        in ``__init__``, ``switch_model``, and ``_try_activate_fallback`` to
+        keep the three snapshot sites in lockstep.
+        """
+        return dict(value) if isinstance(value, dict) else {}
 
     @property
     def base_url(self) -> str:
@@ -2485,10 +2515,8 @@ class AIAgent:
             # Snapshot request_overrides so fallback-entry-specific
             # extra_body forwarded by _try_activate_fallback() is cleared
             # when the primary route is restored next turn (#26460).
-            "request_overrides": (
-                dict(getattr(self, "request_overrides", None) or {})
-                if isinstance(getattr(self, "request_overrides", None), dict)
-                else {}
+            "request_overrides": self._snapshot_request_overrides(
+                getattr(self, "request_overrides", None)
             ),
             # Context engine state that _try_activate_fallback() overwrites.
             # Use getattr for model/base_url/api_key/provider since plugin
@@ -2773,10 +2801,8 @@ class AIAgent:
             "client_kwargs": dict(self._client_kwargs),
             "use_prompt_caching": self._use_prompt_caching,
             "use_native_cache_layout": self._use_native_cache_layout,
-            "request_overrides": (
-                dict(getattr(self, "request_overrides", None) or {})
-                if isinstance(getattr(self, "request_overrides", None), dict)
-                else {}
+            "request_overrides": self._snapshot_request_overrides(
+                getattr(self, "request_overrides", None)
             ),
             "compressor_model": getattr(_cc, "model", self.model) if _cc else self.model,
             "compressor_base_url": getattr(_cc, "base_url", self.base_url) if _cc else self.base_url,
@@ -8857,15 +8883,17 @@ class AIAgent:
             # when the primary route comes back. See #26460.
             fb_extra_body = fb.get("extra_body")
             if isinstance(fb_extra_body, dict) and fb_extra_body:
-                _existing_overrides = getattr(self, "request_overrides", None)
-                base_overrides = (
-                    dict(_existing_overrides)
-                    if isinstance(_existing_overrides, dict)
-                    else {}
+                base_overrides = self._snapshot_request_overrides(
+                    getattr(self, "request_overrides", None)
                 )
                 existing_eb = base_overrides.get("extra_body")
+                # Deep-merge one level so a fallback entry's nested keys
+                # (e.g. ``provider.order``) don't clobber unrelated nested
+                # keys baked into the primary override (e.g.
+                # ``provider.require_parameters``). Fallback wins on leaf
+                # collision, primary wins on absent leaves.
                 merged_eb = (
-                    {**existing_eb, **fb_extra_body}
+                    _deep_merge_extra_body(existing_eb, fb_extra_body)
                     if isinstance(existing_eb, dict)
                     else dict(fb_extra_body)
                 )
@@ -8998,9 +9026,14 @@ class AIAgent:
             self._use_prompt_caching = rt["use_prompt_caching"]
             # Drop any fallback-entry-specific request_overrides that
             # _try_activate_fallback() merged in (e.g. OpenRouter
-            # extra_body.provider routing). Snapshot may be absent on
-            # older sessions saved before #26460.
-            self.request_overrides = dict(rt.get("request_overrides", {}))
+            # extra_body.provider routing). Older sessions saved before
+            # #26460 won't have the snapshot key — leave the current
+            # request_overrides untouched in that case so any overrides
+            # set after snapshot capture are preserved.
+            if "request_overrides" in rt:
+                self.request_overrides = self._snapshot_request_overrides(
+                    rt["request_overrides"]
+                )
             # Default to native layout when the restored snapshot predates the
             # native-vs-proxy split (older sessions saved before this PR).
             self._use_native_cache_layout = rt.get(

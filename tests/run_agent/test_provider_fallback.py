@@ -422,6 +422,46 @@ class TestFallbackEntryExtraBodyForwarded:
         assert self._activate(agent) is True
         assert "extra_body" not in agent.request_overrides
 
+    def test_empty_extra_body_dict_does_not_inject_key(self):
+        """An explicit ``"extra_body": {}`` on a chain entry must behave the
+        same as an absent key — no override injected. Guards against a
+        regression if the ``and fb_extra_body`` truthiness check is later
+        removed."""
+        fbs = [{
+            "provider": "openrouter",
+            "model": "z-ai/glm-5.1",
+            "extra_body": {},  # explicit empty
+        }]
+        agent = _make_agent(fallback_model=fbs)
+        agent.request_overrides = {}
+
+        assert self._activate(agent) is True
+        assert "extra_body" not in agent.request_overrides
+
+    def test_fallback_extra_body_deep_merges_nested_provider_dict(self):
+        """When primary request_overrides already carry ``extra_body.provider``
+        (e.g. OpenRouter ``require_parameters: true`` baked in by config),
+        the fallback's ``provider.order`` / ``allow_fallbacks`` must merge
+        into that nested dict instead of replacing it wholesale."""
+        fbs = [{
+            "provider": "openrouter",
+            "model": "z-ai/glm-5.1",
+            "extra_body": {"provider": {"order": ["baidu/fp8"], "allow_fallbacks": False}},
+        }]
+        agent = _make_agent(fallback_model=fbs)
+        agent.request_overrides = {
+            "extra_body": {"provider": {"require_parameters": True, "data_collection": "deny"}}
+        }
+
+        assert self._activate(agent) is True
+        eb = agent.request_overrides["extra_body"]
+        # Pre-existing nested keys preserved.
+        assert eb["provider"]["require_parameters"] is True
+        assert eb["provider"]["data_collection"] == "deny"
+        # Fallback-entry nested keys merged in (fallback wins on collisions).
+        assert eb["provider"]["order"] == ["baidu/fp8"]
+        assert eb["provider"]["allow_fallbacks"] is False
+
     def test_restore_primary_runtime_clears_fallback_extra_body(self):
         fbs = [{
             "provider": "openrouter",
@@ -450,3 +490,26 @@ class TestFallbackEntryExtraBodyForwarded:
         agent = _make_agent(fallback_model=None)
         assert "request_overrides" in agent._primary_runtime
         assert isinstance(agent._primary_runtime["request_overrides"], dict)
+
+    def test_restore_from_older_snapshot_preserves_current_overrides(self):
+        """Older sessions persisted ``_primary_runtime`` without the
+        ``request_overrides`` field. On restore, code paths that need to
+        operate on those sessions must NOT overwrite the current
+        ``self.request_overrides`` with ``{}`` — that would silently drop
+        user-set overrides applied after the snapshot was taken."""
+        fbs = [{"provider": "openrouter", "model": "z-ai/glm-5.1"}]
+        agent = _make_agent(fallback_model=fbs)
+        assert self._activate(agent) is True
+        # Simulate an older session whose snapshot predates #26460 by
+        # dropping the request_overrides key after activation.
+        agent._primary_runtime.pop("request_overrides", None)
+        # User set an override AFTER the (older) snapshot was taken.
+        agent.request_overrides = {"extra_body": {"user_field": "preserved"}}
+
+        with patch.object(
+            agent, "_create_openai_client", return_value=MagicMock(),
+        ):
+            assert agent._restore_primary_runtime() is True
+
+        # Override survives the restore — older snapshot didn't carry the key.
+        assert agent.request_overrides == {"extra_body": {"user_field": "preserved"}}
