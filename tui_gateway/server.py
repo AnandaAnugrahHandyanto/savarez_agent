@@ -1363,13 +1363,9 @@ def _probe_config_health(cfg: dict) -> str:
 
 
 def _session_info(agent) -> dict:
-    reasoning_config = getattr(agent, "reasoning_config", None)
-    reasoning_effort = ""
-    if (
-        isinstance(reasoning_config, dict)
-        and reasoning_config.get("enabled") is not False
-    ):
-        reasoning_effort = str(reasoning_config.get("effort", "") or "")
+    from hermes_constants import reasoning_effort_label
+
+    reasoning_effort = reasoning_effort_label(getattr(agent, "reasoning_config", None))
     service_tier = getattr(agent, "service_tier", None) or ""
     info: dict = {
         "model": getattr(agent, "model", ""),
@@ -2130,12 +2126,20 @@ def _(rid, params: dict) -> dict:
     build_timer.daemon = True
     build_timer.start()
 
+    from hermes_constants import reasoning_effort_label
+
+    service_tier = _load_service_tier() or ""
+    reasoning_effort = reasoning_effort_label(_load_reasoning_config())
+
     return _ok(
         rid,
         {
             "session_id": sid,
             "info": {
                 "model": _resolve_model(),
+                "reasoning_effort": reasoning_effort,
+                "service_tier": service_tier,
+                "fast": service_tier == "priority",
                 "tools": {},
                 "skills": {},
                 "cwd": os.getenv("TERMINAL_CWD", os.getcwd()),
@@ -3822,8 +3826,14 @@ def _(rid, params: dict) -> dict:
             if parsed is None:
                 return _err(rid, 4002, f"unknown reasoning value: {value}")
             _write_config_key("agent.reasoning_effort", arg)
-            if session and session.get("agent") is not None:
-                session["agent"].reasoning_config = parsed
+            agent = session.get("agent") if session else None
+            if agent is not None:
+                agent.reasoning_config = parsed
+                _emit(
+                    "session.info",
+                    params.get("session_id", ""),
+                    _session_info(agent),
+                )
             return _ok(rid, {"key": key, "value": arg})
         except Exception as e:
             return _err(rid, 5001, str(e))

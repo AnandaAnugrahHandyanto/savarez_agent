@@ -730,6 +730,62 @@ def _session(agent=None, **extra):
     }
 
 
+def test_session_info_uses_compact_reasoning_effort_label(monkeypatch):
+    monkeypatch.setattr(server, "_get_usage", lambda _agent: {})
+    with patch("hermes_cli.banner.get_available_skills", return_value={}), \
+         patch("hermes_cli.banner.get_update_result", return_value=None), \
+         patch("tools.mcp_tool.get_mcp_status", return_value=[]):
+        agent = types.SimpleNamespace(
+            model="openai/gpt-5.5",
+            reasoning_config={"enabled": True, "effort": "high"},
+            service_tier="",
+            tools=[],
+        )
+        assert server._session_info(agent)["reasoning_effort"] == "high"
+
+        agent.reasoning_config = {"enabled": True, "effort": "medium"}
+        assert server._session_info(agent)["reasoning_effort"] == ""
+
+        agent.reasoning_config = {"enabled": False}
+        assert server._session_info(agent)["reasoning_effort"] == "none"
+
+        agent.reasoning_config = {"enabled": True, "effort": "turbo"}
+        assert server._session_info(agent)["reasoning_effort"] == ""
+
+
+def test_session_create_initial_info_includes_reasoning_and_fast(monkeypatch):
+    class _FakeTimer:
+        daemon = False
+
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def start(self):
+            return None
+
+    monkeypatch.setattr(server.threading, "Timer", _FakeTimer)
+    monkeypatch.setattr(server, "_new_session_key", lambda: "session-key")
+    monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: None)
+    monkeypatch.setattr(server, "_resolve_model", lambda: "openai/gpt-5.5")
+    monkeypatch.setattr(server, "_load_reasoning_config", lambda: {"enabled": True, "effort": "high"})
+    monkeypatch.setattr(server, "_load_service_tier", lambda: "priority")
+
+    resp = server.handle_request(
+        {"id": "1", "method": "session.create", "params": {"cols": 100}}
+    )
+
+    sid = resp["result"]["session_id"]
+    try:
+        info = resp["result"]["info"]
+        assert info["model"] == "openai/gpt-5.5"
+        assert info["reasoning_effort"] == "high"
+        assert info["service_tier"] == "priority"
+        assert info["fast"] is True
+        assert info["lazy"] is True
+    finally:
+        server._sessions.pop(sid, None)
+
+
 def test_session_close_commits_memory_and_fires_finalize_hook(monkeypatch):
     calls = {"hooks": []}
 
@@ -1559,8 +1615,15 @@ def test_complete_slash_details_args():
 
 def test_config_set_reasoning_updates_live_session_and_agent(tmp_path, monkeypatch):
     monkeypatch.setattr(server, "_hermes_home", tmp_path)
+    emits = []
     agent = types.SimpleNamespace(reasoning_config=None)
     server._sessions["sid"] = _session(agent=agent)
+    monkeypatch.setattr(
+        server,
+        "_session_info",
+        lambda _agent: {"model": "x", "reasoning_effort": "low"},
+    )
+    monkeypatch.setattr(server, "_emit", lambda *args: emits.append(args))
 
     resp_effort = server.handle_request(
         {
@@ -1571,7 +1634,9 @@ def test_config_set_reasoning_updates_live_session_and_agent(tmp_path, monkeypat
     )
     assert resp_effort["result"]["value"] == "low"
     assert agent.reasoning_config == {"enabled": True, "effort": "low"}
+    assert ("session.info", "sid", {"model": "x", "reasoning_effort": "low"}) in emits
 
+    emits.clear()
     resp_show = server.handle_request(
         {
             "id": "2",
@@ -1582,6 +1647,7 @@ def test_config_set_reasoning_updates_live_session_and_agent(tmp_path, monkeypat
     assert resp_show["result"]["value"] == "show"
     assert server._sessions["sid"]["show_reasoning"] is True
     assert server._load_cfg()["display"]["sections"]["thinking"] == "expanded"
+    assert emits == []
 
     resp_hide = server.handle_request(
         {
@@ -1593,6 +1659,7 @@ def test_config_set_reasoning_updates_live_session_and_agent(tmp_path, monkeypat
     assert resp_hide["result"]["value"] == "hide"
     assert server._sessions["sid"]["show_reasoning"] is False
     assert server._load_cfg()["display"]["sections"]["thinking"] == "hidden"
+    assert emits == []
 
 
 def test_config_set_verbose_updates_session_mode_and_agent(tmp_path, monkeypatch):
