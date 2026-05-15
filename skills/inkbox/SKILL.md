@@ -543,8 +543,10 @@ mailbox   = inkbox.mailboxes.get("abc@inkboxmail.com")
 inkbox.mailboxes.update(mailbox.email_address, webhook_url="https://example.com/hook")
 inkbox.mailboxes.update(mailbox.email_address, webhook_url=None)   # remove webhook
 
-# `display_name` lives on the identity now — passing it to mailboxes.update
-# returns 422 with a hint. Use identity.update(display_name=...) instead.
+# `display_name` lives on the identity now — the SDK no longer accepts it
+# as a kwarg here (would TypeError before the request) and the underlying
+# PATCH endpoint 422s with a redirect hint. Use identity.update(display_name=...)
+# instead.
 
 # Switch contact-rule filter mode (admin-only — agent-scoped keys get 403)
 updated = inkbox.mailboxes.update(mailbox.email_address, filter_mode="whitelist")
@@ -575,7 +577,7 @@ inkbox.tunnels.update("tunnel-uuid", metadata={"env": "prod"})
 signed = inkbox.tunnels.sign_csr("tunnel-uuid", csr_pem=csr_pem_string)  # PEM as str
 ```
 
-To open the data plane from your own code use `inkbox.tunnels.connect(...)` (or `inkbox.tunnels.client.connect`); auth is the SDK client's API key sent as `x-api-key`. No per-tunnel connect secret to mint or rotate. The key must be admin-scoped in the tunnel's org, or agent-scoped to the tunnel's owning identity.
+To open the data plane from your own code use `inkbox.tunnels.connect(...)` (the resource method forwards to `from inkbox.tunnels.client import connect`); auth is the SDK client's API key sent as `x-api-key`. No per-tunnel connect secret to mint or rotate. The key must be admin-scoped in the tunnel's org, or agent-scoped to the tunnel's owning identity.
 
 ### API Keys (`inkbox.api_keys`)
 
@@ -714,7 +716,7 @@ existing = None
 for kwargs in ({"email": email}, {"phone": phone}):
     try:
         match = inkbox.contacts.lookup(**kwargs)
-        existing = match[0] if isinstance(match, list) and match else match
+        existing = match[0] if match else None  # lookup always returns list[Contact]
         if existing:
             break
     except Exception:
