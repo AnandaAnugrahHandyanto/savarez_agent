@@ -82,6 +82,7 @@ Creates a new profile.
 | `--clone` | Copy `config.yaml`, `.env`, and `SOUL.md` from the current profile. |
 | `--clone-all` | Copy everything (config, memories, skills, sessions, state) from the current profile. |
 | `--clone-from <profile>` | Clone from a specific profile instead of the current one. Used with `--clone` or `--clone-all`. |
+| `--no-skills` | Create a fresh profile without seeding bundled skills. Writes `.no-bundled-skills`, so future `hermes update` bundled-skill syncs skip the profile until the marker is deleted. Mutually exclusive with `--clone` and `--clone-all`. |
 | `--no-alias` | Skip wrapper script creation. |
 
 Creating a profile does **not** make that profile directory the default project/workspace directory for terminal commands. If you want a profile to start in a specific project, set `terminal.cwd` in that profile's `config.yaml`.
@@ -91,6 +92,9 @@ Creating a profile does **not** make that profile directory the default project/
 ```bash
 # Blank profile — needs full setup
 hermes profile create mybot
+
+# Blank profile without bundled skills
+hermes profile create minimal --no-skills
 
 # Clone config only from current profile
 hermes profile create work --clone

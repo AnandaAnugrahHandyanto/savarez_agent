@@ -190,7 +190,7 @@ hermes webhook test NAME    Send a test POST
 
 ```
 hermes profile list         List all profiles
-hermes profile create NAME  Create (--clone, --clone-all, --clone-from)
+hermes profile create NAME  Create (--clone, --clone-all, --clone-from, --no-skills)
 hermes profile use NAME     Set sticky default
 hermes profile delete NAME  Delete a profile
 hermes profile show NAME    Show details
@@ -199,6 +199,8 @@ hermes profile rename A B   Rename a profile
 hermes profile export NAME  Export to tar.gz
 hermes profile import FILE  Import from archive
 ```
+
+`hermes profile create NAME --no-skills` creates a fresh profile without bundled skills and writes `.no-bundled-skills`; future `hermes update` bundled-skill sync skips that profile until the marker is deleted. Do not combine it with `--clone` or `--clone-all`.
 
 ### Credential Pools
 

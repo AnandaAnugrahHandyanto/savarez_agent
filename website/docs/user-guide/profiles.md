@@ -32,6 +32,16 @@ hermes profile create mybot
 
 Creates a fresh profile with bundled skills seeded. Run `mybot setup` to configure API keys, model, and gateway tokens.
 
+### Blank profile without bundled skills (`--no-skills`)
+
+```bash
+hermes profile create minimal --no-skills
+```
+
+Creates a fresh profile without seeding bundled skills and writes a `.no-bundled-skills` marker in the profile root. Future `hermes update` bundled-skill syncs skip that profile until you delete the marker. Use this for minimal or sandbox profiles where you want to install only selected skills manually.
+
+`--no-skills` cannot be combined with `--clone` or `--clone-all`, because clone modes explicitly copy skills or profile state from the source profile.
+
 ### Clone config only (`--clone`)
 
 ```bash
@@ -194,6 +204,8 @@ hermes update
 ```
 
 User-modified skills are never overwritten.
+
+Profiles created with `--no-skills` are skipped during bundled-skill sync. Delete the profile's `.no-bundled-skills` marker to opt back in.
 
 ## Managing profiles
 

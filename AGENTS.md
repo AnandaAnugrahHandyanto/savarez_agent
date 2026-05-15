@@ -942,6 +942,11 @@ automatically scope to the active profile.
    This is intentional — it lets `hermes -p coder profile list` see all profiles regardless
    of which one is active.
 
+7. **`hermes profile create NAME --no-skills` opts out of bundled-skill seeding** - it writes
+   `.no-bundled-skills` in the profile root. Future `hermes update` bundled-skill syncs skip
+   that profile until the marker is deleted. It is mutually exclusive with `--clone` and
+   `--clone-all`.
+
 ## Known Pitfalls
 
 ### DO NOT hardcode `~/.hermes` paths
