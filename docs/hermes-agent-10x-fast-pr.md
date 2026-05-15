@@ -209,6 +209,26 @@ Generated visuals for README/PR:
 
 ![Generated parallel runtime](assets/10x-fast/generated/parallel-runtime.png)
 
+### Phase 4 - Message And Delegation Runtime Tightening
+
+21. Reused one delegation config snapshot per `delegate_task` call.
+    The parent call now precomputes max spawn depth, orchestrator enablement,
+    MCP inheritance, child timeout, subagent approval callback, and reasoning
+    config once, then passes those values into child build/run paths. The
+    no-arg helper wrappers remain for compatibility and direct tests.
+
+22. Added phase timings to `delegate_task` results.
+    The returned JSON now includes `phase_timings` for config, credentials,
+    child build, child run, and aggregation. The runtime benchmark records
+    `config_loads=1` for the mocked batch scheduler.
+
+23. Reduced repeated work in the parallel tool-call guard.
+    Read-only `read_file` batches now use a normalized exact-path fast path,
+    and parsed guard arguments are cached on the tool call object so the
+    concurrent executor does not parse the same JSON again.
+
+![Delegate task and parallel guard comparison](assets/10x-fast/phase-7-delegate-parallel-guard.svg)
+
 ## Latest Local Benchmark
 
 Command:
@@ -246,14 +266,14 @@ Results after Phase 3:
 
 | Case | Median | Notes |
 | --- | ---: | --- |
-| `agent_init_file_terminal` | 4.9729s | 10.34x faster than preflight baseline 51.4181s |
-| `agent_init_default_tools` | 5.0176s | 9.10x faster than preflight baseline 45.6670s |
-| `delegate_child_build` | 4.9308s | 9.31x faster than preflight baseline 45.9254s |
-| `delegate_task_batch_scheduler` | 0.3977s | mocked 3-task scheduler; reveals fixed overhead still worth optimizing |
-| `parallel_tool_batch_sleep` | 0.0551s | 5.41x faster than sequential equivalent |
-| `tool_dispatch_noop` | 0.0983s | 0.0341ms per dispatch over 3000 calls |
-| `parallel_guard_read_files` | 6.9878s | 0.7465ms per 8-tool safety decision over 10000 checks |
-| `session_append_messages_batch` | 0.0187s | 18.37x faster than loop writes for 240 messages |
+| `agent_init_file_terminal` | 5.5563s | 9.25x faster than preflight baseline 51.4181s |
+| `agent_init_default_tools` | 5.2897s | 8.63x faster than preflight baseline 45.6670s |
+| `delegate_child_build` | 5.0907s | 9.02x faster than preflight baseline 45.9254s |
+| `delegate_task_batch_scheduler` | 0.3971s | mocked 3-task scheduler; `config_loads=1`; child run phase ~0.0535s |
+| `parallel_tool_batch_sleep` | 0.0590s | 5.14x faster than sequential equivalent |
+| `tool_dispatch_noop` | 0.0992s | 0.0308ms per dispatch over 3000 calls |
+| `parallel_guard_read_files` | 1.6403s | 0.1673ms per 8-tool safety decision; 4.26x lower median than the prior 6.9878s |
+| `session_append_messages_batch` | 0.0192s | 22.10x faster than loop writes for 240 messages |
 
 This is the first true 10x-class runtime win in the branch, but it is scoped:
 it applies to the dead local endpoint path that previously made agent and
@@ -274,10 +294,8 @@ blanket "every Hermes operation is 10x faster" claim.
 7. Add CI perf-budget smoke tests for the startup benchmark.
 8. Add a config/profile performance report similar to the DS4/US4 profile
    reports, but scoped to Hermes startup, toolsets, DB writes, and MCP reloads.
-9. Add phase timing to `delegate_task`: config, credentials, child build,
-   queue wait, run, aggregation.
-10. Reduce repeated delegation config loads per child.
-11. Measure and optimize `_save_session_log()` rewrite cost on very long
+9. Add queue-wait timing to `delegate_task` for saturated batches.
+10. Measure and optimize `_save_session_log()` rewrite cost on very long
     conversations.
 
 ## Verification
@@ -296,5 +314,8 @@ cd ui-tui; npm test -- useConfigSync.test.ts; npm run type-check
 python scripts\benchmark_startup_perf.py -n 5
 python -m py_compile agent\model_metadata.py scripts\benchmark_runtime_usage.py
 python -m pytest tests\agent\test_model_metadata_local_ctx.py -q
+python -m py_compile run_agent.py tools\delegate_tool.py scripts\benchmark_runtime_usage.py
+python -m pytest tests\tools\test_delegate.py tests\tools\test_delegate_subagent_timeout_diagnostic.py -q
+python -m pytest tests\run_agent\test_run_agent.py::TestConcurrentToolExecution tests\run_agent\test_run_agent.py::TestParallelScopePathNormalization -q
 python scripts\benchmark_runtime_usage.py -n 3
 ```

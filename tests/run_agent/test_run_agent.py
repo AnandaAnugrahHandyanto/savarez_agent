@@ -1848,6 +1848,28 @@ class TestConcurrentToolExecution:
                 mock_con.assert_called_once()
                 mock_seq.assert_not_called()
 
+    def test_concurrent_reuses_parallel_guard_parsed_args(self, agent):
+        """The guard should not force concurrent execution to parse args twice."""
+        from run_agent import _should_parallelize_tool_batch
+
+        tc1 = _mock_tool_call(name="read_file", arguments='{"path":"a.py"}', call_id="c1")
+        tc2 = _mock_tool_call(name="read_file", arguments='{"path":"b.py"}', call_id="c2")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc1, tc2])
+
+        assert _should_parallelize_tool_batch(mock_msg.tool_calls)
+        messages = []
+        with patch("run_agent.json.loads", side_effect=AssertionError("reparsed args")):
+            with patch("run_agent.handle_function_call", return_value='{"ok": true}') as mock_handle:
+                with patch.object(
+                    agent._tool_guardrails,
+                    "after_call",
+                    return_value=SimpleNamespace(action="allow", should_halt=False),
+                ):
+                    agent._execute_tool_calls_concurrent(mock_msg, messages, "task-1")
+
+        assert mock_handle.call_count == 2
+        assert [call.args[1]["path"] for call in mock_handle.call_args_list] == ["a.py", "b.py"]
+
     def test_terminal_batch_forces_sequential(self, agent):
         """Stateful tools should not share the concurrent execution path."""
         tc1 = _mock_tool_call(name="web_search", arguments='{}', call_id="c1")

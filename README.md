@@ -32,7 +32,8 @@ Use any model you want — [Nous Portal](https://portal.nousresearch.com), [Open
 
 This branch documents a measured performance pass focused on startup hot paths,
 tool discovery, SQLite session persistence, TUI MCP reloads, adaptive
-parallelism, and runtime local-endpoint probe avoidance. The numbers below are
+parallelism, delegation config reuse, parallel guard fast paths, and runtime
+local-endpoint probe avoidance. The numbers below are
 local Windows benchmark results from `scripts/benchmark_startup_perf.py` and
 `scripts/benchmark_runtime_usage.py`; they are measurements for this branch, not
 universal guarantees.
@@ -71,6 +72,8 @@ Full PR documentation:
 
 ![runtime benchmark suite](docs/assets/10x-fast/runtime-benchmark-suite.svg)
 
+![delegate task and parallel guard comparison](docs/assets/10x-fast/phase-7-delegate-parallel-guard.svg)
+
 ![SQLite session batch write comparison](docs/assets/10x-fast/perf-session-batch-writes.svg)
 
 ![toolset cache comparison](docs/assets/10x-fast/perf-toolset-cache.svg)
@@ -107,6 +110,8 @@ signal.
 ![TUI MCP fingerprint architecture](docs/assets/10x-fast/phase-5-tui-mcp-fingerprint.svg)
 
 ![adaptive parallel scan architecture](docs/assets/10x-fast/phase-6-adaptive-parallel-scan.svg)
+
+![delegate task config and parallel guard architecture](docs/assets/10x-fast/phase-7-delegate-parallel-guard.svg)
 
 ---
 

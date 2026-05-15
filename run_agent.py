@@ -347,6 +347,9 @@ _PARALLEL_SAFE_TOOLS = frozenset({
 # File tools can run concurrently when they target independent paths.
 _PATH_SCOPED_TOOLS = frozenset({"read_file", "write_file", "patch"})
 
+_PARALLEL_ARGS_CACHE_ATTR = "_hermes_parallel_function_args"
+_PARALLEL_ARGS_CACHE_MISSING = object()
+
 # Maximum number of concurrent worker threads for parallel tool execution.
 _MAX_TOOL_WORKERS = 8
 
@@ -385,6 +388,41 @@ def _is_destructive_command(cmd: str) -> bool:
     return False
 
 
+def _parse_parallel_guard_args(tool_call, tool_name: str) -> dict | None:
+    """Parse tool args once for the parallel guard and cache for execution."""
+    try:
+        function_args = json.loads(tool_call.function.arguments)
+    except Exception:
+        logging.debug(
+            "Could not parse args for %s â€” defaulting to sequential; raw=%s",
+            tool_name,
+            tool_call.function.arguments[:200],
+        )
+        return None
+    if not isinstance(function_args, dict):
+        logging.debug(
+            "Non-dict args for %s (%s) â€” defaulting to sequential",
+            tool_name,
+            type(function_args).__name__,
+        )
+        return None
+    try:
+        setattr(tool_call, _PARALLEL_ARGS_CACHE_ATTR, function_args)
+    except Exception:
+        pass
+    return function_args
+
+
+def _normalize_parallel_scope_path(raw_path: Any, cwd: str | None = None) -> str | None:
+    """Return a normalized absolute path string for parallel overlap checks."""
+    if not isinstance(raw_path, str) or not raw_path.strip():
+        return None
+    expanded = os.path.expanduser(raw_path)
+    if not os.path.isabs(expanded):
+        expanded = os.path.join(cwd or os.getcwd(), expanded)
+    return os.path.normcase(os.path.abspath(expanded))
+
+
 def _should_parallelize_tool_batch(tool_calls) -> bool:
     """Return True when a tool-call batch is safe to run concurrently."""
     if len(tool_calls) <= 1:
@@ -393,6 +431,20 @@ def _should_parallelize_tool_batch(tool_calls) -> bool:
     tool_names = [tc.function.name for tc in tool_calls]
     if any(name in _NEVER_PARALLEL_TOOLS for name in tool_names):
         return False
+    if all(name == "read_file" for name in tool_names):
+        reserved_paths: set[str] = set()
+        cwd = os.getcwd()
+        for tool_call, tool_name in zip(tool_calls, tool_names):
+            function_args = _parse_parallel_guard_args(tool_call, tool_name)
+            if function_args is None:
+                return False
+            scoped_path = _normalize_parallel_scope_path(function_args.get("path"), cwd)
+            if scoped_path is None:
+                return False
+            if scoped_path in reserved_paths:
+                return False
+            reserved_paths.add(scoped_path)
+        return True
 
     reserved_paths: list[Path] = []
     for tool_call in tool_calls:
@@ -9992,12 +10044,22 @@ class AIAgent:
             elif function_name == "skill_manage":
                 self._iters_since_skill = 0
 
-            try:
-                function_args = json.loads(tool_call.function.arguments)
-            except json.JSONDecodeError:
-                function_args = {}
-            if not isinstance(function_args, dict):
-                function_args = {}
+            cached_args = getattr(
+                tool_call, _PARALLEL_ARGS_CACHE_ATTR, _PARALLEL_ARGS_CACHE_MISSING
+            )
+            if cached_args is not _PARALLEL_ARGS_CACHE_MISSING:
+                function_args = cached_args if isinstance(cached_args, dict) else {}
+                try:
+                    delattr(tool_call, _PARALLEL_ARGS_CACHE_ATTR)
+                except Exception:
+                    pass
+            else:
+                try:
+                    function_args = json.loads(tool_call.function.arguments)
+                except json.JSONDecodeError:
+                    function_args = {}
+                if not isinstance(function_args, dict):
+                    function_args = {}
 
             # Checkpoint for file-mutating tools
             if function_name in ("write_file", "patch") and self._checkpoint_mgr.enabled:

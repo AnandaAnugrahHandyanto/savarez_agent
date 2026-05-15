@@ -156,6 +156,10 @@ API calls:
 - parallel safety checks
 - looped vs batched session message inserts
 
+The runtime pass now also instruments `delegate_task` phase timing and verifies
+that a delegated batch reuses one loaded config snapshot for child build/run
+settings.
+
 ## Benchmarks
 
 Command:
@@ -199,12 +203,14 @@ python scripts\benchmark_runtime_usage.py -n 3
 
 | Case | Median | Notes |
 | --- | ---: | --- |
-| `agent_init_file_terminal` | 4.9729s | 10.34x faster than dead-loopback preflight baseline 51.4181s |
-| `agent_init_default_tools` | 5.0176s | 9.10x faster than dead-loopback preflight baseline 45.6670s |
-| `delegate_child_build` | 4.9308s | 9.31x faster than dead-loopback preflight baseline 45.9254s |
-| `parallel_tool_batch_sleep` | 0.0551s | 5.41x faster than sequential equivalent |
-| `tool_dispatch_noop` | 0.0983s | 0.0341ms per dispatch over 3000 calls |
-| `session_append_messages_batch` | 0.0187s | 18.37x faster than loop writes for 240 messages |
+| `agent_init_file_terminal` | 5.5563s | 9.25x faster than dead-loopback preflight baseline 51.4181s |
+| `agent_init_default_tools` | 5.2897s | 8.63x faster than dead-loopback preflight baseline 45.6670s |
+| `delegate_child_build` | 5.0907s | 9.02x faster than dead-loopback preflight baseline 45.9254s |
+| `delegate_task_batch_scheduler` | 0.3971s | mocked scheduler; `config_loads=1`; child run phase ~0.0535s |
+| `parallel_tool_batch_sleep` | 0.0590s | 5.14x faster than sequential equivalent |
+| `tool_dispatch_noop` | 0.0992s | 0.0308ms per dispatch over 3000 calls |
+| `parallel_guard_read_files` | 1.6403s | 0.1673ms per 8-tool safety decision; 4.26x lower median than prior 6.9878s |
+| `session_append_messages_batch` | 0.0192s | 22.10x faster than loop writes for 240 messages |
 
 The runtime 10x-class result is scoped to dead local/custom endpoint
 initialization. It fixes a real "Hermes appears stuck before the first model
@@ -228,7 +234,10 @@ python -m pytest tests\tools\test_registry.py tests\test_toolsets.py tests\test_
 python -m pytest tests\test_tui_gateway_server.py::test_config_get_mtime_includes_mcp_fingerprint tests\test_tui_gateway_server.py::test_mcp_config_fingerprint_treats_missing_section_as_empty -q
 
 python -m py_compile agent\model_metadata.py scripts\benchmark_runtime_usage.py
+python -m py_compile run_agent.py tools\delegate_tool.py scripts\benchmark_runtime_usage.py
 python -m pytest tests\agent\test_model_metadata_local_ctx.py -q
+python -m pytest tests\tools\test_delegate.py tests\tools\test_delegate_subagent_timeout_diagnostic.py -q
+python -m pytest tests\run_agent\test_run_agent.py::TestConcurrentToolExecution tests\run_agent\test_run_agent.py::TestParallelScopePathNormalization -q
 python scripts\benchmark_runtime_usage.py -n 3
 
 cd ui-tui
@@ -364,6 +373,7 @@ The branch includes diagrams under `docs/assets/10x-fast/`:
 - `phase-6-adaptive-parallel-scan.svg`
 - `runtime-local-endpoint-fast-path.svg`
 - `runtime-benchmark-suite.svg`
+- `phase-7-delegate-parallel-guard.svg`
 - `research-principles-map.svg`
 - generated PNGs under `docs/assets/10x-fast/generated/`
 

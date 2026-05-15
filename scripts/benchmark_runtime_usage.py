@@ -213,12 +213,16 @@ def case():
         session_estimated_cost_usd=0.0,
     )
 
-    dt._load_config = lambda: {
-        "max_iterations": 1,
-        "max_concurrent_children": 3,
-        "max_spawn_depth": 2,
-        "child_timeout": 5,
-    }
+    load_counter = {"count": 0}
+    def fake_load_config():
+        load_counter["count"] += 1
+        return {
+            "max_iterations": 1,
+            "max_concurrent_children": 3,
+            "max_spawn_depth": 2,
+            "child_timeout_seconds": 45,
+        }
+    dt._load_config = fake_load_config
     dt._resolve_delegation_credentials = lambda cfg, parent_agent: {
         "model": None,
         "provider": None,
@@ -267,6 +271,8 @@ def case():
         "tasks": len(tasks),
         "sequential_equivalent": sequential,
         "reported_total": result.get("total_duration_seconds"),
+        "phase_timings": result.get("phase_timings"),
+        "config_loads": load_counter["count"],
         "speedup": sequential / delegate_elapsed if delegate_elapsed else None,
     }
 
@@ -557,6 +563,16 @@ def _notes(sample: dict) -> str:
     if "loop" in sample and "batch" in sample:
         notes.append(f"loop={sample['loop']:.4f}s")
         notes.append(f"batch={sample['batch']:.4f}s")
+    if "config_loads" in sample:
+        notes.append(f"config_loads={sample['config_loads']}")
+    if isinstance(sample.get("phase_timings"), dict):
+        phases = sample["phase_timings"]
+        short_phases = []
+        for key in ("config_seconds", "child_build_seconds", "child_run_seconds"):
+            if key in phases:
+                short_phases.append(f"{key.replace('_seconds', '')}={phases[key]:.4f}s")
+        if short_phases:
+            notes.append("phases:" + "/".join(short_phases))
     if "case_wall" in sample:
         notes.append(f"case_wall={sample['case_wall']:.4f}s")
     if "speedup" in sample and sample["speedup"]:

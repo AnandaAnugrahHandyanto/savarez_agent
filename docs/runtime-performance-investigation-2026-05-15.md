@@ -70,15 +70,18 @@ Current local Windows results after the fast path:
 
 | Case | Median | Signal |
 | --- | ---: | --- |
-| `agent_init_file_terminal` | 4.9729s | 10.34x faster than the preflight baseline of 51.4181s |
-| `agent_init_default_tools` | 5.0176s | 9.10x faster than the preflight baseline of 45.6670s |
-| `delegate_child_build` | 4.9308s | 9.31x faster than the preflight baseline of 45.9254s |
-| `parallel_tool_batch_sleep` | 0.0551s | 5.41x faster than sequential equivalent |
-| `tool_dispatch_noop` | 0.0983s | 0.0341ms per dispatch |
-| `parallel_guard_read_files` | 6.9878s | 0.7465ms per parallel safety decision |
-| `session_append_messages_batch` | 0.0187s | 18.37x faster than per-message loop writes |
+| `agent_init_file_terminal` | 5.5563s | 9.25x faster than the preflight baseline of 51.4181s |
+| `agent_init_default_tools` | 5.2897s | 8.63x faster than the preflight baseline of 45.6670s |
+| `delegate_child_build` | 5.0907s | 9.02x faster than the preflight baseline of 45.9254s |
+| `delegate_task_batch_scheduler` | 0.3971s | mocked scheduler; `config_loads=1`; child run phase ~0.0535s |
+| `parallel_tool_batch_sleep` | 0.0590s | 5.14x faster than sequential equivalent |
+| `tool_dispatch_noop` | 0.0992s | 0.0308ms per dispatch |
+| `parallel_guard_read_files` | 1.6403s | 0.1673ms per parallel safety decision; 4.26x lower median than prior guard |
+| `session_append_messages_batch` | 0.0192s | 22.10x faster than per-message loop writes |
 
 ![Runtime benchmark suite](assets/10x-fast/runtime-benchmark-suite.svg)
+
+![Delegate task and parallel guard comparison](assets/10x-fast/phase-7-delegate-parallel-guard.svg)
 
 ## Visual Summary
 
@@ -103,6 +106,8 @@ We can honestly say the current branch has:
 - Startup/tool-schema improvements in the 2x-4x range.
 - SQLite session append throughput around 18x-25x faster depending on sample.
 - Parallel tool execution around 5x faster for independent I/O-bound batches.
+- Parallel read-file safety checks around 4.26x faster after the exact-path
+  fast path.
 - A real 9x-10x runtime win for the dead local endpoint/subagent construction
   path, which was a practical "Hermes feels stuck before using the model"
   problem.
@@ -113,9 +118,7 @@ wins on other hot paths.
 
 ## Next Safe Runtime Targets
 
-- Instrument `delegate_task` with phase timings: config, credential resolution,
-  child build, queue wait, run, aggregation.
-- Reduce repeated delegation config loads per child.
+- Add queue-wait timing to `delegate_task` for saturated batches.
 - Investigate a reusable tool-call executor, but only after preserving
   thread-local approval, interrupt, sudo, and activity semantics.
 - Measure `_save_session_log()` rewrite cost on long sessions before changing
