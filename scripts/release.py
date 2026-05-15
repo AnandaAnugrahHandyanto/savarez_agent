@@ -57,6 +57,7 @@ AUTHOR_MAP = {
     "0x.badfriend@gmail.com": "discodirector",
     "altriatree@gmail.com": "TruaShamu",
     "m@mobrienv.dev": "mikeyobrien",
+    "mmercado@digitalocean.com": "mamercad",
     "qiyin.zuo@pcitc.com": "qiyin-code",
     "mr.aashiz@gmail.com": "aashizpoudel",
     "nidhi2894@gmail.com": "nidhi-singh02",

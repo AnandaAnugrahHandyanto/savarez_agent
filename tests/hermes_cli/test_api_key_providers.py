@@ -1253,6 +1253,142 @@ class TestNovitaProvider:
 
 
 # =============================================================================
+# DigitalOcean Gradient / Inference (serverless OpenAI-compatible)
+# =============================================================================
+
+class TestDigitalOceanGradientProvider:
+    """DigitalOcean Inference serverless — OpenAI-compatible Bearer key API."""
+
+    def test_profile_loads(self):
+        from providers import get_provider_profile
+
+        profile = get_provider_profile("digitalocean-gradient")
+        assert profile is not None
+        assert profile.name == "digitalocean-gradient"
+        assert profile.display_name == "DigitalOcean Gradient"
+        assert profile.base_url == "https://inference.do-ai.run/v1"
+        assert "DIGITALOCEAN_GRADIENT_API_KEY" in profile.env_vars
+        assert profile.default_aux_model == "anthropic-claude-4.6-sonnet"
+
+    def test_aliases_on_profile(self):
+        from providers import get_provider_profile
+
+        profile = get_provider_profile("digitalocean-gradient")
+        assert "do-gradient" in profile.aliases
+        assert "digitalocean" in profile.aliases
+
+    def test_alias_resolves(self):
+        assert resolve_provider("do-gradient") == "digitalocean-gradient"
+        assert resolve_provider("digitalocean") == "digitalocean-gradient"
+
+    def test_in_provider_registry(self):
+        assert "digitalocean-gradient" in PROVIDER_REGISTRY
+        pconfig = PROVIDER_REGISTRY["digitalocean-gradient"]
+        assert pconfig.auth_type == "api_key"
+        assert pconfig.id == "digitalocean-gradient"
+        assert pconfig.inference_base_url == "https://inference.do-ai.run/v1"
+        assert pconfig.api_key_env_vars == ("DIGITALOCEAN_GRADIENT_API_KEY",)
+        assert pconfig.base_url_env_var == "DIGITALOCEAN_GRADIENT_BASE_URL"
+
+    def test_aliases_in_registry(self):
+        assert "do-gradient" in PROVIDER_REGISTRY
+        assert "digitalocean" in PROVIDER_REGISTRY
+
+    def test_main_and_models_provider_models_match(self):
+        from hermes_cli.main import _PROVIDER_MODELS as main_models
+        from hermes_cli.models import _PROVIDER_MODELS as models_models
+
+        assert "digitalocean-gradient" in main_models
+        assert main_models["digitalocean-gradient"] == models_models["digitalocean-gradient"]
+
+    def test_models_use_do_catalog_ids(self):
+        from hermes_cli.models import _PROVIDER_MODELS
+
+        for model in _PROVIDER_MODELS["digitalocean-gradient"]:
+            assert model, "empty model id"
+            assert "/" not in model, (
+                f"DigitalOcean serverless ids are hyphenated, not org/name: {model!r}"
+            )
+
+    def test_aliases_in_models_py(self):
+        from hermes_cli.models import _PROVIDER_ALIASES
+
+        assert _PROVIDER_ALIASES.get("do-gradient") == "digitalocean-gradient"
+        assert _PROVIDER_ALIASES.get("digitalocean") == "digitalocean-gradient"
+
+    def test_label_via_auto_canonical(self):
+        from hermes_cli.models import _PROVIDER_LABELS
+
+        assert "digitalocean-gradient" in _PROVIDER_LABELS
+
+    def test_provider_prefixes(self):
+        from agent.model_metadata import _PROVIDER_PREFIXES
+
+        assert "digitalocean-gradient" in _PROVIDER_PREFIXES
+        assert "do-gradient" in _PROVIDER_PREFIXES
+        assert "digitalocean" in _PROVIDER_PREFIXES
+
+    def test_url_to_provider_hostname(self):
+        from agent.model_metadata import _URL_TO_PROVIDER
+
+        assert _URL_TO_PROVIDER.get("inference.do-ai.run") == "digitalocean-gradient"
+
+    def test_strip_provider_prefix(self):
+        from agent.model_metadata import _strip_provider_prefix
+
+        assert (
+            _strip_provider_prefix("digitalocean-gradient:qwen3-coder-flash")
+            == "qwen3-coder-flash"
+        )
+        assert _strip_provider_prefix("do-gradient:kimi-k2.5") == "kimi-k2.5"
+
+    def test_provider_model_ids_without_key_returns_fallback(self, monkeypatch):
+        from hermes_cli.models import provider_model_ids
+
+        monkeypatch.delenv("DIGITALOCEAN_GRADIENT_API_KEY", raising=False)
+        monkeypatch.delenv("DIGITALOCEAN_GRADIENT_BASE_URL", raising=False)
+        ids = provider_model_ids("digitalocean-gradient")
+        assert ids == [
+            "anthropic-claude-4.6-sonnet",
+            "kimi-k2.6",
+            "deepseek-v4-pro",
+            "qwen3-coder-flash",
+            "alibaba-qwen3-32b",
+        ]
+
+    def test_provider_model_ids_live_fetch_mocked(self, monkeypatch):
+        import json as _json
+        import urllib.request
+
+        from hermes_cli.models import provider_model_ids
+
+        monkeypatch.setenv("DIGITALOCEAN_GRADIENT_API_KEY", "do-test-key")
+        monkeypatch.setenv(
+            "DIGITALOCEAN_GRADIENT_BASE_URL",
+            "https://inference.do-ai.run/v1",
+        )
+
+        payload = {"data": [{"id": "zeta-fast"}, {"id": "alpha-pro"}]}
+
+        class _FakeResp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def read(self):
+                return _json.dumps(payload).encode()
+
+        def fake_urlopen(req, timeout=None):
+            return _FakeResp()
+
+        monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+        ids = provider_model_ids("digitalocean-gradient")
+        assert sorted(ids) == ["alpha-pro", "zeta-fast"]
+
+
+# =============================================================================
 # MiniMax OAuth provider tests (added by feat/minimax-oauth-provider)
 # =============================================================================
 
