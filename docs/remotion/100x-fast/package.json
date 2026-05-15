@@ -4,6 +4,7 @@
   "version": "1.0.0",
   "scripts": {
     "audio": "python scripts/make_soundtrack.py",
+    "voiceover": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/make_voiceover.ps1",
     "render": "remotion render src/index.ts Hermes100xFast ../../assets/100x-fast/video/hermes-100x-fast-launch.mp4 --codec h264 --audio-codec aac",
     "still": "remotion still src/index.ts Hermes100xFast ../../assets/100x-fast/video/hermes-100x-fast-poster.png --frame 120"
   },

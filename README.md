@@ -59,9 +59,15 @@ canonical README images for this branch.
 
 ### Launch Video
 
+The MP4 is the narrated release cut with voiceover, music, captions, and motion
+graphics. The GIF preview appears first so the README always shows movement
+inline, even where embedded MP4 playback is limited.
+
 ![Hermes Agent 100X Fast launch video animated preview](docs/assets/100x-fast/video/hermes-100x-fast-launch-preview.gif)
 
-<video src="docs/assets/100x-fast/video/hermes-100x-fast-launch.mp4" controls poster="docs/assets/100x-fast/video/hermes-100x-fast-poster.png" width="100%"></video>
+<video controls poster="docs/assets/100x-fast/video/hermes-100x-fast-poster.png" width="100%">
+  <source src="docs/assets/100x-fast/video/hermes-100x-fast-launch.mp4" type="video/mp4">
+</video>
 
 ![Hermes Agent 100X Fast video poster](docs/assets/100x-fast/video/hermes-100x-fast-poster.png)
 

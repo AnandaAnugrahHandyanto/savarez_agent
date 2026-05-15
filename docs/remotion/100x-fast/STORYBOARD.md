@@ -6,6 +6,8 @@ Rendered asset:
 - 90 seconds, 1920x1080, 30fps, H.264 + AAC
 - Poster: `docs/assets/100x-fast/video/hermes-100x-fast-poster.png`
 - Soundtrack source: `public/sound/hermes-100x-fast-soundtrack.wav`
+- Voiceover source: `public/sound/hermes-100x-fast-voiceover.wav`
+- README preview: `docs/assets/100x-fast/video/hermes-100x-fast-launch-preview.gif`
 
 ## Intent
 
@@ -18,11 +20,11 @@ and startup discovery.
 
 | Time | Scene | Visual | Audio Cue |
 | ---: | --- | --- | --- |
-| 0-18s | Opening | GPT-image video cover with title, gain chips, and a slow-to-fast transformation | Slow pulse builds into a brighter synth layer |
-| 16-37s | Before vs after | Generated before/after hero and runtime-stack image side by side with a green sweep | Beat becomes more regular to imply motion |
-| 35-57s | Measured gains | Five metric cards animate in: 0.4211s / 100 lookups, 37.74x, 9.25x, 5.20x, 2-3x | Ticks emphasize each metric reveal |
-| 55-75s | Safety architecture | Cache, batch, fast-fail, metadata disk cache, and parallel tools appear as connected nodes | Wider bass pad, lower tension |
-| 73-90s | Close | Repeatable-playbook message and final "Hermes Agent 100X Fast" mark | Release tail fades cleanly |
+| 0-18s | Opening | GPT-image video cover with title, gain chips, captions, and a slow-to-fast transformation | Narration introduces Hermes Agent 100X Fast over a low synth pulse |
+| 16-37s | Before vs after | Generated before/after hero and runtime-stack image side by side with a green sweep | Voice calls out repeated probes, row writes, endpoint waits, and serial tool waits |
+| 35-57s | Measured gains | Five metric cards animate in: 0.4211s / 100 lookups, 37.74x, 9.25x, 5.20x, 2-3x | Voice names the measured gains while the music stays ducked underneath |
+| 55-75s | Safety architecture | Cache, batch, fast-fail, metadata disk cache, and parallel tools appear as connected nodes | Voice explains fallback paths, refresh hooks, cache paths, and regressions |
+| 73-90s | Close | Repeatable-playbook message, progress rail, and final "Hermes Agent 100X Fast" mark | Narration closes with the public-share message, music release tail fades cleanly |
 
 ## Exact Claims Used
 
@@ -41,10 +43,12 @@ and startup discovery.
 cd docs\remotion\100x-fast
 npm install
 npm run audio
+npm run voiceover
 npx tsc --noEmit
 npm run still
 npm run render
+npx remotion render src/index.ts Hermes100xFast ../../assets/100x-fast/video/hermes-100x-fast-launch-preview.gif --codec gif --frames=0-2699 --every-nth-frame=10 --scale=0.35 --muted --number-of-gif-loops=0 --concurrency=2
 ```
 
-If numbers change, update both the Remotion source and the README table before
-rendering again.
+If numbers change, update the Remotion source, voiceover script/text, README
+claims, MP4, poster, and GIF preview before publishing again.

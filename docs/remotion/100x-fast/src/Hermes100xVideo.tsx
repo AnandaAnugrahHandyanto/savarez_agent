@@ -19,6 +19,15 @@ const metrics = [
   {label: 'Startup discovery', old: 'repeat scans/imports', value: 'fingerprint caches', gain: '2-3x', color: '#8de35a'},
 ];
 
+const narrationCues = [
+  {from: 0, to: 300, text: 'Meet Hermes Agent 100X Fast: measured speed for messages, tasks, delegation, and runtime resources.'},
+  {from: 300, to: 690, text: 'Before: repeated metadata probes, row-by-row writes, endpoint timeouts, and serial tool waits.'},
+  {from: 690, to: 1050, text: 'After: cache-first metadata, batched SQLite writes, TCP fast-fail, and safe parallel tools.'},
+  {from: 1050, to: 1650, text: 'Measured locally: 37.74x faster session writes, 9.25x endpoint startup, and 5.20x parallel tools.'},
+  {from: 1650, to: 2190, text: 'Safety stays explicit: old fallbacks, profile-aware cache paths, refresh hooks, and focused regressions.'},
+  {from: 2190, to: 2700, text: 'Documented, benchmarked, repeatable: fewer wasted waits, more useful work.'},
+];
+
 const sourceImages = {
   hero: staticFile('media/gpt-image-100x-hero-before-after.png'),
   stack: staticFile('media/gpt-image-100x-runtime-stack.png'),
@@ -281,6 +290,75 @@ const SceneClose: React.FC = () => (
   </AbsoluteFill>
 );
 
+const NarrationOverlay: React.FC = () => {
+  const frame = useCurrentFrame();
+  const cue = narrationCues.find((item) => frame >= item.from && frame < item.to) ?? narrationCues[narrationCues.length - 1];
+  const progress = interpolate(frame, [0, 2700], [0, 100], {extrapolateLeft: 'clamp', extrapolateRight: 'clamp'});
+  const cueOpacity = interpolate(frame, [cue.from, cue.from + 18, cue.to - 18, cue.to], [0, 1, 1, 0], {
+    extrapolateLeft: 'clamp',
+    extrapolateRight: 'clamp',
+  });
+
+  return (
+    <AbsoluteFill style={{pointerEvents: 'none'}}>
+      <div
+        style={{
+          position: 'absolute',
+          left: 0,
+          right: 0,
+          bottom: 0,
+          height: 9,
+          background: 'rgba(184,247,255,.18)',
+        }}
+      >
+        <div
+          style={{
+            height: '100%',
+            width: `${progress}%`,
+            background: 'linear-gradient(90deg, #33d69f, #ffd166, #4cc9f0)',
+            boxShadow: '0 0 28px rgba(51,214,159,.72)',
+          }}
+        />
+      </div>
+      <div
+        style={{
+          position: 'absolute',
+          left: 96,
+          right: 96,
+          bottom: 34,
+          opacity: cueOpacity,
+          color: '#f7fbff',
+          fontSize: 30,
+          lineHeight: 1.28,
+          fontWeight: 780,
+          textAlign: 'center',
+          padding: '20px 34px',
+          background: 'rgba(7,16,24,.76)',
+          border: '1px solid rgba(184,247,255,.34)',
+          boxShadow: '0 18px 60px rgba(0,0,0,.38)',
+        }}
+      >
+        {cue.text}
+      </div>
+      <div
+        style={{
+          position: 'absolute',
+          right: 86,
+          top: 42,
+          color: '#b8f7ff',
+          fontSize: 22,
+          fontWeight: 850,
+          padding: '12px 18px',
+          background: 'rgba(7,16,24,.62)',
+          border: '1px solid rgba(184,247,255,.26)',
+        }}
+      >
+        narrated launch cut
+      </div>
+    </AbsoluteFill>
+  );
+};
+
 export const Hermes100xVideo: React.FC = () => (
   <VideoTimeline />
 );
@@ -289,7 +367,8 @@ const VideoTimeline: React.FC = () => {
   const frame = useCurrentFrame();
   return (
     <AbsoluteFill style={{fontFamily: 'Inter, Segoe UI, Arial, sans-serif'}}>
-      <Audio src={staticFile('sound/hermes-100x-fast-soundtrack.wav')} volume={0.72} />
+      <Audio src={staticFile('sound/hermes-100x-fast-soundtrack.wav')} volume={0.24} />
+      <Audio src={staticFile('sound/hermes-100x-fast-voiceover.wav')} volume={1} />
       <Sequence from={0} durationInFrames={540}>
         <div style={{opacity: fade(frame, 0, 540)}}><SceneIntro /></div>
       </Sequence>
@@ -305,6 +384,7 @@ const VideoTimeline: React.FC = () => {
       <Sequence from={2190} durationInFrames={510}>
         <div style={{opacity: fade(frame, 2190, 2700)}}><SceneClose /></div>
       </Sequence>
+      <NarrationOverlay />
     </AbsoluteFill>
   );
 };
