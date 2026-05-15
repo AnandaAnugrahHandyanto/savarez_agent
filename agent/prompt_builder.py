@@ -51,6 +51,14 @@ _CONTEXT_INVISIBLE_CHARS = {
     '\u202a', '\u202b', '\u202c', '\u202d', '\u202e',
 }
 
+_SKILL_VIEW_NAME_RE = re.compile(
+    r"""skill_view\s*\(\s*name\s*=\s*['"]([^'"]+)['"]""",
+    re.IGNORECASE,
+)
+_BACKTICK_SKILL_RE = re.compile(r"`([^`\n]+)`\s+skill\b", re.IGNORECASE)
+_SKILL_INVALID_CHARS_RE = re.compile(r"[^a-z0-9-]")
+_SKILL_MULTI_HYPHEN_RE = re.compile(r"-{2,}")
+
 
 def _scan_context_content(content: str, filename: str) -> str:
     """Scan context file content for injection. Returns sanitized content."""
@@ -71,6 +79,94 @@ def _scan_context_content(content: str, filename: str) -> str:
         return f"[BLOCKED: {filename} contained potential prompt injection ({', '.join(findings)}). Content not loaded.]"
 
     return content
+
+
+def _slugify_skill_reference(name: str) -> str:
+    """Normalize a skill reference to the slash-command slug form."""
+    normalized = str(name).strip().lower().replace(" ", "-")
+    normalized = _SKILL_INVALID_CHARS_RE.sub("-", normalized)
+    normalized = _SKILL_MULTI_HYPHEN_RE.sub("-", normalized)
+    return normalized.strip("-")
+
+
+def _discover_available_context_skill_refs() -> set[str]:
+    """Return installed, non-disabled local/external skill names plus slugs.
+
+    This intentionally mirrors the local/external skill universe that context
+    files can safely reference without forcing the model toward a missing skill.
+    Plugin-qualified names are skipped here because they require plugin
+    discovery; context-file validation only neutralizes unqualified references.
+    """
+    refs: set[str] = set()
+    disabled = get_disabled_skill_names()
+
+    for skills_dir in get_all_skills_dirs():
+        if not skills_dir.exists():
+            continue
+        for skill_file in iter_skill_index_files(skills_dir, "SKILL.md"):
+            try:
+                raw = skill_file.read_text(encoding="utf-8")
+                frontmatter, _ = parse_frontmatter(raw)
+            except Exception:
+                continue
+
+            skill_name = str(frontmatter.get("name") or skill_file.parent.name).strip()
+            if not skill_name:
+                continue
+            if skill_name in disabled or _slugify_skill_reference(skill_name) in disabled:
+                continue
+
+            refs.add(skill_name)
+            refs.add(skill_file.parent.name)
+            slug = _slugify_skill_reference(skill_name)
+            if slug:
+                refs.add(slug)
+
+    return refs
+
+
+def _extract_skill_references(line: str) -> list[str]:
+    """Return skill names explicitly referenced in a line of prompt context."""
+    refs: list[str] = []
+    refs.extend(match.group(1).strip() for match in _BACKTICK_SKILL_RE.finditer(line))
+    refs.extend(match.group(1).strip() for match in _SKILL_VIEW_NAME_RE.finditer(line))
+    return [ref for ref in refs if ref]
+
+
+def _neutralize_missing_skill_references(content: str, filename: str) -> str:
+    """Replace lines that instruct the agent to use unavailable local skills."""
+    if not content or content.startswith("[BLOCKED:"):
+        return content
+
+    available = _discover_available_context_skill_refs()
+    out_lines: list[str] = []
+
+    for line in content.splitlines():
+        refs = _extract_skill_references(line)
+        missing = sorted(
+            {
+                ref for ref in refs
+                if ":" not in ref
+                and ref not in available
+                and _slugify_skill_reference(ref) not in available
+            }
+        )
+        if not missing:
+            out_lines.append(line)
+            continue
+
+        quoted = ", ".join(f"'{name}'" for name in missing)
+        logger.warning(
+            "Context file %s referenced unavailable skill(s): %s",
+            filename,
+            ", ".join(missing),
+        )
+        out_lines.append(
+            f"[{filename} note: referenced skill(s) {quoted} not currently installed; "
+            "ignore this instruction unless the skill is reinstalled.]"
+        )
+
+    return "\n".join(out_lines)
 
 
 def _find_git_root(start: Path) -> Optional[Path]:
@@ -1322,6 +1418,7 @@ def load_soul_md() -> Optional[str]:
         if not content:
             return None
         content = _scan_context_content(content, "SOUL.md")
+        content = _neutralize_missing_skill_references(content, "SOUL.md")
         content = _truncate_content(content, "SOUL.md")
         return content
     except Exception as e:
@@ -1345,6 +1442,7 @@ def _load_hermes_md(cwd_path: Path) -> str:
         except ValueError:
             pass
         content = _scan_context_content(content, rel)
+        content = _neutralize_missing_skill_references(content, rel)
         result = f"## {rel}\n\n{content}"
         return _truncate_content(result, ".hermes.md")
     except Exception as e:
@@ -1361,6 +1459,7 @@ def _load_agents_md(cwd_path: Path) -> str:
                 content = candidate.read_text(encoding="utf-8").strip()
                 if content:
                     content = _scan_context_content(content, name)
+                    content = _neutralize_missing_skill_references(content, name)
                     result = f"## {name}\n\n{content}"
                     return _truncate_content(result, "AGENTS.md")
             except Exception as e:
@@ -1377,6 +1476,7 @@ def _load_claude_md(cwd_path: Path) -> str:
                 content = candidate.read_text(encoding="utf-8").strip()
                 if content:
                     content = _scan_context_content(content, name)
+                    content = _neutralize_missing_skill_references(content, name)
                     result = f"## {name}\n\n{content}"
                     return _truncate_content(result, "CLAUDE.md")
             except Exception as e:
@@ -1393,6 +1493,7 @@ def _load_cursorrules(cwd_path: Path) -> str:
             content = cursorrules_file.read_text(encoding="utf-8").strip()
             if content:
                 content = _scan_context_content(content, ".cursorrules")
+                content = _neutralize_missing_skill_references(content, ".cursorrules")
                 cursorrules_content += f"## .cursorrules\n\n{content}\n\n"
         except Exception as e:
             logger.debug("Could not read .cursorrules: %s", e)
@@ -1405,6 +1506,9 @@ def _load_cursorrules(cwd_path: Path) -> str:
                 content = mdc_file.read_text(encoding="utf-8").strip()
                 if content:
                     content = _scan_context_content(content, f".cursor/rules/{mdc_file.name}")
+                    content = _neutralize_missing_skill_references(
+                        content, f".cursor/rules/{mdc_file.name}"
+                    )
                     cursorrules_content += f"## .cursor/rules/{mdc_file.name}\n\n{content}\n\n"
             except Exception as e:
                 logger.debug("Could not read %s: %s", mdc_file, e)

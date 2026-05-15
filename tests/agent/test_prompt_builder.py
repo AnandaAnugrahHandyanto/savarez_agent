@@ -532,6 +532,42 @@ class TestBuildContextFilesPrompt:
         assert "If SOUL.md is present" not in result
         assert "## SOUL.md" not in result
 
+    def test_missing_skill_reference_in_soul_is_neutralized(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_home"))
+        hermes_home = tmp_path / "hermes_home"
+        hermes_home.mkdir(parents=True)
+        (hermes_home / "skills").mkdir()
+        (hermes_home / "SOUL.md").write_text(
+            "At the start of each task, load the `missing-routing` skill.",
+            encoding="utf-8",
+        )
+
+        result = build_context_files_prompt(cwd=str(tmp_path))
+
+        assert "missing-routing" in result
+        assert "not currently installed" in result
+        assert "load the `missing-routing` skill" not in result
+
+    def test_installed_skill_reference_in_soul_is_preserved(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_home"))
+        hermes_home = tmp_path / "hermes_home"
+        hermes_home.mkdir(parents=True)
+        skill_dir = hermes_home / "skills" / "helix" / "present-routing"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: present-routing\ndescription: route work\n---\n",
+            encoding="utf-8",
+        )
+        (hermes_home / "SOUL.md").write_text(
+            "At the start of each task, load the `present-routing` skill.",
+            encoding="utf-8",
+        )
+
+        result = build_context_files_prompt(cwd=str(tmp_path))
+
+        assert "load the `present-routing` skill" in result
+        assert "not currently installed" not in result
+
     def test_empty_soul_md_adds_nothing(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_home"))
         hermes_home = tmp_path / "hermes_home"
@@ -1186,6 +1222,5 @@ class TestOpenAIModelExecutionGuidance:
 # =========================================================================
 # Budget warning history stripping
 # =========================================================================
-
 
 
