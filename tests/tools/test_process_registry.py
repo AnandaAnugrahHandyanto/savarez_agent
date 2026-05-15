@@ -512,9 +512,14 @@ class TestSpawnEnvSanitization:
 
         bg_command = env.commands[0][0]
         assert session.pid == 4321
+        assert bg_command.startswith("bash -c ")
         assert "/data/data/com.termux/files/usr/tmp/hermes_bg_" in bg_command
         assert ".exit" in bg_command
         assert "rc=$?;" in bg_command
+        assert "printf '%s\\n' \"$rc\"" in bg_command
+        assert ">/dev/null 2>&1 &" in bg_command
+        assert "pid=$!;" in bg_command
+        assert "printf '%s\\n' \"$pid\"" in bg_command
         assert "nohup bash -c" in bg_command
         assert "nohup bash -lc" not in bg_command
         assert " > /tmp/hermes_bg_" not in bg_command
