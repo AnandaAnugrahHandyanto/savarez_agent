@@ -3213,6 +3213,14 @@ def _resolve_chat_argv(
     # the dashboard PTY path.
     env.setdefault("HERMES_TUI_DISABLE_MOUSE", "1")
 
+    # Honour ``dashboard.tui_workdir`` — overrides TERMINAL_CWD so the
+    # embedded TUI's context-file discovery (AGENTS.md, etc.) starts from
+    # the configured directory rather than the repo checkout, preventing
+    # large dev-only context files from inflating the system prompt.
+    cfg_tui_workdir = load_config().get("dashboard", {}).get("tui_workdir", "")
+    if cfg_tui_workdir:
+        env["TERMINAL_CWD"] = os.path.expanduser(cfg_tui_workdir)
+
     if resume:
         latest_resume, _latest_path = _session_latest_descendant(resume)
         if latest_resume:
