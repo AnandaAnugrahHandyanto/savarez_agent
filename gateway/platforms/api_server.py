@@ -1267,11 +1267,18 @@ class APIServerAdapter(BasePlatformAdapter):
         # Soft-partial path: we have *some* text but the run did not complete
         # (e.g. truncation with partial buffered output). Still 200 but signal
         # truncation via finish_reason="length" + Hermes-specific extras.
+        #
+        # Prefer the upstream-reported model id when present so clients see
+        # the concrete backend a routing gateway actually served (e.g. an
+        # alias "high-accuracy" → "high-accuracy-m3"). Fall back to the
+        # client-supplied name when the upstream did not advertise one.
+        upstream_model = result.get("last_response_model")
+        response_model = upstream_model if isinstance(upstream_model, str) and upstream_model else model_name
         response_data = {
             "id": completion_id,
             "object": "chat.completion",
             "created": created,
-            "model": model_name,
+            "model": response_model,
             "choices": [
                 {
                     "index": 0,

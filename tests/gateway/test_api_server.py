@@ -1144,6 +1144,38 @@ class TestChatCompletionsEndpoint:
         assert mock_run.call_args.kwargs["requested_model"] == "gpt-requested"
 
     @pytest.mark.asyncio
+    async def test_chat_completion_reports_upstream_model(self, adapter):
+        """When the upstream surfaces a concrete model (routing-gateway alias
+        like ``high-accuracy`` → ``high-accuracy-m3``), the response should
+        advertise the concrete backend instead of echoing the alias the
+        client originally sent.
+        """
+        mock_result = {
+            "final_response": "ok",
+            "messages": [],
+            "api_calls": 1,
+            "last_response_model": "high-accuracy-m3",
+        }
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "high-accuracy",
+                        "messages": [{"role": "user", "content": "Hello"}],
+                    },
+                )
+
+                assert resp.status == 200
+                data = await resp.json()
+        assert data["model"] == "high-accuracy-m3"
+        # The alias still drives provider selection / agent kwargs.
+        assert mock_run.call_args.kwargs["requested_model"] == "high-accuracy"
+
+    @pytest.mark.asyncio
     async def test_system_prompt_extracted(self, adapter):
         """System messages from the client are passed as ephemeral_system_prompt."""
         mock_result = {
