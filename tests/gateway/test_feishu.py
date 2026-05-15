@@ -547,7 +547,8 @@ class TestAdapterModule(unittest.TestCase):
         try:
             from gateway.platforms.feishu import _run_official_feishu_ws_client
 
-            _run_official_feishu_ws_client(fake_client, fake_adapter)
+            with self.assertLogs("gateway.platforms.feishu", level="INFO") as logs:
+                _run_official_feishu_ws_client(fake_client, fake_adapter)
         finally:
             sys.modules.clear()
             sys.modules.update(original_modules)
@@ -556,6 +557,9 @@ class TestAdapterModule(unittest.TestCase):
         self.assertEqual(fake_client._reconnect_nonce, 2)
         self.assertEqual(fake_client._reconnect_interval, 3)
         self.assertEqual(fake_client._ping_interval, 4)
+        joined = "\n".join(logs.output)
+        self.assertIn("Websocket client thread crashed", joined)
+        self.assertIn("Websocket client thread exiting", joined)
 
 
 def _admits_group(adapter, message, sender_id, chat_id=""):
