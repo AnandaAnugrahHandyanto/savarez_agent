@@ -706,6 +706,48 @@ async def test_channel_event_routes_thread_reply_to_parent(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_channel_event_routes_openclaw_thread_reply_essay(monkeypatch):
+    monkeypatch.setenv("TLON_SHIP_NAME", "~bot-palnet")
+    monkeypatch.setenv("TLON_ALLOW_ALL_USERS", "true")
+    adapter = TlonAdapter(PlatformConfig())
+    adapter.monitored_channels = {"chat/~host/test"}
+    adapter.handle_message = AsyncMock()
+
+    await adapter._handle_channel_event({
+        "nest": "chat/~host/test",
+        "response": {
+            "post": {
+                "id": "parent-post",
+                "r-post": {
+                    "reply": {
+                        "id": "reply-post",
+                        "r-reply": {
+                            "set": {
+                                "seal": {"parent-id": "parent-post"},
+                                "reply-essay": {
+                                    "author": "~zod",
+                                    "sent": 1_700_000_000_000,
+                                    "content": [
+                                        {"inline": ["got it ", {"ship": "~bot-palnet"}]}
+                                    ],
+                                },
+                            }
+                        },
+                    }
+                },
+            }
+        },
+    })
+
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.text == "got it"
+    assert event.message_id == "reply-post"
+    assert event.reply_to_message_id == "parent-post"
+    assert event.source.thread_id == "parent-post"
+
+
+@pytest.mark.asyncio
 async def test_channel_event_refreshes_group_mapping_for_context(monkeypatch):
     monkeypatch.setenv("TLON_SHIP_NAME", "~bot-palnet")
     monkeypatch.setenv("TLON_ALLOW_ALL_USERS", "true")

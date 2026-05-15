@@ -2566,7 +2566,9 @@ class TlonAdapter(BasePlatformAdapter):
 
             # Two event shapes:
             # 1) Top-level post: r-post.set.essay  (type="post")
-            # 2) Thread reply:   r-post.reply["r-reply"].set.memo
+            # 2) Thread reply:   r-post.reply["r-reply"].set["reply-essay"]
+            #    OpenClaw and current %channels use reply-essay; keep memo/essay
+            #    as compatibility fallbacks for older or simplified fixtures.
             post_data = r_post.get("set") or {}
             essay = post_data.get("essay") if isinstance(post_data, dict) else None
 
@@ -2580,7 +2582,11 @@ class TlonAdapter(BasePlatformAdapter):
                 if r_reply:
                     reply_set = r_reply.get("set")
                     if reply_set and isinstance(reply_set, dict):
-                        reply_memo = reply_set.get("memo") or reply_set.get("essay")
+                        reply_memo = (
+                            reply_set.get("reply-essay")
+                            or reply_set.get("memo")
+                            or reply_set.get("essay")
+                        )
                         is_thread_reply = True
 
             content = reply_memo or essay
