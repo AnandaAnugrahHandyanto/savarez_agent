@@ -1474,6 +1474,8 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     api_server_cors_origins = os.getenv("API_SERVER_CORS_ORIGINS", "")
     api_server_port = os.getenv("API_SERVER_PORT")
     api_server_host = os.getenv("API_SERVER_HOST")
+    api_server_mode = os.getenv("API_SERVER_MODE")
+    api_server_passthrough_force_model = os.getenv("API_SERVER_PASSTHROUGH_FORCE_MODEL")
     if api_server_enabled or api_server_key:
         if Platform.API_SERVER not in config.platforms:
             config.platforms[Platform.API_SERVER] = PlatformConfig()
@@ -1491,6 +1493,10 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                 pass
         if api_server_host:
             config.platforms[Platform.API_SERVER].extra["host"] = api_server_host
+    if api_server_mode:
+        config.platforms[Platform.API_SERVER].extra["mode"] = api_server_mode.strip().lower()
+    if api_server_passthrough_force_model:
+        config.platforms[Platform.API_SERVER].extra["passthrough_force_model"] = api_server_passthrough_force_model
         api_server_model_name = os.getenv("API_SERVER_MODEL_NAME", "")
         if api_server_model_name:
             config.platforms[Platform.API_SERVER].extra["model_name"] = api_server_model_name

@@ -592,11 +592,24 @@ class APIServerAdapter(BasePlatformAdapter):
             raw_port = os.getenv("API_SERVER_PORT", str(DEFAULT_PORT))
         self._port: int = _coerce_port(raw_port, DEFAULT_PORT)
         self._api_key: str = extra.get("key", os.getenv("API_SERVER_KEY", ""))
+        self._mode: str = str(
+            extra.get("mode", os.getenv("API_SERVER_MODE", "agent")) or "agent"
+        ).strip().lower()
+        self._passthrough_force_model: bool = str(
+            extra.get(
+                "passthrough_force_model",
+                os.getenv("API_SERVER_PASSTHROUGH_FORCE_MODEL", "true"),
+            )
+        ).strip().lower() not in {"0", "false", "no", "off"}
         self._cors_origins: tuple[str, ...] = self._parse_cors_origins(
             extra.get("cors_origins", os.getenv("API_SERVER_CORS_ORIGINS", "")),
         )
         self._model_name: str = self._resolve_model_name(
             extra.get("model_name", os.getenv("API_SERVER_MODEL_NAME", "")),
+        )
+        self._allowed_model_names: tuple[str, ...] = self._parse_allowed_model_names(
+            extra.get("allowed_models", os.getenv("API_SERVER_ALLOWED_MODELS", "")),
+            self._model_name,
         )
         self._app: Optional["web.Application"] = None
         self._runner: Optional["web.AppRunner"] = None
@@ -631,6 +644,35 @@ class APIServerAdapter(BasePlatformAdapter):
             items = [str(value)]
 
         return tuple(str(item).strip() for item in items if str(item).strip())
+
+    @staticmethod
+    def _parse_allowed_model_names(value: Any, default_model: str) -> tuple[str, ...]:
+        """Build the passthrough model whitelist. Defaults to the advertised model only."""
+        names: list[str] = []
+        if default_model and str(default_model).strip():
+            names.append(str(default_model).strip())
+        if value:
+            items = value.split(",") if isinstance(value, str) else value
+            if not isinstance(items, (list, tuple, set)):
+                items = [str(items)]
+            for item in items:
+                name = str(item).strip()
+                if name and name not in names:
+                    names.append(name)
+        return tuple(names)
+
+    def _validate_passthrough_model(self, requested_model: str) -> Optional["web.Response"]:
+        """Reject unknown client-facing model names before passthrough fallback."""
+        if not requested_model or requested_model in self._allowed_model_names:
+            return None
+        allowed = ", ".join(self._allowed_model_names) or self._model_name
+        return web.json_response(
+            _openai_error(
+                f"Unknown model {requested_model!r}. Allowed model(s): {allowed}.",
+                code="model_not_found",
+            ),
+            status=400,
+        )
 
     @staticmethod
     def _resolve_model_name(explicit: str) -> str:
@@ -707,6 +749,11 @@ class APIServerAdapter(BasePlatformAdapter):
             {"error": {"message": "Invalid API key", "type": "invalid_request_error", "code": "invalid_api_key"}},
             status=401,
         )
+
+    @staticmethod
+    def _openai_error(message: str, err_type: str = "invalid_request_error", code: Optional[str] = None) -> Dict[str, Any]:
+        """Expose module-level OpenAI error helper to passthrough adapters."""
+        return _openai_error(message, err_type=err_type, code=code)
 
     # ------------------------------------------------------------------
     # Session header helpers
@@ -893,19 +940,21 @@ class APIServerAdapter(BasePlatformAdapter):
         if auth_err:
             return auth_err
 
+        model_entry = {
+            "id": self._model_name,
+            "object": "model",
+            "created": int(time.time()),
+            "owned_by": "hermes",
+            "permission": [],
+            "root": self._model_name,
+            "parent": None,
+        }
         return web.json_response({
             "object": "list",
-            "data": [
-                {
-                    "id": self._model_name,
-                    "object": "model",
-                    "created": int(time.time()),
-                    "owned_by": "hermes",
-                    "permission": [],
-                    "root": self._model_name,
-                    "parent": None,
-                }
-            ],
+            "data": [model_entry],
+            # Compatibility with clients that look for a top-level `models`
+            # array in addition to the OpenAI-standard `data` array.
+            "models": [model_entry],
         })
 
     async def _handle_capabilities(self, request: "web.Request") -> "web.Response":
@@ -942,13 +991,13 @@ class APIServerAdapter(BasePlatformAdapter):
                 "chat_completions_streaming": True,
                 "responses_api": True,
                 "responses_streaming": True,
-                "run_submission": True,
-                "run_status": True,
-                "run_events_sse": True,
-                "run_stop": True,
-                "run_approval_response": True,
-                "tool_progress_events": True,
-                "approval_events": True,
+                "run_submission": self._mode != "passthrough",
+                "run_status": self._mode != "passthrough",
+                "run_events_sse": self._mode != "passthrough",
+                "run_stop": self._mode != "passthrough",
+                "run_approval_response": self._mode != "passthrough",
+                "tool_progress_events": self._mode != "passthrough",
+                "approval_events": self._mode != "passthrough",
                 "session_continuity_header": "X-Hermes-Session-Id",
                 "session_key_header": "X-Hermes-Session-Key",
                 "cors": bool(self._cors_origins),
@@ -967,6 +1016,84 @@ class APIServerAdapter(BasePlatformAdapter):
             },
         })
 
+    def _passthrough_payload(self, body: Dict[str, Any]) -> tuple[Dict[str, Any], str]:
+        """Build the upstream Chat Completions payload for passthrough mode.
+
+        By default we force the upstream model to Hermes' configured default so
+        the public API can advertise a single friendly model name while still
+        reusing the real provider/model from config.yaml.
+        """
+        from gateway.run import _resolve_gateway_model
+
+        payload = dict(body)
+        requested_model = str(payload.get("model") or self._model_name).strip() or self._model_name
+        configured_model = _resolve_gateway_model()
+        if self._passthrough_force_model and configured_model:
+            payload["model"] = configured_model
+        elif not payload.get("model") and configured_model:
+            payload["model"] = configured_model
+        return payload, requested_model
+
+    async def _handle_passthrough_chat_completions(
+        self,
+        request: "web.Request",
+        body: Dict[str, Any],
+    ) -> "web.Response":
+        """POST /v1/chat/completions in model-passthrough mode.
+
+        This bypasses AIAgent entirely: no Hermes system prompt, no tools, no
+        skills, no memory, no session DB. It only reuses Hermes' configured
+        inference provider credentials/base_url/model.
+        """
+        from gateway.run import _resolve_runtime_agent_kwargs
+
+        try:
+            from openai import AsyncOpenAI
+        except ImportError:
+            return web.json_response(
+                _openai_error("The openai Python package is required for API_SERVER_MODE=passthrough.", code="missing_dependency"),
+                status=500,
+            )
+
+        try:
+            runtime = _resolve_runtime_agent_kwargs()
+            payload, requested_model = self._passthrough_payload(body)
+            model_err = self._validate_passthrough_model(requested_model)
+            if model_err is not None:
+                return model_err
+            api_mode = str(runtime.get("api_mode") or "").strip().lower()
+            if not runtime.get("api_key"):
+                return web.json_response(_openai_error("No upstream API key resolved from Hermes config.", code="missing_upstream_api_key"), status=500)
+
+            client = AsyncOpenAI(api_key=runtime.get("api_key"), base_url=runtime.get("base_url") or None)
+
+            from gateway.platforms.one_model_api import get_passthrough_adapter
+
+            adapter = get_passthrough_adapter(runtime)
+            if adapter is None:
+                return web.json_response(
+                    _openai_error(
+                        f"API passthrough does not yet support current upstream api_mode {api_mode!r}.",
+                        code="unsupported_provider_mode",
+                    ),
+                    status=501,
+                )
+
+            return await adapter.chat_completion(
+                server=self,
+                request=request,
+                client=client,
+                runtime=runtime,
+                payload=payload,
+                requested_model=requested_model,
+            )
+        except Exception as exc:
+            logger.exception("Passthrough chat completion failed")
+            return web.json_response(
+                _openai_error(f"Passthrough upstream request failed: {exc}", code="upstream_request_failed"),
+                status=502,
+            )
+
     async def _handle_chat_completions(self, request: "web.Request") -> "web.Response":
         """POST /v1/chat/completions — OpenAI Chat Completions format."""
         auth_err = self._check_auth(request)
@@ -978,6 +1105,9 @@ class APIServerAdapter(BasePlatformAdapter):
             body = await request.json()
         except (json.JSONDecodeError, Exception):
             return web.json_response(_openai_error("Invalid JSON in request body"), status=400)
+
+        if self._mode == "passthrough":
+            return await self._handle_passthrough_chat_completions(request, body)
 
         messages = body.get("messages")
         if not messages or not isinstance(messages, list):
@@ -2036,11 +2166,91 @@ class APIServerAdapter(BasePlatformAdapter):
 
         return response
 
+    # ── Passthrough /v1/responses handler ─────────────────────────
+
+    async def _handle_passthrough_responses(
+        self,
+        request: "web.Request",
+        body: Dict[str, Any],
+    ) -> "web.Response":
+        """POST /v1/responses in passthrough mode — minimal compat adapter.
+
+        Converts Responses API input to chat messages, forwards to upstream,
+        wraps the chat completion result back into response format.
+        Does NOT support tools — returns 400 if tools are present.
+        """
+        from gateway.run import _resolve_runtime_agent_kwargs
+
+        try:
+            from openai import AsyncOpenAI
+        except ImportError:
+            return web.json_response(
+                _openai_error("The openai Python package is required for API_SERVER_MODE=passthrough.", code="missing_dependency"),
+                status=500,
+            )
+
+        # Minimal compat: reject tools explicitly
+        if body.get("tools"):
+            return web.json_response(
+                _openai_error("tools are not supported by this minimal passthrough responses adapter", code="unsupported_feature"),
+                status=400,
+            )
+
+        try:
+            runtime = _resolve_runtime_agent_kwargs()
+            from gateway.platforms.one_model_api.conversions import responses_to_chat_payload
+
+            chat_payload = responses_to_chat_payload(body, default_model=self._model_name)
+            _, requested_model = self._passthrough_payload(chat_payload)
+            model_err = self._validate_passthrough_model(requested_model)
+            if model_err is not None:
+                return model_err
+            logger.info("Passthrough responses: base_url=%s model=%s payload_keys=%s", runtime.get("base_url"), chat_payload.get("model"), list(chat_payload.keys()))
+            api_mode = str(runtime.get("api_mode") or "").strip().lower()
+            if not runtime.get("api_key"):
+                return web.json_response(_openai_error("No upstream API key resolved from Hermes config.", code="missing_upstream_api_key"), status=500)
+
+            client = AsyncOpenAI(api_key=runtime.get("api_key"), base_url=runtime.get("base_url") or None)
+
+            from gateway.platforms.one_model_api import get_passthrough_adapter
+
+            adapter = get_passthrough_adapter(runtime)
+            if adapter is None:
+                return web.json_response(
+                    _openai_error(
+                        f"API passthrough does not yet support current upstream api_mode {api_mode!r}.",
+                        code="unsupported_provider_mode",
+                    ),
+                    status=501,
+                )
+
+            return await adapter.responses(
+                server=self,
+                request=request,
+                client=client,
+                runtime=runtime,
+                body=body,
+                chat_payload=chat_payload,
+                requested_model=requested_model,
+            )
+        except Exception as exc:
+            logger.exception("Passthrough responses failed")
+            return web.json_response(
+                _openai_error(f"Passthrough upstream request failed: {exc}", code="upstream_request_failed"),
+                status=502,
+            )
+
     async def _handle_responses(self, request: "web.Request") -> "web.Response":
         """POST /v1/responses — OpenAI Responses API format."""
         auth_err = self._check_auth(request)
         if auth_err:
             return auth_err
+        if self._mode == "passthrough":
+            try:
+                body = await request.json()
+            except (json.JSONDecodeError, Exception):
+                return web.json_response(_openai_error("Invalid JSON in request body"), status=400)
+            return await self._handle_passthrough_responses(request, body)
 
         # Long-term memory scope header (see chat_completions for details).
         gateway_session_key, key_err = self._parse_session_key_header(request)
@@ -2811,6 +3021,11 @@ class APIServerAdapter(BasePlatformAdapter):
         auth_err = self._check_auth(request)
         if auth_err:
             return auth_err
+        if self._mode == "passthrough":
+            return web.json_response(
+                _openai_error("/v1/runs is not available in API_SERVER_MODE=passthrough; use /v1/chat/completions.", code="unsupported_endpoint"),
+                status=501,
+            )
 
         # Long-term memory scope header (see chat_completions for details).
         gateway_session_key, key_err = self._parse_session_key_header(request)
