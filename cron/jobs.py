@@ -13,11 +13,12 @@ import tempfile
 import threading
 import os
 import re
+import shlex
 import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
 from hermes_constants import get_hermes_home
-from typing import Optional, Dict, List, Any, Union
+from typing import Optional, Dict, List, Any, Set, Union
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +71,216 @@ def _apply_skill_fields(job: Dict[str, Any]) -> Dict[str, Any]:
     normalized["skills"] = skills
     normalized["skill"] = skills[0] if skills else None
     return normalized
+
+
+def _find_skill_dir_for_rewrite(skill_name: str) -> Optional[Path]:
+    """Find an installed skill directory by its leaf directory name."""
+    name = str(skill_name or "").strip()
+    if not name:
+        return None
+
+    skills_root = HERMES_DIR / "skills"
+    if not skills_root.exists():
+        return None
+
+    candidates: List[Path] = [skills_root / name]
+    try:
+        candidates.extend(
+            child / name for child in skills_root.iterdir() if child.is_dir()
+        )
+    except OSError:
+        pass
+
+    for candidate in candidates:
+        if candidate.is_dir():
+            return candidate
+
+    try:
+        for skill_file in skills_root.rglob("SKILL.md"):
+            if skill_file.parent.name == name:
+                return skill_file.parent
+    except OSError:
+        pass
+
+    return None
+
+
+def _skill_segment_index(parts: List[str], skill_name: str) -> Optional[int]:
+    """Return the segment index for skill_name when it appears under skills/."""
+    for index, part in enumerate(parts):
+        if part != skill_name:
+            continue
+        if "skills" in parts[:index]:
+            return index
+    return None
+
+
+def _skill_root_index(parts: List[str], before_index: int) -> Optional[int]:
+    for index in range(before_index - 1, -1, -1):
+        if parts[index] == "skills":
+            return index
+    return None
+
+
+def _rewrite_skill_path_token(
+    token: str,
+    consolidated: Dict[str, str],
+    pruned_set: Set[str],
+    *,
+    require_target_exists: bool,
+) -> Dict[str, Any]:
+    """Rewrite one path-like token that may point inside a skill directory."""
+    raw = str(token or "").strip()
+    if not raw:
+        return {"matched": False}
+
+    normalized = raw.replace("\\", "/")
+    parts = normalized.split("/")
+
+    for old_name, target_name in consolidated.items():
+        old_index = _skill_segment_index(parts, old_name)
+        if old_index is None:
+            continue
+
+        skills_index = _skill_root_index(parts, old_index)
+        target_dir = _find_skill_dir_for_rewrite(target_name)
+        if skills_index is None or target_dir is None:
+            return {
+                "matched": True,
+                "changed": False,
+                "old": old_name,
+                "target": target_name,
+                "reason": f"target skill directory not found: {target_name}",
+            }
+
+        suffix = parts[old_index + 1:]
+        target_path = target_dir.joinpath(*suffix)
+        if require_target_exists and not target_path.exists():
+            return {
+                "matched": True,
+                "changed": False,
+                "old": old_name,
+                "target": target_name,
+                "reason": f"target path does not exist: {target_path}",
+            }
+
+        try:
+            target_rel_parts = list(target_dir.relative_to(HERMES_DIR).parts)
+            new_parts = parts[:skills_index] + target_rel_parts + suffix
+            separator = "\\" if "\\" in raw and "/" not in raw else "/"
+            new_token = separator.join(new_parts)
+        except ValueError:
+            new_token = str(target_path)
+
+        return {
+            "matched": True,
+            "changed": new_token != raw,
+            "old": old_name,
+            "target": target_name,
+            "new": new_token,
+        }
+
+    for old_name in pruned_set:
+        old_index = _skill_segment_index(parts, old_name)
+        if old_index is not None:
+            return {
+                "matched": True,
+                "changed": True,
+                "old": old_name,
+                "target": None,
+                "new": None,
+            }
+
+    return {"matched": False}
+
+
+def _path_tokens_to_scan(value: str) -> List[str]:
+    """Extract path-like tokens from a cron script/workdir field."""
+    raw = str(value or "").strip()
+    if not raw:
+        return []
+    if not any(ch.isspace() for ch in raw):
+        return [raw]
+
+    if "\\" in raw:
+        tokens = raw.split()
+    else:
+        try:
+            tokens = shlex.split(raw)
+        except ValueError:
+            tokens = raw.split()
+
+    if not tokens:
+        tokens = raw.split()
+
+    return [
+        token for token in tokens
+        if "skills" in token.replace("\\", "/").split("/")
+    ]
+
+
+def _rewrite_cron_path_field(
+    value: Any,
+    consolidated: Dict[str, str],
+    pruned_set: Set[str],
+    *,
+    field: str,
+    require_target_exists: bool,
+) -> Dict[str, Any]:
+    """Rewrite script/workdir strings that reference consolidated skills."""
+    raw = str(value or "").strip()
+    if not raw:
+        return {"changed": False, "unresolved": []}
+
+    rewritten = raw
+    mapped: Dict[str, str] = {}
+    dropped: List[str] = []
+    unresolved: List[Dict[str, Any]] = []
+
+    for token in _path_tokens_to_scan(raw):
+        outcome = _rewrite_skill_path_token(
+            token,
+            consolidated,
+            pruned_set,
+            require_target_exists=require_target_exists,
+        )
+        if not outcome.get("matched"):
+            continue
+
+        old_name = outcome.get("old")
+        target_name = outcome.get("target")
+        if not outcome.get("changed"):
+            unresolved.append({
+                "field": field,
+                "skill": old_name,
+                "target": target_name,
+                "value": raw,
+                "reason": outcome.get("reason") or "reference could not be rewritten",
+            })
+            continue
+
+        new_token = outcome.get("new")
+        if new_token is None:
+            dropped.append(str(old_name))
+            return {
+                "changed": True,
+                "value": None,
+                "mapped": mapped,
+                "dropped": dropped,
+                "unresolved": unresolved,
+            }
+
+        rewritten = rewritten.replace(token, str(new_token), 1)
+        if old_name and target_name:
+            mapped[str(old_name)] = str(target_name)
+
+    return {
+        "changed": rewritten != raw,
+        "value": rewritten,
+        "mapped": mapped,
+        "dropped": dropped,
+        "unresolved": unresolved,
+    }
 
 
 def _coerce_job_text(value: Any, fallback: str = "") -> str:
@@ -1068,6 +1279,10 @@ def rewrite_skill_refs(
       forwarding target.
     - Ordering and other skills in the list are preserved.
     - The legacy ``skill`` field is realigned via ``_apply_skill_fields``.
+    - ``script`` and ``workdir`` fields that point inside a consolidated
+      skill directory are rewritten to the absorbing skill directory when
+      the target path exists. Pruned skill path references are cleared.
+      References that cannot be resolved are reported but left untouched.
 
     Args:
         consolidated: mapping of ``old_skill_name -> umbrella_skill_name``.
@@ -1090,6 +1305,7 @@ def rewrite_skill_refs(
             ],
             "jobs_updated": N,
             "jobs_scanned": M,
+            "jobs_with_unresolved": U,
         }
 
     Best-effort: exceptions from loading/saving propagate to the caller so
@@ -1109,12 +1325,13 @@ def rewrite_skill_refs(
         jobs = load_jobs()
         rewrites: List[Dict[str, Any]] = []
         changed = False
+        updated_count = 0
+        unresolved_count = 0
 
         for job in jobs:
             skills_before = _normalize_skill_list(job.get("skill"), job.get("skills"))
-            if not skills_before:
-                continue
-
+            script_before = job.get("script")
+            workdir_before = job.get("workdir")
             mapped: Dict[str, str] = {}
             dropped: List[str] = []
             new_skills: List[str] = []
@@ -1130,30 +1347,81 @@ def rewrite_skill_refs(
                 elif name not in new_skills:
                     new_skills.append(name)
 
-            if not mapped and not dropped:
+            script_rewrite = _rewrite_cron_path_field(
+                job.get("script"),
+                consolidated,
+                pruned_set,
+                field="script",
+                require_target_exists=True,
+            )
+            workdir_rewrite = _rewrite_cron_path_field(
+                job.get("workdir"),
+                consolidated,
+                pruned_set,
+                field="workdir",
+                require_target_exists=True,
+            )
+
+            unresolved = (
+                script_rewrite.get("unresolved", [])
+                + workdir_rewrite.get("unresolved", [])
+            )
+
+            skills_changed = bool(mapped or dropped)
+            paths_changed = bool(
+                script_rewrite.get("changed") or workdir_rewrite.get("changed")
+            )
+            if not skills_changed and not paths_changed and not unresolved:
                 continue
 
-            job["skills"] = new_skills
-            job["skill"] = new_skills[0] if new_skills else None
-            changed = True
+            if skills_changed:
+                job["skills"] = new_skills
+                job["skill"] = new_skills[0] if new_skills else None
 
-            rewrites.append({
+            if script_rewrite.get("changed"):
+                job["script"] = script_rewrite.get("value")
+
+            if workdir_rewrite.get("changed"):
+                job["workdir"] = workdir_rewrite.get("value")
+
+            if skills_changed or paths_changed:
+                changed = True
+                updated_count += 1
+
+            if unresolved:
+                unresolved_count += 1
+
+            entry = {
                 "job_id": job.get("id"),
                 "job_name": job.get("name") or job.get("id"),
                 "before": list(skills_before),
-                "after": list(new_skills),
+                "after": list(new_skills) if skills_changed else list(skills_before),
                 "mapped": mapped,
                 "dropped": dropped,
-            })
+            }
+            if script_rewrite.get("changed"):
+                entry["script_before"] = script_before
+                entry["script_after"] = script_rewrite.get("value")
+                entry["script_mapped"] = script_rewrite.get("mapped", {})
+                entry["script_dropped"] = script_rewrite.get("dropped", [])
+            if workdir_rewrite.get("changed"):
+                entry["workdir_before"] = workdir_before
+                entry["workdir_after"] = workdir_rewrite.get("value")
+                entry["workdir_mapped"] = workdir_rewrite.get("mapped", {})
+                entry["workdir_dropped"] = workdir_rewrite.get("dropped", [])
+            if unresolved:
+                entry["unresolved"] = unresolved
+            rewrites.append(entry)
 
         if changed:
             save_jobs(jobs)
             logger.info(
-                "Curator rewrote skill references in %d cron job(s)", len(rewrites)
+                "Curator rewrote skill references in %d cron job(s)", updated_count
             )
 
         return {
             "rewrites": rewrites,
-            "jobs_updated": len(rewrites),
+            "jobs_updated": updated_count,
             "jobs_scanned": len(jobs),
+            "jobs_with_unresolved": unresolved_count,
         }

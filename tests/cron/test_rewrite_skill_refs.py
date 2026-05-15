@@ -37,6 +37,17 @@ def cron_env(tmp_path, monkeypatch):
     return hermes_home
 
 
+def _make_skill(hermes_home: Path, category: str, name: str, files: dict[str, str] | None = None) -> Path:
+    skill_dir = hermes_home / "skills" / category / name
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    (skill_dir / "SKILL.md").write_text(f"---\nname: {name}\n---\n", encoding="utf-8")
+    for rel_path, content in (files or {}).items():
+        path = skill_dir / rel_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+    return skill_dir
+
+
 class TestRewriteSkillRefsNoop:
     """No jobs, no rewrites, no map — every combination of empty inputs."""
 
@@ -255,6 +266,117 @@ class TestRewriteSkillRefsMultipleJobs:
         loaded = get_job(job["id"])
         assert loaded["skills"] == ["umbrella"]
         assert loaded["skill"] == "umbrella"
+
+
+class TestRewriteSkillRefsPathFields:
+    """Cron script/workdir fields can also point inside skill directories."""
+
+    def test_script_command_path_rewritten_when_target_file_exists(self, cron_env):
+        from cron.jobs import create_job, get_job, rewrite_skill_refs
+
+        old_dir = _make_skill(cron_env, "productivity", "school-teen-radar")
+        target_dir = _make_skill(
+            cron_env,
+            "productivity",
+            "automated-industry-briefing",
+            {"scripts/jacob_digest.py": "print('ok')\n"},
+        )
+        old_script = old_dir / "scripts" / "jacob_digest.py"
+        script_command = f"python3 {old_script} --days 1 --compact"
+
+        job = create_job(
+            prompt="",
+            schedule="every 1h",
+            skills=["school-teen-radar", "google-workspace"],
+            script=script_command,
+        )
+        report = rewrite_skill_refs(
+            consolidated={"school-teen-radar": "automated-industry-briefing"},
+            pruned=[],
+        )
+
+        loaded = get_job(job["id"])
+        expected_script = target_dir / "scripts" / "jacob_digest.py"
+        assert loaded["skills"] == ["automated-industry-briefing", "google-workspace"]
+        assert loaded["script"] == f"python3 {expected_script} --days 1 --compact"
+        assert report["jobs_updated"] == 1
+        entry = report["rewrites"][0]
+        assert entry["script_before"] == script_command
+        assert entry["script_after"] == loaded["script"]
+        assert entry["script_mapped"] == {
+            "school-teen-radar": "automated-industry-briefing",
+        }
+
+    def test_workdir_rewritten_to_absorbing_skill_dir(self, cron_env):
+        from cron.jobs import create_job, get_job, rewrite_skill_refs
+
+        old_dir = _make_skill(cron_env, "productivity", "school-teen-radar")
+        target_dir = _make_skill(cron_env, "productivity", "automated-industry-briefing")
+
+        job = create_job(
+            prompt="",
+            schedule="every 1h",
+            workdir=str(old_dir),
+        )
+        report = rewrite_skill_refs(
+            consolidated={"school-teen-radar": "automated-industry-briefing"},
+            pruned=[],
+        )
+
+        loaded = get_job(job["id"])
+        assert loaded["workdir"] == str(target_dir)
+        assert report["jobs_updated"] == 1
+        assert report["rewrites"][0]["workdir_before"] == str(old_dir)
+        assert report["rewrites"][0]["workdir_after"] == str(target_dir)
+
+    def test_missing_target_script_is_reported_without_rewrite(self, cron_env):
+        from cron.jobs import create_job, get_job, rewrite_skill_refs
+
+        old_dir = _make_skill(cron_env, "productivity", "school-teen-radar")
+        _make_skill(cron_env, "productivity", "automated-industry-briefing")
+        old_script = old_dir / "scripts" / "jacob_digest.py"
+        script_command = f"python3 {old_script} --days 1"
+
+        job = create_job(
+            prompt="",
+            schedule="every 1h",
+            script=script_command,
+        )
+        report = rewrite_skill_refs(
+            consolidated={"school-teen-radar": "automated-industry-briefing"},
+            pruned=[],
+        )
+
+        loaded = get_job(job["id"])
+        assert loaded["script"] == script_command
+        assert report["jobs_updated"] == 0
+        assert report["jobs_with_unresolved"] == 1
+        unresolved = report["rewrites"][0]["unresolved"][0]
+        assert unresolved["field"] == "script"
+        assert unresolved["skill"] == "school-teen-radar"
+        assert "target path does not exist" in unresolved["reason"]
+
+    def test_pruned_skill_path_refs_are_cleared(self, cron_env):
+        from cron.jobs import create_job, get_job, rewrite_skill_refs
+
+        old_dir = _make_skill(cron_env, "productivity", "school-teen-radar")
+        old_script = old_dir / "scripts" / "digest.py"
+
+        job = create_job(
+            prompt="",
+            schedule="every 1h",
+            script=str(old_script),
+            workdir=str(old_dir),
+        )
+        report = rewrite_skill_refs(consolidated={}, pruned=["school-teen-radar"])
+
+        loaded = get_job(job["id"])
+        assert loaded.get("script") is None
+        assert loaded.get("workdir") is None
+        assert report["jobs_updated"] == 1
+        entry = report["rewrites"][0]
+        assert entry["script_dropped"] == ["school-teen-radar"]
+        assert entry["workdir_dropped"] == ["school-teen-radar"]
 
 
 class TestRewriteSkillRefsPersistence:
