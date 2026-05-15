@@ -30,6 +30,10 @@ def _resolve_safe_cwd(cwd: str) -> str:
     raises ``FileNotFoundError`` before bash starts, wedging every subsequent
     terminal call until the gateway restarts.
     """
+    # Expand ~ and environment variables so callers can pass paths like
+    # ~/Projects/DaemonCraft/agents/bot without falling through to /tmp.
+    if cwd:
+        cwd = os.path.expandvars(os.path.expanduser(cwd))
     if cwd and os.path.isdir(cwd):
         return cwd
     parent = os.path.dirname(cwd) if cwd else ""
