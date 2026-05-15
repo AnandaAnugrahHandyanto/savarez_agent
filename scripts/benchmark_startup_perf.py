@@ -55,6 +55,48 @@ CASES: dict[str, str] = {
         "start=time.perf_counter(); mgr=PluginManager(); mgr.discover_and_load(); elapsed=time.perf_counter()-start\n"
         "print(json.dumps({'elapsed': elapsed, 'plugins': len(mgr._plugins), 'platforms_loaded': mgr._platform_plugins_loaded}))\n"
     ),
+    "tool_discovery_source_scan_adaptive": (
+        "import json, time\n"
+        "from pathlib import Path\n"
+        "from tools import registry as reg\n"
+        "tools_path=Path('tools').resolve()\n"
+        "reg._TOOL_DISCOVERY_PARALLEL_THRESHOLD=10**9\n"
+        "start=time.perf_counter(); sequential=reg._discover_registering_tool_modules(tools_path); sequential_elapsed=time.perf_counter()-start\n"
+        "reg._TOOL_DISCOVERY_PARALLEL_THRESHOLD=8\n"
+        "candidates=reg._candidate_tool_paths(tools_path)\n"
+        "parallel_eligible=reg._should_parallel_scan_tool_sources(candidates)\n"
+        "start=time.perf_counter(); adaptive=reg._discover_registering_tool_modules(tools_path); adaptive_elapsed=time.perf_counter()-start\n"
+        "print(json.dumps({'elapsed': adaptive_elapsed, 'sequential': sequential_elapsed, 'adaptive': adaptive_elapsed, 'parallel_eligible': parallel_eligible, 'speedup': sequential_elapsed / adaptive_elapsed if adaptive_elapsed else None, 'tools': len(adaptive), 'same': sequential == adaptive}))\n"
+    ),
+    "resolve_toolset_cached": (
+        "import json, time\n"
+        "from toolsets import clear_toolset_resolution_cache, resolve_toolset\n"
+        "clear_toolset_resolution_cache()\n"
+        "start=time.perf_counter(); first=resolve_toolset('all'); cold=time.perf_counter()-start\n"
+        "start=time.perf_counter()\n"
+        "for _ in range(1000): resolve_toolset('all')\n"
+        "warm_total=time.perf_counter()-start\n"
+        "print(json.dumps({'elapsed': cold, 'cold': cold, 'warm': warm_total/1000, 'tools': len(first)}))\n"
+    ),
+    "session_append_messages_batch": (
+        "import json, tempfile, time\n"
+        "from pathlib import Path\n"
+        "from hermes_state import SessionDB\n"
+        "tool_calls=[{'id':'c1','function':{'name':'web_search','arguments':'{}'}}, {'id':'c2','function':{'name':'read_file','arguments':'{}'}}]\n"
+        "messages=[]\n"
+        "for i in range(60):\n"
+        "    messages.append({'role':'user','content':f'prompt {i}'})\n"
+        "    messages.append({'role':'assistant','content':'','tool_calls':tool_calls})\n"
+        "    messages.append({'role':'tool','content':'ok','tool_name':'web_search'})\n"
+        "tmp=Path(tempfile.mkdtemp())\n"
+        "db=SessionDB(db_path=tmp/'loop.db'); db.create_session('s1', source='bench')\n"
+        "start=time.perf_counter()\n"
+        "for msg in messages: db.append_message('s1', **msg)\n"
+        "loop=time.perf_counter()-start; db.close()\n"
+        "db=SessionDB(db_path=tmp/'batch.db'); db.create_session('s1', source='bench')\n"
+        "start=time.perf_counter(); db.append_messages('s1', messages); batch=time.perf_counter()-start; db.close()\n"
+        "print(json.dumps({'elapsed': batch, 'loop': loop, 'batch': batch, 'speedup': loop / batch if batch else None, 'messages': len(messages)}))\n"
+    ),
 }
 
 
@@ -129,6 +171,20 @@ def main() -> int:
             notes.append(f"platforms_loaded={sample['platforms_loaded']}")
         if "warm" in sample:
             notes.append(f"warm={sample['warm']:.6f}s")
+        if "loop" in sample and "batch" in sample:
+            notes.append(f"loop={sample['loop']:.4f}s")
+            notes.append(f"batch={sample['batch']:.4f}s")
+        if "sequential" in sample and "adaptive" in sample:
+            notes.append(f"sequential={sample['sequential']:.4f}s")
+            notes.append(f"adaptive={sample['adaptive']:.4f}s")
+        if "parallel_eligible" in sample:
+            notes.append(f"parallel_eligible={sample['parallel_eligible']}")
+        if "same" in sample:
+            notes.append(f"same={sample['same']}")
+        if "speedup" in sample and sample["speedup"]:
+            notes.append(f"speedup={sample['speedup']:.2f}x")
+        if "messages" in sample:
+            notes.append(f"messages={sample['messages']}")
         print(
             f"| {name} | {summary['median']:.4f}s | {summary['min']:.4f}s | "
             f"{summary['max']:.4f}s | {', '.join(notes)} |"

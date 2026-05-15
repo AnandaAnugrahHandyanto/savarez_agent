@@ -213,6 +213,31 @@ class TestMessageStorage:
         messages = db.get_messages("s1")
         assert messages[0]["tool_calls"] == tool_calls
 
+    def test_append_messages_batches_session_counter_updates(self, db):
+        db.create_session(session_id="s1", source="cli")
+        tool_calls = [
+            {"id": "call_1", "function": {"name": "web_search", "arguments": "{}"}},
+            {"id": "call_2", "function": {"name": "read_file", "arguments": "{}"}},
+        ]
+
+        ids = db.append_messages(
+            "s1",
+            [
+                {"role": "user", "content": "Hello"},
+                {"role": "assistant", "content": "", "tool_calls": tool_calls},
+                {"role": "tool", "content": "ok", "tool_name": "web_search"},
+            ],
+        )
+
+        assert len(ids) == 3
+        messages = db.get_messages("s1")
+        assert [m["role"] for m in messages] == ["user", "assistant", "tool"]
+        assert messages[0]["content"] == "Hello"
+        assert messages[1]["tool_calls"] == tool_calls
+        session = db.get_session("s1")
+        assert session["message_count"] == 3
+        assert session["tool_call_count"] == 2
+
     def test_multimodal_list_content_round_trip(self, db):
         """Multimodal ``content`` (list of parts) must survive the SQLite
         round-trip.  sqlite3 cannot bind Python lists directly, so the DB

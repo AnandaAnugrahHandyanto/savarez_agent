@@ -1350,6 +1350,88 @@ class SessionDB:
 
         return self._execute_write(_do)
 
+    def append_messages(self, session_id: str, messages: List[Dict[str, Any]]) -> List[int]:
+        """Append multiple messages in one SQLite transaction.
+
+        Each item accepts the same keys as :meth:`append_message` except
+        ``session_id``. Returns inserted row IDs in order.
+        """
+        prepared: List[tuple] = []
+        total_tool_calls = 0
+        now_ts = time.time()
+
+        for index, msg in enumerate(messages):
+            role = msg.get("role", "unknown")
+            content = msg.get("content")
+            tool_calls = msg.get("tool_calls")
+            reasoning_details = msg.get("reasoning_details")
+            codex_reasoning_items = msg.get("codex_reasoning_items")
+            codex_message_items = msg.get("codex_message_items")
+            tool_calls_json = json.dumps(tool_calls) if tool_calls else None
+            reasoning_details_json = (
+                json.dumps(reasoning_details) if reasoning_details else None
+            )
+            codex_items_json = (
+                json.dumps(codex_reasoning_items)
+                if codex_reasoning_items else None
+            )
+            codex_message_items_json = (
+                json.dumps(codex_message_items)
+                if codex_message_items else None
+            )
+            if tool_calls is not None:
+                total_tool_calls += len(tool_calls) if isinstance(tool_calls, list) else 1
+
+            prepared.append(
+                (
+                    session_id,
+                    role,
+                    self._encode_content(content),
+                    msg.get("tool_call_id"),
+                    tool_calls_json,
+                    msg.get("tool_name"),
+                    now_ts + (index * 1e-6),
+                    msg.get("token_count"),
+                    msg.get("finish_reason"),
+                    msg.get("reasoning"),
+                    msg.get("reasoning_content"),
+                    reasoning_details_json,
+                    codex_items_json,
+                    codex_message_items_json,
+                )
+            )
+
+        if not prepared:
+            return []
+
+        def _do(conn):
+            ids: List[int] = []
+            for row in prepared:
+                cursor = conn.execute(
+                    """INSERT INTO messages (session_id, role, content, tool_call_id,
+                       tool_calls, tool_name, timestamp, token_count, finish_reason,
+                       reasoning, reasoning_content, reasoning_details,
+                       codex_reasoning_items, codex_message_items)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    row,
+                )
+                ids.append(cursor.lastrowid)
+
+            if total_tool_calls > 0:
+                conn.execute(
+                    """UPDATE sessions SET message_count = message_count + ?,
+                       tool_call_count = tool_call_count + ? WHERE id = ?""",
+                    (len(prepared), total_tool_calls, session_id),
+                )
+            else:
+                conn.execute(
+                    "UPDATE sessions SET message_count = message_count + ? WHERE id = ?",
+                    (len(prepared), session_id),
+                )
+            return ids
+
+        return self._execute_write(_do)
+
     def replace_messages(self, session_id: str, messages: List[Dict[str, Any]]) -> None:
         """Atomically replace every message for a session.
 
