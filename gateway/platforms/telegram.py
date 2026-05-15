@@ -1527,7 +1527,11 @@ class TelegramAdapter(BasePlatformAdapter):
             
             message_ids = []
             thread_id = self._metadata_thread_id(metadata)
-            
+
+            # Context-inject button: attach to the last chunk of a cron delivery
+            # when the job has offer_context_inject=True.
+            ci_token = (metadata or {}).get("cron_context_inject_token")
+
             try:
                 from telegram.error import NetworkError as _NetErr
             except ImportError:
@@ -1544,6 +1548,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 _TimedOut = None  # type: ignore[assignment,misc]
 
             for i, chunk in enumerate(chunks):
+                is_last_chunk = (i == len(chunks) - 1)
                 metadata_reply_to = self._metadata_reply_to_message_id(metadata)
                 reply_to_source = reply_to or (
                     str(metadata_reply_to)
@@ -1563,6 +1568,19 @@ class TelegramAdapter(BasePlatformAdapter):
                 effective_thread_id = thread_kwargs.get("message_thread_id")
 
                 msg = None
+                # Build context-inject keyboard once per chunk (outside retry loop)
+                ci_keyboard = None
+                if ci_token and is_last_chunk:
+                    ci_keyboard = InlineKeyboardMarkup([[
+                        InlineKeyboardButton(
+                            "📌 Add to session",
+                            callback_data=f"ci:inject:{ci_token}",
+                        ),
+                        InlineKeyboardButton(
+                            "💬 New session",
+                            callback_data=f"ci:new:{ci_token}",
+                        ),
+                    ]])
                 for _send_attempt in range(3):
                     try:
                         # Try Markdown first, fall back to plain text if it fails
@@ -1572,6 +1590,7 @@ class TelegramAdapter(BasePlatformAdapter):
                                 text=chunk,
                                 parse_mode=ParseMode.MARKDOWN_V2,
                                 reply_to_message_id=reply_to_id,
+                                reply_markup=ci_keyboard,
                                 **thread_kwargs,
                                 **self._link_preview_kwargs(),
                                 **self._notification_kwargs(metadata),
@@ -1586,6 +1605,7 @@ class TelegramAdapter(BasePlatformAdapter):
                                     text=plain_chunk,
                                     parse_mode=None,
                                     reply_to_message_id=reply_to_id,
+                                    reply_markup=ci_keyboard,
                                     **thread_kwargs,
                                     **self._link_preview_kwargs(),
                                     **self._notification_kwargs(metadata),
@@ -2895,6 +2915,130 @@ class TelegramAdapter(BasePlatformAdapter):
                         "Telegram clarify button: resolve_gateway_clarify returned False (id=%s)",
                         clarify_id,
                     )
+            return
+
+        # --- Cron context-inject callbacks (ci:action:token) ---
+        if data.startswith("ci:"):
+            parts = data.split(":", 2)
+            if len(parts) != 3:
+                await query.answer(text="Invalid context-inject data.")
+                return
+
+            action = parts[1]   # "inject" or "new"
+            ci_token = parts[2]
+
+            caller_id = str(getattr(query.from_user, "id", ""))
+            if not self._is_callback_user_authorized(
+                caller_id,
+                chat_id=query_chat_id,
+                chat_type=str(query_chat_type) if query_chat_type is not None else None,
+                thread_id=str(query_thread_id) if query_thread_id is not None else None,
+                user_name=query_user_name,
+            ):
+                await query.answer(text="⛔ You are not authorized.")
+                return
+
+            # Retrieve and consume the stored cron output
+            try:
+                from cron.scheduler import ci_store_pop
+                entry = ci_store_pop(ci_token)
+            except Exception as exc:
+                logger.warning("[%s] ci_store_pop failed: %s", self.name, exc)
+                entry = None
+
+            if not entry:
+                await query.answer(text="⏰ Token expired or not found.")
+                try:
+                    await query.edit_message_reply_markup(reply_markup=None)
+                except Exception:
+                    pass
+                return
+
+            raw_content = entry["content"]
+            job_id = entry.get("job_id", "")
+            chat_id_str = str(query_chat_id) if query_chat_id is not None else ""
+            thread_id_str = str(query_thread_id) if query_thread_id is not None else None
+            label = "⚠️ Gagal"  # default, overwritten below
+
+            if action == "inject":
+                # Inject into the active session for this chat as a user message
+                # so the agent sees it as new input and can respond.
+                try:
+                    from gateway.mirror import mirror_to_session, has_active_session
+                    if not has_active_session(
+                        platform="telegram",
+                        chat_id=chat_id_str,
+                        thread_id=thread_id_str,
+                    ):
+                        ok = False
+                    else:
+                        ok = mirror_to_session(
+                            platform="telegram",
+                            chat_id=chat_id_str,
+                            message_text=raw_content,
+                            source_label=f"cron:{job_id}",
+                            thread_id=thread_id_str,
+                            role="user",
+                        )
+                except Exception as exc:
+                    logger.warning("[%s] mirror_to_session failed: %s", self.name, exc)
+                    ok = False
+
+                if ok:
+                    await query.answer(text="✅ Added to active session.")
+                    label = "✅ Added to session"
+                else:
+                    # No active session found — fall back to "new session" behavior
+                    action = "new"
+
+            if action == "new":
+                # Queue the cron output as a pending user message. The next time
+                # the user sends a message, the gateway will pick it up and the
+                # agent will see it as context. We cannot create a brand-new
+                # session from a callback handler (no GatewaySession access), so
+                # we write it as a user-role mirror entry — it will be visible in
+                # the next session that opens for this chat.
+                try:
+                    from gateway.mirror import mirror_to_session
+                    ok = mirror_to_session(
+                        platform="telegram",
+                        chat_id=chat_id_str,
+                        message_text=raw_content,
+                        source_label=f"cron:{job_id}",
+                        thread_id=thread_id_str,
+                        role="user",
+                    )
+                except Exception as exc:
+                    logger.warning("[%s] new-session context inject failed: %s", self.name, exc)
+                    ok = False
+
+                if ok:
+                    await query.answer(text="💬 Context queued — send a message to continue.")
+                    label = "💬 Context queued"
+                else:
+                    await query.answer(text="⚠️ No session found. Start a conversation first.")
+                    label = "⚠️ No active session"
+
+            # Edit the message to remove buttons and show status
+            try:
+                await query.edit_message_reply_markup(reply_markup=None)
+            except Exception:
+                pass
+            # Send a brief confirmation in the same chat
+            if query.message and self._bot and ParseMode:
+                try:
+                    _ci_thread_kwargs = self._thread_kwargs_for_send(
+                        chat_id_str, thread_id_str, {"thread_id": thread_id_str} if thread_id_str else None
+                    )
+                    await self._bot.send_message(
+                        chat_id=int(chat_id_str),
+                        text=self.format_message(f"{label} — send your next message to continue."),
+                        parse_mode=ParseMode.MARKDOWN_V2,
+                        **_ci_thread_kwargs,
+                        **self._link_preview_kwargs(),
+                    )
+                except Exception as exc:
+                    logger.warning("[%s] ci confirmation send failed: %s", self.name, exc)
             return
 
         # --- Update prompt callbacks ---

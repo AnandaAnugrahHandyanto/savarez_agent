@@ -22,6 +22,15 @@ _SESSIONS_DIR = get_hermes_home() / "sessions"
 _SESSIONS_INDEX = _SESSIONS_DIR / "sessions.json"
 
 
+def has_active_session(
+    platform: str,
+    chat_id: str,
+    thread_id: Optional[str] = None,
+) -> bool:
+    """Return True if an active session exists for the given platform + chat_id."""
+    return _find_session_id(platform, str(chat_id), thread_id=thread_id) is not None
+
+
 def mirror_to_session(
     platform: str,
     chat_id: str,
@@ -29,12 +38,17 @@ def mirror_to_session(
     source_label: str = "cli",
     thread_id: Optional[str] = None,
     user_id: Optional[str] = None,
+    role: str = "assistant",
 ) -> bool:
     """
     Append a delivery-mirror message to the target session's transcript.
 
     Finds the gateway session that matches the given platform + chat_id,
     then writes a mirror entry to both the JSONL transcript and SQLite DB.
+
+    Args:
+        role: Message role — "assistant" for outbound delivery mirrors,
+              "user" for context-inject (cron output injected as user input).
 
     Returns True if mirrored successfully, False if no matching session or error.
     All errors are caught -- this is never fatal.
@@ -57,7 +71,7 @@ def mirror_to_session(
             return False
 
         mirror_msg = {
-            "role": "assistant",
+            "role": role,
             "content": message_text,
             "timestamp": datetime.now().isoformat(),
             "mirror": True,
@@ -67,7 +81,7 @@ def mirror_to_session(
         _append_to_jsonl(session_id, mirror_msg)
         _append_to_sqlite(session_id, mirror_msg)
 
-        logger.debug("Mirror: wrote to session %s (from %s)", session_id, source_label)
+        logger.debug("Mirror: wrote to session %s (from %s, role=%s)", session_id, source_label, role)
         return True
 
     except Exception as e:

@@ -302,6 +302,7 @@ def cronjob(
     enabled_toolsets: Optional[List[str]] = None,
     workdir: Optional[str] = None,
     no_agent: Optional[bool] = None,
+    offer_context_inject: Optional[bool] = None,
     task_id: str = None,
 ) -> str:
     """Unified cron job management tool."""
@@ -368,6 +369,7 @@ def cronjob(
                 enabled_toolsets=enabled_toolsets or None,
                 workdir=_normalize_optional_job_value(workdir),
                 no_agent=_no_agent,
+                offer_context_inject=bool(offer_context_inject) if offer_context_inject is not None else False,
             )
             return json.dumps(
                 {
@@ -612,6 +614,18 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
                     "WHEN TO USE False (default): anything that needs reasoning — summarize a feed, draft a daily briefing, pick interesting items, rephrase data for a human, follow conditional logic based on content."
                 ),
             },
+            "offer_context_inject": {
+                "type": "boolean",
+                "default": False,
+                "description": (
+                    "When True and deliver targets Telegram, the cron delivery message includes two inline buttons: "
+                    "\"📌 Add to session\" injects the raw output into the currently active session as a user message so the agent can respond to it; "
+                    "\"💬 New session\" does the same but seeds a fresh session. "
+                    "If no active session exists, the inject button falls back to new-session behavior automatically. "
+                    "Token expires after 24 h. Only supported via the live adapter (gateway running) — ignored on standalone delivery. "
+                    "Defaults to False."
+                ),
+            },
             "context_from": {
                 "type": "array",
                 "items": {"type": "string"},
@@ -682,6 +696,7 @@ registry.register(
         enabled_toolsets=args.get("enabled_toolsets"),
         workdir=args.get("workdir"),
         no_agent=args.get("no_agent"),
+        offer_context_inject=args.get("offer_context_inject"),
         task_id=kw.get("task_id"),
     ))(),
     check_fn=check_cronjob_requirements,

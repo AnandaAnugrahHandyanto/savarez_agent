@@ -41,6 +41,51 @@ from hermes_time import now as _hermes_now
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Context-inject store
+# ---------------------------------------------------------------------------
+# Maps a short token → raw cron output so the Telegram callback handler can
+# retrieve the content when the user taps "📌 Tambahkan ke sesi" or
+# "💬 Mulai sesi baru".  Entries are keyed by a random hex token embedded in
+# the callback_data string ("ci:<token>") and expire after 24 h to avoid
+# unbounded memory growth.
+# ---------------------------------------------------------------------------
+import threading as _threading
+import time as _time
+import secrets as _secrets
+
+_ci_store: dict = {}          # token → {"content": str, "job_id": str, "ts": float}
+_ci_store_lock = _threading.Lock()
+_CI_TTL = 86400               # 24 hours
+
+
+def _ci_store_put(content: str, job_id: str) -> str:
+    """Store raw cron output and return a short opaque token."""
+    token = _secrets.token_hex(8)
+    now = _time.monotonic()
+    with _ci_store_lock:
+        # Evict expired entries opportunistically
+        expired = [k for k, v in _ci_store.items() if now - v["ts"] > _CI_TTL]
+        for k in expired:
+            del _ci_store[k]
+        _ci_store[token] = {"content": content, "job_id": job_id, "ts": now}
+    return token
+
+
+def ci_store_pop(token: str) -> Optional[dict]:
+    """Retrieve and remove a stored context-inject entry by token.
+
+    Returns the stored dict (keys: ``content``, ``job_id``) or None if the
+    token is unknown or expired.  Called by the Telegram callback handler.
+    """
+    with _ci_store_lock:
+        entry = _ci_store.pop(token, None)
+    if entry is None:
+        return None
+    if _time.monotonic() - entry["ts"] > _CI_TTL:
+        return None
+    return entry
+
 
 class CronPromptInjectionBlocked(Exception):
     """Raised by _build_job_prompt when the fully-assembled prompt trips the
@@ -578,8 +623,18 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         # rooms (e.g. Matrix) where the standalone HTTP path cannot encrypt.
         runtime_adapter = (adapters or {}).get(platform)
         delivered = False
+
         if runtime_adapter is not None and loop is not None and getattr(loop, "is_running", lambda: False)():
-            send_metadata = {"thread_id": thread_id} if thread_id else None
+            # Build optional context-inject inline keyboard for Telegram deliveries.
+            # Only store the token when we know the live adapter will actually send it.
+            send_metadata = {"thread_id": thread_id} if thread_id else {}
+            if (
+                job.get("offer_context_inject")
+                and platform_name.lower() == "telegram"
+            ):
+                ci_token = _ci_store_put(content, job.get("id", ""))
+                send_metadata["cron_context_inject_token"] = ci_token
+            send_metadata = send_metadata or None
             try:
                 # Send cleaned text (MEDIA tags stripped) — not the raw content
                 text_to_send = cleaned_delivery_content.strip()
@@ -624,7 +679,10 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 )
 
         if not delivered:
-            # Standalone path: run the async send in a fresh event loop (safe from any thread)
+            # Standalone path: run the async send in a fresh event loop (safe from any thread).
+            # Note: context-inject button (offer_context_inject) is only supported via the
+            # live adapter path above. When the gateway is not running, the button is skipped
+            # and the message is delivered as plain text.
             coro = _send_to_platform(platform, pconfig, chat_id, cleaned_delivery_content, thread_id=thread_id, media_files=media_files)
             try:
                 result = asyncio.run(coro)
