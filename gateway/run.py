@@ -169,6 +169,35 @@ def _extract_research_progress_label(output: str, fallback: str = "🧠 thinking
     return fallback
 
 
+def _extract_research_progress_lines(output: str, limit: int = 3) -> list[str]:
+    if not output:
+        return ["🧠 thinking"]
+    labels: list[str] = []
+    for raw_line in output.splitlines()[-80:]:
+        line = raw_line.strip().lower()
+        if not line:
+            continue
+        label = ""
+        if " web_" in line or " websearch" in line or "web_search" in line or "web_extract" in line or "browser" in line:
+            label = "🌐 browsing"
+        elif " skill" in line or "skill_view" in line:
+            label = "📚 skimming"
+        elif " process" in line or " proc" in line:
+            label = "🧠 thinking"
+        elif " terminal" in line or " $ " in f" {line} " or line.startswith("┊ 💻"):
+            label = "🛠️ tinkering"
+        elif any(tok in line for tok in ("write_file", "read_file", "patch", "grep", "glob", "search_files")):
+            label = "💾 filing"
+        elif "clarify" in line or "todo" in line:
+            label = "📝 scribbling"
+        if label:
+            if not labels or labels[-1] != label:
+                labels.append(label)
+    if not labels:
+        return ["🧠 thinking"]
+    return labels[-limit:]
+
+
 def _telegramize_command_mentions(text: str, platform: Any) -> str:
     """Rewrite slash-command mentions to Telegram-valid command names.
 
@@ -13615,7 +13644,7 @@ class GatewayRunner:
             proc_session.watcher_thread_id = source.thread_id or ""
             proc_session.notify_on_complete = True
             proc_session.watcher_interval = 5
-            process_registry.pending_watchers.append({
+            watcher = {
                 "session_id": proc_session.id,
                 "check_interval": 5,
                 "session_key": session_key or "",
@@ -13627,7 +13656,15 @@ class GatewayRunner:
                 "notify_on_complete": True,
                 "direct_research_delivery": True,
                 "progress_message_id": progress_message_id,
-            })
+            }
+            process_registry.pending_watchers.append(watcher)
+            try:
+                process_registry._write_checkpoint()  # persist watcher metadata for crash recovery
+            except Exception:
+                pass
+            _watch_task = asyncio.create_task(self._run_process_watcher(watcher))
+            self._background_tasks.add(_watch_task)
+            _watch_task.add_done_callback(self._background_tasks.discard)
         except Exception as exc:
             logger.error("Manual Telegram research spawn failed: %s", exc, exc_info=True)
             return f"PUBLISH_FAILED: could not start research worker ({exc})"
@@ -13828,7 +13865,7 @@ class GatewayRunner:
                 if adapter and chat_id:
                     try:
                         send_meta = {"thread_id": thread_id} if thread_id else None
-                        label = _extract_research_progress_label(session.output_buffer)
+                        label = "\n".join(_extract_research_progress_lines(session.output_buffer, limit=3))
                         if progress_message_id and type(adapter).edit_message is not BasePlatformAdapter.edit_message:
                             await adapter.edit_message(
                                 chat_id=chat_id,
