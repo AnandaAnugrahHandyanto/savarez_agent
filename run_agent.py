@@ -10726,7 +10726,10 @@ class AIAgent:
             try:
                 from hermes_cli.plugins import get_pre_tool_call_block_message
                 block_message = get_pre_tool_call_block_message(
-                    function_name, function_args, task_id=effective_task_id or "",
+                    function_name,
+                    function_args,
+                    task_id=effective_task_id or "",
+                    profile=_hook_profile,
                 )
             except Exception:
                 pass
@@ -10889,7 +10892,10 @@ class AIAgent:
             try:
                 from hermes_cli.plugins import get_pre_tool_call_block_message
                 block_message = get_pre_tool_call_block_message(
-                    function_name, function_args, task_id=effective_task_id or "",
+                    function_name,
+                    function_args,
+                    task_id=effective_task_id or "",
+                    profile=_hook_profile,
                 )
             except Exception:
                 block_message = None
@@ -11267,7 +11273,10 @@ class AIAgent:
             try:
                 from hermes_cli.plugins import get_pre_tool_call_block_message
                 _block_msg = get_pre_tool_call_block_message(
-                    function_name, function_args, task_id=effective_task_id or "",
+                    function_name,
+                    function_args,
+                    task_id=effective_task_id or "",
+                    profile=_hook_profile,
                 )
             except Exception:
                 pass
@@ -11974,7 +11983,12 @@ class AIAgent:
         # state registry.  Set BEFORE any tool dispatch so snapshots taken at
         # child-launch time see the parent's real id, not None.
         self._current_task_id = effective_task_id
-        
+        try:
+            from hermes_cli.profiles import get_active_profile_name
+            _hook_profile = get_active_profile_name() or ""
+        except Exception:
+            _hook_profile = os.getenv("HERMES_PROFILE_NAME") or os.getenv("HERMES_PROFILE") or ""
+
         # Reset retry counters and iteration budget at the start of each turn
         # so subagent usage from a previous turn doesn't eat into the next one.
         self._invalid_tool_retries = 0
@@ -12146,6 +12160,7 @@ class AIAgent:
                         session_id=self.session_id,
                         model=self.model,
                         platform=getattr(self, "platform", None) or "",
+                        profile=_hook_profile,
                     )
                 except Exception as exc:
                     logger.warning("on_session_start hook failed: %s", exc)
@@ -12251,6 +12266,7 @@ class AIAgent:
                 model=self.model,
                 platform=getattr(self, "platform", None) or "",
                 sender_id=getattr(self, "_user_id", None) or "",
+                profile=_hook_profile,
             )
             _ctx_parts: list[str] = []
             for r in _pre_results:
@@ -12749,6 +12765,7 @@ class AIAgent:
                             user_message=original_user_message,
                             conversation_history=list(messages),
                             platform=self.platform or "",
+                            profile=_hook_profile,
                             model=self.model,
                             provider=self.provider,
                             base_url=self.base_url,
@@ -14655,6 +14672,7 @@ class AIAgent:
                         task_id=effective_task_id,
                         session_id=self.session_id or "",
                         platform=self.platform or "",
+                        profile=_hook_profile,
                         model=self.model,
                         provider=self.provider,
                         base_url=self.base_url,
@@ -15643,6 +15661,7 @@ class AIAgent:
                     session_id=self.session_id or "",
                     model=self.model,
                     platform=getattr(self, "platform", None) or "",
+                    profile=_hook_profile,
                 )
                 for _hook_result in _transform_results:
                     if isinstance(_hook_result, str) and _hook_result:
@@ -15666,6 +15685,7 @@ class AIAgent:
                     conversation_history=list(messages),
                     model=self.model,
                     platform=getattr(self, "platform", None) or "",
+                    profile=_hook_profile,
                 )
             except Exception as exc:
                 logger.warning("post_llm_call hook failed: %s", exc)
@@ -15780,6 +15800,7 @@ class AIAgent:
                 interrupted=interrupted,
                 model=self.model,
                 platform=getattr(self, "platform", None) or "",
+                profile=_hook_profile,
             )
         except Exception as exc:
             logger.warning("on_session_end hook failed: %s", exc)

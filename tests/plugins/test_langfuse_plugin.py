@@ -468,6 +468,72 @@ class TestRequestMessageCoercion:
         assert mod._coerce_request_messages(user_message="u") == [{"role": "user", "content": "u"}]
 
 
+class _FakeRootSpan:
+    def __init__(self):
+        self.trace_io = {}
+
+    def set_trace_io(self, **kwargs):
+        self.trace_io.update(kwargs)
+
+    def start_observation(self, **kwargs):
+        return object()
+
+    def update(self, **kwargs):
+        self.trace_io.update(kwargs)
+
+    def end(self):
+        pass
+
+
+class _FakeRootContext:
+    def __init__(self):
+        self.span = _FakeRootSpan()
+
+    def __enter__(self):
+        return self.span
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+
+class _FakeTraceClient:
+    def __init__(self):
+        self.kwargs = None
+
+    def create_trace_id(self, seed):
+        self.seed = seed
+        return "trace-id"
+
+    def start_as_current_observation(self, **kwargs):
+        self.kwargs = kwargs
+        return _FakeRootContext()
+
+
+class TestProfileUserId:
+    def test_root_trace_uses_profile_as_langfuse_user_id(self):
+        sys.modules.pop("plugins.observability.langfuse", None)
+        mod = importlib.import_module("plugins.observability.langfuse")
+        client = _FakeTraceClient()
+
+        mod._start_root_trace(
+            "task-key",
+            task_id="task-1",
+            session_id="session-1",
+            profile="coder",
+            platform="cli",
+            provider="openrouter",
+            model="gpt-5",
+            api_mode="chat_completions",
+            messages=[{"role": "user", "content": "hi"}],
+            client=client,
+        )
+
+        assert client.kwargs["trace_context"]["trace_id"] == "trace-id"
+        assert client.kwargs["trace_context"]["session_id"] == "session-1"
+        assert client.kwargs["trace_context"]["user_id"] == "coder"
+        assert client.kwargs["metadata"]["profile"] == "coder"
+
+
 class TestToolCallOutputBackfill:
     def test_post_tool_call_backfills_matching_turn_tool_call_output(self, monkeypatch):
         sys.modules.pop("plugins.observability.langfuse", None)

@@ -36,6 +36,11 @@ hermes plugins list                 # observability/langfuse should show "enable
 hermes chat -q "hello"              # then check Langfuse for a "Hermes turn" trace
 ```
 
+Hermes passes the active profile name to Langfuse as the trace `userId` and
+also stores it in trace metadata as `profile`. In Langfuse, use the User
+filters or user analytics views to group usage, latency, and cost by Hermes
+profile.
+
 ## Optional tuning
 
 ```bash

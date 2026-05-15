@@ -23,6 +23,7 @@ Public API (signatures preserved from the original 2,400-line version):
 import json
 import asyncio
 import logging
+import os
 import threading
 import time
 from typing import Dict, Any, List, Optional, Tuple
@@ -31,6 +32,14 @@ from tools.registry import discover_builtin_tools, registry
 from toolsets import resolve_toolset, validate_toolset
 
 logger = logging.getLogger(__name__)
+
+
+def _active_profile_name_for_hooks() -> str:
+    try:
+        from hermes_cli.profiles import get_active_profile_name
+        return get_active_profile_name() or ""
+    except Exception:
+        return os.getenv("HERMES_PROFILE_NAME") or os.getenv("HERMES_PROFILE") or ""
 
 
 # =============================================================================
@@ -738,6 +747,7 @@ def handle_function_call(
                     task_id=task_id or "",
                     session_id=session_id or "",
                     tool_call_id=tool_call_id or "",
+                    profile=_active_profile_name_for_hooks(),
                 )
             except Exception as _hook_err:
                 logger.debug("pre_tool_call hook error: %s", _hook_err)
@@ -790,6 +800,7 @@ def handle_function_call(
                 session_id=session_id or "",
                 tool_call_id=tool_call_id or "",
                 duration_ms=duration_ms,
+                profile=_active_profile_name_for_hooks(),
             )
         except Exception as _hook_err:
             logger.debug("post_tool_call hook error: %s", _hook_err)

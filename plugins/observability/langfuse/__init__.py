@@ -539,13 +539,16 @@ def _usage_and_cost(response: Any, *, provider: str, api_mode: str, model: str, 
     return usage_details, cost_details
 
 
-def _start_root_trace(task_key: str, *, task_id: str, session_id: str, platform: str, provider: str, model: str,
+def _start_root_trace(task_key: str, *, task_id: str, session_id: str, profile: str = "",
+                      platform: str, provider: str, model: str,
                       api_mode: str, messages: Any, client: Langfuse) -> TraceState:
     trace_id = client.create_trace_id(seed=f"{session_id or 'sessionless'}::{task_id or task_key}")
     trace_input = _extract_last_user_message(messages)
+    profile = str(profile or "").strip()
     metadata = {
         "source": "hermes",
         "task_id": task_id,
+        "profile": profile,
         "platform": platform,
         "provider": provider,
         "model": model,
@@ -553,7 +556,7 @@ def _start_root_trace(task_key: str, *, task_id: str, session_id: str, platform:
     }
 
     # session_id must be passed in trace_context for Langfuse session grouping.
-    trace_ctx: Dict[str, Any] = {"trace_id": trace_id}
+    trace_ctx: Dict[str, Any] = {"trace_id": trace_id, "user_id": profile}
     if session_id:
         trace_ctx["session_id"] = session_id
 
@@ -688,6 +691,7 @@ def _request_key(api_call_count: Any) -> str:
 
 def on_pre_llm_call(*, task_id: str = "", session_id: str = "", platform: str = "", model: str = "",
                     provider: str = "", base_url: str = "", api_mode: str = "",
+                    profile: str = "",
                     api_call_count: int = 0, messages: Any = None, turn_type: str = "user",
                     conversation_history: Any = None, user_message: Any = None, **_: Any) -> None:
     # Older Hermes branches used pre_llm_call for request-scoped tracing and
@@ -715,6 +719,7 @@ def on_pre_llm_call(*, task_id: str = "", session_id: str = "", platform: str = 
                 task_key,
                 task_id=task_id,
                 session_id=session_id,
+                profile=profile,
                 platform=platform,
                 provider=provider,
                 model=model,
@@ -735,6 +740,7 @@ def on_pre_llm_request(
     provider: str = "",
     base_url: str = "",
     api_mode: str = "",
+    profile: str = "",
     api_call_count: int = 0,
     request_messages: Any = None,
     messages: Any = None,
@@ -769,6 +775,7 @@ def on_pre_llm_request(
                 task_key,
                 task_id=task_id,
                 session_id=session_id,
+                profile=profile,
                 platform=platform,
                 provider=provider,
                 model=model,
@@ -800,6 +807,7 @@ def on_pre_llm_request(
 
 def on_post_llm_call(*, task_id: str = "", session_id: str = "", provider: str = "", base_url: str = "",
                      api_mode: str = "", model: str = "", api_call_count: int = 0,
+                     profile: str = "",
                      assistant_message: Any = None, response: Any = None,
                      api_duration: float = 0.0, finish_reason: str = "",
                      usage: Any = None, assistant_content_chars: int = 0,
@@ -919,7 +927,7 @@ def on_post_llm_call(*, task_id: str = "", session_id: str = "", provider: str =
 
 
 def on_pre_tool_call(*, tool_name: str = "", args: Any = None, task_id: str = "",
-                     session_id: str = "", tool_call_id: str = "", **_: Any) -> None:
+                     session_id: str = "", tool_call_id: str = "", profile: str = "", **_: Any) -> None:
     client = _get_langfuse()
     if client is None:
         return
@@ -945,7 +953,8 @@ def on_pre_tool_call(*, tool_name: str = "", args: Any = None, task_id: str = ""
 
 
 def on_post_tool_call(*, tool_name: str = "", args: Any = None, result: Any = None,
-                      task_id: str = "", session_id: str = "", tool_call_id: str = "", **_: Any) -> None:
+                      task_id: str = "", session_id: str = "", tool_call_id: str = "",
+                      profile: str = "", **_: Any) -> None:
     task_key = _trace_key(task_id, session_id)
     observation = None
 
