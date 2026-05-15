@@ -27,6 +27,8 @@ class FakeAdapter:
             {
                 "chat_id": chat_id,
                 "content": content,
+                "text": content,
+                "actions": [],
                 "reply_to": reply_to,
                 "metadata": metadata,
             }
@@ -103,7 +105,7 @@ def test_kbtoday_command_renders_attention_cockpit_with_native_adapter(monkeypat
     adapter = FakeKbActionsAdapter()
     hook = build_pre_gateway_dispatch_hook(ctx)
 
-    result = hook(event=_event("/kbtoday"), gateway=_authorized_gateway(adapter), session_store=None)
+    result = hook(event=_event("/kb today"), gateway=_authorized_gateway(adapter), session_store=None)
     _drain_scheduled_tasks()
 
     assert result == {"action": "skip", "reason": "kb_journeys"}
@@ -244,7 +246,8 @@ def test_dashboard_command_prefers_live_dashboard_packet(monkeypatch):
     assert "Publication: clean" in text
     assert "Proposals 2" in text
     assert "Review one proposal" in text
-    assert [action.label for action in adapter.sent[0]["actions"]] == ["Refresh", "Queue", "Runs", "Status"]
+    assert "Commands: /kb queue" in text
+    assert adapter.sent[0]["actions"] == []
 
 
 def test_plain_non_kb_commands_are_left_for_system_handlers(monkeypatch):
@@ -255,7 +258,19 @@ def test_plain_non_kb_commands_are_left_for_system_handlers(monkeypatch):
     adapter = FakeKbActionsAdapter()
     hook = build_pre_gateway_dispatch_hook(ctx)
 
-    for command in ["/queue", "/dashboard", "/today", "/runs", "/run", "/review"]:
+    for command in [
+        "/queue",
+        "/dashboard",
+        "/today",
+        "/runs",
+        "/run",
+        "/review",
+        "/kbqueue",
+        "/kbreview",
+        "/kbtoday",
+        "/kbruns",
+        "/kbrun",
+    ]:
         result = hook(event=_event(command), gateway=_authorized_gateway(adapter), session_store=None)
         assert result is None
 
@@ -263,9 +278,33 @@ def test_plain_non_kb_commands_are_left_for_system_handlers(monkeypatch):
     assert adapter.sent == []
 
 
-def test_kbqueue_dashboard_reviews_one_item_before_preview_and_confirm(monkeypatch):
+def test_register_exposes_single_clear_kb_menu_command():
+    from plugins import kb_journeys
+
+    class RegisterContext:
+        def __init__(self):
+            self.commands = {}
+            self.hooks = {}
+
+        def register_command(self, name, handler, description=""):
+            self.commands[name] = {"handler": handler, "description": description}
+
+        def register_hook(self, name, handler):
+            self.hooks[name] = handler
+
+    ctx = RegisterContext()
+    kb_journeys.register(ctx)
+
+    assert sorted(ctx.commands) == ["kb"]
+    assert ctx.commands["kb"]["description"] == "KB dashboard, queue, status, runs, and sync."
+    assert ctx.commands["kb"]["handler"]("") == (
+        "Use /kb in Telegram. Try: /kb queue, /kb status, /kb runs, /kb run sync."
+    )
+    assert "pre_gateway_dispatch" in ctx.hooks
+
+
+def test_kb_root_queue_dashboard_is_text_first(monkeypatch):
     from plugins.kb_journeys import build_pre_gateway_dispatch_hook
-    from tools.kb_callback_registry import KbCallbackContext
 
     monkeypatch.setenv("HERMES_KB_MCP_TARGET", "kb-engine-prod")
     ctx = FakeContext(
@@ -285,18 +324,12 @@ def test_kbqueue_dashboard_reviews_one_item_before_preview_and_confirm(monkeypat
                     ],
                 }
             },
-            "mcp_kb_engine_prod_queue_decision_preview": {
-                "result": {"status": "preview", "ok": True, "plan": {"summary": "Reject 2 proposals."}}
-            },
-            "mcp_kb_engine_prod_queue_batch_decide_confirmed": {
-                "result": {"status": "applied", "ok": True, "publication": {"status": "manual"}}
-            },
         }
     )
     adapter = FakeKbActionsAdapter()
     hook = build_pre_gateway_dispatch_hook(ctx)
 
-    result = hook(event=_event("/kbqueue"), gateway=_authorized_gateway(adapter), session_store=None)
+    result = hook(event=_event("/kb queue"), gateway=_authorized_gateway(adapter), session_store=None)
     _drain_scheduled_tasks()
 
     assert result == {"action": "skip", "reason": "kb_journeys"}
@@ -306,61 +339,9 @@ def test_kbqueue_dashboard_reviews_one_item_before_preview_and_confirm(monkeypat
     assert "KB Queue" in text
     assert "9" in text
     assert "Admit Stanford DAS Lab" in text
-    assert "Tap Review N" in text
-    assert "/kbqueue review N" in text
-    assert [action.label for action in adapter.sent[0]["actions"]] == ["Review 1"]
+    assert "Send /kb queue review N" in text
+    assert adapter.sent[0]["actions"] == []
     assert adapter.sent[0]["reply_to"] == "m1"
-
-    detail = asyncio.run(
-        adapter.sent[0]["actions"][0].handler(
-            KbCallbackContext(
-                callback_id="cb_detail",
-                action_id="queue.item.1",
-                actor_id="777",
-                actor_name="Ada",
-            )
-        )
-    )
-    assert "Queue Item 1" in detail["text"]
-    assert "Admit Stanford DAS Lab" in detail["text"]
-    assert "Would update existing entity." in detail["text"]
-    assert "Decision buttons preview only this item" in detail["text"]
-    assert [action.label for action in detail["actions"]] == [
-        "Preview approve",
-        "Preview reject",
-        "Preview archive",
-    ]
-
-    preview = asyncio.run(
-        detail["actions"][1].handler(
-            KbCallbackContext(
-                callback_id="cb_preview",
-                action_id="queue.preview.reject",
-                actor_id="777",
-                actor_name="Ada",
-            )
-        )
-    )
-    assert "Queue reject preview" in preview["text"]
-    assert "Item: Admit Stanford DAS Lab" in preview["text"]
-    assert preview["actions"][0].label == "Confirm reject"
-
-    confirmed = asyncio.run(
-        preview["actions"][0].handler(
-            KbCallbackContext(
-                callback_id="cb_confirm",
-                action_id="queue.confirm.reject",
-                actor_id="777",
-                actor_name="Ada",
-            )
-        )
-    )
-    assert "Queue reject applied" in confirmed
-    assert ctx.calls[-2][0] == "mcp_kb_engine_prod_queue_decision_preview"
-    assert ctx.calls[-2][1]["proposal_ids"] == ["act_1", "act_2"]
-    assert ctx.calls[-2][1]["decision"] == "reject"
-    assert ctx.calls[-1][0] == "mcp_kb_engine_prod_queue_batch_decide_confirmed"
-    assert ctx.calls[-1][1]["user_confirmation"]["confirmed"] is True
 
 
 def test_kbqueue_review_item_can_be_opened_by_text_command(monkeypatch):
@@ -389,7 +370,7 @@ def test_kbqueue_review_item_can_be_opened_by_text_command(monkeypatch):
     adapter = FakeKbActionsAdapter()
     hook = build_pre_gateway_dispatch_hook(ctx)
 
-    result = hook(event=_event("/kbqueue review 1"), gateway=_authorized_gateway(adapter), session_store=None)
+    result = hook(event=_event("/kb queue review 1"), gateway=_authorized_gateway(adapter), session_store=None)
     _drain_scheduled_tasks()
 
     assert result == {"action": "skip", "reason": "kb_journeys"}
@@ -397,13 +378,9 @@ def test_kbqueue_review_item_can_be_opened_by_text_command(monkeypatch):
     text = adapter.sent[0]["text"]
     assert "Queue Item 1" in text
     assert "Keio University" in text
-    assert "Text:" in text
-    assert "/kbqueue reject 1" in text
-    assert [action.label for action in adapter.sent[0]["actions"]] == [
-        "Preview approve",
-        "Preview reject",
-        "Preview archive",
-    ]
+    assert "Commands:" in text
+    assert "/kb queue reject 1" in text
+    assert adapter.sent[0]["actions"] == []
 
 
 def test_kbqueue_decision_can_be_previewed_and_confirmed_by_text_command(monkeypatch):
@@ -437,15 +414,15 @@ def test_kbqueue_decision_can_be_previewed_and_confirmed_by_text_command(monkeyp
     adapter = FakeKbActionsAdapter()
     hook = build_pre_gateway_dispatch_hook(ctx)
 
-    preview = hook(event=_event("/kbqueue reject 1"), gateway=_authorized_gateway(adapter), session_store=None)
+    preview = hook(event=_event("/kb queue reject 1"), gateway=_authorized_gateway(adapter), session_store=None)
     _drain_scheduled_tasks()
 
     assert preview == {"action": "skip", "reason": "kb_journeys"}
     assert "Queue reject preview" in adapter.sent[0]["text"]
-    assert "To apply: /kbqueue reject 1 confirm" in adapter.sent[0]["text"]
+    assert "To apply: /kb queue reject 1 confirm" in adapter.sent[0]["text"]
     assert adapter.sent[0]["actions"] == []
 
-    applied = hook(event=_event("/kbqueue reject 1 confirm"), gateway=_authorized_gateway(adapter), session_store=None)
+    applied = hook(event=_event("/kb queue reject 1 confirm"), gateway=_authorized_gateway(adapter), session_store=None)
     _drain_scheduled_tasks()
 
     assert applied == {"action": "skip", "reason": "kb_journeys"}
@@ -458,7 +435,6 @@ def test_kbqueue_decision_can_be_previewed_and_confirmed_by_text_command(monkeyp
 
 def test_queue_preview_failure_does_not_offer_confirm(monkeypatch):
     from plugins.kb_journeys import build_pre_gateway_dispatch_hook
-    from tools.kb_callback_registry import KbCallbackContext
 
     monkeypatch.setenv("HERMES_KB_MCP_TARGET", "kb-engine-prod")
     ctx = FakeContext(
@@ -483,38 +459,16 @@ def test_queue_preview_failure_does_not_offer_confirm(monkeypatch):
     adapter = FakeKbActionsAdapter()
     hook = build_pre_gateway_dispatch_hook(ctx)
 
-    result = hook(event=_event("/kbqueue"), gateway=_authorized_gateway(adapter), session_store=None)
+    result = hook(event=_event("/kb queue approve 1"), gateway=_authorized_gateway(adapter), session_store=None)
     _drain_scheduled_tasks()
 
     assert result == {"action": "skip", "reason": "kb_journeys"}
-    detail = asyncio.run(
-        adapter.sent[0]["actions"][0].handler(
-            KbCallbackContext(
-                callback_id="cb_detail",
-                action_id="queue.item.1",
-                actor_id="777",
-                actor_name="Ada",
-            )
-        )
-    )
-    preview = asyncio.run(
-        detail["actions"][0].handler(
-            KbCallbackContext(
-                callback_id="cb_preview",
-                action_id="queue.preview.approve",
-                actor_id="777",
-                actor_name="Ada",
-            )
-        )
-    )
-    assert "Queue approve preview failed" in preview["text"]
-    assert preview["actions"] == []
+    assert "Queue approve preview failed" in adapter.sent[0]["text"]
+    assert adapter.sent[0]["actions"] == []
 
 
 def test_run_command_previews_and_starts_with_confirmed_envelope(monkeypatch):
-    from plugins import kb_journeys
     from plugins.kb_journeys import build_pre_gateway_dispatch_hook
-    from tools.kb_callback_registry import KbCallbackContext
 
     monkeypatch.setenv("HERMES_KB_MCP_TARGET", "kb-engine-prod")
     ctx = FakeContext(
@@ -554,7 +508,7 @@ def test_run_command_previews_and_starts_with_confirmed_envelope(monkeypatch):
     adapter = FakeKbActionsAdapter()
     hook = build_pre_gateway_dispatch_hook(ctx)
 
-    result = hook(event=_event("/kbrun kb sync"), gateway=_authorized_gateway(adapter), session_store=None)
+    result = hook(event=_event("/kb run kb sync"), gateway=_authorized_gateway(adapter), session_store=None)
     _drain_scheduled_tasks()
 
     assert result == {"action": "skip", "reason": "kb_journeys"}
@@ -569,24 +523,15 @@ def test_run_command_previews_and_starts_with_confirmed_envelope(monkeypatch):
         },
     )
     assert "Workflow Preview" in adapter.sent[0]["text"]
-    assert adapter.sent[0]["actions"][0].label == "Start update_kb"
+    assert "To start: /kb run kb sync confirm" in adapter.sent[0]["text"]
+    assert adapter.sent[0]["actions"] == []
 
-    monkeypatch.setattr(kb_journeys, "_run_delivery", lambda coro: coro.close())
-    started = asyncio.run(
-        adapter.sent[0]["actions"][0].handler(
-            KbCallbackContext(
-                callback_id="cb_start",
-                action_id="workflow.start.update_kb",
-                chat_id="chat-1",
-                thread_id="topic-1",
-                actor_id="777",
-                actor_name="Ada",
-            )
-        )
-    )
+    started = hook(event=_event("/kb run kb sync confirm"), gateway=_authorized_gateway(adapter), session_store=None)
+    _drain_scheduled_tasks()
 
-    assert "Workflow start result" in started
-    assert "gen-123" in started
+    assert started == {"action": "skip", "reason": "kb_journeys"}
+    assert "Workflow start result" in adapter.sent[1]["text"]
+    assert "gen-123" in adapter.sent[1]["text"]
     assert ctx.calls[-1][0] == "mcp_kb_engine_prod_workflow_start_confirmed"
     envelope = ctx.calls[-1][1]["envelope"]
     assert envelope["tool"] == "workflow.start_confirmed"

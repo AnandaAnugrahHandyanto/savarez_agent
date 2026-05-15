@@ -14,12 +14,14 @@ import logging
 import os
 import re
 import time
+from types import SimpleNamespace
 from typing import Any, Callable, Iterable
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_MCP_TARGET = "kb_engine_prod"
-SUPPORTED_COMMANDS = {"kb", "kbtoday", "kbstatus", "kbruns", "kbqueue", "kbreview", "kbrun"}
+MENU_COMMANDS = {"kb"}
+SUPPORTED_COMMANDS = MENU_COMMANDS
 
 
 def _sanitize_component(value: str) -> str:
@@ -44,7 +46,7 @@ def _command_from_text(text: str) -> str | None:
         return None
     token = stripped.split(maxsplit=1)[0][1:]
     command = token.split("@", 1)[0].lower()
-    return command if command in SUPPORTED_COMMANDS else None
+    return command if command in MENU_COMMANDS else None
 
 
 def _command_args_from_text(text: str) -> str:
@@ -198,7 +200,7 @@ def _todo_count_from_summary(summary: dict[str, Any]) -> Any:
 def _display_text(value: Any) -> str:
     text = _short(value, "")
     if text == "Review prioritized queue items through workbench.queue.":
-        return "Review prioritized TODO items; use /kbqueue for proposal review."
+        return "Review prioritized TODO items; use /kb queue for proposal review."
     return text
 
 
@@ -357,13 +359,9 @@ def _render_dashboard(data: Any, *, ctx: Any, target: str) -> dict[str, Any]:
     refresh = data.get("refresh") if isinstance(data.get("refresh"), dict) else {}
     if refresh:
         lines.append(f"Refresh: every {_short(refresh.get('ttl_seconds'), '60')}s target")
-    actions = [
-        _command_card_action(ctx, target, "Refresh", "kb"),
-        _command_card_action(ctx, target, "Queue", "kbqueue"),
-        _command_card_action(ctx, target, "Runs", "kbruns"),
-        _command_card_action(ctx, target, "Status", "kbstatus"),
-    ]
-    return {"title": "KB Dashboard", "text": "\n".join(lines), "actions": actions}
+    lines.append("")
+    lines.append("Commands: /kb queue · /kb status · /kb runs · /kb today")
+    return {"title": "KB Dashboard", "text": "\n".join(lines), "actions": []}
 
 
 def _config_snapshot() -> dict[str, str]:
@@ -470,38 +468,6 @@ def _render_runs(data: Any) -> dict[str, Any]:
     return {"title": "KB Runs", "text": "\n".join(lines), "actions": []}
 
 
-def _kb_action(label: str, action_id: str, handler: Callable[[Any], Any], metadata: dict[str, Any] | None = None) -> Any:
-    try:
-        from tools.kb_callback_registry import KbAction
-
-        return KbAction(
-            label=label,
-            action_id=action_id,
-            handler=handler,
-            metadata=metadata or {},
-        )
-    except Exception:
-        return {
-            "label": label,
-            "action_id": action_id,
-            "handler": handler,
-            "metadata": metadata or {},
-        }
-
-
-def _command_card_action(ctx: Any, target: str, label: str, command: str) -> Any:
-    async def _handler(_callback_ctx: Any) -> str:
-        card = _card_for_command(ctx, command)
-        return str(card.get("text") or card.get("title") or label)
-
-    return _kb_action(
-        label,
-        f"dashboard.{command}",
-        _handler,
-        {"command": command, "target": target},
-    )
-
-
 def _proposal_ids_for_item(item: Any) -> list[str]:
     if not isinstance(item, dict):
         return []
@@ -579,10 +545,8 @@ def _queue_item_text(item: dict[str, Any], *, index: int) -> str:
     if proposal_ids:
         lines.append("")
         lines.append(f"Proposal ids: {', '.join(proposal_ids[:5])}")
-        lines.append("Decision buttons preview only this item; confirmation is still required.")
-        lines.append(
-            f"Text: /kbqueue approve {index} | /kbqueue reject {index} | /kbqueue archive {index}"
-        )
+        lines.append("Preview a decision first, then confirm only if it matches.")
+        lines.append(f"Commands: /kb queue approve {index} · /kb queue reject {index} · /kb queue archive {index}")
     else:
         lines.append("")
         lines.append("This item did not include proposal ids, so Telegram cannot apply a decision yet. Use the KB workbench for details.")
@@ -660,9 +624,9 @@ def _confirmed_text(decision: str, payload: Any) -> str:
             )
         if git_state:
             lines.append("Git: " + _short(git_state.get("summary") or git_state.get("status") or git_state))
-        lines.append("Use /kbqueue to refresh.")
+        lines.append("Use /kb queue to refresh.")
         return "\n".join(lines)
-    return f"Queue {decision} applied\nUse /kbqueue to refresh."
+    return f"Queue {decision} applied\nUse /kb queue to refresh."
 
 
 def _queue_summary_payload(ctx: Any, target: str, *, limit: int = 5) -> tuple[Any | None, list[str]]:
@@ -719,10 +683,10 @@ def _queue_command_help() -> dict[str, Any]:
         "text": "\n".join(
             [
                 "KB Queue",
-                "Use /kbqueue to list proposals.",
-                "Use /kbqueue review 1 to inspect one item.",
-                "Use /kbqueue reject 1 to preview a decision.",
-                "Use /kbqueue reject 1 confirm to apply it.",
+                "Use /kb queue to list proposals.",
+                "Use /kb queue review 1 to inspect one item.",
+                "Use /kb queue reject 1 to preview a decision.",
+                "Use /kb queue reject 1 confirm to apply it.",
             ]
         ),
         "actions": [],
@@ -735,19 +699,13 @@ def _render_queue_item(data: Any, *, index: int, ctx: Any, target: str) -> dict[
         total = len(_queue_items_from_payload(data))
         return {
             "title": "KB Queue",
-            "text": f"KB Queue\nNo item {index} in the current queue window ({total} shown). Use /kbqueue to refresh.",
+            "text": f"KB Queue\nNo item {index} in the current queue window ({total} shown). Use /kb queue to refresh.",
             "actions": [],
         }
     return {
         "title": "KB Queue",
         "text": _queue_item_text(item, index=index),
-        "actions": [
-            _queue_decision_action(ctx, target, item, "approve"),
-            _queue_decision_action(ctx, target, item, "reject"),
-            _queue_decision_action(ctx, target, item, "archive"),
-        ]
-        if _proposal_ids_for_item(item)
-        else [],
+        "actions": [],
     }
 
 
@@ -765,7 +723,7 @@ def _render_queue_text_decision(
         total = len(_queue_items_from_payload(data))
         return {
             "title": "KB Queue",
-            "text": f"KB Queue\nNo item {index} in the current queue window ({total} shown). Use /kbqueue to refresh.",
+            "text": f"KB Queue\nNo item {index} in the current queue window ({total} shown). Use /kb queue to refresh.",
             "actions": [],
         }
     proposal_ids = _proposal_ids_for_item(item)
@@ -783,14 +741,14 @@ def _render_queue_text_decision(
                 "decision": decision,
                 "actor": actor,
                 "source": source,
-                "note": f"Previewed from Telegram /kbqueue text command for {_item_title(item)}",
+                "note": f"Previewed from Telegram /kb queue text command for {_item_title(item)}",
             },
         )
     )
     if not confirm:
         text = _preview_text(decision, proposal_ids, preview_payload, item=item)
         if _preview_allows_confirmation(preview_payload):
-            text += f"\nTo apply: /kbqueue {decision} {index} confirm"
+            text += f"\nTo apply: /kb queue {decision} {index} confirm"
         return {"title": "KB Queue", "text": text, "actions": []}
     if not _preview_allows_confirmation(preview_payload):
         return {"title": "KB Queue", "text": _preview_text(decision, proposal_ids, preview_payload, item=item), "actions": []}
@@ -808,103 +766,13 @@ def _render_queue_text_decision(
                     "surface": "telegram",
                     "action": f"queue.{decision}",
                     "preview_required": True,
-                    "confirmation_text": f"/kbqueue {decision} {index} confirm",
+                    "confirmation_text": f"/kb queue {decision} {index} confirm",
                 },
-                "note": f"Confirmed from Telegram /kbqueue text command for {_item_title(item)}",
+                "note": f"Confirmed from Telegram /kb queue text command for {_item_title(item)}",
             },
         )
     )
     return {"title": "KB Queue", "text": _confirmed_text(decision, confirmed_payload), "actions": []}
-
-
-def _queue_decision_action(ctx: Any, target: str, item: dict[str, Any], decision: str) -> Any:
-    proposal_ids = _proposal_ids_for_item(item)
-
-    async def _preview(callback_ctx: Any) -> dict[str, Any] | str:
-        if not proposal_ids:
-            return "No proposal ids were available for this queue item."
-        actor = f"telegram:{_short(getattr(callback_ctx, 'actor_id', ''), 'unknown')}"
-        source = "Hermes Telegram"
-        preview_tool = _mcp_tool_name(target, "queue.decision_preview")
-        confirmed_tool = _mcp_tool_name(target, "queue.batch_decide_confirmed")
-        preview_payload = _result_payload(
-            ctx.dispatch_tool(
-                preview_tool,
-                {
-                    "proposal_ids": proposal_ids,
-                    "decision": decision,
-                    "actor": actor,
-                    "source": source,
-                    "note": f"Previewed from Telegram /kbqueue for {item.get('item_id') or item.get('entity_path') or item.get('title')}",
-                },
-            )
-        )
-
-        async def _confirm(confirm_ctx: Any) -> str:
-            confirmed_payload = _result_payload(
-                ctx.dispatch_tool(
-                    confirmed_tool,
-                    {
-                        "proposal_ids": proposal_ids,
-                        "decision": decision,
-                        "actor": f"telegram:{_short(getattr(confirm_ctx, 'actor_id', ''), 'unknown')}",
-                        "source": source,
-                        "session_id": f"telegram-kb-{_short(getattr(confirm_ctx, 'callback_id', ''), str(int(time.time())))}",
-                        "user_confirmation": {
-                            "confirmed": True,
-                            "surface": "telegram",
-                            "action": f"queue.{decision}",
-                            "actor_id": _short(getattr(confirm_ctx, "actor_id", ""), ""),
-                            "actor_name": _short(getattr(confirm_ctx, "actor_name", ""), ""),
-                            "preview_required": True,
-                        },
-                        "note": f"Confirmed from Telegram /kbqueue for {item.get('item_id') or item.get('entity_path') or item.get('title')}",
-                    },
-                )
-            )
-            return _confirmed_text(decision, confirmed_payload)
-
-        actions: list[Any] = []
-        if _preview_allows_confirmation(preview_payload):
-            actions.append(
-                _kb_action(
-                    f"Confirm {decision}",
-                    f"queue.confirm.{decision}",
-                    _confirm,
-                    {"proposal_ids": proposal_ids, "decision": decision},
-                )
-            )
-        return {"text": _preview_text(decision, proposal_ids, preview_payload, item=item), "actions": actions}
-
-    return _kb_action(
-        f"Preview {decision}",
-        f"queue.preview.{decision}",
-        _preview,
-        {"proposal_ids": proposal_ids, "decision": decision},
-    )
-
-
-def _queue_item_action(ctx: Any, target: str, item: dict[str, Any], index: int) -> Any:
-    async def _handler(_callback_ctx: Any) -> dict[str, Any]:
-        actions: list[Any] = []
-        if _proposal_ids_for_item(item):
-            actions = [
-                _queue_decision_action(ctx, target, item, "approve"),
-                _queue_decision_action(ctx, target, item, "reject"),
-                _queue_decision_action(ctx, target, item, "archive"),
-            ]
-        return {"text": _queue_item_text(item, index=index), "actions": actions}
-
-    return _kb_action(
-        f"Review {index}",
-        f"queue.item.{index}",
-        _handler,
-        {
-            "index": index,
-            "item_id": str(item.get("item_id") or item.get("id") or item.get("entity_path") or ""),
-            "proposal_ids": _proposal_ids_for_item(item),
-        },
-    )
 
 
 def _workflow_id_from_args(args: str) -> tuple[str, str]:
@@ -915,6 +783,16 @@ def _workflow_id_from_args(args: str) -> tuple[str, str]:
     if lowered.startswith("meeting"):
         return "meeting_process", text
     return text.split(maxsplit=1)[0], text
+
+
+def _workflow_args_from_text(args: str) -> tuple[str, str, bool]:
+    text = (args or "").strip()
+    parts = text.split()
+    confirm = bool(parts and parts[-1].lower() in {"confirm", "confirmed", "start", "apply"})
+    if confirm:
+        text = " ".join(parts[:-1]).strip()
+    workflow_id, intent = _workflow_id_from_args(text)
+    return workflow_id, intent, confirm
 
 
 def _workflow_envelope(plan: dict[str, Any], callback_ctx: Any) -> dict[str, Any]:
@@ -940,13 +818,33 @@ def _workflow_envelope(plan: dict[str, Any], callback_ctx: Any) -> dict[str, Any
             "confirmed": True,
             "confirmed_by": actor_name or actor_id,
             "confirmed_at": confirmed_at,
-            "confirmation_text": "Confirmed by Telegram button tap after workflow preview.",
+            "confirmation_text": "Confirmed by Telegram text command after workflow preview.",
             "preview_status": _short(plan.get("status")),
             "surface": "telegram",
             "actor_id": actor_id,
             "actor_name": actor_name,
         },
     }
+
+
+def _workflow_start_text(ctx: Any, target: str, plan: dict[str, Any]) -> str:
+    callback_ctx = SimpleNamespace(
+        callback_id=f"text-{int(time.time())}",
+        actor_id="operator",
+        actor_name="Telegram",
+    )
+    envelope = _workflow_envelope(plan, callback_ctx)
+    payload = _result_payload(
+        ctx.dispatch_tool(
+            _mcp_tool_name(target, "workflow.start_confirmed"),
+            {"envelope": envelope},
+        )
+    )
+    text = _workflow_status_text("Workflow start result", payload)
+    run_id = _workflow_run_id(payload)
+    if run_id:
+        text += "\nUse /kb runs for progress. Hermes should also keep watching in the main conversation."
+    return text
 
 
 def _workflow_run_id(payload: Any) -> str:
@@ -978,102 +876,14 @@ def _workflow_status_text(prefix: str, payload: Any) -> str:
     return "\n".join(lines)
 
 
-async def _adapter_send_text(adapter: Any, callback_ctx: Any, text: str) -> None:
-    chat_id = getattr(callback_ctx, "chat_id", None)
-    if not chat_id or not hasattr(adapter, "send"):
-        return
-    metadata = None
-    thread_id = getattr(callback_ctx, "thread_id", None)
-    if thread_id:
-        metadata = {"thread_id": str(thread_id)}
-    result = adapter.send(str(chat_id), text, metadata=metadata)
-    if inspect.isawaitable(result):
-        await result
-
-
-async def _watch_run_until_terminal(ctx: Any, target: str, run_id: str, adapter: Any, callback_ctx: Any) -> None:
-    if not run_id:
-        return
-    watch_tool = _mcp_tool_name(target, "run.watch")
-    summary_tool = _mcp_tool_name(target, "run.summary")
-    last_status = ""
-    for attempt in range(24):
-        await asyncio.sleep(20 if attempt == 0 else min(60, 20 + attempt * 5))
-        try:
-            raw = await asyncio.to_thread(
-                ctx.dispatch_tool,
-                watch_tool,
-                {"run_id": run_id, "timeout_seconds": 25, "poll_interval_seconds": 5, "timeline_limit": 5},
-            )
-            payload = _result_payload(raw)
-        except Exception as exc:
-            await _adapter_send_text(adapter, callback_ctx, f"KB run watcher failed for {run_id}\n{exc}")
-            return
-        if isinstance(payload, dict):
-            terminal = bool(payload.get("terminal"))
-            status = _short(
-                payload.get("status")
-                or _get_path(payload, "summary", "status")
-                or _get_path(payload, "progress_digest", "status"),
-                "",
-            )
-            phase = _short(
-                _get_path(payload, "progress_digest", "progress", "current_phase")
-                or _get_path(payload, "progress_digest", "current_phase"),
-                "",
-            )
-            current = " · ".join(part for part in (status, phase) if part)
-            if current and current != last_status and attempt in {0, 3, 8, 15}:
-                last_status = current
-                await _adapter_send_text(adapter, callback_ctx, f"KB run {run_id} still running\n{current}")
-            if terminal:
-                try:
-                    summary_payload = _result_payload(
-                        await asyncio.to_thread(ctx.dispatch_tool, summary_tool, {"run_id": run_id})
-                    )
-                except Exception:
-                    summary_payload = payload
-                await _adapter_send_text(
-                    adapter,
-                    callback_ctx,
-                    _workflow_status_text(f"KB run {run_id} finished", summary_payload),
-                )
-                return
-    await _adapter_send_text(
-        adapter,
-        callback_ctx,
-        f"KB run {run_id} is still active after the watcher window. Use /kbruns for the latest status.",
-    )
-
-
-def _workflow_start_action(ctx: Any, target: str, plan: dict[str, Any], adapter: Any) -> Any:
-    async def _start(callback_ctx: Any) -> str:
-        envelope = _workflow_envelope(plan, callback_ctx)
-        payload = _result_payload(
-            ctx.dispatch_tool(
-                _mcp_tool_name(target, "workflow.start_confirmed"),
-                {"envelope": envelope},
-            )
-        )
-        run_id = _workflow_run_id(payload)
-        if run_id:
-            _run_delivery(_watch_run_until_terminal(ctx, target, run_id, adapter, callback_ctx))
-        text = _workflow_status_text("Workflow start result", payload)
-        if run_id:
-            text += "\nI will watch this run and send the terminal summary here."
-        return text
-
-    workflow = plan.get("workflow") if isinstance(plan.get("workflow"), dict) else {}
-    workflow_id = _short(workflow.get("workflow_id"), "workflow")
-    return _kb_action(
-        f"Start {workflow_id}",
-        f"workflow.start.{workflow_id}",
-        _start,
-        {"workflow_id": workflow_id, "request_id": plan.get("request_id")},
-    )
-
-
-def _render_workflow_plan(data: Any, *, ctx: Any, target: str, adapter: Any) -> dict[str, Any]:
+def _render_workflow_plan(
+    data: Any,
+    *,
+    ctx: Any,
+    target: str,
+    adapter: Any,
+    start_hint: str = "/kb run sync confirm",
+) -> dict[str, Any]:
     if isinstance(data, dict) and data.get("error"):
         return {"title": "Workflow", "text": f"Workflow plan failed\n{data['error']}", "actions": []}
     if not isinstance(data, dict):
@@ -1098,11 +908,9 @@ def _render_workflow_plan(data: Any, *, ctx: Any, target: str, adapter: Any) -> 
     follow = data.get("followthrough_contract") if isinstance(data.get("followthrough_contract"), dict) else {}
     if follow:
         lines.append("Follow-through: " + _short(follow.get("watch_tool")) + " -> " + _short(follow.get("terminal_summary_tool")))
-    actions = []
     if data.get("status") == "confirmation_required":
-        actions = [_workflow_start_action(ctx, target, data, adapter)]
-        lines.append("Tap Start only after this preview matches what you intend.")
-    return {"title": "Workflow", "text": "\n".join(lines), "actions": actions}
+        lines.append(f"To start: {start_hint}")
+    return {"title": "Workflow", "text": "\n".join(lines), "actions": []}
 
 
 def _render_queue(data: Any, *, ctx: Any | None = None, target: str | None = None) -> dict[str, Any]:
@@ -1129,17 +937,58 @@ def _render_queue(data: Any, *, ctx: Any | None = None, target: str | None = Non
             lines.append(line)
         else:
             lines.append(f"{idx}. {_short(item)}")
-    actions: list[Any] = []
-    if ctx is not None and target and items:
-        actions = [
-            _queue_item_action(ctx, target, item, idx)
-            for idx, item in enumerate(items[:5], start=1)
-            if isinstance(item, dict)
-        ]
-        if actions:
-            lines.append("")
-            lines.append("Tap Review N or send /kbqueue review N to inspect one item before choosing a decision.")
-    return {"title": "KB Queue", "text": "\n".join(lines), "actions": actions}
+    if items:
+        lines.append("")
+        lines.append("Send /kb queue review N to inspect one item before choosing a decision.")
+    return {"title": "KB Queue", "text": "\n".join(lines), "actions": []}
+
+
+def _kb_root_command(args: str) -> tuple[str, str]:
+    text = (args or "").strip()
+    if not text:
+        return "kb", ""
+    head, _, tail = text.partition(" ")
+    key = head.strip().lower()
+    rest = tail.strip()
+    if key in {"dashboard", "home"}:
+        return "kb", rest
+    if key in {"help", "commands"}:
+        return "kbhelp", rest
+    if key == "today":
+        return "kbtoday", rest
+    if key in {"status", "info"}:
+        return "kbstatus", rest
+    if key in {"runs", "runlog", "history"}:
+        return "kbruns", rest
+    if key in {"queue", "q"}:
+        return "kbqueue", rest
+    if key == "review":
+        return "kbqueue", f"review {rest}".strip()
+    if key in {"run", "workflow"}:
+        return "kbrun", rest
+    if key == "sync":
+        return "kbrun", f"sync {rest}".strip()
+    return "kbhelp", text
+
+
+def _kb_command_help() -> dict[str, Any]:
+    return {
+        "title": "KB",
+        "text": "\n".join(
+            [
+                "KB Commands",
+                "/kb - dashboard",
+                "/kb queue - proposal review list",
+                "/kb queue review 1 - inspect one queue item",
+                "/kb queue reject 1 - preview a decision",
+                "/kb queue reject 1 confirm - apply a previewed decision",
+                "/kb status - lane, model, readiness, publication",
+                "/kb runs - active and recent workflow runs",
+                "/kb run sync - preview a KB sync",
+            ]
+        ),
+        "actions": [],
+    }
 
 
 def _card_for_command(ctx: Any, command: str, *, args: str = "", adapter: Any = None) -> dict[str, Any]:
@@ -1151,6 +1000,11 @@ def _card_for_command(ctx: Any, command: str, *, args: str = "", adapter: Any = 
         "run_limit": 3,
     }
     if command == "kb":
+        routed_command, routed_args = _kb_root_command(args)
+        if routed_command == "kbhelp":
+            return _kb_command_help()
+        if routed_command != "kb":
+            return _card_for_command(ctx, routed_command, args=routed_args, adapter=adapter)
         _, data, errors = _dispatch_first(
             ctx,
             target,
@@ -1168,6 +1022,8 @@ def _card_for_command(ctx: Any, command: str, *, args: str = "", adapter: Any = 
             ],
         )
         return _render_error("KB Dashboard", target, errors) if data is None else _render_dashboard(data, ctx=ctx, target=target)
+    if command == "kbhelp":
+        return _kb_command_help()
     if command == "kbtoday":
         _, data, errors = _dispatch_first(ctx, target, [("attention.cockpit", cockpit_args)])
         return _render_error("KB Today", target, errors) if data is None else _render_today(data)
@@ -1198,11 +1054,11 @@ def _card_for_command(ctx: Any, command: str, *, args: str = "", adapter: Any = 
             return _render_queue_text_decision(ctx, target, data, index=index, decision=decision, confirm=confirm)
         return _render_queue(data, ctx=ctx, target=target)
     if command == "kbrun":
-        workflow_id, intent = _workflow_id_from_args(args)
+        workflow_id, intent, confirm = _workflow_args_from_text(args)
         if not workflow_id:
             return {
                 "title": "Workflow",
-                "text": "Workflow\nSend /kbrun kb sync or /kbrun <workflow_id>.",
+                "text": "Workflow\nSend /kb run sync or /kb run <workflow_id>.",
                 "actions": [],
             }
         _, data, errors = _dispatch_first(
@@ -1221,7 +1077,21 @@ def _card_for_command(ctx: Any, command: str, *, args: str = "", adapter: Any = 
                 )
             ],
         )
-        return _render_error("Workflow", target, errors) if data is None else _render_workflow_plan(data, ctx=ctx, target=target, adapter=adapter)
+        if data is None:
+            return _render_error("Workflow", target, errors)
+        if confirm and isinstance(data, dict) and data.get("status") == "confirmation_required":
+            return {"title": "Workflow", "text": _workflow_start_text(ctx, target, data), "actions": []}
+        hint_args = (args or "sync").strip()
+        hint_parts = hint_args.split()
+        if hint_parts and hint_parts[-1].lower() in {"confirm", "confirmed", "start", "apply"}:
+            hint_args = " ".join(hint_parts[:-1]).strip()
+        return _render_workflow_plan(
+            data,
+            ctx=ctx,
+            target=target,
+            adapter=adapter,
+            start_hint=f"/kb run {hint_args or 'sync'} confirm",
+        )
     return {"title": "KB", "text": "Unsupported KB command.", "actions": []}
 
 
@@ -1265,11 +1135,12 @@ async def _send_card(adapter: Any, event: Any, card: dict[str, Any]) -> None:
     if not chat_id:
         return
     reply_to, metadata = _reply_anchor_and_metadata(event)
-    if hasattr(adapter, "send_kb_actions"):
+    actions = card.get("actions", []) or []
+    if actions and hasattr(adapter, "send_kb_actions"):
         result = adapter.send_kb_actions(
             chat_id,
             card["text"],
-            card.get("actions", []),
+            actions,
             reply_to=reply_to,
             metadata=metadata,
         )
@@ -1312,14 +1183,14 @@ def build_pre_gateway_dispatch_hook(ctx: Any) -> Callable[..., dict[str, str] | 
 
 def register(ctx: Any) -> None:
     def _command_help(_: str = "") -> str:
-        return "Use this command from Telegram to render the native KB card."
+        return "Use /kb in Telegram. Try: /kb queue, /kb status, /kb runs, /kb run sync."
 
-    for command in sorted(SUPPORTED_COMMANDS):
+    for command in sorted(MENU_COMMANDS):
         try:
             ctx.register_command(
                 command,
                 _command_help,
-                description="Render a Telegram-native KB journey card.",
+                description="KB dashboard, queue, status, runs, and sync.",
             )
         except Exception:
             logger.debug("kb_journeys: failed to register /%s", command, exc_info=True)
