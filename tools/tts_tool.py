@@ -7,6 +7,7 @@ Built-in TTS providers:
 - ElevenLabs (premium): High-quality voices, needs ELEVENLABS_API_KEY
 - OpenAI TTS: Good quality, needs OPENAI_API_KEY
 - MiniMax TTS: High-quality with voice cloning, needs MINIMAX_API_KEY
+- SenseAudio TTS: Mandarin-focused, hex-encoded MP3, needs SENSEAUDIO_API_KEY
 - Mistral (Voxtral TTS): Multilingual, native Opus, needs MISTRAL_API_KEY
 - Google Gemini TTS: Controllable, 30 prebuilt voices, needs GEMINI_API_KEY
 - xAI TTS: Grok voices, needs XAI_API_KEY
@@ -162,6 +163,9 @@ DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
 DEFAULT_MINIMAX_MODEL = "speech-02-hd"
 DEFAULT_MINIMAX_VOICE_ID = "English_expressive_narrator"
 DEFAULT_MINIMAX_BASE_URL = "https://api.minimax.io/v1/t2a_v2"
+DEFAULT_SENSEAUDIO_TTS_MODEL = "senseaudio-tts-1.5-260319"
+DEFAULT_SENSEAUDIO_TTS_VOICE = "female_0033_b"
+DEFAULT_SENSEAUDIO_TTS_BASE_URL = "https://api.senseaudio.cn"
 DEFAULT_MISTRAL_TTS_MODEL = "voxtral-mini-tts-2603"
 DEFAULT_MISTRAL_TTS_VOICE_ID = "c69964a6-ab8b-4f8a-9465-ec0925096ec8"  # Paul - Neutral
 DEFAULT_XAI_VOICE_ID = "eve"
@@ -195,6 +199,7 @@ PROVIDER_MAX_TEXT_LENGTH: Dict[str, int] = {
     "openai": 4096,       # https://platform.openai.com/docs/guides/text-to-speech
     "xai": 15000,         # https://docs.x.ai/developers/model-capabilities/audio/text-to-speech
     "minimax": 10000,     # https://platform.minimax.io/docs/api-reference/speech-t2a-http (sync)
+    "senseaudio": 10000,  # SenseAudio /v1/t2a_v2 — same family as MiniMax t2a_v2
     "mistral": 4000,      # conservative; no published per-request cap
     "gemini": 5000,       # Gemini TTS caps at ~8k input tokens / ~655s audio
     "elevenlabs": 10000,  # fallback when model-aware lookup can't resolve (multilingual_v2)
@@ -341,6 +346,7 @@ BUILTIN_TTS_PROVIDERS = frozenset({
     "elevenlabs",
     "openai",
     "minimax",
+    "senseaudio",
     "xai",
     "mistral",
     "gemini",
@@ -1087,6 +1093,85 @@ def _generate_minimax_tts(text: str, output_path: str, tts_config: Dict[str, Any
 
 
 # ===========================================================================
+# Provider: SenseAudio TTS
+# ===========================================================================
+def _generate_senseaudio_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
+    """
+    Generate audio using SenseAudio TTS API.
+
+    SenseAudio exposes a MiniMax-style t2a_v2 endpoint at
+    ``POST {base_url}/v1/t2a_v2`` and returns JSON with a hex-encoded MP3
+    payload under ``data.audio``. Mandarin-focused; defaults to a
+    32 kHz / 128 kbps MP3.
+
+    Args:
+        text: Text to convert (max ~10,000 characters).
+        output_path: Where to save the audio file.
+        tts_config: TTS config dict.
+
+    Returns:
+        Path to the saved audio file.
+    """
+    import requests
+
+    api_key = (get_env_value("SENSEAUDIO_API_KEY") or "")
+    if not api_key:
+        raise ValueError("SENSEAUDIO_API_KEY not set. Get one at https://senseaudio.cn/")
+
+    sa_config = tts_config.get("senseaudio", {})
+    model = sa_config.get("model", DEFAULT_SENSEAUDIO_TTS_MODEL)
+    voice_id = sa_config.get("voice_id", DEFAULT_SENSEAUDIO_TTS_VOICE)
+    base_url = sa_config.get("base_url", DEFAULT_SENSEAUDIO_TTS_BASE_URL)
+    sample_rate = sa_config.get("sample_rate", 32000)
+    bitrate = sa_config.get("bitrate", 128000)
+    channel = sa_config.get("channel", 2)
+
+    # Normalise base URL: strip trailing slash and a trailing /v1 segment
+    # so users can paste either form. Then build the full t2a_v2 URL.
+    normalized = base_url.rstrip("/")
+    if normalized.lower().endswith("/v1"):
+        normalized = normalized[:-3]
+    url = f"{normalized}/v1/t2a_v2"
+
+    payload = {
+        "model": model,
+        "text": text,
+        "stream": False,
+        "voice_setting": {"voice_id": voice_id},
+        "audio_setting": {
+            "sample_rate": sample_rate,
+            "bitrate": bitrate,
+            "format": "mp3",
+            "channel": channel,
+        },
+    }
+
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {api_key}",
+    }
+
+    response = requests.post(url, json=payload, headers=headers, timeout=60)
+    response.raise_for_status()
+
+    result = response.json()
+    base_resp = result.get("base_resp", {})
+    status_code = base_resp.get("status_code", -1)
+    if status_code != 0:
+        status_msg = base_resp.get("status_msg", "unknown error")
+        raise RuntimeError(f"SenseAudio TTS API error (code {status_code}): {status_msg}")
+
+    hex_audio = result.get("data", {}).get("audio", "")
+    if not hex_audio:
+        raise RuntimeError("SenseAudio TTS returned empty audio data")
+
+    audio_bytes = bytes.fromhex(hex_audio)
+    with open(output_path, "wb") as f:
+        f.write(audio_bytes)
+    return output_path
+
+
+# ===========================================================================
 # Provider: Mistral (Voxtral TTS)
 # ===========================================================================
 def _generate_mistral_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
@@ -1730,6 +1815,10 @@ def text_to_speech_tool(
             logger.info("Generating speech with MiniMax TTS...")
             _generate_minimax_tts(text, file_str, tts_config)
 
+        elif provider == "senseaudio":
+            logger.info("Generating speech with SenseAudio TTS...")
+            _generate_senseaudio_tts(text, file_str, tts_config)
+
         elif provider == "xai":
             logger.info("Generating speech with xAI TTS...")
             _generate_xai_tts(text, file_str, tts_config)
@@ -1840,7 +1929,7 @@ def text_to_speech_tool(
                     if opus_path:
                         file_str = opus_path
                 voice_compatible = file_str.endswith(".ogg")
-        elif provider in {"edge", "neutts", "minimax", "xai", "kittentts", "piper"} and not file_str.endswith(".ogg"):
+        elif provider in {"edge", "neutts", "minimax", "senseaudio", "xai", "kittentts", "piper"} and not file_str.endswith(".ogg"):
             opus_path = _convert_to_opus(file_str)
             if opus_path:
                 file_str = opus_path
@@ -1916,6 +2005,8 @@ def check_tts_requirements() -> bool:
     except ImportError:
         pass
     if get_env_value("MINIMAX_API_KEY"):
+        return True
+    if get_env_value("SENSEAUDIO_API_KEY"):
         return True
     if get_env_value("XAI_API_KEY"):
         return True
@@ -2230,6 +2321,7 @@ if __name__ == "__main__":
         f"{'set' if resolve_openai_audio_api_key() else 'not set (VOICE_TOOLS_OPENAI_KEY or OPENAI_API_KEY)'}"
     )
     print(f"  MiniMax:    {'API key set' if get_env_value('MINIMAX_API_KEY') else 'not set (MINIMAX_API_KEY)'}")
+    print(f"  SenseAudio: {'API key set' if get_env_value('SENSEAUDIO_API_KEY') else 'not set (SENSEAUDIO_API_KEY)'}")
     print(f"  Piper:      {'installed' if _check_piper_available() else 'not installed (pip install piper-tts)'}")
     print(f"  ffmpeg:     {'✅ found' if _has_ffmpeg() else '❌ not found (needed for Telegram Opus)'}")
     print(f"\n  Output dir: {DEFAULT_OUTPUT_DIR}")
