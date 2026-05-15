@@ -3205,6 +3205,17 @@ def _resolve_chat_argv(
     argv, cwd = _make_tui_argv(PROJECT_ROOT / "ui-tui", tui_dev=False)
     env = os.environ.copy()
     env.setdefault("NODE_ENV", "production")
+    # GatewayClient resolves the Python source root from this env var (see
+    # ui-tui/src/gatewayClient.ts). When unset, it falls back to
+    # ``import.meta.dirname`` which is unreliable across the various ways
+    # ``entry.js`` ends up loaded under PTY (it can be ``undefined`` even on
+    # Node 22, depending on loader path), causing
+    # ``path.resolve(undefined, '../../')`` to throw ``ERR_INVALID_ARG_TYPE``.
+    # The CLI launch path (``_launch_tui``) already sets this; the dashboard
+    # PTY path missed it and was relying on inheritance from the user's
+    # shell. Set it explicitly with ``setdefault`` so an operator-provided
+    # value still wins.
+    env.setdefault("HERMES_PYTHON_SRC_ROOT", str(PROJECT_ROOT))
     # Browser-embedded chat should prefer stable wheel-based scrollback over
     # native terminal mouse tracking. When mouse tracking is enabled, wheel
     # events are consumed by the TUI and forwarded as terminal input, which
