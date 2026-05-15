@@ -13635,7 +13635,7 @@ class GatewayRunner:
                 task_id=session_key or "telegram-research",
                 session_key=session_key or "",
                 env_vars=None,
-                use_pty=False,
+                use_pty=True,
             )
             proc_session.watcher_platform = source.platform.value
             proc_session.watcher_chat_id = source.chat_id
@@ -13643,14 +13643,14 @@ class GatewayRunner:
             proc_session.watcher_user_name = source.user_name or ""
             proc_session.watcher_thread_id = source.thread_id or ""
             proc_session.notify_on_complete = True
-            proc_session.watcher_interval = 5
+            proc_session.watcher_interval = 1
             try:
                 process_registry._write_checkpoint()
             except Exception:
                 pass
             watcher = {
                 "session_id": proc_session.id,
-                "check_interval": 5,
+                "check_interval": 1,
                 "session_key": session_key or "",
                 "platform": source.platform.value,
                 "chat_id": source.chat_id,
@@ -13665,6 +13665,12 @@ class GatewayRunner:
             _watch_task = asyncio.create_task(self._run_process_watcher(watcher))
             self._background_tasks.add(_watch_task)
             _watch_task.add_done_callback(self._background_tasks.discard)
+            logger.info(
+                "Started direct Telegram research watcher for %s chat=%s interval=%ss",
+                proc_session.id,
+                source.chat_id,
+                watcher["check_interval"],
+            )
         except Exception as exc:
             logger.error("Manual Telegram research spawn failed: %s", exc, exc_info=True)
             return f"PUBLISH_FAILED: could not start research worker ({exc})"
@@ -13729,7 +13735,7 @@ class GatewayRunner:
                 if direct_research_delivery:
                     final_url = _extract_public_research_url(session.output_buffer)
                     if session.exit_code == 0 and final_url:
-                        final_text = final_url
+                        final_text = f"✅ done\n{final_url}"
                     else:
                         final_text = f"PUBLISH_FAILED: child exited with code {session.exit_code}"
                     adapter = None
