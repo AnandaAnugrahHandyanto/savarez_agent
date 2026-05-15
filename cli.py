@@ -3235,25 +3235,27 @@ class HermesCLI:
 
     @staticmethod
     def _scrollback_box_width(width: Optional[int] = None) -> int:
-        """Return a resize-safe width for printed scrollback box rules.
+        """Return the full viewport width for printed scrollback box rules.
 
-        Lines already printed to terminal scrollback are reflowed by the
-        terminal emulator when the column count shrinks. A full-width response
-        border drawn at, say, 200 columns will wrap into two or three rows of
-        dashes after the user resizes to 80 columns, looking like duplicated
-        separator lines (the family of bugs tracked by #18449, #19280, #22976).
+        Previously this clamped to ``max(32, min(width, 56))`` as a defense
+        against terminal-emulator reflow on column-shrink (#25975, salvaging
+        #24403).  That clamp made response/reasoning borders look stubby on
+        any modern wide terminal.  We now trust the prompt_toolkit
+        ``_output_screen_diff`` monkey-patch landed in #26137 (salvaging
+        #25981) to keep chrome out of scrollback in the first place, and
+        accept that an aggressive column-shrink may visually reflow already
+        printed Panel borders — that's a cosmetic artifact of stamped
+        scrollback history, not a live-render bug.
 
-        Keep decorative scrollback boxes intentionally narrower than the
-        viewport so a moderate resize never triggers reflow. The live TUI
-        footer (status bar, input rule) still uses the full width — only
-        content that is *stamped into scrollback* needs this clamp.
+        A small floor (32 cols) is kept so the box still renders on tiny
+        terminals without negative ``'─' * (w - 2)`` math.
         """
         if width is None:
             try:
                 width = shutil.get_terminal_size((80, 24)).columns
             except Exception:
                 width = 80
-        return max(32, min(int(width or 80), 56))
+        return max(32, int(width or 80))
 
     def _tui_input_rule_height(self, position: str, width: Optional[int] = None) -> int:
         """Return the visible height for the top/bottom input separator rules."""
@@ -3368,8 +3370,11 @@ class HermesCLI:
             percent_label = f"{percent}%" if percent is not None else "--"
             duration_label = snapshot["duration"]
 
+            yolo_active = bool(os.getenv("HERMES_YOLO_MODE"))
             if width < 52:
                 text = f"⚕ {snapshot['model_short']} · {duration_label}"
+                if yolo_active:
+                    text += " · ⚠ YOLO"
                 return self._trim_status_bar_text(text, width)
             if width < 76:
                 parts = [f"⚕ {snapshot['model_short']}", percent_label]
@@ -3377,6 +3382,8 @@ class HermesCLI:
                 if compressions:
                     parts.append(f"🗜️ {compressions}")
                 parts.append(duration_label)
+                if yolo_active:
+                    parts.append("⚠ YOLO")
                 return self._trim_status_bar_text(" · ".join(parts), width)
 
             if snapshot["context_length"]:
@@ -3394,6 +3401,8 @@ class HermesCLI:
             prompt_elapsed = snapshot.get("prompt_elapsed")
             if prompt_elapsed:
                 parts.append(prompt_elapsed)
+            if yolo_active:
+                parts.append("⚠ YOLO")
             return self._trim_status_bar_text(" │ ".join(parts), width)
         except Exception:
             return f"⚕ {self.model if getattr(self, 'model', None) else 'Hermes'}"
@@ -3410,6 +3419,7 @@ class HermesCLI:
             # line and produce duplicated status bar rows over long sessions.
             width = self._get_tui_terminal_width()
             duration_label = snapshot["duration"]
+            yolo_active = bool(os.getenv("HERMES_YOLO_MODE"))
 
             if width < 52:
                 frags = [
@@ -3417,8 +3427,11 @@ class HermesCLI:
                     ("class:status-bar-strong", snapshot["model_short"]),
                     ("class:status-bar-dim", " · "),
                     ("class:status-bar-dim", duration_label),
-                    ("class:status-bar", " "),
                 ]
+                if yolo_active:
+                    frags.append(("class:status-bar-dim", " · "))
+                    frags.append(("class:status-bar-yolo", "⚠ YOLO"))
+                frags.append(("class:status-bar", " "))
             else:
                 percent = snapshot["context_percent"]
                 percent_label = f"{percent}%" if percent is not None else "--"
@@ -3436,8 +3449,11 @@ class HermesCLI:
                     frags.extend([
                         ("class:status-bar-dim", " · "),
                         ("class:status-bar-dim", duration_label),
-                        ("class:status-bar", " "),
                     ])
+                    if yolo_active:
+                        frags.append(("class:status-bar-dim", " · "))
+                        frags.append(("class:status-bar-yolo", "⚠ YOLO"))
+                    frags.append(("class:status-bar", " "))
                 else:
                     if snapshot["context_length"]:
                         ctx_total = _format_context_length(snapshot["context_length"])
@@ -3470,6 +3486,9 @@ class HermesCLI:
                     if prompt_elapsed:
                         frags.append(("class:status-bar-dim", " │ "))
                         frags.append(("class:status-bar-dim", prompt_elapsed))
+                    if yolo_active:
+                        frags.append(("class:status-bar-dim", " │ "))
+                        frags.append(("class:status-bar-yolo", "⚠ YOLO"))
                     frags.append(("class:status-bar", " "))
 
             total_width = sum(self._status_bar_display_width(text) for _, text in frags)
@@ -13342,6 +13361,7 @@ class HermesCLI:
             'status-bar-warn': 'bg:#1a1a2e #FFD700 bold',
             'status-bar-bad': 'bg:#1a1a2e #FF8C00 bold',
             'status-bar-critical': 'bg:#1a1a2e #FF6B6B bold',
+            'status-bar-yolo': 'bg:#1a1a2e #FF4444 bold',
             # Bronze horizontal rules around the input area
             'input-rule': '#CD7F32',
             # Clipboard image attachment badges
