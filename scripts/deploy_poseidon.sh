@@ -8,6 +8,7 @@ SERVICE_NAME="${SERVICE_NAME:-hermes}"
 WAIT_TIMEOUT="${WAIT_TIMEOUT:-180}"
 STABLE_IMAGE="${STABLE_IMAGE:-hermes-local:latest}"
 NEW_IMAGE="${NEW_IMAGE:-hermes-local:sha-${DEPLOY_REF:0:12}}"
+BASE_IMAGE_TAG="${BASE_IMAGE_TAG:-hermes-app:sha-${DEPLOY_REF:0:12}}"
 LOCK_FILE="${LOCK_FILE:-/tmp/hermes-poseidon-deploy.lock}"
 
 if [[ ! -f "$WORKSPACE_DIR/Dockerfile" ]]; then
@@ -35,7 +36,7 @@ compose_cmd=(
   -f "$COMPOSE_DIR/docker-compose.yml"
 )
 
-echo "Building image $NEW_IMAGE from $WORKSPACE_DIR"
+echo "Building app base image $BASE_IMAGE_TAG from $WORKSPACE_DIR"
 current_image_id="$(docker image inspect "$STABLE_IMAGE" --format '{{.Id}}' 2>/dev/null || true)"
 rollback_image=""
 if [[ -n "$current_image_id" ]]; then
@@ -46,8 +47,16 @@ fi
 docker build \
   --pull \
   --label "org.opencontainers.image.revision=$DEPLOY_REF" \
-  -t "$NEW_IMAGE" \
+  -t "$BASE_IMAGE_TAG" \
   "$WORKSPACE_DIR"
+
+echo "Building deploy wrapper image $NEW_IMAGE from $COMPOSE_DIR"
+docker build \
+  --build-arg "BASE_IMAGE=$BASE_IMAGE_TAG" \
+  --label "org.opencontainers.image.revision=$DEPLOY_REF" \
+  -t "$NEW_IMAGE" \
+  -f "$COMPOSE_DIR/Dockerfile" \
+  "$COMPOSE_DIR"
 
 docker tag "$NEW_IMAGE" "$STABLE_IMAGE"
 
