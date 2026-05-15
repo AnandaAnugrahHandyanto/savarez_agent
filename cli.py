@@ -268,6 +268,32 @@ def _parse_service_tier_config(raw: str) -> str | None:
     logger.warning("Unknown service_tier '%s', ignoring", raw)
     return None
 
+def _parse_api_service_tier_config(raw: str) -> str | None:
+    """Parse direct OpenAI API service-tier preference.
+
+    ``None`` means omit the Responses/Chat Completions ``service_tier``
+    parameter and let OpenAI use the account default/standard tier.
+    """
+    value = str(raw or "").strip().lower()
+    if not value or value in {"standard", "normal", "default", "auto", "off", "none"}:
+        return None
+    if value == "flex":
+        return "flex"
+    logger.warning("Unknown api_service_tier '%s', using standard", raw)
+    return None
+
+
+def _parse_api_service_tier_fallback_config(raw: str) -> str | None:
+    """Parse service-tier fallback preference for direct OpenAI API routes."""
+    value = str(raw or "").strip().lower()
+    if not value or value in {"off", "none", "false", "disabled"}:
+        return None
+    if value in {"standard", "normal", "default", "auto"}:
+        return "standard"
+    logger.warning("Unknown api_service_tier_fallback '%s', disabling service-tier fallback", raw)
+    return None
+
+
 def load_cli_config() -> Dict[str, Any]:
     """
     Load CLI configuration from config files.
@@ -335,6 +361,8 @@ def load_cli_config() -> Dict[str, Any]:
             "prefill_messages_file": "",
             "reasoning_effort": "",
             "service_tier": "",
+            "api_service_tier": "standard",
+            "api_service_tier_fallback": "standard",
             "personalities": {
                 "helpful": "You are a helpful, friendly AI assistant.",
                 "concise": "You are a concise assistant. Keep responses brief and to the point.",
@@ -2763,6 +2791,12 @@ class HermesCLI:
         self.service_tier = _parse_service_tier_config(
             CLI_CONFIG["agent"].get("service_tier", "")
         )
+        self.api_service_tier = _parse_api_service_tier_config(
+            CLI_CONFIG["agent"].get("api_service_tier", "")
+        )
+        self.api_service_tier_fallback = _parse_api_service_tier_fallback_config(
+            CLI_CONFIG["agent"].get("api_service_tier_fallback", "")
+        )
         
         # OpenRouter provider routing preferences
         pr = CLI_CONFIG.get("provider_routing", {}) or {}
@@ -4354,6 +4388,17 @@ class HermesCLI:
             ),
         }
 
+        api_service_tier = getattr(self, "api_service_tier", None)
+        if base_url_host_matches(runtime.get("base_url") or "", "api.openai.com"):
+            if api_service_tier == "flex":
+                overrides = {"service_tier": "flex"}
+                if getattr(self, "api_service_tier_fallback", None) == "standard":
+                    overrides["_fallback_request_overrides"] = {}
+                route["request_overrides"] = overrides
+            else:
+                route["request_overrides"] = None
+            return route
+
         service_tier = getattr(self, "service_tier", None)
         if not service_tier:
             route["request_overrides"] = None
@@ -4375,6 +4420,10 @@ class HermesCLI:
             bool: True if successful, False otherwise
         """
         if self.agent is not None:
+            if hasattr(self.agent, "set_request_overrides"):
+                self.agent.set_request_overrides(request_overrides, update_primary_runtime=True)
+            else:
+                self.agent.request_overrides = dict(request_overrides or {})
             return True
 
         if not self._ensure_runtime_credentials():

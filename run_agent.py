@@ -1440,7 +1440,10 @@ class AIAgent:
         self.max_tokens = max_tokens  # None = use model default
         self.reasoning_config = reasoning_config  # None = use default (medium for OpenRouter)
         self.service_tier = service_tier
-        self.request_overrides = dict(request_overrides or {})
+        self.request_overrides = {}
+        self._request_overrides_fallback = None
+        self._request_overrides_fallback_activated = False
+        self.set_request_overrides(request_overrides)
         self.prefill_messages = prefill_messages or []  # Prefilled conversation turns
         self._force_ascii_payload = False
         
@@ -2482,6 +2485,12 @@ class AIAgent:
             "client_kwargs": dict(self._client_kwargs),
             "use_prompt_caching": self._use_prompt_caching,
             "use_native_cache_layout": self._use_native_cache_layout,
+            "request_overrides": dict(self.request_overrides or {}),
+            "request_overrides_fallback": (
+                dict(self._request_overrides_fallback)
+                if isinstance(self._request_overrides_fallback, dict)
+                else None
+            ),
             # Context engine state that _try_activate_fallback() overwrites.
             # Use getattr for model/base_url/api_key/provider since plugin
             # engines may not have these (they're ContextCompressor-specific).
@@ -2756,6 +2765,7 @@ class AIAgent:
 
         # ── Update _primary_runtime so the change persists across turns ──
         _cc = self.context_compressor if hasattr(self, "context_compressor") and self.context_compressor else None
+        _request_overrides_fallback = getattr(self, "_request_overrides_fallback", None)
         self._primary_runtime = {
             "model": self.model,
             "provider": self.provider,
@@ -2765,6 +2775,12 @@ class AIAgent:
             "client_kwargs": dict(self._client_kwargs),
             "use_prompt_caching": self._use_prompt_caching,
             "use_native_cache_layout": self._use_native_cache_layout,
+            "request_overrides": dict(getattr(self, "request_overrides", {}) or {}),
+            "request_overrides_fallback": (
+                dict(_request_overrides_fallback)
+                if isinstance(_request_overrides_fallback, dict)
+                else None
+            ),
             "compressor_model": getattr(_cc, "model", self.model) if _cc else self.model,
             "compressor_base_url": getattr(_cc, "base_url", self.base_url) if _cc else self.base_url,
             "compressor_api_key": getattr(_cc, "api_key", "") if _cc else "",
@@ -2804,6 +2820,40 @@ class AIAgent:
         logging.info(
             "Model switched in-place: %s (%s) -> %s (%s)",
             old_model, old_provider, new_model, new_provider,
+        )
+
+    def set_request_overrides(
+        self,
+        request_overrides: Dict[str, Any] | None,
+        *,
+        update_primary_runtime: bool = False,
+    ) -> None:
+        """Apply per-turn request overrides and extract fallback metadata.
+
+        Keys beginning with '_' are Hermes-internal and must never be forwarded
+        to provider APIs. ``_fallback_request_overrides`` lets a route retry the
+        same runtime once with alternate public request overrides before moving
+        to provider/model fallback.
+        """
+        raw = dict(request_overrides or {})
+        fallback = raw.pop("_fallback_request_overrides", None)
+        self.request_overrides = {
+            key: value for key, value in raw.items() if not str(key).startswith("_")
+        }
+        self._request_overrides_fallback = dict(fallback) if isinstance(fallback, dict) else None
+        self._request_overrides_fallback_activated = False
+        if update_primary_runtime:
+            self._sync_primary_request_override_snapshot()
+
+    def _sync_primary_request_override_snapshot(self) -> None:
+        """Keep cached-agent primary runtime in sync with the latest turn route."""
+        primary_runtime = getattr(self, "_primary_runtime", None)
+        if not isinstance(primary_runtime, dict):
+            return
+        primary_runtime["request_overrides"] = dict(getattr(self, "request_overrides", {}) or {})
+        fallback_snapshot = getattr(self, "_request_overrides_fallback", None)
+        primary_runtime["request_overrides_fallback"] = (
+            dict(fallback_snapshot) if isinstance(fallback_snapshot, dict) else None
         )
 
     def _safe_print(self, *args, **kwargs):
@@ -8696,6 +8746,27 @@ class AIAgent:
 
     # ── Provider fallback ──────────────────────────────────────────────────
 
+    def _try_activate_request_overrides_fallback(self, reason: "FailoverReason | None" = None) -> bool:
+        """Retry the same runtime with alternate request overrides before provider fallback."""
+        if getattr(self, "_request_overrides_fallback_activated", False):
+            return False
+        fallback = getattr(self, "_request_overrides_fallback", None)
+        if not isinstance(fallback, dict):
+            return False
+        current = dict(getattr(self, "request_overrides", {}) or {})
+        if current == fallback:
+            return False
+        self.request_overrides = dict(fallback)
+        self._request_overrides_fallback_activated = True
+        self._emit_status("🔄 Flex request failed — retrying same model with standard service tier...")
+        logging.info(
+            "Request override fallback activated: keys=%s -> keys=%s (reason=%s)",
+            sorted(current.keys()),
+            sorted(self.request_overrides.keys()),
+            getattr(reason, "value", reason),
+        )
+        return True
+
     def _try_activate_fallback(self, reason: "FailoverReason | None" = None) -> bool:
         """Switch to the next fallback model/provider in the chain.
 
@@ -8831,6 +8902,14 @@ class AIAgent:
             if hasattr(self, "_transport_cache"):
                 self._transport_cache.clear()
             self._fallback_activated = True
+            fb_request_overrides = dict(fb.get("request_overrides") or {})
+            fb_api_service_tier = str(fb.get("api_service_tier") or "").strip().lower()
+            if base_url_host_matches(fb_base_url, "api.openai.com"):
+                if fb_api_service_tier == "flex":
+                    fb_request_overrides["service_tier"] = "flex"
+                elif fb_api_service_tier in {"standard", "normal", "default", "auto", "off", "none"}:
+                    fb_request_overrides.pop("service_tier", None)
+            self.set_request_overrides(fb_request_overrides)
 
             # Honor per-provider / per-model request_timeout_seconds for the
             # fallback target (same knob the primary client uses).  None = use
@@ -8938,8 +9017,20 @@ class AIAgent:
         The gateway caches agents across messages (``_agent_cache`` in
         ``gateway/run.py``), so this restoration IS needed there too.
         """
-        if not self._fallback_activated:
+        request_override_fallback_active = bool(getattr(self, "_request_overrides_fallback_activated", False))
+        if not self._fallback_activated and not request_override_fallback_active:
             return False
+
+        if request_override_fallback_active and not self._fallback_activated:
+            rt = self._primary_runtime or {}
+            self.set_request_overrides(rt.get("request_overrides", {}))
+            self._request_overrides_fallback = (
+                dict(rt.get("request_overrides_fallback"))
+                if isinstance(rt.get("request_overrides_fallback"), dict)
+                else None
+            )
+            logging.info("Primary request overrides restored for new turn")
+            return True
 
         if getattr(self, "_rate_limited_until", 0) > time.monotonic():
             return False  # primary still in rate-limit cooldown, stay on fallback
@@ -8991,9 +9082,15 @@ class AIAgent:
                 provider=rt["compressor_provider"],
             )
 
-            # ── Reset fallback chain for the new turn ──
+            # ── Reset fallback chain and request overrides for the new turn ──
             self._fallback_activated = False
             self._fallback_index = 0
+            self.set_request_overrides(rt.get("request_overrides", {}))
+            self._request_overrides_fallback = (
+                dict(rt.get("request_overrides_fallback"))
+                if isinstance(rt.get("request_overrides_fallback"), dict)
+                else None
+            )
 
             logging.info(
                 "Primary runtime restored for new turn: %s (%s)",
@@ -13974,6 +14071,12 @@ class AIAgent:
                         FailoverReason.rate_limit,
                         FailoverReason.billing,
                     }
+                    if is_rate_limited and self._try_activate_request_overrides_fallback(reason=classified.reason):
+                        retry_count = 0
+                        compression_attempts = 0
+                        primary_recovery_attempted = False
+                        continue
+
                     if is_rate_limited and self._fallback_index < len(self._fallback_chain):
                         # Don't eagerly fallback if credential pool rotation may
                         # still recover.  See _pool_may_recover_from_rate_limit
@@ -14311,6 +14414,12 @@ class AIAgent:
                     ) and not is_context_length_error
 
                     if is_client_error:
+                        if self._try_activate_request_overrides_fallback(reason=classified.reason):
+                            retry_count = 0
+                            compression_attempts = 0
+                            primary_recovery_attempted = False
+                            continue
+
                         # Try fallback before aborting — a different provider
                         # may not have the same issue (rate limit, auth, etc.)
                         self._emit_status(f"⚠️ Non-retryable error (HTTP {status_code}) — trying fallback...")
@@ -14379,6 +14488,13 @@ class AIAgent:
                             primary_recovery_attempted = True
                             retry_count = 0
                             continue
+                        # Try same-runtime request-override fallback before provider fallback.
+                        if self._try_activate_request_overrides_fallback(reason=classified.reason):
+                            retry_count = 0
+                            compression_attempts = 0
+                            primary_recovery_attempted = False
+                            continue
+
                         # Try fallback before giving up entirely
                         self._emit_status(f"⚠️ Max retries ({max_retries}) exhausted — trying fallback...")
                         if self._try_activate_fallback():

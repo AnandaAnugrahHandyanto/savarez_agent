@@ -386,7 +386,13 @@ class ChatCompletionsTransport(ProviderTransport):
         # Request overrides last (service_tier etc.)
         overrides = params.get("request_overrides")
         if overrides:
-            api_kwargs.update(overrides)
+            api_kwargs.update(
+                {
+                    key: value
+                    for key, value in overrides.items()
+                    if not str(key).startswith("_")
+                }
+            )
 
         return api_kwargs
 
@@ -496,6 +502,8 @@ class ChatCompletionsTransport(ProviderTransport):
         overrides = params.get("request_overrides")
         if overrides:
             for k, v in overrides.items():
+                if str(k).startswith("_"):
+                    continue
                 if k == "extra_body" and isinstance(v, dict):
                     extra_body.update(v)
                 else:
