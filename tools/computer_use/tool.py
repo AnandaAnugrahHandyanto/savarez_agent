@@ -311,7 +311,11 @@ def _summarize_action(action: str, args: Dict[str, Any]) -> str:
         return f"key {args.get('keys', '')!r}"
     if action == "set_value":
         value = str(args.get("value", ""))
-        summary = f"set_value element #{args.get('element')} to {value[:60]!r}"
+        element = args.get("element")
+        if element is not None:
+            summary = f"set_value element #{element} to {value[:60]!r}"
+        else:
+            summary = f"set_value to {value[:60]!r}"
         return summary + ("..." if len(value) > 60 else "")
     if action == "focus_app":
         return f"focus {args.get('app', '')!r}" + (" (raise)" if args.get("raise_window") else "")

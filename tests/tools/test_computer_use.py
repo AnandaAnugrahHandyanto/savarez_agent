@@ -156,6 +156,18 @@ class TestDispatch:
         assert click_kw["button"] == "right"
 
 
+class TestActionSummaries:
+    def test_set_value_summary_includes_element_when_present(self):
+        from tools.computer_use.tool import _summarize_action
+        out = _summarize_action("set_value", {"element": 7, "value": "abc"})
+        assert out == "set_value element #7 to 'abc'"
+
+    def test_set_value_summary_omits_missing_element(self):
+        from tools.computer_use.tool import _summarize_action
+        out = _summarize_action("set_value", {"value": "abc"})
+        assert out == "set_value to 'abc'"
+
+
 # ---------------------------------------------------------------------------
 # Safety guards (type / key block lists)
 # ---------------------------------------------------------------------------
