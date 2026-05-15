@@ -2532,8 +2532,8 @@ class CronJobUpdate(BaseModel):
 
 @app.get("/api/cron/jobs")
 async def list_cron_jobs():
-    from cron.jobs import list_jobs
-    return list_jobs(include_disabled=True)
+    from cron.jobs import list_visible_jobs
+    return list_visible_jobs(include_disabled=True)
 
 
 @app.get("/api/cron/jobs/{job_id}")
@@ -2549,8 +2549,11 @@ async def get_cron_job(job_id: str):
 async def create_cron_job(body: CronJobCreate):
     from cron.jobs import create_job
     try:
+        scope = getattr(body, "scope", "profile")
+        run_as = getattr(body, "run_as_profile", None)
         job = create_job(prompt=body.prompt, schedule=body.schedule,
-                         name=body.name, deliver=body.deliver)
+                         name=body.name, deliver=body.deliver,
+                         scope=scope, run_as_profile=run_as)
         return job
     except Exception as e:
         _log.exception("POST /api/cron/jobs failed")

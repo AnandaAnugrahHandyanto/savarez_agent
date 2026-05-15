@@ -10096,6 +10096,8 @@ def main():
     # cron list
     cron_list = cron_subparsers.add_parser("list", help="List scheduled jobs")
     cron_list.add_argument("--all", action="store_true", help="Include disabled jobs")
+    cron_list.add_argument("--global", action="store_true", dest="cron_global", help="List global jobs only")
+    cron_list.add_argument("--visible", action="store_true", dest="cron_visible", help="List profile + global jobs")
 
     # cron create/add
     cron_create = cron_subparsers.add_parser(
@@ -10144,6 +10146,8 @@ def main():
         "--workdir",
         help="Absolute path for the job to run from. Injects AGENTS.md / CLAUDE.md / .cursorrules from that directory and uses it as the cwd for terminal/file/code_exec tools. Omit to preserve old behaviour (no project context files).",
     )
+    cron_create.add_argument("--global", action="store_true", dest="cron_global", help="Create as a global cron job")
+    cron_create.add_argument("--run-as-profile", dest="run_as_profile", help="Profile to run global job as (required with --global)")
 
     # cron edit
     cron_edit = cron_subparsers.add_parser(
@@ -10234,6 +10238,16 @@ def main():
     cron_tick = cron_subparsers.add_parser("tick", help="Run due jobs once and exit")
     _add_accept_hooks_flag(cron_tick)
     _add_accept_hooks_flag(cron_parser)
+
+    # cron run-internal (hidden, for subprocess execution only)
+    cron_run_internal = cron_subparsers.add_parser(
+        "run-internal", help=argparse.SUPPRESS
+    )
+    cron_run_internal.add_argument("--scope", choices=["global"], required=True)
+    cron_run_internal.add_argument("--store-root", required=True)
+    cron_run_internal.add_argument("--job-id", required=True)
+    cron_run_internal.set_defaults(func=cmd_cron)
+
     cron_parser.set_defaults(func=cmd_cron)
 
     # =========================================================================

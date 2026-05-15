@@ -8,6 +8,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from cron.jobs import CronStore, ensure_dirs, save_jobs
+
 
 class TestCronFilePermissions(unittest.TestCase):
     """Verify cron files get secure permissions."""
@@ -21,58 +23,64 @@ class TestCronFilePermissions(unittest.TestCase):
         import shutil
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
-    @patch("cron.jobs.CRON_DIR")
-    @patch("cron.jobs.OUTPUT_DIR")
-    @patch("cron.jobs.JOBS_FILE")
-    def test_ensure_dirs_sets_0700(self, mock_jobs_file, mock_output, mock_cron):
-        mock_cron.__class__ = Path
-        # Use real paths
-        cron_dir = Path(self.tmpdir) / "cron"
+    def test_ensure_dirs_sets_0700(self):
+        """ensure_dirs() via CronStore creates dirs with 0700 permissions."""
+        root = Path(self.tmpdir)
+        store = CronStore(
+            scope="profile",
+            root=root,
+            cron_dir=root / "cron",
+            jobs_file=root / "cron" / "jobs.json",
+            output_dir=root / "cron" / "output",
+            lock_file=root / "cron" / ".tick.lock",
+        )
+        ensure_dirs(store=store)
+
+        cron_dir = root / "cron"
         output_dir = cron_dir / "output"
+        cron_mode = stat.S_IMODE(os.stat(cron_dir).st_mode)
+        output_mode = stat.S_IMODE(os.stat(output_dir).st_mode)
+        self.assertEqual(cron_mode, 0o700)
+        self.assertEqual(output_mode, 0o700)
 
-        with patch("cron.jobs.CRON_DIR", cron_dir), \
-             patch("cron.jobs.OUTPUT_DIR", output_dir):
-            from cron.jobs import ensure_dirs
-            ensure_dirs()
+    def test_save_jobs_sets_0600(self):
+        """save_jobs() via CronStore creates jobs.json with 0600 permissions."""
+        root = Path(self.tmpdir)
+        store = CronStore(
+            scope="profile",
+            root=root,
+            cron_dir=root / "cron",
+            jobs_file=root / "cron" / "jobs.json",
+            output_dir=root / "cron" / "output",
+            lock_file=root / "cron" / ".tick.lock",
+        )
+        save_jobs([{"id": "test", "prompt": "hello"}], store=store)
 
-            cron_mode = stat.S_IMODE(os.stat(cron_dir).st_mode)
-            output_mode = stat.S_IMODE(os.stat(output_dir).st_mode)
-            self.assertEqual(cron_mode, 0o700)
-            self.assertEqual(output_mode, 0o700)
-
-    @patch("cron.jobs.CRON_DIR")
-    @patch("cron.jobs.OUTPUT_DIR")
-    @patch("cron.jobs.JOBS_FILE")
-    def test_save_jobs_sets_0600(self, mock_jobs_file, mock_output, mock_cron):
-        cron_dir = Path(self.tmpdir) / "cron"
-        output_dir = cron_dir / "output"
-        jobs_file = cron_dir / "jobs.json"
-
-        with patch("cron.jobs.CRON_DIR", cron_dir), \
-             patch("cron.jobs.OUTPUT_DIR", output_dir), \
-             patch("cron.jobs.JOBS_FILE", jobs_file):
-            from cron.jobs import save_jobs
-            save_jobs([{"id": "test", "prompt": "hello"}])
-
-            file_mode = stat.S_IMODE(os.stat(jobs_file).st_mode)
-            self.assertEqual(file_mode, 0o600)
+        jobs_file = root / "cron" / "jobs.json"
+        file_mode = stat.S_IMODE(os.stat(jobs_file).st_mode)
+        self.assertEqual(file_mode, 0o600)
 
     def test_save_job_output_sets_0600(self):
-        output_dir = Path(self.tmpdir) / "output"
-        with patch("cron.jobs.OUTPUT_DIR", output_dir), \
-             patch("cron.jobs.CRON_DIR", Path(self.tmpdir)), \
-             patch("cron.jobs.ensure_dirs"):
-            output_dir.mkdir(parents=True, exist_ok=True)
-            from cron.jobs import save_job_output
-            output_file = save_job_output("test-job", "test output content")
+        """save_job_output() via CronStore creates output with 0600 permissions."""
+        root = Path(self.tmpdir)
+        store = CronStore(
+            scope="profile",
+            root=root,
+            cron_dir=root / "cron",
+            jobs_file=root / "cron" / "jobs.json",
+            output_dir=root / "cron" / "output",
+            lock_file=root / "cron" / ".tick.lock",
+        )
+        from cron.jobs import save_job_output
+        output_file = save_job_output("test-job", "test output content", store=store)
 
-            file_mode = stat.S_IMODE(os.stat(output_file).st_mode)
-            self.assertEqual(file_mode, 0o600)
+        file_mode = stat.S_IMODE(os.stat(output_file).st_mode)
+        self.assertEqual(file_mode, 0o600)
 
-            # Job output dir should also be 0700
-            job_dir = output_dir / "test-job"
-            dir_mode = stat.S_IMODE(os.stat(job_dir).st_mode)
-            self.assertEqual(dir_mode, 0o700)
+        # Job output dir should also be 0700
+        job_dir = store.output_dir / "test-job"
+        dir_mode = stat.S_IMODE(os.stat(job_dir).st_mode)
+        self.assertEqual(dir_mode, 0o700)
 
 
 class TestConfigFilePermissions(unittest.TestCase):

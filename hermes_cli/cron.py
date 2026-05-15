@@ -38,11 +38,16 @@ def _cron_api(**kwargs):
     return json.loads(cronjob_tool(**kwargs))
 
 
-def cron_list(show_all: bool = False):
-    """List all scheduled jobs."""
-    from cron.jobs import list_jobs
+def cron_list(show_all: bool = False, global_only: bool = False, visible: bool = False):
+    """List scheduled jobs."""
+    from cron.jobs import list_jobs, global_store as _gs, list_visible_jobs
 
-    jobs = list_jobs(include_disabled=show_all)
+    if global_only:
+        jobs = list_jobs(include_disabled=show_all, store=_gs())
+    elif visible:
+        jobs = list_visible_jobs(include_disabled=show_all)
+    else:
+        jobs = list_jobs(include_disabled=show_all)
 
     if not jobs:
         print(color("No scheduled jobs.", Colors.DIM))
@@ -82,8 +87,13 @@ def cron_list(show_all: bool = False):
         else:
             status = color("[disabled]", Colors.RED)
 
-        print(f"  {color(job_id, Colors.YELLOW)} {status}")
+        scope = job.get("scope", "profile")
+        scope_badge = color("[global]", Colors.MAGENTA) if scope == "global" else ""
+        print(f"  {color(job_id, Colors.YELLOW)} {status} {scope_badge}")
         print(f"    Name:      {name}")
+        run_as = job.get("run_as_profile")
+        if run_as:
+            print(f"    Run as:    {run_as}")
         print(f"    Schedule:  {schedule}")
         print(f"    Repeat:    {repeat_str}")
         print(f"    Next run:  {next_run}")
@@ -163,6 +173,7 @@ def cron_status():
 
 
 def cron_create(args):
+    scope = "global" if getattr(args, "cron_global", False) else "profile"
     result = _cron_api(
         action="create",
         schedule=args.schedule,
@@ -175,6 +186,8 @@ def cron_create(args):
         script=getattr(args, "script", None),
         workdir=getattr(args, "workdir", None),
         no_agent=getattr(args, "no_agent", False) or None,
+        scope=scope,
+        run_as_profile=getattr(args, "run_as_profile", None),
     )
     if not result.get("success"):
         print(color(f"Failed to create job: {result.get('error', 'unknown error')}", Colors.RED))
@@ -267,13 +280,29 @@ def _job_action(action: str, job_id: str, success_verb: str) -> int:
     return 0
 
 
+
+def cron_run_internal(args):
+    """Internal entrypoint for global cron job execution via subprocess."""
+    from cron.jobs import store_from_root, get_job
+    from cron.scheduler import process_job
+
+    store = store_from_root("global", args.store_root)
+    job = get_job(args.job_id, store=store)
+    if not job:
+        print(f"Job not found: {args.job_id}", file=sys.stderr)
+        return 1
+    success = process_job(job, store=store)
+    return 0 if success else 1
+
 def cron_command(args):
     """Handle cron subcommands."""
     subcmd = getattr(args, 'cron_command', None)
 
     if subcmd is None or subcmd == "list":
         show_all = getattr(args, 'all', False)
-        cron_list(show_all)
+        global_only = getattr(args, 'cron_global', False)
+        visible = getattr(args, 'cron_visible', False)
+        cron_list(show_all, global_only=global_only, visible=visible)
         return 0
 
     if subcmd == "status":
@@ -301,6 +330,9 @@ def cron_command(args):
 
     if subcmd in {"remove", "rm", "delete"}:
         return _job_action("remove", args.job_id, "Removed")
+
+    if subcmd == "run-internal":
+        return cron_run_internal(args)
 
     print(f"Unknown cron command: {subcmd}")
     print("Usage: hermes cron [list|create|edit|pause|resume|run|remove|status|tick]")

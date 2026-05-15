@@ -14,6 +14,8 @@ import contextvars
 import json
 import logging
 import os
+import subprocess as _sp
+import sys
 import shutil
 import subprocess
 import sys
@@ -877,45 +879,54 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
             )
 
     # Inject output from referenced cron jobs as context.
+    # v1: store-aware context resolution via load_latest_job_output.
     context_from = job.get("context_from")
     if context_from:
-        from cron.jobs import OUTPUT_DIR
+        from cron.jobs import load_latest_job_output, OUTPUT_DIR as _legacy_output_dir
         if isinstance(context_from, str):
             context_from = [context_from]
         for source_job_id in context_from:
-            # Guard against path traversal — valid job IDs are 12-char hex strings
-            if not source_job_id or not all(c in "0123456789abcdef" for c in source_job_id):
-                logger.warning("context_from: skipping invalid job_id %r", source_job_id)
-                continue
+            # Try store-aware resolution first
             try:
-                job_output_dir = OUTPUT_DIR / source_job_id
-                if not job_output_dir.exists():
-                    continue  # silent skip — no output yet
-                output_files = sorted(
-                    job_output_dir.glob("*.md"),
-                    key=lambda f: f.stat().st_mtime,
-                    reverse=True,
-                )
-                if not output_files:
-                    continue  # silent skip — no output yet
-                latest_output = output_files[0].read_text(encoding="utf-8").strip()
-                # Truncate to 8K characters to avoid prompt bloat
-                _MAX_CONTEXT_CHARS = 8000
-                if len(latest_output) > _MAX_CONTEXT_CHARS:
-                    latest_output = latest_output[:_MAX_CONTEXT_CHARS] + "\n\n[... output truncated ...]"
-                if latest_output:
-                    prompt = (
-                        f"## Output from job '{source_job_id}'\n"
-                        "The following is the most recent output from a preceding "
-                        "cron job. Use it as context for your analysis.\n\n"
-                        f"```\n{latest_output}\n```\n\n"
-                        f"{prompt}"
+                context_output = load_latest_job_output(source_job_id)
+            except (OSError, PermissionError):
+                context_output = None
+            if context_output is not None:
+                latest_output = context_output.strip()
+            else:
+                # Fallback: direct file read for legacy plain IDs
+                if not source_job_id or not all(c in "0123456789abcdef" for c in source_job_id):
+                    logger.warning("context_from: skipping invalid job_id %r", source_job_id)
+                    continue
+                try:
+                    job_output_dir = _legacy_output_dir / source_job_id
+                    if not job_output_dir.exists():
+                        continue
+                    output_files = sorted(
+                        job_output_dir.glob("*.md"),
+                        key=lambda f: f.stat().st_mtime,
+                        reverse=True,
                     )
-                else:
-                    continue  # silent skip — empty output
-            except (OSError, PermissionError) as e:
-                logger.warning("context_from: failed to read output for job %r: %s", source_job_id, e)
-                # silent skip — do not pollute the prompt with error messages
+                    if not output_files:
+                        continue
+                    latest_output = output_files[0].read_text(encoding="utf-8").strip()
+                except Exception:
+                    logger.warning("context_from: failed to read output for %r", source_job_id)
+                    continue
+            # Truncate to 8K characters to avoid prompt bloat
+            _MAX_CONTEXT_CHARS = 8000
+            if latest_output and len(latest_output) > _MAX_CONTEXT_CHARS:
+                latest_output = latest_output[:_MAX_CONTEXT_CHARS] + "\n\n[... output truncated ...]"
+            if latest_output:
+                prompt = (
+                    f"## Output from job '{source_job_id}'\n"
+                    "The following is the most recent output from a preceding "
+                    "cron job. Use it as context for your analysis.\n\n"
+                    f"```\n{latest_output}\n```\n\n"
+                    f"{prompt}"
+                )
+            else:
+                continue
 
     # Always prepend cron execution guidance so the agent knows how
     # delivery works and can suppress delivery when appropriate.
@@ -1655,6 +1666,69 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             logger.debug("Job '%s': failed to reap stale auxiliary clients: %s", job_id, e)
 
 
+
+def process_job(job: dict, *, store=None, adapters=None, loop=None, verbose: bool = True) -> bool:
+    """Run one job end-to-end: execute, save output, deliver, mark.
+    
+    Factorised so cron run-internal can call it directly.
+    """
+    try:
+        success, output_doc, final_response, error = run_job(job)
+        output_file = save_job_output(job["id"], output_doc, store=store)
+        # Deliver using runtime profile config
+        delivery_error = None
+        try:
+            _deliver_result(job, final_response, adapters=adapters, loop=loop)
+        except Exception as de:
+            delivery_error = str(de)
+            logger.warning("Delivery failed for job %s: %s", job.get("id"), de)
+        mark_job_run(job["id"], success, error, delivery_error=delivery_error, store=store)
+        return success
+    except Exception as e:
+        logger.error("process_job failed for %s: %s", job.get("id"), e)
+        try:
+            mark_job_run(job["id"], False, str(e), store=store)
+        except Exception:
+            pass
+        return False
+
+
+def _run_global_job_subprocess(job: dict, store) -> tuple:
+    """Launch a global cron job in a subprocess with the runtime profile's HERMES_HOME."""
+    from cron.jobs import resolve_profile_home
+    profile = job.get("run_as_profile")
+    if not profile:
+        return False, "", "", "Global job missing run_as_profile"
+    try:
+        profile_home = resolve_profile_home(profile)
+    except ValueError as e:
+        return False, "", "", f"Invalid run_as_profile: {e}"
+    
+    env = os.environ.copy()
+    env["HERMES_HOME"] = str(profile_home)
+    for key in list(env):
+        if key.startswith("HERMES_SESSION_"):
+            env.pop(key, None)
+    
+    cmd = [
+        sys.executable, "-m", "hermes_cli.main",
+        "cron", "run-internal",
+        "--scope", "global",
+        "--store-root", str(store.root),
+        "--job-id", job["id"],
+    ]
+    try:
+        proc = _sp.run(cmd, env=env, capture_output=True, text=True, timeout=600)
+        ok = proc.returncode == 0
+        combined = (proc.stdout or "") + (proc.stderr or "")
+        return ok, combined, combined, None if ok else combined[-2000:]
+    except _sp.TimeoutExpired:
+        return False, "", "", "Global job subprocess timed out after 600s"
+    except FileNotFoundError:
+        return False, "", "", f"Python executable not found: {sys.executable}"
+    except Exception as e:
+        return False, "", "", f"Global subprocess error: {e}"
+
 def tick(verbose: bool = True, adapters=None, loop=None) -> int:
     """
     Check and run all due jobs.
@@ -1689,6 +1763,28 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
 
     try:
         due_jobs = get_due_jobs()
+        # Merge global due jobs under cross-process file lock so multiple
+        # profile gateways can't claim the same global job.
+        global_lock_cm = None
+        global_lock_held = False
+        try:
+            from cron.jobs import global_store as _gs, current_profile_store as _cps, with_store_file_lock
+            gs = _gs()
+            ps = _cps()
+            if gs.jobs_file.resolve() != ps.jobs_file.resolve():
+                global_lock_cm = with_store_file_lock(gs)
+                global_lock_held = global_lock_cm.__enter__()
+                if global_lock_held:
+                    global_due = get_due_jobs(store=gs)
+                    due_jobs.extend(global_due)
+                else:
+                    global_lock_cm.__exit__(None, None, None)
+                    global_lock_cm = None
+            else:
+                global_lock_cm = None
+        except Exception as e:
+            logger.debug("Global cron claim skipped: %s", e)
+            global_lock_cm = None
 
         if verbose and not due_jobs:
             logger.info("%s - No jobs due", _hermes_now().strftime('%H:%M:%S'))
@@ -1700,7 +1796,11 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
         # Advance next_run_at for all recurring jobs FIRST, under the file lock,
         # before any execution begins.  This preserves at-most-once semantics.
         for job in due_jobs:
-            advance_next_run(job["id"])
+            if job.get("scope") == "global":
+                from cron.jobs import global_store as _gsa
+                advance_next_run(job["id"], store=_gsa())
+            else:
+                advance_next_run(job["id"])
 
         # Resolve max parallel workers: env var > config.yaml > unbounded.
         # Set HERMES_CRON_MAX_PARALLEL=1 to restore old serial behaviour.
@@ -1729,8 +1829,36 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
                 _max_workers if _max_workers else "unbounded",
             )
 
+        # Split profile vs global jobs — global jobs run via subprocess
+        profile_jobs = [j for j in due_jobs if j.get("scope") != "global"]
+        global_jobs = [j for j in due_jobs if j.get("scope") == "global"]
+        
+        # Run global jobs via subprocess
+        if global_jobs and verbose:
+            logger.info("Running %d global job(s) via subprocess", len(global_jobs))
+        for gj in global_jobs:
+            try:
+                from cron.jobs import global_store as _gs, mark_job_run as _mjr
+                gs = _gs()
+                ok, out, resp, err = _run_global_job_subprocess(gj, gs)
+                if ok:
+                    _mjr(gj["id"], True, store=gs)
+                    if verbose:
+                        logger.info("Global job %s completed", gj.get("id"))
+                else:
+                    _mjr(gj["id"], False, err, store=gs)
+                    if verbose:
+                        logger.warning("Global job %s failed: %s", gj.get("id"), err)
+            except Exception as e:
+                logger.error("Global job %s subprocess error: %s", gj.get("id"), e)
+                try:
+                    from cron.jobs import mark_job_run as _mjr2, global_store as _gs2
+                    _mjr2(gj["id"], False, str(e), store=_gs2())
+                except Exception:
+                    pass
+
         def _process_job(job: dict) -> bool:
-            """Run one due job end-to-end: execute, save, deliver, mark."""
+            """Run one profile job end-to-end: execute, save, deliver, mark."""
             try:
                 success, output, final_response, error = run_job(job)
 
@@ -1806,6 +1934,11 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
 
         return sum(_results)
     finally:
+        if global_lock_cm is not None:
+            try:
+                global_lock_cm.__exit__(None, None, None)
+            except Exception:
+                pass
         if fcntl:
             fcntl.flock(lock_fd, fcntl.LOCK_UN)
         elif msvcrt:
