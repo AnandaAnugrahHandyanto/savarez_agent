@@ -20,6 +20,8 @@ def _make_cli():
     cli_obj.model = "openai/gpt-5.4"
     cli_obj.provider = "openai"
     cli_obj.session_start = datetime(2026, 4, 9, 19, 24)
+    cli_obj.preloaded_skills = []
+    cli_obj.loaded_skill_names = []
     cli_obj._agent_running = False
     cli_obj._session_db = MagicMock()
     cli_obj._session_db.get_session.return_value = None
@@ -81,9 +83,22 @@ def test_show_session_status_prints_gateway_style_summary():
     assert "Model: openai/gpt-5.4 (openai)" in printed
     assert "Tokens: 321" in printed
     assert "Agent Running: No" in printed
+    assert "Active Skills: None" in printed
     _, kwargs = cli_obj.console.print.call_args
     assert kwargs.get("highlight") is False
     assert kwargs.get("markup") is False
+
+
+def test_show_session_status_prints_active_skills():
+    cli_obj = _make_cli()
+    cli_obj.preloaded_skills = ["hermes-agent", "github-pr-workflow"]
+    cli_obj.loaded_skill_names = ["github-pr-workflow", "obsidian"]
+
+    with patch("cli.display_hermes_home", return_value="~/.hermes"):
+        cli_obj._show_session_status()
+
+    printed = "\n".join(str(call.args[0]) for call in cli_obj.console.print.call_args_list)
+    assert "Active Skills: hermes-agent, github-pr-workflow, obsidian" in printed
 
 
 def test_profile_command_reports_custom_root_profile(monkeypatch, tmp_path, capsys):

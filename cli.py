@@ -2848,6 +2848,7 @@ class HermesCLI:
         self._attached_images: list[Path] = []
         self._image_counter = 0
         self.preloaded_skills: list[str] = []
+        self.loaded_skill_names: list[str] = []
         self._startup_skills_line_shown = False
 
         # Voice mode state (also reinitialized inside run() for interactive TUI).
@@ -5388,6 +5389,17 @@ class HermesCLI:
             f"{toolsets_info}{provider_info}"
         )
 
+    def _active_skills_label(self) -> str:
+        """Return a display label for skills active in the current session."""
+        names: list[str] = []
+        for skill_name in (
+            list(getattr(self, "preloaded_skills", []) or [])
+            + list(getattr(self, "loaded_skill_names", []) or [])
+        ):
+            if skill_name and skill_name not in names:
+                names.append(skill_name)
+        return ", ".join(names) if names else "None"
+
     def _show_session_status(self):
         """Show gateway-style status for the current CLI session."""
         session_meta = {}
@@ -5438,6 +5450,7 @@ class HermesCLI:
             f"Last Activity: {updated_at.strftime('%Y-%m-%d %H:%M')}",
             f"Tokens: {total_tokens:,}",
             f"Agent Running: {'Yes' if is_running else 'No'}",
+            f"Active Skills: {self._active_skills_label()}",
         ])
         self._console_print("\n".join(lines), highlight=False, markup=False)
     
@@ -8035,6 +8048,8 @@ class HermesCLI:
                 )
                 if msg:
                     skill_name = _skill_commands[base_cmd]["name"]
+                    if skill_name not in self.loaded_skill_names:
+                        self.loaded_skill_names.append(skill_name)
                     print(f"\n⚡ Loading skill: {skill_name}")
                     if hasattr(self, '_pending_input'):
                         self._pending_input.put(msg)
