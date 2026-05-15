@@ -8316,8 +8316,11 @@ class HermesCLI:
         _cprint(f"  ⊙ Goal set ({state.max_turns}-turn budget): {state.goal}")
         _cprint(
             f"  {_DIM}After each turn, a judge model will check if the goal is done. "
-            f"Hermes keeps working until it is, you pause/clear it, or the budget is "
-            f"exhausted. Use /goal status, /goal pause, /goal resume, /goal clear.{_RST}"
+            f"Hermes keeps working in this same session until it is, you "
+            f"pause/clear it, or the budget is exhausted. /goal does not auto-"
+            f"route work into Kanban; use /kanban when you want cross-agent "
+            f"dispatch. Use /goal status, /goal pause, /goal resume, /goal "
+            f"clear.{_RST}"
         )
         # Kick the loop off immediately so the user doesn't have to send a
         # separate message after setting the goal.

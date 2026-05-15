@@ -15,6 +15,9 @@ Design notes / invariants:
 - The continuation prompt is just a normal user message appended to the
   session via ``run_conversation``. No system-prompt mutation, no toolset
   swap — prompt caching stays intact.
+- The loop stays inside the current session. It does NOT create Kanban cards,
+  spawn workers, or hand work off to the dispatcher; use ``/kanban`` or
+  ``kanban_create`` when you want cross-agent fan-out.
 - Judge failures are fail-OPEN: ``continue``. A broken judge must not wedge
   progress; the turn budget is the backstop.
 - When a real user message arrives mid-loop it preempts the continuation

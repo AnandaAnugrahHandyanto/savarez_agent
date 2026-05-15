@@ -8,6 +8,8 @@ description: "Set a standing goal and let Hermes keep working across turns until
 
 `/goal` gives Hermes a standing objective that survives across turns. After every turn a lightweight judge model checks whether the goal is satisfied by the assistant's last response. If not, Hermes automatically feeds a continuation prompt back into the same session and keeps working — until the goal is achieved, you pause or clear it, or the turn budget runs out.
 
+`/goal` is a same-session continuation loop, not a Kanban dispatcher. It does not create Kanban cards, spawn worker profiles, or fan work out across agents on its own. If you want cross-agent decomposition or multi-profile execution, use `/kanban` or a profile/toolset that can call `kanban_create`.
+
 It's our take on the **Ralph loop**, directly inspired by [Codex CLI 0.128.0's `/goal`](https://github.com/openai/codex) by Eric Traut (OpenAI). The core idea — keep a goal alive across turns and don't stop until it's achieved — is theirs. The implementation here is independent and adapted to Hermes' architecture.
 
 ## When to use it
@@ -39,13 +41,15 @@ What you'll see:
 
 | Command | What it does |
 |---|---|
-| `/goal <text>` | Set (or replace) the standing goal. Kicks off the first turn immediately so you don't need to send a separate message. |
+| `/goal <text>` | Set (or replace) the standing goal. Kicks off the first turn immediately so you don't need to send a separate message. The follow-up turns stay in the current session; this does not auto-dispatch into Kanban. |
 | `/goal` or `/goal status` | Show the current goal, its status, and turns used. |
 | `/goal pause` | Stop the auto-continuation loop without clearing the goal. |
 | `/goal resume` | Resume the loop (resets the turn counter back to zero). |
 | `/goal clear` | Drop the goal entirely. |
 
 Works identically on the CLI and every gateway platform (Telegram, Discord, Slack, Matrix, Signal, WhatsApp, SMS, iMessage, Webhook, API server, and the web dashboard).
+
+If your intent is "break this into tasks and hand them to other agents," `/goal` is the wrong entry point. Use `/kanban` for that workflow.
 
 ## Behavior details
 

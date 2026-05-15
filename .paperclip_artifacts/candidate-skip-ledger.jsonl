@@ -1,0 +1,1 @@
+{"issue":26105,"url":"https://github.com/NousResearch/hermes-agent/issues/26105","reason":"no_truthful_increment","evidence":"debug report shows model=deepseek-v4-flash, cron_jobs=0 active / 4 total, and active gateway/session traffic without a reproducible flash->pro switch or isolated billing bug"}
