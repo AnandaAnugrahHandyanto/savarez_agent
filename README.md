@@ -59,12 +59,11 @@ canonical README images for this branch.
 
 ### Launch Video
 
+![Hermes Agent 100X Fast launch video animated preview](docs/assets/100x-fast/video/hermes-100x-fast-launch-preview.gif)
+
 <video src="docs/assets/100x-fast/video/hermes-100x-fast-launch.mp4" controls poster="docs/assets/100x-fast/video/hermes-100x-fast-poster.png" width="100%"></video>
 
-[Watch the rendered MP4](docs/assets/100x-fast/video/hermes-100x-fast-launch.mp4) -
-[Open the poster](docs/assets/100x-fast/video/hermes-100x-fast-poster.png) -
-[Edit the Remotion source](docs/remotion/100x-fast/src/Hermes100xVideo.tsx) -
-[Storyboard](docs/remotion/100x-fast/STORYBOARD.md)
+![Hermes Agent 100X Fast video poster](docs/assets/100x-fast/video/hermes-100x-fast-poster.png)
 
 ### What Changed
 
@@ -78,9 +77,9 @@ runtime checks:
 - Parallel tools: `5.20x` faster for independent I/O-bound tool batches.
 - Startup discovery: `2x-3x` class improvements from fingerprinted caches and reduced repeated work.
 
-Detailed comparison assets are still kept in
-[docs/assets/100x-fast](docs/assets/100x-fast/) for PR review, but the README
-now highlights only the newest 100X GPT-image-2 campaign visuals.
+Detailed comparison assets are still kept under `docs/assets/100x-fast/` for
+PR review, but the README now highlights the newest 100X GPT-image-2 campaign
+visuals directly inline.
 
 ### Research To Code
 
