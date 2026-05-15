@@ -20,9 +20,12 @@ FailureCallback = Callable[[str, BaseException], None]
 TitleCallback = Callable[[str], None]
 
 _TITLE_PROMPT = (
-    "Generate a short, descriptive title (3-7 words) for a conversation that starts with the "
-    "following exchange. The title should capture the main topic or intent. "
-    "Return ONLY the title text, nothing else. No quotes, no punctuation at the end, no prefixes."
+    "Based ONLY on the provided User and Assistant messages below, generate a short, "
+    "descriptive title (3-7 words) for this conversation. The title must reflect the "
+    "user's intent or the actual topic discussed in the messages. Do NOT use any "
+    "information that is not present in the messages below. Do NOT refer to yourself "
+    "by any name (Claude, AI assistant, etc.). Return ONLY the title text, nothing else. "
+    "No quotes, no punctuation at the end, no prefixes."
 )
 
 
