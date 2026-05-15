@@ -385,12 +385,12 @@ def cronjob(
                     "job": _format_job(job),
                     "message": f"Cron job '{job['name']}' created.",
                 },
-                indent=2,
+                indent=2, ensure_ascii=False,
             )
 
         if normalized == "list":
             jobs = [_format_job(job) for job in list_jobs(include_disabled=include_disabled)]
-            return json.dumps({"success": True, "count": len(jobs), "jobs": jobs}, indent=2)
+            return json.dumps({"success": True, "count": len(jobs), "jobs": jobs}, indent=2, ensure_ascii=False)
 
         if not job_id:
             return tool_error(f"job_id is required for action '{normalized}'", success=False)
@@ -412,12 +412,12 @@ def cronjob(
                         for m in exc.matches
                     ],
                 },
-                indent=2,
+                indent=2, ensure_ascii=False,
             )
         if not job:
             return json.dumps(
                 {"success": False, "error": f"Job with ID or name '{job_id}' not found. Use cronjob(action='list') to inspect jobs."},
-                indent=2,
+                indent=2, ensure_ascii=False,
             )
         # Resolve to canonical ID (supports name-based lookup)
         job_id = job["id"]
@@ -436,20 +436,20 @@ def cronjob(
                         "schedule": job.get("schedule_display"),
                     },
                 },
-                indent=2,
+                indent=2, ensure_ascii=False,
             )
 
         if normalized == "pause":
             updated = pause_job(job_id, reason=reason)
-            return json.dumps({"success": True, "job": _format_job(updated)}, indent=2)
+            return json.dumps({"success": True, "job": _format_job(updated)}, indent=2, ensure_ascii=False)
 
         if normalized == "resume":
             updated = resume_job(job_id)
-            return json.dumps({"success": True, "job": _format_job(updated)}, indent=2)
+            return json.dumps({"success": True, "job": _format_job(updated)}, indent=2, ensure_ascii=False)
 
         if normalized in {"run", "run_now", "trigger"}:
             updated = trigger_job(job_id)
-            return json.dumps({"success": True, "job": _format_job(updated)}, indent=2)
+            return json.dumps({"success": True, "job": _format_job(updated)}, indent=2, ensure_ascii=False)
 
         if normalized == "update":
             updates: Dict[str, Any] = {}
@@ -533,7 +533,7 @@ def cronjob(
             if not updates:
                 return tool_error("No updates provided.", success=False)
             updated = update_job(job_id, updates)
-            return json.dumps({"success": True, "job": _format_job(updated)}, indent=2)
+            return json.dumps({"success": True, "job": _format_job(updated)}, indent=2, ensure_ascii=False)
 
         return tool_error(f"Unknown cron action '{action}'", success=False)
 
