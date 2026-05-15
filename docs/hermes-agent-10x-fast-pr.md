@@ -34,6 +34,10 @@ Visual summary:
 
 ![Hermes Agent 10x Fast Phase 1](assets/hermes-agent-10x-fast-before-after.svg)
 
+Generated visual:
+
+![Hermes Agent 10x Fast generated PR visual](assets/10x-fast/hermes-agent-10x-fast-phase-1.png)
+
 ## What Shipped
 
 1. Deferred platform plugin imports outside normal model-tool startup.
