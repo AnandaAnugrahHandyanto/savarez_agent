@@ -409,6 +409,29 @@ class TestLoadGatewayConfig:
             "456": "Therapist mode",
         }
 
+
+    def test_bridges_discord_custom_slash_commands_from_config_yaml(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "discord:\n"
+            "  custom_slash_commands:\n"
+            "    - name: done\n"
+            "      description: Mark current thread done\n"
+            "    - blocked\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.platforms[Platform.DISCORD].extra["custom_slash_commands"] == [
+            {"name": "done", "description": "Mark current thread done"},
+            "blocked",
+        ]
+
     def test_bridges_discord_history_backfill_settings_from_config_yaml(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()

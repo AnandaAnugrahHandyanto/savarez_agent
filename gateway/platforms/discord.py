@@ -3160,6 +3160,34 @@ class DiscordAdapter(BasePlatformAdapter):
                 "Discord auto-register from plugin commands failed: %s", e
             )
 
+        # ── Config-declared custom slash commands ──
+        # These are Discord-native commands whose invocation is exposed to
+        # plugins via the discord_custom_slash_command hook. Unlike
+        # PluginContext.register_command(), these do NOT route through the
+        # Hermes slash-command text path or the agent; they are for
+        # deterministic Discord-side behaviors such as renaming/archiving the
+        # current thread.
+        try:
+            for command_def in self._discord_custom_slash_commands():
+                discord_name = command_def["name"]
+                if discord_name in already_registered or discord_name == "skill":
+                    logger.warning(
+                        "[Discord] Skipping custom slash command /%s because it conflicts with an existing command",
+                        discord_name,
+                    )
+                    continue
+                custom_cmd = self._build_custom_slash_command(command_def)
+                try:
+                    tree.add_command(custom_cmd)
+                    already_registered.add(discord_name)
+                except Exception as e:
+                    logger.warning(
+                        "[Discord] Failed to register custom slash command /%s: %s",
+                        discord_name, e,
+                    )
+        except Exception as e:
+            logger.warning("Discord custom slash command registration failed: %s", e)
+
         # Register skills under a single /skill command group with category
         # subcommand groups.  This uses 1 top-level slot instead of N,
         # supporting up to 25 categories × 25 skills = 625 skills.
@@ -3175,6 +3203,189 @@ class DiscordAdapter(BasePlatformAdapter):
             "true", "1", "yes", "on",
         }:
             self._apply_owner_only_visibility(tree)
+
+
+    def _discord_custom_slash_commands(self) -> list[dict[str, str]]:
+        """Return normalized Discord custom slash command definitions.
+
+        Config accepts either a list of strings::
+
+            discord:
+              custom_slash_commands: [done, blocked]
+
+        or a list/dict with descriptions and an optional args_hint::
+
+            discord:
+              custom_slash_commands:
+                - name: done
+                  description: Mark this thread done
+                - name: tag
+                  description: Tag the current Discord context
+                  args_hint: "label"
+
+        Custom commands are intentionally plumbing-only: invocation emits the
+        ``discord_custom_slash_command`` plugin hook and does not call the LLM.
+        """
+        raw = self.config.extra.get("custom_slash_commands", [])
+        if not raw:
+            return []
+
+        items: list[Any]
+        if isinstance(raw, dict):
+            items = []
+            for name, value in raw.items():
+                if isinstance(value, dict):
+                    entry = {**value, "name": name}
+                else:
+                    entry = {"name": name, "description": str(value) if value else ""}
+                items.append(entry)
+        elif isinstance(raw, list):
+            items = raw
+        else:
+            logger.warning("[Discord] custom_slash_commands must be a list or mapping; got %s", type(raw).__name__)
+            return []
+
+        commands_out: list[dict[str, str]] = []
+        seen: set[str] = set()
+        for item in items:
+            if isinstance(item, str):
+                entry = {"name": item}
+            elif isinstance(item, dict):
+                entry = item
+            else:
+                logger.warning("[Discord] Ignoring invalid custom slash command entry: %r", item)
+                continue
+
+            name = str(entry.get("name", "")).strip().lower().lstrip("/").replace(" ", "-")
+            if not name:
+                logger.warning("[Discord] Ignoring custom slash command with empty name")
+                continue
+            # Discord app-command names are lower-case, 1-32 chars, and may
+            # contain hyphens/underscores. Drop unsupported characters rather
+            # than registering a command Discord will reject during tree.sync().
+            name = re.sub(r"[^a-z0-9_-]", "-", name)[:32].strip("-_")
+            if not name:
+                logger.warning("[Discord] Ignoring custom slash command whose name normalizes to empty: %r", entry.get("name"))
+                continue
+            if name in seen:
+                continue
+            seen.add(name)
+
+            description = str(entry.get("description") or f"Run custom Discord slash command /{name}").strip()[:100]
+            if not description:
+                description = f"Run custom Discord slash command /{name}"[:100]
+            args_hint = str(entry.get("args_hint") or entry.get("args") or "").strip()
+            commands_out.append({"name": name, "description": description, "args_hint": args_hint})
+        return commands_out
+
+    def _build_custom_slash_command(self, command_def: dict[str, str]):
+        """Build a Discord app command that emits a plugin hook on invocation."""
+        name = command_def["name"]
+        description = command_def.get("description") or f"Run custom Discord slash command /{name}"
+        args_hint = command_def.get("args_hint", "")
+
+        if args_hint:
+            def _make_args_handler(_name: str, _hint: str):
+                @discord.app_commands.describe(args=f"Arguments: {_hint}"[:100])
+                async def _handler(interaction: discord.Interaction, args: str = ""):
+                    await self._handle_custom_slash_command(interaction, _name, args=args, command_def=command_def)
+                _handler.__name__ = f"custom_slash_{_name.replace('-', '_')}"
+                return _handler
+
+            handler = _make_args_handler(name, args_hint)
+        else:
+            def _make_simple_handler(_name: str):
+                async def _handler(interaction: discord.Interaction):
+                    await self._handle_custom_slash_command(interaction, _name, args="", command_def=command_def)
+                _handler.__name__ = f"custom_slash_{_name.replace('-', '_')}"
+                return _handler
+
+            handler = _make_simple_handler(name)
+
+        return discord.app_commands.Command(
+            name=name,
+            description=description[:100],
+            callback=handler,
+        )
+
+    async def _handle_custom_slash_command(
+        self,
+        interaction: discord.Interaction,
+        command: str,
+        *,
+        args: str = "",
+        command_def: Optional[dict[str, str]] = None,
+    ) -> None:
+        """Authorize a config-declared slash command and emit a plugin hook."""
+        slash_name = f"/{command}"
+        if not await self._check_slash_authorization(interaction, slash_name):
+            return
+
+        channel = getattr(interaction, "channel", None)
+        channel_id = str(getattr(interaction, "channel_id", "") or getattr(channel, "id", "") or "")
+        guild = getattr(interaction, "guild", None)
+        guild_id = str(getattr(guild, "id", "") or getattr(interaction, "guild_id", "") or "")
+        user = getattr(interaction, "user", None)
+        parent_channel = self._thread_parent_channel(channel) if channel is not None else None
+        parent_channel_id = str(getattr(parent_channel, "id", "") or "") if parent_channel is not channel else ""
+        is_thread = bool(discord is not None and getattr(discord, "Thread", None) and isinstance(channel, discord.Thread))
+        thread = channel if is_thread else None
+        thread_id = str(getattr(thread, "id", "") or "")
+
+        hook_results = []
+        try:
+            from hermes_cli.plugins import invoke_hook
+
+            hook_results = invoke_hook(
+                "discord_custom_slash_command",
+                command=command,
+                args=args or "",
+                command_def=dict(command_def or {}),
+                interaction=interaction,
+                adapter=self,
+                guild=guild,
+                guild_id=guild_id,
+                channel=channel,
+                channel_id=channel_id,
+                thread=thread,
+                thread_id=thread_id,
+                parent_channel=parent_channel if parent_channel is not channel else None,
+                parent_channel_id=parent_channel_id,
+                user=user,
+                user_id=str(getattr(user, "id", "") or ""),
+                user_name=getattr(user, "display_name", None) or getattr(user, "name", ""),
+            )
+            for result in hook_results:
+                if hasattr(result, "__await__"):
+                    await result
+        except Exception as e:
+            logger.warning("[Discord] custom slash command /%s hook failed: %s", command, e)
+            await self._send_custom_slash_fallback_response(
+                interaction, f"Custom command /{command} failed: {e}", ephemeral=True
+            )
+            return
+
+        await self._send_custom_slash_fallback_response(
+            interaction, f"Handled /{command}", ephemeral=True
+        )
+
+    async def _send_custom_slash_fallback_response(
+        self, interaction: discord.Interaction, message: str, *, ephemeral: bool = True
+    ) -> None:
+        """Send a response only if the custom slash listener did not already do so."""
+        try:
+            response = getattr(interaction, "response", None)
+            is_done = getattr(response, "is_done", None)
+            if callable(is_done) and is_done():
+                return
+            if response and hasattr(response, "send_message"):
+                await response.send_message(message, ephemeral=ephemeral)
+                return
+            followup = getattr(interaction, "followup", None)
+            if followup and hasattr(followup, "send"):
+                await followup.send(message, ephemeral=ephemeral)
+        except Exception as e:
+            logger.debug("[Discord] custom slash fallback response failed: %s", e)
 
     def _apply_owner_only_visibility(self, tree) -> None:
         """Set default_member_permissions=0 on every registered slash command.

@@ -574,6 +574,44 @@ Send `/model` with no arguments in a Discord channel to open a dropdown-based mo
 
 The picker times out after 120 seconds. Only authorized users (those in `DISCORD_ALLOWED_USERS`) can interact with it. If you know the model name, type `/model <name>` directly.
 
+
+## Custom Discord Slash Command Hooks
+
+You can declare Discord-native slash commands that do **not** route through the LLM or Hermes' generic slash-command text path. Instead, the Discord adapter authorizes the user and emits a plugin hook named `discord_custom_slash_command`. This is useful for deterministic Discord-side workflows such as marking a thread done, renaming a channel, archiving a thread, or adding reactions.
+
+```yaml
+discord:
+  custom_slash_commands:
+    - name: done
+      description: Mark the current thread done
+    - name: blocked
+      description: Mark the current thread blocked
+    - name: tag
+      description: Tag the current Discord context
+      args_hint: "label"
+```
+
+A user plugin can then handle the event and decide what to mutate:
+
+```python
+# ~/.hermes/plugins/thread-status/__init__.py
+import re
+
+def register(ctx):
+    async def on_custom_slash(command, interaction, channel, thread_id, **kwargs):
+        if command != "done" or not thread_id:
+            return
+        title = re.sub(r"^[✅🟡🔴]\s*", "", channel.name)
+        await channel.edit(name=f"✅ {title}", archived=True)
+        await interaction.response.send_message("Marked done", ephemeral=True)
+
+    ctx.register_hook("discord_custom_slash_command", on_custom_slash)
+```
+
+Hook payload includes the raw `interaction`, `adapter`, `guild`, `channel`, `thread`, `parent_channel`, `user`, plus normalized IDs (`guild_id`, `channel_id`, `thread_id`, `parent_channel_id`, `user_id`) and the optional `args` string. If the plugin does not send a response, Hermes sends a small ephemeral fallback acknowledgment.
+
+Custom commands share the same slash authorization checks as built-in Discord slash commands.
+
 ## Native Slash Commands for Skills
 
 Hermes automatically registers installed skills as **native Discord Application Commands**. This means skills appear in Discord's autocomplete `/` menu alongside built-in commands.

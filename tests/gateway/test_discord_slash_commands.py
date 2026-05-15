@@ -292,6 +292,111 @@ async def test_plugin_command_name_conflict_skipped(adapter):
     )
 
 
+
+
+@pytest.mark.asyncio
+async def test_config_custom_slash_command_emits_discord_hook(adapter):
+    """Config-declared slash commands should emit Discord-native plugin hooks, not agent text commands."""
+    adapter.config.extra["custom_slash_commands"] = [
+        {"name": "done", "description": "Mark current thread done"}
+    ]
+    adapter._run_simple_slash = AsyncMock()
+    adapter._register_slash_commands()
+
+    assert "done" in adapter._client.tree.commands
+
+    hook_calls = []
+
+    async def _listener(**kwargs):
+        hook_calls.append(kwargs)
+        # Prove the raw Discord object is usable by listeners for deterministic
+        # side effects like renaming the current thread.
+        await kwargs["channel"].edit(name="✅ Finished")
+
+    thread_cls = sys.modules["discord"].Thread
+    channel = thread_cls()
+    channel.id = 555
+    channel.name = "🟡 Planning"
+    channel.parent = SimpleNamespace(id=123, name="garage")
+    channel.edit = AsyncMock()
+    response = SimpleNamespace(send_message=AsyncMock(), is_done=lambda: False)
+    interaction = SimpleNamespace(
+        channel=channel,
+        channel_id=555,
+        guild=SimpleNamespace(id=999, name="Guild"),
+        user=SimpleNamespace(id=42, display_name="Sumanth"),
+        response=response,
+    )
+
+    with patch("hermes_cli.plugins.invoke_hook", return_value=[_listener(
+        command="done",
+        args="",
+        command_def={"name": "done", "description": "Mark current thread done", "args_hint": ""},
+        interaction=interaction,
+        adapter=adapter,
+        guild=interaction.guild,
+        guild_id="999",
+        channel=channel,
+        channel_id="555",
+        thread=channel,
+        thread_id="555",
+        parent_channel=channel.parent,
+        parent_channel_id="123",
+        user=interaction.user,
+        user_id="42",
+        user_name="Sumanth",
+    )]) as invoke_hook:
+        await adapter._client.tree.commands["done"].callback(interaction)
+
+    adapter._run_simple_slash.assert_not_awaited()
+    invoke_hook.assert_called_once()
+    _, hook_kwargs = invoke_hook.call_args
+    assert hook_kwargs["command"] == "done"
+    assert hook_kwargs["thread_id"] == "555"
+    assert hook_kwargs["parent_channel_id"] == "123"
+    assert hook_kwargs["user_id"] == "42"
+    assert hook_kwargs["interaction"] is interaction
+    channel.edit.assert_awaited_once_with(name="✅ Finished")
+    response.send_message.assert_awaited_once_with("Handled /done", ephemeral=True)
+
+
+@pytest.mark.asyncio
+async def test_config_custom_slash_command_with_args(adapter):
+    adapter.config.extra["custom_slash_commands"] = [
+        {"name": "tag", "description": "Tag current context", "args_hint": "label"}
+    ]
+    adapter._register_slash_commands()
+
+    command = adapter._client.tree.commands["tag"]
+    interaction = SimpleNamespace(
+        channel=SimpleNamespace(id=555),
+        channel_id=555,
+        guild=None,
+        user=SimpleNamespace(id=42, display_name="Sumanth"),
+        response=SimpleNamespace(send_message=AsyncMock(), is_done=lambda: False),
+    )
+
+    with patch("hermes_cli.plugins.invoke_hook", return_value=[]) as invoke_hook:
+        await command.callback(interaction, args="important")
+
+    _, hook_kwargs = invoke_hook.call_args
+    assert hook_kwargs["command"] == "tag"
+    assert hook_kwargs["args"] == "important"
+
+
+@pytest.mark.asyncio
+async def test_config_custom_slash_command_auth_failure_does_not_emit_hook(adapter):
+    adapter.config.extra["custom_slash_commands"] = ["done"]
+    adapter._check_slash_authorization = AsyncMock(return_value=False)
+    adapter._register_slash_commands()
+
+    interaction = SimpleNamespace(channel=SimpleNamespace(id=555), channel_id=555)
+    with patch("hermes_cli.plugins.invoke_hook") as invoke_hook:
+        await adapter._client.tree.commands["done"].callback(interaction)
+
+    invoke_hook.assert_not_called()
+
+
 # ------------------------------------------------------------------
 # _handle_thread_create_slash — success, session dispatch, failure
 # ------------------------------------------------------------------
