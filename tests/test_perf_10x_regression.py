@@ -143,6 +143,7 @@ class TestToolDiscoveryCacheCorrectness:
         )
 
         fp1 = _tool_discovery_fingerprint(tools_dir)
+        assert fp1 is not None
         _write_tool_discovery_cache(
             tools_dir, fp1, ["tools.a_tool", "tools.b_tool"]
         )
@@ -153,6 +154,7 @@ class TestToolDiscoveryCacheCorrectness:
             (tools_dir / "a_tool.py").read_text() + "# bumped\n", encoding="utf-8"
         )
         fp2 = _tool_discovery_fingerprint(tools_dir)
+        assert fp2 is not None
         assert fp1 != fp2
         assert _read_tool_discovery_cache(tools_dir, fp2) is None
 
@@ -167,12 +169,14 @@ class TestToolDiscoveryCacheCorrectness:
         )
 
         fp_a = _tool_discovery_fingerprint(tools_dir_a)
+        assert fp_a is not None
         _write_tool_discovery_cache(tools_dir_a, fp_a, ["tools.a_tool"])
 
         # Same fingerprint shape (mtime/size happen to match if the
         # files are created back-to-back) is not enough: tools_path
         # mismatch must reject the cache.
         fp_b = _tool_discovery_fingerprint(tools_dir_b)
+        assert fp_b is not None
         assert _read_tool_discovery_cache(tools_dir_b, fp_b) is None
 
     def test_cache_rejects_corrupt_payload(self, tmp_path, monkeypatch):
@@ -186,6 +190,7 @@ class TestToolDiscoveryCacheCorrectness:
         cache_path.write_text("{not valid json", encoding="utf-8")
 
         fp = _tool_discovery_fingerprint(tools_dir)
+        assert fp is not None
         assert _read_tool_discovery_cache(tools_dir, fp) is None
 
         # Wrong version → also a miss.
