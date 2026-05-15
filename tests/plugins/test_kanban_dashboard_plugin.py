@@ -1794,3 +1794,58 @@ def test_dashboard_failed_card_highlight_class_exists():
     assert "hermes-kanban-card--failed" in js
     assert "hermes-kanban-card--failed" in css
     assert "failedIds" in js
+
+def test_aion_readonly_board_maps_factory_cockpit_columns(client):
+    """AION cockpit mode keeps Hermes as read-only source while deriving Chinese lanes."""
+    waiting = client.post(
+        "/api/plugins/kanban/tasks",
+        json={
+            "title": "#266 L1 prepare-only 修复包",
+            "body": "audit requested by 八府巡按 https://github.com/kiddhu/aion-governance/pull/267",
+            "assignee": "gm2",
+        },
+    ).json()["task"]
+    client.patch(f"/api/plugins/kanban/tasks/{waiting['id']}", json={"status": "done", "summary": "claimed done"})
+
+    blocked = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "CI failed blocker", "body": "blocked: ci failed", "assignee": "007"},
+    ).json()["task"]
+    client.patch(f"/api/plugins/kanban/tasks/{blocked['id']}", json={"status": "blocked"})
+
+    monarch = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "L4 production payment webhook", "body": "merge high-risk PR requires Monarch", "assignee": "monarch"},
+    ).json()["task"]
+
+    done = client.post(
+        "/api/plugins/kanban/tasks",
+        json={
+            "title": "L1 docs-only completed",
+            "body": "审计通过 formal verdict https://github.com/kiddhu/aion-governance/pull/283",
+            "assignee": "bafuxunan",
+        },
+    ).json()["task"]
+    client.patch(f"/api/plugins/kanban/tasks/{done['id']}", json={"status": "done", "summary": "audit pass"})
+
+    r = client.get("/api/plugins/kanban/board?aion=true")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["aion_mode"] is True
+    assert data["readonly"] is True
+    names = [c["name"] for c in data["columns"]]
+    for expected in ("waiting_audit", "blocked", "needs_monarch", "done", "archived"):
+        assert expected in names
+
+    by_col = {c["name"]: c["tasks"] for c in data["columns"]}
+    assert any(t["id"] == waiting["id"] and t["aion"]["evidence_status"] == "present" for t in by_col["waiting_audit"])
+    assert any(t["id"] == blocked["id"] for t in by_col["blocked"])
+    assert any(t["id"] == monarch["id"] and t["aion"]["monarch_required"] for t in by_col["needs_monarch"])
+    assert any(t["id"] == done["id"] and t["aion"]["merge_allowed_now"] and t["aion"]["archive_status"] == "indexed" for t in by_col["done"])
+
+    summary = data["aion_summary"]
+    assert summary["title"] == "AION 帝国工厂驾驶舱"
+    assert summary["waiting_audit"] >= 1
+    assert summary["blocked"] >= 1
+    assert summary["needs_monarch"] >= 1
+    assert "只读" in summary["phase"]

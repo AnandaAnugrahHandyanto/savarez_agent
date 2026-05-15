@@ -57,22 +57,26 @@
   // a key, and as defaults for the get*() helpers below so callers running
   // outside any React component (where there's no `t`) still get sane text.
   const FALLBACK_COLUMN_LABEL = {
-    triage: "Triage",
-    todo: "Todo",
-    ready: "Ready",
-    running: "In Progress",
-    blocked: "Blocked",
-    done: "Done",
-    archived: "Archived",
+    triage: "待定性",
+    todo: "待派工",
+    ready: "待开工",
+    running: "执行中",
+    waiting_audit: "待审计",
+    blocked: "阻塞",
+    needs_monarch: "待君主拍板",
+    done: "已完成",
+    archived: "已归档",
   };
   const FALLBACK_COLUMN_HELP = {
-    triage: "Raw ideas — a specifier will flesh out the spec",
-    todo: "Waiting on dependencies or unassigned",
-    ready: "Assigned and waiting for a dispatcher tick",
-    running: "Claimed by a worker — in-flight",
-    blocked: "Worker asked for human input",
-    done: "Completed",
-    archived: "Archived",
+    triage: "原始想法、子议题、未拆解需求",
+    todo: "已明确目标，但还没有负责人",
+    ready: "已派给角色，等待调度器 tick 或 worker ACK",
+    running: "007 / GM / Cursor / 13爷等正在处理",
+    waiting_audit: "执行者声称完成，但还没有八府巡按 formal verdict",
+    blocked: "缺依赖、CI 失败、证据不足、权限不足或定义不清",
+    needs_monarch: "涉及真实外部影响或高风险合并，必须君主拍板",
+    done: "已有证据、已审计、已写回，可归档",
+    archived: "完成后移出主战场，保留查询能力",
   };
   const FALLBACK_DESTRUCTIVE = {
     done: "Mark this task as done? The worker's claim is released and dependent children become ready.",
@@ -115,8 +119,10 @@
     todo: "hermes-kanban-dot-todo",
     ready: "hermes-kanban-dot-ready",
     running: "hermes-kanban-dot-running",
+    waiting_audit: "hermes-kanban-dot-ready",
     blocked: "hermes-kanban-dot-blocked",
     done: "hermes-kanban-dot-done",
+    needs_monarch: "hermes-kanban-dot-blocked",
     archived: "hermes-kanban-dot-archived",
   };
 
@@ -474,6 +480,7 @@
     // --- fetch full board ---------------------------------------------------
     const loadBoard = useCallback(() => {
       const qs = new URLSearchParams();
+      qs.set("aion", "true");
       if (tenantFilter) qs.set("tenant", tenantFilter);
       if (includeArchived) qs.set("include_archived", "true");
       const url = qs.toString() ? `${API}/board?${qs}` : `${API}/board`;
@@ -594,7 +601,8 @@
         if (tenantFilter && t.tenant !== tenantFilter) return false;
         if (assigneeFilter && t.assignee !== assigneeFilter) return false;
         if (q) {
-          const hay = `${t.id} ${t.title || ""} ${t.body || ""} ${t.result || ""} ${t.latest_summary || ""} ${t.assignee || ""} ${t.tenant || ""}`.toLowerCase();
+          const aionHay = t.aion ? `${t.aion.state || ""} ${t.aion.risk_level || ""} ${t.aion.evidence_status || ""} ${t.aion.next_gate || ""} ${t.aion.discord_trace || ""}` : "";
+          const hay = `${t.id} ${t.title || ""} ${t.body || ""} ${t.result || ""} ${t.latest_summary || ""} ${t.assignee || ""} ${t.tenant || ""} ${aionHay}`.toLowerCase();
           if (hay.indexOf(q) === -1) return false;
         }
         return true;
@@ -608,6 +616,10 @@
 
     // --- actions ------------------------------------------------------------
     const moveTask = useCallback(function (taskId, newStatus) {
+      if (boardData && boardData.readonly) {
+        setError("AION Phase 1 是只读驾驶舱：不允许拖动写回。请以 GitHub 正本为准。");
+        return;
+      }
       const confirmMsg = getDestructiveConfirm(t, newStatus);
       if (confirmMsg && !window.confirm(confirmMsg)) return;
       const patch = withCompletionSummary({ status: newStatus }, 1, t);
@@ -636,7 +648,7 @@
         setError(tx(t, "moveFailed", "Move failed: ") + (err.message || err));
         loadBoard();
       });
-    }, [loadBoard, board, t]);
+    }, [loadBoard, board, t, boardData]);
 
     const clearSelected = useCallback(function () {
       setSelectedIds(new Set());
@@ -644,6 +656,10 @@
       setFailedIds(new Set());
     }, []);
     const moveSelected = useCallback(function (newStatus) {
+      if (boardData && boardData.readonly) {
+        setError("AION Phase 1 是只读驾驶舱：不允许批量写回。请以 GitHub 正本为准。");
+        return;
+      }
       const confirmMsg = DESTRUCTIVE_TRANSITIONS[newStatus];
       if (confirmMsg && !window.confirm(confirmMsg)) return;
       if (selectedIds.size === 0) return;
@@ -686,9 +702,13 @@
         setFailedIds(new Set(selectedIds));
         loadBoard();
       });
-    }, [selectedIds, loadBoard, board]);
+    }, [selectedIds, loadBoard, board, boardData]);
 
     const createTask = useCallback(function (body) {
+      if (boardData && boardData.readonly) {
+        setError("AION Phase 1 是只读驾驶舱：不允许新建/反写任务。");
+        return Promise.resolve(null);
+      }
       return SDK.fetchJSON(withBoard(`${API}/tasks`, board), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -705,7 +725,7 @@
         loadBoardList();  // refresh counts in the switcher
         return res;
       });
-    }, [loadBoard, loadBoardList, board, t]);
+    }, [loadBoard, loadBoardList, board, t, boardData]);
 
     const toggleSelected = useCallback(function (id, additive) {
       setSelectedIds(function (prev) {
@@ -908,6 +928,15 @@
             return createNewBoard(payload).then(function () { setShowNewBoard(false); });
           },
         }) : null,
+        h(AionCockpitSummary, {
+          summary: boardData && boardData.aion_summary,
+          onQuickSearch: function (label) {
+            if (label === "待审计") setSearch("待审计");
+            else if (label === "阻塞") setSearch("阻塞");
+            else if (label === "待君主") setSearch("君主");
+            else setSearch("");
+          },
+        }),
         h(AttentionStrip, {
           boardData,
           onOpen: setSelectedTaskId,
@@ -920,6 +949,10 @@
           laneByProfile, setLaneByProfile,
           search, setSearch,
           onNudgeDispatch: function () {
+            if (boardData && boardData.readonly) {
+              setError("AION Phase 1 只读集成：催动调度器属于写入/执行动作，本版禁用。");
+              return;
+            }
             SDK.fetchJSON(withBoard(`${API}/dispatch?max=8`, board), { method: "POST" })
               .then(loadBoard)
               .catch(function (e) { setError(String(e.message || e)); });
@@ -961,6 +994,40 @@
           assignees: (boardData && boardData.assignees) || [],
           eventTick: taskEventTick[selectedTaskId] || 0,
         }) : null,
+      ),
+    );
+  }
+
+  // -------------------------------------------------------------------------
+  // AION cockpit summary — Phase 1 read-only commander layer.
+  // -------------------------------------------------------------------------
+
+  function AionCockpitSummary(props) {
+    const summary = props.summary;
+    if (!summary) return null;
+    const items = [
+      ["正在推进", summary.active],
+      ["待审计", summary.waiting_audit],
+      ["阻塞", summary.blocked],
+      ["待君主", summary.needs_monarch],
+      ["今日完成", summary.done_today],
+    ];
+    return h("div", { className: "hermes-kanban-aion-summary" },
+      h("div", { className: "hermes-kanban-aion-title" }, summary.title || "AION 帝国工厂驾驶舱"),
+      h("div", { className: "hermes-kanban-aion-phase" }, summary.phase || "Phase 1 只读集成"),
+      h("div", { className: "hermes-kanban-aion-grid" },
+        h("div", null, h("span", null, "总体状态"), h("strong", null, summary.overall_status || "未知")),
+        h("div", null, h("span", null, "无人值守成熟度"), h("strong", null, summary.unattended_maturity || "半自动")),
+        h("div", null, h("span", null, "总体评分"), h("strong", null, String(summary.score || 0), " / 100")),
+        h("div", null, h("span", null, "当前瓶颈"), h("strong", null, summary.current_bottleneck || "无")),
+      ),
+      h("div", { className: "hermes-kanban-aion-counts" },
+        items.map(function (it) {
+          return h("button", {
+            key: it[0], type: "button", className: "hermes-kanban-aion-chip",
+            onClick: function () { if (props.onQuickSearch) props.onQuickSearch(it[0]); },
+          }, h("span", null, it[0]), h("strong", null, String(it[1] || 0)));
+        }),
       ),
     );
   }
@@ -2121,6 +2188,17 @@
           ),
           h("div", { className: "hermes-kanban-card-title" },
             t.title || tx(i18n, "untitled", "(untitled)")),
+          t.aion ? h("div", { className: "hermes-kanban-aion-card" },
+            h("div", null, "负责人：", t.aion.owner || "未指派", " ｜ 审计：", t.aion.auditor || "未进入"),
+            h("div", null, "风险：", t.aion.risk_level || "L1", " ｜ 证据：",
+              t.aion.latest_evidence
+                ? h("a", { href: t.aion.latest_evidence, target: "_blank", rel: "noreferrer", onClick: function (e) { e.stopPropagation(); } }, "GitHub evidence")
+                : "待补证据"),
+            h("div", null, "下一关口：", t.aion.next_gate || "待定"),
+            h("div", null, "等待：", String(t.aion.age_hours || 0), "h ｜ 是否需要君主：", t.aion.monarch_required ? "是" : "否", " ｜ 是否允许 merge：", t.aion.merge_allowed_now ? "是" : "否"),
+            h("div", null, "归档：", t.aion.archive_status || "none"),
+            h("div", { className: "hermes-kanban-aion-trace" }, "留痕：", t.aion.discord_trace || "暂无摘要"),
+          ) : null,
           h("div", { className: "hermes-kanban-card-row hermes-kanban-card-meta" },
             t.assignee
               ? h("span", { className: "hermes-kanban-assignee",

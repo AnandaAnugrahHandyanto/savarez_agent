@@ -40,6 +40,7 @@ import hmac
 import json
 import logging
 import os
+import re
 import sqlite3
 import time
 from dataclasses import asdict
@@ -133,8 +134,171 @@ BOARD_COLUMNS: list[str] = [
     "triage", "todo", "ready", "running", "blocked", "done",
 ]
 
+AION_COLUMN_ORDER: list[str] = [
+    "triage", "todo", "ready", "running", "waiting_audit", "blocked",
+    "needs_monarch", "done", "archived",
+]
 
+_GITHUB_URL_RE = re.compile(
+    r"https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/"
+    r"(?:issues|pull|commit|actions/runs|checks)/[A-Za-z0-9_./-]+"
+)
+_HIGH_RISK_RE = re.compile(
+    r"production|prod smoke|payment|credits|webhook|external executor|"
+    r"secret|token|db mutation|database|customer data|irreversible|"
+    r"high-risk|merge high-risk|生产|支付|额度|客户数据|数据库|密钥|令牌|"
+    r"外部执行器|不可逆|高风险|正式部署",
+    re.IGNORECASE,
+)
+_AUDIT_RE = re.compile(
+    r"formal verdict|audit pass|审计通过|八府巡按.*(?:PASS|通过)|bafuxunan.*pass",
+    re.IGNORECASE,
+)
+_AUDIT_WAIT_RE = re.compile(
+    r"waiting[_ -]?audit|audit requested|待审计|请求审计|八府巡按|formal audit",
+    re.IGNORECASE,
+)
+_BLOCK_RE = re.compile(r"blocked|阻塞|缺证据|evidence missing|权限不足|ci failed", re.IGNORECASE)
+_RISK_RE = re.compile(r"\b(L[0-4])\b")
 _CARD_SUMMARY_PREVIEW_CHARS = 200
+
+
+def _recent_comments(conn: sqlite3.Connection, task_id: str, limit: int = 6) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        "SELECT author, body, created_at FROM task_comments "
+        "WHERE task_id = ? ORDER BY created_at DESC, id DESC LIMIT ?",
+        (task_id, limit),
+    ).fetchall()
+    return [{"author": r["author"], "body": r["body"] or "", "created_at": r["created_at"]} for r in rows]
+
+
+def _latest_evidence(text: str) -> Optional[str]:
+    matches = _GITHUB_URL_RE.findall(text or "")
+    return matches[-1] if matches else None
+
+
+def _risk_level(text: str) -> str:
+    explicit = _RISK_RE.search(text or "")
+    if explicit:
+        return explicit.group(1).upper()
+    if _HIGH_RISK_RE.search(text or ""):
+        return "L4"
+    return "L1"
+
+
+def _aion_state(task: kanban_db.Task, text: str, evidence: Optional[str], audit_pass: bool) -> str:
+    if task.status == "archived":
+        return "archived"
+    if _HIGH_RISK_RE.search(text or "") and not audit_pass:
+        return "needs_monarch"
+    if task.status == "blocked" or _BLOCK_RE.search(text or ""):
+        return "blocked"
+    if task.status == "done":
+        return "done" if evidence and audit_pass else "waiting_audit"
+    if _AUDIT_WAIT_RE.search(text or ""):
+        return "waiting_audit"
+    if task.status == "running":
+        return "running"
+    if task.status == "ready":
+        return "ready"
+    if task.status == "triage":
+        return "triage"
+    return "todo"
+
+
+def _aion_fields(task: kanban_db.Task, conn: sqlite3.Connection, now: int) -> dict[str, Any]:
+    comments = _recent_comments(conn, task.id)
+    comment_text = "\n".join(c["body"] for c in comments)
+    text = "\n".join(filter(None, [task.title, task.body, task.result, comment_text]))
+    evidence = _latest_evidence(text)
+    audit_pass = bool(_AUDIT_RE.search(text or ""))
+    risk = _risk_level(text)
+    monarch_required = risk == "L4" or bool(_HIGH_RISK_RE.search(text or ""))
+    state = _aion_state(task, text, evidence, audit_pass)
+    age_hours = round(max(0, now - int(task.created_at or now)) / 3600, 1)
+    discord_comment = next((c for c in comments if re.search(r"discord|君主|007|GM|八府巡按", c["body"], re.I)), None)
+    latest_comment = comments[0] if comments else None
+    trace_source = discord_comment or latest_comment
+    evidence_status = "present" if evidence else "missing"
+    if monarch_required and state != "done":
+        next_gate = "君主拍板 / Monarch decision"
+    elif state == "waiting_audit":
+        next_gate = "八府巡按 formal verdict"
+    elif evidence_status == "missing":
+        next_gate = "补 GitHub evidence link"
+    elif state == "blocked":
+        next_gate = "解除阻塞后重跑"
+    else:
+        next_gate = "可继续调度 / Ready for next dispatcher step"
+    sla_status = "ok"
+    if state in {"waiting_audit", "blocked", "needs_monarch"} and age_hours >= 24:
+        sla_status = "overdue"
+    elif state in {"waiting_audit", "blocked", "needs_monarch"} and age_hours >= 6:
+        sla_status = "watch"
+    archive_status = "none"
+    if state == "archived":
+        archive_status = "archived" if evidence and audit_pass else "pending"
+    elif state == "done":
+        archive_status = "indexed" if evidence and audit_pass else "pending"
+    return {
+        "task_id": task.id,
+        "title_cn": task.title,
+        "repo": None,
+        "issue": None,
+        "pr": evidence if evidence and "/pull/" in evidence else None,
+        "owner": task.assignee or "未指派",
+        "auditor": "八府巡按" if state in {"waiting_audit", "done"} else None,
+        "risk_level": risk,
+        "state": state,
+        "monarch_required": monarch_required,
+        "merge_allowed_now": bool(state == "done" and audit_pass and evidence and not monarch_required),
+        "evidence_status": evidence_status,
+        "latest_evidence": evidence,
+        "discord_trace": (trace_source["body"][:180] if trace_source else "暂无 Discord/评论摘要"),
+        "next_gate": next_gate,
+        "age_hours": age_hours,
+        "sla_status": sla_status,
+        "archive_status": archive_status,
+        "archive_packet": None,
+        "audit_pass": audit_pass,
+    }
+
+
+def _aion_summary(columns: dict[str, list[dict[str, Any]]], now: int) -> dict[str, Any]:
+    counts = {name: len(cards) for name, cards in columns.items()}
+    active = counts.get("ready", 0) + counts.get("running", 0)
+    waiting_audit = counts.get("waiting_audit", 0)
+    blocked = counts.get("blocked", 0)
+    needs_monarch = counts.get("needs_monarch", 0)
+    done_today = 0
+    bottlenecks = {
+        "八府巡按": waiting_audit,
+        "外部依赖": blocked,
+        "君主": needs_monarch,
+        "007/执行者": counts.get("ready", 0) + counts.get("running", 0),
+    }
+    current_bottleneck = max(bottlenecks.items(), key=lambda kv: kv[1])[0] if bottlenecks else "无"
+    if needs_monarch:
+        overall = "等君主拍板"
+    elif blocked or waiting_audit:
+        overall = "部分阻塞"
+    else:
+        overall = "运转中"
+    score = max(0, min(100, 85 - 8 * waiting_audit - 10 * blocked - 12 * needs_monarch))
+    return {
+        "title": "AION 帝国工厂驾驶舱",
+        "overall_status": overall,
+        "unattended_maturity": "可审计自动" if score >= 80 else "半自动",
+        "score": score,
+        "refreshed_at": now,
+        "active": active,
+        "waiting_audit": waiting_audit,
+        "blocked": blocked,
+        "needs_monarch": needs_monarch,
+        "done_today": done_today,
+        "current_bottleneck": current_bottleneck,
+        "phase": "Phase 1 只读集成：展示为主，不反写 GitHub，不自动 merge/close",
+    }
 
 
 def _task_dict(
@@ -343,6 +507,7 @@ def get_board(
     tenant: Optional[str] = Query(None, description="Filter to a single tenant"),
     include_archived: bool = Query(False),
     board: Optional[str] = Query(None, description="Kanban board slug (omit for current)"),
+    aion: bool = Query(False, description="Render AION Chinese cockpit read-only view"),
 ):
     """Return the full board grouped by status column.
 
@@ -402,8 +567,10 @@ def get_board(
             "SELECT COALESCE(MAX(id), 0) AS m FROM task_events"
         ).fetchone()["m"]
 
-        columns: dict[str, list[dict]] = {c: [] for c in BOARD_COLUMNS}
-        if include_archived:
+        columns: dict[str, list[dict]] = {
+            c: [] for c in (AION_COLUMN_ORDER if aion else BOARD_COLUMNS)
+        }
+        if include_archived and not aion:
             columns["archived"] = []
 
         # Batch-fetch the latest non-null run summary per task in one
@@ -428,7 +595,13 @@ def get_board(
                 # needs the summary.
                 d["diagnostics"] = diags
                 d["warnings"] = _warnings_summary_from_diagnostics(diags)
-            col = t.status if t.status in columns else "todo"
+            if aion:
+                aion_meta = _aion_fields(t, conn, int(time.time()))
+                d["aion"] = aion_meta
+                d["readonly"] = True
+                col = aion_meta["state"] if aion_meta["state"] in columns else "todo"
+            else:
+                col = t.status if t.status in columns else "todo"
             columns[col].append(d)
 
         # Stable per-column ordering already applied by list_tasks
@@ -450,15 +623,21 @@ def get_board(
             )
         ]
 
-        return {
+        now_ts = int(time.time())
+        response = {
             "columns": [
-                {"name": name, "tasks": columns[name]} for name in columns.keys()
+                {"name": name, "tasks": columns[name], "readonly": bool(aion)} for name in columns.keys()
             ],
             "tenants": tenants,
             "assignees": assignees,
             "latest_event_id": int(latest_event_id),
-            "now": int(time.time()),
+            "now": now_ts,
+            "readonly": bool(aion),
         }
+        if aion:
+            response["aion_mode"] = True
+            response["aion_summary"] = _aion_summary(columns, now_ts)
+        return response
     finally:
         conn.close()
 

@@ -1490,3 +1490,84 @@
   font-size: 0.7rem;
   cursor: pointer;
 }
+
+/* ---- AION Chinese cockpit layer -------------------------------------- */
+.hermes-kanban-aion-summary {
+  border: 1px solid color-mix(in srgb, var(--color-border) 85%, transparent);
+  border-radius: 0.9rem;
+  padding: 1rem;
+  background: linear-gradient(135deg,
+    color-mix(in srgb, var(--color-card) 94%, var(--color-ring) 6%),
+    var(--color-card));
+  box-shadow: 0 10px 24px color-mix(in srgb, black 12%, transparent);
+}
+.hermes-kanban-aion-title {
+  font-weight: 800;
+  font-size: 1.05rem;
+  letter-spacing: 0.02em;
+}
+.hermes-kanban-aion-phase {
+  margin-top: 0.25rem;
+  font-size: 0.76rem;
+  color: var(--color-muted-foreground);
+}
+.hermes-kanban-aion-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr));
+  gap: 0.65rem;
+  margin-top: 0.85rem;
+}
+.hermes-kanban-aion-grid > div,
+.hermes-kanban-aion-chip {
+  border: 1px solid color-mix(in srgb, var(--color-border) 75%, transparent);
+  border-radius: 0.65rem;
+  background: color-mix(in srgb, var(--color-background) 72%, transparent);
+  padding: 0.55rem 0.7rem;
+}
+.hermes-kanban-aion-grid span,
+.hermes-kanban-aion-chip span {
+  display: block;
+  font-size: 0.7rem;
+  color: var(--color-muted-foreground);
+}
+.hermes-kanban-aion-grid strong,
+.hermes-kanban-aion-chip strong {
+  display: block;
+  margin-top: 0.1rem;
+  font-size: 1rem;
+}
+.hermes-kanban-aion-counts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  margin-top: 0.85rem;
+}
+.hermes-kanban-aion-chip {
+  min-width: 5.8rem;
+  cursor: pointer;
+  color: inherit;
+  text-align: left;
+}
+.hermes-kanban-aion-chip:hover {
+  border-color: color-mix(in srgb, var(--color-ring) 60%, var(--color-border));
+}
+.hermes-kanban-aion-card {
+  margin-top: 0.45rem;
+  padding: 0.5rem;
+  border-radius: 0.55rem;
+  background: color-mix(in srgb, var(--color-muted) 65%, transparent);
+  color: var(--color-foreground);
+  font-size: 0.72rem;
+  line-height: 1.45;
+}
+.hermes-kanban-aion-card a {
+  color: var(--color-ring);
+  text-decoration: underline;
+}
+.hermes-kanban-aion-trace {
+  color: var(--color-muted-foreground);
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
