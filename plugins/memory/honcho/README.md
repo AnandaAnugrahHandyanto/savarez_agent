@@ -268,6 +268,10 @@ Presets:
 | `HONCHO_ENVIRONMENT` | `environment` |
 | `HERMES_HONCHO_HOST` | Host key override |
 
+For self-hosted Honcho v3, use `LLM_OPENAI_API_KEY` for Honcho's own
+text-generation and embedding providers. Do not use Hermes' general
+`OPENAI_API_KEY` for this unless you also want Hermes model selection to see it.
+
 ## CLI Commands
 
 | Command | Description |

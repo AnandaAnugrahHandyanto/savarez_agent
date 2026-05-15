@@ -331,17 +331,16 @@ class CodexAppServerSession:
         *,
         turn_timeout: float = 600.0,
         notification_poll_timeout: float = 0.25,
-        post_tool_quiet_timeout: float = 90.0,
+        post_tool_quiet_timeout: Optional[float] = 0.0,
     ) -> TurnResult:
         """Send a user message and block until turn/completed, while
         forwarding server-initiated approval requests and projecting items
         into Hermes' messages shape.
 
-        post_tool_quiet_timeout: if codex emits a tool completion and then
-        goes quiet for this many seconds without emitting another item or
-        `turn/completed`, fast-fail and mark the session for retirement.
-        Mirrors openclaw beta.8's post-tool completion watchdog (#81697)
-        so a wedged codex doesn't burn the full turn deadline.
+        post_tool_quiet_timeout: optional watchdog for "tool result, then
+        silence" wedges. Non-positive values disable it, which is the
+        default because codex can legitimately spend longer than 90 seconds
+        thinking after a tool result in unattended cron/gateway turns.
         """
         # Pre-create the result so startup failures (codex subprocess can't
         # spawn, initialize handshake rejects, thread/start blows up) surface
@@ -439,7 +438,9 @@ class CodexAppServerSession:
             # signal and codex has been silent past the quiet timeout, give
             # up on this turn instead of waiting for the outer deadline.
             if (
-                last_tool_completion_at is not None
+                post_tool_quiet_timeout is not None
+                and post_tool_quiet_timeout > 0
+                and last_tool_completion_at is not None
                 and (time.time() - last_tool_completion_at)
                     > post_tool_quiet_timeout
             ):

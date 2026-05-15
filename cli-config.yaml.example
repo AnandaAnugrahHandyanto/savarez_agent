@@ -887,6 +887,8 @@ delegation:
 # Requires: pip install honcho-ai
 # Config: ~/.honcho/config.json (shared with Claude Code, Cursor, etc.)
 # API key: HONCHO_API_KEY in ~/.hermes/.env or ~/.honcho/config.json
+# Self-hosted Honcho model/embedding key: LLM_OPENAI_API_KEY in ~/.hermes/.env
+#   This is intentionally separate from Hermes' general OPENAI_API_KEY.
 #
 # Hermes-specific overrides (optional — most config comes from ~/.honcho/config.json):
 # honcho: {}

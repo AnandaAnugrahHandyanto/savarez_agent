@@ -666,6 +666,30 @@ class TestSessionRetirement:
         # Confirm we issued turn/interrupt to free codex compute
         assert any(method == "turn/interrupt" for (method, _) in client.requests)
 
+    def test_post_tool_quiet_watchdog_can_be_disabled(self):
+        client = FakeClient()
+        client.queue_notification(
+            "item/completed",
+            item={
+                "type": "commandExecution", "id": "ex1",
+                "command": "echo hi", "cwd": "/tmp",
+                "status": "completed", "aggregatedOutput": "hi",
+                "exitCode": 0, "commandActions": [],
+            },
+            threadId="t", turnId="tu1",
+        )
+        s = make_session(client)
+        r = s.run_turn(
+            "tool then model thinks for a long time",
+            turn_timeout=0.05,
+            notification_poll_timeout=0.01,
+            post_tool_quiet_timeout=0,
+        )
+        assert r.interrupted is True
+        assert r.should_retire is True
+        assert r.error and "timed out" in r.error
+        assert "silent" not in r.error
+
     def test_post_tool_watchdog_resets_on_further_activity(self):
         """A tool completion followed by an agent message should NOT trip
         the watchdog — further activity = codex still alive."""

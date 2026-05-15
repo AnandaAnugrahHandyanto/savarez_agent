@@ -106,6 +106,8 @@ The auto-injected dialectic scales `dialecticReasoningLevel` by query length: +1
 
 Honcho is configured in `~/.honcho/config.json` (global) or `$HERMES_HOME/honcho.json` (profile-local). The setup wizard handles this for you.
 
+For self-hosted Honcho v3, put the OpenAI key used by Honcho's own text-generation and embedding providers in `LLM_OPENAI_API_KEY`. That keeps it scoped to Honcho instead of exposing it as Hermes' general `OPENAI_API_KEY`.
+
 ### Full Config Reference
 
 | Key | Default | Description |

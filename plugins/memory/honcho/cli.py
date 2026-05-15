@@ -14,6 +14,8 @@ from hermes_constants import get_hermes_home
 from plugins.memory.honcho.client import resolve_active_host, resolve_config_path, HOST
 from hermes_cli.config import cfg_get
 
+HONCHO_LLM_OPENAI_ENV_VAR = "LLM_OPENAI_API_KEY"
+
 
 def clone_honcho_for_profile(profile_name: str) -> bool:
     """Auto-clone Honcho config for a new profile from the default host block.
@@ -324,6 +326,12 @@ def _prompt(label: str, default: str | None = None, secret: bool = False) -> str
     return val or (default or "")
 
 
+def _mask_secret(value: str) -> str:
+    if not value:
+        return "not set"
+    return f"...{value[-8:]}" if len(value) > 8 else "set"
+
+
 def _ensure_sdk_installed() -> bool:
     """Check honcho-ai is importable; offer to install if not. Returns True if ready."""
     try:
@@ -403,13 +411,24 @@ def cmd_setup(args) -> None:
             print("  Local connections will skip auth automatically.")
         else:
             print("\n  No API key set. Local no-auth ready.")
+
+        current_llm_key = os.environ.get(HONCHO_LLM_OPENAI_ENV_VAR, "")
+        print("\n  Honcho LLM key for self-hosted text generation + embeddings:")
+        print(f"    {HONCHO_LLM_OPENAI_ENV_VAR}: {_mask_secret(current_llm_key)}")
+        print("    This key is scoped to Honcho and is not Hermes' general OPENAI_API_KEY.")
+        new_llm_key = _prompt(
+            "OpenAI API key for Honcho text generation + embeddings (leave blank to keep current)",
+            secret=True,
+        )
+        if new_llm_key:
+            from hermes_cli.config import save_env_value
+            save_env_value(HONCHO_LLM_OPENAI_ENV_VAR, new_llm_key)
     else:
         # --- Cloud: set default base URL, require API key ---
         cfg.pop("baseUrl", None)  # cloud uses SDK default
 
         current_key = cfg.get("apiKey", "")
-        masked = f"...{current_key[-8:]}" if len(current_key) > 8 else ("set" if current_key else "not set")
-        print(f"\n  Current API key: {masked}")
+        print(f"\n  Current API key: {_mask_secret(current_key)}")
         new_key = _prompt("Honcho API key (leave blank to keep current)", secret=True)
         if new_key:
             cfg["apiKey"] = new_key

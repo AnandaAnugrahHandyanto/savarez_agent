@@ -2220,6 +2220,15 @@ OPTIONAL_ENV_VARS = {
         "prompt": "Honcho base URL (e.g. http://localhost:8000)",
         "category": "tool",
     },
+    "LLM_OPENAI_API_KEY": {
+        "description": "OpenAI key used only by self-hosted Honcho for text generation and embeddings",
+        "prompt": "Honcho OpenAI key (text generation + embeddings)",
+        "url": "https://platform.openai.com/api-keys",
+        "tools": ["honcho_context"],
+        "password": True,
+        "category": "tool",
+        "advanced": True,
+    },
 
     # ── Langfuse observability ──
     "HERMES_LANGFUSE_PUBLIC_KEY": {

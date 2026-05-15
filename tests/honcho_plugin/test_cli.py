@@ -1,5 +1,6 @@
 """Tests for plugins/memory/honcho/cli.py."""
 
+import os
 from types import SimpleNamespace
 
 
@@ -154,3 +155,73 @@ class TestCmdStatus:
         out = capsys.readouterr().out
         assert "FAILED (Invalid API key)" in out
         assert "Connection... OK" not in out
+
+
+class TestCmdSetup:
+    def test_local_setup_scopes_openai_key_to_honcho_llm(self, monkeypatch, tmp_path):
+        import plugins.memory.honcho.cli as honcho_cli
+
+        cfg_path = tmp_path / "honcho.json"
+        saved_env = {}
+        prompts = iter([
+            "local",
+            "http://localhost:8000",
+            "sk-honcho-openai",
+            "alice",
+            "hermes",
+            "hermes",
+            "directional",
+            "async",
+            "hybrid",
+            "uncapped",
+            "2",
+            "low",
+            "per-session",
+        ])
+
+        class FakeConfig:
+            workspace_id = "hermes"
+            peer_name = "alice"
+            ai_peer = "hermes"
+            observation_mode = "directional"
+            write_frequency = "async"
+            recall_mode = "hybrid"
+            session_strategy = "per-session"
+
+            def resolve_session_name(self):
+                return "hermes"
+
+        monkeypatch.setattr(honcho_cli, "_read_config", lambda: {})
+        monkeypatch.setattr(
+            honcho_cli,
+            "_write_config",
+            lambda cfg, path=None: cfg_path.write_text("{}"),
+        )
+        monkeypatch.setattr(honcho_cli, "_config_path", lambda: cfg_path)
+        monkeypatch.setattr(honcho_cli, "_local_config_path", lambda: cfg_path)
+        monkeypatch.setattr(honcho_cli, "_host_key", lambda: "hermes")
+        monkeypatch.setattr(honcho_cli, "_ensure_sdk_installed", lambda: True)
+        monkeypatch.setattr(honcho_cli, "_prompt", lambda *args, **kwargs: next(prompts))
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-general-openai")
+        monkeypatch.delenv("LLM_OPENAI_API_KEY", raising=False)
+
+        def fake_save_env_value(key, value):
+            saved_env[key] = value
+            os.environ[key] = value
+
+        monkeypatch.setattr("hermes_cli.config.save_env_value", fake_save_env_value)
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {})
+        monkeypatch.setattr("hermes_cli.config.save_config", lambda config: None)
+        monkeypatch.setattr(
+            "plugins.memory.honcho.client.HonchoClientConfig.from_global_config",
+            lambda host=None: FakeConfig(),
+        )
+        monkeypatch.setattr(
+            "plugins.memory.honcho.client.get_honcho_client",
+            lambda cfg: object(),
+        )
+
+        honcho_cli.cmd_setup(SimpleNamespace())
+
+        assert saved_env == {"LLM_OPENAI_API_KEY": "sk-honcho-openai"}
+        assert os.environ["OPENAI_API_KEY"] == "sk-general-openai"
