@@ -663,6 +663,95 @@ from gateway.whatsapp_identity import (
 logger = logging.getLogger(__name__)
 
 
+def _progress_message_chunks(adapter: Any, content: str) -> List[str]:
+    """Split a tool-progress payload into edit-safe platform chunks.
+
+    Tool-progress bubbles are edited repeatedly. If we hand an oversized
+    payload to a platform adapter, Telegram's edit overflow fallback has to
+    create continuation messages on every update because the caller only knows
+    about one message id. Pre-splitting here lets the gateway track and edit
+    each visible progress chunk in place.
+    """
+    len_fn = adapter.message_len_fn if isinstance(adapter, BasePlatformAdapter) else len
+    raw_limit = getattr(adapter, "MAX_MESSAGE_LENGTH", 4096)
+    # Leave room for platform formatting/escaping and chunk indicators so the
+    # adapter's own send/edit path does not need to split a chunk again.
+    safe_limit = max(500, int(raw_limit) - 100)
+    return adapter.truncate_message(content, safe_limit, len_fn=len_fn)
+
+
+async def _send_or_update_progress_chunks(
+    *,
+    adapter: Any,
+    chat_id: str,
+    content: str,
+    message_ids: List[str],
+    reply_to: Optional[str],
+    metadata: Optional[Dict[str, Any]],
+    cleanup_msg_ids: Optional[List[str]] = None,
+    platform: Any = None,
+) -> bool:
+    """Send/edit all chunks for a growing tool-progress bubble.
+
+    ``message_ids`` is mutated in-place and contains the visible progress
+    messages in display order. Existing chunks are edited; new chunks are sent
+    only when the rendered status grows past another platform limit.
+    """
+    chunks = _progress_message_chunks(adapter, content)
+    if not chunks:
+        return True
+
+    platform_value = getattr(platform, "value", platform)
+    for idx, chunk in enumerate(chunks):
+        if idx < len(message_ids):
+            result = await adapter.edit_message(
+                chat_id=chat_id,
+                message_id=message_ids[idx],
+                content=chunk,
+            )
+            if not result.success:
+                return False
+            continue
+
+        if idx > 0 and platform_value == "telegram" and message_ids:
+            chunk_reply_to = message_ids[-1]
+        else:
+            chunk_reply_to = reply_to
+        result = await adapter.send(
+            chat_id=chat_id,
+            content=chunk,
+            reply_to=chunk_reply_to,
+            metadata=metadata,
+        )
+        if not result.success or not result.message_id:
+            return False
+        message_ids.append(str(result.message_id))
+        if cleanup_msg_ids is not None:
+            cleanup_msg_ids.append(str(result.message_id))
+        for continuation_id in getattr(result, "continuation_message_ids", ()) or ():
+            cid = str(continuation_id)
+            if cid and cid not in message_ids:
+                message_ids.append(cid)
+                if cleanup_msg_ids is not None:
+                    cleanup_msg_ids.append(cid)
+
+    # Progress only grows in normal operation, but dedup/reset edge cases can
+    # make the rendered chunk count shrink. Best-effort delete stale trailing
+    # chunks so they don't keep showing old content.
+    if len(message_ids) > len(chunks):
+        stale_ids = message_ids[len(chunks):]
+        del message_ids[len(chunks):]
+        delete_fn = getattr(adapter, "delete_message", None)
+        if delete_fn is not None:
+            for stale_id in stale_ids:
+                try:
+                    await delete_fn(chat_id=chat_id, message_id=stale_id)
+                except Exception:
+                    logger.debug("Progress stale chunk delete failed", exc_info=True)
+
+    return True
+
+
 # Sentinel placed into _running_agents immediately when a session starts
 # processing, *before* any await.  Prevents a second message for the same
 # session from bypassing the "already running" guard during the async gap
@@ -14614,7 +14703,7 @@ class GatewayRunner:
                 return
 
             progress_lines = []      # Accumulated tool lines
-            progress_msg_id = None   # ID of the progress message to edit
+            progress_msg_ids = []    # IDs of progress chunk messages to edit, in order
             can_edit = True          # False once an edit fails (platform doesn't support it)
             _last_edit_ts = 0.0      # Throttle edits to avoid Telegram flood control
             _PROGRESS_EDIT_INTERVAL = 1.5  # Minimum seconds between edits
@@ -14662,7 +14751,7 @@ class GatewayRunner:
                         # order. Mirrors GatewayStreamConsumer.on_segment_break
                         # on the content side. (Issue: tool + content
                         # linearization regression after PR #7885.)
-                        progress_msg_id = None
+                        progress_msg_ids = []
                         progress_lines = []
                         last_progress_msg[0] = None
                         repeat_count[0] = 0
@@ -14687,16 +14776,21 @@ class GatewayRunner:
                     if not _run_still_current():
                         return
 
-                    if can_edit and progress_msg_id is not None:
+                    if can_edit and progress_msg_ids:
                         # Try to edit the existing progress message
                         full_text = "\n".join(progress_lines)
-                        result = await adapter.edit_message(
+                        ok = await _send_or_update_progress_chunks(
+                            adapter=adapter,
                             chat_id=source.chat_id,
-                            message_id=progress_msg_id,
                             content=full_text,
+                            message_ids=progress_msg_ids,
+                            reply_to=_progress_reply_to,
+                            metadata=_progress_metadata,
+                            cleanup_msg_ids=_cleanup_msg_ids if _cleanup_progress else None,
+                            platform=source.platform,
                         )
-                        if not result.success:
-                            _err = (getattr(result, "error", "") or "").lower()
+                        if not ok:
+                            _err = ""
                             if "flood" in _err or "retry after" in _err:
                                 # Flood control hit — disable further edits,
                                 # switch to sending new messages only for
@@ -14722,12 +14816,17 @@ class GatewayRunner:
                         if can_edit:
                             # First tool: send all accumulated text as new message
                             full_text = "\n".join(progress_lines)
-                            result = await adapter.send(
+                            ok = await _send_or_update_progress_chunks(
+                                adapter=adapter,
                                 chat_id=source.chat_id,
                                 content=full_text,
+                                message_ids=progress_msg_ids,
                                 reply_to=_progress_reply_to,
                                 metadata=_progress_metadata,
+                                cleanup_msg_ids=_cleanup_msg_ids if _cleanup_progress else None,
+                                platform=source.platform,
                             )
+                            result = None
                         else:
                             # Editing unsupported: send just this line
                             result = await adapter.send(
@@ -14736,10 +14835,12 @@ class GatewayRunner:
                                 reply_to=_progress_reply_to,
                                 metadata=_progress_metadata,
                             )
-                        if result.success and result.message_id:
-                            progress_msg_id = result.message_id
+                        if result is not None and result.success and result.message_id:
+                            progress_msg_ids = [str(result.message_id)]
                             if _cleanup_progress:
                                 _cleanup_msg_ids.append(str(result.message_id))
+                        elif can_edit and not ok:
+                            can_edit = False
 
                     _last_edit_ts = time.monotonic()
 
@@ -14763,17 +14864,22 @@ class GatewayRunner:
                                 # Content-bubble marker during drain: close off
                                 # the current progress bubble and start a fresh
                                 # one for any tool lines that arrived after.
-                                if can_edit and progress_lines and progress_msg_id:
+                                if can_edit and progress_lines and progress_msg_ids:
                                     _pending_text = "\n".join(progress_lines)
                                     try:
-                                        await adapter.edit_message(
+                                        await _send_or_update_progress_chunks(
+                                            adapter=adapter,
                                             chat_id=source.chat_id,
-                                            message_id=progress_msg_id,
                                             content=_pending_text,
+                                            message_ids=progress_msg_ids,
+                                            reply_to=_progress_reply_to,
+                                            metadata=_progress_metadata,
+                                            cleanup_msg_ids=_cleanup_msg_ids if _cleanup_progress else None,
+                                            platform=source.platform,
                                         )
                                     except Exception:
                                         pass
-                                progress_msg_id = None
+                                progress_msg_ids = []
                                 progress_lines = []
                                 last_progress_msg[0] = None
                                 repeat_count[0] = 0
@@ -14782,13 +14888,18 @@ class GatewayRunner:
                         except Exception:
                             break
                     # Final edit with all remaining tools (only if editing works)
-                    if can_edit and progress_lines and progress_msg_id:
+                    if can_edit and progress_lines and progress_msg_ids:
                         full_text = "\n".join(progress_lines)
                         try:
-                            await adapter.edit_message(
+                            await _send_or_update_progress_chunks(
+                                adapter=adapter,
                                 chat_id=source.chat_id,
-                                message_id=progress_msg_id,
                                 content=full_text,
+                                message_ids=progress_msg_ids,
+                                reply_to=_progress_reply_to,
+                                metadata=_progress_metadata,
+                                cleanup_msg_ids=_cleanup_msg_ids if _cleanup_progress else None,
+                                platform=source.platform,
                             )
                         except Exception:
                             pass
