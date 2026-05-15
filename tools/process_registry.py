@@ -826,6 +826,26 @@ class ProcessRegistry:
         """Check if a completion notification was already consumed via wait/poll/log."""
         return session_id in self._completion_consumed
 
+    def drain_notifications(self) -> "list[tuple[dict, str]]":
+        """Pop all pending notification events and return formatted pairs.
+
+        Returns a list of (raw_event, formatted_text) tuples.
+        Skips completion events that were already consumed via wait/poll/log.
+        """
+        results = []
+        while not self.completion_queue.empty():
+            try:
+                evt = self.completion_queue.get_nowait()
+            except Exception:
+                break
+            _evt_sid = evt.get("session_id", "")
+            if evt.get("type") == "completion" and self.is_completion_consumed(_evt_sid):
+                continue
+            text = format_process_notification(evt)
+            if text:
+                results.append((evt, text))
+        return results
+
     def get(self, session_id: str) -> Optional[ProcessSession]:
         """Get a session by ID (running or finished)."""
         with self._lock:

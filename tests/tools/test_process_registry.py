@@ -58,3 +58,77 @@ def test_format_returns_none_for_empty_event():
     result = format_process_notification(evt)
     assert result is not None  # still formats with defaults
     assert "unknown" in result
+
+import queue
+
+
+def test_drain_notifications_returns_pending_events():
+    from tools.process_registry import process_registry
+
+    # Clear any leftover state
+    while not process_registry.completion_queue.empty():
+        process_registry.completion_queue.get_nowait()
+
+    process_registry.completion_queue.put({
+        "type": "completion",
+        "session_id": "proc_drain1",
+        "command": "echo hi",
+        "exit_code": 0,
+        "output": "hi",
+    })
+    process_registry.completion_queue.put({
+        "type": "watch_match",
+        "session_id": "proc_drain2",
+        "command": "tail -f x",
+        "pattern": "ERR",
+        "output": "ERR found",
+        "suppressed": 0,
+    })
+
+    try:
+        results = process_registry.drain_notifications()
+        assert len(results) == 2
+        assert results[0][0]["session_id"] == "proc_drain1"
+        assert "proc_drain1 completed" in results[0][1]
+        assert results[1][0]["session_id"] == "proc_drain2"
+        assert "watch pattern" in results[1][1]
+    finally:
+        while not process_registry.completion_queue.empty():
+            process_registry.completion_queue.get_nowait()
+        process_registry._completion_consumed.discard("proc_drain1")
+        process_registry._completion_consumed.discard("proc_drain2")
+
+
+def test_drain_notifications_skips_consumed():
+    from tools.process_registry import process_registry
+
+    while not process_registry.completion_queue.empty():
+        process_registry.completion_queue.get_nowait()
+
+    process_registry._completion_consumed.add("proc_consumed")
+    process_registry.completion_queue.put({
+        "type": "completion",
+        "session_id": "proc_consumed",
+        "command": "echo done",
+        "exit_code": 0,
+        "output": "done",
+    })
+
+    try:
+        results = process_registry.drain_notifications()
+        assert len(results) == 0
+    finally:
+        process_registry._completion_consumed.discard("proc_consumed")
+        while not process_registry.completion_queue.empty():
+            process_registry.completion_queue.get_nowait()
+
+
+def test_drain_notifications_empty_queue():
+    from tools.process_registry import process_registry
+
+    while not process_registry.completion_queue.empty():
+        process_registry.completion_queue.get_nowait()
+
+    results = process_registry.drain_notifications()
+    assert results == []
+
