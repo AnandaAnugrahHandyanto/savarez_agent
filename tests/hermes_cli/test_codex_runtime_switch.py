@@ -96,6 +96,42 @@ class TestApply:
         assert r.success
         assert r.message == "openai_runtime already set to auto"
 
+    def test_reapply_codex_app_server_runs_migration_without_persist(self):
+        cfg = {
+            "model": {"openai_runtime": "codex_app_server"},
+            "mcp_servers": {
+                "filesystem": {"command": "npx", "args": ["-y", "fs-server"]},
+            },
+        }
+        persisted = False
+
+        def persist(c):
+            nonlocal persisted
+            persisted = True
+
+        with patch.object(crs, "check_codex_binary_ok",
+                          return_value=(True, "0.130.0")), \
+             patch("hermes_cli.codex_runtime_plugin_migration.migrate") as mig:
+            mig.return_value.migrated = ["filesystem", "hermes-tools"]
+            mig.return_value.migrated_plugins = []
+            mig.return_value.plugin_query_error = None
+            mig.return_value.wrote_permissions_default = ":workspace"
+            mig.return_value.errors = []
+            mig.return_value.target_path = "/fake/.codex/config.toml"
+            r = crs.apply(cfg, "codex_app_server", persist_callback=persist)
+
+        assert r.success
+        assert r.new_value == "codex_app_server"
+        assert r.old_value == "codex_app_server"
+        assert r.requires_new_session is True
+        assert persisted is False
+        mig.assert_called_once_with(cfg)
+        assert cfg["model"]["openai_runtime"] == "codex_app_server"
+        assert "already set to codex_app_server" in r.message
+        assert "re-applying migration" in r.message
+        assert "Migrated 1 MCP server" in r.message
+        assert "via MCP" in r.message
+
     def test_enable_blocked_when_codex_missing(self):
         cfg = {}
         with patch.object(crs, "check_codex_binary_ok",

@@ -144,8 +144,12 @@ def apply(
             codex_version=ver if ok else None,
         )
 
-    # No change requested
-    if new_value == current:
+    reapply_codex_app_server = new_value == current == "codex_app_server"
+
+    # No change requested. Re-applying codex_app_server is not a pure no-op:
+    # the persisted config value can already be correct while ~/.codex still
+    # lacks Hermes' managed MCP/plugin migration block.
+    if new_value == current and not reapply_codex_app_server:
         return CodexRuntimeStatus(
             success=True,
             new_value=current,
@@ -172,8 +176,9 @@ def apply(
                 codex_version=None,
             )
 
-    set_runtime(config, new_value)
-    if persist_callback is not None:
+    if not reapply_codex_app_server:
+        set_runtime(config, new_value)
+    if persist_callback is not None and not reapply_codex_app_server:
         try:
             persist_callback(config)
         except Exception as exc:
@@ -185,9 +190,15 @@ def apply(
                 message=f"updated config in memory but persist failed: {exc}",
             )
 
-    msg_lines = [
-        f"openai_runtime: {current} → {new_value}",
-    ]
+    if reapply_codex_app_server:
+        msg_lines = [
+            "openai_runtime already set to codex_app_server - "
+            "re-applying migration",
+        ]
+    else:
+        msg_lines = [
+            f"openai_runtime: {current} → {new_value}",
+        ]
     if new_value == "codex_app_server":
         ok, ver = _check_binary_cached()
         if ok:
