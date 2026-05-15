@@ -45,6 +45,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_MAX_TURNS = 20
 DEFAULT_JUDGE_TIMEOUT = 30.0
+DEFAULT_JUDGE_MAX_TOKENS = 1024
 # Cap how much of the last response + recent messages we send to the judge.
 _JUDGE_RESPONSE_SNIPPET_CHARS = 4000
 # After this many consecutive judge *parse* failures (empty output / non-JSON),
@@ -92,7 +93,9 @@ JUDGE_SYSTEM_PROMPT = (
     "- The response explains the goal is unachievable / blocked / needs "
     "user input (treat this as DONE with reason describing the block).\n\n"
     "Otherwise the goal is NOT done — CONTINUE.\n\n"
-    "Reply ONLY with a single JSON object on one line:\n"
+    "Call the submit_verdict tool with your decision. Do not write prose. "
+    "If tool calling is unavailable, reply ONLY with a single JSON object "
+    "on one line:\n"
     '{\"done\": <true|false>, \"reason\": \"<one-sentence rationale>\"}'
 )
 
@@ -282,6 +285,30 @@ def _truncate(text: str, limit: int) -> str:
 _JSON_OBJECT_RE = re.compile(r"\{.*?\}", re.DOTALL)
 
 
+_JUDGE_VERDICT_TOOL_SCHEMA: Dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": "submit_verdict",
+        "description": "Submit whether the current goal is satisfied.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "done": {
+                    "type": "boolean",
+                    "description": "True only when the goal is fully satisfied.",
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "One-sentence rationale for the verdict.",
+                },
+            },
+            "required": ["done", "reason"],
+            "additionalProperties": False,
+        },
+    },
+}
+
+
 def _parse_judge_response(raw: str) -> Tuple[bool, str, bool]:
     """Parse the judge's reply. Fail-open to ``(False, "<reason>", parse_failed)``.
 
@@ -331,6 +358,86 @@ def _parse_judge_response(raw: str) -> Tuple[bool, str, bool]:
     return done, reason, False
 
 
+def _goal_judge_max_tokens() -> int:
+    """Read auxiliary.goal_judge.max_tokens, falling back to a safer default."""
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config()
+        value = (
+            (cfg.get("auxiliary") or {})
+            .get("goal_judge", {})
+            .get("max_tokens", DEFAULT_JUDGE_MAX_TOKENS)
+        )
+        value = int(value)
+        if value > 0:
+            return value
+    except Exception:
+        pass
+    return DEFAULT_JUDGE_MAX_TOKENS
+
+
+def _tool_choice_variants(tool_name: str) -> List[Any]:
+    """Provider-compatible tool_choice attempts, strictest first."""
+    return [
+        {"type": "function", "function": {"name": tool_name}},
+        {"function": {"name": tool_name}},
+        "required",
+        "auto",
+    ]
+
+
+def _coerce_tool_arguments(raw: Any) -> Dict[str, Any]:
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str):
+        try:
+            data = json.loads(raw)
+        except Exception:
+            return {}
+        return data if isinstance(data, dict) else {}
+    return {}
+
+
+def _extract_submit_verdict(message: Any) -> Optional[Dict[str, Any]]:
+    """Return submit_verdict arguments from OpenAI-style tool calls, if present."""
+    tool_calls = getattr(message, "tool_calls", None)
+    if tool_calls is None and isinstance(message, dict):
+        tool_calls = message.get("tool_calls")
+    if not tool_calls:
+        return None
+
+    for tool_call in tool_calls:
+        function = getattr(tool_call, "function", None)
+        if function is None and isinstance(tool_call, dict):
+            function = tool_call.get("function")
+        if function is None:
+            continue
+
+        name = getattr(function, "name", None)
+        arguments = getattr(function, "arguments", None)
+        if isinstance(function, dict):
+            name = function.get("name")
+            arguments = function.get("arguments")
+        if name != "submit_verdict":
+            continue
+
+        args = _coerce_tool_arguments(arguments)
+        if args:
+            return args
+    return None
+
+
+def _verdict_from_tool_args(args: Dict[str, Any]) -> Tuple[str, str, bool]:
+    done_val = args.get("done")
+    if isinstance(done_val, str):
+        done = done_val.strip().lower() in {"true", "yes", "1", "done"}
+    else:
+        done = bool(done_val)
+    reason = str(args.get("reason") or "").strip() or "no reason provided"
+    return ("done" if done else "continue"), reason, False
+
+
 def judge_goal(
     goal: str,
     last_response: str,
@@ -365,7 +472,11 @@ def judge_goal(
         return "continue", "empty response (nothing to evaluate)", False
 
     try:
-        from agent.auxiliary_client import get_auxiliary_extra_body, get_text_auxiliary_client
+        from agent.auxiliary_client import (
+            extract_content_or_reasoning,
+            get_auxiliary_extra_body,
+            get_text_auxiliary_client,
+        )
     except Exception as exc:
         logger.debug("goal judge: auxiliary client import failed: %s", exc)
         return "continue", "auxiliary client unavailable", False
@@ -396,30 +507,91 @@ def judge_goal(
             response=_truncate(last_response, _JUDGE_RESPONSE_SNIPPET_CHARS),
         )
 
-    try:
-        resp = client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": JUDGE_SYSTEM_PROMPT},
-                {"role": "user", "content": prompt},
-            ],
-            temperature=0,
-            max_tokens=200,
-            timeout=timeout,
-            extra_body=get_auxiliary_extra_body() or None,
-        )
-    except Exception as exc:
-        logger.info("goal judge: API call failed (%s) — falling through to continue", exc)
-        return "continue", f"judge error: {type(exc).__name__}", False
+    messages = [
+        {"role": "system", "content": JUDGE_SYSTEM_PROMPT},
+        {"role": "user", "content": prompt},
+    ]
+    max_tokens = _goal_judge_max_tokens()
+    extra_body = get_auxiliary_extra_body() or None
+    base_url = str(getattr(client, "base_url", "") or "")
+    logger.info(
+        "goal judge: using model=%s%s max_tokens=%s",
+        model,
+        f" at {base_url}" if base_url else "",
+        max_tokens,
+    )
+
+    resp = None
+    for tool_choice in [*_tool_choice_variants("submit_verdict"), None]:
+        kwargs: Dict[str, Any] = {
+            "model": model,
+            "messages": messages,
+            "temperature": 0,
+            "max_tokens": max_tokens,
+            "timeout": timeout,
+        }
+        if extra_body:
+            kwargs["extra_body"] = extra_body
+        if tool_choice is not None:
+            kwargs["tools"] = [_JUDGE_VERDICT_TOOL_SCHEMA]
+            kwargs["tool_choice"] = tool_choice
+        try:
+            resp = client.chat.completions.create(**kwargs)
+            if tool_choice is None:
+                logger.info("goal judge: tool verdict unavailable; using text fallback")
+            break
+        except Exception as exc:
+            err_text = str(exc).lower()
+            tool_choice_rejected = (
+                "tool_choice" in err_text
+                or "tools" in err_text
+                or "function" in err_text
+                or "unsupported" in err_text
+            )
+            if tool_choice is not None and tool_choice_rejected:
+                logger.debug(
+                    "goal judge: tool_choice=%r rejected (%s); trying next form",
+                    tool_choice,
+                    exc,
+                )
+                continue
+            logger.info("goal judge: API call failed (%s) — falling through to continue", exc)
+            return "continue", f"judge error: {type(exc).__name__}", False
+
+    if resp is None:
+        return "continue", "judge error: tool calling unavailable", False
 
     try:
-        raw = resp.choices[0].message.content or ""
+        msg = resp.choices[0].message
     except Exception:
-        raw = ""
+        msg = None
+
+    if msg is not None:
+        tool_args = _extract_submit_verdict(msg)
+        if tool_args is not None:
+            verdict, reason, parse_failed = _verdict_from_tool_args(tool_args)
+            logger.info(
+                "goal judge: verdict=%s reason=%s source=tool_call",
+                verdict,
+                _truncate(reason, 120),
+            )
+            return verdict, reason, parse_failed
+
+    try:
+        raw = extract_content_or_reasoning(resp)
+    except Exception:
+        try:
+            raw = resp.choices[0].message.content or ""
+        except Exception:
+            raw = ""
 
     done, reason, parse_failed = _parse_judge_response(raw)
     verdict = "done" if done else "continue"
-    logger.info("goal judge: verdict=%s reason=%s", verdict, _truncate(reason, 120))
+    logger.info(
+        "goal judge: verdict=%s reason=%s source=text_fallback",
+        verdict,
+        _truncate(reason, 120),
+    )
     return verdict, reason, parse_failed
 
 
