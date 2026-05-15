@@ -60,7 +60,7 @@ Opening any port on an internet facing machine is a security risk. You should no
 
 ## Running the dashboard
 
-The built-in web dashboard runs as an optional side-process inside the same container as the gateway. Set `HERMES_DASHBOARD=1` and expose port `9119` alongside the gateway's `8642`:
+The built-in web dashboard runs as an optional side-process inside the same container as the gateway. Set `HERMES_DASHBOARD=1` and publish port `9119` on localhost alongside the gateway's `8642`:
 
 ```sh
 docker run -d \
@@ -68,7 +68,7 @@ docker run -d \
   --restart unless-stopped \
   -v ~/.hermes:/opt/data \
   -p 8642:8642 \
-  -p 9119:9119 \
+  -p 127.0.0.1:9119:9119 \
   -e HERMES_DASHBOARD=1 \
   nousresearch/hermes-agent gateway run
 ```
@@ -82,7 +82,7 @@ The entrypoint starts `hermes dashboard` in the background (running as the non-r
 | `HERMES_DASHBOARD_PORT` | Port for the dashboard HTTP server | `9119` |
 | `HERMES_DASHBOARD_TUI` | Set to `1` to expose the in-browser Chat tab (embedded `hermes --tui` via PTY/WebSocket) | *(unset)* |
 
-The default `HERMES_DASHBOARD_HOST=0.0.0.0` is required for the host to reach the dashboard through the published port; the entrypoint automatically passes `--insecure` to `hermes dashboard` in that case. Override to `127.0.0.1` if you want to restrict the dashboard to in-container access only (e.g. behind a reverse proxy in a sidecar).
+The dashboard has no robust authentication when it is reachable outside localhost. Keep the Docker port publication bound to `127.0.0.1` unless you place the dashboard behind a trusted, authenticated reverse proxy or another network-layer access control. The container still binds `HERMES_DASHBOARD_HOST=0.0.0.0` internally so Docker can forward the localhost-only host port to it; the entrypoint automatically passes `--insecure` for that internal container bind.
 
 :::note
 The dashboard side-process is **not supervised** — if it crashes, it stays down until the container restarts. Running it as a separate container is not supported: the dashboard's gateway-liveness detection requires a shared PID namespace with the gateway process.
@@ -209,7 +209,7 @@ services:
     command: gateway run
     ports:
       - "8642:8642"   # gateway API
-      - "9119:9119"   # dashboard (only reached when HERMES_DASHBOARD=1)
+      - "127.0.0.1:9119:9119"   # dashboard, localhost-only (only reached when HERMES_DASHBOARD=1)
     volumes:
       - ~/.hermes:/opt/data
     environment:
