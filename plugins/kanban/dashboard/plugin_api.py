@@ -374,6 +374,171 @@ def _dependency_summaries_for(
     }
 
 
+def _graph_role_for(title: Optional[str]) -> str:
+    """Classify public task title copy into a compact dashboard graph role."""
+    text = (title or "").lower()
+    if "spec" in text:
+        return "spec"
+    if "verif" in text or "test" in text or "dogfood" in text:
+        return "verification"
+    if "review" in text or "handoff" in text or "readiness" in text:
+        return "review"
+    if "accept" in text or "gate" in text:
+        return "acceptance"
+    if "implement" in text or "build" in text or "ship" in text:
+        return "implementation"
+    return "task"
+
+
+def _graph_state_label(node: dict[str, Any], relation: str) -> str:
+    if node.get("missing"):
+        return "Referenced task unavailable"
+    status = node.get("status") or "unknown"
+    role = _graph_role_for(node.get("title"))
+    if relation == "root":
+        return "Selected task"
+    if status == "done" and role in {"spec", "verification", "review", "acceptance"}:
+        return "Completed gate"
+    if relation == "upstream":
+        return "Upstream blocker" if status != "done" else "Upstream complete"
+    if relation == "downstream":
+        return "Downstream work"
+    return "Linked task"
+
+
+def _graph_node_dict(task_id: str, row: Optional[sqlite3.Row], relation: str, depth: int) -> dict[str, Any]:
+    if row is None:
+        base: dict[str, Any] = {
+            "id": task_id,
+            "title": None,
+            "status": "missing",
+            "assignee": None,
+            "missing": True,
+        }
+    else:
+        base = {
+            "id": row["id"],
+            "title": row["title"],
+            "status": row["status"],
+            "assignee": row["assignee"],
+        }
+    base["relation"] = relation
+    base["depth"] = depth
+    base["role"] = _graph_role_for(base.get("title"))
+    base["state_label"] = _graph_state_label(base, relation)
+    return base
+
+
+def _task_summary_row(conn: sqlite3.Connection, task_id: str) -> Optional[sqlite3.Row]:
+    return conn.execute(
+        "SELECT id, title, status, assignee FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+
+
+def _bounded_dependency_graph(
+    conn: sqlite3.Connection,
+    root_id: str,
+    depth_limit: int,
+    node_limit: int,
+) -> dict[str, Any]:
+    """Return a safe, bounded dependency DAG around ``root_id``.
+
+    The graph includes only task id/title/status/assignee plus derived UI labels.
+    It follows parents upstream and children downstream independently so large
+    boards do not force the drawer to serialize the full task table.
+    """
+    root = _task_summary_row(conn, root_id)
+    if root is None:
+        raise HTTPException(status_code=404, detail=f"task {root_id} not found")
+
+    nodes: dict[str, dict[str, Any]] = {
+        root_id: _graph_node_dict(root_id, root, "root", 0),
+    }
+    edges: list[dict[str, str]] = []
+    overflow_count = 0
+
+    def remember_edge(parent_id: str, child_id: str) -> None:
+        edge = {"parent_id": parent_id, "child_id": child_id}
+        if edge not in edges:
+            edges.append(edge)
+
+    def add_node(task_id: str, relation: str, depth: int) -> bool:
+        nonlocal overflow_count
+        if task_id in nodes:
+            return True
+        if len(nodes) >= node_limit:
+            overflow_count += 1
+            return False
+        row = _task_summary_row(conn, task_id)
+        nodes[task_id] = _graph_node_dict(task_id, row, relation, depth)
+        return row is not None
+
+    def traverse(direction: str) -> None:
+        nonlocal overflow_count
+        queue: list[tuple[str, int]] = [(root_id, 0)]
+        seen_sources: set[str] = {root_id}
+        while queue:
+            current, depth = queue.pop(0)
+            if depth >= depth_limit:
+                continue
+            if direction == "upstream":
+                rows = conn.execute(
+                    "SELECT parent_id AS next_id, parent_id, child_id "
+                    "FROM task_links WHERE child_id = ? ORDER BY parent_id",
+                    (current,),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT child_id AS next_id, parent_id, child_id "
+                    "FROM task_links WHERE parent_id = ? ORDER BY child_id",
+                    (current,),
+                ).fetchall()
+            for link in rows:
+                next_id = link["next_id"]
+                next_depth = depth + 1
+                added_existing_or_present = add_node(next_id, direction, next_depth)
+                if next_id in nodes:
+                    remember_edge(link["parent_id"], link["child_id"])
+                if (
+                    added_existing_or_present
+                    and next_id not in seen_sources
+                    and next_depth < depth_limit
+                ):
+                    seen_sources.add(next_id)
+                    queue.append((next_id, next_depth))
+                elif next_depth >= depth_limit:
+                    more = conn.execute(
+                        "SELECT 1 FROM task_links WHERE "
+                        + ("child_id = ?" if direction == "upstream" else "parent_id = ?")
+                        + " LIMIT 1",
+                        (next_id,),
+                    ).fetchone()
+                    if more:
+                        overflow_count += 1
+
+    traverse("upstream")
+    traverse("downstream")
+
+    ordered_nodes = sorted(
+        nodes.values(),
+        key=lambda n: (
+            {"root": 0, "upstream": 1, "downstream": 2}.get(n["relation"], 3),
+            n["depth"],
+            n["id"],
+        ),
+    )
+    return {
+        "root_id": root_id,
+        "depth_limit": depth_limit,
+        "node_limit": node_limit,
+        "truncated": overflow_count > 0,
+        "overflow_count": overflow_count,
+        "nodes": ordered_nodes,
+        "edges": edges,
+    }
+
+
 # ---------------------------------------------------------------------------
 # GET /board
 # ---------------------------------------------------------------------------
@@ -506,6 +671,22 @@ def get_board(
 # ---------------------------------------------------------------------------
 # GET /tasks/:id
 # ---------------------------------------------------------------------------
+
+@router.get("/tasks/{task_id}/dependency-graph")
+def get_task_dependency_graph(
+    task_id: str,
+    depth: int = Query(3, ge=1, le=4),
+    limit: int = Query(25, ge=1, le=50),
+    board: Optional[str] = Query(None),
+):
+    """Return a bounded safe dependency graph centered on one task."""
+    board = _resolve_board(board)
+    conn = _conn(board=board)
+    try:
+        return _bounded_dependency_graph(conn, task_id, depth_limit=depth, node_limit=limit)
+    finally:
+        conn.close()
+
 
 @router.get("/tasks/{task_id}")
 def get_task(task_id: str, board: Optional[str] = Query(None)):

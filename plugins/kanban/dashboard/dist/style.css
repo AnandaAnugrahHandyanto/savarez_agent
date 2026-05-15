@@ -697,7 +697,120 @@
 .hermes-kanban-dependency-empty--standalone {
   padding: 0.35rem 0.45rem;
   border: 1px dashed color-mix(in srgb, var(--color-border) 75%, transparent);
-  border-radius: var(--radius-md, 0.375rem);
+  border-radius: 0.5rem;
+}
+
+.hermes-kanban-dependency-graph {
+  gap: 0.45rem;
+}
+.hermes-kanban-graph-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  border: 1px solid color-mix(in srgb, var(--color-border) 75%, transparent);
+  border-radius: 0.65rem;
+  padding: 0.55rem;
+  background: color-mix(in srgb, var(--color-card) 92%, var(--color-foreground) 3%);
+}
+.hermes-kanban-graph-note,
+.hermes-kanban-graph-empty,
+.hermes-kanban-graph-loading,
+.hermes-kanban-graph-error,
+.hermes-kanban-graph-limit {
+  font-size: 0.72rem;
+  color: var(--color-muted-foreground);
+}
+.hermes-kanban-graph-error,
+.hermes-kanban-graph-limit {
+  color: var(--color-destructive, #d14a4a);
+}
+.hermes-kanban-graph-layout {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.5rem;
+}
+.hermes-kanban-graph-column {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+.hermes-kanban-graph-column-title {
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--color-muted-foreground);
+}
+.hermes-kanban-graph-nodes {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+.hermes-kanban-graph-node {
+  appearance: none;
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  flex-direction: column;
+  gap: 0.18rem;
+  padding: 0.45rem;
+  border: 1px solid var(--color-border);
+  border-radius: 0.6rem;
+  background: color-mix(in srgb, var(--color-card) 88%, var(--color-foreground) 4%);
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.hermes-kanban-graph-node:hover,
+.hermes-kanban-graph-node:focus-visible {
+  border-color: var(--color-ring);
+}
+.hermes-kanban-graph-node:disabled {
+  cursor: not-allowed;
+  opacity: 0.7;
+}
+.hermes-kanban-graph-node--upstream {
+  border-left: 3px solid var(--color-destructive, #d14a4a);
+}
+.hermes-kanban-graph-node--downstream {
+  border-left: 3px solid var(--color-ring);
+}
+.hermes-kanban-graph-node--root {
+  border-left: 3px solid var(--color-success, #32a852);
+}
+.hermes-kanban-graph-node--missing {
+  border-style: dashed;
+}
+.hermes-kanban-graph-node--status-done .hermes-kanban-graph-node-id {
+  color: var(--color-success, #32a852);
+}
+.hermes-kanban-graph-node-id {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.68rem;
+  color: var(--color-muted-foreground);
+}
+.hermes-kanban-graph-node-title {
+  font-size: 0.78rem;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.hermes-kanban-graph-node-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  font-size: 0.66rem;
+  color: var(--color-muted-foreground);
+}
+.hermes-kanban-graph-node-meta span {
+  border: 1px solid color-mix(in srgb, var(--color-border) 78%, transparent);
+  border-radius: 999px;
+  padding: 0.05rem 0.32rem;
+  background: color-mix(in srgb, var(--color-foreground) 4%, transparent);
+}
+@media (max-width: 860px) {
+  .hermes-kanban-graph-layout {
+    grid-template-columns: 1fr;
+  }
 }
 
 .hermes-kanban-deps-row {

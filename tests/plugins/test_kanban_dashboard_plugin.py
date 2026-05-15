@@ -237,6 +237,61 @@ def test_task_detail_includes_safe_dependency_summaries(client):
         assert "workspace_path" not in summary
 
 
+def test_task_dependency_graph_endpoint_returns_bounded_safe_dag(client):
+    """Graph payload should traverse beyond immediate drawer links safely."""
+
+    spec = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "Spec gate", "assignee": "specifier"},
+    ).json()["task"]
+    implementation = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "Implementation card", "parents": [spec["id"]], "assignee": "builder"},
+    ).json()["task"]
+    verification = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "Verification pass", "parents": [implementation["id"]]},
+    ).json()["task"]
+    review = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "Review handoff", "parents": [verification["id"]]},
+    ).json()["task"]
+    acceptance = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "Acceptance gate", "parents": [review["id"]]},
+    ).json()["task"]
+
+    r = client.get(
+        f"/api/plugins/kanban/tasks/{implementation['id']}/dependency-graph",
+        params={"depth": 3, "limit": 4},
+    )
+    assert r.status_code == 200, r.text
+    data = r.json()
+
+    assert data["root_id"] == implementation["id"]
+    assert data["depth_limit"] == 3
+    assert data["node_limit"] == 4
+    assert data["truncated"] is True
+    assert data["overflow_count"] >= 1
+
+    nodes = {n["id"]: n for n in data["nodes"]}
+    assert set(nodes) == {spec["id"], implementation["id"], verification["id"], review["id"]}
+    assert acceptance["id"] not in nodes
+    assert nodes[implementation["id"]]["relation"] == "root"
+    assert nodes[implementation["id"]]["role"] == "implementation"
+    assert nodes[spec["id"]]["relation"] == "upstream"
+    assert nodes[spec["id"]]["role"] == "spec"
+    assert nodes[verification["id"]]["relation"] == "downstream"
+    assert nodes[verification["id"]]["role"] == "verification"
+    assert nodes[review["id"]]["role"] == "review"
+    assert all(
+        set(node) <= {"id", "title", "status", "assignee", "relation", "depth", "role", "state_label", "missing"}
+        for node in data["nodes"]
+    )
+    assert {"parent_id": implementation["id"], "child_id": verification["id"]} in data["edges"]
+    assert {"parent_id": verification["id"], "child_id": review["id"]} in data["edges"]
+
+
 def test_task_detail_404_on_unknown(client):
     r = client.get("/api/plugins/kanban/tasks/does-not-exist")
     assert r.status_code == 404
@@ -817,6 +872,37 @@ def test_dashboard_dependency_section_surfaces_navigable_task_summaries():
     assert "hermes-kanban-dependency-status" in css
     assert "hermes-kanban-dependency-state" in css
     assert "api.github.com" not in bundle.lower()
+
+
+def test_dashboard_dependency_graph_panel_exposes_bounded_navigation():
+    """Task drawer should expose a bounded, accessible dependency graph panel."""
+
+    repo_root = Path(__file__).resolve().parents[2]
+    bundle = (
+        repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
+    ).read_text()
+    css = (
+        repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "style.css"
+    ).read_text()
+
+    assert "function DependencyGraphPanel" in bundle
+    assert "buildDependencyGraphModel" in bundle
+    assert "graphNodeStateLabel" in bundle
+    assert "/dependency-graph" in bundle
+    assert "Show dependency graph" in bundle
+    assert "Hide dependency graph" in bundle
+    assert "Loading dependency graph…" in bundle
+    assert "Dependency graph unavailable" in bundle
+    assert "Bounded to 3 hops / 25 nodes" in bundle
+    assert "Graph limit reached" in bundle
+    assert "Open graph task" in bundle
+    assert '"aria-label": `Open graph task ${node.id}`' in bundle
+    assert 'onOpenTask: props.onOpenTask' in bundle
+    assert "hermes-kanban-dependency-graph" in css
+    assert "hermes-kanban-graph-node--upstream" in css
+    assert "hermes-kanban-graph-node--downstream" in css
+    assert "hermes-kanban-graph-node--root" in css
+    assert "hermes-kanban-graph-node--missing" in css
 
 
 def test_bulk_archive(client):

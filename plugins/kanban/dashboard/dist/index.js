@@ -2579,6 +2579,11 @@
         onRemoveChild: props.onRemoveChild,
         onOpenTask: props.onOpenTask,
       }),
+      h(DependencyGraphPanel, {
+        task: t,
+        boardSlug: props.boardSlug,
+        onOpenTask: props.onOpenTask,
+      }),
       t.result ? h("div", { className: "hermes-kanban-section" },
         h("div", { className: "hermes-kanban-section-head" }, tx(i18n, "result", "Result")),
         h(MarkdownBlock, { source: t.result, enabled: props.renderMarkdown }),
@@ -3014,6 +3019,125 @@
               );
             }),
           ),
+    );
+  }
+
+  function buildDependencyGraphModel(graph) {
+    const nodes = (graph && graph.nodes) || [];
+    return {
+      root: nodes.filter(function (node) { return node.relation === "root"; }),
+      upstream: nodes.filter(function (node) { return node.relation === "upstream"; }),
+      downstream: nodes.filter(function (node) { return node.relation === "downstream"; }),
+      edges: (graph && graph.edges) || [],
+      truncated: !!(graph && graph.truncated),
+      overflowCount: graph && graph.overflow_count ? graph.overflow_count : 0,
+    };
+  }
+
+  function graphNodeStateLabel(node) {
+    if (!node || node.missing) return "Referenced task unavailable";
+    return node.state_label || node.status || "Linked task";
+  }
+
+  function graphRoleLabel(role) {
+    return role === "spec" ? "Spec"
+      : role === "verification" ? "Verification"
+        : role === "review" ? "Review"
+          : role === "acceptance" ? "Acceptance gate"
+            : role === "implementation" ? "Implementation"
+              : "Task";
+  }
+
+  function DependencyGraphPanel(props) {
+    const { t } = useI18n();
+    const [expanded, setExpanded] = useState(false);
+    const [graph, setGraph] = useState(null);
+    const [loading, setLoading] = useState(false);
+    const [err, setErr] = useState(null);
+    const task = props.task || {};
+    const graphDepth = 3;
+    const graphLimit = 25;
+
+    const loadGraph = useCallback(function () {
+      if (!task.id) return Promise.resolve();
+      setLoading(true);
+      const qs = new URLSearchParams({ depth: String(graphDepth), limit: String(graphLimit) });
+      return SDK.fetchJSON(withBoard(`${API}/tasks/${encodeURIComponent(task.id)}/dependency-graph?${qs}`, props.boardSlug))
+        .then(function (payload) { setGraph(payload); setErr(null); })
+        .catch(function (e) { setErr(String(e.message || e)); })
+        .finally(function () { setLoading(false); });
+    }, [task.id, props.boardSlug]);
+
+    useEffect(function () {
+      if (expanded) loadGraph();
+    }, [expanded, loadGraph]);
+
+    const model = buildDependencyGraphModel(graph);
+    const hasGraph = model.root.length + model.upstream.length + model.downstream.length > 1;
+    const renderNode = function (node) {
+      const state = graphNodeStateLabel(node);
+      const disabled = !!node.missing || !props.onOpenTask;
+      return h("button", {
+        key: node.id,
+        type: "button",
+        className: cn(
+          "hermes-kanban-graph-node",
+          `hermes-kanban-graph-node--${node.relation || "linked"}`,
+          node.missing && "hermes-kanban-graph-node--missing",
+          node.status && `hermes-kanban-graph-node--status-${node.status}`,
+        ),
+        disabled: disabled,
+        title: node.missing ? "Referenced task unavailable" : `Open graph task ${node.id}`,
+        "aria-label": `Open graph task ${node.id}`,
+        onClick: function () { if (!disabled) props.onOpenTask(node.id); },
+      },
+        h("span", { className: "hermes-kanban-graph-node-id" }, node.id),
+        h("span", { className: "hermes-kanban-graph-node-title" }, node.title || "Referenced task unavailable"),
+        h("span", { className: "hermes-kanban-graph-node-meta" },
+          h("span", null, node.status || "missing"),
+          h("span", null, graphRoleLabel(node.role)),
+          h("span", null, state),
+        ),
+      );
+    };
+    const renderColumn = function (label, nodes, emptyText) {
+      return h("div", { className: "hermes-kanban-graph-column" },
+        h("div", { className: "hermes-kanban-graph-column-title" }, `${label} (${nodes.length})`),
+        nodes.length === 0
+          ? h("div", { className: "hermes-kanban-graph-empty" }, emptyText)
+          : h("div", { className: "hermes-kanban-graph-nodes", role: "list" },
+              nodes.map(function (node) {
+                return h("div", { key: node.id, role: "listitem" }, renderNode(node));
+              }),
+            ),
+      );
+    };
+
+    return h("div", { className: "hermes-kanban-section hermes-kanban-dependency-graph" },
+      h("div", { className: "hermes-kanban-section-head-row" },
+        h("div", { className: "hermes-kanban-section-head" }, tx(t, "dependencyGraph", "Dependency graph")),
+        h(Button, {
+          size: "sm",
+          onClick: function () { setExpanded(function (v) { return !v; }); },
+          "aria-expanded": expanded,
+          "aria-label": expanded ? "Hide dependency graph" : "Show dependency graph",
+        }, expanded ? "Hide dependency graph" : "Show dependency graph"),
+      ),
+      expanded ? h("div", { className: "hermes-kanban-graph-panel", "aria-label": "Task dependency graph" },
+        h("div", { className: "hermes-kanban-graph-note" }, "Bounded to 3 hops / 25 nodes"),
+        loading ? h("div", { className: "hermes-kanban-graph-loading" }, "Loading dependency graph…") : null,
+        err ? h("div", { className: "hermes-kanban-graph-error" }, "Dependency graph unavailable: ", err) : null,
+        !loading && !err && graph && !hasGraph
+          ? h("div", { className: "hermes-kanban-graph-empty" }, "No dependency graph links found for this task.")
+          : null,
+        !loading && !err && graph ? h("div", { className: "hermes-kanban-graph-layout" },
+          renderColumn("Upstream blockers", model.upstream, "No upstream blockers."),
+          renderColumn("Selected task", model.root, "Selected task unavailable."),
+          renderColumn("Downstream work", model.downstream, "No downstream work."),
+        ) : null,
+        model.truncated ? h("div", { className: "hermes-kanban-graph-limit" },
+          `Graph limit reached; ${model.overflowCount} linked task${model.overflowCount === 1 ? "" : "s"} hidden.`) : null,
+      ) : null,
     );
   }
 
