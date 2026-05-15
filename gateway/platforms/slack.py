@@ -182,11 +182,46 @@ def _extract_text_from_slack_blocks(blocks: list) -> str:
                 if rendered:
                     _append_line(rendered, quote_depth=quote_depth, bullet=bullet)
 
+    def _render_text_object(value: Any) -> str:
+        if isinstance(value, str):
+            return value
+        if isinstance(value, dict):
+            return str(value.get("text") or "")
+        return ""
+
     for block in blocks:
-        if (block or {}).get("type") == "rich_text":
+        block = block or {}
+        block_type = block.get("type")
+        if block_type == "rich_text":
             _walk_elements(block.get("elements", []))
+        elif block_type in {"section", "header"}:
+            _append_line(_render_text_object(block.get("text")))
+            for field in block.get("fields") or []:
+                _append_line(_render_text_object(field))
+        elif block_type == "context":
+            rendered = " ".join(
+                part for part in (
+                    _render_text_object(element)
+                    for element in (block.get("elements") or [])
+                ) if part.strip()
+            )
+            _append_line(rendered)
 
     return "\n".join(parts)
+
+
+def _render_slack_message_text(message: dict) -> str:
+    """Render Slack event/message text with Block Kit fallbacks.
+
+    Slack review cards often put the useful body in ``blocks`` while the plain
+    ``text`` fallback only contains a short headline. Thread recovery must see
+    the same readable card content as the human reviewer.
+    """
+    text = (message.get("text") or "").strip()
+    blocks_text = _extract_text_from_slack_blocks(message.get("blocks") or []).strip()
+    if blocks_text and blocks_text not in text:
+        text = (text + "\n" + blocks_text).strip()
+    return text
 
 
 def _serialize_slack_blocks_for_agent(blocks: list, max_chars: int = 6000) -> str:
@@ -2803,7 +2838,7 @@ class SlackAdapter(BasePlatformAdapter):
                 ):
                     continue
 
-                msg_text = msg.get("text", "").strip()
+                msg_text = _render_slack_message_text(msg)
                 if not msg_text:
                     continue
 
@@ -2878,7 +2913,7 @@ class SlackAdapter(BasePlatformAdapter):
             if parent.get("ts", "") != thread_ts:
                 return ""
             bot_uid = self._team_bot_user_ids.get(team_id, self._bot_user_id)
-            text = (parent.get("text") or "").strip()
+            text = _render_slack_message_text(parent)
             if bot_uid:
                 text = text.replace(f"<@{bot_uid}>", "").strip()
             return text

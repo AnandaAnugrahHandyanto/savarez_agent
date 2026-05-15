@@ -555,6 +555,66 @@ class TestSlackThreadContext:
         # No additional API call
         assert mock_client.conversations_replies.await_count == 1
 
+    @pytest.mark.asyncio
+    async def test_fetch_thread_context_includes_block_kit_parent_body(self):
+        """Thread recovery must include review-card fields, not only fallback text."""
+        adapter = _make_adapter()
+        mock_client = adapter._team_clients["T1"]
+        mock_client.conversations_replies = AsyncMock(return_value={
+            "messages": [
+                {
+                    "ts": "1000.0",
+                    "bot_id": "B123",
+                    "subtype": "bot_message",
+                    "username": "Hazel Whitaker",
+                    "text": "Cierra Marie commented — Hazel reply ready",
+                    "blocks": [
+                        {"type": "header", "text": {"type": "plain_text", "text": "Hazel reply ready"}},
+                        {
+                            "type": "section",
+                            "fields": [
+                                {"type": "mrkdwn", "text": "*Conversation*\nconv_d06ke26b75iqk37"},
+                                {"type": "mrkdwn", "text": "*Guest*\nCierra Marie"},
+                            ],
+                        },
+                        {"type": "section", "text": {"type": "mrkdwn", "text": "*Guest wrote*\nRaven Battle she would!!"}},
+                    ],
+                },
+                {"ts": "1000.1", "user": "U1", "text": "<@U_BOT>"},
+            ]
+        })
+
+        context = await adapter._fetch_thread_context(
+            channel_id="C1", thread_ts="1000.0", current_ts="1000.1", team_id="T1"
+        )
+
+        assert "Cierra Marie commented" in context
+        assert "conv_d06ke26b75iqk37" in context
+        assert "*Guest wrote*\nRaven Battle she would!!" in context
+
+    @pytest.mark.asyncio
+    async def test_fetch_thread_parent_text_includes_block_kit_body(self):
+        adapter = _make_adapter()
+        mock_client = adapter._team_clients["T1"]
+        mock_client.conversations_replies = AsyncMock(return_value={
+            "messages": [
+                {
+                    "ts": "1000.0",
+                    "text": "Headline only",
+                    "blocks": [
+                        {"type": "section", "text": {"type": "mrkdwn", "text": "*Guest wrote*\nRaven Battle she would!!"}},
+                    ],
+                }
+            ]
+        })
+
+        parent = await adapter._fetch_thread_parent_text(
+            channel_id="C1", thread_ts="1000.0", team_id="T1"
+        )
+
+        assert "Headline only" in parent
+        assert "*Guest wrote*\nRaven Battle she would!!" in parent
+
 
 # ===========================================================================
 # _has_active_session_for_thread — session key fix (#5833)
