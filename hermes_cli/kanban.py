@@ -683,14 +683,20 @@ def kanban_command(args: argparse.Namespace) -> int:
         os.environ["HERMES_KANBAN_BOARD"] = normed
         restore_board_env = True
 
-    # Boards management doesn't touch the DB at all — dispatch early so
-    # fresh installs that haven't initialized any DB can still use
-    # `hermes kanban boards create …`.
+    # Boards management should reflect the persisted global board selection,
+    # not an inherited worker/session pin from the parent environment. A
+    # stale HERMES_KANBAN_BOARD from the caller would otherwise make
+    # `hermes kanban boards list/show` report the wrong current board even
+    # after `boards switch` updated <root>/kanban/current on disk.
     if action == "boards":
+        os.environ.pop("HERMES_KANBAN_BOARD", None)
         try:
             return _dispatch_boards(args)
         finally:
-            _restore_board_env()
+            if prev_board_env is None:
+                os.environ.pop("HERMES_KANBAN_BOARD", None)
+            else:
+                os.environ["HERMES_KANBAN_BOARD"] = prev_board_env
 
     # Auto-initialize the DB before dispatching any subcommand. init_db
     # is idempotent, so running it every invocation is cheap (one
