@@ -44,9 +44,10 @@ Preferred execution shape:
 1. Enqueue/spawn a temporary run under the single `research` profile.
 2. Use `hermes -p research chat -q ...` (or `hermes chat -q ...` when already inside the research profile).
 3. Do not use cron/cronjob for manual Brian/Telegram research unless the user explicitly asks to schedule it.
-4. After spawn, do one quick confirmation that the child actually started. Do not keep polling it to completion from the active Telegram chat.
-5. Once the child is confirmed running, stop and return a short status. The parent chat should not continue doing terminal/process/session inspection loops.
-6. The spawned session gathers sources, synthesizes, self-critiques, publishes, verifies the public page, and returns only the public URL.
+4. After spawn, do at most one quick confirmation that the child actually started.
+5. Never wait for the child to finish from the parent Telegram/chat session. Do not call long `process wait`, repeated polling loops, log tailing, or session-inspection loops from the active chat.
+6. Once the child is confirmed running, stop immediately and return a short status. The child owns the rest of the work.
+7. The spawned session gathers sources, synthesizes, self-critiques, publishes, verifies the public page, and returns only the public URL.
 
 See `references/research-background-profile.md` for the preferred prompt contract.
 

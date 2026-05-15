@@ -123,6 +123,42 @@ def _tool_progress_label(tool_name: str | None, *, with_emoji: bool = True) -> s
     return f"{emoji} {label}" if with_emoji else label
 
 
+def _manual_research_skill_for_prompt(text: str) -> str:
+    lower = (text or "").strip().lower()
+    opportunity_signals = (
+        " better than ",
+        " competition",
+        " compare ",
+        " versus ",
+        " vs ",
+        " passive income",
+        " side hustle",
+        " startup",
+        " saas",
+        " business",
+        " revenue",
+        " comp for ",
+        " compensation",
+        " salary",
+    )
+    if any(sig in lower for sig in opportunity_signals):
+        return "opportunity-research-publishing"
+    return "evidence-report-publishing"
+
+
+def _build_manual_research_child_prompt(text: str, rigor: str) -> str:
+    clean = (text or "").strip()
+    tier = (rigor or "standard").strip().lower() or "standard"
+    return (
+        f"{clean}\n\n"
+        f"Rigor tier: {tier}.\n"
+        "Publish the result as an existing-format research.briankeefe.dev research page using the established modern renderer/pipeline. "
+        "Verify the public URL returns HTTP 200. Final response must contain ONLY the public https://research.briankeefe.dev/... URL. "
+        "If public publishing fails, final response must be exactly: PUBLISH_FAILED: <brief reason>. "
+        "Do not paste the report into chat. Do not return file:// or container-local paths."
+    )
+
+
 def _telegramize_command_mentions(text: str, platform: Any) -> str:
     """Rewrite slash-command mentions to Telegram-valid command names.
 
@@ -5931,16 +5967,45 @@ class GatewayRunner:
             if _pending_research:
                 if _rigor:
                     self._pending_research_rigor.pop(_quick_key, None)
-                    event.text = (
-                        f"{_pending_research}\n\n"
-                        f"Rigor tier: {_rigor}. For Brian/Telegram, do not ask for rigor again. "
-                        f"Do not do the research inline; use the background research workflow."
+                    return await self._start_manual_telegram_research(
+                        source,
+                        _quick_key,
+                        _pending_research,
+                        _rigor,
+                        event_message_id=getattr(event, "message_id", None),
                     )
                 else:
                     return "Choose rigor first: Brief, Standard, or Deep."
             elif _looks_like_manual_research_request(event.text or "") and not _rigor:
                 self._pending_research_rigor[_quick_key] = (event.text or "").strip()
+                _adapter = self.adapters.get(source.platform)
+                if _adapter and hasattr(_adapter, "send_research_rigor"):
+                    try:
+                        import uuid as _uuid
+                        _rigor_id = _uuid.uuid4().hex[:10]
+                        _send_result = await _adapter.send_research_rigor(
+                            chat_id=source.chat_id,
+                            question="Research rigor?",
+                            rigor_id=_rigor_id,
+                            session_key=_quick_key,
+                            metadata=self._thread_metadata_for_source(
+                                source,
+                                getattr(event, "message_id", None),
+                            ),
+                        )
+                        if getattr(_send_result, "success", False):
+                            return ""
+                    except Exception as _rigor_exc:
+                        logger.warning("Telegram research rigor prompt failed: %s", _rigor_exc)
                 return "Choose rigor: Brief, Standard, or Deep."
+            elif _looks_like_manual_research_request(event.text or "") and _rigor:
+                return await self._start_manual_telegram_research(
+                    source,
+                    _quick_key,
+                    (event.text or "").strip(),
+                    _rigor,
+                    event_message_id=getattr(event, "message_id", None),
+                )
 
         # Intercept messages that are responses to a pending clarify
         # request that is awaiting free-form text (either an open-ended
@@ -13478,6 +13543,63 @@ class GatewayRunner:
             await adapter.handle_message(synth_event)
         except Exception as e:
             logger.error("Watch notification injection error: %s", e)
+
+    async def _start_manual_telegram_research(
+        self,
+        source: "SessionSource",
+        session_key: str,
+        prompt_text: str,
+        rigor: str,
+        *,
+        event_message_id: Optional[str] = None,
+    ) -> str:
+        """Spawn a manual Telegram research child and return immediately.
+
+        This bypasses the main agent loop after rigor selection so the parent
+        chat never sits in long process-wait/poll loops.
+        """
+        from tools.process_registry import process_registry
+
+        skill_name = _manual_research_skill_for_prompt(prompt_text)
+        child_prompt = _build_manual_research_child_prompt(prompt_text, rigor)
+        hermes_bin = "/opt/hermes/.venv/bin/hermes"
+        command = (
+            f"{hermes_bin} -p research chat -Q --accept-hooks --source tool "
+            f"-s {shlex.quote(skill_name)} -q {shlex.quote(child_prompt)}"
+        )
+        try:
+            proc_session = process_registry.spawn_local(
+                command=command,
+                cwd="/home/brian",
+                task_id=session_key or "telegram-research",
+                session_key=session_key or "",
+                env_vars=None,
+                use_pty=False,
+            )
+            proc_session.watcher_platform = source.platform.value
+            proc_session.watcher_chat_id = source.chat_id
+            proc_session.watcher_user_id = source.user_id or ""
+            proc_session.watcher_user_name = source.user_name or ""
+            proc_session.watcher_thread_id = source.thread_id or ""
+            proc_session.notify_on_complete = True
+            proc_session.watcher_interval = 5
+            process_registry.pending_watchers.append({
+                "session_id": proc_session.id,
+                "check_interval": 5,
+                "session_key": session_key or "",
+                "platform": source.platform.value,
+                "chat_id": source.chat_id,
+                "user_id": source.user_id or "",
+                "user_name": source.user_name or "",
+                "thread_id": source.thread_id or "",
+                "notify_on_complete": True,
+            })
+        except Exception as exc:
+            logger.error("Manual Telegram research spawn failed: %s", exc, exc_info=True)
+            return f"PUBLISH_FAILED: could not start research worker ({exc})"
+
+        tier_label = (rigor or "standard").strip().capitalize()
+        return f"Research started ({tier_label})."
 
     async def _run_process_watcher(self, watcher: dict) -> None:
         """

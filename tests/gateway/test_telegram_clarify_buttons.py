@@ -143,6 +143,39 @@ class TestTelegramSendClarify:
         assert [b.text for b in rows[0]] == ["Brief", "Standard", "Deep"]
 
     @pytest.mark.asyncio
+    async def test_send_research_rigor_renders_single_row(self, monkeypatch):
+        adapter = _make_adapter()
+        mock_msg = MagicMock()
+        mock_msg.message_id = 105
+        adapter._bot.send_message = AsyncMock(return_value=mock_msg)
+
+        captured = {}
+
+        class _Btn:
+            def __init__(self, text, callback_data):
+                self.text = text
+                self.callback_data = callback_data
+
+        class _Markup:
+            def __init__(self, rows):
+                captured["rows"] = rows
+
+        monkeypatch.setattr("gateway.platforms.telegram.InlineKeyboardButton", _Btn)
+        monkeypatch.setattr("gateway.platforms.telegram.InlineKeyboardMarkup", _Markup)
+
+        result = await adapter.send_research_rigor(
+            chat_id="12345",
+            question="Research rigor?",
+            rigor_id="rig1",
+            session_key="sk-rigor2",
+        )
+
+        assert result.success is True
+        rows = captured["rows"]
+        assert len(rows) == 1
+        assert [b.text for b in rows[0]] == ["Brief", "Standard", "Deep"]
+
+    @pytest.mark.asyncio
     async def test_open_ended_no_keyboard(self):
         adapter = _make_adapter()
         mock_msg = MagicMock()

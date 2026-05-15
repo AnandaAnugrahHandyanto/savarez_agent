@@ -53,7 +53,10 @@ Preferred execution shape:
 2. Use the exact Hermes CLI form `hermes -p research chat -q ...` (or `hermes chat -q ...` when already inside the research profile).
 3. Do not use bare `hermes -q ...` without the `chat` subcommand.
 4. Do not use cron/cronjob for manual Brian/Telegram research unless the user explicitly asks to schedule it.
-5. The spawned session does the research, publishes the page, verifies it, and returns only the public URL or `PUBLISH_FAILED: <brief reason>`.
+5. After spawn, do at most one quick confirmation that the child actually started.
+6. Never wait for the child to finish from the parent Telegram/chat session. Do not use long `process wait`, repeated polling, log tailing, or session-inspection loops.
+7. Once the child is confirmed running, stop immediately and return a short status. The child owns the rest of the work.
+8. The spawned session does the research, publishes the page, verifies it, and returns only the public URL or `PUBLISH_FAILED: <brief reason>`.
 
 ## Research method
 

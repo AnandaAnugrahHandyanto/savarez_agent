@@ -437,6 +437,8 @@ class TelegramAdapter(BasePlatformAdapter):
         # Clarify button state: clarify_id → session_key (for the clarify tool's
         # multiple-choice prompts; see GatewayRunner clarify_callback wiring).
         self._clarify_state: Dict[str, str] = {}
+        # Manual research rigor state: rigor_id → session_key.
+        self._research_rigor_state: Dict[str, str] = {}
         # Notification mode for message sends.
         # "important" — only final responses, approvals, and slash confirmations
         #               trigger notifications; tool progress, streaming, status
@@ -2307,6 +2309,49 @@ class TelegramAdapter(BasePlatformAdapter):
             logger.warning("[%s] send_clarify failed: %s", self.name, e)
             return SendResult(success=False, error=str(e))
 
+    async def send_research_rigor(
+        self,
+        chat_id: str,
+        question: str,
+        rigor_id: str,
+        session_key: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send the one-row Brief/Standard/Deep rigor picker."""
+        if not self._bot:
+            return SendResult(success=False, error="Not connected")
+
+        try:
+            thread_id = self._metadata_thread_id(metadata)
+            rows = [[
+                InlineKeyboardButton("Brief", callback_data=f"rr:{rigor_id}:brief"),
+                InlineKeyboardButton("Standard", callback_data=f"rr:{rigor_id}:standard"),
+                InlineKeyboardButton("Deep", callback_data=f"rr:{rigor_id}:deep"),
+            ]]
+            kwargs: Dict[str, Any] = {
+                "chat_id": int(chat_id),
+                "text": f"❓ {_html.escape(question)}",
+                "parse_mode": ParseMode.HTML,
+                "reply_markup": InlineKeyboardMarkup(rows),
+                **self._link_preview_kwargs(),
+            }
+            reply_to_id = self._reply_to_message_id_for_send(None, metadata)
+            kwargs["reply_to_message_id"] = reply_to_id
+            kwargs.update(
+                self._thread_kwargs_for_send(
+                    chat_id,
+                    thread_id,
+                    metadata,
+                    reply_to_message_id=reply_to_id,
+                )
+            )
+            msg = await self._send_message_with_thread_fallback(**kwargs)
+            self._research_rigor_state[rigor_id] = session_key
+            return SendResult(success=True, message_id=str(msg.message_id))
+        except Exception as e:
+            logger.warning("[%s] send_research_rigor failed: %s", self.name, e)
+            return SendResult(success=False, error=str(e))
+
     async def send_model_picker(
         self,
         chat_id: str,
@@ -2638,6 +2683,91 @@ class TelegramAdapter(BasePlatformAdapter):
             chat_id = str(query.message.chat_id) if query.message else None
             if chat_id:
                 await self._handle_model_picker_callback(query, data, chat_id)
+            return
+
+        # --- Manual research rigor callbacks (rr:<id>:<tier>) ---
+        if data.startswith("rr:"):
+            parts = data.split(":", 2)
+            if len(parts) == 3:
+                rigor_id = parts[1]
+                rigor_choice = parts[2]
+
+                caller_id = str(getattr(query.from_user, "id", ""))
+                if not self._is_callback_user_authorized(
+                    caller_id,
+                    chat_id=query_chat_id,
+                    chat_type=str(query_chat_type) if query_chat_type is not None else None,
+                    thread_id=str(query_thread_id) if query_thread_id is not None else None,
+                    user_name=query_user_name,
+                ):
+                    await query.answer(text="⛔ You are not authorized to answer this prompt.")
+                    return
+
+                session_key = self._research_rigor_state.pop(rigor_id, None)
+                if not session_key:
+                    await query.answer(text="This prompt has already been resolved.")
+                    return
+
+                await query.answer(text=f"✓ {rigor_choice.capitalize()}")
+                try:
+                    await query.edit_message_text(
+                        text=f"❓ {query.message.text or ''}\n\n<b>{_html.escape(getattr(query.from_user, 'first_name', 'User'))}:</b> {_html.escape(rigor_choice.capitalize())}",
+                        parse_mode=ParseMode.HTML,
+                        reply_markup=None,
+                    )
+                except Exception:
+                    pass
+
+                runner = getattr(getattr(self, "_message_handler", None), "__self__", None)
+                if runner is None or not callable(getattr(self, "_message_handler", None)):
+                    return
+
+                try:
+                    from gateway.session import SessionSource
+
+                    normalized_chat_type = str(query_chat_type or "private").strip().lower()
+                    if normalized_chat_type == "private":
+                        normalized_chat_type = "dm"
+                    elif normalized_chat_type == "supergroup":
+                        normalized_chat_type = "forum" if query_thread_id is not None else "group"
+
+                    synth_event = MessageEvent(
+                        text=rigor_choice,
+                        message_type=MessageType.TEXT,
+                        source=SessionSource(
+                            platform=Platform.TELEGRAM,
+                            chat_id=str(query_chat_id),
+                            chat_type=normalized_chat_type,
+                            user_id=caller_id or None,
+                            user_name=query_user_name,
+                            thread_id=str(query_thread_id) if query_thread_id is not None else None,
+                        ),
+                        message_id=str(getattr(query_message, "message_id", "") or ""),
+                    )
+                    result_text = await self._message_handler(synth_event)
+                    if result_text and query.message:
+                        thread_id = getattr(query.message, "message_thread_id", None)
+                        reply_to_id = getattr(query.message, "message_id", None)
+                        send_kwargs: Dict[str, Any] = {
+                            "chat_id": int(query.message.chat_id),
+                            "text": self.format_message(result_text),
+                            "parse_mode": ParseMode.MARKDOWN_V2,
+                            **self._link_preview_kwargs(),
+                        }
+                        if reply_to_id is not None:
+                            send_kwargs["reply_to_message_id"] = int(reply_to_id)
+                        if thread_id is not None:
+                            send_kwargs.update(
+                                self._thread_kwargs_for_send(
+                                    str(query.message.chat_id),
+                                    str(thread_id),
+                                    {"thread_id": str(thread_id)},
+                                    reply_to_message_id=int(reply_to_id) if reply_to_id is not None else None,
+                                )
+                            )
+                        await self._send_message_with_thread_fallback(**send_kwargs)
+                except Exception as exc:
+                    logger.error("[%s] research-rigor callback failed: %s", self.name, exc, exc_info=True)
             return
 
         # --- Exec approval callbacks (ea:choice:id) ---
