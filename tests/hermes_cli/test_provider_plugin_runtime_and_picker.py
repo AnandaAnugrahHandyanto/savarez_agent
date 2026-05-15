@@ -9,7 +9,7 @@ from hermes_cli.auth import (
     resolve_api_key_provider_credentials,
     resolve_provider,
 )
-from hermes_cli.model_switch import list_authenticated_providers
+from hermes_cli.model_switch import list_authenticated_providers, switch_model
 from hermes_cli.runtime_provider import resolve_runtime_provider
 
 
@@ -158,5 +158,46 @@ def test_plugin_provider_picker_reads_dotenv(tmp_path, monkeypatch):
     relaybox = next((p for p in providers if p["slug"] == "relaybox"), None)
     assert relaybox is not None, "Plugin provider with .env-only key should appear in picker"
     assert relaybox["models"] == ["relaybox-agent", "relaybox-fast"]
+
+    _clear_provider_caches()
+
+
+def test_switch_model_accepts_explicit_plugin_provider(tmp_path, monkeypatch):
+    hermes_home = _install_test_provider(tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("RELAYBOX_API_KEY", "relaybox-secret")
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda **kwargs: {
+            "api_key": "relaybox-secret",
+            "base_url": "https://relaybox.example/v1",
+            "api_mode": "chat_completions",
+        },
+    )
+    monkeypatch.setattr(
+        "hermes_cli.models.validate_requested_model",
+        lambda *a, **k: {"accepted": True, "persist": True, "recognized": True, "message": None},
+    )
+    monkeypatch.setattr("hermes_cli.model_switch.get_model_info", lambda *a, **k: None)
+    monkeypatch.setattr("hermes_cli.model_switch.get_model_capabilities", lambda *a, **k: None)
+    _clear_provider_caches()
+
+    result = switch_model(
+        raw_input="relaybox-agent",
+        current_provider="openrouter",
+        current_model="openai/gpt-oss-120b",
+        current_base_url="https://openrouter.ai/api/v1",
+        current_api_key="",
+        explicit_provider="relaybox",
+        user_providers={},
+        custom_providers=[],
+    )
+
+    assert result.success is True
+    assert result.target_provider == "relaybox"
+    assert result.provider_label == "RelayBox"
+    assert result.new_model == "relaybox-agent"
+    assert result.base_url == "https://relaybox.example/v1"
+    assert result.api_key == "relaybox-secret"
 
     _clear_provider_caches()
