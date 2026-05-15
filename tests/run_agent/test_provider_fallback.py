@@ -305,3 +305,148 @@ class TestFallbackChainDedup:
 
         assert ok is False
         mock_resolve.assert_not_called()
+
+
+# ── Fallback-entry extra_body forwarding (#26460) ─────────────────────────
+
+
+class TestFallbackEntryExtraBodyForwarded:
+    """When a fallback entry carries ``extra_body`` (e.g. OpenRouter
+    ``provider.order`` for request-scoped routing), activating that entry
+    must merge it into ``request_overrides`` so the chat_completions
+    transport forwards it on the very next request — without mutating the
+    agent's global ``provider_routing`` knobs (``providers_allowed`` etc.)
+    and without persisting past the next ``_restore_primary_runtime``.
+    See issue #26460."""
+
+    def _activate(self, agent):
+        with (
+            patch(
+                "agent.auxiliary_client.resolve_provider_client",
+                return_value=(_mock_client(), agent._fallback_chain[0]["model"]),
+            ),
+            patch(
+                "hermes_cli.model_normalize.normalize_model_for_provider",
+                side_effect=lambda m, p: m,
+            ),
+        ):
+            return agent._try_activate_fallback()
+
+    def test_fallback_extra_body_forwarded_to_request_overrides(self):
+        fb_extra = {
+            "provider": {
+                "order": ["baidu/fp8", "gmicloud/fp8", "deepinfra/fp4"],
+                "allow_fallbacks": False,
+            }
+        }
+        fbs = [{
+            "provider": "openrouter",
+            "model": "z-ai/glm-5.1",
+            "key_env": "OPENROUTER_API_KEY",
+            "extra_body": fb_extra,
+        }]
+        agent = _make_agent(fallback_model=fbs)
+        assert "extra_body" not in (agent.request_overrides or {})
+
+        assert self._activate(agent) is True
+        eb = agent.request_overrides.get("extra_body")
+        assert isinstance(eb, dict)
+        assert eb["provider"] == fb_extra["provider"]
+
+    def test_global_provider_routing_unchanged(self):
+        """Activating a fallback entry's request-scoped extra_body must not
+        touch the agent-level provider_routing knobs — those still apply to
+        unrelated OpenRouter requests."""
+        fbs = [{
+            "provider": "openrouter",
+            "model": "z-ai/glm-5.1",
+            "extra_body": {"provider": {"order": ["baidu/fp8"], "allow_fallbacks": False}},
+        }]
+        agent = _make_agent(fallback_model=fbs)
+        # Snapshot the global routing knobs before activation.
+        before = (
+            list(agent.providers_allowed or []),
+            list(agent.providers_ignored or []),
+            list(agent.providers_order or []),
+            agent.provider_sort,
+        )
+
+        assert self._activate(agent) is True
+
+        after = (
+            list(agent.providers_allowed or []),
+            list(agent.providers_ignored or []),
+            list(agent.providers_order or []),
+            agent.provider_sort,
+        )
+        assert before == after
+
+    def test_fallback_without_extra_body_does_not_inject_key(self):
+        fbs = [{"provider": "openrouter", "model": "z-ai/glm-5.1"}]
+        agent = _make_agent(fallback_model=fbs)
+        agent.request_overrides = {}
+
+        assert self._activate(agent) is True
+        assert "extra_body" not in agent.request_overrides
+
+    def test_fallback_extra_body_merges_with_existing_extra_body(self):
+        """If primary config already populated request_overrides['extra_body'],
+        the fallback's extra_body should merge on top (fallback wins on
+        key collision) rather than replace the whole dict."""
+        fbs = [{
+            "provider": "openrouter",
+            "model": "z-ai/glm-5.1",
+            "extra_body": {"provider": {"order": ["baidu/fp8"], "allow_fallbacks": False}},
+        }]
+        agent = _make_agent(fallback_model=fbs)
+        agent.request_overrides = {"extra_body": {"some_user_field": 42}}
+
+        assert self._activate(agent) is True
+        eb = agent.request_overrides["extra_body"]
+        # Pre-existing user extra_body field preserved.
+        assert eb["some_user_field"] == 42
+        # Fallback-entry extra_body merged in.
+        assert eb["provider"]["order"] == ["baidu/fp8"]
+
+    def test_invalid_extra_body_type_is_ignored(self):
+        """Defensive: a non-dict extra_body in the chain entry must not
+        crash activation or mutate request_overrides."""
+        fbs = [{
+            "provider": "openrouter",
+            "model": "z-ai/glm-5.1",
+            "extra_body": "not-a-dict",  # invalid shape
+        }]
+        agent = _make_agent(fallback_model=fbs)
+        agent.request_overrides = {}
+
+        assert self._activate(agent) is True
+        assert "extra_body" not in agent.request_overrides
+
+    def test_restore_primary_runtime_clears_fallback_extra_body(self):
+        fbs = [{
+            "provider": "openrouter",
+            "model": "z-ai/glm-5.1",
+            "extra_body": {"provider": {"order": ["baidu/fp8"], "allow_fallbacks": False}},
+        }]
+        agent = _make_agent(fallback_model=fbs)
+        # Snapshot baseline overrides at init (typically empty).
+        baseline_overrides = dict(agent.request_overrides or {})
+
+        assert self._activate(agent) is True
+        assert "extra_body" in agent.request_overrides
+
+        # Simulate the start of the next turn — restore from snapshot.
+        with patch.object(
+            agent, "_create_openai_client", return_value=MagicMock(),
+        ):
+            assert agent._restore_primary_runtime() is True
+
+        assert agent.request_overrides == baseline_overrides
+
+    def test_primary_runtime_snapshot_includes_request_overrides(self):
+        """Fix #26460 requires the snapshot to capture request_overrides at
+        init so restoration after fallback activation doesn't leak the
+        fallback-entry override into the primary route."""
+        agent = _make_agent(fallback_model=None)
+        assert "request_overrides" in agent._primary_runtime
+        assert isinstance(agent._primary_runtime["request_overrides"], dict)

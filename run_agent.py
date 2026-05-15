@@ -2482,6 +2482,14 @@ class AIAgent:
             "client_kwargs": dict(self._client_kwargs),
             "use_prompt_caching": self._use_prompt_caching,
             "use_native_cache_layout": self._use_native_cache_layout,
+            # Snapshot request_overrides so fallback-entry-specific
+            # extra_body forwarded by _try_activate_fallback() is cleared
+            # when the primary route is restored next turn (#26460).
+            "request_overrides": (
+                dict(getattr(self, "request_overrides", None) or {})
+                if isinstance(getattr(self, "request_overrides", None), dict)
+                else {}
+            ),
             # Context engine state that _try_activate_fallback() overwrites.
             # Use getattr for model/base_url/api_key/provider since plugin
             # engines may not have these (they're ContextCompressor-specific).
@@ -2765,6 +2773,11 @@ class AIAgent:
             "client_kwargs": dict(self._client_kwargs),
             "use_prompt_caching": self._use_prompt_caching,
             "use_native_cache_layout": self._use_native_cache_layout,
+            "request_overrides": (
+                dict(getattr(self, "request_overrides", None) or {})
+                if isinstance(getattr(self, "request_overrides", None), dict)
+                else {}
+            ),
             "compressor_model": getattr(_cc, "model", self.model) if _cc else self.model,
             "compressor_base_url": getattr(_cc, "base_url", self.base_url) if _cc else self.base_url,
             "compressor_api_key": getattr(_cc, "api_key", "") if _cc else "",
@@ -8832,6 +8845,33 @@ class AIAgent:
                 self._transport_cache.clear()
             self._fallback_activated = True
 
+            # Forward fallback-entry-specific request metadata (e.g.
+            # OpenRouter ``extra_body.provider`` routing) into
+            # request_overrides so it scopes to the active fallback route
+            # only. The chat_completions transport already merges
+            # ``request_overrides["extra_body"]`` into the outbound
+            # extra_body (see agent/transports/chat_completions.py); this
+            # makes per-fallback routing config-honored without leaking
+            # into unrelated requests. _restore_primary_runtime() resets
+            # request_overrides from the snapshot so the override clears
+            # when the primary route comes back. See #26460.
+            fb_extra_body = fb.get("extra_body")
+            if isinstance(fb_extra_body, dict) and fb_extra_body:
+                _existing_overrides = getattr(self, "request_overrides", None)
+                base_overrides = (
+                    dict(_existing_overrides)
+                    if isinstance(_existing_overrides, dict)
+                    else {}
+                )
+                existing_eb = base_overrides.get("extra_body")
+                merged_eb = (
+                    {**existing_eb, **fb_extra_body}
+                    if isinstance(existing_eb, dict)
+                    else dict(fb_extra_body)
+                )
+                base_overrides["extra_body"] = merged_eb
+                self.request_overrides = base_overrides
+
             # Honor per-provider / per-model request_timeout_seconds for the
             # fallback target (same knob the primary client uses).  None = use
             # SDK default.
@@ -8956,6 +8996,11 @@ class AIAgent:
             self.api_key = rt["api_key"]
             self._client_kwargs = dict(rt["client_kwargs"])
             self._use_prompt_caching = rt["use_prompt_caching"]
+            # Drop any fallback-entry-specific request_overrides that
+            # _try_activate_fallback() merged in (e.g. OpenRouter
+            # extra_body.provider routing). Snapshot may be absent on
+            # older sessions saved before #26460.
+            self.request_overrides = dict(rt.get("request_overrides", {}))
             # Default to native layout when the restored snapshot predates the
             # native-vs-proxy split (older sessions saved before this PR).
             self._use_native_cache_layout = rt.get(
