@@ -46,34 +46,29 @@ Full PR documentation:
 
 ![Hermes Agent 10x Fast performance dashboard](docs/assets/10x-fast/perf-summary-dashboard.svg)
 
-### Image Comparison Map
+### Visual Before/After Gallery
 
-Every performance image in this branch is meant to compare old vs new behavior.
-When a gain is numeric, the measured local Windows result is listed here so the
-visuals do not become vague marketing art.
+Every image below is tagged and tied to a measured old-vs-new comparison. The
+generated PNGs are visual summaries, but the table still pins each one to the
+specific benchmark claim it represents.
 
-| Image | Old | New | Gain |
-| --- | ---: | ---: | ---: |
-| `perf-startup-model-tools.svg` | `import_model_tools` 2.0847s | 0.8419s | 2.48x |
-| `perf-tool-definitions-startup.svg` | `import_and_get_tool_definitions` 1.8782s | 0.8741s | 2.15x |
-| `perf-plugin-discovery.svg` | full platform discovery 0.5571s | deferred fast path 0.1930s | 2.89x |
-| `perf-session-batch-writes.svg` | per-message loop 0.6329s | batched write 0.0240s | 24.21x |
-| `runtime-local-endpoint-fast-path.svg` | dead local endpoint 51.4181s | TCP fast-fail 5.5563s | 9.25x |
-| `runtime-benchmark-suite.svg` | mixed runtime hot paths before this branch | latest measured medians | up to 22.10x |
-| `phase-7-delegate-parallel-guard.svg` | guard 6.9878s / 0.7465ms per batch | 1.6403s / 0.1673ms per batch | 4.26x |
-| `generated/parallel-runtime.png` | sequential independent tool work 0.3036s | parallel batch 0.0590s | 5.14x |
+`#startup` `#tool-schema` `#plugin-discovery` `#sqlite` `#runtime`
+`#delegation` `#parallel-tools` `#mcp` `#research-to-code`
 
-![Phase 1 before and after summary](docs/assets/hermes-agent-10x-fast-before-after.svg)
-
-![Generated 10x Fast visual](docs/assets/10x-fast/hermes-agent-10x-fast-phase-1.png)
-
-![Generated runtime before and after](docs/assets/10x-fast/generated/runtime-before-after.png)
-
-![Generated runtime before and after alternate](docs/assets/10x-fast/generated/runtime-before-after-alt.png)
-
-![Generated research to code visual](docs/assets/10x-fast/generated/research-to-code.png)
-
-![Generated parallel runtime visual](docs/assets/10x-fast/generated/parallel-runtime.png)
+| Visual | Tags | Old | New | Gain |
+| --- | --- | ---: | ---: | ---: |
+| <img src="docs/assets/10x-fast/perf-startup-model-tools.svg" width="320" alt="model_tools startup old 2.0847s new 0.8419s gain 2.48x"> | `#startup` `#model-tools` | 2.0847s | 0.8419s | **2.48x** |
+| <img src="docs/assets/10x-fast/perf-tool-definitions-startup.svg" width="320" alt="tool definitions startup old 1.8782s new 0.8741s gain 2.15x"> | `#startup` `#tool-schema` | 1.8782s | 0.8741s | **2.15x** |
+| <img src="docs/assets/10x-fast/perf-plugin-discovery.svg" width="320" alt="plugin discovery old 0.5571s new 0.1930s gain 2.89x"> | `#plugin-discovery` `#startup` | 0.5571s | 0.1930s | **2.89x** |
+| <img src="docs/assets/10x-fast/perf-session-batch-writes.svg" width="320" alt="SQLite session writes old 0.6329s new 0.0240s gain 24.21x"> | `#sqlite` `#session-db` | 0.6329s | 0.0240s | **24.21x** |
+| <img src="docs/assets/10x-fast/runtime-local-endpoint-fast-path.svg" width="320" alt="dead local endpoint old 51.4181s new 5.5563s gain 9.25x"> | `#runtime` `#local-endpoint` | 51.4181s | 5.5563s | **9.25x** |
+| <img src="docs/assets/10x-fast/phase-7-delegate-parallel-guard.svg" width="320" alt="parallel guard old 6.9878s new 1.6403s gain 4.26x"> | `#delegation` `#parallel-tools` | 6.9878s | 1.6403s | **4.26x** |
+| <img src="docs/assets/10x-fast/runtime-benchmark-suite.svg" width="320" alt="runtime benchmark suite showing gains up to 22.10x"> | `#runtime` `#benchmark-suite` | mixed hot paths | latest medians | **up to 22.10x** |
+| <img src="docs/assets/10x-fast/generated/parallel-runtime.png" width="320" alt="parallel runtime generated comparison old 0.3036s new 0.0590s gain 5.14x"> | `#parallel-tools` `#generated` | 0.3036s | 0.0590s | **5.14x** |
+| <img src="docs/assets/10x-fast/generated/runtime-before-after.png" width="320" alt="runtime before after generated comparison old 51.4181s new 5.5563s gain 9.25x"> | `#runtime` `#generated` | 51.4181s | 5.5563s | **9.25x** |
+| <img src="docs/assets/10x-fast/generated/runtime-before-after-alt.png" width="320" alt="runtime before after alternate generated comparison old 51.4181s new 5.5563s gain 9.25x"> | `#runtime` `#generated` | 51.4181s | 5.5563s | **9.25x** |
+| <img src="docs/assets/10x-fast/generated/research-to-code.png" width="320" alt="research to code visual mapping cache batch route and fast fail ideas to measured gains"> | `#research-to-code` `#systems` | repeated probes/work | cache, batch, route, fast-fail | **up to 24.21x** |
+| <img src="docs/assets/10x-fast/hermes-agent-10x-fast-phase-1.png" width="320" alt="generated 10x fast overview visual with measured gains up to 24.21x"> | `#overview` `#generated` | baseline hot paths | optimized hot paths | **up to 24.21x** |
 
 ### Startup And Tool Schema
 
