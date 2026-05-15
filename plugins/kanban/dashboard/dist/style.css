@@ -8,6 +8,13 @@
 .hermes-kanban {
   width: 100%;
 }
+.hermes-kanban,
+.hermes-kanban-drawer {
+  /* The dashboard shell uses uppercase as part of its visual language.
+   * Kanban displays case-sensitive task IDs, profile IDs, paths, and user
+   * content, so reset inherited casing at the plugin boundary. */
+  text-transform: none;
+}
 
 /* ---- Code/pre reset (theme-immune default) --------------------------- *
  *
@@ -457,8 +464,7 @@
 .hermes-kanban-section-head {
   font-size: 0.72rem;
   font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.07em;
+  letter-spacing: 0.03em;
   color: var(--color-muted-foreground);
 }
 
@@ -603,8 +609,7 @@
 }
 .hermes-kanban-deps-label {
   font-size: 0.68rem;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.03em;
   color: var(--color-muted-foreground);
   min-width: 4rem;
 }
@@ -683,8 +688,7 @@
   border: 0;
   color: var(--color-muted-foreground);
   font-size: 0.7rem;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
+  letter-spacing: 0.02em;
   cursor: pointer;
   padding: 0;
 }
@@ -861,8 +865,7 @@
 .hermes-kanban-run-outcome {
   font-family: var(--font-mono, ui-monospace, monospace);
   font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
+  letter-spacing: 0.02em;
   color: var(--color-foreground);
 }
 .hermes-kanban-run-profile {
@@ -921,8 +924,7 @@
 .hermes-kanban-run-meta-label {
   font-size: 0.65rem;
   font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
+  letter-spacing: 0.03em;
   color: var(--color-muted-foreground);
   padding-bottom: 0.15rem;
 }

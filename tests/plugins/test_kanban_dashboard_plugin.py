@@ -164,6 +164,32 @@ def test_dashboard_client_side_filtering_includes_tenant_filter():
     assert "[boardData, tenantFilter, assigneeFilter, search]" in js
 
 
+def _css_block(css: str, selector: str) -> str:
+    start = css.index(selector)
+    open_brace = css.index("{", start)
+    close_brace = css.index("}", open_brace)
+    return css[open_brace:close_brace]
+
+
+def test_dashboard_kanban_preserves_user_entered_case():
+    """Kanban must opt out of dashboard-wide uppercase styling."""
+
+    repo_root = Path(__file__).resolve().parents[2]
+    css = (repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "style.css").read_text()
+
+    assert ".hermes-kanban,\n.hermes-kanban-drawer" in css
+    assert "text-transform: none;" in _css_block(css, ".hermes-kanban,")
+
+    for selector in (
+        ".hermes-kanban-section-head",
+        ".hermes-kanban-deps-label",
+        ".hermes-kanban-edit-link",
+        ".hermes-kanban-run-outcome",
+        ".hermes-kanban-run-meta-label",
+    ):
+        assert "text-transform: uppercase" not in _css_block(css, selector)
+
+
 # ---------------------------------------------------------------------------
 # GET /tasks/:id returns body + comments + events + links
 # ---------------------------------------------------------------------------
