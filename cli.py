@@ -2061,6 +2061,13 @@ class ChatConsole:
     that expects a console.print() interface.
     """
 
+    # OSC-8 terminal hyperlink escape sequences.  Rich emits these for
+    # ``[link=URL]text[/link]`` markup.  prompt_toolkit's ANSI() renderer
+    # does not understand OSC-8 — it strips the ``\x1b]`` / ``\x1b\\``
+    # delimiters but leaves the URL params visible as garbage text.
+    # Strip them here so hyperlinks degrade gracefully to plain text.
+    _OSC_8_RE = re.compile(r'\x1b\]8;[^\x07\x1b]*?(?:\x07|\x1b\\)')
+
     def __init__(self):
         from io import StringIO
         self._buffer = StringIO()
@@ -2078,6 +2085,8 @@ class ChatConsole:
         self._inner.width = shutil.get_terminal_size((80, 24)).columns
         self._inner.print(*args, **kwargs)
         output = self._buffer.getvalue()
+        # Strip OSC-8 hyperlink sequences before routing through prompt_toolkit
+        output = self._OSC_8_RE.sub('', output)
         for line in output.rstrip("\n").split("\n"):
             _cprint(line)
 
