@@ -201,9 +201,8 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 0
 
-      - uses: ./.github/actions/nix-setup
-        with:
-          cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+      - name: Setup Nix with read-only Cachix
+        uses: ./.github/actions/nix-setup
 
       - name: Apply lockfile hashes
         id: apply
