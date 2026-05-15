@@ -1555,7 +1555,16 @@ def _openai_oauth_auth_path() -> Path:
     override = os.getenv("HERMES_OPENAI_OAUTH_AUTH_PATH", "").strip()
     if override:
         return Path(override).expanduser()
-    return Path.home() / ".local" / "share" / "opencode" / "auth.json"
+    primary = Path.home() / ".local" / "share" / "opencode" / "auth.json"
+    if primary.exists():
+        return primary
+    # Docker deployments commonly run as root inside the container while the
+    # host home is bind-mounted at /home/<user>. Prefer the mounted host path
+    # when it exists so Hermes can reuse OpenCode auth without extra env wiring.
+    fallback = Path("/home/brian/.local/share/opencode/auth.json")
+    if fallback.exists():
+        return fallback
+    return primary
 
 
 def _openai_oauth_access_token_is_expiring(expires_at_ms: Any, skew_seconds: int) -> bool:
