@@ -2148,6 +2148,48 @@ class TestPtyWebSocket:
                 pass
         assert exc.value.code == 4401
 
+    def test_allows_pty_when_dashboard_bound_to_explicit_network_host(self, monkeypatch):
+        """Explicit VPN/LAN binds are intentional network exposure.
+
+        The dashboard CLI requires ``--insecure`` for non-loopback hosts before
+        this server starts. Once it is running there, /api/pty must allow
+        non-loopback websocket clients that have the session token; otherwise
+        Sessions → Resume in Chat closes before accept and the browser can only
+        show the generic "[session ended]" line.
+        """
+        monkeypatch.setattr(
+            self.ws_module.app.state,
+            "bound_host",
+            "192.0.2.10",
+            raising=False,
+        )
+        monkeypatch.setattr(
+            self.ws_module,
+            "_resolve_chat_argv",
+            lambda resume=None, sidecar_url=None: (
+                ["/bin/sh", "-c", "printf network-pty-ok"],
+                None,
+                None,
+            ),
+        )
+
+        with self.client.websocket_connect(self._url()) as conn:
+            buf = b""
+            import time
+
+            deadline = time.monotonic() + 5.0
+            while time.monotonic() < deadline:
+                try:
+                    frame = conn.receive_bytes()
+                except Exception:
+                    break
+                if frame:
+                    buf += frame
+                if b"network-pty-ok" in buf:
+                    break
+
+            assert b"network-pty-ok" in buf
+
     def test_streams_child_stdout_to_client(self, monkeypatch):
         monkeypatch.setattr(
             self.ws_module,

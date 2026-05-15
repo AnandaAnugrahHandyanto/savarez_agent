@@ -3317,12 +3317,17 @@ _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost", "testclient"})
 def _ws_client_is_allowed(ws: "WebSocket") -> bool:
     """Check if the WebSocket client IP is acceptable.
 
-    Allows loopback clients only.
+    Allows loopback clients by default. Non-loopback WebSocket clients are
+    allowed only when the dashboard was explicitly started with the public-bind
+    opt-in (`--insecure`), which is the same gate required to bind the HTTP
+    dashboard off loopback.
     """
     client_host = ws.client.host if ws.client else ""
     if not client_host:
         return True
-    return client_host in _LOOPBACK_HOSTS
+    if client_host in _LOOPBACK_HOSTS:
+        return True
+    return bool(getattr(app.state, "allow_public", False))
 
 
 def _ws_host_origin_is_allowed(ws: "WebSocket") -> bool:
@@ -4684,6 +4689,7 @@ def start_server(
     # PTY child uses to publish events to the dashboard sidebar.
     app.state.bound_host = host
     app.state.bound_port = port
+    app.state.allow_public = allow_public
 
     if open_browser:
         import webbrowser

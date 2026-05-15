@@ -1243,10 +1243,36 @@ def _ensure_tui_node() -> None:
     new binaries in this Python process — regardless of which version manager
     was used (nvm, fnm, proto, brew, or the bundled fallback).
 
-    Idempotent no-op when node+npm are already discoverable. Set
-    ``HERMES_SKIP_NODE_BOOTSTRAP=1`` to disable auto-install.
+    Idempotent no-op when node+npm are already discoverable and Node is new
+    enough for the bundled TUI. Set ``HERMES_SKIP_NODE_BOOTSTRAP=1`` to disable
+    auto-install.
     """
-    if shutil.which("node") and shutil.which("npm"):
+    def _node_is_usable(node_path: str | None) -> bool:
+        if not node_path:
+            return False
+        try:
+            result = subprocess.run(
+                [node_path, "-p", "process.versions.node"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return False
+        if result.returncode != 0:
+            return False
+        try:
+            major, minor, *_ = [int(p) for p in result.stdout.strip().split(".")]
+        except (TypeError, ValueError):
+            return False
+        # Vite 7 (used by the dashboard) requires >=20.19 or >=22.12, and the
+        # built TUI bundle uses modern Node ESM features that crash on Node 18
+        # with ``ERR_INVALID_ARG_TYPE: paths[0]``. Treat old system Node as
+        # missing so node-bootstrap can put the managed Node on PATH.
+        return (major == 20 and minor >= 19) or major >= 22
+
+    if _node_is_usable(shutil.which("node")) and shutil.which("npm"):
         return
     if os.environ.get("HERMES_SKIP_NODE_BOOTSTRAP"):
         return
