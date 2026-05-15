@@ -2971,35 +2971,36 @@ class HermesCLI:
     def _recover_after_resize(self, app, original_on_resize) -> None:
         """Recover a resized classic CLI without desynchronizing cursor state.
 
-        Unlike _force_full_redraw, we do NOT clear the physical screen or
-        scrollback here.  The startup banner and tool summary are printed
-        before prompt_toolkit owns the live chrome, so they live in normal
-        terminal scrollback.  Erasing the screen on SIGWINCH removes that
-        startup UI and ``_replay_output_history`` cannot reconstruct it
-        (the banner was never added to ``_OUTPUT_HISTORY``).
+        Column shrink is especially hostile in non-fullscreen
+        prompt_toolkit mode: the terminal emulator reflows already-printed
+        full-width boxes/rules before prompt_toolkit gets a chance to draw
+        the new prompt layout.  If we only reset prompt_toolkit's renderer,
+        those old-width rows remain visible and the next live redraw can look
+        like duplicated input/status/output boxes.
 
-        Instead we just reset prompt_toolkit's renderer cache so the next
-        incremental redraw starts from a clean slate, then let
-        ``original_on_resize`` recalculate layout for the new size.
+        Clear the visible screen and scrollback, reset prompt_toolkit's
+        cached screen/cursor state, replay Hermes-owned recent output
+        history, then let prompt_toolkit recalculate/redraw the live prompt
+        for the new size.  Clearing scrollback is intentional here: without
+        ESC[3J, every resize replay appends another copy of the previous
+        transcript to the terminal's real scrollback, making the visible
+        history grow longer on each resize.  Resume panels are stored as
+        width-aware history entries, so ``hermes -c`` can re-render them at
+        the current width instead of keeping the stale startup width.
 
         We also flag ``_status_bar_suppressed_after_resize`` so the dynamic
         status bar and input separator rules stay hidden until the next user
-        input.  On column shrink the terminal reflows already-rendered status
-        bar rows into scrollback before prompt_toolkit can erase them; drawing
-        a fresh full-width bar immediately makes the old and new versions
-        look duplicated (#19280, #22976).  Clearing the suppression on the
-        next prompt restores the bar cleanly.
+        input.  Clearing the suppression on the next prompt restores the bar
+        cleanly.
         """
         self._status_bar_suppressed_after_resize = True
-        try:
-            app.renderer.reset(leave_alternate_screen=False)
-        except Exception:
-            pass
+        self._clear_prompt_toolkit_screen(app, rebuild_scrollback=True)
+        _replay_output_history()
+        original_on_resize()
         try:
             app.invalidate()
         except Exception:
             pass
-        original_on_resize()
 
     def _schedule_resize_recovery(self, app, original_on_resize, delay: float = 0.12) -> None:
         """Debounce resize redraws so footer chrome is not stamped into scrollback."""

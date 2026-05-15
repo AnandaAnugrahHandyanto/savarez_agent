@@ -71,38 +71,50 @@ class TestForceFullRedraw:
             "invalidate",
         ]
 
-    def test_resize_preserves_scrollback_and_resets_renderer(self, bare_cli, monkeypatch):
-        """Resize recovery must NOT erase screen or scrollback.
+    def test_resize_clears_visible_screen_replays_and_resets_renderer(self, bare_cli, monkeypatch):
+        """Resize recovery clears the visible screen and replays history.
 
-        The startup banner lives in normal terminal scrollback (printed
-        before prompt_toolkit owns the chrome).  Clearing scrollback on
-        SIGWINCH removes it and ``_replay_output_history`` cannot
-        reconstruct it.  The fix is to only reset the renderer cache and
-        let ``original_on_resize`` recalculate layout.
+        On column shrink, terminal emulators reflow already-rendered
+        full-width boxes/rules before prompt_toolkit can repaint.  Merely
+        resetting the renderer leaves those stale rows visible and the next
+        prompt redraw can look duplicated.  The fix is to clear the visible
+        screen, reset prompt_toolkit's cache, replay Hermes-owned history at
+        the current width, then let prompt_toolkit recalculate layout.
 
-        Additionally, ``_status_bar_suppressed_after_resize`` must be set
-        so the input rules and status bar hide until the next user input,
-        preventing duplicated-bar artifacts on column shrink (#19280).
+        We intentionally clear scrollback (ESC[3J) because otherwise every
+        resize replay appends another copy of the previous transcript to the
+        real terminal history.
         """
         app = MagicMock()
+        out = app.renderer.output
         events = []
+        out.reset_attributes.side_effect = lambda: events.append("reset_attrs")
+        out.erase_screen.side_effect = lambda: events.append("erase")
+        out.cursor_goto.side_effect = lambda *_: events.append("home")
+        out.flush.side_effect = lambda: events.append("flush")
         app.renderer.reset.side_effect = lambda **_: events.append("renderer_reset")
         app.invalidate.side_effect = lambda: events.append("invalidate")
         original_on_resize = lambda: events.append("original_resize")
+        monkeypatch.setattr(cli_mod, "_replay_output_history", lambda: events.append("replay"))
 
         # bare_cli skips __init__, so seed the attribute the way __init__ would.
         bare_cli._status_bar_suppressed_after_resize = False
         bare_cli._recover_after_resize(app, original_on_resize)
 
         assert events == [
+            "reset_attrs",
+            "erase",
+            "home",
+            "flush",
             "renderer_reset",
-            "invalidate",
+            "replay",
             "original_resize",
+            "invalidate",
         ]
-        # Must NOT clear the screen or scrollback — those destroy the banner.
-        app.renderer.output.erase_screen.assert_not_called()
-        app.renderer.output.write_raw.assert_not_called()
-        app.renderer.output.cursor_goto.assert_not_called()
+        out.erase_screen.assert_called_once()
+        out.cursor_goto.assert_called_once_with(0, 0)
+        out.write_raw.assert_called_once_with("\x1b[3J")
+        app.renderer.reset.assert_called_once_with(leave_alternate_screen=False)
         # Status bar / input rules must be suppressed until the next prompt.
         assert bare_cli._status_bar_suppressed_after_resize is True
 
