@@ -1304,6 +1304,8 @@ class AIAgent:
         else:
             self.api_mode = "chat_completions"
 
+        self._resolved_provider = self.provider
+
         # Eagerly warm the transport cache so import errors surface at init,
         # not mid-conversation.  Also validates the api_mode is registered.
         try:
@@ -1745,6 +1747,7 @@ class AIAgent:
                             )
                             if _fb_client is not None:
                                 self.provider = _fb["provider"]
+                                self._resolved_provider = self.provider
                                 self.model = _fb_model or _fb["model"]
                                 self._fallback_activated = True
                                 client_kwargs = {
@@ -2656,6 +2659,7 @@ class AIAgent:
         # ── Swap core runtime fields ──
         self.model = new_model
         self.provider = new_provider
+        self._resolved_provider = self.provider
         # Use new base_url when provided; only fall back to current when the
         # new provider genuinely has no endpoint (e.g. native SDK providers).
         # Without this guard the old provider's URL (e.g. Ollama's localhost
@@ -8694,6 +8698,27 @@ class AIAgent:
             raise result["error"]
         return result["response"]
 
+    def get_display_model_name(self) -> str:
+        """Return the runtime model label used by status surfaces."""
+        return (
+            getattr(self, "_resolved_model", None)
+            or getattr(self, "_resolved_context_model", None)
+            or getattr(self, "model", None)
+            or "unknown"
+        )
+
+    def get_display_provider_name(self) -> str:
+        """Return the runtime provider label used by status surfaces."""
+        return getattr(self, "_resolved_provider", None) or getattr(self, "provider", None) or ""
+
+    def get_display_context_length(self) -> int:
+        """Return the runtime context window used by status surfaces."""
+        resolved_context_length = getattr(self, "_resolved_context_length", None)
+        if resolved_context_length is not None:
+            return resolved_context_length or 0
+        compressor = getattr(self, "context_compressor", None)
+        return getattr(compressor, "context_length", 0) or 0
+
     # ── Provider fallback ──────────────────────────────────────────────────
 
     def _try_activate_fallback(self, reason: "FailoverReason | None" = None) -> bool:
@@ -8826,6 +8851,7 @@ class AIAgent:
             self._config_context_length = None
             self.model = fb_model
             self.provider = fb_provider
+            self._resolved_provider = self.provider
             self.base_url = fb_base_url
             self.api_mode = fb_api_mode
             if hasattr(self, "_transport_cache"):
@@ -8949,6 +8975,7 @@ class AIAgent:
             # ── Core runtime state ──
             self.model = rt["model"]
             self.provider = rt["provider"]
+            self._resolved_provider = self.provider
             self.base_url = rt["base_url"]           # setter updates _base_url_lower
             self.api_mode = rt["api_mode"]
             if hasattr(self, "_transport_cache"):
@@ -9057,6 +9084,7 @@ class AIAgent:
             self._client_kwargs = dict(rt["client_kwargs"])
             self.model = rt["model"]
             self.provider = rt["provider"]
+            self._resolved_provider = self.provider
             self.base_url = rt["base_url"]
             self.api_mode = rt["api_mode"]
             if hasattr(self, "_transport_cache"):
@@ -13217,6 +13245,36 @@ class AIAgent:
                                 self._safe_print(f"{self.log_prefix}💾 Cached context length: {ctx:,} tokens for {self.model}")
                             self.context_compressor._context_probed = False
                             self.context_compressor._context_probe_persistable = False
+
+                        resolved_model = getattr(response, "model", None)
+                        if resolved_model:
+                            self._resolved_model = resolved_model
+                            self._resolved_context_model = resolved_model
+                            try:
+                                from agent.model_metadata import get_model_context_length
+                                resolved_context_length = get_model_context_length(
+                                    resolved_model,
+                                    base_url=self.base_url,
+                                    api_key=getattr(self, "api_key", ""),
+                                    config_context_length=getattr(self, "_config_context_length", None),
+                                    provider=self.provider,
+                                    custom_providers=getattr(self, "_custom_providers", None),
+                                )
+                            except Exception:
+                                resolved_context_length = None
+
+                            if isinstance(resolved_context_length, int) and resolved_context_length > 0:
+                                self._resolved_context_length = resolved_context_length
+                                cc = getattr(self, "context_compressor", None)
+                                if cc is not None:
+                                    cc.update_model(
+                                        model=resolved_model,
+                                        context_length=resolved_context_length,
+                                        base_url=self.base_url,
+                                        api_key=getattr(self, "api_key", ""),
+                                        provider=self.provider,
+                                        api_mode=self.api_mode,
+                                    )
 
                         self.session_prompt_tokens += prompt_tokens
                         self.session_completion_tokens += completion_tokens
