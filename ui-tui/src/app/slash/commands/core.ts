@@ -3,7 +3,7 @@ import { forceRedraw } from '@hermes/ink'
 import { NO_CONFIRM_DESTRUCTIVE } from '../../../config/env.js'
 import { dailyFortune, randomFortune } from '../../../content/fortunes.js'
 import { HOTKEYS } from '../../../content/hotkeys.js'
-import { SECTION_NAMES, isSectionName, nextDetailsMode, parseDetailsMode } from '../../../domain/details.js'
+import { isSectionName, nextDetailsMode, parseDetailsMode, SECTION_NAMES } from '../../../domain/details.js'
 import type {
   ConfigGetValueResponse,
   ConfigSetResponse,
@@ -608,5 +608,29 @@ export const coreCommands: SlashCommand[] = [
         })
       )
     }
+  },
+
+  {
+    help: 'show your slash command access level',
+    name: 'whoami',
+    run: (_arg, ctx) => {
+      ctx.transcript.sys('admin')
+    }
+  },
+
+  {
+    help: 'show usage insights',
+    name: 'insights',
+    run: (arg, ctx) => {
+      const days = parseInt(arg, 10) || 7
+      ctx.gateway
+        .rpc<ConfigGetValueResponse>('config.get', { key: 'insights.days' })
+        .then(() => {
+          ctx.transcript.sys(`insights: ${days} days`)
+        })
+        .catch(ctx.guardedErr)
+    }
   }
 ]
+
+export const coreCommandsExtended = coreCommands

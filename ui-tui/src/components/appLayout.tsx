@@ -1,6 +1,6 @@
 import { AlternateScreen, Box, NoSelect, ScrollBox, Text } from '@hermes/ink'
 import { useStore } from '@nanostores/react'
-import { Fragment, memo, useMemo, useRef } from 'react'
+import { Fragment, memo, useCallback, useMemo, useRef } from 'react'
 
 import { useGateway } from '../app/gatewayContext.js'
 import type { AppLayoutProps } from '../app/interfaces.js'
@@ -177,6 +177,10 @@ const ComposerPane = memo(function ComposerPane({
   const inputHeight = inputVisualHeight(composer.input, inputColumns)
   const inputMouseRef = useRef<null | TextInputMouseApi>(null)
 
+  const setInputMouseApi = useCallback((api: null | TextInputMouseApi) => {
+    inputMouseRef.current = api
+  }, [])
+
   const captureInputDrag = (e: GutterMouseEvent) => {
     if (e.button !== 0) {
       return
@@ -295,10 +299,10 @@ const ComposerPane = memo(function ComposerPane({
 
               <Box flexGrow={0} flexShrink={0} height={inputHeight} width={inputColumns}>
                 {/* Reserve the transcript scrollbar gutter too so typing never rewraps when the scrollbar column repaints. */}
-                <TextInput
-                  columns={inputColumns}
-                  mouseApiRef={inputMouseRef}
-                  onChange={composer.updateInput}
+	                <TextInput
+	                  columns={inputColumns}
+	                  onChange={composer.updateInput}
+	                  onMouseApiChange={setInputMouseApi}
                   onPaste={composer.handleTextPaste}
                   onSubmit={composer.submit}
                   placeholder={composer.empty ? PLACEHOLDER : ui.busy ? 'Ctrl+C to interrupt…' : ''}

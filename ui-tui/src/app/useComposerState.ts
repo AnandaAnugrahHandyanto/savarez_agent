@@ -135,6 +135,13 @@ export function useComposerState({
     historyDraftRef.current = ''
   }, [historyDraftRef, setQueueEdit, setHistoryIdx])
 
+  const setHistoryDraft = useCallback(
+    (text: string) => {
+      historyDraftRef.current = text
+    },
+    [historyDraftRef]
+  )
+
   const handleResolvedPaste = useCallback(
     async ({
       bracketed,
@@ -307,6 +314,7 @@ export function useComposerState({
       removeQueue: removeQ,
       replaceQueue: replaceQ,
       setCompIdx,
+      setHistoryDraft,
       setHistoryIdx,
       setInput,
       setInputBuf,
@@ -324,6 +332,7 @@ export function useComposerState({
       removeQ,
       replaceQ,
       setCompIdx,
+      setHistoryDraft,
       setHistoryIdx,
       setQueueEdit,
       syncQueue

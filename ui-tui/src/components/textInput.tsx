@@ -1,6 +1,6 @@
 import type { InputEvent, Key } from '@hermes/ink'
 import * as Ink from '@hermes/ink'
-import { type MutableRefObject, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { setInputSelection } from '../app/inputSelectionStore.js'
 import { readClipboardText, writeClipboardText } from '../lib/clipboard.js'
@@ -245,7 +245,7 @@ export function TextInput({
   onPaste,
   onSubmit,
   mask,
-  mouseApiRef,
+  onMouseApiChange,
   voiceRecordKey = DEFAULT_VOICE_RECORD_KEY,
   placeholder = '',
   focus = true
@@ -642,7 +642,7 @@ export function TextInput({
     commit(nextValue, nextCursor)
   }
 
-  const startMouseSelection = (next: number) => {
+  const startMouseSelection = useCallback((next: number) => {
     const c = snapPos(vRef.current, next)
 
     mouseAnchorRef.current = c
@@ -650,9 +650,9 @@ export function TextInput({
     setSel(null)
     setCur(c)
     curRef.current = c
-  }
+  }, [])
 
-  const dragMouseSelection = (next: number) => {
+  const dragMouseSelection = useCallback((next: number) => {
     if (mouseAnchorRef.current === null) {
       return
     }
@@ -663,9 +663,9 @@ export function TextInput({
     setSel(range.start === range.end ? null : range)
     setCur(c)
     curRef.current = c
-  }
+  }, [])
 
-  const endMouseSelection = () => {
+  const endMouseSelection = useCallback(() => {
     mouseAnchorRef.current = null
 
     const range = selRef.current
@@ -682,7 +682,7 @@ export function TextInput({
     if (isMac && normalized) {
       void writeClipboardText(vRef.current.slice(normalized.start, normalized.end))
     }
-  }
+  }, [])
 
   const offsetAt = (e: { localCol?: number; localRow?: number }) =>
     offsetFromPosition(display, e.localRow ?? 0, e.localCol ?? 0, columns)
@@ -695,13 +695,21 @@ export function TextInput({
     return now - last.at < MULTI_CLICK_MS && offset === last.offset
   }
 
-  if (mouseApiRef) {
-    mouseApiRef.current = {
+  useEffect(() => {
+    if (!onMouseApiChange) {
+      return
+    }
+
+    onMouseApiChange({
       dragAt: (row, col) => dragMouseSelection(offsetFromPosition(display, row, col, columns)),
       end: endMouseSelection,
       startAtBeginning: () => startMouseSelection(0)
+    })
+
+    return () => {
+      onMouseApiChange(null)
     }
-  }
+  }, [columns, display, dragMouseSelection, endMouseSelection, onMouseApiChange, startMouseSelection])
 
   useInput(
     (inp: string, k: Key, event: InputEvent) => {
@@ -974,11 +982,13 @@ export function TextInput({
         if (e.button === 2) {
           e.stopImmediatePropagation?.()
           const decision = decideRightClickAction(vRef.current, selRange())
+
           if (decision.action === 'copy') {
             void writeClipboardText(decision.text)
 
             return
           }
+
           emitPaste({ cursor: curRef.current, hotkey: true, text: '', value: vRef.current })
 
           return
@@ -1039,8 +1049,8 @@ interface TextInputProps {
   columns?: number
   focus?: boolean
   mask?: string
-  mouseApiRef?: MutableRefObject<null | TextInputMouseApi>
   onChange: (v: string) => void
+  onMouseApiChange?: (api: null | TextInputMouseApi) => void
   onPaste?: (
     e: PasteEvent
   ) => { cursor: number; value: string } | Promise<{ cursor: number; value: string } | null> | null
@@ -1071,10 +1081,12 @@ export function decideRightClickAction(
 ): RightClickDecision {
   if (range && range.end > range.start) {
     const text = value.slice(range.start, range.end)
+
     if (text) {
       return { action: 'copy', text }
     }
   }
+
   return { action: 'paste' }
 }
 

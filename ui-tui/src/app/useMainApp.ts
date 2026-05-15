@@ -1,4 +1,4 @@
-import { useApp, useHasSelection, useSelection, useStdout, useTerminalTitle, type ScrollBoxHandle } from '@hermes/ink'
+import { type ScrollBoxHandle, useApp, useHasSelection, useSelection, useStdout, useTerminalTitle } from '@hermes/ink'
 import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
@@ -21,7 +21,7 @@ import { appendTranscriptMessage } from '../lib/messages.js'
 import { DEFAULT_VOICE_RECORD_KEY, isMac, type ParsedVoiceRecordKey } from '../lib/platform.js'
 import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
 import { terminalParityHints } from '../lib/terminalParity.js'
-import { buildToolTrailLine, sameToolTrailGroup, toolTrailLabel } from '../lib/text.js'
+import { buildToolTrailLine, toolTrailLabel } from '../lib/text.js'
 import { estimatedMsgHeight, messageHeightKey } from '../lib/virtualHeights.js'
 import type { Msg, PanelSection, SlashCatalog } from '../types.js'
 
@@ -445,8 +445,7 @@ export function useMainApp(gw: GatewayClient) {
 
       const label = toolTrailLabel('clarify')
 
-      turnController.turnTools = turnController.turnTools.filter(line => !sameToolTrailGroup(label, line))
-      patchTurnState({ turnTrail: turnController.turnTools })
+      turnController.removeToolTrail('clarify')
 
       rpc<ClarifyRespondResponse>('clarify.respond', { answer, request_id: clarify.requestId }).then(r => {
         if (!r) {
@@ -504,9 +503,10 @@ export function useMainApp(gw: GatewayClient) {
     maybeGoodVibes,
     setLastUserMsg,
     slashRef,
-    submitRef,
     sys
   })
+
+  submitRef.current = submit
 
   // Drain one queued message whenever the session settles (busy → false):
   // agent turn ends, interrupt, shell.exec finishes, error recovered, or the
@@ -580,7 +580,6 @@ export function useMainApp(gw: GatewayClient) {
     [
       appendMessage,
       bellOnComplete,
-      clearSelection,
       composerActions.setInput,
       gateway,
       panel,
@@ -730,10 +729,13 @@ export function useMainApp(gw: GatewayClient) {
   const anyPanelVisible = SECTION_NAMES.some(
     s => sectionMode(s, ui.detailsMode, ui.sections, ui.detailsModeCommandOverride) !== 'hidden'
   )
+
   const thinkingPanelVisible =
     sectionMode('thinking', ui.detailsMode, ui.sections, ui.detailsModeCommandOverride) !== 'hidden'
+
   const toolsPanelVisible =
     sectionMode('tools', ui.detailsMode, ui.sections, ui.detailsModeCommandOverride) !== 'hidden'
+
   const activityPanelVisible =
     sectionMode('activity', ui.detailsMode, ui.sections, ui.detailsModeCommandOverride) !== 'hidden'
 

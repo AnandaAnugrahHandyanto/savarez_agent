@@ -1,3 +1,4 @@
+import { NO_CONFIRM_DESTRUCTIVE } from '../../../config/env.js'
 import { attachedImageNotice, introMsg, toTranscriptMessages } from '../../../domain/messages.js'
 import { TUI_SESSION_MODEL_FLAG } from '../../../domain/slash.js'
 import type {
@@ -61,6 +62,7 @@ export const sessionCommands: SlashCommand[] = [
   },
 
   {
+    aliases: ['provider'],
     help: 'change or show model',
     name: 'model',
     run: (arg, ctx) => {
@@ -99,6 +101,7 @@ export const sessionCommands: SlashCommand[] = [
       if (ctx.session.guardBusySessionSwitch('switch sessions')) {
         return
       }
+
       if (!arg.trim()) {
         return patchOverlayState({ picker: true })
       }
@@ -549,6 +552,92 @@ export const sessionCommands: SlashCommand[] = [
 
         ctx.transcript.panel('Usage', sections)
       })
+    }
+  },
+
+  {
+    help: 'start a new session',
+    name: 'new',
+    run: (arg, ctx) => {
+      if (ctx.session.guardBusySessionSwitch('switch sessions')) {
+        return
+      }
+
+      const requestedTitle = arg.trim()
+
+      const commit = () => {
+        patchUiState({ status: 'forging session…' })
+        ctx.session.newSession('new session started', requestedTitle || undefined)
+      }
+
+      if (NO_CONFIRM_DESTRUCTIVE) {
+        return commit()
+      }
+
+      patchOverlayState({
+        confirm: {
+          cancelLabel: 'No, keep going',
+          confirmLabel: 'Yes, start a new session',
+          danger: true,
+          detail: 'This ends the current conversation and clears the transcript.',
+          onConfirm: commit,
+          title: 'Start a new session?'
+        }
+      })
+    }
+  },
+
+  {
+    help: 'show active profile name and home directory',
+    name: 'profile',
+    run: (_arg, ctx) => {
+      ctx.gateway
+        .rpc<ConfigGetValueResponse>('config.get', { key: 'profile' })
+        .then(
+          ctx.guarded<ConfigGetValueResponse>(r => {
+            const profileName = r.value || 'default'
+            const homeDir = process.env.HERMES_HOME || process.env.HOME || '~'
+            ctx.transcript.sys(`profile: ${profileName}`)
+            ctx.transcript.sys(`home: ${homeDir}`)
+          })
+        )
+        .catch(ctx.guardedErr)
+    }
+  },
+
+  {
+    help: 'toggle footer on replies',
+    name: 'footer',
+    run: (arg, ctx) => {
+      const mode = arg.trim().toLowerCase()
+      const valid = new Set(['', 'status', 'on', 'off', 'toggle'])
+
+      if (!valid.has(mode)) {
+        return ctx.transcript.sys('usage: /footer [on|off|status|toggle]')
+      }
+
+      if (!mode || mode === 'status') {
+        return ctx.gateway
+          .rpc<ConfigGetValueResponse>('config.get', { key: 'footer' })
+          .then(
+            ctx.guarded<ConfigGetValueResponse>(r =>
+              ctx.transcript.sys(`footer: ${r.value === '1' || r.value === 'on' ? 'on' : 'off'}`)
+            )
+          )
+          .catch(ctx.guardedErr)
+      }
+
+      const value = mode === 'toggle' ? 'toggle' : mode === 'on' ? '1' : '0'
+
+      ctx.gateway
+        .rpc<ConfigSetResponse>('config.set', { key: 'footer', value })
+        .then(
+          ctx.guarded<ConfigSetResponse>(r => {
+            const next = r.value === '1' || r.value === 'on' ? 'on' : 'off'
+            ctx.transcript.sys(`footer: ${next}`)
+          })
+        )
+        .catch(ctx.guardedErr)
     }
   }
 ]

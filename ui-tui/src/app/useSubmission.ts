@@ -48,7 +48,6 @@ export function useSubmission(opts: UseSubmissionOptions) {
     maybeGoodVibes,
     setLastUserMsg,
     slashRef,
-    submitRef,
     sys
   } = opts
 
@@ -104,8 +103,7 @@ export function useSubmission(opts: UseSubmissionOptions) {
         }
 
         patchUiState({ busy: true, status: 'running…' })
-        turnController.bufRef = ''
-        turnController.interrupted = false
+        turnController.preparePromptSubmit()
 
         gw.request<PromptSubmitResponse>('prompt.submit', { session_id: sid, text: submitText }).catch((e: Error) => {
           if (isSessionBusyError(e)) {
@@ -410,8 +408,6 @@ export function useSubmission(opts: UseSubmissionOptions) {
     [appendMessage, composerActions, composerRefs, composerState, dispatchSubmission, gw, sys]
   )
 
-  submitRef.current = submit
-
   return { dispatchSubmission, send, sendQueued, submit }
 }
 
@@ -424,6 +420,5 @@ export interface UseSubmissionOptions {
   maybeGoodVibes: (text: string) => void
   setLastUserMsg: (value: string) => void
   slashRef: MutableRefObject<(cmd: string) => boolean>
-  submitRef: MutableRefObject<(value: string) => void>
   sys: (text: string) => void
 }

@@ -417,15 +417,15 @@ const SUBSCRIPT: Record<string, string> = {
   x: 'ₓ'
 }
 
+const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+
 // Sentinel control characters used to mark `\boxed` / `\fbox` regions in
 // the converted output. The renderer splits on these to apply a highlight
 // style; consumers that don't want highlighting can strip them with the
 // exported `BOX_RE` below.
 export const BOX_OPEN = '\u0001'
 export const BOX_CLOSE = '\u0002'
-export const BOX_RE = /\u0001([^\u0001\u0002]*)\u0002/g
-
-const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+export const BOX_RE = new RegExp(`${escapeRe(BOX_OPEN)}([^${escapeRe(BOX_OPEN)}${escapeRe(BOX_CLOSE)}]*)${escapeRe(BOX_CLOSE)}`, 'g')
 
 // Pre-compile two symbol regexes: one for letter-ending commands (`\pi`,
 // `\sum`) which need a `(?![A-Za-z])` lookahead so they don't partially
@@ -515,6 +515,7 @@ const readBraced = (s: string, start: number): { content: string; end: number } 
     // should not change the brace counter.
     if (c === '\\' && i + 1 < s.length) {
       i += 2
+
       continue
     }
 
@@ -560,6 +561,7 @@ const replaceBracedCommand = (input: string, command: string, render: (content: 
     if (after && /[A-Za-z]/.test(after)) {
       out += input.slice(i, idx + cmdLen)
       i = idx + cmdLen
+
       continue
     }
 
@@ -567,13 +569,16 @@ const replaceBracedCommand = (input: string, command: string, render: (content: 
 
     let p = idx + cmdLen
 
-    while (input[p] === ' ' || input[p] === '\t') p++
+    while (input[p] === ' ' || input[p] === '\t') {
+      p++
+    }
 
     const arg = readBraced(input, p)
 
     if (!arg) {
       out += input.slice(idx, p + 1)
       i = p + 1
+
       continue
     }
 
@@ -607,6 +612,7 @@ const replaceFracs = (input: string): string => {
     if (after && /[A-Za-z]/.test(after)) {
       out += input.slice(i, idx + 5)
       i = idx + 5
+
       continue
     }
 
@@ -614,25 +620,31 @@ const replaceFracs = (input: string): string => {
 
     let p = idx + 5
 
-    while (input[p] === ' ' || input[p] === '\t') p++
+    while (input[p] === ' ' || input[p] === '\t') {
+      p++
+    }
 
     const num = readBraced(input, p)
 
     if (!num) {
       out += input.slice(idx, p + 1)
       i = p + 1
+
       continue
     }
 
     p = num.end
 
-    while (input[p] === ' ' || input[p] === '\t') p++
+    while (input[p] === ' ' || input[p] === '\t') {
+      p++
+    }
 
     const den = readBraced(input, p)
 
     if (!den) {
       out += input.slice(idx, p + 1)
       i = p + 1
+
       continue
     }
 

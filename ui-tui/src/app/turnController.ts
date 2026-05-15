@@ -156,6 +156,10 @@ class TurnController {
     this.statusTimer = clear(this.statusTimer)
   }
 
+  clearTurnTrail() {
+    this.turnTools = []
+  }
+
   endReasoningPhase() {
     this.reasoningStreamingTimer = clear(this.reasoningStreamingTimer)
     patchTurnState({ reasoningActive: false, reasoningStreaming: false })
@@ -179,6 +183,17 @@ class TurnController {
     })
     patchUiState({ busy: false })
     resetFlowOverlays()
+  }
+
+  preparePromptSubmit() {
+    this.bufRef = ''
+    this.interrupted = false
+  }
+
+  removeToolTrail(name: string) {
+    const label = toolTrailLabel(name)
+    this.turnTools = this.turnTools.filter(line => !sameToolTrailGroup(label, line))
+    patchTurnState({ turnTrail: this.turnTools })
   }
 
   interruptTurn({ appendMessage, gw, sid, sys }: InterruptDeps) {

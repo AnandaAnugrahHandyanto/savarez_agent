@@ -99,6 +99,7 @@ describe('createSlashHandler', () => {
 
   it('applies /reasoning hide to the thinking section immediately', async () => {
     patchUiState({ sections: { thinking: 'expanded' }, showReasoning: true, sid: 'sid-abc' })
+
     const ctx = buildCtx({
       gateway: {
         ...buildGateway(),
@@ -121,6 +122,7 @@ describe('createSlashHandler', () => {
 
   it('applies /reasoning show to the thinking section immediately', async () => {
     patchUiState({ sections: { thinking: 'hidden' }, showReasoning: false, sid: 'sid-abc' })
+
     const ctx = buildCtx({
       gateway: {
         ...buildGateway(),
@@ -212,11 +214,14 @@ describe('createSlashHandler', () => {
       if (method === 'skills.reload') {
         return Promise.resolve({ output: '42 skill(s) available' })
       }
+
       if (method === 'commands.catalog') {
         return Promise.resolve({ canon: { '/new-skill': '/new-skill' }, pairs: [['/new-skill', 'demo']] })
       }
+
       return Promise.resolve({})
     })
+
     const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })
 
     createSlashHandler(ctx)('/reload-skills')
@@ -511,21 +516,38 @@ describe('createSlashHandler', () => {
       local: {
         catalog: {
           canon: {
-            '/profile': '/profile',
+            '/plugin': '/plugin',
             '/plugins': '/plugins'
           }
         }
       }
     })
 
-    expect(createSlashHandler(ctx)('/profile')).toBe(true)
+    expect(createSlashHandler(ctx)('/plugin')).toBe(true)
     await vi.waitFor(() => {
       expect(ctx.gateway.gw.request).toHaveBeenCalledWith('slash.exec', {
-        command: 'profile',
+        command: 'plugin',
         session_id: null
       })
     })
     expect(ctx.transcript.sys).not.toHaveBeenCalledWith(expect.stringContaining('ambiguous command'))
+  })
+
+  it('handles /profile locally', async () => {
+    const ctx = buildCtx({
+      gateway: {
+        ...buildGateway(),
+        rpc: vi.fn(() => Promise.resolve({ value: 'coder' }))
+      }
+    })
+
+    expect(createSlashHandler(ctx)('/profile')).toBe(true)
+    expect(ctx.gateway.rpc).toHaveBeenCalledWith('config.get', { key: 'profile' })
+    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
+
+    await vi.waitFor(() => {
+      expect(ctx.transcript.sys).toHaveBeenCalledWith('profile: coder')
+    })
   })
 
   it('keeps ambiguous prefix handling when there is no exact catalog match', () => {
