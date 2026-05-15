@@ -1,7 +1,9 @@
 """Unit tests for the Blaxel cloud sandbox environment backend."""
 
+import io
 import threading
 import re
+import tarfile
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -23,9 +25,20 @@ def _make_exec_response(stdout="", stderr="", exit_code=0, logs=None, status="co
     )
 
 
+def _make_tar_bytes(files: dict[str, bytes]) -> bytes:
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tar:
+        for name, content in files.items():
+            info = tarfile.TarInfo(name=name)
+            info.size = len(content)
+            tar.addfile(info, io.BytesIO(content))
+    return buf.getvalue()
+
+
 def _make_sandbox():
     sb = MagicMock()
     sb.process.exec.return_value = _make_exec_response()
+    sb.fs.read_binary.return_value = _make_tar_bytes({})
     return sb
 
 
@@ -62,6 +75,7 @@ def _patch_blaxel_imports(monkeypatch):
     monkeypatch.setitem(sys.modules, "blaxel.core", core_mod)
     monkeypatch.setitem(sys.modules, "blaxel.core.sandbox", sandbox_mod)
     monkeypatch.setitem(sys.modules, "blaxel.core.volume", volume_mod)
+    monkeypatch.setattr("tools.lazy_deps.ensure", lambda *args, **kwargs: None)
     return SimpleNamespace(
         SyncSandboxInstance=core_mod.SyncSandboxInstance,
         SyncVolumeInstance=core_mod.SyncVolumeInstance,
@@ -81,12 +95,13 @@ def blaxel_sdk(monkeypatch):
 
 
 @pytest.fixture()
-def make_env(blaxel_sdk, monkeypatch):
+def make_env(blaxel_sdk, monkeypatch, tmp_path):
     """Factory that creates a BlaxelEnvironment with a mocked SDK."""
     monkeypatch.setattr("tools.environments.base.is_interrupted", lambda: False)
     monkeypatch.setattr("tools.credential_files.get_credential_file_mounts", lambda: [])
     monkeypatch.setattr("tools.credential_files.get_skills_directory_mount", lambda **kw: None)
     monkeypatch.setattr("tools.credential_files.iter_skills_files", lambda **kw: [])
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     # Default region — keep tests deterministic regardless of host env.
     monkeypatch.setenv("BL_REGION", "us-pdx-1")
     # Skip the readiness probe during unit tests; it consumes mock exec
@@ -353,6 +368,37 @@ class TestCleanup:
         env._sandbox.delete.side_effect = RuntimeError("boom")
         env.cleanup()  # should not raise
         assert env._sandbox is None
+
+    def test_cleanup_syncs_workspace_to_remote_sync_cache(
+        self, make_env, monkeypatch, tmp_path,
+    ):
+        hermes_home = tmp_path / "hermes"
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        sb = _make_sandbox()
+        sb.fs.read_binary.return_value = _make_tar_bytes({
+            "result.txt": b"workspace-result",
+            "nested/output.log": b"nested-result",
+        })
+        env = make_env(persistent=False, sandbox=sb)
+        session_id = env._session_id
+
+        env.cleanup()
+
+        sync_root = hermes_home / "cache" / "remote-syncs" / session_id
+        assert (sync_root / "result.txt").read_bytes() == b"workspace-result"
+        assert (sync_root / "nested" / "output.log").read_bytes() == b"nested-result"
+
+        commands = [
+            call_args[0][0]["command"]
+            for call_args in sb.process.exec.call_args_list
+        ]
+        workspace_sync_commands = [
+            command for command in commands
+            if ".hermes_workspace_sync" in command
+        ]
+        assert workspace_sync_commands
+        assert "node_modules" in workspace_sync_commands[0]
+        assert ".hermes" in workspace_sync_commands[0]
 
 
 # ---------------------------------------------------------------------------

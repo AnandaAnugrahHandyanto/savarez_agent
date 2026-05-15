@@ -1609,6 +1609,8 @@ def setup_terminal_backend(config: dict):
         print_info("Workspace-scoped cloud sandboxes with standby/resume.")
         print_info("Sign up at: https://blaxel.ai")
 
+        blaxel_package = "blaxel==0.2.52"
+
         # Check if blaxel SDK is installed
         try:
             __import__("blaxel")
@@ -1619,13 +1621,13 @@ def setup_terminal_backend(config: dict):
             uv_bin = shutil.which("uv")
             if uv_bin:
                 result = subprocess.run(
-                    [uv_bin, "pip", "install", "--python", sys.executable, "blaxel"],
+                    [uv_bin, "pip", "install", "--python", sys.executable, blaxel_package],
                     capture_output=True,
                     text=True,
                 )
             else:
                 result = subprocess.run(
-                    [sys.executable, "-m", "pip", "install", "blaxel"],
+                    [sys.executable, "-m", "pip", "install", blaxel_package],
                     capture_output=True,
                     text=True,
                 )

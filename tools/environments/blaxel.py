@@ -13,11 +13,14 @@ import os
 import hashlib
 import re
 import shlex
+import tarfile
+import tempfile
 import threading
 import time
 import uuid
 from pathlib import Path
 
+from hermes_constants import get_hermes_home
 from tools.environments.base import (
     BaseEnvironment,
     _ThreadedProcessHandle,
@@ -46,6 +49,14 @@ _BLAXEL_VOLUME_MOUNT_PATH = "/blaxel/persistent"
 _BLAXEL_RESOURCE_MAX_LENGTH = 40
 _BLAXEL_LABEL_MAX_LENGTH = 63
 _BLAXEL_HASH_LENGTH = 8
+_WORKSPACE_SYNC_MAX_MB = 100
+_WORKSPACE_SYNC_EXCLUDES = (
+    ".git",
+    ".hermes",
+    ".venv",
+    "__pycache__",
+    "node_modules",
+)
 
 
 def _safe_blaxel_component(value: str, max_length: int) -> str:
@@ -75,6 +86,26 @@ def _blaxel_label_value(task_id: str) -> str:
     return _safe_blaxel_component(task_id, _BLAXEL_LABEL_MAX_LENGTH)
 
 
+def _workspace_sync_max_bytes() -> int:
+    raw = os.getenv("TERMINAL_FILE_SYNC_MAX_MB", str(_WORKSPACE_SYNC_MAX_MB))
+    try:
+        mb = int(raw)
+    except ValueError:
+        mb = _WORKSPACE_SYNC_MAX_MB
+    return max(1, mb) * 1024 * 1024
+
+
+def _ensure_blaxel_sdk() -> None:
+    """Lazy-install blaxel SDK on demand. Idempotent once installed."""
+    try:
+        from tools.lazy_deps import ensure as _lazy_ensure
+        _lazy_ensure("terminal.blaxel", prompt=False)
+    except ImportError:
+        pass
+    except Exception as e:
+        raise ImportError(str(e))
+
+
 class BlaxelEnvironment(BaseEnvironment):
     """Blaxel cloud sandbox execution backend.
 
@@ -99,6 +130,8 @@ class BlaxelEnvironment(BaseEnvironment):
     ):
         requested_cwd = cwd
         super().__init__(cwd=cwd, timeout=timeout)
+
+        _ensure_blaxel_sdk()
 
         # Lazy import: keep blaxel SDK optional until backend is selected.
         from blaxel.core import SyncSandboxInstance
@@ -397,6 +430,82 @@ class BlaxelEnvironment(BaseEnvironment):
         except Exception:
             pass
 
+    def _blaxel_workspace_bulk_download(self, dest: Path) -> None:
+        """Download the remote working tree as a tar archive.
+
+        The managed .hermes credential/cache tree is intentionally excluded
+        here and handled by FileSyncManager. This archive is for user-visible
+        files created during the sandbox run.
+        """
+        remote_base = (self.cwd or self._remote_home or "/").rstrip("/") or "/"
+        remote_tar = f"/tmp/.hermes_workspace_sync.{os.getpid()}.tar"
+        remote_list = f"/tmp/.hermes_workspace_sync.{os.getpid()}.list"
+        max_bytes = _workspace_sync_max_bytes()
+        prune_parts = []
+        for name in _WORKSPACE_SYNC_EXCLUDES:
+            prune_parts.append(f"-path {shlex.quote('./' + name)}")
+            prune_parts.append(f"-path {shlex.quote('./' + name + '/*')}")
+        prune_expr = " -o ".join(prune_parts)
+        find_cmd = (
+            f"find . \\( {prune_expr} \\) -prune -o "
+            f"-type f -size -{max_bytes}c -print"
+        )
+        command = (
+            f"rm -f {shlex.quote(remote_tar)} {shlex.quote(remote_list)} && "
+            f"cd {shlex.quote(remote_base)} && "
+            f"{find_cmd} > {shlex.quote(remote_list)} && "
+            f"if [ -s {shlex.quote(remote_list)} ]; then "
+            f"tar -cf {shlex.quote(remote_tar)} -T {shlex.quote(remote_list)}; "
+            f"else dd if=/dev/zero of={shlex.quote(remote_tar)} "
+            f"bs=10240 count=1 >/dev/null 2>&1; fi"
+        )
+        try:
+            response = self._sandbox.process.exec({
+                "command": command,
+                "wait_for_completion": True,
+                "timeout": 60_000,
+            })
+            exit_code = getattr(response, "exit_code", None) or 0
+            if exit_code:
+                output = (
+                    getattr(response, "stdout", None)
+                    or getattr(response, "stderr", None)
+                    or getattr(response, "logs", None)
+                    or ""
+                )
+                raise RuntimeError(
+                    f"workspace archive command failed ({exit_code}): {output}"
+                )
+            data = self._sandbox.fs.read_binary(remote_tar)
+            with open(dest, "wb") as f:
+                f.write(data)
+        finally:
+            try:
+                self._sandbox.process.exec({
+                    "command": (
+                        f"rm -f {shlex.quote(remote_tar)} "
+                        f"{shlex.quote(remote_list)}"
+                    ),
+                    "wait_for_completion": True,
+                    "timeout": 10_000,
+                })
+            except Exception:
+                pass
+
+    def _sync_workspace_back(self) -> None:
+        """Persist user-created sandbox files to host remote-sync cache."""
+        dest = get_hermes_home() / "cache" / "remote-syncs" / self._session_id
+        dest.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(suffix=".tar") as tf:
+            self._blaxel_workspace_bulk_download(Path(tf.name))
+            try:
+                with tarfile.open(tf.name) as tar:
+                    tar.extractall(dest, filter="data")
+            except tarfile.ReadError:
+                logger.debug("Blaxel: workspace sync archive was empty or invalid")
+                return
+        logger.info("Blaxel: synced workspace files to %s", dest)
+
     def _blaxel_delete(self, remote_paths: list[str]) -> None:
         """Batch-delete remote files via SDK exec."""
         self._sandbox.process.exec({
@@ -517,6 +626,11 @@ class BlaxelEnvironment(BaseEnvironment):
         with self._lock:
             if self._sandbox is None:
                 return
+
+            try:
+                self._sync_workspace_back()
+            except Exception as e:
+                logger.warning("Blaxel: workspace sync_back failed: %s", e)
 
             if self._sync_manager:
                 logger.info("Blaxel: syncing files from sandbox...")
