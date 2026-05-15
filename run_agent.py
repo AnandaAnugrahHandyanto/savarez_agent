@@ -4251,9 +4251,9 @@ class AIAgent:
                     }
                 )
             if pending_db_messages:
-                append_many = getattr(self._session_db, "append_messages", None)
+                append_many = getattr(type(self._session_db), "append_messages", None)
                 if callable(append_many):
-                    append_many(self.session_id, pending_db_messages)
+                    append_many(self._session_db, self.session_id, pending_db_messages)
                 else:
                     for msg in pending_db_messages:
                         self._session_db.append_message(
