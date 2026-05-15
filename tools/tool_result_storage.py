@@ -22,6 +22,7 @@ Defense against context-window overflow operates at three levels:
    where many medium-sized results combine to overflow context.
 """
 
+import json
 import logging
 import os
 import shlex
@@ -39,6 +40,56 @@ PERSISTED_OUTPUT_CLOSING_TAG = "</persisted-output>"
 STORAGE_DIR = "/tmp/hermes-results"
 HEREDOC_MARKER = "HERMES_PERSIST_EOF"
 _BUDGET_TOOL_NAME = "__budget_enforcement__"
+_MAX_STRUCTURED_DEPTH = 3
+_MAX_STRUCTURED_ITEMS = 8
+_MAX_STRUCTURED_STRING = 160
+_BULKY_KEYS = {
+    "audio",
+    "audio_base64",
+    "base64",
+    "blob",
+    "content_base64",
+    "data_uri",
+    "html",
+    "image",
+    "image_base64",
+    "media",
+    "raw",
+    "raw_content",
+    "raw_html",
+    "raw_output",
+    "screenshot",
+    "screenshot_base64",
+    "video",
+    "video_base64",
+}
+_PRIORITY_KEYS = (
+    "success",
+    "status",
+    "error",
+    "message",
+    "exit_code",
+    "returncode",
+    "path",
+    "file_path",
+    "url",
+    "source",
+    "source_url",
+    "source_id",
+    "document_id",
+    "title",
+    "total",
+    "total_count",
+    "count",
+    "line",
+    "line_number",
+    "results",
+    "matches",
+    "items",
+    "data",
+    "output",
+)
+_MAX_OMITTED_KEY_NAMES = 20
 
 
 def _resolve_storage_dir(env) -> str:
@@ -57,7 +108,136 @@ def _resolve_storage_dir(env) -> str:
     return STORAGE_DIR
 
 
-def generate_preview(content: str, max_chars: int = DEFAULT_PREVIEW_SIZE_CHARS) -> tuple[str, bool]:
+def _truncate_text(text: str, max_chars: int = _MAX_STRUCTURED_STRING) -> str:
+    """Return a bounded text snippet that preserves head/tail context."""
+    if len(text) <= max_chars:
+        return text
+    half = max(1, max_chars // 2)
+    omitted = len(text) - (half * 2)
+    return f"{text[:half]}… [omitted {omitted:,} chars] …{text[-half:]}"
+
+
+def _looks_like_base64(text: str) -> bool:
+    """Heuristic for bulky media/blob strings that should not enter context."""
+    if len(text) < 512:
+        return False
+    sample = text[:2048]
+    allowed = set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=\n\r")
+    if any(ch not in allowed for ch in sample):
+        return False
+    non_ws = sum(1 for ch in sample if not ch.isspace())
+    return non_ws / max(1, len(sample)) > 0.90
+
+
+def _looks_like_data_uri(text: str) -> bool:
+    """Detect embedded data URI media regardless of which JSON key carries it."""
+    prefix = text[:128].lower()
+    return prefix.startswith("data:") and ";base64," in prefix
+
+
+def _describe_omitted_value(value) -> str:
+    """Describe omitted data without stringifying large nested containers."""
+    if isinstance(value, str):
+        return f"{len(value):,} chars"
+    if isinstance(value, dict):
+        return f"{len(value):,} keys"
+    if isinstance(value, list):
+        return f"{len(value):,} items"
+    return type(value).__name__
+
+
+def _summarize_json_key(key: str) -> tuple[str, bool]:
+    """Bound/redact JSON object keys before they enter preview context."""
+    if _looks_like_data_uri(key):
+        return f"[omitted data URI key: {len(key):,} chars]", True
+    if _looks_like_base64(key):
+        return f"[omitted base64-like key: {len(key):,} chars]", True
+    if len(key) > _MAX_STRUCTURED_STRING:
+        return _truncate_text(key), True
+    return key, False
+
+
+def _summarize_json_value(value, *, key: str | None = None, depth: int = 0) -> tuple[object, bool]:
+    """Build a compact, source-handle-preserving preview for JSON-like data."""
+    lowered_key = (key or "").lower()
+    if lowered_key in _BULKY_KEYS:
+        return f"[omitted bulky field {lowered_key!r}: {_describe_omitted_value(value)}]", True
+
+    if isinstance(value, str):
+        if _looks_like_data_uri(value):
+            return f"[omitted data URI: {len(value):,} chars]", True
+        if _looks_like_base64(value):
+            return f"[omitted base64-like string: {len(value):,} chars]", True
+        if len(value) > _MAX_STRUCTURED_STRING:
+            return _truncate_text(value), True
+        return value, False
+    if value is None or isinstance(value, (bool, int, float)):
+        return value, False
+    if depth >= _MAX_STRUCTURED_DEPTH:
+        return f"[{type(value).__name__} omitted at depth {depth}: {_describe_omitted_value(value)}]", True
+    if isinstance(value, list):
+        summarized = []
+        reduced = len(value) > _MAX_STRUCTURED_ITEMS
+        for item in value[:_MAX_STRUCTURED_ITEMS]:
+            item_summary, item_reduced = _summarize_json_value(item, depth=depth + 1)
+            summarized.append(item_summary)
+            reduced = reduced or item_reduced
+        if len(value) > _MAX_STRUCTURED_ITEMS:
+            summarized.append(f"… {len(value) - _MAX_STRUCTURED_ITEMS:,} more items omitted")
+        return summarized, reduced
+    if isinstance(value, dict):
+        ordered_keys: list[str] = []
+        for priority in _PRIORITY_KEYS:
+            if priority in value:
+                ordered_keys.append(priority)
+        for existing_key in value:
+            if existing_key not in ordered_keys:
+                ordered_keys.append(existing_key)
+
+        summarized: dict[str, object] = {}
+        reduced = len(ordered_keys) > _MAX_STRUCTURED_ITEMS
+        for existing_key in ordered_keys[:_MAX_STRUCTURED_ITEMS]:
+            preview_key, key_was_reduced = _summarize_json_key(str(existing_key))
+            key_summary, key_reduced = _summarize_json_value(
+                value[existing_key],
+                key=existing_key,
+                depth=depth + 1,
+            )
+            summarized[preview_key] = key_summary
+            reduced = reduced or key_reduced or key_was_reduced
+        if len(ordered_keys) > _MAX_STRUCTURED_ITEMS:
+            omitted_keys = ordered_keys[_MAX_STRUCTURED_ITEMS:]
+            omitted_key_previews = []
+            for omitted_key in omitted_keys[:_MAX_OMITTED_KEY_NAMES]:
+                preview_key, key_was_reduced = _summarize_json_key(str(omitted_key))
+                omitted_key_previews.append(preview_key)
+                reduced = reduced or key_was_reduced
+            summarized["_omitted_keys"] = omitted_key_previews
+            if len(omitted_keys) > _MAX_OMITTED_KEY_NAMES:
+                summarized["_omitted_key_count"] = len(omitted_keys)
+        return summarized, reduced
+    return _truncate_text(str(value)), True
+
+
+def _generate_structured_preview(content: str, max_chars: int) -> tuple[str, bool] | None:
+    """Return a compact JSON preview when content is parseable structured data."""
+    stripped = content.strip()
+    if not stripped or stripped[0] not in "[{":
+        return None
+    try:
+        parsed = json.loads(stripped)
+    except Exception:
+        return None
+
+    summary, reduced = _summarize_json_value(parsed)
+    preview = json.dumps(summary, ensure_ascii=False, indent=2)
+    if len(preview) <= max_chars:
+        return preview, reduced
+    text_preview, _ = _generate_text_preview(preview, max_chars=max_chars)
+    return text_preview, True
+
+
+def _generate_text_preview(content: str, max_chars: int = DEFAULT_PREVIEW_SIZE_CHARS) -> tuple[str, bool]:
     """Truncate at last newline within max_chars. Returns (preview, has_more)."""
     if len(content) <= max_chars:
         return content, False
@@ -66,6 +246,19 @@ def generate_preview(content: str, max_chars: int = DEFAULT_PREVIEW_SIZE_CHARS) 
     if last_nl > max_chars // 2:
         truncated = truncated[:last_nl + 1]
     return truncated, True
+
+
+def generate_preview(content: str, max_chars: int = DEFAULT_PREVIEW_SIZE_CHARS) -> tuple[str, bool]:
+    """Generate a compact context preview for a persisted tool result.
+
+    Structured JSON gets summarized so source handles, counts, and errors stay
+    visible while raw payload/media fields are omitted from the model context.
+    Plain text keeps the legacy newline-aware preview behavior.
+    """
+    structured = _generate_structured_preview(content, max_chars=max_chars)
+    if structured is not None:
+        return structured
+    return _generate_text_preview(content, max_chars=max_chars)
 
 
 def _heredoc_marker(content: str) -> str:

@@ -1,5 +1,7 @@
 """Tests for tools/tool_result_storage.py -- 3-layer tool result persistence."""
 
+import json
+
 import pytest
 from unittest.mock import MagicMock, patch
 
@@ -62,6 +64,91 @@ class TestGeneratePreview:
         text = "x" * DEFAULT_PREVIEW_SIZE_CHARS
         preview, has_more = generate_preview(text)
         assert preview == text
+        assert has_more is False
+
+    def test_large_json_preview_preserves_handles_and_counts(self):
+        content = json.dumps({
+            "success": True,
+            "total_count": 42,
+            "results": [
+                {
+                    "title": f"Result {i}",
+                    "url": f"https://example.com/{i}",
+                    "source_id": f"doc-{i}",
+                    "text": "useful excerpt " + ("x" * 2_000),
+                }
+                for i in range(12)
+            ],
+        })
+        preview, has_more = generate_preview(content, max_chars=4_000)
+        assert has_more is True
+        assert len(preview) < len(content)
+        assert '"total_count": 42' in preview
+        assert "https://example.com/0" in preview
+        assert "doc-0" in preview
+        assert "more items omitted" in preview
+
+    def test_large_json_preview_omits_bulky_media_fields(self):
+        content = json.dumps({
+            "success": True,
+            "source_url": "https://example.com/source",
+            "screenshot_base64": "A" * 10_000,
+            "raw_html": "<html>" + ("x" * 10_000) + "</html>",
+        })
+        preview, has_more = generate_preview(content, max_chars=4_000)
+        assert has_more is True
+        assert "https://example.com/source" in preview
+        assert "omitted bulky field" in preview
+        assert "A" * 1_000 not in preview
+        assert "x" * 1_000 not in preview
+
+    def test_large_json_preview_preserves_errors(self):
+        content = json.dumps({
+            "success": False,
+            "error": "Traceback: something broke",
+            "raw_output": "x" * 20_000,
+        })
+        preview, has_more = generate_preview(content, max_chars=2_000)
+        assert has_more is True
+        assert '"success": false' in preview
+        assert "Traceback: something broke" in preview
+        assert "omitted bulky field" in preview
+
+    def test_large_json_preview_omits_data_uri_even_under_url_keys(self):
+        data_uri = "data:image/png;base64," + ("A" * 10_000)
+        content = json.dumps({
+            "success": True,
+            "url": data_uri,
+            "image_url": {"url": data_uri},
+            "content": [{"type": "image_url", "image_url": {"url": data_uri}}],
+        })
+        preview, has_more = generate_preview(content, max_chars=4_000)
+        assert has_more is True
+        assert "omitted data URI" in preview
+        assert "data:image/png;base64" not in preview
+        assert "A" * 1_000 not in preview
+
+    def test_large_json_preview_bounds_omitted_key_list(self):
+        content = json.dumps({f"key_{i}": i for i in range(100)})
+        preview, has_more = generate_preview(content, max_chars=4_000)
+        assert has_more is True
+        assert "_omitted_keys" in preview
+        assert "_omitted_key_count" in preview
+        assert "key_99" not in preview
+
+    def test_large_json_preview_redacts_bulky_object_keys(self):
+        data_uri_key = "data:image/png;base64," + ("A" * 10_000)
+        content = json.dumps({data_uri_key: "value", "success": True})
+        preview, has_more = generate_preview(content, max_chars=4_000)
+        assert has_more is True
+        assert "omitted data URI key" in preview
+        assert "data:image/png;base64" not in preview
+        assert "A" * 1_000 not in preview
+
+    def test_pretty_json_without_semantic_reduction_has_no_more(self):
+        content = '{\n  "success": true,\n  "count": 2\n}\n'
+        preview, has_more = generate_preview(content, max_chars=4_000)
+        assert json.loads(preview) == {"success": True, "count": 2}
         assert has_more is False
 
 
