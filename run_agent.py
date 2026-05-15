@@ -43,7 +43,9 @@ logger = logging.getLogger(__name__)
 import os
 import random
 import re
+import shlex
 import ssl
+import subprocess
 import sys
 import tempfile
 import time
@@ -380,6 +382,32 @@ _DESTRUCTIVE_PATTERNS = re.compile(
 )
 # Output redirects that overwrite files (> but not >>)
 _REDIRECT_OVERWRITE = re.compile(r'[^>]>[^>]|^>[^>]')
+_V4A_FILE_HEADER = re.compile(
+    r"^\*\*\*\s+(?:Update|Add|Delete)\s+File:\s*(.+?)\s*$",
+    re.MULTILINE,
+)
+_CODEX_EXEC_SHELL = re.compile(r"(?<![\w./-])codex\s+exec(?:\s|$)")
+_CODEX_EXEC_ARGV = re.compile(
+    r"""(?:'codex'|"codex")\s*,\s*(?:'exec'|"exec")"""
+)
+_CODEX_PROMPT_FILE_READ = re.compile(
+    r"""Path\(\s*(?P<quote>['"])(?P<path>[^'"]{1,500})(?P=quote)\s*\)\.read_text\s*\(""",
+    re.DOTALL,
+)
+_CODEX_OPTION_VALUE_FLAGS = frozenset({
+    "-C",
+    "-c",
+    "-m",
+    "-s",
+    "--cd",
+    "--config",
+    "--model",
+    "--output-schema",
+    "--profile",
+    "--reasoning-effort",
+    "--sandbox",
+})
+_CHECKPOINT_DESC_MAX_CHARS = 72
 
 
 def _is_destructive_command(cmd: str) -> bool:
@@ -391,6 +419,261 @@ def _is_destructive_command(cmd: str) -> bool:
     if _REDIRECT_OVERWRITE.search(cmd):
         return True
     return False
+
+
+def _is_codex_terminal_command(cmd: str) -> bool:
+    """Return True for terminal commands that launch `codex exec`."""
+    if not isinstance(cmd, str) or not cmd.strip():
+        return False
+    if _CODEX_EXEC_SHELL.search(cmd):
+        return True
+    return bool(_CODEX_EXEC_ARGV.search(cmd))
+
+
+def _normalize_checkpoint_description(text: str | None) -> str | None:
+    """Extract a short, safe task label from prompt-like text."""
+    if not isinstance(text, str) or not text.strip():
+        return None
+
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("```"):
+            continue
+        line = re.sub(r"^(?:[#>*+-]|\d+[.)])\s*", "", line).strip()
+        line = re.sub(
+            r"^(?:goal|task|request|instructions?|context)\s*:\s*",
+            "",
+            line,
+            flags=re.IGNORECASE,
+        ).strip()
+        line = line.strip(" \t\r\n\"'`*_")
+        if line.lower() in {"goal", "task", "request", "instruction", "instructions", "context"}:
+            continue
+        if not line:
+            continue
+        if re.search(r"(?i)\b(api[_-]?key|authorization|bearer|password|secret|token)\b", line):
+            continue
+
+        sentence = re.split(r"(?<=[.!?])\s+", line, maxsplit=1)[0]
+        sentence = sentence.strip(" \t\r\n\"'`*_.,;:")
+        sentence = re.sub(r"\s+", " ", sentence)
+        if not sentence:
+            continue
+        sentence = re.sub(r"(?<!\w)(?:~|/|\.\.?/)?(?:[\w.-]+/)+[\w.-]+", "files", sentence)
+        if re.fullmatch(r"[\w.-]+\.[A-Za-z0-9]{1,8}", sentence):
+            continue
+        sentence = sentence.lower()
+        sentence = re.sub(r"\s+plan implementation$", "", sentence).strip()
+        if len(sentence) > _CHECKPOINT_DESC_MAX_CHARS:
+            sentence = sentence[:_CHECKPOINT_DESC_MAX_CHARS].rsplit(" ", 1)[0].strip()
+        return sentence or None
+
+    return None
+
+
+def _read_codex_prompt_file(cmd: str, work_dir: str | None) -> str | None:
+    """Best-effort prompt-file read for wrapper commands; never blocks execution."""
+    match = _CODEX_PROMPT_FILE_READ.search(cmd)
+    if not match:
+        return None
+
+    try:
+        prompt_path = Path(match.group("path")).expanduser()
+        if not prompt_path.is_absolute():
+            prompt_path = Path(work_dir or os.getcwd()) / prompt_path
+        if not prompt_path.is_file() or prompt_path.stat().st_size > 64 * 1024:
+            return None
+        return prompt_path.read_text(encoding="utf-8", errors="replace")
+    except Exception:
+        return None
+
+
+def _codex_exec_prompt_from_shell(cmd: str) -> str | None:
+    """Extract the likely direct prompt argument from a `codex exec` shell command."""
+    try:
+        argv = shlex.split(cmd)
+    except ValueError:
+        return None
+
+    for idx, token in enumerate(argv[:-1]):
+        if Path(token).name != "codex" or argv[idx + 1] != "exec":
+            continue
+
+        prompt_parts: list[str] = []
+        i = idx + 2
+        while i < len(argv):
+            current = argv[i]
+            if current == "--":
+                prompt_parts.extend(argv[i + 1:])
+                break
+            if current.startswith("-"):
+                flag = current.split("=", 1)[0]
+                if "=" not in current and flag in _CODEX_OPTION_VALUE_FLAGS and i + 1 < len(argv):
+                    i += 2
+                else:
+                    i += 1
+                continue
+            if current in {"&&", "||", ";", "|"}:
+                break
+            prompt_parts.append(current)
+            i += 1
+
+        if prompt_parts:
+            return " ".join(prompt_parts)
+
+    return None
+
+
+def _codex_terminal_short_description(cmd: str, work_dir: str | None) -> str | None:
+    """Prefer prompt text over command text for Codex checkpoint labels."""
+    prompt_text = _read_codex_prompt_file(cmd, work_dir)
+    description = _normalize_checkpoint_description(prompt_text)
+    if description:
+        return description
+    return _normalize_checkpoint_description(_codex_exec_prompt_from_shell(cmd))
+
+
+def _codex_terminal_checkpoint_reason(cmd: str, work_dir: str | None) -> str | None:
+    """Build a state+task checkpoint label for Codex implementation commands."""
+    if not _is_codex_terminal_command(cmd):
+        return None
+
+    state = _checkpoint_worktree_state_prefix(work_dir)
+    description = _codex_terminal_short_description(cmd, work_dir)
+    if not description:
+        return f"{state} before codex task"
+    return f"{state} before codex ***{description}*** plan implementation"
+
+
+def _ensure_terminal_tool_checkpoint(checkpoint_mgr, function_args: dict) -> None:
+    """Create a terminal checkpoint when command risk or Codex task intent warrants it."""
+    cmd = function_args.get("command", "")
+    if not isinstance(cmd, str):
+        return
+
+    cwd = function_args.get("workdir") or os.getenv("TERMINAL_CWD", os.getcwd())
+    reason = _codex_terminal_checkpoint_reason(cmd, cwd)
+    if reason is None and _is_destructive_command(cmd):
+        reason = f"before terminal: {cmd[:60]}"
+    if reason:
+        checkpoint_mgr.ensure_checkpoint(cwd, reason)
+
+
+def _extract_v4a_patch_paths(patch_content: Any) -> list[str]:
+    """Extract touched file paths from V4A patch text without reading hunks."""
+    if not isinstance(patch_content, str) or not patch_content:
+        return []
+
+    paths: list[str] = []
+    seen: set[str] = set()
+    for match in _V4A_FILE_HEADER.finditer(patch_content):
+        path = match.group(1).strip()
+        if path and path not in seen:
+            paths.append(path)
+            seen.add(path)
+    return paths
+
+
+def _file_tool_checkpoint_target(
+    function_name: str,
+    function_args: dict,
+) -> str | None:
+    """Return a representative target path for file-mutating tools."""
+    if function_name not in ("write_file", "patch"):
+        return None
+
+    file_path = function_args.get("path")
+    if isinstance(file_path, str) and file_path.strip():
+        return file_path
+
+    if function_name == "patch":
+        patch_paths = _extract_v4a_patch_paths(function_args.get("patch"))
+        if patch_paths:
+            return patch_paths[0]
+
+    return None
+
+
+def _checkpoint_file_exists(file_path: str, work_dir: str | None) -> bool:
+    """Best-effort existence check used only to label write intent."""
+    try:
+        path = Path(file_path)
+        if not path.is_absolute() and work_dir:
+            path = Path(work_dir) / path
+        return path.exists()
+    except (OSError, ValueError):
+        return False
+
+
+def _file_tool_checkpoint_intent(
+    function_name: str,
+    function_args: dict,
+    file_path: str,
+    work_dir: str | None,
+) -> str:
+    """Describe the incoming file mutation without including path or content."""
+    if function_name == "write_file":
+        if _checkpoint_file_exists(file_path, work_dir):
+            return "overwriting file"
+        return "creating file"
+
+    if function_name == "patch":
+        patch_paths = _extract_v4a_patch_paths(function_args.get("patch"))
+        if len(patch_paths) > 1:
+            return "multi-file patch"
+        if function_args.get("replace_all"):
+            return "bulk replacement"
+        return "targeted patch"
+
+    return "file change"
+
+
+def _checkpoint_worktree_state_prefix(work_dir: str | None) -> str:
+    """Best-effort description of the worktree state being checkpointed."""
+    if not work_dir:
+        return "current worktree"
+
+    try:
+        result = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=work_dir,
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=False,
+        )
+    except Exception:
+        return "current worktree"
+
+    if result.returncode != 0:
+        return "current worktree"
+
+    changed_count = len([line for line in result.stdout.splitlines() if line.strip()])
+    if changed_count == 0:
+        return "clean worktree"
+    return f"dirty worktree ({changed_count} changed)"
+
+
+def _file_tool_checkpoint_reason(
+    function_name: str,
+    function_args: dict,
+    file_path: str,
+    work_dir: str | None,
+) -> str:
+    """Build a short state+intent checkpoint label for file mutations."""
+    state = _checkpoint_worktree_state_prefix(work_dir)
+    intent = _file_tool_checkpoint_intent(function_name, function_args, file_path, work_dir)
+    return f"{state} before {intent}"
+
+
+def _ensure_file_tool_checkpoint(checkpoint_mgr, function_name: str, function_args: dict) -> None:
+    """Create a checkpoint for file-mutating tools without blocking execution."""
+    file_path = _file_tool_checkpoint_target(function_name, function_args)
+    if not file_path:
+        return
+    work_dir = checkpoint_mgr.get_working_dir_for_path(file_path)
+    reason = _file_tool_checkpoint_reason(function_name, function_args, file_path, work_dir)
+    checkpoint_mgr.ensure_checkpoint(work_dir, reason)
 
 
 def _should_parallelize_tool_batch(tool_calls) -> bool:
@@ -10865,22 +11148,16 @@ class AIAgent:
             # Checkpoint for file-mutating tools
             if function_name in {"write_file", "patch"} and self._checkpoint_mgr.enabled:
                 try:
-                    file_path = function_args.get("path", "")
-                    if file_path:
-                        work_dir = self._checkpoint_mgr.get_working_dir_for_path(file_path)
-                        self._checkpoint_mgr.ensure_checkpoint(work_dir, f"before {function_name}")
+                    _ensure_file_tool_checkpoint(
+                        self._checkpoint_mgr, function_name, function_args
+                    )
                 except Exception:
                     pass
 
-            # Checkpoint before destructive terminal commands
+            # Checkpoint before destructive terminal commands or Codex implementation tasks
             if function_name == "terminal" and self._checkpoint_mgr.enabled:
                 try:
-                    cmd = function_args.get("command", "")
-                    if _is_destructive_command(cmd):
-                        cwd = function_args.get("workdir") or os.getenv("TERMINAL_CWD", os.getcwd())
-                        self._checkpoint_mgr.ensure_checkpoint(
-                            cwd, f"before terminal: {cmd[:60]}"
-                        )
+                    _ensure_terminal_tool_checkpoint(self._checkpoint_mgr, function_args)
                 except Exception:
                     pass
 
@@ -11329,24 +11606,16 @@ class AIAgent:
             # Checkpoint: snapshot working dir before file-mutating tools
             if not _execution_blocked and function_name in {"write_file", "patch"} and self._checkpoint_mgr.enabled:
                 try:
-                    file_path = function_args.get("path", "")
-                    if file_path:
-                        work_dir = self._checkpoint_mgr.get_working_dir_for_path(file_path)
-                        self._checkpoint_mgr.ensure_checkpoint(
-                            work_dir, f"before {function_name}"
-                        )
+                    _ensure_file_tool_checkpoint(
+                        self._checkpoint_mgr, function_name, function_args
+                    )
                 except Exception:
                     pass  # never block tool execution
 
-            # Checkpoint before destructive terminal commands
+            # Checkpoint before destructive terminal commands or Codex implementation tasks
             if not _execution_blocked and function_name == "terminal" and self._checkpoint_mgr.enabled:
                 try:
-                    cmd = function_args.get("command", "")
-                    if _is_destructive_command(cmd):
-                        cwd = function_args.get("workdir") or os.getenv("TERMINAL_CWD", os.getcwd())
-                        self._checkpoint_mgr.ensure_checkpoint(
-                            cwd, f"before terminal: {cmd[:60]}"
-                        )
+                    _ensure_terminal_tool_checkpoint(self._checkpoint_mgr, function_args)
                 except Exception:
                     pass  # never block tool execution
 

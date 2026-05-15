@@ -5896,7 +5896,8 @@ def _(rid, params: dict) -> dict:
                         {
                             "hash": c.get("hash", ""),
                             "timestamp": c.get("timestamp", ""),
-                            "message": c.get("message", ""),
+                            "message": c.get("reason", c.get("message", "")),
+                            "reason": c.get("reason", c.get("message", "")),
                         }
                         for c in mgr.list_checkpoints(cwd)
                     ],

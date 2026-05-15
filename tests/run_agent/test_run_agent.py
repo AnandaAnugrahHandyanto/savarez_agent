@@ -52,6 +52,63 @@ def test_is_destructive_command_treats_install_as_mutating():
     assert run_agent._is_destructive_command("install template.env .env") is True
 
 
+def test_codex_checkpoint_reason_extracts_direct_prompt(tmp_path):
+    cmd = "codex exec --sandbox workspace-write 'Implement checkpoint label handling'"
+
+    with patch(
+        "run_agent.subprocess.run",
+        return_value=SimpleNamespace(returncode=0, stdout="", stderr=""),
+    ):
+        reason = run_agent._codex_terminal_checkpoint_reason(cmd, str(tmp_path))
+
+    assert (
+        reason
+        == "clean worktree before codex ***implement checkpoint label handling*** plan implementation"
+    )
+
+
+def test_codex_checkpoint_reason_prefers_wrapper_prompt_file(tmp_path):
+    prompt_file = tmp_path / ".hermes" / "codex-prompts" / "slice.txt"
+    prompt_file.parent.mkdir(parents=True)
+    prompt_file.write_text(
+        "# Task\n\n- Checkpoint-label plan implementation for rollback labels.\n",
+        encoding="utf-8",
+    )
+    cmd = (
+        "python - <<'PY'\n"
+        "from pathlib import Path\n"
+        "import subprocess\n"
+        "prompt = Path('.hermes/codex-prompts/slice.txt').read_text()\n"
+        "subprocess.run(['codex', 'exec', '--sandbox', 'workspace-write', prompt])\n"
+        "PY"
+    )
+
+    with patch(
+        "run_agent.subprocess.run",
+        return_value=SimpleNamespace(returncode=0, stdout="", stderr=""),
+    ):
+        reason = run_agent._codex_terminal_checkpoint_reason(cmd, str(tmp_path))
+
+    assert (
+        reason
+        == "clean worktree before codex ***checkpoint-label plan implementation for rollback labels*** plan implementation"
+    )
+    assert ".hermes/codex-prompts/slice.txt" not in reason
+
+
+def test_codex_checkpoint_reason_falls_back_without_prompt(tmp_path):
+    with patch(
+        "run_agent.subprocess.run",
+        return_value=SimpleNamespace(returncode=0, stdout="", stderr=""),
+    ):
+        reason = run_agent._codex_terminal_checkpoint_reason(
+            "codex exec --sandbox workspace-write",
+            str(tmp_path),
+        )
+
+    assert reason == "clean worktree before codex task"
+
+
 @pytest.fixture()
 def agent():
     """Minimal AIAgent with mocked OpenAI client and tool loading."""
@@ -2128,6 +2185,259 @@ class TestConcurrentToolExecution:
         assert len(completes) == 2
         assert {entry[0] for entry in completes} == {"c1", "c2"}
         assert {entry[3] for entry in completes} == {'{"id":1}', '{"id":2}'}
+
+    def test_sequential_write_file_checkpoint_reason_describes_clean_overwrite(self, agent, tmp_path):
+        existing_file = tmp_path / "README.md"
+        existing_file.write_text("old", encoding="utf-8")
+        tool_call = _mock_tool_call(
+            name="write_file",
+            arguments='{"path":"README.md","content":"hello"}',
+            call_id="c1",
+        )
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tool_call])
+        messages = []
+        agent._checkpoint_mgr.enabled = True
+        agent._checkpoint_mgr.get_working_dir_for_path = MagicMock(return_value=str(tmp_path))
+        agent._checkpoint_mgr.ensure_checkpoint = MagicMock(return_value=True)
+
+        with (
+            patch("run_agent.handle_function_call", return_value='{"success": true}'),
+            patch(
+                "run_agent.subprocess.run",
+                return_value=SimpleNamespace(returncode=0, stdout="", stderr=""),
+            ),
+        ):
+            agent._execute_tool_calls_sequential(mock_msg, messages, "task-1")
+
+        agent._checkpoint_mgr.ensure_checkpoint.assert_called_once_with(
+            str(tmp_path), "clean worktree before overwriting file"
+        )
+        reason = agent._checkpoint_mgr.ensure_checkpoint.call_args.args[1]
+        assert "README.md" not in reason
+
+    def test_sequential_write_file_checkpoint_reason_describes_file_creation(self, agent, tmp_path):
+        tool_call = _mock_tool_call(
+            name="write_file",
+            arguments='{"path":"new-file.txt","content":"hello"}',
+            call_id="c1",
+        )
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tool_call])
+        messages = []
+        agent._checkpoint_mgr.enabled = True
+        agent._checkpoint_mgr.get_working_dir_for_path = MagicMock(return_value=str(tmp_path))
+        agent._checkpoint_mgr.ensure_checkpoint = MagicMock(return_value=True)
+
+        with (
+            patch("run_agent.handle_function_call", return_value='{"success": true}'),
+            patch(
+                "run_agent.subprocess.run",
+                return_value=SimpleNamespace(returncode=0, stdout="", stderr=""),
+            ),
+        ):
+            agent._execute_tool_calls_sequential(mock_msg, messages, "task-1")
+
+        agent._checkpoint_mgr.ensure_checkpoint.assert_called_once_with(
+            str(tmp_path), "clean worktree before creating file"
+        )
+        reason = agent._checkpoint_mgr.ensure_checkpoint.call_args.args[1]
+        assert "new-file.txt" not in reason
+
+    def test_checkpoint_reason_falls_back_when_worktree_state_is_unknown(self, agent, tmp_path):
+        existing_file = tmp_path / "README.md"
+        existing_file.write_text("old", encoding="utf-8")
+        tool_call = _mock_tool_call(
+            name="write_file",
+            arguments='{"path":"README.md","content":"hello"}',
+            call_id="c1",
+        )
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tool_call])
+        messages = []
+        agent._checkpoint_mgr.enabled = True
+        agent._checkpoint_mgr.get_working_dir_for_path = MagicMock(return_value=str(tmp_path))
+        agent._checkpoint_mgr.ensure_checkpoint = MagicMock(return_value=True)
+
+        with (
+            patch("run_agent.handle_function_call", return_value='{"success": true}'),
+            patch("run_agent.subprocess.run", side_effect=OSError("not git")),
+        ):
+            agent._execute_tool_calls_sequential(mock_msg, messages, "task-1")
+
+        agent._checkpoint_mgr.ensure_checkpoint.assert_called_once_with(
+            str(tmp_path), "current worktree before overwriting file"
+        )
+        reason = agent._checkpoint_mgr.ensure_checkpoint.call_args.args[1]
+        assert "README.md" not in reason
+
+    def test_concurrent_patch_checkpoint_reason_describes_dirty_targeted_patch(self, agent):
+        tool_call = _mock_tool_call(
+            name="patch",
+            arguments='{"path":"src/app.tsx","old_string":"old","new_string":"new"}',
+            call_id="c1",
+        )
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tool_call])
+        messages = []
+        agent._checkpoint_mgr.enabled = True
+        agent._checkpoint_mgr.get_working_dir_for_path = MagicMock(return_value="/work")
+        agent._checkpoint_mgr.ensure_checkpoint = MagicMock(return_value=True)
+
+        with (
+            patch("run_agent.handle_function_call", return_value='{"success": true}'),
+            patch(
+                "run_agent.subprocess.run",
+                return_value=SimpleNamespace(
+                    returncode=0,
+                    stdout=" M src/app.tsx\n?? notes.txt\n",
+                    stderr="",
+                ),
+            ),
+        ):
+            agent._execute_tool_calls_concurrent(mock_msg, messages, "task-1")
+
+        agent._checkpoint_mgr.ensure_checkpoint.assert_called_once_with(
+            "/work", "dirty worktree (2 changed) before targeted patch"
+        )
+        reason = agent._checkpoint_mgr.ensure_checkpoint.call_args.args[1]
+        assert reason.startswith("dirty worktree")
+        assert "targeted patch" in reason
+        assert "src/app.tsx" not in reason
+
+    def test_concurrent_replace_all_checkpoint_reason_describes_bulk_replacement(self, agent):
+        tool_call = _mock_tool_call(
+            name="patch",
+            arguments='{"path":"src/app.tsx","old_string":"old","new_string":"new","replace_all":true}',
+            call_id="c1",
+        )
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tool_call])
+        messages = []
+        agent._checkpoint_mgr.enabled = True
+        agent._checkpoint_mgr.get_working_dir_for_path = MagicMock(return_value="/work")
+        agent._checkpoint_mgr.ensure_checkpoint = MagicMock(return_value=True)
+
+        with (
+            patch("run_agent.handle_function_call", return_value='{"success": true}'),
+            patch(
+                "run_agent.subprocess.run",
+                return_value=SimpleNamespace(returncode=0, stdout="", stderr=""),
+            ),
+        ):
+            agent._execute_tool_calls_concurrent(mock_msg, messages, "task-1")
+
+        agent._checkpoint_mgr.ensure_checkpoint.assert_called_once_with(
+            "/work", "clean worktree before bulk replacement"
+        )
+        reason = agent._checkpoint_mgr.ensure_checkpoint.call_args.args[1]
+        assert "src/app.tsx" not in reason
+
+    def test_v4a_patch_without_path_checkpoint_reason_uses_state_and_intent(self, agent):
+        patch_text = (
+            "*** Begin Patch\n"
+            "*** Update File: src/app.tsx\n"
+            "@@\n"
+            "-old\n"
+            "+new\n"
+            "*** Add File: src/other.ts\n"
+            "+hello\n"
+            "*** End Patch"
+        )
+        tool_call = _mock_tool_call(
+            name="patch",
+            arguments=json.dumps({"mode": "patch", "patch": patch_text}),
+            call_id="c1",
+        )
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tool_call])
+        messages = []
+        agent._checkpoint_mgr.enabled = True
+        agent._checkpoint_mgr.get_working_dir_for_path = MagicMock(return_value="/work")
+        agent._checkpoint_mgr.ensure_checkpoint = MagicMock(return_value=True)
+
+        with (
+            patch("run_agent.handle_function_call", return_value='{"success": true}'),
+            patch(
+                "run_agent.subprocess.run",
+                return_value=SimpleNamespace(returncode=0, stdout="", stderr=""),
+            ),
+        ):
+            agent._execute_tool_calls_sequential(mock_msg, messages, "task-1")
+
+        agent._checkpoint_mgr.get_working_dir_for_path.assert_called_once_with("src/app.tsx")
+        agent._checkpoint_mgr.ensure_checkpoint.assert_called_once_with(
+            "/work", "clean worktree before multi-file patch"
+        )
+        reason = agent._checkpoint_mgr.ensure_checkpoint.call_args.args[1]
+        assert "src/app.tsx" not in reason
+        assert "src/other.ts" not in reason
+        assert "old" not in reason
+        assert "new" not in reason
+
+    def test_sequential_terminal_codex_checkpoint_reason_describes_task(self, agent, tmp_path):
+        command = "codex exec --sandbox workspace-write 'Implement rollback checkpoint labels'"
+        tool_call = _mock_tool_call(
+            name="terminal",
+            arguments=json.dumps({"command": command, "workdir": str(tmp_path)}),
+            call_id="c1",
+        )
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tool_call])
+        messages = []
+        agent._checkpoint_mgr.enabled = True
+        agent._checkpoint_mgr.ensure_checkpoint = MagicMock(return_value=True)
+
+        with (
+            patch("run_agent.handle_function_call", return_value='{"success": true}'),
+            patch(
+                "run_agent.subprocess.run",
+                return_value=SimpleNamespace(returncode=0, stdout="", stderr=""),
+            ),
+        ):
+            agent._execute_tool_calls_sequential(mock_msg, messages, "task-1")
+
+        agent._checkpoint_mgr.ensure_checkpoint.assert_called_once_with(
+            str(tmp_path),
+            "clean worktree before codex ***implement rollback checkpoint labels*** plan implementation",
+        )
+        reason = agent._checkpoint_mgr.ensure_checkpoint.call_args.args[1]
+        assert command not in reason
+
+    def test_concurrent_terminal_codex_checkpoint_reason_reads_prompt_file(self, agent, tmp_path):
+        prompt_file = tmp_path / ".hermes" / "codex-prompts" / "slice.txt"
+        prompt_file.parent.mkdir(parents=True)
+        prompt_file.write_text(
+            "Checkpoint-label plan implementation\n\nUse semantic rollback labels.",
+            encoding="utf-8",
+        )
+        command = (
+            "python - <<'PY'\n"
+            "from pathlib import Path\n"
+            "import subprocess\n"
+            "prompt = Path('.hermes/codex-prompts/slice.txt').read_text()\n"
+            "subprocess.run(['codex', 'exec', '--sandbox', 'workspace-write', prompt])\n"
+            "PY"
+        )
+        tool_call = _mock_tool_call(
+            name="terminal",
+            arguments=json.dumps({"command": command, "workdir": str(tmp_path)}),
+            call_id="c1",
+        )
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tool_call])
+        messages = []
+        agent._checkpoint_mgr.enabled = True
+        agent._checkpoint_mgr.ensure_checkpoint = MagicMock(return_value=True)
+
+        with (
+            patch("run_agent.handle_function_call", return_value='{"success": true}'),
+            patch(
+                "run_agent.subprocess.run",
+                return_value=SimpleNamespace(returncode=0, stdout=" M run_agent.py\n", stderr=""),
+            ),
+        ):
+            agent._execute_tool_calls_concurrent(mock_msg, messages, "task-1")
+
+        agent._checkpoint_mgr.ensure_checkpoint.assert_called_once_with(
+            str(tmp_path),
+            "dirty worktree (1 changed) before codex ***checkpoint-label*** plan implementation",
+        )
+        reason = agent._checkpoint_mgr.ensure_checkpoint.call_args.args[1]
+        assert ".hermes/codex-prompts/slice.txt" not in reason
+        assert command not in reason
 
     def test_invoke_tool_handles_agent_level_tools(self, agent):
         """_invoke_tool should handle todo tool directly."""
