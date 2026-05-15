@@ -374,7 +374,7 @@ def _prepend_shell_init(cmd_string: str, files: list[str]) -> str:
     # environment and makes console entry points like `hermes` disappear in
     # terminal-tool subprocesses.
     critical_bins: list[str] = []
-    current_python_bin = str(Path(sys.executable).resolve().parent)
+    current_python_bin = str(Path(sys.executable).parent)
     if current_python_bin:
         critical_bins.append(current_python_bin)
     hermes_home = os.getenv("HERMES_HOME", "").strip()

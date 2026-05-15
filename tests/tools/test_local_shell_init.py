@@ -276,6 +276,11 @@ class TestSnapshotEndToEnd:
         profile.write_text('export PATH="/usr/local/bin:/usr/bin"\n')
         monkeypatch.setenv("HOME", str(tmp_path))
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes-home"))
+        fake_venv_bin = tmp_path / "venv" / "bin"
+        fake_venv_bin.mkdir(parents=True)
+        fake_python = fake_venv_bin / "python"
+        fake_python.symlink_to("/usr/bin/python3")
+        monkeypatch.setattr(sys, "executable", str(fake_python))
 
         with patch(
             "tools.environments.local._read_terminal_shell_init_config",
@@ -288,5 +293,5 @@ class TestSnapshotEndToEnd:
                 env.cleanup()
 
         output = result.get("output", "")
-        expected_python_bin = str(Path(sys.executable).resolve().parent)
+        expected_python_bin = str(Path(sys.executable).parent)
         assert expected_python_bin in output

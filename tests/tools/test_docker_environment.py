@@ -291,7 +291,7 @@ def test_prepend_runtime_path_readds_hermes_bins(monkeypatch, tmp_path):
     fake_venv_bin = tmp_path / "venv" / "bin"
     fake_venv_bin.mkdir(parents=True)
     fake_python = fake_venv_bin / "python"
-    fake_python.write_text("#!/bin/sh\n")
+    fake_python.symlink_to("/usr/bin/python3")
 
     hermes_home = tmp_path / "hermes-home"
     monkeypatch.setattr(docker_env.sys, "executable", str(fake_python))
@@ -308,7 +308,7 @@ def test_resolve_self_image_sandbox_uses_current_container_image(monkeypatch, tm
     fake_venv_bin = tmp_path / "venv" / "bin"
     fake_venv_bin.mkdir(parents=True)
     fake_python = fake_venv_bin / "python"
-    fake_python.write_text("#!/bin/sh\n")
+    fake_python.symlink_to("/usr/bin/python3")
     (fake_venv_bin / "hermes").write_text("#!/bin/sh\n")
 
     monkeypatch.setattr(docker_env.sys, "executable", str(fake_python))

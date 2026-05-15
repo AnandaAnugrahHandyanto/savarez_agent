@@ -110,7 +110,7 @@ def _prepend_runtime_path(cmd_string: str) -> str:
     bin and ``{HERMES_HOME}/.local/bin`` before the snapshot bootstrap runs.
     """
     critical_bins: list[str] = []
-    current_python_bin = str(Path(sys.executable).resolve().parent)
+    current_python_bin = str(Path(sys.executable).parent)
     if current_python_bin:
         critical_bins.append(current_python_bin)
     hermes_home = os.getenv("HERMES_HOME", "").strip()
@@ -161,7 +161,7 @@ def _resolve_self_image_sandbox(
     if requested_image != _GENERIC_DOCKER_SANDBOX_IMAGE:
         return requested_image, []
 
-    current_python_bin = Path(sys.executable).resolve().parent
+    current_python_bin = Path(sys.executable).parent
     if not (current_python_bin / "hermes").exists():
         return requested_image, []
 
