@@ -2787,7 +2787,26 @@ class TelegramAdapter(BasePlatformAdapter):
                                     {"thread_id": str(thread_id)},
                                 )
                             )
-                        await self._send_message_with_thread_fallback(**send_kwargs)
+                        try:
+                            await self._send_message_with_thread_fallback(**send_kwargs)
+                        except Exception as send_exc:
+                            err_text = str(send_exc).lower()
+                            if (
+                                "parse" in err_text
+                                or "markdown" in err_text
+                                or "entity" in err_text
+                            ):
+                                logger.warning(
+                                    "[%s] slash-confirm MarkdownV2 send failed, falling back to plain text: %s",
+                                    self.name,
+                                    send_exc,
+                                )
+                                plain_kwargs = dict(send_kwargs)
+                                plain_kwargs["text"] = _strip_mdv2(str(send_kwargs.get("text", "")))
+                                plain_kwargs.pop("parse_mode", None)
+                                await self._send_message_with_thread_fallback(**plain_kwargs)
+                            else:
+                                raise
                 except Exception as exc:
                     logger.error("[%s] slash-confirm callback failed: %s", self.name, exc, exc_info=True)
             return
