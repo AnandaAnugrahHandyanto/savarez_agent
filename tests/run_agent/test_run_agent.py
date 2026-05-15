@@ -3454,6 +3454,7 @@ class TestRunConversation:
 
         agent._interruptible_api_call = _fake_api_call
         agent._compress_context = MagicMock()
+        agent._vprint = MagicMock()
 
         mock_classify.return_value = ClassifiedError(
             reason=FailoverReason.context_overflow,
@@ -3472,9 +3473,14 @@ class TestRunConversation:
 
         assert result["completed"] is True
         agent._compress_context.assert_not_called()
+        # The user-facing log must mention reducing the output cap
+        assert any(
+            "Output cap too large for current prompt" in str(call)
+            for call in agent._vprint.call_args_list
+        )
         # Two API calls: error then retry
         assert len(captured_kwargs) == 2
-        # The retry must use a reduced max_tokens (available_out=1000, safe_out=1000-64=936)
+        # The retry must use the reduced max_tokens: safe_out = available_out - 64 = 1000 - 64 = 936
         assert captured_kwargs[1].get("max_tokens") == 936
 
     @patch("run_agent.parse_available_output_tokens_from_error")
