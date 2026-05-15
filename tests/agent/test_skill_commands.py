@@ -111,6 +111,17 @@ class TestScanSkillCommands:
         assert "/enabled-skill" in result
         assert "/disabled-skill" not in result
 
+    def test_skips_arbitrary_hidden_directories(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "visible-skill")
+            _make_skill(tmp_path, "cursor-copy", category=".cursor/skills")
+            _make_skill(tmp_path, "opencode-copy", category="visible/.opencode")
+            result = scan_skill_commands()
+
+        assert "/visible-skill" in result
+        assert "/cursor-copy" not in result
+        assert "/opencode-copy" not in result
+
     def test_finds_skills_in_symlinked_category_dir(self, tmp_path):
         external_root = tmp_path / "repo"
         skills_root = tmp_path / "skills"

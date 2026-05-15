@@ -267,6 +267,15 @@ class TestFindAllSkills:
         assert len(skills) == 1
         assert skills[0]["name"] == "real-skill"
 
+    def test_skips_arbitrary_hidden_directories(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "real-skill")
+            _make_skill(tmp_path, "cursor-copy", category=".cursor/skills")
+            _make_skill(tmp_path, "opencode-copy", category="visible/.opencode")
+            skills = _find_all_skills()
+
+        assert [s["name"] for s in skills] == ["real-skill"]
+
     def test_finds_skills_in_symlinked_category_dir(self, tmp_path):
         external_root = tmp_path / "repo"
         skills_root = tmp_path / "skills"
@@ -419,6 +428,17 @@ class TestSkillView:
         assert result["success"] is False
         assert "not found" in result["error"].lower()
         assert "available_skills" in result
+
+    def test_view_skips_arbitrary_hidden_directories(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "visible-skill")
+            _make_skill(tmp_path, "cursor-copy", category=".cursor/skills")
+            raw = skill_view("cursor-copy")
+
+        result = json.loads(raw)
+        assert result["success"] is False
+        assert "visible-skill" in result["available_skills"]
+        assert "cursor-copy" not in result["available_skills"]
 
     def test_view_reference_file(self, tmp_path):
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
