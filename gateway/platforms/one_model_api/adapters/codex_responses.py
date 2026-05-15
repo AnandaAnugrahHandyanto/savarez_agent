@@ -49,11 +49,19 @@ class CodexResponsesAdapter(PassthroughProtocolAdapter):
                 codex_kwargs=codex_kwargs,
                 requested_model=requested_model,
                 default_model=server._model_name,
+                stop=payload.get("stop"),
             )
 
         response = await collect_codex_stream(client, codex_kwargs)
         return web.json_response(
-            codex_to_chat_payload(response, requested_model=requested_model, default_model=server._model_name)
+            codex_to_chat_payload(
+                response,
+                requested_model=requested_model,
+                default_model=server._model_name,
+                stop=payload.get("stop"),
+                tool_choice=payload.get("tool_choice") or payload.get("function_call"),
+                tools=codex_kwargs.get("tools"),
+            )
         )
 
     async def responses(
@@ -88,5 +96,10 @@ class CodexResponsesAdapter(PassthroughProtocolAdapter):
 
         response = await collect_codex_stream(client, codex_kwargs)
         return web.json_response(
-            codex_to_response_payload(response, requested_model=requested_model, default_model=server._model_name)
+            codex_to_response_payload(
+                response,
+                requested_model=requested_model,
+                default_model=server._model_name,
+                stop=chat_payload.get("stop"),
+            )
         )

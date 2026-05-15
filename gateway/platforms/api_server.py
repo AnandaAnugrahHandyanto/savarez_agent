@@ -607,6 +607,10 @@ class APIServerAdapter(BasePlatformAdapter):
         self._model_name: str = self._resolve_model_name(
             extra.get("model_name", os.getenv("API_SERVER_MODEL_NAME", "")),
         )
+        self._allowed_model_names: tuple[str, ...] = self._parse_allowed_model_names(
+            extra.get("allowed_models", os.getenv("API_SERVER_ALLOWED_MODELS", "")),
+            self._model_name,
+        )
         self._app: Optional["web.Application"] = None
         self._runner: Optional["web.AppRunner"] = None
         self._site: Optional["web.TCPSite"] = None
@@ -640,6 +644,35 @@ class APIServerAdapter(BasePlatformAdapter):
             items = [str(value)]
 
         return tuple(str(item).strip() for item in items if str(item).strip())
+
+    @staticmethod
+    def _parse_allowed_model_names(value: Any, default_model: str) -> tuple[str, ...]:
+        """Build the passthrough model whitelist. Defaults to the advertised model only."""
+        names: list[str] = []
+        if default_model and str(default_model).strip():
+            names.append(str(default_model).strip())
+        if value:
+            items = value.split(",") if isinstance(value, str) else value
+            if not isinstance(items, (list, tuple, set)):
+                items = [str(items)]
+            for item in items:
+                name = str(item).strip()
+                if name and name not in names:
+                    names.append(name)
+        return tuple(names)
+
+    def _validate_passthrough_model(self, requested_model: str) -> Optional["web.Response"]:
+        """Reject unknown client-facing model names before passthrough fallback."""
+        if not requested_model or requested_model in self._allowed_model_names:
+            return None
+        allowed = ", ".join(self._allowed_model_names) or self._model_name
+        return web.json_response(
+            _openai_error(
+                f"Unknown model {requested_model!r}. Allowed model(s): {allowed}.",
+                code="model_not_found",
+            ),
+            status=400,
+        )
 
     @staticmethod
     def _resolve_model_name(explicit: str) -> str:
@@ -1025,6 +1058,9 @@ class APIServerAdapter(BasePlatformAdapter):
         try:
             runtime = _resolve_runtime_agent_kwargs()
             payload, requested_model = self._passthrough_payload(body)
+            model_err = self._validate_passthrough_model(requested_model)
+            if model_err is not None:
+                return model_err
             api_mode = str(runtime.get("api_mode") or "").strip().lower()
             if not runtime.get("api_key"):
                 return web.json_response(_openai_error("No upstream API key resolved from Hermes config.", code="missing_upstream_api_key"), status=500)
@@ -2166,6 +2202,9 @@ class APIServerAdapter(BasePlatformAdapter):
 
             chat_payload = responses_to_chat_payload(body, default_model=self._model_name)
             _, requested_model = self._passthrough_payload(chat_payload)
+            model_err = self._validate_passthrough_model(requested_model)
+            if model_err is not None:
+                return model_err
             logger.info("Passthrough responses: base_url=%s model=%s payload_keys=%s", runtime.get("base_url"), chat_payload.get("model"), list(chat_payload.keys()))
             api_mode = str(runtime.get("api_mode") or "").strip().lower()
             if not runtime.get("api_key"):
