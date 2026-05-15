@@ -64,7 +64,14 @@ def _load_skill_payload(skill_identifier: str, task_id: str | None = None) -> tu
             try:
                 normalized = str(identifier_path.resolve().relative_to(SKILLS_DIR.resolve()))
             except Exception:
-                normalized = raw_identifier
+                # External skill dir (outside SKILLS_DIR): extract the skill
+                # directory name so skill_view() can search for it by name
+                # across all registered skill directories (including
+                # external_dirs).  Using the full absolute path here would
+                # cause skill_view() to pass it through to rglob() which
+                # raises NotImplementedError on some platforms.
+                # See #26337.
+                normalized = identifier_path.name
         else:
             normalized = raw_identifier.lstrip("/")
 
