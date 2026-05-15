@@ -1148,6 +1148,27 @@ class TestTelegramMenuCommands:
 
 
 # ---------------------------------------------------------------------------
+# Path completion helpers
+# ---------------------------------------------------------------------------
+
+class TestPathCompletionHelpers:
+    def test_extract_path_word_preserves_spaces_in_prefixed_paths(self):
+        assert (
+            SlashCommandCompleter._extract_path_word("open ./My Documents/file.txt")
+            == "./My Documents/file.txt"
+        )
+
+    def test_extract_path_word_preserves_completed_directory_with_space(self):
+        assert (
+            SlashCommandCompleter._extract_path_word("./My Documents/")
+            == "./My Documents/"
+        )
+
+    def test_extract_path_word_still_ignores_plain_words(self):
+        assert SlashCommandCompleter._extract_path_word("hello world") is None
+
+
+# ---------------------------------------------------------------------------
 # Backward-compat aliases
 # ---------------------------------------------------------------------------
 

@@ -1178,11 +1178,23 @@ class SlashCommandCompleter(Completer):
         """
         if not text:
             return None
-        # Walk backwards to find the start of the current "word".
-        # Words are delimited by spaces, but paths can contain almost anything.
+        # Walk backwards to find the start of the current "word".  Spaces
+        # normally delimit words, but they can also be part of path tokens such
+        # as ``./My Documents/file.txt``.  Keep walking across spaces inside a
+        # path, but stop at the argument boundary before explicit path prefixes
+        # like ``./`` and ``~/`` so command text is not included.
         i = len(text) - 1
-        while i >= 0 and text[i] != " ":
-            i -= 1
+        while i >= 0:
+            if text[i] != " ":
+                i -= 1
+                continue
+            rest = text[i + 1:]
+            if rest.startswith(("./", "../", "~/", "/")):
+                break
+            if "/" in rest:
+                i -= 1
+                continue
+            break
         word = text[i + 1:]
         if not word:
             return None
