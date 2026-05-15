@@ -37,6 +37,7 @@ import logging
 import mimetypes
 import os
 import re
+import tempfile
 import time
 import uuid
 from datetime import datetime, timezone
@@ -67,6 +68,10 @@ from gateway.platforms.base import (
     SendResult,
     cache_document_from_bytes,
     cache_image_from_bytes,
+    get_audio_cache_dir,
+    get_document_cache_dir,
+    get_image_cache_dir,
+    get_video_cache_dir,
 )
 
 logger = logging.getLogger(__name__)
@@ -1089,6 +1094,28 @@ class WeComAdapter(BasePlatformAdapter):
         parsed = urlparse(str(media_source or ""))
         return parsed.scheme in {"http", "https"}
 
+    @staticmethod
+    def _allowed_outbound_media_dirs() -> List[Path]:
+        """Directories whose local files may be uploaded as outbound media."""
+        return [
+            get_image_cache_dir().resolve(),
+            get_audio_cache_dir().resolve(),
+            get_video_cache_dir().resolve(),
+            get_document_cache_dir().resolve(),
+            Path(tempfile.gettempdir()).resolve(),
+        ]
+
+    @classmethod
+    def _validate_outbound_media_path(cls, local_path: Path) -> Path:
+        """Resolve and require ``local_path`` to stay inside media-safe dirs."""
+        resolved = local_path.resolve()
+        for allowed_dir in cls._allowed_outbound_media_dirs():
+            if resolved.is_relative_to(allowed_dir):
+                return resolved
+        raise PermissionError(
+            "Outbound WeCom media path is outside allowed media directories"
+        )
+
     async def _load_outbound_media(
         self,
         media_source: str,
@@ -1109,12 +1136,17 @@ class WeComAdapter(BasePlatformAdapter):
             return data, content_type, resolved_name
 
         if parsed.scheme == "file":
+            if parsed.netloc and parsed.netloc not in {"localhost", "127.0.0.1"}:
+                raise ValueError(
+                    f"Unsupported file URL host for WeCom media: {parsed.netloc}"
+                )
             local_path = Path(unquote(parsed.path)).expanduser()
         else:
             local_path = Path(source).expanduser()
 
         if not local_path.is_absolute():
-            local_path = (Path.cwd() / local_path).resolve()
+            local_path = Path.cwd() / local_path
+        local_path = self._validate_outbound_media_path(local_path)
 
         if not local_path.exists() or not local_path.is_file():
             raise FileNotFoundError(f"Media file not found: {local_path}")
