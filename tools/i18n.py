@@ -70,8 +70,6 @@ def format_zh(text: str, **kwargs) -> str:
     }
 
     translations = {
-        # Circuit breaker
-        "Auxiliary Model": "辅助模型",
         # Compression feedback
         "Compressing": "正在压缩",
         "Compressed:": "已压缩:",
@@ -380,7 +378,7 @@ def format_zh(text: str, **kwargs) -> str:
         if kwargs:
             try:
                 return text.format(**kwargs)
-            except (KeyError, ValueError):
+            except (KeyError, IndexError, ValueError):
                 return text
         return text
 
@@ -391,21 +389,26 @@ def format_zh(text: str, **kwargs) -> str:
         if kwargs:
             try:
                 return result.format(**kwargs)
-            except (KeyError, ValueError):
+            except (KeyError, IndexError, ValueError):
                 return result
         return result
 
     # 2. Fall back to substring replacements for known phrases
+    #
+    # IMPORTANT: Apply format() FIRST so named placeholders ({name}, {cmd})
+    # are resolved to their actual values BEFORE substring replacement runs.
+    # Otherwise a Chinese translation value containing {0} (positional
+    # placeholder) can corrupt the result — format() with **kwargs then
+    # raises IndexError ("Replacement index 0 out of range").
     result = text
-    for en, zh in translations.items():
-        if en in result:
-            result = result.replace(en, zh)
-    
-    # Then apply format arguments
     if kwargs:
         try:
             result = result.format(**kwargs)
-        except (KeyError, ValueError):
+        except (KeyError, IndexError, ValueError):
             pass
-    
+
+    for en, zh in translations.items():
+        if en in result:
+            result = result.replace(en, zh)
+
     return result

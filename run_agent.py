@@ -3365,9 +3365,8 @@ class AIAgent:
                     tool_name, consecutive, suggestion[:100],
                 )
                 import sys as _sys
-                from tools.i18n import format_zh
                 _sug_clean = suggestion[:120].replace('\n', ' ')
-                print(f"\033[90m  ┊ 🤖 {format_zh('Auxiliary Model')}  {_sug_clean}\033[0m",
+                print(f"\033[90m  ┊ 🤖 辅助模型  {_sug_clean}\033[0m",
                       flush=True, file=_sys.stderr)
                 return (
                     f"[辅助模型建议] 工具 '{tool_name}' 已连续调用 {consecutive} 次，"
