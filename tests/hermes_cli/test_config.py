@@ -8,6 +8,7 @@ import yaml
 
 from hermes_cli.config import (
     DEFAULT_CONFIG,
+    OPTIONAL_ENV_VARS,
     get_hermes_home,
     ensure_hermes_home,
     get_compatible_custom_providers,
@@ -725,6 +726,17 @@ class TestDiscordChannelPromptsConfig:
         assert raw["_config_version"] == DEFAULT_CONFIG["_config_version"]
         assert raw["discord"]["auto_thread"] is True
         assert raw["discord"]["channel_prompts"] == {}
+
+
+class TestDiscordAutoThreadEnvMetadata:
+    def test_discord_auto_thread_is_exposed_to_setup_metadata(self):
+        metadata = OPTIONAL_ENV_VARS["DISCORD_AUTO_THREAD"]
+
+        assert metadata["category"] == "messaging"
+        assert metadata["password"] is False
+        assert metadata["advanced"] is True
+        assert "default: true" in metadata["description"]
+        assert "true/false" in metadata["prompt"]
 
 
 class TestUserMessagePreviewConfig:
