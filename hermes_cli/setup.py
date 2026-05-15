@@ -486,6 +486,8 @@ def _print_setup_summary(config: dict, hermes_home):
         tool_status.append(("Text-to-Speech (OpenAI)", True, None))
     elif tts_provider == "minimax" and get_env_value("MINIMAX_API_KEY"):
         tool_status.append(("Text-to-Speech (MiniMax)", True, None))
+    elif tts_provider == "senseaudio" and get_env_value("SENSEAUDIO_API_KEY"):
+        tool_status.append(("Text-to-Speech (SenseAudio)", True, None))
     elif tts_provider == "mistral" and get_env_value("MISTRAL_API_KEY"):
         tool_status.append(("Text-to-Speech (Mistral Voxtral)", True, None))
     elif tts_provider == "gemini" and (get_env_value("GEMINI_API_KEY") or get_env_value("GOOGLE_API_KEY")):
@@ -1103,6 +1105,7 @@ def _setup_tts_provider(config: dict):
         "openai": "OpenAI TTS",
         "xai": "xAI TTS",
         "minimax": "MiniMax TTS",
+        "senseaudio": "SenseAudio TTS",
         "mistral": "Mistral Voxtral TTS",
         "gemini": "Google Gemini TTS",
         "neutts": "NeuTTS",
@@ -1127,13 +1130,14 @@ def _setup_tts_provider(config: dict):
             "OpenAI TTS (good quality, needs API key)",
             "xAI TTS (Grok voices, needs API key)",
             "MiniMax TTS (high quality with voice cloning, needs API key)",
+            "SenseAudio TTS (Mandarin-focused, needs API key)",
             "Mistral Voxtral TTS (multilingual, native Opus, needs API key)",
             "Google Gemini TTS (30 prebuilt voices, prompt-controllable, needs API key)",
             "NeuTTS (local on-device, free, ~300MB model download)",
             "KittenTTS (local on-device, free, lightweight ~25-80MB ONNX)",
         ]
     )
-    providers.extend(["edge", "elevenlabs", "openai", "xai", "minimax", "mistral", "gemini", "neutts", "kittentts"])
+    providers.extend(["edge", "elevenlabs", "openai", "xai", "minimax", "senseaudio", "mistral", "gemini", "neutts", "kittentts"])
     choices.append(f"Keep current ({current_label})")
     keep_current_idx = len(choices) - 1
     idx = prompt_choice("Select TTS provider:", choices, keep_current_idx)
@@ -1230,6 +1234,18 @@ def _setup_tts_provider(config: dict):
             if api_key:
                 save_env_value("MINIMAX_API_KEY", api_key)
                 print_success("MiniMax TTS API key saved")
+            else:
+                print_warning("No API key provided. Falling back to Edge TTS.")
+                selected = "edge"
+
+    elif selected == "senseaudio":
+        existing = get_env_value("SENSEAUDIO_API_KEY")
+        if not existing:
+            print()
+            api_key = prompt("SenseAudio API key for TTS", password=True)
+            if api_key:
+                save_env_value("SENSEAUDIO_API_KEY", api_key)
+                print_success("SenseAudio TTS API key saved")
             else:
                 print_warning("No API key provided. Falling back to Edge TTS.")
                 selected = "edge"
