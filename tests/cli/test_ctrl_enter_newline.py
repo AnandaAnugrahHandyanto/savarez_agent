@@ -51,6 +51,14 @@ def test_windows_terminal_session_preserves_newline():
             assert cli_mod._preserve_ctrl_enter_newline() is True
 
 
+def test_macos_preserves_newline():
+    """macOS terminals (Terminal.app, iTerm2, VSCode) reliably send CR for Enter,
+    so the thin-PTY workaround is unnecessary. c-j should be a newline."""
+    import cli as cli_mod
+    with patch.object(sys, "platform", "darwin"):
+        assert cli_mod._preserve_ctrl_enter_newline() is True
+
+
 def test_pure_local_linux_does_not_preserve():
     """A bare local Linux TTY (no SSH/WSL/WT) keeps c-j → submit so docker exec
     style Enter-as-LF stays usable."""

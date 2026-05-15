@@ -2184,6 +2184,11 @@ def _preserve_ctrl_enter_newline() -> bool:
     """
     if sys.platform == "win32":
         return True
+    if sys.platform == "darwin":
+        # macOS terminals (Terminal.app, iTerm2, VSCode) reliably send CR
+        # for Enter, so the thin-PTY workaround is unnecessary. Let c-j be
+        # a newline keystroke instead.
+        return True
     if any(os.environ.get(v) for v in ("SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY")):
         return True
     if os.environ.get("WT_SESSION"):
@@ -2204,15 +2209,14 @@ def _preserve_ctrl_enter_newline() -> bool:
 def _bind_prompt_submit_keys(kb, handler) -> None:
     """Bind terminal Enter forms to the submit handler.
 
-    Enter is always submit. On POSIX we also bind c-j (LF) to submit because
+    Enter is always submit. On Linux we also bind c-j (LF) to submit because
     some thin PTYs (docker exec, certain SSH flavors) deliver Enter as LF
     instead of CR — without this, Enter appears dead on those terminals.
 
-    Exception: on Windows, WSL, SSH sessions, and Windows Terminal,
-    c-j is the wire encoding of Ctrl+Enter (a distinct keystroke from
-    plain Enter / c-m). We leave c-j unbound there so the c-j newline
-    handler registered separately can fire — giving the user an
-    Enter-involving newline keystroke without terminal settings changes.
+    Exception: on macOS, Windows, WSL, SSH sessions, and Windows Terminal,
+    c-j is left unbound so the c-j newline handler registered separately
+    can fire. macOS terminals (Terminal.app, iTerm2, VSCode) reliably send
+    CR for Enter, so the thin-PTY workaround is unnecessary there.
     See _preserve_ctrl_enter_newline() and issue #22379.
     """
     kb.add("enter")(handler)
