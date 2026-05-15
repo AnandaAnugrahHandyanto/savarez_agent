@@ -972,7 +972,7 @@ class TestNewEndpoints:
             "top_skills": [],
         }
 
-    def test_analytics_models_uses_to_thread(self, monkeypatch):
+    def test_analytics_models_uses_asyncio_to_thread(self, monkeypatch):
         import hermes_cli.web_server as web_server
 
         calls = {}
