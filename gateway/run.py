@@ -5390,9 +5390,12 @@ class GatewayRunner:
             Platform.QQBOT: "QQ_ALLOW_ALL_USERS",
             Platform.YUANBAO: "YUANBAO_ALLOW_ALL_USERS",
         }
-        # Bots admitted by {PLATFORM}_ALLOW_BOTS bypass the human allowlist (#4466).
+        # Bots admitted by {PLATFORM}_ALLOW_BOTS bypass the human allowlist for
+        # platforms whose adapter authenticates the bot/app identity before this
+        # gateway-level check. Discord bot/webhook messages must still pass the
+        # normal user allowlist or pairing checks below because DISCORD_ALLOW_BOTS
+        # only gates message shape/mention policy, not sender identity.
         platform_allow_bots_map = {
-            Platform.DISCORD: "DISCORD_ALLOW_BOTS",
             Platform.FEISHU: "FEISHU_ALLOW_BOTS",
         }
 
