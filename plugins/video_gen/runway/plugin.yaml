@@ -1,0 +1,7 @@
+name: runway
+version: 1.0.0
+description: "RunwayML video generation backend. Gen-3 Alpha — text-to-video and image-to-video with cinematic quality."
+author: 0z1
+kind: backend
+requires_env:
+  - RUNWAY_API_KEY

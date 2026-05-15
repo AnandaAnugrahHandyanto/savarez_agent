@@ -1,0 +1,7 @@
+name: luma
+version: 1.0.0
+description: "Luma Dream Machine video generation backend. Photorealistic text-to-video and image-to-video with cinematic quality."
+author: 0z1
+kind: backend
+requires_env:
+  - LUMA_API_KEY
