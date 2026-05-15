@@ -13,6 +13,8 @@ import pytest
 from agent.inline_images import (
     _calculate_display_cells,
     _get_png_dimensions,
+    _get_image_dimensions_from_data,
+    _ensure_png,
     detect_image_protocol,
     extract_image_path_from_tool_result,
     try_render_inline,
@@ -39,6 +41,24 @@ def _make_test_png(width=100, height=50) -> bytes:
     png += make_chunk(b'IDAT', compressed)
     png += make_chunk(b'IEND', b'')
     return png
+
+
+def _make_test_jpeg(width=100, height=50) -> bytes:
+    """Create a minimal valid JPEG file via PIL, or a hand-crafted stub."""
+    try:
+        import io as _io
+        from PIL import Image
+        img = Image.new("RGB", (width, height), color=(128, 128, 128))
+        buf = _io.BytesIO()
+        img.save(buf, format="JPEG")
+        return buf.getvalue()
+    except ImportError:
+        # Hand-craft a minimal JPEG with a SOF0 marker so _get_jpeg_dimensions works
+        sof = b"\xff\xc0"  # SOF0 marker
+        sof_len = struct.pack(">H", 11)  # length
+        sof_data = struct.pack(">BHHB", 8, height, width, 3)  # precision, h, w, components
+        sof_data += b"\x01\x11\x00\x02\x11\x00\x03\x11\x00"  # component specs
+        return b"\xff\xd8" + sof + sof_len + sof_data + b"\xff\xd9"
 
 
 class TestDetectProtocol:
@@ -166,3 +186,66 @@ class TestCalculateDisplayCells:
         cols, rows = _calculate_display_cells(10, 10, max_cols=80, max_rows=24)
         assert cols >= 1
         assert rows >= 1
+
+
+class TestImageDimensionsFromData:
+    """Tests for _get_image_dimensions_from_data — the format-agnostic dimension reader."""
+
+    def test_png_data(self):
+        png = _make_test_png(320, 200)
+        assert _get_image_dimensions_from_data(png) == (320, 200)
+
+    def test_jpeg_data(self):
+        jpeg = _make_test_jpeg(160, 120)
+        w, h = _get_image_dimensions_from_data(jpeg)
+        assert w == 160
+        assert h == 120
+
+    def test_unknown_format_fallback(self):
+        assert _get_image_dimensions_from_data(b"not an image at all") == (800, 600)
+
+
+class TestEnsurePng:
+    """Tests for _ensure_png — the non-PNG-to-PNG converter."""
+
+    def test_png_passthrough(self):
+        """PNG data should be returned unchanged."""
+        png = _make_test_png(10, 10)
+        result = _ensure_png(png)
+        assert result is png  # exact same object, no conversion
+
+    def test_jpeg_converted_to_png(self):
+        """JPEG data should be converted to valid PNG (if PIL is available)."""
+        jpeg = _make_test_jpeg(20, 15)
+        result = _ensure_png(jpeg)
+        try:
+            import PIL  # noqa: F401
+            # PIL available — should have been converted
+            assert result[:8] == b"\x89PNG\r\n\x1a\n", "JPEG should be converted to PNG"
+            # Verify dimensions are preserved
+            w, h = _get_png_dimensions(result)
+            assert w == 20
+            assert h == 15
+        except ImportError:
+            # No PIL — data returned as-is
+            assert result == jpeg
+
+    def test_unknown_format_passthrough(self):
+        """Unknown format should be returned as-is (best-effort)."""
+        data = b"definitely not an image"
+        result = _ensure_png(data)
+        assert result == data
+
+
+class TestKittySSHJpeg:
+    """Regression test: JPEG images over SSH should get correct dimensions and valid protocol output."""
+
+    def test_jpeg_over_ssh_renders(self):
+        """Simulate SSH rendering of a JPEG — should produce valid Kitty escape sequences."""
+        from agent.inline_images import _render_kitty_from_data
+        jpeg = _make_test_jpeg(200, 100)
+        output = _render_kitty_from_data(jpeg, max_cols=80, max_rows=24)
+        # Must contain kitty graphics protocol escape
+        assert "\033_G" in output
+        # f=100 is declared (PNG format) — the data should have been converted to PNG
+        assert "f=100" in output

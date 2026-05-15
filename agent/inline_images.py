@@ -111,6 +111,47 @@ def _get_jpeg_dimensions(data: bytes) -> Tuple[int, int]:
     return (800, 600)
 
 
+def _get_image_dimensions_from_data(data: bytes) -> Tuple[int, int]:
+    """Get image dimensions from raw bytes. Handles PNG natively, JPEG via SOF
+    marker parsing, and falls back to PIL for other formats."""
+    # PNG
+    if data[:8] == b"\x89PNG\r\n\x1a\n":
+        return _get_png_dimensions(data)
+
+    # JPEG
+    if data[:2] == b"\xff\xd8":
+        return _get_jpeg_dimensions(data)
+
+    # Try PIL/Pillow for GIF, WebP, BMP, etc.
+    try:
+        import io as _io
+        from PIL import Image
+        with Image.open(_io.BytesIO(data)) as img:
+            return img.size
+    except (ImportError, Exception):
+        pass
+
+    return (800, 600)  # fallback estimate
+
+
+def _ensure_png(data: bytes) -> bytes:
+    """Convert image data to PNG if it isn't already. Returns the original data
+    unchanged if it's already PNG or if PIL is not available for conversion."""
+    if data[:8] == b"\x89PNG\r\n\x1a\n":
+        return data
+
+    try:
+        import io as _io
+        from PIL import Image
+        with Image.open(_io.BytesIO(data)) as img:
+            buf = _io.BytesIO()
+            img.save(buf, format="PNG")
+            return buf.getvalue()
+    except (ImportError, Exception) as e:
+        logger.debug("Cannot convert image to PNG (PIL unavailable or failed): %s", e)
+        return data  # best-effort: send as-is
+
+
 # ── Terminal size helpers ──────────────────────────────────────────────
 
 
@@ -197,11 +238,19 @@ def _render_kitty(image_path: str, max_cols: Optional[int] = None, max_rows: Opt
 def _render_kitty_from_data(
     data: bytes, max_cols: Optional[int] = None, max_rows: Optional[int] = None
 ) -> str:
-    """Render image from raw bytes via Kitty protocol (direct transmission)."""
-    try:
-        img_w, img_h = _get_png_dimensions(data)
-    except ValueError:
-        img_w, img_h = 800, 600
+    """Render image from raw bytes via Kitty protocol (direct transmission).
+
+    Converts non-PNG images to PNG (via PIL) so the f=100 format code is always
+    correct.  Falls back to sending raw data if PIL is unavailable — most modern
+    Kitty-compatible terminals auto-detect the format from the payload even when
+    f=100 is declared.
+    """
+    # Get dimensions from the *original* data (before any conversion) so we
+    # handle all formats correctly — JPEG via SOF parsing, PNG natively, etc.
+    img_w, img_h = _get_image_dimensions_from_data(data)
+
+    # Convert to PNG so f=100 is always truthful
+    data = _ensure_png(data)
 
     display_cols, display_rows = _calculate_display_cells(img_w, img_h, max_cols, max_rows)
     b64_data = base64.b64encode(data).decode()
