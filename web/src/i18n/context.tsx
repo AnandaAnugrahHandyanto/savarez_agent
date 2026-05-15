@@ -16,6 +16,7 @@ import { ga } from "./ga";
 import { pt } from "./pt";
 import { ru } from "./ru";
 import { hu } from "./hu";
+import { id } from "./id";
 
 const TRANSLATIONS: Record<Locale, Translations> = {
   en,
@@ -34,6 +35,7 @@ const TRANSLATIONS: Record<Locale, Translations> = {
   pt,
   ru,
   hu,
+  id,
 };
 
 // Display metadata for the language picker — endonym (native name) so users
@@ -57,6 +59,7 @@ export const LOCALE_META: Record<Locale, { name: string; flag: string }> = {
   pt: { name: "Português", flag: "🇵🇹" },
   ru: { name: "Русский", flag: "🇷🇺" },
   hu: { name: "Magyar", flag: "🇭🇺" },
+  id: { name: "Bahasa Indonesia", flag: "🇮🇩" },
 };
 
 const SUPPORTED_LOCALES = Object.keys(TRANSLATIONS) as Locale[];
