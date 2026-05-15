@@ -11992,7 +11992,8 @@ class AIAgent:
                             self._credential_pool
                         )
                         if not pool_may_recover:
-                            self._emit_status("⚠️ Rate limited — switching to fallback provider...")
+                            _err_suffix = f": {_error_summary[:200]}" if _error_summary else ""
+                            self._emit_status(f"⚠️ Rate limited — switching to fallback provider{_err_suffix}...")
                             if self._try_activate_fallback(reason=classified.reason):
                                 retry_count = 0
                                 compression_attempts = 0
@@ -12320,7 +12321,8 @@ class AIAgent:
                     if is_client_error:
                         # Try fallback before aborting — a different provider
                         # may not have the same issue (rate limit, auth, etc.)
-                        self._emit_status(f"⚠️ Non-retryable error (HTTP {status_code}) — trying fallback...")
+                        _client_err_suffix = f": {_error_summary[:200]}" if _error_summary else ""
+                        self._emit_status(f"⚠️ Non-retryable error{_client_err_suffix} — trying fallback...")
                         if self._try_activate_fallback():
                             retry_count = 0
                             compression_attempts = 0
