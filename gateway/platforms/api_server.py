@@ -25,14 +25,18 @@ Requires:
 """
 
 import asyncio
+import base64
 import hashlib
 import hmac
 import json
 import logging
+import mimetypes
 import os
+from pathlib import Path
 import socket as _socket
 import re
 import sqlite3
+import tempfile
 import time
 import uuid
 from typing import Any, Dict, List, Optional
@@ -61,6 +65,51 @@ MAX_REQUEST_BYTES = 10_000_000  # 10 MB — accommodates long agent conversation
 CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS = 30.0
 MAX_NORMALIZED_TEXT_LENGTH = 65_536  # 64 KB cap for normalized content parts
 MAX_CONTENT_LIST_SIZE = 1_000  # Max items when content is an array
+MAX_AUDIO_REQUEST_BYTES = 25 * 1024 * 1024
+MAX_ARTIFACT_ITEMS = 250
+MAX_ARTIFACT_PREVIEW_BYTES = 4096
+SECRET_ARTIFACT_NAMES = frozenset({
+    ".aws",
+    ".azure",
+    ".config",
+    ".env",
+    ".git",
+    ".gnupg",
+    ".infisical",
+    ".kube",
+    ".npmrc",
+    ".ssh",
+    "__pycache__",
+    "auth",
+    "credentials",
+    "keys",
+    "node_modules",
+    "secrets",
+    "venv",
+    ".venv",
+})
+SECRET_ARTIFACT_SUFFIXES = (
+    ".env",
+    ".key",
+    ".pem",
+    ".p12",
+    ".pfx",
+    ".crt",
+    ".cer",
+    ".kubeconfig",
+)
+PREVIEWABLE_TEXT_SUFFIXES = frozenset({
+    ".csv",
+    ".htm",
+    ".html",
+    ".json",
+    ".log",
+    ".md",
+    ".txt",
+    ".xml",
+    ".yaml",
+    ".yml",
+})
 
 
 def _coerce_port(value: Any, default: int = DEFAULT_PORT) -> int:
@@ -445,6 +494,96 @@ def _openai_error(message: str, err_type: str = "invalid_request_error", param: 
     }
 
 
+def _safe_artifact_label(label: str) -> str:
+    """Normalize a configured artifact root label for use in logical paths."""
+    clean = re.sub(r"[^A-Za-z0-9_.-]+", "-", label.strip().lower()).strip(".-")
+    if clean in {"", ".", ".."} or _is_secret_artifact_name(clean):
+        return ""
+    return clean[:64]
+
+
+def _humanize_artifact_label(label: str) -> str:
+    words = re.sub(r"[_-]+", " ", label).strip()
+    return words[:1].upper() + words[1:] if words else "Entregables"
+
+
+def _is_secret_artifact_name(name: str) -> bool:
+    normalized = name.strip().lower()
+    stem = Path(normalized).stem
+    if normalized in SECRET_ARTIFACT_NAMES or stem in SECRET_ARTIFACT_NAMES:
+        return True
+    if normalized.startswith(".env."):
+        return True
+    return normalized.endswith(SECRET_ARTIFACT_SUFFIXES)
+
+
+def _mtime_iso(timestamp: float) -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(timestamp))
+
+
+def _artifact_type_for_path(path: Path, *, is_dir: bool, mime_type: Optional[str]) -> str:
+    if is_dir:
+        return "folder"
+
+    suffix = path.suffix.lower()
+    name = path.name.lower()
+    if mime_type:
+        if mime_type.startswith("image/"):
+            return "image"
+        if mime_type.startswith("video/"):
+            return "video"
+        if mime_type.startswith("audio/"):
+            return "audio"
+        if mime_type in {"application/json", "text/csv"}:
+            return "data"
+        if mime_type.startswith("text/"):
+            return "document"
+
+    if suffix in {".png", ".jpg", ".jpeg", ".gif", ".webp", ".heic", ".svg"}:
+        return "image"
+    if suffix in {".mp4", ".mov", ".webm", ".mkv", ".avi"}:
+        return "video"
+    if suffix in {".mp3", ".m4a", ".wav", ".ogg", ".aac", ".flac"}:
+        return "audio"
+    if suffix in {".csv", ".json", ".xlsx", ".xls", ".parquet", ".sqlite", ".db"}:
+        return "data"
+    if suffix in {".pdf", ".doc", ".docx", ".md", ".txt", ".rtf", ".html", ".htm"}:
+        return "document"
+    if suffix in {".py", ".js", ".jsx", ".ts", ".tsx", ".go", ".rs", ".java", ".css", ".sh"}:
+        return "code"
+    if suffix in {".zip", ".gz", ".bz2", ".xz", ".rar", ".7z"} or name.endswith((".tar.gz", ".tar.bz2", ".tar.xz")):
+        return "archive"
+    return "file"
+
+
+def _artifact_preview(path: Path, *, mime_type: Optional[str], is_dir: bool) -> Optional[str]:
+    if is_dir:
+        return None
+    try:
+        if path.stat().st_size > MAX_ARTIFACT_PREVIEW_BYTES:
+            return None
+    except OSError:
+        return None
+
+    suffix = path.suffix.lower()
+    is_text = (
+        suffix in PREVIEWABLE_TEXT_SUFFIXES
+        or bool(mime_type and (mime_type.startswith("text/") or mime_type in {"application/json", "application/xml"}))
+    )
+    if not is_text:
+        return None
+
+    try:
+        raw = path.read_bytes()[:MAX_ARTIFACT_PREVIEW_BYTES]
+    except OSError:
+        return None
+    if b"\x00" in raw:
+        return None
+    text = raw.decode("utf-8", errors="replace")
+    text = re.sub(r"\s+", " ", text).strip()
+    return text[:320] if text else None
+
+
 if AIOHTTP_AVAILABLE:
     @web.middleware
     async def body_limit_middleware(request, handler):
@@ -594,6 +733,22 @@ class APIServerAdapter(BasePlatformAdapter):
         self._api_key: str = extra.get("key", os.getenv("API_SERVER_KEY", ""))
         self._cors_origins: tuple[str, ...] = self._parse_cors_origins(
             extra.get("cors_origins", os.getenv("API_SERVER_CORS_ORIGINS", "")),
+        )
+        self._artifact_root_config: str = str(
+            extra.get(
+                "artifact_roots",
+                extra.get(
+                    "artifact_root",
+                    os.getenv(
+                        "API_SERVER_ARTIFACT_ROOTS",
+                        os.getenv(
+                            "API_SERVER_ARTIFACT_ROOT",
+                            os.getenv("HERMES_ARTIFACT_ROOT", ""),
+                        ),
+                    ),
+                ),
+            )
+            or ""
         )
         self._model_name: str = self._resolve_model_name(
             extra.get("model_name", os.getenv("API_SERVER_MODEL_NAME", "")),
@@ -938,6 +1093,9 @@ class APIServerAdapter(BasePlatformAdapter):
                 ),
             },
             "features": {
+                "artifacts": True,
+                "audio_speech": True,
+                "audio_transcriptions": True,
                 "chat_completions": True,
                 "chat_completions_streaming": True,
                 "responses_api": True,
@@ -957,6 +1115,10 @@ class APIServerAdapter(BasePlatformAdapter):
                 "health": {"method": "GET", "path": "/health"},
                 "health_detailed": {"method": "GET", "path": "/health/detailed"},
                 "models": {"method": "GET", "path": "/v1/models"},
+                "artifacts": {"method": "GET", "path": "/api/artifacts"},
+                "artifact_file": {"method": "GET", "path": "/api/artifacts/{relative_path}"},
+                "audio_speech": {"method": "POST", "path": "/v1/audio/speech"},
+                "audio_transcriptions": {"method": "POST", "path": "/v1/audio/transcriptions"},
                 "chat_completions": {"method": "POST", "path": "/v1/chat/completions"},
                 "responses": {"method": "POST", "path": "/v1/responses"},
                 "runs": {"method": "POST", "path": "/v1/runs"},
@@ -965,6 +1127,337 @@ class APIServerAdapter(BasePlatformAdapter):
                 "run_approval": {"method": "POST", "path": "/v1/runs/{run_id}/approval"},
                 "run_stop": {"method": "POST", "path": "/v1/runs/{run_id}/stop"},
             },
+        })
+
+    def _artifact_sources(self) -> tuple[tuple[str, Path], ...]:
+        """Return safe physical roots exposed through the virtual artifacts API."""
+        configured = self._artifact_root_config.strip()
+        sources: list[tuple[str, Path]] = []
+
+        if configured:
+            for index, item in enumerate(part.strip() for part in configured.split(",") if part.strip()):
+                if "=" in item:
+                    label, raw_path = item.split("=", 1)
+                    label = _safe_artifact_label(label.strip()) or f"root-{index + 1}"
+                else:
+                    raw_path = item
+                    label = _safe_artifact_label(Path(raw_path).name) or f"root-{index + 1}"
+
+                path = Path(os.path.expandvars(os.path.expanduser(raw_path))).resolve()
+                if path.is_dir():
+                    sources.append((label, path))
+        else:
+            candidates: list[tuple[str, Path]] = []
+            base_paths = [Path.cwd(), Path.home() / "paimon"]
+            for base in base_paths:
+                candidates.extend([
+                    ("outputs", base / "data" / "outputs"),
+                    ("cron-output", base / "home" / "cron" / "output"),
+                ])
+
+            seen: set[Path] = set()
+            for label, path in candidates:
+                try:
+                    resolved = path.resolve()
+                except OSError:
+                    continue
+                if resolved in seen or not resolved.is_dir():
+                    continue
+                seen.add(resolved)
+                sources.append((label, resolved))
+
+        return tuple(sources)
+
+    @staticmethod
+    def _artifact_path_parts(raw_path: str) -> tuple[str, ...]:
+        raw_path = (raw_path or "").strip().replace("\\", "/")
+        if not raw_path:
+            return ()
+        if raw_path.startswith("/") or re.search(r"[\x00-\x1f]", raw_path):
+            raise ValueError("Invalid artifact path")
+
+        parts = tuple(part for part in raw_path.split("/") if part and part != ".")
+        if any(part == ".." for part in parts):
+            raise ValueError("Invalid artifact path")
+        if any(_is_secret_artifact_name(part) for part in parts):
+            raise ValueError("Artifact path is not allowed")
+        return parts
+
+    def _resolve_artifact_target(self, raw_path: str) -> tuple[str, Path, Path, tuple[str, ...]]:
+        """Resolve a logical artifact path to a physical path inside an allowed root."""
+        sources = self._artifact_sources()
+        if not sources:
+            raise FileNotFoundError("No artifact root is configured")
+
+        parts = self._artifact_path_parts(raw_path)
+        if len(sources) > 1:
+            if not parts:
+                raise IsADirectoryError("Virtual artifact root")
+            labels = {label: root for label, root in sources}
+            label = parts[0]
+            root = labels.get(label)
+            if root is None:
+                raise FileNotFoundError("Artifact root not found")
+            remainder = parts[1:]
+        else:
+            label, root = sources[0]
+            remainder = parts
+
+        target = root.joinpath(*remainder).resolve()
+        try:
+            target.relative_to(root)
+        except ValueError:
+            raise ValueError("Artifact path escapes root")
+
+        return label, root, target, remainder
+
+    def _artifact_item(self, path: Path, logical_path: str) -> Optional[Dict[str, Any]]:
+        try:
+            if _is_secret_artifact_name(path.name):
+                return None
+
+            resolved = path.resolve()
+            label, root, _, _ = self._resolve_artifact_target(logical_path)
+            try:
+                resolved.relative_to(root)
+            except ValueError:
+                logger.warning("Skipping artifact outside root %s: %s", label, path)
+                return None
+
+            stat = resolved.stat()
+            is_dir = resolved.is_dir()
+            mime_type, _encoding = mimetypes.guess_type(str(resolved))
+            artifact_type = _artifact_type_for_path(resolved, is_dir=is_dir, mime_type=mime_type)
+            item: Dict[str, Any] = {
+                "artifactType": artifact_type,
+                "kind": "folder" if is_dir else "file",
+                "mimeType": mime_type,
+                "modifiedAt": _mtime_iso(stat.st_mtime),
+                "name": path.name,
+                "path": logical_path,
+                "size": 0 if is_dir else stat.st_size,
+            }
+            preview = _artifact_preview(resolved, mime_type=mime_type, is_dir=is_dir)
+            if preview:
+                item["preview"] = preview
+            return item
+        except (FileNotFoundError, PermissionError, OSError, ValueError):
+            return None
+
+    def _virtual_artifact_root_items(self, sources: tuple[tuple[str, Path], ...]) -> list[Dict[str, Any]]:
+        items: list[Dict[str, Any]] = []
+        for label, root in sources:
+            try:
+                stat = root.stat()
+            except OSError:
+                continue
+            items.append({
+                "artifactType": "folder",
+                "kind": "folder",
+                "mimeType": None,
+                "modifiedAt": _mtime_iso(stat.st_mtime),
+                "name": _humanize_artifact_label(label),
+                "path": label,
+                "size": 0,
+            })
+        return items
+
+    def _list_artifacts_payload(self, raw_path: str = "") -> Dict[str, Any]:
+        sources = self._artifact_sources()
+        clean_path = "/".join(self._artifact_path_parts(raw_path))
+        if not sources:
+            return {
+                "object": "hermes.artifacts.list",
+                "root": "paimon-artifacts",
+                "path": clean_path,
+                "counts": {"files": 0, "folders": 0},
+                "items": [],
+                "truncated": False,
+            }
+
+        if len(sources) > 1 and not clean_path:
+            items = self._virtual_artifact_root_items(sources)
+        else:
+            label, root, target, remainder = self._resolve_artifact_target(clean_path)
+            if not target.exists():
+                raise FileNotFoundError("Artifact path not found")
+            if not target.is_dir():
+                item = self._artifact_item(target, clean_path)
+                items = [item] if item else []
+            else:
+                items = []
+                for child in target.iterdir():
+                    child_relative = "/".join((*remainder, child.name))
+                    logical_path = f"{label}/{child_relative}" if len(sources) > 1 else child_relative
+                    item = self._artifact_item(child, logical_path)
+                    if item:
+                        items.append(item)
+
+        items.sort(key=lambda item: (item["kind"] != "folder", item["name"].lower()))
+        truncated = len(items) > MAX_ARTIFACT_ITEMS
+        if truncated:
+            items = items[:MAX_ARTIFACT_ITEMS]
+
+        return {
+            "object": "hermes.artifacts.list",
+            "root": "paimon-artifacts",
+            "path": clean_path,
+            "counts": {
+                "files": sum(1 for item in items if item["kind"] == "file"),
+                "folders": sum(1 for item in items if item["kind"] == "folder"),
+            },
+            "items": items,
+            "truncated": truncated,
+        }
+
+    async def _handle_list_artifacts(self, request: "web.Request") -> "web.Response":
+        """GET /api/artifacts — list safe deliverables from the agent workshop."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        raw_path = request.query.get("path", "")
+        try:
+            return web.json_response(self._list_artifacts_payload(raw_path))
+        except ValueError as exc:
+            return web.json_response(_openai_error(str(exc)), status=400)
+        except FileNotFoundError as exc:
+            return web.json_response(_openai_error(str(exc)), status=404)
+
+    async def _handle_get_artifact(self, request: "web.Request") -> "web.StreamResponse":
+        """GET /api/artifacts/{path} — return metadata, directory listing, or file bytes."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        raw_path = request.match_info.get("artifact_path", "")
+        try:
+            _label, _root, target, _remainder = self._resolve_artifact_target(raw_path)
+            if not target.exists():
+                raise FileNotFoundError("Artifact path not found")
+            if target.is_dir():
+                return web.json_response(self._list_artifacts_payload(raw_path))
+            if request.query.get("metadata") in {"1", "true", "yes"}:
+                item = self._artifact_item(target, "/".join(self._artifact_path_parts(raw_path)))
+                return web.json_response(item or {})
+            return web.FileResponse(
+                target,
+                headers={
+                    "Content-Disposition": f'inline; filename="{target.name}"',
+                    "X-Content-Type-Options": "nosniff",
+                },
+            )
+        except ValueError as exc:
+            return web.json_response(_openai_error(str(exc)), status=400)
+        except FileNotFoundError as exc:
+            return web.json_response(_openai_error(str(exc)), status=404)
+
+    async def _handle_audio_transcriptions(self, request: "web.Request") -> "web.Response":
+        """POST /v1/audio/transcriptions — transcribe base64 audio with configured STT."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, Exception):
+            return web.json_response(_openai_error("Invalid JSON in request body"), status=400)
+
+        audio = body.get("audio") if isinstance(body, dict) else None
+        if not isinstance(audio, dict):
+            return web.json_response(_openai_error("Missing 'audio' object"), status=400)
+
+        raw_data = audio.get("data")
+        if not isinstance(raw_data, str) or not raw_data.strip():
+            return web.json_response(_openai_error("Missing base64 audio data"), status=400)
+
+        mime_type = str(audio.get("mime_type") or audio.get("mimeType") or "audio/m4a")
+        extension = mimetypes.guess_extension(mime_type) or ".m4a"
+
+        try:
+            audio_bytes = base64.b64decode(raw_data, validate=True)
+        except Exception:
+            return web.json_response(_openai_error("Invalid base64 audio data"), status=400)
+
+        if len(audio_bytes) > MAX_AUDIO_REQUEST_BYTES:
+            return web.json_response(_openai_error("Audio file is too large"), status=413)
+
+        fd, temp_path = tempfile.mkstemp(prefix="bael-stt-", suffix=extension)
+        try:
+            with os.fdopen(fd, "wb") as handle:
+                handle.write(audio_bytes)
+
+            loop = asyncio.get_running_loop()
+
+            def _transcribe():
+                from tools.transcription_tools import transcribe_audio
+
+                return transcribe_audio(temp_path, model=body.get("model"))
+
+            result = await loop.run_in_executor(None, _transcribe)
+            if not isinstance(result, dict) or not result.get("success"):
+                message = result.get("error") if isinstance(result, dict) else "STT failed"
+                return web.json_response(_openai_error(str(message)), status=500)
+
+            return web.json_response({
+                "object": "audio.transcription",
+                "text": result.get("transcript") or result.get("text") or "",
+                "provider": result.get("provider"),
+            })
+        finally:
+            try:
+                os.unlink(temp_path)
+            except OSError:
+                pass
+
+    async def _handle_audio_speech(self, request: "web.Request") -> "web.Response":
+        """POST /v1/audio/speech — synthesize speech with configured TTS."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, Exception):
+            return web.json_response(_openai_error("Invalid JSON in request body"), status=400)
+
+        text = body.get("text") if isinstance(body, dict) else None
+        if not isinstance(text, str) or not text.strip():
+            return web.json_response(_openai_error("Missing text"), status=400)
+
+        loop = asyncio.get_running_loop()
+
+        def _synthesize():
+            from tools.tts_tool import text_to_speech_tool
+
+            return text_to_speech_tool(text=text)
+
+        raw_result = await loop.run_in_executor(None, _synthesize)
+        try:
+            result = json.loads(raw_result) if isinstance(raw_result, str) else raw_result
+        except Exception:
+            result = {"success": False, "error": "Invalid TTS result"}
+
+        if not isinstance(result, dict) or not result.get("success"):
+            message = result.get("error") if isinstance(result, dict) else "TTS failed"
+            return web.json_response(_openai_error(str(message)), status=500)
+
+        file_path = result.get("file_path")
+        if not isinstance(file_path, str) or not os.path.exists(file_path):
+            return web.json_response(_openai_error("TTS audio file was not created"), status=500)
+
+        with open(file_path, "rb") as handle:
+            audio_data = base64.b64encode(handle.read()).decode("ascii")
+
+        mime_type = mimetypes.guess_type(file_path)[0] or "audio/mpeg"
+        return web.json_response({
+            "object": "audio.speech",
+            "audio": {
+                "data": audio_data,
+                "mime_type": mime_type,
+            },
+            "provider": result.get("provider"),
+            "voice_compatible": bool(result.get("voice_compatible")),
         })
 
     async def _handle_chat_completions(self, request: "web.Request") -> "web.Response":
@@ -3346,6 +3839,10 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_get("/v1/health", self._handle_health)
             self._app.router.add_get("/v1/models", self._handle_models)
             self._app.router.add_get("/v1/capabilities", self._handle_capabilities)
+            self._app.router.add_get("/api/artifacts", self._handle_list_artifacts)
+            self._app.router.add_get("/api/artifacts/{artifact_path:.+}", self._handle_get_artifact)
+            self._app.router.add_post("/v1/audio/transcriptions", self._handle_audio_transcriptions)
+            self._app.router.add_post("/v1/audio/speech", self._handle_audio_speech)
             self._app.router.add_post("/v1/chat/completions", self._handle_chat_completions)
             self._app.router.add_post("/v1/responses", self._handle_responses)
             self._app.router.add_get("/v1/responses/{response_id}", self._handle_get_response)
