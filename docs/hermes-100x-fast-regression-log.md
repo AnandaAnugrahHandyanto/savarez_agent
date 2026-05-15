@@ -320,3 +320,68 @@ Minimum carry-forward checklist:
 
 - Upstream draft PR: https://github.com/NousResearch/hermes-agent/pull/26129
 - User fork PR: https://github.com/wesleysimplicio/hermes-agent/pull/1
+
+## Post-Merge Continuation Cycle
+
+Date: 2026-05-15
+
+After syncing the performance branch with `upstream/main`, the continuation
+loop now uses this default cadence:
+
+1. Run a short `codex exec --enable goals "/goal ..."` pass to summarize the
+   current PR state and next objective.
+2. Use a parallel read-only agent for the next performance-scouting pass when
+   agent slots are available.
+3. Pick the smallest high-signal optimization from that scout report.
+4. Implement it with focused tests before broadening the regression surface.
+5. Update this log and the PR narrative before committing.
+
+Latest `/goal` result:
+
+- PR #26129 is mergeable but still draft/blocked on GitHub state.
+- `git diff --check upstream/main...HEAD` passed.
+- `docs/contribution_scout/` remains intentionally untracked and outside this
+  PR scope.
+- The Codex CLI subprocess could not see the Python/venv environment, so its
+  local test warning was treated as an environment limitation, not as a Hermes
+  regression.
+
+Parallel scout selected two low-risk runtime follow-ups for immediate action:
+
+- Reuse parsed tool-call args for mixed safe concurrent batches, not only
+  all-`read_file` batches.
+- Apply `normcase` to write/patch parallel scope paths so case-insensitive
+  filesystems do not accidentally parallelize the same target with different
+  casing.
+
+Implemented follow-up:
+
+- `run_agent.py` now routes the general parallel-safety path through
+  `_parse_parallel_guard_args()`, so `_execute_tool_calls_concurrent()` can
+  reuse cached args for mixed safe batches.
+- `_extract_parallel_scope_path()` now applies `os.path.normcase()` after
+  absolute path normalization for write/patch overlap checks.
+- Added regression tests for mixed safe arg reuse and case-normalized path
+  overlap.
+
+Validation:
+
+```powershell
+python -m py_compile run_agent.py tests\run_agent\test_run_agent.py
+```
+
+Result: passed.
+
+```powershell
+python -m pytest tests\run_agent\test_run_agent.py::TestConcurrentToolExecution::test_concurrent_reuses_parallel_guard_parsed_args tests\run_agent\test_run_agent.py::TestConcurrentToolExecution::test_concurrent_reuses_guard_args_for_mixed_safe_batches tests\run_agent\test_run_agent.py::TestParallelScopePathNormalization -q
+```
+
+Result: `6 passed`.
+
+Broader concurrent-tool guardrail validation:
+
+```powershell
+python -m pytest tests\run_agent\test_run_agent.py::TestConcurrentToolExecution tests\run_agent\test_run_agent.py::TestParallelScopePathNormalization tests\run_agent\test_tool_executor_contextvar_propagation.py tests\run_agent\test_concurrent_interrupt.py tests\run_agent\test_tool_call_guardrail_runtime.py -q
+```
+
+Result: `42 passed`.

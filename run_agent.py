@@ -457,21 +457,8 @@ def _should_parallelize_tool_batch(tool_calls) -> bool:
     reserved_paths: list[Path] = []
     for tool_call in tool_calls:
         tool_name = tool_call.function.name
-        try:
-            function_args = json.loads(tool_call.function.arguments)
-        except Exception:
-            logging.debug(
-                "Could not parse args for %s — defaulting to sequential; raw=%s",
-                tool_name,
-                tool_call.function.arguments[:200],
-            )
-            return False
-        if not isinstance(function_args, dict):
-            logging.debug(
-                "Non-dict args for %s (%s) — defaulting to sequential",
-                tool_name,
-                type(function_args).__name__,
-            )
+        function_args = _parse_parallel_guard_args(tool_call, tool_name)
+        if function_args is None:
             return False
 
         if tool_name in _PATH_SCOPED_TOOLS:
@@ -498,12 +485,12 @@ def _extract_parallel_scope_path(tool_name: str, function_args: dict) -> Path | 
     if not isinstance(raw_path, str) or not raw_path.strip():
         return None
 
-    expanded = Path(raw_path).expanduser()
-    if expanded.is_absolute():
-        return Path(os.path.abspath(str(expanded)))
+    expanded = os.path.expanduser(raw_path)
+    if os.path.isabs(expanded):
+        return Path(os.path.normcase(os.path.abspath(expanded)))
 
     # Avoid resolve(); the file may not exist yet.
-    return Path(os.path.abspath(str(Path.cwd() / expanded)))
+    return Path(os.path.normcase(os.path.abspath(os.path.join(os.getcwd(), expanded))))
 
 
 def _paths_overlap(left: Path, right: Path) -> bool:
