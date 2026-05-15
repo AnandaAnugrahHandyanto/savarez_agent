@@ -385,3 +385,42 @@ python -m pytest tests\run_agent\test_run_agent.py::TestConcurrentToolExecution 
 ```
 
 Result: `42 passed`.
+
+## CI Follow-Up: Discord E2E Mock Compatibility
+
+Date: 2026-05-15
+
+After pushing the post-merge continuation commit, GitHub Actions surfaced an
+`e2e` failure in `tests/e2e/test_discord_adapter.py`. The failure was not in
+the performance code; the Discord e2e mock exposes `discord.Forbidden` as a
+mock object rather than a real exception class, so `_fetch_channel_context()`
+raised `TypeError` while trying to catch it after a mocked channel without
+`history()` failed.
+
+Implemented follow-up:
+
+- `gateway/platforms/discord.py` now detects whether `discord.Forbidden` is a
+  real exception class inside the generic exception path before treating it as
+  a missing-permission case.
+- Real Discord behavior is preserved; mocked Discord modules no longer crash
+  the e2e command-dispatch path.
+
+Validation:
+
+```powershell
+python -m py_compile gateway\platforms\discord.py
+```
+
+Result: passed.
+
+```powershell
+python -m pytest tests\e2e\test_discord_adapter.py::TestMentionStrippedCommandDispatch::test_mention_then_command tests\e2e\test_discord_adapter.py::TestMentionStrippedCommandDispatch::test_nickname_mention_then_command tests\e2e\test_discord_adapter.py::TestMentionStrippedCommandDispatch::test_text_before_command_not_detected tests\e2e\test_discord_adapter.py::TestAutoThreadingPreservesCommand::test_command_detected_after_auto_thread -q
+```
+
+Result: `4 passed`.
+
+```powershell
+python -m pytest tests\e2e -q
+```
+
+Result: `56 passed, 7 skipped`.
