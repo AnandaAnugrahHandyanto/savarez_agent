@@ -1,4 +1,6 @@
 manifest_version: 1
 name: kanban
 version: 1.0.0
+author: Hermes Agent
 description: Hermes native Kanban board/dashboard integration.
+kind: standalone
