@@ -1022,6 +1022,24 @@ scripts/run_tests.sh tests/agent/test_foo.py::test_x  # one test
 scripts/run_tests.sh -v --tb=long                     # pass-through pytest flags
 ```
 
+### PR validation wrapper
+
+For PR handoff, start with the repo-local validation wrapper:
+
+```bash
+scripts/validate_pr.sh --dry-run
+scripts/validate_pr.sh --scope docs      # docs-only changes
+scripts/validate_pr.sh --scope scripts   # validation wrapper / script changes
+scripts/validate_pr.sh --scope tests     # wrapper contract tests
+scripts/validate_pr.sh --scope full      # runtime or uncertain changes
+```
+
+`scripts/validate_pr.sh` is intentionally thin. It selects the smallest useful
+scope and delegates any pytest execution to `scripts/run_tests.sh`, which remains
+the source of truth for virtualenv selection, credential scrubbing, timezone and
+locale pins, and worker count. Record the exact wrapper command and result in
+the PR body or handoff note.
+
 ### Why the wrapper (and why the old "just call pytest" doesn't work)
 
 Five real sources of local-vs-CI drift the script closes:

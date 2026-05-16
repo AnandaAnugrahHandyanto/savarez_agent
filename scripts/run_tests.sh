@@ -27,7 +27,24 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 # Prefer a .venv in the current tree, fall back to the main checkout's venv
 # (useful for worktrees where we don't always duplicate the venv).
 VENV=""
-for candidate in "$REPO_ROOT/.venv" "$REPO_ROOT/venv" "$HOME/.hermes/hermes-agent/venv"; do
+MAIN_CHECKOUT=""
+if GIT_COMMON_DIR="$(git -C "$REPO_ROOT" rev-parse --git-common-dir 2>/dev/null)"; then
+  case "$GIT_COMMON_DIR" in
+    /*) GIT_COMMON_DIR_ABS="$GIT_COMMON_DIR" ;;
+    *) GIT_COMMON_DIR_ABS="$(cd "$REPO_ROOT/$GIT_COMMON_DIR" && pwd)" ;;
+  esac
+  if [ "$(basename "$GIT_COMMON_DIR_ABS")" = ".git" ]; then
+    MAIN_CHECKOUT="$(dirname "$GIT_COMMON_DIR_ABS")"
+  fi
+fi
+
+VENV_CANDIDATES=("$REPO_ROOT/.venv" "$REPO_ROOT/venv")
+if [ -n "$MAIN_CHECKOUT" ] && [ "$MAIN_CHECKOUT" != "$REPO_ROOT" ]; then
+  VENV_CANDIDATES+=("$MAIN_CHECKOUT/.venv" "$MAIN_CHECKOUT/venv")
+fi
+VENV_CANDIDATES+=("$HOME/.hermes/hermes-agent/venv")
+
+for candidate in "${VENV_CANDIDATES[@]}"; do
   if [ -f "$candidate/bin/activate" ]; then
     VENV="$candidate"
     break
@@ -35,7 +52,8 @@ for candidate in "$REPO_ROOT/.venv" "$REPO_ROOT/venv" "$HOME/.hermes/hermes-agen
 done
 
 if [ -z "$VENV" ]; then
-  echo "error: no virtualenv found in $REPO_ROOT/.venv or $REPO_ROOT/venv" >&2
+  echo "error: no virtualenv found in:" >&2
+  printf '  %s\n' "${VENV_CANDIDATES[@]}" >&2
   exit 1
 fi
 

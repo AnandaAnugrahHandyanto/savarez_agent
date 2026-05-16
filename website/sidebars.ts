@@ -682,6 +682,7 @@ const sidebars: SidebarsConfig = {
       collapsed: true,
       items: [
         'developer-guide/contributing',
+        'developer-guide/validation-contract',
         {
           type: 'category',
           label: 'Architecture',
