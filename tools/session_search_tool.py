@@ -29,8 +29,19 @@ MAX_SESSION_CHARS = 100_000
 MAX_SUMMARY_TOKENS = 10000
 
 
-def _get_session_search_max_concurrency(default: int = 3) -> int:
-    """Read auxiliary.session_search.max_concurrency with sane bounds."""
+def _get_session_search_int(
+    key: str,
+    default: int,
+    min_v: int = 0,
+    max_v: Optional[int] = None,
+) -> int:
+    """Read an integer from ``auxiliary.session_search.<key>`` with bounds.
+
+    Returns ``default`` if the config can't be loaded, the key is missing, or
+    the value isn't coercible to ``int``. Otherwise clamps to ``[min_v, max_v]``
+    (``max_v`` is optional). Mirrors the contract of
+    ``_get_session_search_max_concurrency`` so all knobs share one parser.
+    """
     try:
         from hermes_cli.config import load_config
         config = load_config()
@@ -40,14 +51,64 @@ def _get_session_search_max_concurrency(default: int = 3) -> int:
     task_config = aux.get("session_search", {}) if isinstance(aux, dict) else {}
     if not isinstance(task_config, dict):
         return default
-    raw = task_config.get("max_concurrency")
+    raw = task_config.get(key)
     if raw is None:
         return default
     try:
         value = int(raw)
     except (TypeError, ValueError):
         return default
-    return max(1, min(value, 5))
+    value = max(min_v, value)
+    if max_v is not None:
+        value = min(max_v, value)
+    return value
+
+
+def _get_session_search_max_concurrency(default: int = 3) -> int:
+    """Read auxiliary.session_search.max_concurrency with sane bounds."""
+    return _get_session_search_int("max_concurrency", default, min_v=1, max_v=5)
+
+
+def _get_session_search_max_chars(default: int = MAX_SESSION_CHARS) -> int:
+    """Read auxiliary.session_search.max_session_chars with sane bounds.
+
+    Hard minimum 1000 chars — anything smaller starves the summarizer of
+    context. No hard upper bound: very large contexts are legitimate for
+    frontier-model users; the existing transcript size is already the
+    natural ceiling.
+    """
+    return _get_session_search_int("max_session_chars", default, min_v=1000)
+
+
+def _get_session_search_max_summary_tokens(default: int = MAX_SUMMARY_TOKENS) -> int:
+    """Read auxiliary.session_search.max_summary_tokens with sane bounds.
+
+    Clamped to ``[128, 32000]`` — below 128 makes summaries useless; above
+    32k risks pathological generation costs without obvious benefit.
+    """
+    return _get_session_search_int(
+        "max_summary_tokens", default, min_v=128, max_v=32000
+    )
+
+
+def _get_session_search_default_limit(default: int = 3) -> int:
+    """Read auxiliary.session_search.default_limit with sane bounds.
+
+    Clamped to ``[1, 5]`` to match the per-call ``limit`` argument's
+    existing clamp at the call site.
+    """
+    return _get_session_search_int("default_limit", default, min_v=1, max_v=5)
+
+
+def _get_session_search_max_retries(default: int = 3) -> int:
+    """Read auxiliary.session_search.max_retries with sane bounds.
+
+    Clamped to ``[0, 5]``. ``0`` is intentional: for local reasoning-mode
+    backends where empty-content responses are the norm rather than the
+    exception, users can opt out of the retry loop entirely and fall
+    through to the ``[Raw preview — summarization unavailable]`` path.
+    """
+    return _get_session_search_int("max_retries", default, min_v=0, max_v=5)
 
 
 def _format_timestamp(ts: Union[int, float, str, None]) -> str:
@@ -222,7 +283,13 @@ async def _summarize_session(
         f"Summarize this conversation with focus on: {query}"
     )
 
-    max_retries = 3
+    max_retries = _get_session_search_max_retries()
+    max_tokens = _get_session_search_max_summary_tokens()
+    if max_retries <= 0:
+        # User opted out of retries entirely (typical for local reasoning-mode
+        # backends that produce empty content as the norm). Fall through to the
+        # raw-preview fallback at the call site without ever invoking the LLM.
+        return None
     for attempt in range(max_retries):
         try:
             response = await async_call_llm(
@@ -232,7 +299,7 @@ async def _summarize_session(
                     {"role": "user", "content": user_prompt},
                 ],
                 temperature=0.1,
-                max_tokens=MAX_SUMMARY_TOKENS,
+                max_tokens=max_tokens,
             )
             content = extract_content_or_reasoning(response)
             if content:
@@ -353,7 +420,7 @@ def session_search(
         try:
             limit = int(limit)
         except (TypeError, ValueError):
-            limit = 3
+            limit = _get_session_search_default_limit()
     limit = max(1, min(limit, 5))  # Clamp to [1, 5]
 
     # Recent sessions mode: when query is empty, return metadata for recent sessions.
@@ -447,7 +514,9 @@ def session_search(
                     continue
                 session_meta = db.get_session(session_id) or {}
                 conversation_text = _format_conversation(messages)
-                conversation_text = _truncate_around_matches(conversation_text, query)
+                conversation_text = _truncate_around_matches(
+                    conversation_text, query, max_chars=_get_session_search_max_chars()
+                )
                 tasks.append((session_id, match_info, conversation_text, session_meta))
             except Exception as e:
                 logging.warning(
@@ -604,7 +673,7 @@ registry.register(
     handler=lambda args, **kw: session_search(
         query=args.get("query") or "",
         role_filter=args.get("role_filter"),
-        limit=args.get("limit", 3),
+        limit=args.get("limit") if args.get("limit") is not None else _get_session_search_default_limit(),
         db=kw.get("db"),
         current_session_id=kw.get("current_session_id")),
     check_fn=check_session_search_requirements,

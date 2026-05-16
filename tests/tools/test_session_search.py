@@ -10,9 +10,14 @@ from tools.session_search_tool import (
     _format_conversation,
     _truncate_around_matches,
     _get_session_search_max_concurrency,
+    _get_session_search_max_chars,
+    _get_session_search_max_summary_tokens,
+    _get_session_search_default_limit,
+    _get_session_search_max_retries,
     _list_recent_sessions,
     _HIDDEN_SESSION_SOURCES,
     MAX_SESSION_CHARS,
+    MAX_SUMMARY_TOKENS,
     SESSION_SEARCH_SCHEMA,
 )
 
@@ -239,6 +244,216 @@ class TestSessionSearchConcurrency:
         assert result["success"] is True
         assert result["count"] == 3
         assert max_seen["value"] == 1
+
+
+class TestSessionSearchCostKnobs:
+    """auxiliary.session_search.{max_session_chars, max_summary_tokens,
+    default_limit, max_retries} — config knobs added so users on slow local
+    backends can tune session_search without forking the file (#27059)."""
+
+    def test_max_chars_defaults_to_module_constant(self):
+        assert _get_session_search_max_chars() == MAX_SESSION_CHARS
+
+    def test_max_chars_reads_and_clamps_low(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"auxiliary": {"session_search": {"max_session_chars": 500}}},
+        )
+        # min clamp at 1000 — anything smaller starves the summarizer
+        assert _get_session_search_max_chars() == 1000
+
+    def test_max_chars_reads_configured_value(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"auxiliary": {"session_search": {"max_session_chars": 30000}}},
+        )
+        assert _get_session_search_max_chars() == 30000
+
+    def test_max_chars_invalid_value_falls_back_to_default(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"auxiliary": {"session_search": {"max_session_chars": "abc"}}},
+        )
+        assert _get_session_search_max_chars() == MAX_SESSION_CHARS
+
+    def test_max_summary_tokens_defaults_to_module_constant(self):
+        assert _get_session_search_max_summary_tokens() == MAX_SUMMARY_TOKENS
+
+    def test_max_summary_tokens_clamps_to_128(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"auxiliary": {"session_search": {"max_summary_tokens": 10}}},
+        )
+        assert _get_session_search_max_summary_tokens() == 128
+
+    def test_max_summary_tokens_clamps_to_32000(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"auxiliary": {"session_search": {"max_summary_tokens": 100000}}},
+        )
+        assert _get_session_search_max_summary_tokens() == 32000
+
+    def test_max_summary_tokens_reads_configured_value(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"auxiliary": {"session_search": {"max_summary_tokens": 2000}}},
+        )
+        assert _get_session_search_max_summary_tokens() == 2000
+
+    def test_default_limit_defaults_to_three(self):
+        assert _get_session_search_default_limit() == 3
+
+    def test_default_limit_clamps_to_one(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"auxiliary": {"session_search": {"default_limit": 0}}},
+        )
+        assert _get_session_search_default_limit() == 1
+
+    def test_default_limit_clamps_to_five(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"auxiliary": {"session_search": {"default_limit": 50}}},
+        )
+        assert _get_session_search_default_limit() == 5
+
+    def test_default_limit_reads_configured_value(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"auxiliary": {"session_search": {"default_limit": 2}}},
+        )
+        assert _get_session_search_default_limit() == 2
+
+    def test_max_retries_defaults_to_three(self):
+        assert _get_session_search_max_retries() == 3
+
+    def test_max_retries_allows_zero(self, monkeypatch):
+        """0 is intentional: local reasoning-mode users opt out of retries
+        and fall through to the raw-preview path (see issue #27059)."""
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"auxiliary": {"session_search": {"max_retries": 0}}},
+        )
+        assert _get_session_search_max_retries() == 0
+
+    def test_max_retries_clamps_to_five(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"auxiliary": {"session_search": {"max_retries": 100}}},
+        )
+        assert _get_session_search_max_retries() == 5
+
+    def test_max_retries_reads_configured_value(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"auxiliary": {"session_search": {"max_retries": 1}}},
+        )
+        assert _get_session_search_max_retries() == 1
+
+    def test_knobs_unaffected_by_unrelated_aux_keys(self, monkeypatch):
+        """Adding the new knobs must not regress max_concurrency reading."""
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {
+                "auxiliary": {
+                    "session_search": {
+                        "max_concurrency": 2,
+                        "max_session_chars": 20000,
+                        "max_summary_tokens": 1500,
+                        "default_limit": 2,
+                        "max_retries": 1,
+                    }
+                }
+            },
+        )
+        assert _get_session_search_max_concurrency() == 2
+        assert _get_session_search_max_chars() == 20000
+        assert _get_session_search_max_summary_tokens() == 1500
+        assert _get_session_search_default_limit() == 2
+        assert _get_session_search_max_retries() == 1
+
+
+def _fake_llm_response(content: str):
+    """Build a duck-typed object matching ``async_call_llm``'s return shape
+    so ``extract_content_or_reasoning`` can do attribute access on it."""
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content=content))]
+    )
+
+
+class TestSummarizeSessionMaxRetriesZero:
+    """Setting max_retries=0 must short-circuit before calling the LLM and
+    return None so the caller falls through to the raw-preview path. Before
+    this change the for-loop simply never iterated and the function fell
+    through to an implicit None — same observable outcome, but ambiguous
+    intent and easy to break with a future refactor."""
+
+    def test_zero_retries_returns_none_without_llm_call(self, monkeypatch):
+        from tools.session_search_tool import _summarize_session
+
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"auxiliary": {"session_search": {"max_retries": 0}}},
+        )
+
+        called = {"n": 0}
+
+        async def fake_call(**_kwargs):
+            called["n"] += 1
+            return {"choices": [{"message": {"content": "should not run"}}]}
+
+        monkeypatch.setattr(
+            "tools.session_search_tool.async_call_llm", fake_call
+        )
+
+        result = asyncio.run(_summarize_session("transcript text", "query", {}))
+        assert result is None
+        assert called["n"] == 0, "LLM must not be called when max_retries=0"
+
+    def test_default_retries_still_calls_llm(self, monkeypatch):
+        from tools.session_search_tool import _summarize_session
+
+        called = {"n": 0, "max_tokens": None}
+
+        async def fake_call(**kwargs):
+            called["n"] += 1
+            called["max_tokens"] = kwargs.get("max_tokens")
+            return _fake_llm_response("ok")
+
+        monkeypatch.setattr(
+            "tools.session_search_tool.async_call_llm", fake_call
+        )
+
+        result = asyncio.run(_summarize_session("transcript text", "query", {}))
+        assert result == "ok"
+        assert called["n"] == 1
+        assert called["max_tokens"] == MAX_SUMMARY_TOKENS, (
+            "default max_tokens should match MAX_SUMMARY_TOKENS module constant"
+        )
+
+    def test_configured_max_summary_tokens_flows_into_llm_call(self, monkeypatch):
+        from tools.session_search_tool import _summarize_session
+
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"auxiliary": {"session_search": {"max_summary_tokens": 2000}}},
+        )
+
+        seen = {"max_tokens": None}
+
+        async def fake_call(**kwargs):
+            seen["max_tokens"] = kwargs.get("max_tokens")
+            return _fake_llm_response("ok")
+
+        monkeypatch.setattr(
+            "tools.session_search_tool.async_call_llm", fake_call
+        )
+
+        result = asyncio.run(_summarize_session("transcript text", "query", {}))
+        assert result == "ok"
+        assert seen["max_tokens"] == 2000
 
 
 class TestRecentSessionListing:
