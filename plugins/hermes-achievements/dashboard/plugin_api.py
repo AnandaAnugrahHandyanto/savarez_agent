@@ -270,6 +270,51 @@ def _tool_name_from_call(call: Any) -> Optional[str]:
     return call.get("name") or fn.get("name")
 
 
+def _tool_arguments_from_call(call: Any) -> Dict[str, Any]:
+    """Return the parsed tool-call arguments dict (or ``{}`` on failure).
+
+    Tool-call ``arguments`` come in three shapes across model adapters:
+
+    * Already a ``dict`` (some streaming providers parse on the way in).
+    * A JSON-encoded ``str`` (the OpenAI Chat Completions wire format).
+    * Missing / ``None``.
+
+    Used by ``analyze_messages`` to distinguish ``memory`` writes from
+    reads/removes for the Memory Palace achievement — see #26927, where
+    ``memory_write_events`` had degenerated into an exact copy of
+    ``memory_events`` because the previous heuristic only looked at
+    tool names, not arguments.
+    """
+    if not isinstance(call, dict):
+        return {}
+    fn = call.get("function") or {}
+    raw = call.get("arguments")
+    if raw is None:
+        raw = fn.get("arguments")
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str):
+        s = raw.strip()
+        if not s:
+            return {}
+        try:
+            parsed = json.loads(s)
+        except Exception:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
+
+
+# Built-in memory tool actions that produce a net write to durable storage.
+# ``remove`` is excluded — it deletes content rather than persisting new
+# content, so counting it as a "write" would over-credit the Memory Palace
+# achievement.  ``mnemosyne_remember`` is a separate write-only tool name
+# from the external Mnemosyne plugin and is matched by name (no args
+# inspection needed).  See #26927.
+_MEMORY_WRITE_ACTIONS = frozenset({"add", "replace"})
+_MEMORY_TOOL_NAMES = frozenset({"memory"})
+
+
 def _content(msg: Dict[str, Any]) -> str:
     content = msg.get("content")
     if content is None:
@@ -313,6 +358,11 @@ def analyze_messages(session_id: str, title: str, messages: List[Dict[str, Any]]
     files_touched: Set[str] = set()
     full_text_parts: List[str] = []
     error_count = 0
+    # Per-action write count for the built-in ``memory`` tool.  Populated
+    # by inspecting tool-call arguments below; consumed by
+    # ``memory_write_events`` so the Memory Palace achievement counts
+    # genuine writes instead of every memory engagement (#26927).
+    memory_write_call_count = 0
 
     for msg in messages:
         text = _content(msg)
@@ -329,6 +379,11 @@ def analyze_messages(session_id: str, title: str, messages: List[Dict[str, Any]]
             if name:
                 tool_names.add(name)
                 tool_sequence.append(name)
+                if name.lower() in _MEMORY_TOOL_NAMES:
+                    args = _tool_arguments_from_call(call)
+                    action = str(args.get("action") or "").strip().lower()
+                    if action in _MEMORY_WRITE_ACTIONS:
+                        memory_write_call_count += 1
         if ERROR_RE.search(text):
             error_count += 1
         blob = text
@@ -354,7 +409,16 @@ def analyze_messages(session_id: str, title: str, messages: List[Dict[str, Any]]
     skill_events = _count_tool(tool_sequence, "skill") + len(re.findall(r"\bskill", lower))
     skill_manage_events = _count_tool(tool_sequence, "skill_manage")
     memory_events = _count_tool(tool_sequence, "memory", "mnemosyne")
-    memory_write_events = _count_tool(tool_sequence, "mnemosyne_remember", "memory")
+    # ``memory_write_events`` was previously ``_count_tool(..., "mnemosyne_remember", "memory")``,
+    # which substring-matched every ``memory`` call (read / search / remove)
+    # and made it an exact copy of ``memory_events`` — see #26927.  The
+    # fix: count ``mnemosyne_remember`` by name (it's a write-only tool
+    # from the external Mnemosyne plugin) and gate the built-in ``memory``
+    # tool on its parsed ``action`` argument (``add`` or ``replace`` only).
+    memory_write_events = (
+        _count_tool(tool_sequence, "mnemosyne_remember")
+        + memory_write_call_count
+    )
 
     return {
         "session_id": session_id,
