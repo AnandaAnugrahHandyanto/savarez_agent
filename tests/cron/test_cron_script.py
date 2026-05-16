@@ -158,6 +158,51 @@ class TestRunJobScript:
         assert success is False
         assert "timed out" in output.lower()
 
+    def test_per_job_timeout_overrides_global(self, cron_env, monkeypatch):
+        """A positive per-job timeout takes precedence over the global default."""
+        from cron import scheduler as sched_mod
+        from cron.scheduler import _run_job_script
+
+        # Global default is generous; per-job timeout is the tight ceiling.
+        monkeypatch.setattr(sched_mod, "_SCRIPT_TIMEOUT", 30)
+
+        script = cron_env / "scripts" / "slow_for_job.py"
+        script.write_text("import time; time.sleep(30)\n")
+
+        success, output = _run_job_script(str(script), job_timeout=1)
+        assert success is False
+        assert "timed out after 1s" in output.lower()
+
+    def test_per_job_timeout_allows_long_run(self, cron_env, monkeypatch):
+        """A per-job timeout >> the global default lets a long script finish."""
+        from cron import scheduler as sched_mod
+        from cron.scheduler import _run_job_script
+
+        # Global default is tight; per-job timeout lifts the ceiling.
+        monkeypatch.setattr(sched_mod, "_SCRIPT_TIMEOUT", 1)
+
+        script = cron_env / "scripts" / "brief.py"
+        script.write_text("import time; time.sleep(2); print('done')\n")
+
+        success, output = _run_job_script(str(script), job_timeout=10)
+        assert success is True
+        assert output == "done"
+
+    def test_invalid_per_job_timeout_falls_back(self, cron_env, monkeypatch):
+        """Non-positive or non-numeric per-job timeouts fall back to global."""
+        from cron import scheduler as sched_mod
+        from cron.scheduler import _run_job_script
+
+        monkeypatch.setattr(sched_mod, "_SCRIPT_TIMEOUT", 30)
+
+        script = cron_env / "scripts" / "echo.py"
+        script.write_text("print('ok')\n")
+
+        for bad in (0, -5, "not-a-number", None):
+            success, output = _run_job_script(str(script), job_timeout=bad)
+            assert success is True, f"expected fallback for job_timeout={bad!r}"
+            assert output == "ok"
+
     def test_script_json_output(self, cron_env):
         """Scripts can output structured JSON for the LLM to parse."""
         from cron.scheduler import _run_job_script

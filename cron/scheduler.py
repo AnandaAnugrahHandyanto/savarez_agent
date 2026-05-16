@@ -693,7 +693,29 @@ def _get_script_timeout() -> int:
     return _DEFAULT_SCRIPT_TIMEOUT
 
 
-def _run_job_script(script_path: str) -> tuple[bool, str]:
+def _resolve_script_timeout(job_timeout: int | None) -> int:
+    """Pick the effective script timeout for a single job invocation.
+
+    Precedence (highest first):
+      1. Per-job ``timeout`` from jobs.json (when a positive int).
+      2. Module patch / ``HERMES_CRON_SCRIPT_TIMEOUT`` env / ``cron.script_timeout_seconds`` config.
+      3. ``_DEFAULT_SCRIPT_TIMEOUT`` (120s).
+
+    Honouring the per-job value lets long-running watchdog scripts ship
+    their own budget in jobs.json without requiring operators to raise the
+    global ceiling for all jobs.
+    """
+    if job_timeout is not None:
+        try:
+            value = int(job_timeout)
+            if value > 0:
+                return value
+        except (TypeError, ValueError):
+            logger.warning("Invalid per-job timeout=%r; falling back to global", job_timeout)
+    return _get_script_timeout()
+
+
+def _run_job_script(script_path: str, job_timeout: int | None = None) -> tuple[bool, str]:
     """Execute a cron job's data-collection script and capture its output.
 
     Scripts must reside within HERMES_HOME/scripts/.  Both relative and
@@ -715,6 +737,11 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
         script_path: Path to the script.  Relative paths are resolved
             against HERMES_HOME/scripts/.  Absolute and ~-prefixed paths
             are also validated to ensure they stay within the scripts dir.
+        job_timeout: Optional per-job timeout (seconds) from the job's
+            ``timeout`` field in jobs.json. When a positive int, takes
+            precedence over the global default / env / config. Lets
+            long-running watchdogs (e.g. ``safe-hermes-update.sh``) set
+            their own budget without raising the global ceiling.
 
     Returns:
         (success, output) — on failure *output* contains the error message so the
@@ -747,7 +774,7 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
     if not path.is_file():
         return False, f"Script path is not a file: {path}"
 
-    script_timeout = _get_script_timeout()
+    script_timeout = _resolve_script_timeout(job_timeout)
 
     # Pick an interpreter by extension.  Bash for .sh/.bash, Python for
     # everything else.  We deliberately do NOT honour the file's own
@@ -854,7 +881,7 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
         if prerun_script is not None:
             success, script_output = prerun_script
         else:
-            success, script_output = _run_job_script(script_path)
+            success, script_output = _run_job_script(script_path, job.get("timeout"))
         if success:
             if script_output:
                 prompt = (
@@ -1137,7 +1164,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 _prior_cwd = None
 
         try:
-            ok, output = _run_job_script(script_path)
+            ok, output = _run_job_script(script_path, job.get("timeout"))
         finally:
             if _prior_cwd is not None:
                 try:
@@ -1226,7 +1253,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     prerun_script = None
     script_path = job.get("script")
     if script_path:
-        prerun_script = _run_job_script(script_path)
+        prerun_script = _run_job_script(script_path, job.get("timeout"))
         _ran_ok, _script_output = prerun_script
         if _ran_ok and not _parse_wake_gate(_script_output):
             logger.info(
