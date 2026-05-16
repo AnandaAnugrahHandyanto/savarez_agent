@@ -1513,8 +1513,17 @@ class HermesACPAgent(acp.Agent):
             provider = getattr(state.agent, "provider", None) or "auto"
             return f"Current model: {model}\nProvider: {provider}"
 
+        # Parse --provider and --global flags (same as CLI path in main.py)
+        from hermes_cli.model_switch import parse_model_flags
+        model_input, explicit_provider, _persist_global = parse_model_flags(args)
+
         current_provider = getattr(state.agent, "provider", None) or "openrouter"
-        target_provider, new_model = self._resolve_model_selection(args, current_provider)
+        target_provider = explicit_provider or current_provider
+        model_arg = model_input or ""
+        if model_arg:
+            target_provider, new_model = self._resolve_model_selection(model_arg, target_provider)
+        else:
+            new_model = state.model or ""
 
         state.model = new_model
         state.agent = self.session_manager._make_agent(
