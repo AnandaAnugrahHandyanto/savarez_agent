@@ -125,11 +125,15 @@ def generate_title(
     if not user_messages:
         return None
 
-    # Resolve explicit provider from main_runtime if not passed directly
+    # Resolve explicit provider from main_runtime if not passed directly.
+    # We also pass main_runtime to call_llm so the auxiliary client can
+    # reuse the main agent's authenticated client instead of building a
+    # separate one that may lack valid credentials.
     resolved_provider: Optional[str] = provider
     resolved_model: Optional[str] = model
     resolved_base_url: Optional[str] = base_url
     resolved_api_key: Optional[str] = api_key
+    resolved_main_runtime: Optional[dict] = main_runtime
 
     if not resolved_provider and main_runtime:
         resolved_provider = main_runtime.get("provider")
@@ -143,6 +147,7 @@ def generate_title(
     for attempt in range(retry_count):
         try:
             response = call_llm(
+                task="title_generation",
                 messages=messages,
                 max_tokens=100,
                 temperature=0.3,
@@ -151,6 +156,7 @@ def generate_title(
                 model=resolved_model,
                 base_url=resolved_base_url,
                 api_key=resolved_api_key,
+                main_runtime=resolved_main_runtime,
             )
             title = (response.choices[0].message.content or "").strip()
             # Clean up: remove quotes, trailing punctuation, prefixes like "Title: "
