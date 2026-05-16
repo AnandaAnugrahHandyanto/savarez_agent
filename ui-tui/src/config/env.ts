@@ -11,6 +11,7 @@ export const NO_CONFIRM_DESTRUCTIVE = truthy(process.env.HERMES_TUI_NO_CONFIRM)
 // Experiment gate: lets us measure native scroll vs our virtualization on
 // the same pipeline.
 export const INLINE_MODE = truthy(process.env.HERMES_TUI_INLINE)
+export const CLASSIC_SKIN = truthy(process.env.HERMES_TUI_CLASSIC_SKIN)
 
 // Live FPS counter overlay, fed by ink's onFrame (real render rate, not a
 // synthetic timer).

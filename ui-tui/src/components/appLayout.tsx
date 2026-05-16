@@ -6,7 +6,7 @@ import { useGateway } from '../app/gatewayContext.js'
 import type { AppLayoutProps } from '../app/interfaces.js'
 import { $isBlocked, $overlayState, patchOverlayState } from '../app/overlayStore.js'
 import { $uiState } from '../app/uiStore.js'
-import { INLINE_MODE, SHOW_FPS } from '../config/env.js'
+import { CLASSIC_SKIN, INLINE_MODE, SHOW_FPS } from '../config/env.js'
 import { FULL_RENDER_TAIL_ITEMS } from '../config/limits.js'
 import { PLACEHOLDER } from '../content/placeholders.js'
 import {
@@ -244,14 +244,8 @@ const ComposerPane = memo(function ComposerPane({
 
           {status.stickyPrompt}
         </Text>
-      ) : (
-        <Box height={1} onMouseDown={captureInputDrag} onMouseDrag={dragFromSpacer} onMouseUp={endInputDrag}>
-          {ui.statusBar === 'top' ? (
-            <Text color={ui.theme.color.border} wrap="truncate-end">
-              {horizontalRule(composer.cols)}
-            </Text>
-          ) : null}
-        </Box>
+      ) : CLASSIC_SKIN && ui.statusBar === 'top' ? null : (
+        <Box height={1} onMouseDown={captureInputDrag} onMouseDrag={dragFromSpacer} onMouseUp={endInputDrag} />
       )}
 
       <StatusRulePane at="top" composer={composer} status={status} />
@@ -284,7 +278,14 @@ const ComposerPane = memo(function ComposerPane({
               </Box>
             ))}
 
+            {CLASSIC_SKIN && ui.statusBar === 'top' && (
+              <Text color={ui.theme.color.border} wrap="truncate-end">
+                {horizontalRule(composer.cols)}
+              </Text>
+            )}
+
             <Box
+              height={CLASSIC_SKIN && composer.empty ? inputHeight + 1 : undefined}
               onMouseDown={captureInputDrag}
               onMouseDrag={dragFromPromptRow}
               onMouseUp={endInputDrag}
@@ -301,7 +302,13 @@ const ComposerPane = memo(function ComposerPane({
                 )}
               </Box>
 
-              <Box flexGrow={0} flexShrink={0} height={inputHeight} width={inputColumns}>
+              <Box
+                flexDirection="column"
+                flexGrow={0}
+                flexShrink={0}
+                height={CLASSIC_SKIN ? inputHeight + 1 : inputHeight}
+                width={inputColumns}
+              >
                 {/* Reserve the transcript scrollbar gutter too so typing never rewraps when the scrollbar column repaints. */}
                 <TextInput
                   columns={inputColumns}
@@ -309,10 +316,24 @@ const ComposerPane = memo(function ComposerPane({
                   onChange={composer.updateInput}
                   onPaste={composer.handleTextPaste}
                   onSubmit={composer.submit}
-                  placeholder={composer.empty ? PLACEHOLDER : ui.busy ? 'Ctrl+C to interrupt…' : ''}
+                  placeholder={
+                    CLASSIC_SKIN
+                      ? `\n${horizontalRule(inputColumns)}`
+                      : composer.empty
+                        ? PLACEHOLDER
+                        : ui.busy
+                          ? 'Ctrl+C to interrupt…'
+                          : ''
+                  }
                   value={composer.input}
                   voiceRecordKey={composer.voiceRecordKey}
                 />
+
+                {CLASSIC_SKIN && composer.input.length > 0 && (
+                  <Text color={ui.theme.color.border} wrap="truncate-end">
+                    {horizontalRule(inputColumns)}
+                  </Text>
+                )}
               </Box>
 
               <Box position="absolute" right={0}>
