@@ -84,6 +84,18 @@ class TestMinimaxAuxModel:
         assert "highspeed" not in _get_aux_model_for_provider("minimax-cn")
 
 
+class TestDeepseekAuxModel:
+    """Verify DeepSeek (direct API-key provider) has an aux model fallback (#26924)."""
+
+    def test_deepseek_aux_is_chat(self):
+        from agent.auxiliary_client import _get_aux_model_for_provider
+        assert _get_aux_model_for_provider("deepseek") == "deepseek-chat"
+
+    def test_deepseek_aux_not_empty(self):
+        from agent.auxiliary_client import _get_aux_model_for_provider
+        assert _get_aux_model_for_provider("deepseek") != ""
+
+
 class TestMinimaxBetaHeaders:
     """MiniMax Anthropic-compat endpoints reject fine-grained-tool-streaming beta.
 
