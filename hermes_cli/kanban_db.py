@@ -1228,6 +1228,67 @@ def _canonical_assignee(assignee: Optional[str]) -> Optional[str]:
     return normalize_profile_name(assignee)
 
 
+
+# Keyword-to-profile mapping for auto-assigning unassigned ready tasks.
+# Keys are lowercase substrings matched against task titles (and skill names).
+# Values are the profile names that will be assigned.
+_AUTO_ASSIGN_MAP: dict[str, str] = {
+    # Research / arXiv
+    "arxiv": "researcher-specialist",
+    "research": "researcher-specialist",
+    "paper": "researcher-specialist",
+    # Coding / development
+    "fix(": "coder-specialist",
+    "feat(": "coder-specialist",
+    "refactor": "coder-specialist",
+    "implement": "coder-specialist",
+    "ci(": "coder-specialist",
+    "test(": "coder-specialist",
+    "build": "coder-specialist",
+    "docker": "coder-specialist",
+    # Communication / writing
+    "draft": "communicator",
+    "reply": "communicator",
+    "write": "communicator",
+    "email": "communicator",
+    # Orchestration / planning
+    "plan": "orchestrator",
+    "coordinate": "orchestrator",
+    "sprint": "orchestrator",
+}
+
+
+def _pick_assignee_for_task(
+    title: str,
+    skills: list[str] | None = None,
+) -> str | None:
+    """Return a profile name for an unassigned task, or None if no match.
+
+    Priority:
+      1. Skill names (direct match against _AUTO_ASSIGN_MAP keys)
+      2. Title keywords (substring match against _AUTO_ASSIGN_MAP keys)
+      3. Fallback: None (task stays unassigned for manual routing)
+    """
+    title_lower = title.lower()
+
+    # Match by skill name (strongest signal)
+    if skills:
+        for skill in skills:
+            skill_lower = skill.lower()
+            if skill_lower in _AUTO_ASSIGN_MAP:
+                return _AUTO_ASSIGN_MAP[skill_lower]
+
+    # Match by title keyword
+    for keyword, profile in _AUTO_ASSIGN_MAP.items():
+        if keyword in title_lower:
+            return profile
+
+    # Last resort: check for common task patterns
+    if any(w in title_lower for w in ("debug", "bug", "error", "crash", "fail")):
+        return "coder-specialist"
+
+    return None
+
 def create_task(
     conn: sqlite3.Connection,
     *,
@@ -3079,6 +3140,9 @@ class DispatchResult:
     skipped_unassigned: list[str] = field(default_factory=list)
     """Ready task ids skipped because they have no assignee at all.
     Operator-actionable — usually a misfiled task waiting for routing."""
+    auto_assigned: list[tuple[str, str, str]] = field(default_factory=list)
+    """List of ``(task_id, assignee, matched_by)`` triples for ready tasks
+    that were auto-assigned by the dispatcher based on title/skills."""
     skipped_nonspawnable: list[str] = field(default_factory=list)
     """Ready task ids skipped because their assignee names a control-plane
     lane (a Claude Code terminal like ``orion-cc``) rather than a Hermes
@@ -3938,7 +4002,7 @@ def dispatch_once(
         )
 
     ready_rows = conn.execute(
-        "SELECT id, assignee FROM tasks "
+        "SELECT id, title, assignee, skills FROM tasks "
         "WHERE status = 'ready' AND claim_lock IS NULL "
         "ORDER BY priority DESC, created_at ASC"
     ).fetchall()
@@ -3947,8 +4011,22 @@ def dispatch_once(
         if max_spawn is not None and running_count + spawned >= max_spawn:
             break
         if not row["assignee"]:
-            result.skipped_unassigned.append(row["id"])
-            continue
+            # Try auto-assign — pick a profile based on title/skills
+            skills_list = json.loads(row["skills"]) if row["skills"] else None
+            auto_profile = _pick_assignee_for_task(row["title"], skills_list)
+            if auto_profile:
+                conn.execute(
+                    "UPDATE tasks SET assignee = ? WHERE id = ?",
+                    (auto_profile, row["id"]),
+                )
+                _append_event(conn, row["id"], "assigned",
+                              {"assignee": auto_profile, "auto": True})
+                row["assignee"] = auto_profile
+                result.auto_assigned.append((row["id"], auto_profile,
+                                             "skill" if skills_list else "title"))
+            else:
+                result.skipped_unassigned.append(row["id"])
+                continue
         # Skip ready tasks whose assignee is not a real Hermes profile.
         # `_default_spawn` invokes ``hermes -p <assignee>`` which fails
         # with "Profile 'X' does not exist" when the assignee names a
