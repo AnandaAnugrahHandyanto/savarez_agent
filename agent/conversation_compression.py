@@ -277,6 +277,7 @@ def compress_context(
     task_id: str = "default",
     focus_topic: Optional[str] = None,
     force: bool = False,
+    emit_status: bool = True,
 ) -> Tuple[list, str]:
     """Compress conversation context and split the session in SQLite.
 
@@ -324,9 +325,10 @@ def compress_context(
         f"{approx_tokens:,}" if approx_tokens else "unknown", agent.model,
         focus_topic,
     )
-    agent._emit_status(
-        "🗜️ Compacting context — summarizing earlier conversation so I can continue..."
-    )
+    if emit_status:
+        agent._emit_compression_status(
+            "🗜️ Compacting context — summarizing earlier conversation so I can continue..."
+        )
 
     # ── Compression lock ────────────────────────────────────────────────
     # Atomic, state.db-backed lock per session_id.  Without this, two
