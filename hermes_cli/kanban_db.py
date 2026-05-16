@@ -1238,12 +1238,12 @@ _AUTO_ASSIGN_MAP: dict[str, str] = {
     "research": "researcher-specialist",
     "paper": "researcher-specialist",
     # Coding / development
-    "fix(": "coder-specialist",
-    "feat(": "coder-specialist",
+    "fix:": "coder-specialist",
+    "feat:": "coder-specialist",
     "refactor": "coder-specialist",
     "implement": "coder-specialist",
-    "ci(": "coder-specialist",
-    "test(": "coder-specialist",
+    "ci:": "coder-specialist",
+    "test:": "coder-specialist",
     "build": "coder-specialist",
     "docker": "coder-specialist",
     # Communication / writing
@@ -1261,7 +1261,7 @@ _AUTO_ASSIGN_MAP: dict[str, str] = {
 def _pick_assignee_for_task(
     title: str,
     skills: list[str] | None = None,
-) -> str | None:
+) -> tuple[str | None, str]:
     """Return a profile name for an unassigned task, or None if no match.
 
     Priority:
@@ -1271,23 +1271,28 @@ def _pick_assignee_for_task(
     """
     title_lower = title.lower()
 
-    # Match by skill name (strongest signal)
+    # Match by skill name (strongest signal) — exact key match
     if skills:
         for skill in skills:
             skill_lower = skill.lower()
             if skill_lower in _AUTO_ASSIGN_MAP:
-                return _AUTO_ASSIGN_MAP[skill_lower]
+                return _AUTO_ASSIGN_MAP[skill_lower], "skill"
 
-    # Match by title keyword
+    # Match by title keyword (substring match)
+    matched_keyword = None
     for keyword, profile in _AUTO_ASSIGN_MAP.items():
         if keyword in title_lower:
-            return profile
+            matched_keyword = profile
+            break
 
-    # Last resort: check for common task patterns
+    if matched_keyword:
+        return matched_keyword, "title"
+
+    # Last resort: check for common bug/error patterns
     if any(w in title_lower for w in ("debug", "bug", "error", "crash", "fail")):
-        return "coder-specialist"
+        return "coder-specialist", "title"
 
-    return None
+    return None, ""
 
 def create_task(
     conn: sqlite3.Connection,
@@ -4012,8 +4017,16 @@ def dispatch_once(
             break
         if not row["assignee"]:
             # Try auto-assign — pick a profile based on title/skills
-            skills_list = json.loads(row["skills"]) if row["skills"] else None
-            auto_profile = _pick_assignee_for_task(row["title"], skills_list)
+            raw_skills = row["skills"]
+            skills_list = None
+            if raw_skills:
+                try:
+                    parsed = json.loads(raw_skills)
+                    skills_list = parsed if isinstance(parsed, list) else None
+                except (json.JSONDecodeError, TypeError):
+                    skills_list = None
+            title_text = row["title"] or ""
+            auto_profile, match_type = _pick_assignee_for_task(title_text, skills_list)
             if auto_profile:
                 conn.execute(
                     "UPDATE tasks SET assignee = ? WHERE id = ?",
@@ -4022,8 +4035,7 @@ def dispatch_once(
                 _append_event(conn, row["id"], "assigned",
                               {"assignee": auto_profile, "auto": True})
                 row["assignee"] = auto_profile
-                result.auto_assigned.append((row["id"], auto_profile,
-                                             "skill" if skills_list else "title"))
+                result.auto_assigned.append((row["id"], auto_profile, match_type))
             else:
                 result.skipped_unassigned.append(row["id"])
                 continue
