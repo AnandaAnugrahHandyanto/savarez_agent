@@ -406,8 +406,33 @@ class WebhookAdapter(BasePlatformAdapter):
                 {"status": "ignored", "event": event_type}
             )
 
-        # Format prompt from template
+        # Format prompt from template. Agent-triggering webhook routes must
+        # opt into the exact fields they pass to the model; otherwise a signed
+        # webhook with attacker-controlled business fields can become direct
+        # instructions for a tool-capable agent.
         prompt_template = route_config.get("prompt", "")
+        deliver_only = bool(route_config.get("deliver_only"))
+        if not deliver_only:
+            if not isinstance(prompt_template, str) or not prompt_template.strip():
+                return web.json_response(
+                    {
+                        "error": (
+                            "Webhook routes that invoke the agent require an "
+                            "explicit prompt template."
+                        )
+                    },
+                    status=400,
+                )
+            if "{__raw__}" in prompt_template and not route_config.get("allow_raw_prompt"):
+                return web.json_response(
+                    {
+                        "error": (
+                            "Webhook agent routes cannot include {__raw__} "
+                            "unless allow_raw_prompt is true."
+                        )
+                    },
+                    status=400,
+                )
         prompt = self._render_prompt(
             prompt_template, payload, event_type, route_name
         )
@@ -472,7 +497,7 @@ class WebhookAdapter(BasePlatformAdapter):
         # cron jobs, other agents) that need to push a plain notification
         # to a user's chat with zero LLM cost.  Reuses the same HMAC auth,
         # rate limiting, idempotency, and template rendering as agent mode.
-        if route_config.get("deliver_only"):
+        if deliver_only:
             delivery = {
                 "deliver": route_config.get("deliver", "log"),
                 "deliver_extra": self._render_delivery_extra(
