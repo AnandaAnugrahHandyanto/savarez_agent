@@ -189,7 +189,7 @@ from agent.trajectory import (
     convert_scratchpad_to_think, has_incomplete_scratchpad,
     save_trajectory as _save_trajectory_to_file,
 )
-from utils import atomic_json_write, base_url_host_matches, base_url_hostname, env_var_enabled, normalize_proxy_url
+from utils import atomic_json_write, base_url_host_matches, base_url_hostname, configure_extra_ca_bundle, env_var_enabled, normalize_proxy_url
 from hermes_cli.config import cfg_get
 
 
@@ -6743,10 +6743,15 @@ class AIAgent:
             # Explicitly read proxy settings while still honoring NO_PROXY for
             # loopback / local endpoints such as a locally hosted sub2api.
             _proxy = _get_proxy_for_base_url(base_url)
-            return _httpx.Client(
-                transport=_httpx.HTTPTransport(socket_options=_sock_opts),
-                proxy=_proxy,
-            )
+            _kwargs: "dict[str, Any]" = {
+                "transport": _httpx.HTTPTransport(socket_options=_sock_opts),
+                "proxy": _proxy,
+            }
+            _verify = configure_extra_ca_bundle()
+            if _verify:
+                import ssl as _ssl
+                _kwargs["verify"] = _ssl.create_default_context(cafile=_verify)
+            return _httpx.Client(**_kwargs)
         except Exception:
             return None
 
