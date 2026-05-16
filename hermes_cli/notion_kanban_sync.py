@@ -232,6 +232,27 @@ def normalize_assignee(value: str | None, valid_profiles: set[str]) -> str | Non
     return candidate if candidate in valid_profiles else None
 
 
+def invalid_assignee_message(
+    value: str | None,
+    valid_profiles: set[str],
+    *,
+    existing_assignee: str | None = None,
+) -> str | None:
+    raw = (value or "").strip()
+    if not raw or normalize_assignee(raw, valid_profiles):
+        return None
+    if existing_assignee:
+        return (
+            f"Invalid Notion Assigned Agent {raw!r}; no matching Hermes profile exists, "
+            f"so it kept Hermes assignee {existing_assignee!r}. Fix the Notion "
+            "Assigned Agent value to a real profile before syncing assignment changes."
+        )
+    return (
+        f"Invalid Notion Assigned Agent {raw!r}; no matching Hermes profile exists. "
+        "Imported into Hermes triage without an assignee so the dispatcher cannot create invalid runtime state."
+    )
+
+
 def priority_to_int(value: str | None) -> int:
     return PRIORITY_TO_INT.get((value or "").strip().casefold(), 0)
 
@@ -948,9 +969,12 @@ class NotionKanbanSync:
         if existing is None:
             if max_creates is not None and stats.hermes_tasks_created >= max_creates and not dry_run:
                 return
-            assignee = normalize_assignee(notion_task.assigned_agent, profiles) or "halo"
-            triage = notion_task.canonical_status == "Triage"
-            hermes_status = notion_status_to_safe_import_hermes(notion_task.status)
+            assignee = normalize_assignee(notion_task.assigned_agent, profiles)
+            invalid_assignee = invalid_assignee_message(notion_task.assigned_agent, profiles)
+            if not assignee and not invalid_assignee:
+                assignee = "halo"
+            triage = notion_task.canonical_status == "Triage" or bool(invalid_assignee)
+            hermes_status = "triage" if invalid_assignee else notion_status_to_safe_import_hermes(notion_task.status)
             if dry_run:
                 stats.hermes_tasks_would_create += 1
             else:
@@ -967,17 +991,21 @@ class NotionKanbanSync:
                 created = kanban_db.get_task(conn, task_id)
                 if created and created.status != hermes_status:
                     set_kanban_status(conn, task_id, hermes_status, reason="initial Notion import")
-                import_sync_error = ""
+                import_sync_errors: list[str] = []
                 import_status = notion_task.canonical_status if status_migration else None
+                if invalid_assignee:
+                    import_sync_errors.append(invalid_assignee)
+                    import_status = hermes_status_to_notion(hermes_status)
+                    stats.conflicts += 1
                 if notion_status_to_hermes(notion_task.status) == DISPATCHER_OWNED_HERMES_STATUS:
-                    import_sync_error = notion_running_ignored_message(notion_task.status, hermes_status)
+                    import_sync_errors.append(notion_running_ignored_message(notion_task.status, hermes_status))
                     import_status = hermes_status_to_notion(hermes_status)
                 self.notion.update_page_properties(
                     notion_task.page_id,
                     notion_properties_for_sync(
                         status=import_status,
                         hermes_task_id=task_id,
-                        sync_error=import_sync_error,
+                        sync_error="\n".join(import_sync_errors),
                     ),
                 )
                 by_task_id[task_id] = kanban_db.get_task(conn, task_id)  # type: ignore[assignment]
@@ -1032,6 +1060,32 @@ class NotionKanbanSync:
                     stats.comments_appended += 1
                     stats.notion_pages_updated += 1
                 stats.changed = True
+            return
+
+        invalid_assignee = invalid_assignee_message(
+            notion_task.assigned_agent,
+            profiles,
+            existing_assignee=existing.assignee or "(unassigned)",
+        )
+        if invalid_assignee and notion_changed:
+            stats.conflicts += 1
+            if dry_run:
+                stats.comments_would_append += 1
+            else:
+                add_kanban_comment(conn, existing.id, invalid_assignee)
+                self.notion.update_page_properties(
+                    notion_task.page_id,
+                    notion_properties_for_sync(
+                        sync_error=invalid_assignee,
+                        hermes_task_id=existing.id,
+                    ),
+                )
+                now = _now_iso()
+                self.state.setdefault("pages", {})[notion_task.page_id] = {"last_synced_at": now, "hermes_task_id": existing.id}
+                self.state.setdefault("tasks", {})[existing.id] = {"last_synced_at": now, "notion_page_id": notion_task.page_id}
+                stats.comments_appended += 1
+                stats.notion_pages_updated += 1
+            stats.changed = True
             return
 
         if notion_changed and hermes_changed and existing.status != target_hermes_status:

@@ -59,11 +59,18 @@ class FakeNotion(sync.NotionClient):
         self.activity.append((page_id, text))
 
 
-def notion_page(page_id, title, status, hermes_task_id=None, last_edited_time="2026-01-01T00:10:00Z"):
+def notion_page(
+    page_id,
+    title,
+    status,
+    hermes_task_id=None,
+    last_edited_time="2026-01-01T00:10:00Z",
+    assigned_agent="Dev",
+):
     props = {
         "Task": {"type": "title", "title": [{"plain_text": title}]},
         "Status": {"type": "select", "select": {"name": status}},
-        "Assigned Agent": {"type": "select", "select": {"name": "Dev"}},
+        "Assigned Agent": {"type": "select", "select": {"name": assigned_agent}} if assigned_agent is not None else {"type": "select", "select": None},
         "Priority": {"type": "select", "select": {"name": "Medium"}},
         "Notes": {"type": "rich_text", "rich_text": []},
         "Source": {"type": "rich_text", "rich_text": []},
@@ -120,3 +127,65 @@ def test_existing_task_ignores_notion_running_transition(kanban_home, tmp_path):
     assert props["Status"]["select"]["name"] == "Ready"
     sync_error = props["Sync Error"]["rich_text"][0]["text"]["content"]
     assert "kept Hermes status 'ready'" in sync_error
+
+
+def test_new_notion_task_with_invalid_assigned_agent_imports_to_triage_without_assignee(kanban_home, tmp_path):
+    notion = FakeNotion([
+        notion_page("page-invalid-agent", "needs routing", "Ready", assigned_agent="Orion CC")
+    ])
+    engine = sync.NotionKanbanSync(
+        notion=notion,
+        report_dir=tmp_path / "reports",
+        state_path=tmp_path / "state.json",
+    )
+
+    stats, _ = engine.run_once(dry_run=False, max_creates=5)
+
+    assert stats.hermes_tasks_created == 1
+    assert stats.conflicts == 1
+    with kb.connect() as conn:
+        tasks = kb.list_tasks(conn, include_archived=True)
+        assert len(tasks) == 1
+        task = tasks[0]
+        assert task.status == "triage"
+        assert task.assignee is None
+        assert task.claim_lock is None
+        assert task.worker_pid is None
+        assert task.current_run_id is None
+    props = notion.updated[-1][1]
+    assert props["Status"]["select"]["name"] == "Triage"
+    sync_error = props["Sync Error"]["rich_text"][0]["text"]["content"]
+    assert "Invalid Notion Assigned Agent 'Orion CC'" in sync_error
+    assert "Imported into Hermes triage" in sync_error
+
+
+def test_existing_task_ignores_invalid_notion_assigned_agent(kanban_home, tmp_path):
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="paired", assignee="dev")
+    notion = FakeNotion([
+        notion_page(
+            "page-invalid-agent-existing",
+            "paired",
+            "Ready",
+            hermes_task_id=task_id,
+            assigned_agent="Terminal Lane",
+        )
+    ])
+    engine = sync.NotionKanbanSync(
+        notion=notion,
+        report_dir=tmp_path / "reports",
+        state_path=tmp_path / "state.json",
+    )
+
+    stats, _ = engine.run_once(dry_run=False)
+
+    assert stats.conflicts == 1
+    with kb.connect() as conn:
+        task = kb.get_task(conn, task_id)
+        assert task.assignee == "dev"
+        assert task.status == "ready"
+        comments = kb.list_comments(conn, task_id)
+        assert any("Invalid Notion Assigned Agent 'Terminal Lane'" in c.body for c in comments)
+    props = notion.updated[-1][1]
+    sync_error = props["Sync Error"]["rich_text"][0]["text"]["content"]
+    assert "kept Hermes assignee 'dev'" in sync_error
