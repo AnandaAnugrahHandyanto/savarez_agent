@@ -477,6 +477,7 @@ def cronjob(
     workdir: Optional[str] = None,
     profile: Optional[str] = None,
     no_agent: Optional[bool] = None,
+    wrap_response: Optional[bool] = None,
     task_id: str = None,
 ) -> str:
     """Unified cron job management tool."""
@@ -544,6 +545,7 @@ def cronjob(
                 workdir=_normalize_optional_job_value(workdir),
                 profile=_normalize_optional_job_value(profile),
                 no_agent=_no_agent,
+                wrap_response=wrap_response,
             )
             return json.dumps(
                 {
@@ -695,6 +697,8 @@ def cronjob(
                             success=False,
                         )
                 updates["no_agent"] = target_no_agent
+            if wrap_response is not None:
+                updates["wrap_response"] = bool(wrap_response)
             if repeat is not None:
                 # Normalize: treat 0 or negative as None (infinite)
                 normalized_repeat = None if repeat <= 0 else repeat
@@ -838,6 +842,16 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
                 "type": "string",
                 "description": "Optional Hermes profile name to run the job under. When set, the scheduler resolves that profile, applies a context-local Hermes home override, loads that profile's config/.env for the run, and bridges HERMES_HOME into subprocesses. Any temporary process-environment changes from profile .env loading are restored after the job exits. Use 'default' for the root Hermes profile. Named profiles must already exist. When unset (default), preserves the scheduler's existing profile. On update, pass an empty string to clear. Jobs with profile run sequentially (not parallel) to keep profile-scoped runtime state isolated."
             },
+            "wrap_response": {
+                "type": "boolean",
+                "description": (
+                    "Per-job override for the 'Cronjob Response: <name>' header and "
+                    "'To stop or manage this job…' footer that wrap delivered output. "
+                    "True forces wrapping on; False delivers the raw agent output verbatim "
+                    "(useful for briefings the user wants to read clean). "
+                    "Omit to inherit the global cron.wrap_response config (defaults True)."
+                ),
+            },
         },
         "required": ["action"]
     }
@@ -894,6 +908,7 @@ registry.register(
         workdir=args.get("workdir"),
         profile=args.get("profile"),
         no_agent=args.get("no_agent"),
+        wrap_response=args.get("wrap_response"),
         task_id=kw.get("task_id"),
     ))(),
     check_fn=check_cronjob_requirements,

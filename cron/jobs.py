@@ -565,6 +565,7 @@ def create_job(
     workdir: Optional[str] = None,
     profile: Optional[str] = None,
     no_agent: bool = False,
+    wrap_response: Optional[bool] = None,
 ) -> Dict[str, Any]:
     """
     Create a new cron job.
@@ -649,6 +650,7 @@ def create_job(
     normalized_workdir = _normalize_workdir(workdir)
     normalized_profile = _normalize_profile(profile)
     normalized_no_agent = bool(no_agent)
+    normalized_wrap_response = bool(wrap_response) if wrap_response is not None else None
 
     # no_agent jobs are meaningless without a script — the script IS the job.
     # Surface this as a clear ValueError at create time so bad configs never
@@ -703,6 +705,9 @@ def create_job(
         "enabled_toolsets": normalized_toolsets,
         "workdir": normalized_workdir,
         "profile": normalized_profile,
+        # None = inherit global cron.wrap_response config (default True);
+        # True/False = explicit per-job override of the header/footer wrapping.
+        "wrap_response": normalized_wrap_response,
     }
 
     jobs = load_jobs()
@@ -800,6 +805,11 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
                 updates["profile"] = None
             else:
                 updates["profile"] = _normalize_profile(_profile)
+
+        # Normalize wrap_response: None = inherit global config, bool = explicit override.
+        if "wrap_response" in updates:
+            _wr = updates["wrap_response"]
+            updates["wrap_response"] = bool(_wr) if _wr is not None else None
 
         updated = _apply_skill_fields({**job, **updates})
         schedule_changed = "schedule" in updates
