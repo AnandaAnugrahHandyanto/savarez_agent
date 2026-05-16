@@ -2617,7 +2617,7 @@ class GatewayRunner:
         # These work regardless of busy_input_mode, giving users on any
         # gateway platform a reliable escape hatch from runaway agents.
         text = (event.text or "").strip()
-        normalized = text.lower().lstrip("/")
+        normalized = text.lower().lstrip("/").rstrip(".,!?;:")
         if normalized in _INTERRUPT_KEYWORDS:
             await self._interrupt_and_clear_session(
                 session_key=session_key,
@@ -2625,6 +2625,8 @@ class GatewayRunner:
                 interrupt_reason="User requested interrupt",
                 invalidation_reason="User requested interrupt",
             )
+            if not event.source:
+                return True
             adapter = self.adapters.get(event.source.platform)
             if adapter:
                 await adapter._send_with_retry(
