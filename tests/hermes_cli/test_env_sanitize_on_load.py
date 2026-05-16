@@ -35,6 +35,30 @@ def test_load_env_sanitizes_concatenated_lines():
         env_path.unlink(missing_ok=True)
 
 
+def test_load_env_sanitizes_discord_auto_thread_toggle():
+    """Discord runtime toggles should be known to the .env sanitizer."""
+    from hermes_cli.config import invalidate_env_cache, load_env
+
+    corrupted = "DISCORD_BOT_TOKEN=bot-tokenDISCORD_AUTO_THREAD=false\n"
+
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".env", delete=False, encoding="utf-8"
+    ) as f:
+        f.write(corrupted)
+        env_path = Path(f.name)
+
+    try:
+        invalidate_env_cache()
+        with patch("hermes_cli.config.get_env_path", return_value=env_path):
+            result = load_env()
+
+        assert result.get("DISCORD_BOT_TOKEN") == "bot-token"
+        assert result.get("DISCORD_AUTO_THREAD") == "false"
+    finally:
+        env_path.unlink(missing_ok=True)
+        invalidate_env_cache()
+
+
 def test_load_env_normal_file_unchanged():
     """A well-formed .env file should be parsed identically."""
     from hermes_cli.config import load_env

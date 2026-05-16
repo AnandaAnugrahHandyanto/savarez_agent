@@ -2335,6 +2335,14 @@ OPTIONAL_ENV_VARS = {
         "password": False,
         "category": "messaging",
     },
+    "DISCORD_AUTO_THREAD": {
+        "description": "Auto-create Discord threads for eligible server-channel conversations (default: true). Set false to reply inline.",
+        "prompt": "Auto-create Discord threads (true/false)",
+        "url": None,
+        "password": False,
+        "category": "messaging",
+        "advanced": True,
+    },
     "DISCORD_REPLY_TO_MODE": {
         "description": "Discord reply threading mode: 'off' (no reply references), 'first' (reply on first message only, default), 'all' (reply on every chunk)",
         "prompt": "Discord reply mode (off/first/all)",
