@@ -17,18 +17,22 @@ Generate HTML content and publish it to Gordon's personal Cloudflare Pages deplo
 ## Workflow
 
 1. **Generate HTML** — write the content to a local file (typically in `/opt/data/repo/` or wherever the work is happening)
-2. **Publish** — use `publish_html` tool via Python (since the tool isn't auto-discovered as a direct tool call):
+2. **Push to hermes-pages** — commit and push to the `hermes-pages` repo. Cloudflare Pages auto-deploys on push, but it can lag or miss a push.
+3. **Verify immediately** — always check the deployed URL before declaring success:
    ```python
-   import sys, os
-   sys.path.insert(0, '/opt/data/repo')
-   os.environ['GITHUB_TOKEN'] = read_token()
-   from tools.publish_html import publish_html
-   with open('/path/to/file.html', 'r') as f:
-       html = f.read()
-   result = publish_html('slug-name', html)
-   print(result)  # {"success": true, "url": "https://hermes-pages.rouse-gordon.workers.dev/<hash>-slug-name.html", ...}
+   import urllib.request
+   url = 'https://hermes-pages-d55.pages.dev/<path>'
+   req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+   resp = urllib.request.urlopen(req, timeout=30)
+   html = resp.read().decode('utf-8', 'replace')
+   assert 'expected content' in html, f"Unexpected page: {html[:200]}"
    ```
-3. **Update the index** — `publish_html` always creates a new file (new hash each time). The index at `/opt/data/hermes-pages-repo/index.html` needs to be updated with the new filename so the hub page links to the latest version.
+4. **Force-deploy if verification fails** — if the page is stale or missing despite a successful git push, Cloudflare missed the trigger. Deploy manually:
+   ```bash
+   cd /opt/data/hermes-pages
+   npx -y -p node@22 -p wrangler wrangler pages deploy . --project-name hermes-pages --commit-dirty=true
+   ```
+   The `--commit-dirty=true` flag deploys the current working tree without requiring a new commit.
 
 ## Git credentials setup (critical)
 
@@ -45,7 +49,21 @@ os.environ['GITHUB_TOKEN'] = token
 
 The credentials file has the format: `https://x-access-token:{github_pat_...}@github.com`
 
-## Pushing to hermes-pages repo directly
+### Git push to hermes-pages
+
+**Always configure git identity before committing to hermes-pages** (different from hermes-agent repo):
+
+```bash
+git config user.email "hermes@hermes-agent.local"
+git config user.name "Hermes"
+```
+
+Always use `GIT_TERMINAL_PROMPT=0` to avoid interactive prompts:
+```bash
+GIT_TERMINAL_PROMPT=0 git push origin main
+```
+
+### Pushing to hermes-pages repo directly
 
 If `publish_html` isn't available or you need to push manually:
 
@@ -352,7 +370,9 @@ Current nav order: Home → Gordon → KLA → Ventura → Sidekick → Fishing 
   subprocess.run(['git', 'commit', '-m', 'message'])
   subprocess.run(['git', 'push', 'origin', 'main'])
   ```
-- **`rousegordon-ops` is a GitHub USER, not an org** — `https://api.github.com/users/rousegordon-ops/repos` works; `https://api.github.com/orgs/rousegordon-ops/repos` returns 404. The PAT only has read access to that user's repos (hermes-agent public, gordonclaw/hermes-pages/parts-finder/SidekickStudio private).
+Pitfalls:
+
+- **`rousegordon-ops` is a GitHub USER, not an org** — `https://api.github.com/users/rousegordon-ops/repos` works; `https://api.github.com/orgs/rousegordon-ops/repos` returns 404.
 
 - **Python 3.13 f-string brace collision — CRITICAL** — Literal `{` and `}` in CSS inside f-strings must be doubled to `{{` and `}}`. Python 3.13 added dict unpacking syntax `{**}` as a reserved pattern, making bare `{` in f-strings a syntax error. The script appears to run (compiles OK) but fails at runtime inside `build_page()` with `NameError: name 'border' is not defined` (or whichever CSS property word comes first after the unparsed brace). The error occurs AFTER the truncated HTML has been written to disk — so the file exists with wrong content and `git status` shows "nothing to commit." **Verification:** After running md2html.py, ALWAYS grep the actual output file for expected content before committing. Example failure: `table { border-collapse: ... }` → `NameError: name 'border'`. **Fix:** Identify the `<style>` block in the f-string and replace ALL `{` with `{{` and all `}` with `}}`:
   ```python
