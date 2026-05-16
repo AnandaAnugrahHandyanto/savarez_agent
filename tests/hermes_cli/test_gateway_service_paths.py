@@ -35,21 +35,23 @@ def test_service_path_treats_permission_error_as_missing(tmp_path):
     """A ``PermissionError`` from ``is_dir()`` must not crash unit
     generation — treat the path as missing and continue.
 
-    Reproduces the CI baseline (#26622 audit): on Ubuntu runners executing
-    as root, ``stat('/root/.hermes/node/bin')`` can raise ``EACCES`` even
-    though the calling user owns ``/root``. Before the guard,
-    ``generate_systemd_unit()`` and ``generate_launchd_plist()`` would
-    propagate the ``OSError`` and refuse to produce any unit at all.
+    Reproduces the CI baseline (#26622 audit): on locked-down Ubuntu
+    runners, ``stat('/root/.hermes/node/bin')`` returns ``EACCES`` from
+    the sandboxed filesystem layer even when the path is otherwise
+    reachable. Before the guard, ``generate_systemd_unit()`` and
+    ``generate_launchd_plist()`` propagated the ``OSError`` and refused
+    to produce any unit at all.
     """
     from hermes_cli.gateway import _build_service_path_dirs
 
     real_is_dir = Path.is_dir
+    target = tmp_path / ".hermes" / "node" / "bin"
 
     def fake_is_dir(self):
         # Only the hermes_home node/bin probe trips EACCES; other paths
         # must keep their real behavior so the rest of the function is
         # exercised normally.
-        if str(self).endswith("/.hermes/node/bin"):
+        if self == target:
             raise PermissionError(13, "Permission denied", str(self))
         return real_is_dir(self)
 
@@ -57,7 +59,7 @@ def test_service_path_treats_permission_error_as_missing(tmp_path):
          patch.object(Path, "is_dir", fake_is_dir):
         dirs = _build_service_path_dirs(project_root=tmp_path)
 
-    assert str(tmp_path / ".hermes" / "node" / "bin") not in dirs
+    assert str(target) not in dirs
 
 
 def test_service_path_treats_oserror_as_missing(tmp_path):
@@ -67,9 +69,10 @@ def test_service_path_treats_oserror_as_missing(tmp_path):
     from hermes_cli.gateway import _build_service_path_dirs
 
     real_is_dir = Path.is_dir
+    target = tmp_path / ".hermes" / "node_modules" / ".bin"
 
     def fake_is_dir(self):
-        if str(self).endswith("/.hermes/node_modules/.bin"):
+        if self == target:
             raise OSError(5, "Input/output error", str(self))
         return real_is_dir(self)
 
@@ -77,4 +80,4 @@ def test_service_path_treats_oserror_as_missing(tmp_path):
          patch.object(Path, "is_dir", fake_is_dir):
         dirs = _build_service_path_dirs(project_root=tmp_path)
 
-    assert str(tmp_path / ".hermes" / "node_modules" / ".bin") not in dirs
+    assert str(target) not in dirs
