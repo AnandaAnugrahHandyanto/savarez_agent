@@ -3196,6 +3196,14 @@ class HermesCLI:
         return "".join(out).rstrip() + ellipsis
 
     @staticmethod
+    def _normalize_status_bar_title(title: object) -> str:
+        """Return a single-line session title safe for status-bar rendering."""
+        try:
+            return " ".join(str(title or "").split())
+        except Exception:
+            return ""
+
+    @staticmethod
     def _get_tui_terminal_width(default: tuple[int, int] = (80, 24)) -> int:
         """Return the live prompt_toolkit width, falling back to ``shutil``.
 
@@ -3351,7 +3359,7 @@ class HermesCLI:
             percent = snapshot["context_percent"]
             percent_label = f"{percent}%" if percent is not None else "--"
             duration_label = snapshot["duration"]
-            title = (snapshot.get("session_title") or "").strip()
+            title = self._normalize_status_bar_title(snapshot.get("session_title"))
             title_prefix = f"❝{title}❞ " if title else ""
 
             yolo_active = bool(os.getenv("HERMES_YOLO_MODE"))
@@ -3404,10 +3412,16 @@ class HermesCLI:
             width = self._get_tui_terminal_width()
             duration_label = snapshot["duration"]
             yolo_active = bool(os.getenv("HERMES_YOLO_MODE"))
+            title = self._normalize_status_bar_title(snapshot.get("session_title"))
+            model_prefix_frags = [
+                ("class:status-bar", " ❝"),
+                ("class:status-bar-strong", title),
+                ("class:status-bar", "❞ ⚕ "),
+            ] if title else [("class:status-bar", " ⚕ ")]
 
             if width < 52:
                 frags = [
-                    ("class:status-bar", " ⚕ "),
+                    *model_prefix_frags,
                     ("class:status-bar-strong", snapshot["model_short"]),
                     ("class:status-bar-dim", " · "),
                     ("class:status-bar-dim", duration_label),
@@ -3422,7 +3436,7 @@ class HermesCLI:
                 if width < 76:
                     compressions = snapshot.get("compressions", 0)
                     frags = [
-                        ("class:status-bar", " ⚕ "),
+                        *model_prefix_frags,
                         ("class:status-bar-strong", snapshot["model_short"]),
                         ("class:status-bar-dim", " · "),
                         (self._status_bar_context_style(percent), percent_label),
@@ -3449,7 +3463,7 @@ class HermesCLI:
                     bar_style = self._status_bar_context_style(percent)
                     compressions = snapshot.get("compressions", 0)
                     frags = [
-                        ("class:status-bar", " ⚕ "),
+                        *model_prefix_frags,
                         ("class:status-bar-strong", snapshot["model_short"]),
                         ("class:status-bar-dim", " │ "),
                         ("class:status-bar-dim", context_label),

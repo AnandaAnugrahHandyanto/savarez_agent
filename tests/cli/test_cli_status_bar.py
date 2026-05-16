@@ -179,6 +179,76 @@ class TestCLIStatusBar:
         text = cli_obj._build_status_bar_text(width=120)
         assert "Title shown by default" in text
 
+    def test_status_bar_normalizes_title_to_single_line(self):
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+        )
+        cli_obj.session_id = "20260514_1100_abc"
+        cli_obj._session_db = MagicMock()
+        cli_obj._session_db.get_session_title.return_value = "Title\nwith\tspacing"
+        cli_obj.config = {"display": {"status_bar_title": True}}
+
+        text = cli_obj._build_status_bar_text(width=120)
+        assert "Title with spacing" in text
+        assert "\n" not in text
+        assert "\t" not in text
+
+    def test_status_bar_fragments_include_session_title_at_all_widths(self):
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+        )
+        cli_obj.session_id = "20260514_1100_abc"
+        cli_obj._session_db = MagicMock()
+        cli_obj._session_db.get_session_title.return_value = "Refactor parser"
+        cli_obj.config = {"display": {"status_bar_title": True}}
+        cli_obj._status_bar_visible = True
+
+        for width in (40, 60, 120):
+            mock_app = MagicMock()
+            mock_app.output.get_size.return_value = MagicMock(columns=width)
+            with patch("prompt_toolkit.application.get_app", return_value=mock_app):
+                frags = cli_obj._get_status_bar_fragments()
+
+            text = "".join(part for _, part in frags)
+            assert "❝Refactor parser❞" in text
+            assert cli_obj._status_bar_display_width(text) <= width
+
+    def test_status_bar_fragments_omit_title_when_toggle_disabled(self):
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+        )
+        cli_obj.session_id = "20260514_1100_abc"
+        cli_obj._session_db = MagicMock()
+        cli_obj._session_db.get_session_title.return_value = "Should not appear"
+        cli_obj.config = {"display": {"status_bar_title": False}}
+        cli_obj._status_bar_visible = True
+
+        mock_app = MagicMock()
+        mock_app.output.get_size.return_value = MagicMock(columns=120)
+        with patch("prompt_toolkit.application.get_app", return_value=mock_app):
+            text = "".join(part for _, part in cli_obj._get_status_bar_fragments())
+
+        assert "Should not appear" not in text
+        cli_obj._session_db.get_session_title.assert_not_called()
+
     def test_input_height_counts_wide_characters_using_cell_width(self):
         cli_obj = _make_cli()
 
