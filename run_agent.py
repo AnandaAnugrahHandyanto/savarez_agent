@@ -2911,12 +2911,12 @@ class AIAgent:
             and getattr(self, "platform", "") == "cli"
         )
 
-    def _emit_status(self, message: str) -> None:
+    def _emit_status(self, message: str, *, kind: str = "lifecycle") -> None:
         """Emit a lifecycle status message to both CLI and gateway channels.
 
         CLI users see the message via ``_vprint(force=True)`` so it is always
         visible regardless of verbose/quiet mode.  Gateway consumers receive
-        it through ``status_callback("lifecycle", ...)``.
+        it through ``status_callback(kind, ...)``.
 
         This helper never raises — exceptions are swallowed so it cannot
         interrupt the retry/fallback logic.
@@ -2927,7 +2927,7 @@ class AIAgent:
             pass
         if self.status_callback:
             try:
-                self.status_callback("lifecycle", message)
+                self.status_callback(kind, message)
             except Exception:
                 logger.debug("status_callback error in _emit_status", exc_info=True)
 
@@ -10653,7 +10653,16 @@ class AIAgent:
         """
         return self.api_mode != "codex_responses"
 
-    def _compress_context(self, messages: list, system_message: str, *, approx_tokens: int = None, task_id: str = "default", focus_topic: str = None) -> tuple:
+    def _compress_context(
+        self,
+        messages: list,
+        system_message: str,
+        *,
+        approx_tokens: int = None,
+        task_id: str = "default",
+        focus_topic: str = None,
+        emit_compression_status: bool = True,
+    ) -> tuple:
         """Compress conversation context and split the session in SQLite.
 
         Args:
@@ -10671,9 +10680,12 @@ class AIAgent:
             f"{approx_tokens:,}" if approx_tokens else "unknown", self.model,
             focus_topic,
         )
-        self._emit_status(
-            "🗜️ Compacting context — summarizing earlier conversation so I can continue..."
-        )
+        if emit_compression_status:
+            token_hint = f" (~{approx_tokens:,} tok)" if approx_tokens else ""
+            self._emit_status(
+                f"⠋ compressing {_pre_msg_count} messages{token_hint}…",
+                kind="compressing",
+            )
 
         # Notify external memory provider before compression discards context
         if self._memory_manager:
@@ -10683,11 +10695,19 @@ class AIAgent:
                 pass
 
         try:
-            compressed = self.context_compressor.compress(messages, current_tokens=approx_tokens, focus_topic=focus_topic)
-        except TypeError:
-            # Plugin context engine with strict signature that doesn't accept
-            # focus_topic — fall back to calling without it.
-            compressed = self.context_compressor.compress(messages, current_tokens=approx_tokens)
+            try:
+                compressed = self.context_compressor.compress(messages, current_tokens=approx_tokens, focus_topic=focus_topic)
+            except TypeError:
+                # Plugin context engine with strict signature that doesn't accept
+                # focus_topic — fall back to calling without it.
+                compressed = self.context_compressor.compress(messages, current_tokens=approx_tokens)
+        except Exception:
+            if emit_compression_status and self.status_callback:
+                try:
+                    self.status_callback("ready", "ready")
+                except Exception:
+                    logger.debug("status_callback error clearing compression status", exc_info=True)
+            raise
 
         summary_error = getattr(self.context_compressor, "_last_summary_error", None)
         if summary_error:
@@ -10832,6 +10852,17 @@ class AIAgent:
             self.session_id or "none", _pre_msg_count, len(compressed),
             f"{_compressed_est:,}",
         )
+        if emit_compression_status:
+            self._emit_status(
+                f"✓ compressed {_pre_msg_count}→{len(compressed)} messages "
+                f"(~{_compressed_est:,} tok)",
+                kind="compressing",
+            )
+            if self.status_callback:
+                try:
+                    self.status_callback("ready", "ready")
+                except Exception:
+                    logger.debug("status_callback error clearing compression status", exc_info=True)
         return compressed, new_system_prompt
 
     def _set_tool_guardrail_halt(self, decision: ToolGuardrailDecision) -> None:
