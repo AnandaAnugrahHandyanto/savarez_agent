@@ -7664,7 +7664,16 @@ class AIAgent:
             # main agent loop spins re-issuing the same 403 until the
             # user Ctrl+C's.  Surface the error instead so the friendly
             # entitlement hint from ``_summarize_api_error`` can land.
-            if self._is_entitlement_failure(error_context, status_code):
+            #
+            # Defense-in-depth for #26847: xAI's backend has been seen
+            # to 403 standard SuperGrok subscribers with bodies that
+            # don't match the existing entitlement keyword set. Any 403
+            # against ``xai-oauth`` is treated as entitlement so the
+            # refresh loop can't spin in those cases either.
+            is_entitlement = self._is_entitlement_failure(error_context, status_code)
+            if not is_entitlement and status_code == 403 and (self.provider or "") == "xai-oauth":
+                is_entitlement = True
+            if is_entitlement:
                 logger.info(
                     "Credential %s — entitlement-shaped 403 from %s; "
                     "skipping pool refresh (account lacks subscription, "
