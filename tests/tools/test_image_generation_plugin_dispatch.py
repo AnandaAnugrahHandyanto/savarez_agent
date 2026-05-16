@@ -110,9 +110,10 @@ _PNG_1x1 = (
 
 
 class _FakeHTTPResponse:
-    def __init__(self, content: bytes, status: int = 200):
+    def __init__(self, content: bytes, status: int = 200, headers: dict | None = None):
         self.content = content
         self.status_code = status
+        self.headers = headers or {}
 
     def raise_for_status(self):
         if self.status_code >= 400:
@@ -136,6 +137,27 @@ class _FakeHTTPClient:
     def get(self, url, headers=None):
         self._calls.append(url)
         return self._response
+
+
+class _SequenceHTTPClient:
+    """httpx.Client stand-in that returns successive responses for each
+    .get() call — used to simulate a redirect chain."""
+
+    def __init__(self, responses: list, calls: list):
+        self._responses = list(responses)
+        self._calls = calls
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        return False
+
+    def get(self, url, headers=None):
+        self._calls.append(url)
+        if not self._responses:
+            raise AssertionError(f"Unexpected extra GET to {url}")
+        return self._responses.pop(0)
 
 
 class TestImageGenerateEphemeralUrlCache:
@@ -350,3 +372,161 @@ class TestImageGenerateEphemeralUrlCache:
         assert calls == [url]
         assert result["image"] == url
         assert "media_tag" not in result
+
+    def test_handle_uses_content_type_when_url_lacks_extension(
+        self, monkeypatch, tmp_path
+    ):
+        """Provider URLs that omit a file extension or carry query-string
+        parameters (e.g. ``https://example.com/image?id=123``) must rely
+        on the HTTP Content-Type header to pick a correct extension —
+        defaulting to .jpg unconditionally would mislabel PNG/WebP
+        bytes."""
+        from tools import image_generation_tool
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        extensionless_url = "https://example.com/image?id=deadbeef"
+
+        def fake_dispatch(prompt, aspect_ratio):
+            return json.dumps({
+                "success": True,
+                "image": extensionless_url,
+                "provider": "xai",
+            })
+
+        monkeypatch.setattr(
+            image_generation_tool, "_dispatch_to_plugin_provider", fake_dispatch
+        )
+
+        import httpx
+        calls: list = []
+        response = _FakeHTTPResponse(_PNG_1x1, headers={"content-type": "image/png"})
+        monkeypatch.setattr(
+            httpx, "Client",
+            lambda *a, **kw: _FakeHTTPClient(response, calls),
+        )
+
+        result = json.loads(image_generation_tool._handle_image_generate(
+            {"prompt": "x"}
+        ))
+
+        assert calls == [extensionless_url]
+        assert result["success"] is True
+        # Content-Type sniff turns PNG bytes into .png even with no URL
+        # suffix; without this, cache_image_from_bytes would store as .jpg.
+        assert result["image"].endswith(".png"), result["image"]
+        assert result["media_tag"] == f"MEDIA:{result['image']}"
+        assert result["source_url"] == extensionless_url
+
+    def test_handle_rejects_redirect_to_ssrf_unsafe_target(
+        self, monkeypatch, tmp_path
+    ):
+        """A provider URL that 30x-redirects to a private/internal IP
+        must NOT be followed — ``is_safe_url`` runs on every hop, not
+        just the original URL, so the cached-image fetch can't be tricked
+        into fetching 127.0.0.1 or RFC1918 space behind a public
+        redirect. On rejection the original URL is preserved so the
+        adapter's legacy delivery chain still runs."""
+        from tools import image_generation_tool
+        from tools import url_safety
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        public_url = "https://imgen.x.ai/xai-tmp-imgen-redirect.jpeg"
+        unsafe_target = "http://127.0.0.1:8080/internal-image"
+
+        # Deterministic: the provider URL is safe, the redirect target is
+        # not. Avoids real DNS lookups in CI.
+        monkeypatch.setattr(
+            url_safety, "is_safe_url",
+            lambda u: u == public_url,
+        )
+
+        def fake_dispatch(prompt, aspect_ratio):
+            return json.dumps({
+                "success": True,
+                "image": public_url,
+                "provider": "xai",
+            })
+
+        monkeypatch.setattr(
+            image_generation_tool, "_dispatch_to_plugin_provider", fake_dispatch
+        )
+
+        import httpx
+        calls: list = []
+        redirect = _FakeHTTPResponse(
+            b"", status=302, headers={"location": unsafe_target}
+        )
+        monkeypatch.setattr(
+            httpx, "Client",
+            lambda *a, **kw: _SequenceHTTPClient([redirect], calls),
+        )
+
+        result = json.loads(image_generation_tool._handle_image_generate(
+            {"prompt": "x"}
+        ))
+
+        # The redirect target must NOT be fetched — only the original URL
+        # should appear in calls. The internal IP would be blocked by
+        # is_safe_url even if it were attempted.
+        assert calls == [public_url]
+        # Original URL preserved verbatim; no media tag emitted.
+        assert result["image"] == public_url
+        assert "source_url" not in result
+        assert "media_tag" not in result
+
+    def test_handle_follows_safe_redirect_to_public_target(
+        self, monkeypatch, tmp_path
+    ):
+        """A redirect to another public target (e.g. CDN-backed provider
+        URLs) is followed once is_safe_url passes — the manual redirect
+        loop must not break the common 302→CDN case."""
+        from tools import image_generation_tool
+        from tools import url_safety
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        public_url = "https://imgen.x.ai/xai-tmp-imgen-cdn.jpeg"
+        cdn_url = "https://cdn.example.com/cached/img.png"
+
+        # Both hops are public; bypass real DNS so the test is
+        # deterministic in offline CI.
+        monkeypatch.setattr(
+            url_safety, "is_safe_url",
+            lambda u: u in {public_url, cdn_url},
+        )
+
+        def fake_dispatch(prompt, aspect_ratio):
+            return json.dumps({
+                "success": True,
+                "image": public_url,
+                "provider": "xai",
+            })
+
+        monkeypatch.setattr(
+            image_generation_tool, "_dispatch_to_plugin_provider", fake_dispatch
+        )
+
+        import httpx
+        calls: list = []
+        redirect = _FakeHTTPResponse(
+            b"", status=302, headers={"location": cdn_url}
+        )
+        final = _FakeHTTPResponse(
+            _PNG_1x1, headers={"content-type": "image/png"}
+        )
+        monkeypatch.setattr(
+            httpx, "Client",
+            lambda *a, **kw: _SequenceHTTPClient([redirect, final], calls),
+        )
+
+        result = json.loads(image_generation_tool._handle_image_generate(
+            {"prompt": "x"}
+        ))
+
+        assert calls == [public_url, cdn_url]
+        assert result["success"] is True
+        assert result["image"].endswith(".png")
+        assert result["source_url"] == public_url
+        assert result["media_tag"] == f"MEDIA:{result['image']}"

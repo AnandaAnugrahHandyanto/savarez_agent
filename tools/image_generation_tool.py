@@ -933,7 +933,10 @@ IMAGE_GENERATE_SCHEMA = {
         "backend (FAL, OpenAI, etc.) and model are user-configured and not "
         "selectable by the agent. Returns either a URL or an absolute file "
         "path in the `image` field; display it with markdown "
-        "![description](url-or-path) and the gateway will deliver it."
+        "![description](url-or-path) and the gateway will deliver it. "
+        "When the provider URL has been pre-cached locally to defeat fast "
+        "TTL expiry, `image` will be the local path and `source_url` will "
+        "carry the original URL for diagnostics."
     ),
     "parameters": {
         "type": "object",
@@ -1068,6 +1071,63 @@ def _dispatch_to_plugin_provider(prompt: str, aspect_ratio: str):
     return json.dumps(result)
 
 
+_CONTENT_TYPE_TO_EXT = {
+    "image/png": ".png",
+    "image/jpeg": ".jpg",
+    "image/jpg": ".jpg",
+    "image/gif": ".gif",
+    "image/webp": ".webp",
+    "image/bmp": ".bmp",
+}
+
+
+def _extension_from_content_type(content_type: str) -> Optional[str]:
+    """Map a Content-Type header value to a known image extension, or
+    ``None`` when the type is missing/non-image so callers fall back to
+    URL-suffix parsing."""
+    if not isinstance(content_type, str):
+        return None
+    base = content_type.split(";", 1)[0].strip().lower()
+    return _CONTENT_TYPE_TO_EXT.get(base)
+
+
+def _safe_redirect_get(client, url: str, headers: dict, max_hops: int = 5):
+    """GET ``url`` and follow redirects manually, re-running ``is_safe_url``
+    on every hop's ``Location``. Returns the final non-redirect response.
+
+    httpx's ``follow_redirects=True`` would silently follow a 30x from a
+    public provider URL to an internal/SSRF-unsafe target. The initial
+    ``is_safe_url`` check in ``_cache_remote_image_url`` only validates the
+    original URL — without per-hop re-validation, a provider that
+    redirects to ``http://169.254.169.254/...`` would be fetched.
+
+    Raises ``RuntimeError`` on redirect loops, SSRF-unsafe targets, or
+    exceeded depth. Callers catch ``Exception`` and degrade to the
+    original URL.
+    """
+    from tools.url_safety import is_safe_url
+    from urllib.parse import urljoin
+
+    current = url
+    seen: set = set()
+    for _ in range(max_hops):
+        if current in seen:
+            raise RuntimeError(f"redirect loop at {current}")
+        seen.add(current)
+        resp = client.get(current, headers=headers)
+        if resp.status_code not in (301, 302, 303, 307, 308):
+            return resp
+        resp_headers = getattr(resp, "headers", None) or {}
+        location = resp_headers.get("location") or resp_headers.get("Location")
+        if not location:
+            return resp
+        next_url = urljoin(current, location)
+        if not is_safe_url(next_url):
+            raise RuntimeError(f"redirect to SSRF-unsafe URL: {next_url}")
+        current = next_url
+    raise RuntimeError(f"too many redirects (>{max_hops})")
+
+
 def _cache_remote_image_url(url: str) -> Optional[str]:
     """Download a remote image URL into the shared image cache and return its
     local path, or ``None`` on any failure so callers degrade to the URL.
@@ -1096,21 +1156,33 @@ def _cache_remote_image_url(url: str) -> Optional[str]:
 
     from pathlib import Path as _Path
     from urllib.parse import urlparse
-    ext = _Path(urlparse(url).path).suffix.lower()
-    if ext not in {".png", ".jpg", ".jpeg", ".gif", ".webp"}:
-        ext = ".jpg"
+    url_ext = _Path(urlparse(url).path).suffix.lower()
+    if url_ext not in _CONTENT_TYPE_TO_EXT.values() and url_ext != ".jpeg":
+        url_ext = ""
 
     try:
         import httpx
-        with httpx.Client(timeout=30.0, follow_redirects=True) as client:
-            resp = client.get(
-                url,
+        # follow_redirects=False — see _safe_redirect_get; SSRF revalidation
+        # is run per-hop so a provider URL that 30x-redirects to a private
+        # IP is rejected, not silently fetched.
+        with httpx.Client(timeout=30.0, follow_redirects=False) as client:
+            resp = _safe_redirect_get(
+                client, url,
                 headers={
                     "User-Agent": "Mozilla/5.0 (compatible; HermesAgent/1.0)",
                     "Accept": "image/*,*/*;q=0.8",
                 },
             )
             resp.raise_for_status()
+            # Prefer the server's Content-Type over the URL suffix:
+            # provider URLs frequently omit an extension or carry
+            # query-string parameters (e.g. ``?format=png``), so a
+            # URL-only sniff defaults to .jpg even when bytes are PNG.
+            resp_headers = getattr(resp, "headers", None) or {}
+            sniffed_ext = _extension_from_content_type(
+                resp_headers.get("content-type", "") or resp_headers.get("Content-Type", "")
+            )
+            ext = sniffed_ext or url_ext or ".jpg"
             return cache_image_from_bytes(resp.content, ext)
     except Exception as exc:
         logger.warning(
