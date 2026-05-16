@@ -67,7 +67,7 @@ def _current_profile_name() -> str:
     """Best-effort profile identity for non-worker authorization checks."""
     env_profile = _normalize_profile(os.environ.get("HERMES_PROFILE"))
     if env_profile:
-        return env_profile
+        return env_profile.lower()
     try:
         from hermes_cli.profiles import get_active_profile_name
 
@@ -84,7 +84,8 @@ def _configured_kanban_assignees(profile: str) -> set[str]:
     policy = kanban_cfg.get("allowed_assignees", {})
     entries: Any
     if isinstance(policy, dict):
-        entries = policy.get(profile, [])
+        policy_lower = {str(k).lower(): v for k, v in policy.items()}
+        entries = policy_lower.get(profile.lower(), [])
     else:
         # Accept a flat list for deployments that want one profile-local rule.
         entries = policy
@@ -92,7 +93,7 @@ def _configured_kanban_assignees(profile: str) -> set[str]:
         entries = [entries]
     if not isinstance(entries, (list, tuple, set)):
         return set()
-    allowed = {_normalize_profile(item) for item in entries}
+    allowed = {item.lower() for item in (_normalize_profile(i) for i in entries) if item}
     return {item for item in allowed if item}
 
 
