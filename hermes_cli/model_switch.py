@@ -1233,7 +1233,12 @@ def list_authenticated_providers(
                 from hermes_cli.auth import _load_auth_store
                 store = _load_auth_store()
                 if store and hermes_id in store.get("credential_pool", {}):
-                    has_creds = True
+                    # Require non-empty credential pool entries — an empty
+                    # array (e.g. "kimi-coding-cn": []) means the provider
+                    # was once configured but credentials were removed.
+                    pool_creds = store["credential_pool"].get(hermes_id, [])
+                    if pool_creds:
+                        has_creds = True
             except Exception:
                 pass
         if not has_creds:
