@@ -2902,8 +2902,11 @@ class DispatchResult:
     spawned: list[tuple[str, str, str]] = field(default_factory=list)
     """List of ``(task_id, assignee, workspace_path)`` triples."""
     skipped_unassigned: list[str] = field(default_factory=list)
-    """Ready task ids skipped because they have no assignee at all.
-    Operator-actionable — usually a misfiled task waiting for routing."""
+    """Ready task ids skipped because they have no assignee and auto-assign
+    could not determine a suitable profile."""
+    auto_assigned: list[tuple[str, str]] = field(default_factory=list)
+    """List of ``(task_id, assignee)`` tuples where the dispatcher
+    auto-assigned an unassigned task to a profile."""
     skipped_nonspawnable: list[str] = field(default_factory=list)
     """Ready task ids skipped because their assignee names a control-plane
     lane (a Claude Code terminal like ``orion-cc``) rather than a Hermes
@@ -3663,6 +3666,94 @@ def has_spawnable_ready(conn: sqlite3.Connection) -> bool:
     return False
 
 
+# ── Auto-assign helpers ──────────────────────────────────────────────────────
+
+# Keyword hints mapped to the profile best suited for them.
+# Order matters: first match wins.
+_AUTO_ASSIGN_HINTS: list[tuple[list[str], str]] = [
+    # Research skills/tasks → researcher-specialist
+    (["arxiv", "research", "paper", "literature", "survey", "study"],
+     "researcher-specialist"),
+    # Coding/dev skills/tasks → coder-specialist
+    (["coding", "code", "dev", "build", "deploy", "docker", "git",
+      "python", "javascript", "typescript", "rust", "go", "api", "test",
+      "ci", "cd", "pipeline", "refactor", "debug", "implement"],
+     "coder-specialist"),
+    # Communication/UI tasks → communicator
+    (["translate", "write", "blog", "docs", "documentation", "ui", "ux",
+      "design", "email", "slack", "discord", "telegram"],
+     "communicator"),
+    # Orchestration/planning tasks → orchestrator
+    (["plan", "orchestrate", "coordinate", "schedule", "kanban", "workflow",
+      "dispatch", "manage", "organize"],
+     "orchestrator"),
+]
+
+
+def _pick_assignee_for_task(
+    *,
+    skills_json: str | None,
+    title: str,
+    conn: sqlite3.Connection,
+) -> str | None:
+    """Pick the best profile for an unassigned task.
+
+    Uses task skills (JSON array of skill names) and title keywords to
+    match against ``_AUTO_ASSIGN_HINTS``. Falls back to ``default`` if no
+    specific match is found but at least one Hermes profile exists.
+
+    Returns ``None`` only when the DB has no usable profiles at all
+    (should never happen in a normal deployment).
+    """
+    from hermes_cli.profiles import profile_exists  # local import: avoids cycle
+
+    # Collect searchable text: skills (JSON array) + title
+    search_parts: list[str] = []
+    if skills_json:
+        try:
+            skills = json.loads(skills_json)
+            if isinstance(skills, list):
+                search_parts.extend(str(s).lower() for s in skills)
+        except (json.JSONDecodeError, TypeError):
+            pass
+    search_parts.append(title.lower())
+    searchable = " ".join(search_parts)
+
+    # First matching hint wins
+    for keywords, profile in _AUTO_ASSIGN_HINTS:
+        for kw in keywords:
+            if kw in searchable:
+                if profile_exists(profile):
+                    return profile
+
+    # Fallback: use "default" profile if it exists
+    if profile_exists("default"):
+        return "default"
+
+    # Last resort: pick any existing profile that has done work before
+    row = conn.execute(
+        "SELECT DISTINCT assignee FROM tasks "
+        "WHERE assignee IS NOT NULL AND assignee != '' "
+        "ORDER BY completed_at DESC LIMIT 1"
+    ).fetchone()
+    if row and row["assignee"] and profile_exists(row["assignee"]):
+        return row["assignee"]
+
+    return None
+
+
+def _set_assignee(
+    conn: sqlite3.Connection,
+    task_id: str,
+    assignee: str,
+) -> None:
+    """Set the assignee on a task row (used by auto-assign)."""
+    conn.execute(
+        "UPDATE tasks SET assignee = ? WHERE id = ?",
+        (assignee, task_id),
+    )
+
+
 def dispatch_once(
     conn: sqlite3.Connection,
     *,
@@ -3763,7 +3854,7 @@ def dispatch_once(
         )
 
     ready_rows = conn.execute(
-        "SELECT id, assignee FROM tasks "
+        "SELECT id, assignee, skills, title FROM tasks "
         "WHERE status = 'ready' AND claim_lock IS NULL "
         "ORDER BY priority DESC, created_at ASC"
     ).fetchall()
@@ -3772,8 +3863,20 @@ def dispatch_once(
         if max_spawn is not None and running_count + spawned >= max_spawn:
             break
         if not row["assignee"]:
-            result.skipped_unassigned.append(row["id"])
-            continue
+            # Auto-assign unassigned tasks to the best-suited profile
+            # based on task skills and title keywords.
+            auto_assignee = _pick_assignee_for_task(
+                skills_json=row["skills"],
+                title=row["title"] or "",
+                conn=conn,
+            )
+            if auto_assignee:
+                _set_assignee(conn, row["id"], auto_assignee)
+                result.auto_assigned.append((row["id"], auto_assignee))
+                # Fall through to normal dispatch below
+            else:
+                result.skipped_unassigned.append(row["id"])
+                continue
         # Skip ready tasks whose assignee is not a real Hermes profile.
         # `_default_spawn` invokes ``hermes -p <assignee>`` which fails
         # with "Profile 'X' does not exist" when the assignee names a
