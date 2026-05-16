@@ -181,6 +181,10 @@ class SessionState:
     runtime_lock: Any = field(default_factory=Lock)
     current_prompt_text: str = ""
     interrupted_prompt_text: str = ""
+    # Multi-user isolation: platform/chat_id for routing send_message to the correct user
+    platform: str = ""  # e.g. "feishu", "cli"
+    chat_id: str = ""   # The chat/channel to send notifications to
+    user_id: str = ""   # Optional user identifier
 
 
 class SessionManager:
@@ -272,6 +276,10 @@ class SessionManager:
             model=getattr(agent, "model", original.model) or original.model,
             history=copy.deepcopy(original.history),
             cancel_event=threading.Event(),
+            # Inherit multi-user isolation context from parent session
+            platform=original.platform,
+            chat_id=original.chat_id,
+            user_id=original.user_id,
         )
         with self._lock:
             self._sessions[new_id] = state
@@ -442,6 +450,13 @@ class SessionManager:
             session_meta["base_url"] = base_url.strip()
         if isinstance(api_mode, str) and api_mode.strip():
             session_meta["api_mode"] = api_mode.strip()
+        # Multi-user isolation fields
+        if state.platform:
+            session_meta["platform"] = state.platform
+        if state.chat_id:
+            session_meta["chat_id"] = state.chat_id
+        if state.user_id:
+            session_meta["user_id"] = state.user_id
         cwd_json = json.dumps(session_meta)
 
         try:
@@ -499,6 +514,9 @@ class SessionManager:
         requested_provider = row.get("billing_provider")
         restored_base_url = row.get("billing_base_url")
         restored_api_mode = None
+        restored_platform = ""
+        restored_chat_id = ""
+        restored_user_id = ""
         mc = row.get("model_config")
         if mc:
             try:
@@ -508,6 +526,9 @@ class SessionManager:
                     requested_provider = meta.get("provider") or requested_provider
                     restored_base_url = meta.get("base_url") or restored_base_url
                     restored_api_mode = meta.get("api_mode") or restored_api_mode
+                    restored_platform = meta.get("platform", "")
+                    restored_chat_id = meta.get("chat_id", "")
+                    restored_user_id = meta.get("user_id", "")
             except (json.JSONDecodeError, TypeError):
                 pass
 
@@ -540,6 +561,9 @@ class SessionManager:
             model=model or getattr(agent, "model", "") or "",
             history=history,
             cancel_event=threading.Event(),
+            platform=restored_platform,
+            chat_id=restored_chat_id,
+            user_id=restored_user_id,
         )
         with self._lock:
             self._sessions[session_id] = state

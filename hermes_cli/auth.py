@@ -303,7 +303,7 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         name="MiniMax (China)",
         auth_type="api_key",
         inference_base_url="https://api.minimaxi.com/anthropic",
-        api_key_env_vars=("MINIMAX_CN_API_KEY",),
+        api_key_env_vars=("MINIMAX_CN_API_KEY", "MINIMAX_CN_API_KEY_2"),
         base_url_env_var="MINIMAX_CN_BASE_URL",
     ),
     "deepseek": ProviderConfig(
