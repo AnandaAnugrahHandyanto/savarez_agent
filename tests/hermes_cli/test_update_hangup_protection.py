@@ -9,6 +9,7 @@ that ``hermes update`` survives a terminal disconnect mid-install
 from __future__ import annotations
 
 import io
+import importlib
 import os
 import signal
 import sys
@@ -22,6 +23,11 @@ from hermes_cli.main import (
     _finalize_update_output,
     _install_hangup_protection,
 )
+
+
+def _live_update_output_stream_type():
+    """Return the current class after sibling tests reload hermes_cli.main."""
+    return importlib.import_module("hermes_cli.main")._UpdateOutputStream
 
 
 # -----------------------------------------------------------------------------
@@ -213,8 +219,9 @@ class TestInstallHangupProtection:
         try:
             # On Windows (no SIGHUP) we still wrap stdio and create the log.
             assert state["installed"] is True
-            assert isinstance(sys.stdout, _UpdateOutputStream)
-            assert isinstance(sys.stderr, _UpdateOutputStream)
+            stream_type = _live_update_output_stream_type()
+            assert isinstance(sys.stdout, stream_type)
+            assert isinstance(sys.stderr, stream_type)
             assert state["log_file"] is not None
 
             sys.stdout.write("checking mirror\n")
