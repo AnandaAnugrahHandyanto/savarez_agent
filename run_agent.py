@@ -7656,6 +7656,25 @@ class AIAgent:
             self._try_refresh_anthropic_client_credentials()
         return self._anthropic_client.messages.create(**api_kwargs)
 
+    def _refresh_primary_stream_retry_client(self, *, reason: str) -> None:
+        """Reset the shared provider client used to seed future stream retries.
+
+        Anthropic-wire providers (including DeepSeek's ``/anthropic`` path)
+        stream through ``self._anthropic_client`` and often leave
+        ``self._client_kwargs`` empty. Rebuilding the OpenAI client in that
+        mode can emit misleading "Missing credentials" warnings and skip the
+        real transport reset we need.
+        """
+        if self.api_mode == "anthropic_messages":
+            try:
+                self._anthropic_client.close()
+            except Exception:
+                pass
+            self._rebuild_anthropic_client()
+            return
+
+        self._replace_primary_openai_client(reason=reason)
+
     def _rebuild_anthropic_client(self) -> None:
         """Rebuild the Anthropic client after an interrupt or stale call.
 
@@ -8614,7 +8633,7 @@ class AIAgent:
                                 )
                                 request_client_holder["client"] = None
                             try:
-                                self._replace_primary_openai_client(
+                                self._refresh_primary_stream_retry_client(
                                     reason="stream_mid_tool_retry_pool_cleanup"
                                 )
                             except Exception:
@@ -8672,7 +8691,7 @@ class AIAgent:
                                 # Also rebuild the primary client to purge
                                 # any dead connections from the pool.
                                 try:
-                                    self._replace_primary_openai_client(
+                                    self._refresh_primary_stream_retry_client(
                                         reason="stream_retry_pool_cleanup"
                                     )
                                 except Exception:

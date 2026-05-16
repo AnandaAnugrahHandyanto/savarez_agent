@@ -1082,6 +1082,92 @@ class TestAnthropicStreamCallbacks:
         assert mock_replace.call_count == 0
 
 
+class TestAnthropicStreamRetryCleanup:
+    """Anthropic-wire stream retries must rebuild the Anthropic client, not the
+    OpenAI shared client. Third-party /anthropic providers often leave
+    ``_client_kwargs`` empty, so OpenAI-client rebuilds can fail with
+    misleading credential errors during DeepSeek/Kimi retry cleanup.
+    """
+
+    def test_anthropic_stream_retry_rebuilds_anthropic_client(self):
+        from run_agent import AIAgent
+        import httpx as _httpx
+
+        class _FailingStream:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            @property
+            def response(self):
+                return None
+
+            def __iter__(self):
+                raise _httpx.RemoteProtocolError("peer closed connection")
+                yield  # pragma: no cover
+
+            def get_final_message(self):
+                raise AssertionError("final message should not be requested")
+
+        class _SuccessfulStream:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            @property
+            def response(self):
+                return None
+
+            def __iter__(self):
+                return iter([])
+
+            def get_final_message(self):
+                return SimpleNamespace(content=[], stop_reason="end_turn")
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://api.deepseek.com/anthropic",
+            model="deepseek-v4",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "anthropic_messages"
+        agent.provider = "deepseek"
+        agent._interrupt_requested = False
+        agent._client_kwargs = {}
+        agent._anthropic_api_key = "deepseek-key"
+        agent._anthropic_base_url = "https://api.deepseek.com/anthropic"
+
+        stream_client = MagicMock()
+        stream_client.messages.stream.side_effect = [
+            _FailingStream(),
+            _SuccessfulStream(),
+        ]
+        stream_client.close = MagicMock()
+        agent._anthropic_client = stream_client
+
+        with (
+            patch.object(agent, "_try_refresh_anthropic_client_credentials", return_value=False),
+            patch.object(agent, "_rebuild_anthropic_client") as rebuild,
+            patch.object(
+                agent,
+                "_replace_primary_openai_client",
+                side_effect=AssertionError("openai client rebuild should not run"),
+            ),
+        ):
+            response = agent._interruptible_streaming_api_call({"model": "deepseek-v4"})
+
+        assert stream_client.messages.stream.call_count == 2
+        assert stream_client.close.call_count == 1
+        rebuild.assert_called_once()
+        assert response.stop_reason == "end_turn"
+
+
 class TestPartialToolCallWarning:
     """Regression: when a stream dies mid tool-call argument generation after
     text was already delivered, the partial-stream stub at run_agent.py
