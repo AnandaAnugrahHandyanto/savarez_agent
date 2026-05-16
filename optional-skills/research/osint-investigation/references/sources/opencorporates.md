@@ -49,7 +49,6 @@ Key fields emitted by `fetch_opencorporates.py`:
 - **NYC ACRIS** ↔ `name` (LLC/corp owners of NYC property)
 - **USAspending** ↔ `name` (corporate federal contractors)
 - **SEC EDGAR** ↔ `name` (public companies + their subsidiaries)
-- **FEC** ↔ `name` (corporate PAC sponsors)
 - **ICIJ Offshore** ↔ `name` (international corporate structures)
 
 Join key: normalized company name. Some entries have `previous_names` arrays

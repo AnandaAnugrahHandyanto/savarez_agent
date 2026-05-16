@@ -54,7 +54,6 @@ facts — far more lenient on rate limits.
 ## 5. Cross-Reference Potential
 
 - **All sources** ↔ `label` (entity identity resolution)
-- **FEC** ↔ `employer` (notable donors' employers)
 - **SEC EDGAR** ↔ `label` (public companies)
 - **CourtListener** ↔ `label` (parties to notable litigation)
 - **Wikidata external identifiers** (not currently in this fetcher's output)

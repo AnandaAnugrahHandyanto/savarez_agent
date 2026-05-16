@@ -38,7 +38,6 @@ Key fields emitted by `fetch_sec_edgar.py` (filings index):
 
 ## 5. Cross-Reference Potential
 
-- **FEC** ↔ `company_name` → executive donors (via DEF 14A proxy disclosures)
 - **USAspending** ↔ `company_name` (public companies as federal contractors)
 - **Senate LD** ↔ `company_name` (public companies hire lobbyists)
 - **OFAC SDN** ↔ `company_name` (sanctions screening of public registrants)

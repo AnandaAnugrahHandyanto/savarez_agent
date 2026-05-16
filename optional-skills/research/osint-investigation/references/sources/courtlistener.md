@@ -43,7 +43,6 @@ Key fields emitted by `fetch_courtlistener.py`:
 
 ## 5. Cross-Reference Potential
 
-- **FEC** ↔ `judge` (judges who donate to campaigns — some states)
 - **OpenCorporates** ↔ `case_name` (corporate litigation)
 - **SEC EDGAR** ↔ `case_name` (securities class actions)
 - **OFAC SDN** ↔ `case_name` (sanctions-related civil/criminal cases)

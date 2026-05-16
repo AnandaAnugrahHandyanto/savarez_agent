@@ -46,7 +46,6 @@ Key fields emitted by `fetch_usaspending.py` (prime awards):
 
 ## 5. Cross-Reference Potential
 
-- **FEC** ↔ `recipient_name` or `recipient_parent_name` (contractors who donate)
 - **SEC EDGAR** ↔ `recipient_name` (public companies as contractors)
 - **Senate LD** ↔ `recipient_name` (lobbying clients winning contracts)
 - **OFAC SDN** ↔ `recipient_name` (sanctions screening of contractors — must be

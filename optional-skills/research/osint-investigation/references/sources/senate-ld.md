@@ -45,7 +45,6 @@ Key fields emitted by `fetch_senate_ld.py`:
 
 ## 5. Cross-Reference Potential
 
-- **FEC** ↔ `lobbyists` or `registrant_name` (lobbyists who donate to campaigns)
 - **USAspending** ↔ `client_name` (clients lobbying for contracts)
 - **SEC EDGAR** ↔ `client_name` (public companies as lobbying clients)
 - **OFAC SDN** ↔ `client_name` (sanctions screening of lobbying clients)

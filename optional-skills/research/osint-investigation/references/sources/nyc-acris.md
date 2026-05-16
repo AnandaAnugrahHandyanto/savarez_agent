@@ -41,7 +41,6 @@ Key fields emitted by `fetch_nyc_acris.py` (Parties joined to Master):
 
 ## 5. Cross-Reference Potential
 
-- **FEC** ↔ `name` (NYC donors with NYC property)
 - **SEC EDGAR** ↔ `name` (insider filers with NYC property)
 - **USAspending** ↔ `name` (federal contractors with NYC property)
 - **Senate LDA** ↔ `name` (lobbyists / clients with NYC property)

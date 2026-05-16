@@ -48,7 +48,6 @@ Key fields emitted by `fetch_icij_offshore.py`:
 - **SEC EDGAR** ↔ `name` (public companies with offshore arms)
 - **USAspending** ↔ `name` (federal contractors with offshore structure)
 - **OFAC SDN** ↔ `name` (sanctioned entities using offshore vehicles)
-- **FEC** ↔ `name` (donors with offshore ties — politically sensitive)
 
 Join key: normalized entity/officer name. `node_id` is canonical for cross-
 referencing within ICIJ. Connections graph traversal is in-script (BFS over

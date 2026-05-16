@@ -1,41 +1,43 @@
 ---
 name: osint-investigation
-description: Public-records OSINT investigation framework — FEC campaign finance, SEC EDGAR filings, USAspending contracts, Senate lobbying, OFAC sanctions, ICIJ offshore leaks. Entity resolution across sources, cross-link analysis, timing correlation, evidence chains. Python stdlib only.
+description: Public-records OSINT investigation framework — SEC EDGAR filings, USAspending contracts, Senate lobbying, OFAC sanctions, ICIJ offshore leaks, NYC property records (ACRIS), OpenCorporates registries, CourtListener court records, Wayback Machine archives, Wikipedia + Wikidata, GDELT news monitoring. Entity resolution across sources, cross-link analysis, timing correlation, evidence chains. Python stdlib only.
 version: 0.1.0
 platforms: [linux, macos, windows]
 author: Hermes Agent (adapted from ShinMegamiBoson/OpenPlanter, MIT)
 metadata:
   hermes:
-    tags: [osint, investigation, public-records, campaign-finance, sec, fec, sanctions, due-diligence, journalism]
+    tags: [osint, investigation, public-records, sec, sanctions, corporate-registry, property, courts, due-diligence, journalism]
     category: research
     related_skills: [domain-intel, arxiv]
 ---
 
 # OSINT Investigation — Public Records Cross-Reference
 
-Investigative framework for public-records OSINT: campaign finance, government
-contracts, corporate filings, lobbying, sanctions, offshore leaks, property
-records, court records, web archives, knowledge bases, and global news.
-Resolve entities across heterogeneous sources, build cross-links with explicit
-confidence, run statistical timing tests, and produce structured evidence chains.
+Investigative framework for public-records OSINT: government contracts,
+corporate filings, lobbying, sanctions, offshore leaks, property records,
+court records, web archives, knowledge bases, and global news. Resolve
+entities across heterogeneous sources, build cross-links with explicit
+confidence, run statistical timing tests, and produce structured evidence
+chains.
 
 **Python stdlib only.** Zero install. Works on Linux, macOS, Windows. Most
-sources work with no API key (FEC and OpenCorporates have optional free keys
-that raise rate limits).
+sources work with no API key (OpenCorporates has an optional free token
+that raises rate limits).
 
 Adapted from the MIT-licensed ShinMegamiBoson/OpenPlanter project; expanded
-to cover identity / property / litigation / archives / news sources that the
-original didn't address.
+to cover identity / property / litigation / archives / news sources that
+the original didn't address.
 
 ## When to use this skill
 
 Use when the user asks for:
 
-- "follow the money" — campaign donations → contract awards, lobbying → legislation
-- corporate due diligence — who controls company X, who do they donate to,
-  where are they incorporated, who serves on their boards
+- "follow the money" — government contracts, lobbying → legislation, sanctions
+- corporate due diligence — who controls company X, where are they
+  incorporated, who serves on their boards, what filings have they made
 - sanctions screening — is entity X on OFAC SDN, ICIJ offshore leaks
-- pay-to-play investigation — donors who became vendors
+- pay-to-play investigation — contractors with offshore ties, lobbying
+  clients winning awards
 - property ownership — find recorded deeds/mortgages by name or address
   (NYC; for other counties point users at the relevant recorder)
 - litigation history — find federal + state court opinions and PACER dockets
@@ -50,6 +52,10 @@ Do NOT use this skill for:
 - domain/infrastructure OSINT → `domain-intel` skill
 - academic literature → `arxiv` skill
 - social-media profile discovery → `sherlock` skill (optional)
+- US **federal** campaign finance — FEC is intentionally NOT covered here
+  (the API is unreliable for ad-hoc contributor-name queries on the free
+  DEMO_KEY tier). For federal donations, point users at
+  https://www.fec.gov/data/ directly.
 
 ## Workflow
 
@@ -64,7 +70,6 @@ Read the data-source wiki entries to plan the investigation:
 ls SKILL_DIR/references/sources/
 
 # Federal financial / regulatory
-cat SKILL_DIR/references/sources/fec.md             # campaign finance
 cat SKILL_DIR/references/sources/sec-edgar.md       # corporate filings
 cat SKILL_DIR/references/sources/usaspending.md     # federal contracts
 cat SKILL_DIR/references/sources/senate-ld.md       # lobbying
@@ -93,11 +98,6 @@ Each source has a stdlib-only fetch script in `SKILL_DIR/scripts/`:
 **Federal financial / regulatory**
 
 ```bash
-# FEC individual contributions (federal campaign finance).
-# `--contributor` filters by donor name. Use uppercase 'LAST, FIRST'.
-python3 SKILL_DIR/scripts/fetch_fec.py --contributor "SMITH, JOHN" --state NY --cycle 2024 \
-    --out data/fec_donations.csv
-
 # SEC EDGAR filings (corporate disclosures)
 python3 SKILL_DIR/scripts/fetch_sec_edgar.py --cik 0000320193 \
     --types 10-K,10-Q --out data/edgar_filings.csv
@@ -162,20 +162,21 @@ flags when the company-name resolver matched an individual Form 3/4/5 filer
 rather than a corporate registrant.
 
 Rate-limit notes are in each source's wiki entry. Default fetchers sleep
-politely between paginated requests. **DEMO_KEY rate limits exhaust quickly** —
-real investigations should set the matching env var (`FEC_API_KEY`,
-`SENATE_LDA_TOKEN`, etc.). All scripts surface 429 responses immediately with
-the upstream's quota message so the user knows to slow down or supply a key.
+politely between paginated requests. **API keys raise rate limits** for
+sources that support them (`SEC_USER_AGENT`, `SENATE_LDA_TOKEN`,
+`OPENCORPORATES_API_TOKEN`, `COURTLISTENER_TOKEN`). All scripts surface
+429 responses immediately with the upstream's quota message so the user
+knows to slow down or supply a key.
 
 ### 3. Resolve entities across sources
 
 Normalize names and find matches between two CSV files:
 
 ```bash
-# Match donors (FEC) against contract recipients (USAspending)
+# Match lobbying clients (Senate LDA) against contract recipients (USAspending)
 python3 SKILL_DIR/scripts/entity_resolution.py \
-    --left  data/fec_donations.csv  --left-name-col  contributor_name \
-    --right data/contracts.csv      --right-name-col recipient_name \
+    --left  data/lobbying.csv   --left-name-col  client_name \
+    --right data/contracts.csv  --right-name-col recipient_name \
     --out data/cross_links.csv
 ```
 
@@ -192,14 +193,14 @@ right_name, left_normalized, right_normalized, left_row, right_row`.
 
 ### 4. Statistical timing correlation (optional)
 
-Test whether donations cluster suspiciously near contract awards using a
-permutation test:
+Test whether two time series cluster suspiciously close together — e.g.
+lobbying filings near contract awards — using a permutation test:
 
 ```bash
 python3 SKILL_DIR/scripts/timing_analysis.py \
-    --donations data/fec_donations.csv --donation-date-col date \
-        --donation-amount-col amount --donation-donor-col contributor_name \
-        --donation-recipient-col candidate_name \
+    --donations data/lobbying.csv --donation-date-col filing_date \
+        --donation-amount-col income --donation-donor-col client_name \
+        --donation-recipient-col registrant_name \
     --contracts data/contracts.csv --contract-date-col award_date \
         --contract-vendor-col recipient_name \
     --cross-links data/cross_links.csv \
@@ -207,9 +208,12 @@ python3 SKILL_DIR/scripts/timing_analysis.py \
     --out data/timing.json
 ```
 
-Null hypothesis: donation timing is independent of contract dates. One-tailed
-p-value = fraction of permutations with mean nearest-award distance ≤ observed.
-Minimum 3 donations per (donor, vendor) pair to run the test.
+The script's column flags are intentionally generic — the original tool was
+written for donations vs awards, but it works for any (event, payee) time
+series joined through cross-links. Null hypothesis: event timing is
+independent of award dates. One-tailed p-value = fraction of permutations
+with mean nearest-award distance ≤ observed. Minimum 3 events per (payer,
+vendor) pair to run the test.
 
 ### 5. Build the findings JSON (evidence chain)
 

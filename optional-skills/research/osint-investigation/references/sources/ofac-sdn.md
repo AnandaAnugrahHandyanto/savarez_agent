@@ -43,7 +43,6 @@ Key fields emitted by `fetch_ofac_sdn.py`:
 
 ## 5. Cross-Reference Potential
 
-- **FEC** ↔ `name` or `aka_list` (sanctioned individual contributing to a campaign)
 - **SEC EDGAR** ↔ `name` (public companies sanctioned)
 - **USAspending** ↔ `name` (sanctioned entity as federal contractor — should
   be impossible but verify)
