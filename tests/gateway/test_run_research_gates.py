@@ -48,7 +48,7 @@ def test_extract_research_progress_lines_returns_last_three_labels():
 
 def test_research_subject_truncates_long_prompt():
     subject = _research_subject("Research " + "x" * 100)
-    assert subject.startswith("Research ")
+    assert not subject.startswith("Research ")
     assert subject.endswith("...")
 
 

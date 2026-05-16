@@ -142,6 +142,8 @@ def _build_manual_research_child_prompt(text: str, rigor: str) -> str:
 
 def _research_subject(text: str, limit: int = 72) -> str:
     subject = (text or "").strip().splitlines()[0].strip()
+    if subject.lower().startswith("research "):
+        subject = subject[9:].strip()
     if len(subject) > limit:
         subject = subject[: limit - 3].rstrip() + "..."
     return subject or "research"
@@ -13753,7 +13755,7 @@ class GatewayRunner:
                 if direct_research_delivery:
                     final_url = _extract_public_research_url(session.output_buffer)
                     if session.exit_code == 0 and final_url:
-                        final_text = f"Researching {progress_subject}:\ndone\n{final_url}"
+                        final_text = f"Report:\n{final_url}"
                     else:
                         final_text = f"PUBLISH_FAILED: child exited with code {session.exit_code}"
                     adapter = None
