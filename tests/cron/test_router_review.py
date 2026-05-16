@@ -28,6 +28,7 @@ from cron.router_review import (
     PolicyViolation,
     RoutingOutcome,
     format_review_prompt,
+    classify_job_type,
     load_routing_decisions,
     load_routing_outcomes,
     review_outcomes,
@@ -115,6 +116,27 @@ def _outcome(
         error=error,
         consecutive_local_failures=consecutive_local_failures,
     )
+
+
+# ---------------------------------------------------------------------------
+# classify_job_type
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("simple", "simple"),
+        ("routing:simple", "simple"),
+        ("research:reasoning", "reasoning"),
+        ("research:medium", "reasoning"),
+        ("coding", "coding"),
+        ("tool-heavy", "tool-heavy"),
+        (None, None),
+    ],
+)
+def test_classify_job_type_maps_gateway_tiers(raw: str | None, expected: str | None):
+    assert classify_job_type(raw) == expected
 
 
 # ---------------------------------------------------------------------------
@@ -261,7 +283,7 @@ class TestLoadRoutingDecisions:
         assert len(outcomes) == 1
         o = outcomes[0]
         assert o.job_name == "gateway/archie"
-        assert o.job_type == "research:reasoning"
+        assert o.job_type == "reasoning"
         assert o.selected_model == "blockrun/auto"
         assert o.resolved_model == "gn100/qwen3.6:35b-a3b"
 
@@ -386,7 +408,7 @@ class TestLoadRoutingDecisions:
         assert len(outcomes) == 1
         o = outcomes[0]
         assert o.job_name == "gateway/archie"
-        assert o.job_type == "research:reasoning"
+        assert o.job_type == "reasoning"
         assert o.selected_model == "blockrun/auto"
         assert o.resolved_model == "blockrun/auto"
 
@@ -445,17 +467,17 @@ class TestCheck1SimpleWorkNotLocal:
         check1 = [v for v in violations if "Simple job" in v.message]
         assert check1 == []
 
-    def test_gateway_complexity_tier_not_simple_not_flagged(self):
-        """OpenClaw tiers like 'research:reasoning' are not 'simple' — check 1 should not fire."""
+    def test_gateway_simple_tier_cloud_resolved_warns(self):
+        """OpenClaw tiers like 'routing:simple' should be classified as simple."""
         o = _outcome(
-            job_type="research:reasoning",
+            job_type="routing:simple",
             selected_model="blockrun/auto",
             resolved_model="claude-sonnet-4-5",
             router_pin=None,
         )
         violations = review_outcomes([o])
         check1 = [v for v in violations if "Simple job" in v.message]
-        assert check1 == []
+        assert len(check1) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -498,16 +520,16 @@ class TestCheck2EscalationExpected:
         check2 = [v for v in violations if "did not escalate" in v.message]
         assert check2 == []
 
-    def test_gateway_tier_not_in_escalation_types_not_flagged(self):
-        """Gateway-specific tiers like 'research:medium' are not in escalation types."""
+    @pytest.mark.parametrize("gateway_tier", ["research:reasoning", "research:medium"])
+    def test_gateway_tier_classified_for_escalation_checks(self, gateway_tier: str):
         o = _outcome(
-            job_type="research:medium",
+            job_type=gateway_tier,
             selected_model="blockrun/auto",
             resolved_model="gn100/qwen3.6:35b-a3b",
         )
         violations = review_outcomes([o])
         check2 = [v for v in violations if "did not escalate" in v.message]
-        assert check2 == []
+        assert len(check2) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -663,8 +685,8 @@ class TestCheck5UnexplainedPin:
         check5 = [v for v in violations if "router-pin" in v.message]
         assert check5 == []
 
-    def test_gateway_tier_not_in_escalation_types_pin_fires(self):
-        """Gateway-specific tier not in escalation types + explicit pin = check 5 fires."""
+    def test_gateway_reasoning_tier_pin_not_flagged(self):
+        """Gateway reasoning tiers are escalation types, so explicit pins are expected."""
         o = RoutingOutcome(
             job_name="gateway/archie",
             job_id="",
@@ -676,7 +698,7 @@ class TestCheck5UnexplainedPin:
         )
         violations = review_outcomes([o])
         check5 = [v for v in violations if "router-pin" in v.message]
-        assert len(check5) == 1
+        assert check5 == []
 
 
 # ---------------------------------------------------------------------------

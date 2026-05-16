@@ -2,7 +2,7 @@
 #
 # PURPOSE
 # -------
-# Supervise router-first routing outcomes for OpenClaw cron runs.
+# Supervise router-first routing decisions for OpenClaw cron runs.
 # Hermes reviews whether blockrun/auto resolved correctly (local for simple
 # work, cloud escalation for coding/reasoning) and emits [ACK] or
 # [ESCALATION_NOTICE].
@@ -16,8 +16,8 @@
 # ACTIVATION
 # ----------
 # This job is disabled by default.  Enable it as part of Item 7 operational
-# migration, after Items 1-4 land in clawdbot and routing outcome records are
-# being written to ~/.openclaw/routing-outcomes.jsonl.
+# migration, after OpenClaw routing decisions are being written to
+# ~/.openclaw/routing-decisions.json.
 #
 # STATIC PROMPT
 # -------------
@@ -27,7 +27,7 @@
 # FILE TOOLSET
 # ------------
 # enabled_toolsets: ["file"] gives the Hermes agent read access to
-# ~/.openclaw/routing-outcomes.jsonl.  Remove this once the review cron
+# ~/.openclaw/routing-decisions.json.  Remove this once the review cron
 # switches to inline prompt generation via format_review_prompt().
 #
 # REGISTRATION
@@ -44,16 +44,23 @@ deliver: local
 enabled_toolsets:
   - file
 prompt: |
-  [REVIEW_REQUEST] Router-first routing outcome review.
+  [REVIEW_REQUEST] Router-first routing decision review.
   Endpoint assumption: http://127.0.0.1:11435/v1 (openclaw-cli-proxy).
 
-  Read the routing outcomes file at ~/.openclaw/routing-outcomes.jsonl if it exists.
-  Apply the following policy checks to records from the last 60 minutes:
+  Read the routing decisions file at ~/.openclaw/routing-decisions.json if it exists.
+  The file is a JSON envelope: {"decisions": [...], "stats": {...}, "updatedAt": "..."}.
+  Each decision has at minimum: timestamp, selectedModel, resolvedModel, agentId, complexityTier.
 
-  1. Simple jobs (job_type=simple, selected_model=blockrun/auto) resolved to
+  Apply the following policy checks to decisions from the last 60 minutes. Normalize
+  complexityTier values before checking policy: use the suffix after ':' when present;
+  map medium/high/complex/reasoning tiers to reasoning, low/simple tiers to simple,
+  and keep coding/tool-heavy tiers as coding/tool-heavy.
+
+  1. Simple jobs (job_type/simple gateway tier, selected_model=blockrun/auto) resolved to
      cloud model without router_pin → [warning].
-  2. Coding/tool-heavy/reasoning jobs (selected_model=blockrun/auto) resolved
-     to local model instead of escalating → [warning].
+  2. Coding/tool-heavy/reasoning jobs and gateway tiers such as research:reasoning
+     or research:medium (selected_model=blockrun/auto) resolved to local model
+     instead of escalating → [warning].
   3. Router-first job (selected_model=blockrun/auto) with no resolved_model
      recorded → [warning] (Items 1-4 not yet integrated).
   4. Job with consecutive_local_failures >= 3 → [critical]
@@ -61,11 +68,19 @@ prompt: |
   5. Explicit model pin (selected_model != blockrun/auto) with no
      [router-pin: <reason>] marker for a non-coding job → [warning].
 
-  If the file does not exist, output:
-  [ACK] No routing outcomes yet. Items 1-4 integration pending.
+  If ~/.openclaw/routing-decisions.json does not exist, also check
+  ~/.openclaw/routing-outcomes.jsonl as a supplementary future source. Do not output
+  an ACK solely because routing-outcomes.jsonl is absent when routing-decisions.json
+  is present.
+
+  If neither file exists, output:
+  [ACK] No routing decisions yet. OpenClaw gateway has not written any decisions.
+
+  If the decisions file exists but contains no decisions in the last 60 minutes, output:
+  [ACK] Routing decisions file present. No decisions in the review window.
 
   If all checks pass, output:
-  [ACK] Routing outcomes reviewed. All policy checks passed.
+  [ACK] Routing decisions reviewed. All policy checks passed.
 
   If any violation is found, output:
   [ESCALATION_NOTICE] <brief summary of highest-severity violation and job name>.

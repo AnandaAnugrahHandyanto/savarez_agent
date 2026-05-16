@@ -114,6 +114,21 @@ _LOCAL_MODEL_PREFIXES = ("gn100", "local/", "ollama", "qwen", "llama", "mistral"
 #: Job types where escalation to a cloud model is expected.
 _ESCALATION_EXPECTED_TYPES = ("coding", "tool-heavy", "reasoning")
 
+#: Gateway complexity-tier suffixes/values mapped into cron review policy types.
+_GATEWAY_TIER_TO_JOB_TYPE = {
+    "simple": "simple",
+    "low": "simple",
+    "coding": "coding",
+    "code": "coding",
+    "tool-heavy": "tool-heavy",
+    "tool_heavy": "tool-heavy",
+    "tools": "tool-heavy",
+    "reasoning": "reasoning",
+    "medium": "reasoning",
+    "high": "reasoning",
+    "complex": "reasoning",
+}
+
 #: Threshold for "repeated local failures" policy check.
 _CONSECUTIVE_LOCAL_FAILURE_THRESHOLD = 3
 
@@ -245,10 +260,10 @@ def load_routing_decisions(
 
     - ``agentId`` → ``job_name`` (``"gateway/<agentId>"`` or
       ``"gateway-decision"`` when absent)
-    - ``complexityTier`` → ``job_type`` (passed through; OpenClaw tiers such as
-      ``"research:reasoning"`` differ from cron job types — policy checks that
-      require exact values like ``"simple"`` or ``"coding"`` will not fire on
-      unrecognised tier values)
+    - ``complexityTier`` → normalized ``job_type`` (for example
+      ``"research:reasoning"`` and ``"research:medium"`` map to
+      ``"reasoning"`` so gateway decisions hit the same policy checks as
+      cron JSONL outcomes)
     - ``selectedModel`` → ``selected_model``
     - ``resolvedModel`` → ``resolved_model``
     - ``router_pin``, ``consecutive_local_failures``, ``error`` → defaults
@@ -310,7 +325,7 @@ def load_routing_decisions(
                 job_id="",
                 selected_model=record.get("selectedModel") or None,
                 resolved_model=record.get("resolvedModel") or None,
-                job_type=record.get("complexityTier") or None,
+                job_type=classify_job_type(record.get("complexityTier") or None),
                 router_pin=None,
                 timestamp=ts_str,
                 error=None,
@@ -325,6 +340,28 @@ def load_routing_decisions(
 # ---------------------------------------------------------------------------
 # Policy checks
 # ---------------------------------------------------------------------------
+
+
+def classify_job_type(job_type: Optional[str]) -> Optional[str]:
+    """Normalize cron job types and OpenClaw complexity tiers for policy checks."""
+    if not job_type:
+        return None
+
+    raw = job_type.strip().lower()
+    if not raw:
+        return None
+
+    candidates = [raw]
+    if ":" in raw:
+        candidates.append(raw.rsplit(":", 1)[-1])
+    if "/" in raw:
+        candidates.append(raw.rsplit("/", 1)[-1])
+
+    for candidate in candidates:
+        normalized = _GATEWAY_TIER_TO_JOB_TYPE.get(candidate)
+        if normalized:
+            return normalized
+    return raw
 
 
 def _is_local_model(model: Optional[str]) -> bool:
@@ -365,11 +402,13 @@ def review_outcomes(outcomes: List[RoutingOutcome]) -> List[PolicyViolation]:
     violations: List[PolicyViolation] = []
 
     for o in outcomes:
+        job_type = classify_job_type(o.job_type)
+
         # ------------------------------------------------------------------
         # Check 1 — simple work routed to cloud without justification
         # ------------------------------------------------------------------
         if (
-            o.job_type == "simple"
+            job_type == "simple"
             and o.selected_model == "blockrun/auto"
             and _is_cloud_model(o.resolved_model)
             and not o.router_pin
@@ -390,7 +429,7 @@ def review_outcomes(outcomes: List[RoutingOutcome]) -> List[PolicyViolation]:
         # Check 2 — coding/reasoning work not escalating
         # ------------------------------------------------------------------
         if (
-            o.job_type in _ESCALATION_EXPECTED_TYPES
+            job_type in _ESCALATION_EXPECTED_TYPES
             and o.selected_model == "blockrun/auto"
             and _is_local_model(o.resolved_model)
         ):
@@ -398,7 +437,7 @@ def review_outcomes(outcomes: List[RoutingOutcome]) -> List[PolicyViolation]:
                 PolicyViolation(
                     severity="warning",
                     message=(
-                        f"{o.job_type.capitalize()} job did not escalate: "
+                        f"{job_type.capitalize()} job did not escalate: "
                         f"resolved to local {o.resolved_model!r}. "
                         "Expected cloud escalation for this job type."
                     ),
@@ -447,7 +486,7 @@ def review_outcomes(outcomes: List[RoutingOutcome]) -> List[PolicyViolation]:
             and not o.router_pin
             # Coding pins are expected in phase one per the plan — only flag
             # non-coding job types where an unexplained pin is a surprise.
-            and o.job_type not in _ESCALATION_EXPECTED_TYPES
+            and job_type not in _ESCALATION_EXPECTED_TYPES
         ):
             violations.append(
                 PolicyViolation(
@@ -558,9 +597,10 @@ Each decision has at minimum: timestamp, selectedModel, resolvedModel, agentId, 
 
 Apply the following policy checks to decisions from the last 60 minutes:
 
-1. Simple jobs (job_type=simple, selected_model=blockrun/auto) resolved to \
+1. Simple jobs (job_type/simple gateway tier, selected_model=blockrun/auto) resolved to \
 cloud model without router_pin → [warning].
-2. Coding/tool-heavy/reasoning jobs (selected_model=blockrun/auto) resolved \
+2. Coding/tool-heavy/reasoning jobs and gateway tiers such as research:reasoning \
+or research:medium (selected_model=blockrun/auto) resolved \
 to local model instead of escalating → [warning].
 3. Router-first job (selected_model=blockrun/auto) with no resolved_model \
 recorded → [warning] (ClawRouter may not be exposing the upstream model).
