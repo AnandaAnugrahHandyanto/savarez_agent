@@ -12279,7 +12279,8 @@ class AIAgent:
         _should_review_memory = False
         if (self._memory_nudge_interval > 0
                 and "memory" in self.valid_tool_names
-                and self._memory_store):
+                and self._memory_store
+                and getattr(self, "_chat_type", None) not in ("group", "channel")):
             self._turns_since_memory += 1
             if self._turns_since_memory >= self._memory_nudge_interval:
                 _should_review_memory = True
@@ -15931,7 +15932,8 @@ class AIAgent:
         _should_review_skills = False
         if (self._skill_nudge_interval > 0
                 and self._iters_since_skill >= self._skill_nudge_interval
-                and "skill_manage" in self.valid_tool_names):
+                and "skill_manage" in self.valid_tool_names
+                and getattr(self, "_chat_type", None) not in ("group", "channel")):
             _should_review_skills = True
             self._iters_since_skill = 0
 
