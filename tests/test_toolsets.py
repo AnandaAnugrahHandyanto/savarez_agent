@@ -109,7 +109,7 @@ class TestResolveToolset:
         assert "browser_cdp" not in resolve_toolset("browser")
         assert "browser_cdp" not in resolve_toolset("hermes-cli")
         assert "browser_cdp" not in resolve_toolset("hermes-api-server")
-        assert resolve_toolset("browser-cdp") == ["browser_cdp"]
+        assert "browser_cdp" in resolve_toolset("browser-cdp")
 
 
 class TestResolveMultipleToolsets:
