@@ -468,6 +468,34 @@ class VoiceReceiver:
 
         return completed
 
+    def flush_all(self) -> list:
+        """Return all buffered utterances, even if silence has not fired yet.
+
+        This is used when a user explicitly stops listen-only meeting
+        transcription. Without this drain, speech immediately followed by
+        ``stop transcribe`` can still be sitting in the receiver buffer because
+        the normal silence threshold has not fired yet; disconnecting the voice
+        client then discards that buffered audio and the transcript renders as
+        empty.
+        """
+        completed = []
+        with self._lock:
+            ssrc_user_map = dict(self._ssrc_to_user)
+            for ssrc, buf in list(self._buffers.items()):
+                # 48kHz, 16-bit, stereo = 192000 bytes/sec
+                buf_duration = len(buf) / (self.SAMPLE_RATE * self.CHANNELS * 2)
+                if buf_duration < self.MIN_SPEECH_DURATION:
+                    continue
+                user_id = ssrc_user_map.get(ssrc, 0)
+                if not user_id:
+                    user_id = self._infer_user_for_ssrc(ssrc)
+                if user_id:
+                    completed.append((user_id, bytes(buf)))
+                self._buffers[ssrc] = bytearray()
+                self._last_packet_time.pop(ssrc, None)
+
+        return completed
+
     # ------------------------------------------------------------------
     # PCM -> WAV conversion (for Whisper STT)
     # ------------------------------------------------------------------
@@ -2151,6 +2179,19 @@ class DiscordAdapter(BasePlatformAdapter):
             pass
         except Exception as e:
             logger.error("Voice listen loop error: %s", e, exc_info=True)
+
+    async def drain_voice_input(self, guild_id: int) -> None:
+        """Flush and transcribe any buffered voice audio for a guild."""
+        receiver = self._voice_receivers.get(guild_id)
+        if not receiver:
+            return
+        try:
+            completed = receiver.flush_all()
+        except Exception as e:
+            logger.warning("Voice receiver drain failed: %s", e, exc_info=True)
+            return
+        for user_id, pcm_data in completed:
+            await self._process_voice_input(guild_id, user_id, pcm_data)
 
     async def _process_voice_input(self, guild_id: int, user_id: int, pcm_data: bytes):
         """Convert PCM -> WAV -> STT -> callback."""

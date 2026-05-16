@@ -1025,6 +1025,85 @@ class TestVoiceChannelCommands:
         mock_adapter.handle_message.assert_called_once()
         mock_channel.send.assert_called_once()
 
+    @pytest.mark.asyncio
+    async def test_transcribe_start_joins_and_initializes_listen_only_buffer(self, runner):
+        """Natural-language transcribe start should own a live buffer, not just prompt the LLM."""
+        from gateway.config import Platform
+
+        event = self._make_discord_event("start transcribe")
+        event.source.platform = Platform.DISCORD
+        event.source.chat_type = "group"
+        event.source.chat_name = "Hermes Server / #general"
+        mock_channel = MagicMock()
+        mock_channel.name = "General"
+        mock_adapter = AsyncMock()
+        mock_adapter.get_user_voice_channel = AsyncMock(return_value=mock_channel)
+        mock_adapter.join_voice_channel = AsyncMock(return_value=True)
+        mock_adapter._voice_text_channels = {}
+        mock_adapter._voice_sources = {}
+        mock_adapter._voice_input_callback = None
+        runner.adapters[Platform.DISCORD] = mock_adapter
+
+        result = await runner._handle_transcribe_start(event)
+
+        assert "Transcription started" in result
+        assert runner._transcribe_sessions["discord:123"]["active"] is True
+        assert runner._transcribe_sessions["discord:123"]["lines"] == []
+        assert runner._voice_mode["discord:123"] == "off"
+        mock_adapter.join_voice_channel.assert_called_once_with(mock_channel)
+
+    @pytest.mark.asyncio
+    async def test_transcribe_voice_input_buffers_without_agent_reply(self, runner):
+        """Active transcription buffers STT lines and suppresses normal agent/TTS handling."""
+        from gateway.config import Platform
+
+        mock_adapter = AsyncMock()
+        mock_adapter._voice_text_channels = {111: 123}
+        mock_adapter._voice_sources = {}
+        mock_adapter._client = MagicMock()
+        mock_adapter.handle_message = AsyncMock()
+        runner.adapters[Platform.DISCORD] = mock_adapter
+        runner._transcribe_sessions = {
+            "discord:123": {"active": True, "guild_id": 111, "text_channel_id": "123", "lines": []}
+        }
+
+        await runner._handle_voice_channel_input(111, 42, "We should ship today")
+
+        assert runner._transcribe_sessions["discord:123"]["lines"] == [
+            {"user_id": "42", "text": "We should ship today"}
+        ]
+        mock_adapter.handle_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_transcribe_stop_renders_buffer_and_leaves_voice(self, runner):
+        """Stop should render the owned buffer instead of relying on chat history reconstruction."""
+        from gateway.config import Platform
+
+        event = self._make_discord_event("stop transcribe")
+        event.source.platform = Platform.DISCORD
+        mock_adapter = AsyncMock()
+        mock_adapter.leave_voice_channel = AsyncMock()
+        mock_adapter.drain_voice_input = AsyncMock()
+        mock_adapter.is_in_voice_channel = MagicMock(return_value=True)
+        runner.adapters[Platform.DISCORD] = mock_adapter
+        runner._transcribe_sessions = {
+            "discord:123": {
+                "active": True,
+                "guild_id": 111,
+                "text_channel_id": "123",
+                "lines": [{"user_id": "42", "text": "We should ship today"}],
+            }
+        }
+
+        result = await runner._handle_transcribe_stop(event)
+
+        assert "📝 **Meeting Transcript**" in result
+        assert "<@42>: We should ship today" in result
+        assert "📋 **Meeting Summary**" in result
+        assert runner._transcribe_sessions["discord:123"]["active"] is False
+        mock_adapter.drain_voice_input.assert_called_once_with(111)
+        mock_adapter.leave_voice_channel.assert_called_once_with(111)
+
     # -- _get_guild_id --
 
     def test_get_guild_id_from_guild(self, runner):
@@ -1135,6 +1214,33 @@ class TestDiscordVoiceChannelMethods:
         """Leave when not connected — no crash."""
         adapter = self._make_adapter()
         await adapter.leave_voice_channel(111)  # should not raise
+
+    @pytest.mark.asyncio
+    async def test_drain_voice_input_flushes_receiver_buffers(self):
+        adapter = self._make_adapter()
+        mock_receiver = MagicMock()
+        mock_receiver.flush_all.return_value = [(42, b"pcm-bytes")]
+        adapter._voice_receivers[111] = mock_receiver
+        adapter._process_voice_input = AsyncMock()
+
+        await adapter.drain_voice_input(111)
+
+        mock_receiver.flush_all.assert_called_once_with()
+        adapter._process_voice_input.assert_called_once_with(111, 42, b"pcm-bytes")
+
+    def test_voice_receiver_flush_all_returns_unsilenced_buffer(self):
+        from gateway.platforms.discord import VoiceReceiver
+
+        receiver = object.__new__(VoiceReceiver)
+        receiver._lock = threading.Lock()
+        receiver._buffers = {10: bytearray(b"0" * 192000)}
+        receiver._last_packet_time = {10: time.monotonic()}
+        receiver._ssrc_to_user = {10: 42}
+        receiver._infer_user_for_ssrc = MagicMock(return_value=0)
+
+        assert receiver.flush_all() == [(42, b"0" * 192000)]
+        assert receiver._buffers[10] == bytearray()
+        assert 10 not in receiver._last_packet_time
 
     @pytest.mark.asyncio
     async def test_get_user_voice_channel_no_client(self):

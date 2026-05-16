@@ -5878,6 +5878,17 @@ class GatewayRunner:
                     self.pairing_store._record_rate_limit(platform_name, source.user_id)
             return None
         
+        # Natural-language meeting transcription commands must be handled by the
+        # gateway itself, before the normal LLM/skill path. Otherwise the bot can
+        # acknowledge "start transcribe" without owning a live voice buffer, and
+        # "stop transcribe" later reconstructs an empty transcript from chat
+        # history even if Discord voice/STT was active.
+        transcribe_command = self._get_transcribe_command(event)
+        if transcribe_command == "start":
+            return await self._handle_transcribe_start(event)
+        if transcribe_command == "stop":
+            return await self._handle_transcribe_stop(event)
+
         # Intercept messages that are responses to a pending /update prompt.
         # The update process (detached) wrote .update_prompt.json; the watcher
         # forwarded it to the user; now the user's reply goes back via
@@ -10142,6 +10153,125 @@ class GatewayRunner:
         self._save_voice_modes()
         adapter = self.adapters.get(Platform.DISCORD)
         self._set_adapter_auto_tts_disabled(adapter, chat_id, disabled=True)
+        sessions = getattr(self, "_transcribe_sessions", None)
+        if isinstance(sessions, dict):
+            session = sessions.get(self._voice_key(Platform.DISCORD, chat_id))
+            if session:
+                session["active"] = False
+                session["ended_reason"] = "voice_timeout"
+
+    def _get_transcribe_sessions(self) -> dict:
+        sessions = getattr(self, "_transcribe_sessions", None)
+        if not isinstance(sessions, dict):
+            sessions = {}
+            self._transcribe_sessions = sessions
+        return sessions
+
+    def _get_transcribe_command(self, event: MessageEvent) -> str | None:
+        text = re.sub(r"\s+", " ", (event.text or "").strip().lower())
+        if text in ("start transcribe", "transcribe meeting"):
+            return "start"
+        if text in ("stop transcribe", "transcribe stop", "end meeting", "stop recording"):
+            return "stop"
+        return None
+
+    def _transcribe_key_for_chat(self, chat_id: str | int) -> str:
+        return self._voice_key(Platform.DISCORD, str(chat_id))
+
+    async def _handle_transcribe_start(self, event: MessageEvent) -> str:
+        """Start listen-only Discord meeting transcription with an owned buffer."""
+        adapter = self.adapters.get(event.source.platform) or self.adapters.get(Platform.DISCORD)
+        if not adapter or not hasattr(adapter, "join_voice_channel"):
+            return "Voice channels are not supported on this platform."
+
+        guild_id = self._get_guild_id(event)
+        if not guild_id:
+            return "You must be in a voice channel to start transcription."
+
+        if not hasattr(adapter, "get_user_voice_channel"):
+            return "Voice channels are not supported on this platform."
+        voice_channel = await adapter.get_user_voice_channel(guild_id, event.source.user_id)
+        if not voice_channel:
+            return "You must be in a voice channel to start transcription."
+
+        if hasattr(adapter, "_voice_input_callback"):
+            adapter._voice_input_callback = self._handle_voice_channel_input
+        if hasattr(adapter, "_on_voice_disconnect"):
+            adapter._on_voice_disconnect = self._handle_voice_timeout_cleanup
+
+        try:
+            success = await adapter.join_voice_channel(voice_channel)
+        except Exception as e:
+            logger.warning("Failed to join voice channel for transcription: %s", e)
+            if hasattr(adapter, "_voice_input_callback"):
+                adapter._voice_input_callback = None
+            return f"Failed to join voice channel: {e}"
+
+        if not success:
+            if hasattr(adapter, "_voice_input_callback"):
+                adapter._voice_input_callback = None
+            return "Failed to join voice channel. Check bot permissions (Connect + Speak)."
+
+        text_channel_id = str(event.source.chat_id)
+        if hasattr(adapter, "_voice_text_channels"):
+            adapter._voice_text_channels[guild_id] = int(text_channel_id)
+        if hasattr(adapter, "_voice_sources"):
+            adapter._voice_sources[guild_id] = event.source.to_dict()
+
+        key = self._transcribe_key_for_chat(text_channel_id)
+        self._get_transcribe_sessions()[key] = {
+            "active": True,
+            "guild_id": guild_id,
+            "text_channel_id": text_channel_id,
+            "started_by": str(event.source.user_id or ""),
+            "lines": [],
+        }
+        self._voice_mode[key] = "off"
+        self._save_voice_modes()
+        self._set_adapter_auto_tts_disabled(adapter, text_channel_id, disabled=True)
+        return "🎙 Transcription started. Say or type **stop transcribe** or **end meeting** to finish."
+
+    async def _handle_transcribe_stop(self, event: MessageEvent) -> str:
+        """Stop meeting transcription and render the owned in-memory buffer."""
+        key = self._transcribe_key_for_chat(event.source.chat_id)
+        session = self._get_transcribe_sessions().get(key)
+        guild_id = self._get_guild_id(event) or (session or {}).get("guild_id")
+        adapter = self.adapters.get(event.source.platform) or self.adapters.get(Platform.DISCORD)
+        if adapter and guild_id and hasattr(adapter, "drain_voice_input"):
+            try:
+                await adapter.drain_voice_input(guild_id)
+            except Exception as e:
+                logger.warning("Error draining voice input before stopping transcription: %s", e)
+
+        lines = list((session or {}).get("lines") or [])
+        if session:
+            session["active"] = False
+            session["ended_reason"] = "stopped"
+
+        if adapter and guild_id and hasattr(adapter, "leave_voice_channel"):
+            try:
+                await adapter.leave_voice_channel(guild_id)
+            except Exception as e:
+                logger.warning("Error leaving voice channel after transcription: %s", e)
+        self._voice_mode[key] = "off"
+        self._save_voice_modes()
+        self._set_adapter_auto_tts_disabled(adapter, event.source.chat_id, disabled=True)
+        if adapter and hasattr(adapter, "_voice_input_callback"):
+            adapter._voice_input_callback = None
+
+        if not lines:
+            transcript = "📝 **Meeting Transcript**\n\n- no speech captured"
+        else:
+            rendered = []
+            for line in lines:
+                user_id = str(line.get("user_id") or "unknown")
+                text = str(line.get("text") or "").strip()
+                if text:
+                    rendered.append(f"<@{user_id}>: {text}")
+            transcript = "📝 **Meeting Transcript**\n\n" + ("\n".join(rendered) if rendered else "- no speech captured")
+
+        summary = "📋 **Meeting Summary**\n\n**Key Decisions:**\n- none\n\n**Action Items:**\n- none"
+        return f"{transcript}\n\n{summary}"
 
     def _is_duplicate_voice_transcript(self, guild_id: int, user_id: int, transcript: str) -> bool:
         """Suppress repeated STT outputs for the same recent utterance.
@@ -10228,6 +10358,19 @@ class GatewayRunner:
                 user_id,
                 transcript[:100],
             )
+            return
+
+        active_transcribe_session = None
+        transcribe_key = self._transcribe_key_for_chat(text_ch_id)
+        session = self._get_transcribe_sessions().get(transcribe_key)
+        if session and session.get("active") and session.get("guild_id") == guild_id:
+            active_transcribe_session = session
+        if active_transcribe_session is not None:
+            text = (transcript or "").strip()
+            if text:
+                active_transcribe_session.setdefault("lines", []).append(
+                    {"user_id": str(user_id), "text": text}
+                )
             return
 
         # Show transcript in text channel (after auth, with mention sanitization)
