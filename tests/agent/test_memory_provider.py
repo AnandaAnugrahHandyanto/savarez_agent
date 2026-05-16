@@ -1060,3 +1060,57 @@ class TestHonchoCadenceTracking:
         p.on_turn_start(2, "second message")
         should_skip = p._injection_frequency == "first-turn" and p._turn_count > 1
         assert should_skip, "Second turn (turn 2) SHOULD be skipped"
+
+
+class TestHolographicEntityExtraction:
+    """Regression coverage for durable entity links on compact facts."""
+
+    def test_links_known_single_token_product_entities(self, tmp_path):
+        from plugins.memory.holographic.store import MemoryStore
+
+        store = MemoryStore(db_path=tmp_path / "memory_store.db")
+        try:
+            fact_id = store.add_fact(
+                "User devices are on Tailscale; use 1Password CSW for secrets.",
+                category="user_pref",
+            )
+            rows = store._conn.execute(
+                """
+                SELECT e.name FROM entities e
+                JOIN fact_entities fe ON fe.entity_id = e.entity_id
+                WHERE fe.fact_id = ?
+                ORDER BY e.name
+                """,
+                (fact_id,),
+            ).fetchall()
+        finally:
+            store.close()
+
+        names = {row["name"] for row in rows}
+        assert "Tailscale" in names
+        assert "1Password" in names
+
+    def test_links_slash_separated_known_product_entity(self, tmp_path):
+        from plugins.memory.holographic.store import MemoryStore
+
+        store = MemoryStore(db_path=tmp_path / "memory_store.db")
+        try:
+            fact_id = store.add_fact(
+                "User prefers automation stop and ask on Cloudflare/challenge pages; project uses Neon/postgres branching.",
+                category="user_pref",
+            )
+            rows = store._conn.execute(
+                """
+                SELECT e.name FROM entities e
+                JOIN fact_entities fe ON fe.entity_id = e.entity_id
+                WHERE fe.fact_id = ?
+                ORDER BY e.name
+                """,
+                (fact_id,),
+            ).fetchall()
+        finally:
+            store.close()
+
+        names = {row["name"] for row in rows}
+        assert "Cloudflare" in names
+        assert "Neon" in names

@@ -89,6 +89,25 @@ _RE_AKA          = re.compile(
     r'(\w+(?:\s+\w+)*)\s+(?:aka|also known as)\s+(\w+(?:\s+\w+)*)',
     re.IGNORECASE,
 )
+_KNOWN_SINGLE_TOKEN_ENTITIES = (
+    "1Password",
+    "Cloudflare",
+    "GitHub",
+    "Hermes",
+    "Matrix",
+    "OpenAI",
+    "OpenClaw",
+    "RasPi",
+    "Tailscale",
+)
+_RE_KNOWN_SINGLE_TOKEN = re.compile(
+    r"\b("
+    + "|".join(re.escape(name) for name in _KNOWN_SINGLE_TOKEN_ENTITIES)
+    + r")\b"
+)
+_RE_SLASH_ENTITY_HEAD = re.compile(
+    r"\b([A-Z][A-Za-z0-9+_.-]{2,})(?=/[A-Za-z0-9][A-Za-z0-9+_.-]*)"
+)
 
 
 def _clamp_trust(value: float) -> float:
@@ -403,6 +422,8 @@ class MemoryStore:
         2. Double-quoted terms             e.g. "Python"
         3. Single-quoted terms             e.g. 'pytest'
         4. AKA patterns                    e.g. "Guido aka BDFL" -> two entities
+        5. Known single-token products     e.g. Tailscale, 1Password
+        6. Slash-separated entity heads    e.g. Neon/postgres -> Neon
 
         Returns a deduplicated list preserving first-seen order.
         """
@@ -427,6 +448,12 @@ class MemoryStore:
         for m in _RE_AKA.finditer(text):
             _add(m.group(1))
             _add(m.group(2))
+
+        for m in _RE_KNOWN_SINGLE_TOKEN.finditer(text):
+            _add(m.group(1))
+
+        for m in _RE_SLASH_ENTITY_HEAD.finditer(text):
+            _add(m.group(1))
 
         return candidates
 
