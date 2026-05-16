@@ -529,7 +529,8 @@ def _is_local_backend() -> bool:
     so remote CDP sessions keep the same SSRF protections as cloud providers.
 
     Local backends include Camofox and the built-in headless Chromium path
-    used when no cloud provider is configured.
+    used when no cloud provider is configured.  This only describes where
+    browser automation runs; URL safety checks are enforced separately.
     """
     if _is_camofox_mode():
         return True
