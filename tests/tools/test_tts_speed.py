@@ -155,6 +155,32 @@ class TestOpenaiTtsSpeed:
                     {"openai": {"base_url": "http://tts.example.test/v1"}},
                 )
 
+    def test_custom_base_url_rejects_embedded_credentials(self, tmp_path, monkeypatch):
+        """base_url with embedded user:password must be rejected."""
+        monkeypatch.setenv("VOICE_TOOLS_OPENAI_CUSTOM_KEY", "custom-key")
+        with patch("tools.tts_tool._resolve_openai_audio_client_config",
+                   return_value=("shared-key", "https://api.openai.com/v1")):
+            from tools.tts_tool import _generate_openai_tts
+            with pytest.raises(ValueError, match="embedded credentials"):
+                _generate_openai_tts(
+                    "Hello",
+                    str(tmp_path / "out.mp3"),
+                    {"openai": {"base_url": "https://user:pass@tts.example.test/v1"}},
+                )
+
+    def test_custom_base_url_rejects_non_absolute_url(self, tmp_path, monkeypatch):
+        """Non-absolute or non-http(s) base_url must be rejected."""
+        monkeypatch.setenv("VOICE_TOOLS_OPENAI_CUSTOM_KEY", "custom-key")
+        with patch("tools.tts_tool._resolve_openai_audio_client_config",
+                   return_value=("shared-key", "https://api.openai.com/v1")):
+            from tools.tts_tool import _generate_openai_tts
+            with pytest.raises(ValueError, match="absolute http"):
+                _generate_openai_tts(
+                    "Hello",
+                    str(tmp_path / "out.mp3"),
+                    {"openai": {"base_url": "ftp://tts.example.test/v1"}},
+                )
+
 
 # ---------------------------------------------------------------------------
 # MiniMax TTS (new API: raw audio, no speed/voice_setting)

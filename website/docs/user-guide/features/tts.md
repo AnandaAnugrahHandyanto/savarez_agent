@@ -20,7 +20,7 @@ Convert text to speech with ten providers:
 |----------|---------|------|---------|
 | **Edge TTS** (default) | Good | Free | None needed |
 | **ElevenLabs** | Excellent | Paid | `ELEVENLABS_API_KEY` |
-| **OpenAI TTS** | Good | Paid | `VOICE_TOOLS_OPENAI_KEY` |
+| **OpenAI TTS** | Good | Paid | `VOICE_TOOLS_OPENAI_KEY` (official) / `VOICE_TOOLS_OPENAI_CUSTOM_KEY` (custom endpoint) |
 | **MiniMax TTS** | Excellent | Paid | `MINIMAX_API_KEY` |
 | **Mistral (Voxtral TTS)** | Excellent | Paid | `MISTRAL_API_KEY` |
 | **Google Gemini TTS** | Excellent | Free tier | `GEMINI_API_KEY` |
