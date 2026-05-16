@@ -154,7 +154,8 @@ _MARKDOWN_HINT_RE = re.compile(
     re.MULTILINE,
 )
 # Detect markdown tables: a line starting with | followed by a separator line.
-# Feishu post-type 'md' elements do not render tables, so we force text mode.
+# Feishu post-type 'md' elements do not render tables, so we wrap table blocks
+# in fenced text code blocks before sending as post markdown.
 _MARKDOWN_TABLE_RE = re.compile(r"^\|.*\|\n\|[-|: ]+\|", re.MULTILINE)
 _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 _MARKDOWN_FENCE_OPEN_RE = re.compile(r"^```([^\n`]*)\s*$")
@@ -556,6 +557,77 @@ def _build_markdown_post_payload(content: str) -> str:
         },
         ensure_ascii=False,
     )
+
+
+def _is_markdown_table_separator(line: str) -> bool:
+    stripped = line.strip()
+    return bool(
+        stripped.startswith("|")
+        and stripped.endswith("|")
+        and re.fullmatch(r"[|:\- ]+", stripped)
+    )
+
+
+def _looks_like_markdown_table_start(lines: List[str], index: int) -> bool:
+    if index + 1 >= len(lines):
+        return False
+    header = lines[index].strip()
+    if not (header.startswith("|") and header.endswith("|")):
+        return False
+    return _is_markdown_table_separator(lines[index + 1])
+
+
+def _wrap_markdown_tables_as_code_blocks(content: str) -> str:
+    """Wrap markdown table blocks in fenced text code blocks for Feishu.
+
+    Feishu post markdown does not render GitHub-Flavored Markdown tables and can
+    render them as blank content. A fenced text block is the lowest-risk fallback:
+    it keeps the table readable without changing message type to interactive
+    cards, and leaves non-table markdown outside the table intact.
+    """
+    if not content or not _MARKDOWN_TABLE_RE.search(content):
+        return content
+
+    lines = content.splitlines()
+    output: List[str] = []
+    index = 0
+    in_code_block = False
+
+    while index < len(lines):
+        line = lines[index]
+        stripped_line = line.strip()
+        is_fence = bool(
+            _MARKDOWN_FENCE_CLOSE_RE.match(stripped_line)
+            if in_code_block
+            else _MARKDOWN_FENCE_OPEN_RE.match(stripped_line)
+        )
+        if is_fence:
+            in_code_block = not in_code_block
+            output.append(line)
+            index += 1
+            continue
+
+        if not in_code_block and _looks_like_markdown_table_start(lines, index):
+            while output and output[-1] == "":
+                output.pop()
+            output.append("```text")
+            while index < len(lines):
+                table_line = lines[index]
+                if not table_line.strip():
+                    break
+                if "|" not in table_line:
+                    break
+                output.append(table_line)
+                index += 1
+            output.append("```")
+            if index < len(lines) and not lines[index].strip():
+                index += 1
+            continue
+
+        output.append(line)
+        index += 1
+
+    return "\n".join(output)
 
 
 def _build_markdown_post_rows(content: str) -> List[List[Dict[str, str]]]:
@@ -2273,7 +2345,11 @@ class FeishuAdapter(BasePlatformAdapter):
                     daemon=True,
                 ).start()
             return
-        self._submit_on_loop(loop, self._handle_message_event_data(data))
+        future = asyncio.run_coroutine_threadsafe(
+            self._handle_message_event_data(data),
+            loop,
+        )
+        future.add_done_callback(self._log_background_failure)
 
     def _enqueue_pending_inbound_event(self, data: Any) -> bool:
         """Append an event to the pending-inbound queue.
@@ -2349,12 +2425,16 @@ class FeishuAdapter(BasePlatformAdapter):
                     dispatched = 0
                     requeue: List[Any] = []
                     for event in batch:
-                        if self._submit_on_loop(
-                            loop, self._handle_message_event_data(event)
-                        ):
+                        try:
+                            fut = asyncio.run_coroutine_threadsafe(
+                                self._handle_message_event_data(event),
+                                loop,
+                            )
+                            fut.add_done_callback(self._log_background_failure)
                             dispatched += 1
-                        else:
-                            # Loop closed/unavailable — requeue and poll again.
+                        except RuntimeError:
+                            # Loop closed between check and submit — requeue
+                            # and poll again.
                             requeue.append(event)
                     if requeue:
                         with self._pending_inbound_lock:
@@ -2458,10 +2538,11 @@ class FeishuAdapter(BasePlatformAdapter):
         if not self._loop_accepts_callbacks(loop):
             logger.warning("[Feishu] Dropping drive comment event before adapter loop is ready")
             return
-        self._submit_on_loop(
-            loop,
+        future = asyncio.run_coroutine_threadsafe(
             handle_drive_comment_event(self._client, data, self_open_id=self._bot_open_id),
+            loop,
         )
+        future.add_done_callback(self._log_background_failure)
 
     def _on_reaction_event(self, event_type: str, data: Any) -> None:
         """Route user reactions on bot messages as synthetic text events."""
@@ -2489,7 +2570,11 @@ class FeishuAdapter(BasePlatformAdapter):
             or bool(getattr(loop, "is_closed", lambda: False)())
         ):
             return
-        self._submit_on_loop(loop, self._handle_reaction_event(event_type, data))
+        future = asyncio.run_coroutine_threadsafe(
+            self._handle_reaction_event(event_type, data),
+            loop,
+        )
+        future.add_done_callback(self._log_background_failure)
 
     def _on_card_action_trigger(self, data: Any) -> Any:
         """Handle card-action callback from the Feishu SDK (synchronous).
@@ -2535,14 +2620,11 @@ class FeishuAdapter(BasePlatformAdapter):
 
     def _submit_on_loop(self, loop: Any, coro: Any) -> bool:
         """Schedule background work on the adapter loop with shared failure logging."""
-        from agent.async_utils import safe_schedule_threadsafe
-        future = safe_schedule_threadsafe(
-            coro, loop,
-            logger=logger,
-            log_message="[Feishu] Failed to schedule background callback work",
-            log_level=logging.WARNING,
-        )
-        if future is None:
+        try:
+            future = asyncio.run_coroutine_threadsafe(coro, loop)
+        except Exception:
+            coro.close()
+            logger.warning("[Feishu] Failed to schedule background callback work", exc_info=True)
             return False
         future.add_done_callback(self._log_background_failure)
         return True
@@ -4223,11 +4305,12 @@ class FeishuAdapter(BasePlatformAdapter):
 
     def _build_outbound_payload(self, content: str) -> tuple[str, str]:
         # Feishu post-type 'md' elements do not render markdown tables; sending
-        # table content as post causes the message to appear blank on the client.
-        # Force plain text for anything that looks like a markdown table.
+        # table content as post can appear blank. Keep the message type as post
+        # but wrap table blocks in fenced text code blocks so the content stays
+        # readable without switching to interactive cards.
         if _MARKDOWN_TABLE_RE.search(content):
-            text_payload = {"text": content}
-            return "text", json.dumps(text_payload, ensure_ascii=False)
+            safe_content = _wrap_markdown_tables_as_code_blocks(content)
+            return "post", _build_markdown_post_payload(safe_content)
         if _MARKDOWN_HINT_RE.search(content):
             return "post", _build_markdown_post_payload(content)
         text_payload = {"text": content}
@@ -4308,7 +4391,14 @@ class FeishuAdapter(BasePlatformAdapter):
     ) -> Any:
         effective_reply_to = reply_to
         if not effective_reply_to and metadata and metadata.get("thread_id"):
-            effective_reply_to = metadata.get("reply_to_message_id")
+            # Cron / send_message explicit targets are encoded as
+            # feishu:<chat_id>:<thread_id>.  For Feishu topics the thread_id
+            # observed in inbound events is usually the root message ID
+            # (``om_...``).  The reliable API path is therefore
+            # ``message.reply(root_message_id, reply_in_thread=True)``.  Trying
+            # to create with receive_id_type="thread_id" can be rejected by
+            # Feishu with [99992402] field validation failed.
+            effective_reply_to = metadata.get("reply_to_message_id") or metadata.get("thread_id")
         reply_in_thread = bool((metadata or {}).get("thread_id"))
         if effective_reply_to:
             body = self._build_reply_message_body(
