@@ -2097,7 +2097,7 @@ async def _relay_weixin_via_gateway(
             async with session.post(api_url, json=payload, timeout=aiohttp.ClientTimeout(total=30)) as resp:
                 result = await resp.json()
                 if resp.status != 200:
-                    return {"error": result.get("error", f"Gateway relay failed (HTTP {resp.status})")}
+                    return {"error": result.get("error", f"Gateway relay failed - HTTP {resp.status}")}
                 return result
     except aiohttp.ClientError as e:
         return {"error": f"Gateway relay connection failed: {e}"}
