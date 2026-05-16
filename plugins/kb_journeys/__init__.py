@@ -462,8 +462,37 @@ def _provider_status_summary(provider_data: Any) -> dict[str, str]:
     }
 
 
-def _render_status(data: Any, target: str, provider_data: Any | None = None) -> dict[str, Any]:
+def _live_hermes_reasoning(gateway: Any, source: Any) -> str | None:
+    resolver = getattr(gateway, "_resolve_session_reasoning_config", None)
+    if not callable(resolver):
+        return None
+    try:
+        reasoning_config = resolver(source=source)
+    except TypeError:
+        try:
+            reasoning_config = resolver()
+        except Exception:
+            return None
+    except Exception:
+        return None
+    if not isinstance(reasoning_config, dict):
+        return None
+    if reasoning_config.get("enabled") is False:
+        return "none"
+    effort = str(reasoning_config.get("effort") or "").strip().lower()
+    return effort or None
+
+
+def _render_status(
+    data: Any,
+    target: str,
+    provider_data: Any | None = None,
+    *,
+    hermes_reasoning: str | None = None,
+) -> dict[str, Any]:
     snap = _config_snapshot()
+    if hermes_reasoning:
+        snap["reasoning"] = hermes_reasoning
     kb = _provider_status_summary(provider_data)
     readiness = "unknown"
     publication = "unknown"
@@ -1485,6 +1514,7 @@ def _card_for_command(
     args: str = "",
     adapter: Any = None,
     gateway: Any = None,
+    source: Any = None,
 ) -> dict[str, Any]:
     target = _mcp_target()
     cockpit_args = {
@@ -1498,7 +1528,14 @@ def _card_for_command(
         if routed_command == "kbhelp":
             return _kb_command_help()
         if routed_command != "kb":
-            return _card_for_command(ctx, routed_command, args=routed_args, adapter=adapter, gateway=gateway)
+            return _card_for_command(
+                ctx,
+                routed_command,
+                args=routed_args,
+                adapter=adapter,
+                gateway=gateway,
+                source=source,
+            )
         _, data, errors = _dispatch_first(
             ctx,
             target,
@@ -1524,7 +1561,8 @@ def _card_for_command(
     if command == "kbstatus":
         _, data, _errors = _dispatch_first(ctx, target, [("attention.cockpit", cockpit_args)])
         _, provider_data, _provider_errors = _dispatch_first(ctx, target, [("provider.status", {})])
-        return _render_status(data, target, provider_data)
+        hermes_reasoning = _live_hermes_reasoning(gateway, source)
+        return _render_status(data, target, provider_data, hermes_reasoning=hermes_reasoning)
     if command == "kbreasoning":
         reload_available = callable(getattr(gateway, "_execute_mcp_reload", None))
         return _render_kb_reasoning_command(args, reload_available=reload_available)
@@ -1689,7 +1727,7 @@ def build_pre_gateway_dispatch_hook(ctx: Any) -> Callable[..., dict[str, str] | 
         if adapter is None:
             logger.debug("kb_journeys: no Telegram adapter available")
             return None
-        card = _card_for_command(ctx, command, args=args, adapter=adapter, gateway=gateway)
+        card = _card_for_command(ctx, command, args=args, adapter=adapter, gateway=gateway, source=source)
         reload_mcp = bool(card.pop("_reload_mcp", False))
         _run_delivery(_send_card(adapter, event, card))
         if reload_mcp:

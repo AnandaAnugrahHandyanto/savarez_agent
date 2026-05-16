@@ -1007,6 +1007,45 @@ def test_kb_status_fetches_provider_status_and_shows_both_reasoning(monkeypatch)
     assert "KB provider: plugin:openai-compatible" in text
 
 
+def test_kb_status_prefers_live_hermes_session_reasoning(monkeypatch):
+    from plugins.kb_journeys import build_pre_gateway_dispatch_hook
+
+    monkeypatch.setenv("HERMES_KB_MCP_TARGET", "kb_engine_prod")
+    monkeypatch.setenv("HERMES_REASONING_EFFORT", "low")
+    ctx = FakeContext(
+        {
+            "mcp_kb_engine_prod_attention_cockpit": {"result": {"readiness": {"status": "ready"}}},
+            "mcp_kb_engine_prod_provider_status": {
+                "result": {
+                    "targets": [
+                        {
+                            "role": "primary",
+                            "adapter": "plugin:openai-compatible",
+                            "model": "gpt-5.5",
+                            "reasoning_effort": "low",
+                        }
+                    ]
+                }
+            },
+        }
+    )
+    adapter = FakeKbActionsAdapter()
+    gateway = SimpleNamespace(
+        adapters={Platform.TELEGRAM: adapter},
+        _is_user_authorized=lambda _source: True,
+        _resolve_session_reasoning_config=lambda **_kwargs: {"enabled": True, "effort": "xhigh"},
+    )
+    hook = build_pre_gateway_dispatch_hook(ctx)
+
+    result = hook(event=_event("/kb status"), gateway=gateway, session_store=None)
+    _drain_scheduled_tasks()
+
+    assert result == {"action": "skip", "reason": "kb_journeys"}
+    text = adapter.sent[0]["text"]
+    assert "Hermes reasoning: xhigh" in text
+    assert "KB reasoning: low" in text
+
+
 def test_kb_reasoning_sets_env_and_reloads_mcp(monkeypatch, tmp_path):
     from plugins.kb_journeys import build_pre_gateway_dispatch_hook
 
