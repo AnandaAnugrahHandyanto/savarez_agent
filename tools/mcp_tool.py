@@ -1353,6 +1353,32 @@ class MCPServerTask:
         connect_timeout = config.get("connect_timeout", _DEFAULT_CONNECT_TIMEOUT)
         ssl_verify = config.get("ssl_verify", True)
 
+        # Mutual TLS — load client cert from user config if configured.
+        # Replaces the boolean ssl_verify with an ssl.SSLContext so the
+        # httpx client presents a client certificate to the MCP server.
+        _ssl_context = None
+        try:
+            from hermes_cli.config import load_config as _lc
+            _mtls = _lc().get("agent", {}).get("mtls", {}) or {}
+            _cert = (_mtls.get("cert_file") or "").strip()
+            _key = (_mtls.get("key_file") or "").strip()
+            if _cert and _key:
+                import os as _os, ssl as _ssl_mod
+                _cert_path = _os.path.expanduser(_cert)
+                _key_path = _os.path.expanduser(_key)
+                if _os.path.isfile(_cert_path) and _os.path.isfile(_key_path):
+                    _ca = (_mtls.get("ca_cert") or "").strip()
+                    _ssl_context = _ssl_mod.create_default_context(
+                        cafile=_os.path.expanduser(_ca) if _ca else None
+                    )
+                    _ssl_context.load_cert_chain(_cert_path, _key_path)
+                    logger.info(
+                        "MCP mTLS client certificate configured: %s", _cert_path,
+                    )
+        except Exception:
+            pass
+        _mcp_verify = _ssl_context if _ssl_context is not None else ssl_verify
+
         # OAuth 2.1 PKCE: route through the central MCPOAuthManager so the
         # same provider instance is reused across reconnects, pre-flow
         # disk-watch is active, and config-time CLI code paths share state.
@@ -1398,6 +1424,11 @@ class MCPServerTask:
                 "timeout": float(connect_timeout),
                 "sse_read_timeout": 300.0,
             }
+            if _ssl_context is not None:
+                import httpx as _httpx
+                _sse_kwargs["httpx_client_factory"] = (
+                    lambda: _httpx.AsyncClient(verify=_ssl_context)
+                )
             if _oauth_auth is not None:
                 # Pass OAuth auth through to sse_client so SSE MCP servers
                 # behind OAuth 2.1 PKCE work. Previously built but never
@@ -1439,7 +1470,7 @@ class MCPServerTask:
             client_kwargs: dict = {
                 "follow_redirects": True,
                 "timeout": httpx.Timeout(float(connect_timeout), read=300.0),
-                "verify": ssl_verify,
+                "verify": _mcp_verify,
                 "event_hooks": {"response": [_strip_auth_on_cross_origin_redirect]},
             }
             if headers:
@@ -1469,7 +1500,7 @@ class MCPServerTask:
             _http_kwargs: dict = {
                 "headers": headers,
                 "timeout": float(connect_timeout),
-                "verify": ssl_verify,
+                "verify": _mcp_verify,
             }
             if _oauth_auth is not None:
                 _http_kwargs["auth"] = _oauth_auth
