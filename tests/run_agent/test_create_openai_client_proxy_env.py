@@ -188,6 +188,86 @@ def test_get_proxy_for_base_url_returns_none_when_proxy_unset(monkeypatch):
     assert _get_proxy_for_base_url("https://api.openai.com/v1") is None
 
 
+def test_get_proxy_for_base_url_uses_openai_codex_provider_proxy_url(monkeypatch):
+    for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY",
+                "https_proxy", "http_proxy", "all_proxy",
+                "NO_PROXY", "no_proxy"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setattr(
+        "hermes_cli.config.read_raw_config",
+        lambda: {
+            "model": {"provider": "openai-codex"},
+            "providers": {
+                "openai-codex": {"proxy_url": "socks://127.0.0.1:6152"},
+            },
+        },
+    )
+
+    assert (
+        _get_proxy_for_base_url("https://chatgpt.com/backend-api/codex")
+        == "socks5://127.0.0.1:6152"
+    )
+
+
+def test_get_proxy_for_base_url_env_proxy_takes_precedence_over_codex_config(monkeypatch):
+    for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY",
+                "https_proxy", "http_proxy", "all_proxy",
+                "NO_PROXY", "no_proxy"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("HTTPS_PROXY", "http://env-proxy:8080")
+    monkeypatch.setattr(
+        "hermes_cli.config.read_raw_config",
+        lambda: {
+            "model": {"provider": "openai-codex"},
+            "providers": {
+                "openai-codex": {"proxy_url": "http://config-proxy:6152"},
+            },
+        },
+    )
+
+    assert (
+        _get_proxy_for_base_url("https://chatgpt.com/backend-api/codex")
+        == "http://env-proxy:8080"
+    )
+
+
+def test_get_proxy_for_base_url_no_proxy_suppresses_codex_config_proxy(monkeypatch):
+    for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY",
+                "https_proxy", "http_proxy", "all_proxy",
+                "NO_PROXY", "no_proxy"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("NO_PROXY", "chatgpt.com")
+    monkeypatch.setattr(
+        "hermes_cli.config.read_raw_config",
+        lambda: {
+            "model": {"provider": "openai-codex"},
+            "providers": {
+                "openai-codex": {"proxy_url": "http://127.0.0.1:6152"},
+            },
+        },
+    )
+
+    assert _get_proxy_for_base_url("https://chatgpt.com/backend-api/codex") is None
+
+
+def test_get_proxy_for_base_url_ignores_codex_proxy_for_other_provider(monkeypatch):
+    for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY",
+                "https_proxy", "http_proxy", "all_proxy",
+                "NO_PROXY", "no_proxy"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setattr(
+        "hermes_cli.config.read_raw_config",
+        lambda: {
+            "model": {"provider": "openrouter"},
+            "providers": {
+                "openai-codex": {"proxy_url": "http://127.0.0.1:6152"},
+            },
+        },
+    )
+
+    assert _get_proxy_for_base_url("https://api.openai.com/v1") is None
+
+
 @patch("run_agent.OpenAI")
 def test_create_openai_client_bypasses_proxy_for_no_proxy_host(mock_openai, monkeypatch):
     """E2E: with HTTPS_PROXY + NO_PROXY=localhost, a local base_url gets a
