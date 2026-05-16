@@ -24,6 +24,9 @@ MENU_COMMANDS = {"kb"}
 LEGACY_COMMANDS = {"kbtoday", "kbstatus", "kbruns", "kbqueue", "kbreview", "kbrun"}
 SUPPORTED_COMMANDS = MENU_COMMANDS
 KB_REASONING_LEVELS = {"none", "minimal", "low", "medium", "high", "xhigh"}
+QUEUE_REPLY_DECISIONS = {"approve", "reject", "archive", "skip", "complete", "keep", "demote", "detail"}
+QUEUE_REPLY_TOOL_DECISIONS = {"approve", "reject", "archive", "skip", "complete", "keep", "demote"}
+QUEUE_REPLY_STATE_TTL_SECONDS = 15 * 60
 
 
 def _sanitize_component(value: str) -> str:
@@ -36,6 +39,39 @@ def _mcp_target() -> str:
 
 def _mcp_tool_name(target: str, tool_name: str) -> str:
     return f"mcp_{_sanitize_component(target)}_{_sanitize_component(tool_name)}"
+
+
+def _queue_reply_state_path():
+    from hermes_constants import get_hermes_home
+
+    return get_hermes_home() / "state" / "kb_queue_reply_state.json"
+
+
+def _load_queue_reply_states() -> dict[str, Any]:
+    path = _queue_reply_state_path()
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _save_queue_reply_states(states: dict[str, Any]) -> None:
+    path = _queue_reply_state_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(states, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+    except OSError:
+        logger.debug("kb_journeys: failed to persist iterative queue state", exc_info=True)
+
+
+def _clear_iterative_queue_reply_state(session_id: str) -> None:
+    if not session_id:
+        return
+    states = _load_queue_reply_states()
+    if session_id in states:
+        states.pop(session_id, None)
+        _save_queue_reply_states(states)
 
 
 def _platform_name(platform: Any) -> str:
@@ -846,6 +882,298 @@ def _confirmed_text(
         lines.extend(["", "Changed:", *_selection_lines(selection)])
     lines.append("Next: /kb queue")
     return "\n".join(lines)
+
+
+def _queue_reply_choices_from_text(text: str) -> list[str]:
+    lowered = str(text or "").lower()
+    ordered = ["complete", "keep", "demote", "archive", "reject", "approve", "detail", "skip"]
+    return [decision for decision in ordered if re.search(rf"\b{re.escape(decision)}\b", lowered)]
+
+
+def _infer_iterative_queue_title(body: str) -> str:
+    lines = body.splitlines()
+    last_proposal_line = -1
+    for idx, line in enumerate(lines):
+        if re.search(r"(?i)\bproposal ids?\b", line) and re.search(r"\bact_[A-Za-z0-9]+\b", line):
+            last_proposal_line = idx
+    search_lines = lines[:last_proposal_line] if last_proposal_line >= 0 else lines
+    skip_prefixes = (
+        "next item",
+        "proposal",
+        "todo",
+        "summary",
+        "created",
+        "reply",
+        "applied",
+        "archived proposal",
+        "proposal ids",
+    )
+    for raw_line in reversed(search_lines):
+        line = raw_line.strip()
+        if not line:
+            continue
+        line = re.sub(r"^\s*#+\s*", "", line).strip()
+        line = re.sub(r"^\s*\d+[\).]\s*", "", line).strip()
+        if line.startswith("-"):
+            continue
+        if line.lower().startswith(skip_prefixes):
+            continue
+        return line.strip("`*_ ")
+    return ""
+
+
+def _parse_iterative_queue_reply_state(response_text: str) -> dict[str, Any] | None:
+    text = str(response_text or "")
+    reply_matches = list(re.finditer(r"(?im)^\s*Reply(?:\s+with)?\s*:\s*(.+)$", text))
+    if not reply_matches:
+        return None
+    reply_match = reply_matches[-1]
+    choices = _queue_reply_choices_from_text(reply_match.group(1))
+    if not choices:
+        return None
+    body = text[: reply_match.start()].rstrip()
+    proposal_ids: list[str] = []
+    for line in body.splitlines():
+        if re.search(r"(?i)\bproposal ids?\b", line):
+            ids = re.findall(r"\bact_[A-Za-z0-9]+\b", line)
+            if ids:
+                proposal_ids = ids
+    if not proposal_ids:
+        all_ids = re.findall(r"\bact_[A-Za-z0-9]+\b", body)
+        proposal_ids = all_ids[-1:] if all_ids else []
+    if not proposal_ids:
+        return None
+    title = _infer_iterative_queue_title(body)
+    return {
+        "schema_version": 1,
+        "proposal_ids": proposal_ids,
+        "title": title,
+        "choices": choices,
+        "recorded_at": time.time(),
+    }
+
+
+def _record_iterative_queue_reply_state(session_id: str, response_text: str) -> dict[str, Any] | None:
+    if not session_id:
+        return None
+    parsed = _parse_iterative_queue_reply_state(response_text)
+    states = _load_queue_reply_states()
+    if not parsed:
+        if session_id in states:
+            states.pop(session_id, None)
+            _save_queue_reply_states(states)
+        return None
+    states[session_id] = parsed
+    _save_queue_reply_states(states)
+    return parsed
+
+
+def _get_iterative_queue_reply_state(session_id: str) -> dict[str, Any] | None:
+    if not session_id:
+        return None
+    states = _load_queue_reply_states()
+    state = states.get(session_id)
+    if not isinstance(state, dict):
+        return None
+    recorded_at = float(state.get("recorded_at") or 0.0)
+    if recorded_at and time.time() - recorded_at > QUEUE_REPLY_STATE_TTL_SECONDS:
+        states.pop(session_id, None)
+        _save_queue_reply_states(states)
+        return None
+    proposal_ids = [str(item) for item in (state.get("proposal_ids") or []) if str(item).strip()]
+    if not proposal_ids:
+        return None
+    state["proposal_ids"] = proposal_ids
+    return state
+
+
+def _bare_queue_reply_decision(text: str) -> str:
+    lowered = str(text or "").strip().lower()
+    lowered = {"details": "detail", "show": "detail"}.get(lowered, lowered)
+    return lowered if lowered in QUEUE_REPLY_DECISIONS else ""
+
+
+def _session_id_for_queue_reply_state(session_store: Any, source: Any) -> str:
+    if session_store is None:
+        return ""
+    try:
+        session_store._ensure_loaded()
+    except Exception:
+        pass
+    try:
+        session_key = session_store._generate_session_key(source)
+        entry = getattr(session_store, "_entries", {}).get(session_key)
+        return str(getattr(entry, "session_id", "") or "")
+    except Exception:
+        logger.debug("kb_journeys: failed to resolve gateway session id", exc_info=True)
+        return ""
+
+
+def _queue_count(data: Any) -> int | None:
+    if not isinstance(data, dict):
+        return None
+    counts = data.get("counts") if isinstance(data.get("counts"), dict) else {}
+    for value in (counts.get("proposals"), data.get("total"), data.get("count"), _count_from(data, "queue", "proposals")):
+        if value is not None:
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                continue
+    return None
+
+
+def _iterative_state_from_item(item: dict[str, Any]) -> dict[str, Any] | None:
+    proposal_ids = _proposal_ids_for_item(item)
+    if not proposal_ids:
+        return None
+    decisions = [decision for decision, _ in _queue_action_decisions(item)]
+    for fallback in ("detail", "skip"):
+        if fallback not in decisions:
+            decisions.append(fallback)
+    return {
+        "schema_version": 1,
+        "proposal_ids": proposal_ids,
+        "title": _item_title(item),
+        "choices": decisions,
+        "recorded_at": time.time(),
+    }
+
+
+def _store_iterative_state_from_item(session_id: str, item: dict[str, Any] | None) -> None:
+    if not session_id:
+        return
+    if not isinstance(item, dict):
+        _clear_iterative_queue_reply_state(session_id)
+        return
+    state = _iterative_state_from_item(item)
+    if not state:
+        _clear_iterative_queue_reply_state(session_id)
+        return
+    states = _load_queue_reply_states()
+    states[session_id] = state
+    _save_queue_reply_states(states)
+
+
+def _iterative_queue_next_text(data: Any, *, session_id: str = "") -> str:
+    items = _queue_items_from_payload(data)
+    if not items:
+        if session_id:
+            _clear_iterative_queue_reply_state(session_id)
+        return "Queue is empty."
+    item = items[0] if isinstance(items[0], dict) else {}
+    if not item:
+        return "Next queue item could not be rendered. Use /kb queue to refresh."
+    _store_iterative_state_from_item(session_id, item)
+    count = _queue_count(data)
+    proposal_ids = _proposal_ids_for_item(item)
+    decisions = [decision for decision, _ in _queue_action_decisions(item)]
+    for fallback in ("detail", "skip"):
+        if fallback not in decisions:
+            decisions.append(fallback)
+    lines: list[str] = []
+    if count is not None:
+        lines.append(f"Queue now has {count} proposal(s).")
+        lines.append("")
+    lines.extend(["Next item:", "", _item_title(item)])
+    detail = _item_detail(item)
+    if detail:
+        lines.append("- Summary: " + _clip(detail, 240))
+    target = _item_target(item)
+    if target:
+        lines.append("- Target: " + target)
+    if proposal_ids:
+        label = "Proposal ids" if len(proposal_ids) != 1 else "Proposal id"
+        lines.append(f"- {label}: {', '.join(proposal_ids[:8])}")
+    lines.append("")
+    lines.append("Reply: " + ", ".join(decisions) + ".")
+    return "\n".join(lines)
+
+
+def _iterative_selection_from_state(state: dict[str, Any]) -> list[tuple[int, dict[str, Any]]]:
+    return [
+        (
+            1,
+            {
+                "title": _short(state.get("title"), "Current queue item"),
+                "raw": {"proposal_ids": list(state.get("proposal_ids") or [])},
+            },
+        )
+    ]
+
+
+def _render_iterative_queue_reply_decision(
+    ctx: Any,
+    target: str,
+    *,
+    session_id: str,
+    state: dict[str, Any],
+    decision: str,
+) -> dict[str, Any]:
+    proposal_ids = [str(item) for item in (state.get("proposal_ids") or []) if str(item).strip()]
+    title = _short(state.get("title"), "current queue item")
+    selection = _iterative_selection_from_state(state)
+    if decision == "detail":
+        lines = [
+            "Queue Item",
+            f"Title: {title}",
+            f"Proposal ids: {', '.join(proposal_ids)}",
+            "Reply: " + ", ".join(state.get("choices") or sorted(QUEUE_REPLY_DECISIONS)) + ".",
+        ]
+        return {"title": "KB Queue", "text": "\n".join(lines), "actions": []}
+    if decision not in QUEUE_REPLY_TOOL_DECISIONS:
+        return {"title": "KB Queue", "text": "That queue reply is not supported. Use /kb queue to refresh.", "actions": []}
+    actor = "telegram:operator"
+    source = "Hermes Telegram iterative queue"
+    preview_tool = _mcp_tool_name(target, "queue.decision_preview")
+    confirmed_tool = _mcp_tool_name(target, "queue.batch_decide_confirmed")
+    preview_payload = _result_payload(
+        ctx.dispatch_tool(
+            preview_tool,
+            {
+                "proposal_ids": proposal_ids,
+                "decision": decision,
+                "actor": actor,
+                "source": source,
+                "note": f"Previewed from Telegram iterative queue reply for {title}",
+            },
+        )
+    )
+    if not _preview_allows_confirmation(preview_payload):
+        return {
+            "title": "KB Queue",
+            "text": _preview_text(decision, proposal_ids, preview_payload, selection=selection),
+            "actions": [],
+        }
+    confirmed_payload = _result_payload(
+        ctx.dispatch_tool(
+            confirmed_tool,
+            {
+                "proposal_ids": proposal_ids,
+                "decision": decision,
+                "actor": actor,
+                "source": source,
+                "session_id": session_id or f"telegram-kb-reply-{int(time.time())}",
+                "user_confirmation": {
+                    "confirmed": True,
+                    "surface": "telegram",
+                    "action": f"queue.{decision}",
+                    "preview_required": True,
+                    "confirmation_text": decision,
+                    "proposal_ids": proposal_ids,
+                },
+                "note": f"Confirmed from Telegram iterative queue reply for {title}",
+            },
+        )
+    )
+    text = _confirmed_text(decision, confirmed_payload, selection=selection, proposal_ids=proposal_ids)
+    text = text.replace("\nNext: /kb queue", "")
+    if isinstance(confirmed_payload, dict) and confirmed_payload.get("ok") is False:
+        return {"title": "KB Queue", "text": text, "actions": []}
+    data, errors = _queue_summary_payload(ctx, target, limit=5)
+    next_text = _iterative_queue_next_text(data, session_id=session_id)
+    if errors:
+        next_text += "\nQueue refresh warning: " + "; ".join(errors[:2])
+    return {"title": "KB Queue", "text": text.rstrip() + "\n\n" + next_text, "actions": []}
 
 
 def _queue_summary_payload(ctx: Any, target: str, *, limit: int = 5) -> tuple[Any | None, list[str]]:
@@ -1717,17 +2045,32 @@ def build_pre_gateway_dispatch_hook(ctx: Any) -> Callable[..., dict[str, str] | 
         source = getattr(event, "source", None)
         if _platform_name(getattr(source, "platform", None)) != "telegram":
             return None
-        command = _command_from_text(getattr(event, "text", ""))
-        if command is None:
+        text = getattr(event, "text", "")
+        command = _command_from_text(text)
+        bare_decision = _bare_queue_reply_decision(text)
+        if command is None and not bare_decision:
             return None
-        args = _command_args_from_text(getattr(event, "text", ""))
         if not _authorized_for_gateway(gateway, source):
             return None
         adapter = _adapter_for(gateway, source)
         if adapter is None:
             logger.debug("kb_journeys: no Telegram adapter available")
             return None
-        card = _card_for_command(ctx, command, args=args, adapter=adapter, gateway=gateway, source=source)
+        if bare_decision:
+            session_id = _session_id_for_queue_reply_state(session_store, source)
+            state = _get_iterative_queue_reply_state(session_id)
+            if not state:
+                return None
+            card = _render_iterative_queue_reply_decision(
+                ctx,
+                _mcp_target(),
+                session_id=session_id,
+                state=state,
+                decision=bare_decision,
+            )
+        else:
+            args = _command_args_from_text(text)
+            card = _card_for_command(ctx, command, args=args, adapter=adapter, gateway=gateway, source=source)
         reload_mcp = bool(card.pop("_reload_mcp", False))
         _run_delivery(_send_card(adapter, event, card))
         if reload_mcp:
@@ -1735,6 +2078,18 @@ def build_pre_gateway_dispatch_hook(ctx: Any) -> Callable[..., dict[str, str] | 
         return {"action": "skip", "reason": "kb_journeys"}
 
     return _hook
+
+
+def _on_post_llm_call(
+    *,
+    session_id: str = "",
+    assistant_response: str = "",
+    platform: str = "",
+    **_: Any,
+) -> None:
+    if str(platform or "").lower() != "telegram":
+        return
+    _record_iterative_queue_reply_state(session_id, assistant_response)
 
 
 def register(ctx: Any) -> None:
@@ -1751,3 +2106,4 @@ def register(ctx: Any) -> None:
         except Exception:
             logger.debug("kb_journeys: failed to register /%s", command, exc_info=True)
     ctx.register_hook("pre_gateway_dispatch", build_pre_gateway_dispatch_hook(ctx))
+    ctx.register_hook("post_llm_call", _on_post_llm_call)

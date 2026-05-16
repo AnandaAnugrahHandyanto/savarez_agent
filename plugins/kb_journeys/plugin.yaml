@@ -4,3 +4,4 @@ description: "Telegram-native KB journey cards, /kb dashboard, /kbqueue review d
 author: "Hermes Agent"
 provides_hooks:
   - pre_gateway_dispatch
+  - post_llm_call

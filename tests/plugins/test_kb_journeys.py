@@ -36,6 +36,17 @@ class FakeAdapter:
         )
 
 
+class FakeSessionStore:
+    def __init__(self, session_id: str = "session-visible"):
+        self._entries = {"session-key": SimpleNamespace(session_id=session_id)}
+
+    def _ensure_loaded(self):
+        return None
+
+    def _generate_session_key(self, _source):
+        return "session-key"
+
+
 class FakeKbActionsAdapter(FakeAdapter):
     async def send_kb_actions(self, chat_id, text, actions, metadata=None, reply_to=None):
         self.sent.append(
@@ -526,6 +537,84 @@ def test_kbqueue_decision_can_be_previewed_and_confirmed_by_text_command(monkeyp
     assert ctx.calls[-2][1]["proposal_ids"] == ["act_2"]
     assert ctx.calls[-1][0] == "mcp_kb_engine_prod_queue_batch_decide_confirmed"
     assert ctx.calls[-1][1]["user_confirmation"]["confirmed"] is True
+
+
+def test_kbqueue_bare_reply_uses_visible_iterative_item_state(monkeypatch, tmp_path):
+    from plugins import kb_journeys
+    from plugins.kb_journeys import build_pre_gateway_dispatch_hook
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    monkeypatch.setenv("HERMES_KB_MCP_TARGET", "kb-engine-prod")
+    kb_journeys._record_iterative_queue_reply_state(
+        session_id="session-visible",
+        response_text=(
+            "Done — Huang Foundation was treated as P0.\n"
+            "Archived proposal ids: act_huang1, act_huang2\n\n"
+            "Next item:\n\n"
+            "GTC Taipei 2026\n"
+            "- Proposal: stale P1→P2 TODO\n"
+            "- TODO id: todo_gtc\n"
+            "- Proposal id: act_gtc\n\n"
+            "Reply with: complete, keep, demote, archive, detail, or skip."
+        ),
+    )
+    ctx = FakeContext(
+        {
+            "mcp_kb_engine_prod_queue_decision_preview": {
+                "result": {"status": "preview", "ok": True, "plan": {"summary": "Archive GTC."}}
+            },
+            "mcp_kb_engine_prod_queue_batch_decide_confirmed": {
+                "result": {"status": "applied", "ok": True, "git": {"after": {"changed_count": 2}}}
+            },
+            "mcp_kb_engine_prod_queue_summary": {
+                "result": {
+                    "counts": {"proposals": 1},
+                    "items": [
+                        {
+                            "item_id": "forums/wg-agents",
+                            "title": "WG Agents",
+                            "kind": "proposal_entity",
+                            "summary": "Review stale P1→P2 TODO: send the strategy note.",
+                            "raw": {"proposal_ids": ["act_next"]},
+                            "safe_actions": [
+                                {
+                                    "label": "Archive TODO",
+                                    "params": {"decision": "archive", "proposal_ids": ["act_next"]},
+                                }
+                            ],
+                        }
+                    ],
+                }
+            },
+        }
+    )
+    adapter = FakeKbActionsAdapter()
+    hook = build_pre_gateway_dispatch_hook(ctx)
+
+    result = hook(
+        event=_event("archive"),
+        gateway=_authorized_gateway(adapter),
+        session_store=FakeSessionStore("session-visible"),
+    )
+    _drain_scheduled_tasks()
+
+    assert result == {"action": "skip", "reason": "kb_journeys"}
+    assert ctx.calls[0] == (
+        "mcp_kb_engine_prod_queue_decision_preview",
+        {
+            "proposal_ids": ["act_gtc"],
+            "decision": "archive",
+            "actor": "telegram:operator",
+            "source": "Hermes Telegram iterative queue",
+            "note": "Previewed from Telegram iterative queue reply for GTC Taipei 2026",
+        },
+    )
+    assert ctx.calls[1][0] == "mcp_kb_engine_prod_queue_batch_decide_confirmed"
+    assert ctx.calls[1][1]["proposal_ids"] == ["act_gtc"]
+    assert "act_huang1" not in json.dumps(ctx.calls)
+    assert adapter.sent
+    assert "GTC Taipei 2026" in adapter.sent[0]["text"]
+    assert "WG Agents" in adapter.sent[0]["text"]
 
 
 def test_kbqueue_todo_complete_decision_uses_queue_decision_contract(monkeypatch):
