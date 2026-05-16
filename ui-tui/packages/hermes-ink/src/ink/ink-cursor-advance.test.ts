@@ -98,7 +98,7 @@ describe('Ink.noteExternalCursorAdvance', () => {
     ink.unmount()
   })
 
-  it('is a no-op on alt-screen — CSI H resets cursor every frame', () => {
+  it('skips displayCursor on alt-screen — CSI H resets every frame', () => {
     const { ink } = makeInk()
 
     ink.setAltScreenActive(true)
@@ -109,6 +109,40 @@ describe('Ink.noteExternalCursorAdvance', () => {
     ink.noteExternalCursorAdvance(3)
 
     expect(ink.__getDisplayCursorForTest()).toEqual({ x: 5, y: 0 })
+
+    ink.unmount()
+  })
+
+  // Closes Copilot follow-up on PR #26717: the default TUI wraps the
+  // composer in <AlternateScreen>, so alt-screen is the production
+  // path. CSI H only resets the log-update relative-move basis — the
+  // declared cursor target is still consulted by onRender's alt-screen
+  // park branch (`cursorPosition(row, col)` using rect + decl). So
+  // cursorDeclaration MUST advance on alt-screen too, even though
+  // displayCursor doesn't need to.
+  it('still advances cursorDeclaration on alt-screen', () => {
+    const { ink } = makeInk()
+
+    ink.setAltScreenActive(true)
+    ink.render(React.createElement(Text, null, 'hi'))
+    ink.onRender()
+
+    const fakeNode = {} as unknown as Record<string, unknown>
+
+    const inkAny = ink as unknown as {
+      cursorDeclaration: { node: unknown; relativeX: number; relativeY: number } | null
+      displayCursor: { x: number; y: number } | null
+    }
+
+    inkAny.cursorDeclaration = { node: fakeNode, relativeX: 7, relativeY: 0 }
+    inkAny.displayCursor = { x: 12, y: 0 }
+
+    ink.noteExternalCursorAdvance(3)
+
+    // displayCursor untouched on alt-screen
+    expect(ink.__getDisplayCursorForTest()).toEqual({ x: 12, y: 0 })
+    // declaration still advanced — onRender's alt-screen park reads this
+    expect(ink.__getCursorDeclarationForTest()).toEqual({ node: fakeNode, relativeX: 10, relativeY: 0 })
 
     ink.unmount()
   })

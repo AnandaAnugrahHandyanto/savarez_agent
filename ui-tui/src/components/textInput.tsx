@@ -370,7 +370,19 @@ export function TextInput({
     [sel]
   )
 
-  const layout = useMemo(() => cursorLayout(display, cur, columns), [columns, cur, display])
+  // Read `curRef.current` (always up-to-date) rather than the `cur`
+  // React state. The fast-echo path defers the React `setCur` by 16ms
+  // to batch re-renders during heavy typing; if an unrelated render
+  // flushes this component during that window and we used the stale
+  // `cur` state here, the layout effect inside `useDeclaredCursor`
+  // would publish a stale cursor declaration and clobber the Ink-level
+  // bump from `noteCursorAdvance(...)`. `cur` is still in scope and
+  // referenced by setSel/setCur paths below, so React tracks the
+  // dependency naturally — we just don't use it as the source of truth
+  // for layout. The cursorLayout call is cheap (one wrap-text pass
+  // over a single-line string in the common case), so dropping useMemo
+  // is fine.
+  const layout = cursorLayout(display, curRef.current, columns)
 
   const boxRef = useDeclaredCursor({
     line: layout.line,

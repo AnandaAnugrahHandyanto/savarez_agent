@@ -2251,25 +2251,29 @@ export default class Ink {
       return
     }
 
-    if (this.altScreenActive) {
-      // Alt-screen frames begin with CSI H which absolutely repositions
-      // the cursor, so the stale-parked-position bug doesn't apply.
-      return
-    }
-
-    if (this.displayCursor !== null) {
-      this.displayCursor = {
-        x: this.displayCursor.x + dx,
-        y: this.displayCursor.y + dy
+    // displayCursor / log-update relative-move basis only matters on
+    // main screen — alt-screen frames begin with absolute CSI H every
+    // frame so the next preamble naturally resets to (0,0). cursorDeclaration,
+    // however, IS still consulted on alt-screen — onRender's park branch
+    // emits an absolute CUP using `rect.x + decl.relativeX`, so a stale
+    // declaration in the deferred-setCur window would park the cursor
+    // at the pre-keystroke caret. We therefore skip ONLY the displayCursor
+    // half on alt-screen, not the declaration half.
+    if (!this.altScreenActive) {
+      if (this.displayCursor !== null) {
+        this.displayCursor = {
+          x: this.displayCursor.x + dx,
+          y: this.displayCursor.y + dy
+        }
+      } else {
+        // No prior parked position. Seed from frontFrame.cursor (where
+        // log-update parked the cursor at the end of the last frame) so
+        // the next preamble's relative move correctly cancels the
+        // external advance.
+        const baseX = this.frontFrame.cursor.x
+        const baseY = this.frontFrame.cursor.y
+        this.displayCursor = { x: baseX + dx, y: baseY + dy }
       }
-    } else {
-      // No prior parked position. Seed from frontFrame.cursor (where
-      // log-update parked the cursor at the end of the last frame) so
-      // the next preamble's relative move correctly cancels the external
-      // advance.
-      const baseX = this.frontFrame.cursor.x
-      const baseY = this.frontFrame.cursor.y
-      this.displayCursor = { x: baseX + dx, y: baseY + dy }
     }
 
     // Also advance the active cursor declaration if any. Without this,
@@ -2282,6 +2286,9 @@ export default class Ink {
     // to that stale relativeX and visually undo the fast-echo's
     // advance. Bumping relativeX here keeps the declared target in
     // lock-step with the physical cursor until React state catches up.
+    // Applies to BOTH main-screen and alt-screen — the alt-screen park
+    // branch uses an absolute CUP to (rect.x + decl.relativeX), so a
+    // stale declaration there would still produce the wrong column.
     const decl = this.cursorDeclaration
 
     if (decl !== null) {
