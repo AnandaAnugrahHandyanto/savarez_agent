@@ -160,6 +160,24 @@ _STATELESS_AGENT_LOOP_DISPATCHERS = {
 }
 
 
+def _set_registered_tool_schema(mcp: Any, name: str, params_schema: dict[str, Any]) -> None:
+    """Attach Hermes' JSON schema to a FastMCP-registered tool when possible.
+
+    FastMCP 1.x derives schemas from Python signatures and does not accept an
+    ``input_schema`` argument on ``add_tool()``. Our handlers are deliberately
+    generic ``**kwargs`` closures around Hermes' runtime tool registry, so
+    signature introspection would otherwise expose every tool as an unhelpful
+    variadic object instead of the authoritative Hermes parameter schema.
+    """
+    tool_manager = getattr(mcp, "_tool_manager", None)
+    tools = getattr(tool_manager, "_tools", None)
+    if not isinstance(tools, dict):
+        return
+    tool = tools.get(name)
+    if tool is not None and hasattr(tool, "parameters"):
+        tool.parameters = params_schema
+
+
 def _build_server() -> Any:
     """Create the FastMCP server with Hermes tools attached. Lazy imports
     so the module can be imported without the mcp package installed
@@ -232,14 +250,13 @@ def _build_server() -> Any:
                 _make_handler(name),
                 name=name,
                 description=description,
-                # FastMCP accepts JSON schema directly via the
-                # input_schema parameter on newer versions; older
-                # versions use parameters_schema. Try both for compat.
             )
         except TypeError:
             # Older mcp SDK signature — fall back to decorator-style.
             handler = _make_handler(name)
             handler = mcp.tool(name=name, description=description)(handler)
+
+        _set_registered_tool_schema(mcp, name, params_schema)
 
         exposed_count += 1
 

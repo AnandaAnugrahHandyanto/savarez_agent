@@ -189,6 +189,45 @@ class TestModuleSurface:
         assert server.tools["web_search"](query="hermes") == "handled"
         assert handle_calls == [("web_search", {"query": "hermes"})]
 
+    def test_build_server_preserves_hermes_parameter_schema(self, monkeypatch):
+        """Codex should see Hermes' tool JSON schema, not FastMCP's **kwargs schema."""
+        from agent.transports import hermes_tools_mcp_server as m
+        import model_tools
+
+        schema = {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Search query"},
+                "limit": {"type": "integer", "default": 5},
+            },
+            "required": ["query"],
+        }
+
+        monkeypatch.setattr(m, "EXPOSED_TOOLS", ("web_search",))
+        monkeypatch.setattr(
+            model_tools,
+            "get_tool_definitions",
+            lambda quiet_mode=True: [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "web_search",
+                        "description": "Search the web",
+                        "parameters": schema,
+                    },
+                }
+            ],
+        )
+        monkeypatch.setattr(
+            model_tools,
+            "handle_function_call",
+            lambda name, args: "handled",
+        )
+
+        server = m._build_server()
+
+        assert server._tool_manager._tools["web_search"].parameters == schema
+
     def test_kanban_worker_tools_exposed(self):
         """Kanban workers run as `hermes chat -q` subprocesses; if they
         come up on the codex_app_server runtime, the worker can do the
