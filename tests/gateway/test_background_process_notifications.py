@@ -252,8 +252,10 @@ async def test_start_manual_telegram_research_mock_path_skips_spawn_local(monkey
     from gateway.session import SessionSource
 
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    sleep_calls = []
 
-    async def _instant_sleep(*_a, **_kw):
+    async def _instant_sleep(delay=0, *_a, **_kw):
+        sleep_calls.append(delay)
         pass
 
     monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
@@ -295,11 +297,17 @@ async def test_start_manual_telegram_research_mock_path_skips_spawn_local(monkey
     assert result == ""
     await asyncio.gather(*list(runner._background_tasks))
     assert adapter.send.await_count == 1
-    assert adapter._edit_message.await_count == 3
+    assert adapter._edit_message.await_count == 4
+    kickoff_text = adapter.send.await_args.args[1]
     progress_text = adapter._edit_message.await_args_list[0].kwargs["content"]
     final_text = adapter._edit_message.await_args_list[-1].kwargs["content"]
-    assert progress_text.startswith("Researching the best browser:\n")
-    assert final_text.startswith("Report:\nhttps://research.briankeefe.dev/")
+    assert kickoff_text.startswith("Researching the best browser\nmock preview · no tokens burned\n\n")
+    assert "◉ framing" in kickoff_text
+    assert "◉ browsing" in progress_text
+    assert final_text.startswith("Research complete · the best browser\n")
+    assert final_text.endswith("https://research.briankeefe.dev/20260515-shows-like-breaking-bad")
+    assert len(sleep_calls) == 4
+    assert all(delay > 1 for delay in sleep_calls)
 
 
 @pytest.mark.asyncio

@@ -1,6 +1,8 @@
 from gateway.run import (
     _extract_research_progress_lines,
     _format_direct_research_progress,
+    _format_mock_research_progress,
+    _format_mock_research_result,
     _looks_like_manual_research_request,
     _normalize_research_rigor,
     _research_subject,
@@ -64,3 +66,22 @@ def test_format_direct_research_progress_prefixes_subject():
     assert text.startswith("Researching the best browser:\n")
     assert text.endswith("🛠️ tinkering")
     assert text.count("\n") == 3
+
+
+def test_format_mock_research_progress_marks_current_step():
+    text = _format_mock_research_progress("the best browser", 2)
+    assert text.startswith("Researching the best browser\nmock preview · no tokens burned\n\n")
+    assert "✓ framing" in text
+    assert "✓ browsing" in text
+    assert "◉ shaping" in text
+    assert "○ publishing" in text
+
+
+def test_format_mock_research_result_includes_report_link():
+    text = _format_mock_research_result(
+        "the best browser",
+        "https://research.briankeefe.dev/mock-browser-report",
+    )
+    assert text.startswith("Research complete · the best browser\n")
+    assert "✓ publishing" in text
+    assert text.endswith("https://research.briankeefe.dev/mock-browser-report")

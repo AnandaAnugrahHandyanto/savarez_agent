@@ -66,6 +66,12 @@ _TELEGRAM_COMMAND_MENTION_RE = re.compile(r"(?<![\w:/])/([A-Za-z0-9][A-Za-z0-9_-
 
 _RESEARCH_RIGOR_CHOICES = ("brief", "standard", "deep")
 _MOCK_RESEARCH_PUBLIC_URL = "https://research.briankeefe.dev/20260515-shows-like-breaking-bad"
+_MOCK_RESEARCH_STEP_LABELS = (
+    "framing",
+    "browsing",
+    "shaping",
+    "publishing",
+)
 
 
 def _normalize_research_rigor(text: str) -> str:
@@ -172,6 +178,41 @@ def _research_subject(text: str, limit: int = 72) -> str:
 def _format_direct_research_progress(subject: str, labels: list[str]) -> str:
     visible = labels[-3:] if labels else ["🧠 thinking"]
     return "Researching " + subject + ":\n" + "\n".join(visible)
+
+
+def _mock_research_step_delay_secs() -> float:
+    raw = (os.getenv("HERMES_MOCK_RESEARCH_STEP_DELAY", "") or "").strip()
+    try:
+        delay = float(raw) if raw else 1.35
+    except ValueError:
+        delay = 1.35
+    return max(0.0, min(delay, 10.0))
+
+
+def _format_mock_research_progress(subject: str, active_index: int) -> str:
+    clean_subject = (subject or "research").strip() or "research"
+    lines = [
+        f"Researching {clean_subject}",
+        "mock preview · no tokens burned",
+        "",
+    ]
+    max_index = max(0, min(active_index, len(_MOCK_RESEARCH_STEP_LABELS) - 1))
+    for index, step in enumerate(_MOCK_RESEARCH_STEP_LABELS):
+        marker = "✓" if index < max_index else "◉" if index == max_index else "○"
+        lines.append(f"{marker} {step}")
+    return "\n".join(lines)
+
+
+def _format_mock_research_result(subject: str, final_url: str) -> str:
+    clean_subject = (subject or "research").strip() or "research"
+    lines = [
+        f"Research complete · {clean_subject}",
+        "mock preview · no tokens burned",
+        "",
+    ]
+    lines.extend(f"✓ {step}" for step in _MOCK_RESEARCH_STEP_LABELS)
+    lines.extend(["", "Report", final_url])
+    return "\n".join(lines)
 
 
 def _extract_public_research_url(text: str) -> str:
@@ -13637,12 +13678,18 @@ class GatewayRunner:
         from tools.process_registry import process_registry
 
         subject = _research_subject(prompt_text)
+        is_mock_research = _looks_like_mock_manual_research_request(prompt_text)
+        kickoff_text = (
+            _format_mock_research_progress(subject, 0)
+            if is_mock_research
+            else _format_direct_research_progress(subject, ["🧠 thinking"])
+        )
         adapter = self.adapters.get(source.platform)
         if adapter and not progress_message_id:
             try:
                 result = await adapter.send(
                     source.chat_id,
-                    _format_direct_research_progress(subject, ["🧠 thinking"]),
+                    kickoff_text,
                     metadata=self._thread_metadata_for_source(source, event_message_id),
                 )
                 if getattr(result, "success", False) and getattr(result, "message_id", None):
@@ -13654,11 +13701,11 @@ class GatewayRunner:
                 await adapter.edit_message(
                     chat_id=source.chat_id,
                     message_id=str(progress_message_id),
-                    content=_format_direct_research_progress(subject, ["🧠 thinking"]),
+                    content=kickoff_text,
                 )
             except Exception as exc:
                 logger.warning("Manual Telegram research kickoff edit failed: %s", exc)
-        if _looks_like_mock_manual_research_request(prompt_text):
+        if is_mock_research:
             watcher = {
                 "session_id": f"mock-research-{int(time.time() * 1000)}",
                 "check_interval": 0,
@@ -13753,12 +13800,11 @@ class GatewayRunner:
                 break
         if not adapter or not chat_id:
             return
-        progress_history = ["🧠 thinking"]
-        for latest in ("🌐 browsing", "🔗 publishing"):
-            if latest != progress_history[-1]:
-                progress_history.append(latest)
-                progress_history[:] = progress_history[-3:]
-            label = _format_direct_research_progress(progress_subject, progress_history)
+        step_delay = _mock_research_step_delay_secs()
+        for active_index in range(1, len(_MOCK_RESEARCH_STEP_LABELS)):
+            if step_delay > 0:
+                await asyncio.sleep(step_delay)
+            label = _format_mock_research_progress(progress_subject, active_index)
             try:
                 if progress_message_id and type(adapter).edit_message is not BasePlatformAdapter.edit_message:
                     await adapter.edit_message(
@@ -13771,11 +13817,12 @@ class GatewayRunner:
                     send_result = await adapter.send(chat_id, label, metadata=send_meta)
                     if getattr(send_result, "success", False) and getattr(send_result, "message_id", None):
                         progress_message_id = str(send_result.message_id)
-                await asyncio.sleep(0)
             except Exception as exc:
                 logger.error("Mock research progress delivery error: %s", exc)
                 break
-        final_text = f"Report:\n{_MOCK_RESEARCH_PUBLIC_URL}"
+        if step_delay > 0:
+            await asyncio.sleep(step_delay)
+        final_text = _format_mock_research_result(progress_subject, _MOCK_RESEARCH_PUBLIC_URL)
         try:
             if progress_message_id and type(adapter).edit_message is not BasePlatformAdapter.edit_message:
                 await adapter.edit_message(
