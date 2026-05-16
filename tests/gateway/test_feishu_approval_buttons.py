@@ -487,6 +487,33 @@ def _patch_callback_card_types(monkeypatch):
 class TestCardActionCallbackResponse:
     """Test that _on_card_action_trigger returns updated card inline."""
 
+    def test_non_approval_card_click_is_one_shot(self, _patch_callback_card_types):
+        adapter = _make_adapter()
+        adapter._loop = MagicMock()
+        adapter._loop.is_closed = MagicMock(return_value=False)
+        first = _make_card_action_data(
+            {"hermes_test": "post_restart_card"},
+            token="tok_first",
+            open_message_id="om_same_card",
+        )
+        second = _make_card_action_data(
+            {"hermes_test": "post_restart_card"},
+            token="tok_second",
+            open_message_id="om_same_card",
+        )
+
+        def _close_and_accept(_loop, coro):
+            coro.close()
+            return True
+
+        with patch.object(adapter, "_submit_on_loop", side_effect=_close_and_accept) as mock_submit:
+            first_response = adapter._on_card_action_trigger(first)
+            second_response = adapter._on_card_action_trigger(second)
+
+        assert mock_submit.call_count == 1
+        assert first_response.card.data["header"]["title"]["content"] == "✅ 已收到"
+        assert second_response.card.data["header"]["title"]["content"] == "✅ 已处理过"
+
     def test_drops_action_when_loop_not_ready(self, _patch_callback_card_types):
         adapter = _make_adapter()
         adapter._loop = None
@@ -549,7 +576,7 @@ class TestCardActionCallbackResponse:
         assert response.card is None
         mock_submit.assert_not_called()
 
-    def test_no_card_for_non_approval_action(self, _patch_callback_card_types):
+    def test_non_approval_action_returns_received_card(self, _patch_callback_card_types):
         adapter = _make_adapter()
         adapter._loop = MagicMock()
         adapter._loop.is_closed = MagicMock(return_value=False)
@@ -559,7 +586,8 @@ class TestCardActionCallbackResponse:
             response = adapter._on_card_action_trigger(data)
 
         assert response is not None
-        assert response.card is None
+        assert response.card is not None
+        assert response.card.data["header"]["title"]["content"] == "✅ 已收到"
 
     def test_falls_back_to_open_id_when_name_not_cached(self, _patch_callback_card_types):
         adapter = _make_adapter()

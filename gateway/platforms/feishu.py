@@ -1465,6 +1465,11 @@ class FeishuAdapter(BasePlatformAdapter):
         self._webhook_rate_counts: Dict[str, tuple[int, float]] = {}  # rate_key → (count, window_start)
         self._webhook_anomaly_counts: Dict[str, tuple[int, str, float]] = {}  # ip → (count, last_status, first_seen)
         self._card_action_tokens: Dict[str, float] = {}  # token → first_seen_time
+        # Logical card-action guard for non-approval cards. Feishu creates a new
+        # callback token for each click, so token dedup alone does not stop users
+        # from double-clicking the same button and triggering multiple agent runs.
+        self._card_action_logical_keys: "OrderedDict[str, float]" = OrderedDict()
+        self._card_action_logical_lock = threading.Lock()
         # Inbound events that arrived before the adapter loop was ready
         # (e.g. during startup/restart or network-flap reconnect). A single
         # drainer thread replays them as soon as the loop becomes available.
@@ -2564,10 +2569,67 @@ class FeishuAdapter(BasePlatformAdapter):
                 loop=loop,
             )
 
+        if self._is_logical_card_action_duplicate(event, action_value):
+            logger.info("[Feishu] Dropping repeated card action click for the same message/operator/action")
+            return self._build_card_action_callback_response(
+                self._build_generic_card_action_received_card(duplicate=True)
+            )
+
         self._submit_on_loop(loop, self._handle_card_action_event(data))
+        return self._build_card_action_callback_response(
+            self._build_generic_card_action_received_card(duplicate=False)
+        )
+
+    @staticmethod
+    def _build_generic_card_action_received_card(*, duplicate: bool = False) -> Dict[str, Any]:
+        title = "已处理过" if duplicate else "已收到"
+        content = "这个按钮已经点过了，不会重复触发。" if duplicate else "按钮点击已收到，正在处理。"
+        return {
+            "config": {"wide_screen_mode": True},
+            "header": {
+                "title": {"content": f"✅ {title}", "tag": "plain_text"},
+                "template": "green" if not duplicate else "grey",
+            },
+            "elements": [{"tag": "markdown", "content": content}],
+        }
+
+    @staticmethod
+    def _build_card_action_callback_response(card_data: Dict[str, Any]) -> Any:
         if P2CardActionTriggerResponse is None:
             return None
-        return P2CardActionTriggerResponse()
+        response = P2CardActionTriggerResponse()
+        if CallBackCard is not None:
+            card = CallBackCard()
+            card.type = "raw"
+            card.data = card_data
+            response.card = card
+        return response
+
+    def _logical_card_action_key(self, event: Any, action_value: Any) -> str:
+        context = getattr(event, "context", None)
+        operator = getattr(event, "operator", None)
+        action = getattr(event, "action", None)
+        open_message_id = str(getattr(context, "open_message_id", "") or "")
+        chat_id = str(getattr(context, "open_chat_id", "") or "")
+        open_id = str(getattr(operator, "open_id", "") or "")
+        action_tag = str(getattr(action, "tag", "") or "button")
+        try:
+            value_json = json.dumps(action_value or {}, ensure_ascii=False, sort_keys=True, default=str)
+        except Exception:
+            value_json = str(action_value)
+        return "|".join([open_message_id or chat_id, open_id, action_tag, value_json])
+
+    def _is_logical_card_action_duplicate(self, event: Any, action_value: Any) -> bool:
+        key = self._logical_card_action_key(event, action_value)
+        now = time.time()
+        with self._card_action_logical_lock:
+            if key in self._card_action_logical_keys:
+                return True
+            self._card_action_logical_keys[key] = now
+            self._card_action_logical_keys.move_to_end(key)
+            while len(self._card_action_logical_keys) > 1000:
+                self._card_action_logical_keys.popitem(last=False)
+        return False
 
     @staticmethod
     def _loop_accepts_callbacks(loop: Any) -> bool:
