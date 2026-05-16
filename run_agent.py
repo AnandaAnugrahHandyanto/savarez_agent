@@ -10949,11 +10949,19 @@ class AIAgent:
                 from hermes_state import format_session_db_unavailable
                 return json.dumps({"success": False, "error": format_session_db_unavailable()})
             from tools.session_search_tool import session_search as _session_search
+            
+            # Auto-inject current platform as source_filter if not explicitly provided
+            source_filter = function_args.get("source_filter")
+            if not source_filter and self.platform:
+                source_filter = self.platform
+            
             return _session_search(
                 query=function_args.get("query", ""),
                 role_filter=function_args.get("role_filter"),
+                source_filter=source_filter,
                 limit=function_args.get("limit", 3),
-                db=session_db,
+                include_current=function_args.get("include_current", False),
+                db=self._session_db,
                 current_session_id=self.session_id,
             )
         elif function_name == "memory":
@@ -11581,11 +11589,19 @@ class AIAgent:
                     function_result = json.dumps({"success": False, "error": format_session_db_unavailable()})
                 else:
                     from tools.session_search_tool import session_search as _session_search
+                    
+                    # Auto-inject current platform as source_filter if not explicitly provided
+                    source_filter = function_args.get("source_filter")
+                    if not source_filter and self.platform:
+                        source_filter = self.platform
+                    
                     function_result = _session_search(
                         query=function_args.get("query", ""),
                         role_filter=function_args.get("role_filter"),
+                        source_filter=source_filter,
                         limit=function_args.get("limit", 3),
-                        db=session_db,
+                        include_current=function_args.get("include_current", False),
+                        db=self._session_db,
                         current_session_id=self.session_id,
                     )
                 tool_duration = time.time() - tool_start_time
