@@ -145,6 +145,7 @@ export interface McpServerStatus {
 export interface SessionInfo {
   cwd?: string
   fast?: boolean
+  title?: string
   lazy?: boolean
   mcp_servers?: McpServerStatus[]
   model: string

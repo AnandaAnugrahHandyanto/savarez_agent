@@ -6,7 +6,8 @@ import { STARTUP_RESUME_ID } from '../config/env.js'
 import { FULL_RENDER_TAIL_ITEMS, MAX_HISTORY, WHEEL_SCROLL_STEP } from '../config/limits.js'
 import { SECTION_NAMES, sectionMode } from '../domain/details.js'
 import { attachedImageNotice, imageTokenMeta } from '../domain/messages.js'
-import { fmtCwdBranch, shortCwd } from '../domain/paths.js'
+import { fmtCwdBranch } from '../domain/paths.js'
+import { buildTerminalTitle } from '../domain/terminalTitle.js'
 import { type GatewayClient } from '../gatewayClient.js'
 import type {
   ClarifyRespondResponse,
@@ -404,13 +405,16 @@ export function useMainApp(gw: GatewayClient) {
   useConfigSync({ gw, setBellOnComplete, setVoiceEnabled, setVoiceRecordKey, sid: ui.sid })
 
   // Tab title: `⚠` waiting on approval/sudo/secret/clarify, `⏳` busy, `✓` idle.
-  const model = ui.info?.model?.replace(/^.*\//, '') ?? ''
-
   const marker = overlay.approval || overlay.sudo || overlay.secret || overlay.clarify ? '⚠' : ui.busy ? '⏳' : '✓'
 
-  const tabCwd = ui.info?.cwd
-
-  useTerminalTitle(model ? `${marker} ${model}${tabCwd ? ` · ${shortCwd(tabCwd, 24)}` : ''}` : 'Hermes')
+  useTerminalTitle(
+    buildTerminalTitle({
+      cwd: ui.info?.cwd,
+      marker,
+      model: ui.info?.model,
+      sessionTitle: ui.info?.title
+    })
+  )
 
   useEffect(() => {
     if (!ui.sid || !stdout) {
