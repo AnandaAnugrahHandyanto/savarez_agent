@@ -305,6 +305,36 @@ class TestAdapterInit:
         assert isinstance(agent, FakeAgent)
         assert captured["reasoning_config"] == {"enabled": True, "effort": "xhigh"}
 
+    def test_create_agent_uses_requested_model(self, monkeypatch):
+        captured = {}
+
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        monkeypatch.setattr("run_agent.AIAgent", FakeAgent)
+        monkeypatch.setattr(
+            "gateway.run._resolve_runtime_agent_kwargs",
+            lambda: {
+                "provider": "openai",
+                "base_url": "https://example.test/v1",
+                "api_mode": "chat_completions",
+            },
+        )
+        monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda: "configured-model")
+        monkeypatch.setattr("gateway.run._load_gateway_config", lambda: {})
+        monkeypatch.setattr("gateway.run.GatewayRunner._load_reasoning_config", staticmethod(lambda: None))
+        monkeypatch.setattr("gateway.run.GatewayRunner._load_fallback_model", staticmethod(lambda: None))
+        monkeypatch.setattr("hermes_cli.tools_config._get_platform_tools", lambda *_: set())
+
+        adapter = APIServerAdapter(PlatformConfig(enabled=True))
+        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+
+        agent = adapter._create_agent(requested_model="request-model")
+
+        assert isinstance(agent, FakeAgent)
+        assert captured["model"] == "request-model"
+
 
 # ---------------------------------------------------------------------------
 # Auth checking
@@ -1114,6 +1144,59 @@ class TestChatCompletionsEndpoint:
             assert data["choices"][0]["message"]["content"] == "Hello! How can I help you today?"
             assert data["choices"][0]["finish_reason"] == "stop"
             assert "usage" in data
+
+    @pytest.mark.asyncio
+    async def test_chat_completion_model_is_passed_to_agent(self, adapter):
+        mock_result = {"final_response": "ok", "messages": [], "api_calls": 1}
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "gpt-requested",
+                        "messages": [{"role": "user", "content": "Hello"}],
+                    },
+                )
+
+                assert resp.status == 200
+                data = await resp.json()
+        assert data["model"] == "gpt-requested"
+        assert mock_run.call_args.kwargs["requested_model"] == "gpt-requested"
+
+    @pytest.mark.asyncio
+    async def test_chat_completion_reports_upstream_model(self, adapter):
+        """When the upstream surfaces a concrete model (routing-gateway alias
+        like ``high-accuracy`` → ``high-accuracy-m3``), the response should
+        advertise the concrete backend instead of echoing the alias the
+        client originally sent.
+        """
+        mock_result = {
+            "final_response": "ok",
+            "messages": [],
+            "api_calls": 1,
+            "last_response_model": "high-accuracy-m3",
+        }
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "high-accuracy",
+                        "messages": [{"role": "user", "content": "Hello"}],
+                    },
+                )
+
+                assert resp.status == 200
+                data = await resp.json()
+        assert data["model"] == "high-accuracy-m3"
+        # The alias still drives provider selection / agent kwargs.
+        assert mock_run.call_args.kwargs["requested_model"] == "high-accuracy"
 
     @pytest.mark.asyncio
     async def test_system_prompt_extracted(self, adapter):

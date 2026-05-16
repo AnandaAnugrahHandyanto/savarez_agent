@@ -818,6 +818,7 @@ class APIServerAdapter(BasePlatformAdapter):
         self,
         ephemeral_system_prompt: Optional[str] = None,
         session_id: Optional[str] = None,
+        requested_model: Optional[str] = None,
         stream_delta_callback=None,
         tool_progress_callback=None,
         tool_start_callback=None,
@@ -845,7 +846,8 @@ class APIServerAdapter(BasePlatformAdapter):
 
         runtime_kwargs = _resolve_runtime_agent_kwargs()
         reasoning_config = GatewayRunner._load_reasoning_config()
-        model = _resolve_gateway_model()
+        runtime_model = runtime_kwargs.pop("model", None)
+        model = requested_model or runtime_model or _resolve_gateway_model()
 
         user_config = _load_gateway_config()
         enabled_toolsets = sorted(_get_platform_tools(user_config, "api_server"))
@@ -876,6 +878,17 @@ class APIServerAdapter(BasePlatformAdapter):
             gateway_session_key=gateway_session_key,
         )
         return agent
+
+    def _resolve_request_model(self, body: Dict[str, Any]):
+        raw_model = body.get("model")
+        if not isinstance(raw_model, str):
+            return self._model_name, None
+        model = raw_model.strip()
+        if not model:
+            return self._model_name, None
+        if model == self._model_name:
+            return model, None
+        return model, model
 
     # ------------------------------------------------------------------
     # HTTP Handlers
@@ -1101,7 +1114,7 @@ class APIServerAdapter(BasePlatformAdapter):
             # history already set from request body above
 
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:29]}"
-        model_name = body.get("model", self._model_name)
+        model_name, requested_model = self._resolve_request_model(body)
         created = int(time.time())
 
         if stream:
@@ -1186,6 +1199,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_complete_callback=_on_tool_complete,
                 agent_ref=agent_ref,
                 gateway_session_key=gateway_session_key,
+                requested_model=requested_model,
             ))
             # Ensure SSE drain loops can terminate without relying on polling
             # agent_task.done(), which can race with queue timeout checks.
@@ -1205,6 +1219,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 ephemeral_system_prompt=system_prompt,
                 session_id=session_id,
                 gateway_session_key=gateway_session_key,
+                requested_model=requested_model,
             )
 
         idempotency_key = request.headers.get("Idempotency-Key")
@@ -1271,11 +1286,18 @@ class APIServerAdapter(BasePlatformAdapter):
         # Soft-partial path: we have *some* text but the run did not complete
         # (e.g. truncation with partial buffered output). Still 200 but signal
         # truncation via finish_reason="length" + Hermes-specific extras.
+        #
+        # Prefer the upstream-reported model id when present so clients see
+        # the concrete backend a routing gateway actually served (e.g. an
+        # alias "high-accuracy" → "high-accuracy-m3"). Fall back to the
+        # client-supplied name when the upstream did not advertise one.
+        upstream_model = result.get("last_response_model")
+        response_model = upstream_model if isinstance(upstream_model, str) and upstream_model else model_name
         response_data = {
             "id": completion_id,
             "object": "chat.completion",
             "created": created,
-            "model": model_name,
+            "model": response_model,
             "choices": [
                 {
                     "index": 0,
@@ -2709,6 +2731,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_complete_callback=None,
         agent_ref: Optional[list] = None,
         gateway_session_key: Optional[str] = None,
+        requested_model: Optional[str] = None,
     ) -> tuple:
         """
         Create an agent and run a conversation in a thread executor.
@@ -2732,6 +2755,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_start_callback=tool_start_callback,
                 tool_complete_callback=tool_complete_callback,
                 gateway_session_key=gateway_session_key,
+                requested_model=requested_model,
             )
             if agent_ref is not None:
                 agent_ref[0] = agent

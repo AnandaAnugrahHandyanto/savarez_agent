@@ -1411,6 +1411,14 @@ class AIAgent:
         self._interrupt_message = None  # Optional message that triggered interrupt
         self._execution_thread_id: int | None = None  # Set at run_conversation() start
         self._interrupt_thread_signal_pending = False
+
+        # Tracks the upstream-reported model id from the last API response.
+        # Routing gateways (e.g. an alias like "high-accuracy" that fans out
+        # to "high-accuracy-m1/m2/m3") populate ``response.model`` with the
+        # concrete backend they actually served. We surface this through
+        # ``run_conversation()`` so callers can report it to the end user
+        # instead of echoing the alias the client originally sent.
+        self._last_response_model: Optional[str] = None
         self._client_lock = threading.RLock()
 
         # /steer mechanism — inject a user note into the next tool result
@@ -14857,6 +14865,16 @@ class AIAgent:
                 self._persist_session(messages, conversation_history)
                 break
 
+            # Capture the upstream-reported model id (e.g. routing gateways
+            # that turn "high-accuracy" into "high-accuracy-m3"). We stamp
+            # this on every successful response so the last assignment
+            # reflects the final turn; falsy values are ignored so a
+            # provider that omits the field doesn't blank out an earlier
+            # known value.
+            _resp_model = getattr(response, "model", None)
+            if isinstance(_resp_model, str) and _resp_model:
+                self._last_response_model = _resp_model
+
             try:
                 _transport = self._get_transport()
                 _normalize_kwargs = {}
@@ -15940,6 +15958,7 @@ class AIAgent:
             "interrupted": interrupted,
             "response_previewed": getattr(self, "_response_was_previewed", False),
             "model": self.model,
+            "last_response_model": self._last_response_model,
             "provider": self.provider,
             "base_url": self.base_url,
             "input_tokens": self.session_input_tokens,
