@@ -596,6 +596,26 @@ browser:
 
 When enabled, recording starts automatically on the first `browser_navigate` and saves to `~/.hermes/browser_recordings/` when the session closes. Works in both local and cloud (Browserbase) modes. Recordings older than 72 hours are automatically cleaned up.
 
+## Persistent Sessions Across Turns
+
+By default, Hermes closes the browser at the end of every agent turn. This is normally fine, but when a task spans multiple turns (e.g. the agent asks for clarification, the user replies, and the agent continues), the browser state is lost and the agent must start over.
+
+To keep the browser session alive across turns, add this to `~/.hermes/config.yaml`:
+
+```yaml
+browser:
+  persistent_sessions: true  # default: false
+```
+
+When enabled:
+- The browser session is **not** torn down at the end of each turn.
+- The agent can continue interacting with the same page after a `clarify` or other multi-turn exchange.
+- The session is still closed when:
+  - The agent instance is fully destroyed (e.g. `/new`, gateway restart, or process exit).
+  - The browser inactivity timeout fires (default: 2 minutes of idle time).
+
+This is independent of `browser.camofox.managed_persistence` (which preserves the Firefox profile on the Camofox server) and works with all browser backends.
+
 ## Stealth Features
 
 Browserbase provides automatic stealth capabilities:

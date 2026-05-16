@@ -648,6 +648,11 @@ DEFAULT_CONFIG = {
         "command_timeout": 30,  # Timeout for browser commands in seconds (screenshot, navigate, etc.)
         "record_sessions": False,  # Auto-record browser sessions as WebM videos
         "allow_private_urls": False,  # Allow navigating to private/internal IPs (localhost, 192.168.x.x, etc.)
+        # When true, the browser session is kept alive across agent turns instead
+        # of being torn down at the end of every turn.  The session still closes
+        # when the agent instance is destroyed (e.g. /new or gateway restart) or
+        # when the inactivity timeout fires.
+        "persistent_sessions": False,
         # Browser engine for local mode.  Passed as ``--engine <value>`` to
         # agent-browser v0.25.3+.
         # "auto"       — use Chrome (default, don't pass --engine at all)

@@ -5360,3 +5360,37 @@ class TestMemoryProviderTurnStart:
         import inspect
         src = inspect.getsource(AIAgent.run_conversation)
         assert "on_turn_start(self._user_turn_count" in src
+
+
+class TestCleanupTaskResources:
+    """_cleanup_task_resources must respect browser.persistent_sessions."""
+
+    def test_cleanup_browser_called_when_not_persistent(self, agent):
+        """Default behaviour: cleanup_browser is invoked per-turn."""
+        agent._browser_persistent_sessions = False
+        with patch("run_agent.cleanup_browser") as mock_cleanup_browser, \
+             patch("run_agent.cleanup_vm") as mock_cleanup_vm, \
+             patch("run_agent.is_persistent_env", return_value=False):
+            agent._cleanup_task_resources("task-123")
+            mock_cleanup_browser.assert_called_once_with("task-123")
+            mock_cleanup_vm.assert_called_once_with("task-123")
+
+    def test_cleanup_browser_skipped_when_persistent(self, agent):
+        """With persistent_sessions=True, per-turn browser cleanup is skipped."""
+        agent._browser_persistent_sessions = True
+        with patch("run_agent.cleanup_browser") as mock_cleanup_browser, \
+             patch("run_agent.cleanup_vm") as mock_cleanup_vm, \
+             patch("run_agent.is_persistent_env", return_value=False):
+            agent._cleanup_task_resources("task-123")
+            mock_cleanup_browser.assert_not_called()
+            mock_cleanup_vm.assert_called_once_with("task-123")
+
+    def test_vm_cleanup_still_honours_persistent_env(self, agent):
+        """VM persistence logic is unchanged by the browser flag."""
+        agent._browser_persistent_sessions = True
+        with patch("run_agent.cleanup_browser") as mock_cleanup_browser, \
+             patch("run_agent.cleanup_vm") as mock_cleanup_vm, \
+             patch("run_agent.is_persistent_env", return_value=True):
+            agent._cleanup_task_resources("task-123")
+            mock_cleanup_browser.assert_not_called()
+            mock_cleanup_vm.assert_not_called()

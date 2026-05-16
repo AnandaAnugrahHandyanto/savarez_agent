@@ -1990,6 +1990,14 @@ class AIAgent:
         # broad pseudo-public config object on the agent instance.
         self._aux_compression_context_length_config = None
 
+        # Browser persistence across turns (mirrors persistent_filesystem for VMs)
+        try:
+            self._browser_persistent_sessions = bool(
+                _agent_cfg.get("browser", {}).get("persistent_sessions", False)
+            )
+        except Exception:
+            self._browser_persistent_sessions = False
+
         # Persistent memory (MEMORY.md + USER.md) -- loaded from disk
         self._memory_store = None
         self._memory_enabled = False
@@ -4012,6 +4020,10 @@ class AIAgent:
         ``terminal.lifetime_seconds`` is exceeded. Non-persistent backends are
         torn down per-turn as before to prevent resource leakage (the original
         intent of this hook for the Morph backend, see commit fbd3a2fd).
+
+        Skips ``cleanup_browser`` when ``browser.persistent_sessions`` is true
+        so the browser stays open across turns. The background inactivity reaper
+        (``BROWSER_SESSION_INACTIVITY_TIMEOUT``) still tears it down once idle.
         """
         try:
             if is_persistent_env(task_id):
@@ -4026,7 +4038,14 @@ class AIAgent:
             if self.verbose_logging:
                 logging.warning(f"Failed to cleanup VM for task {task_id}: {e}")
         try:
-            cleanup_browser(task_id)
+            if self._browser_persistent_sessions:
+                if self.verbose_logging:
+                    logging.debug(
+                        f"Skipping per-turn cleanup_browser for persistent session {task_id}; "
+                        f"inactivity reaper will handle it."
+                    )
+            else:
+                cleanup_browser(task_id)
         except Exception as e:
             if self.verbose_logging:
                 logging.warning(f"Failed to cleanup browser for task {task_id}: {e}")
