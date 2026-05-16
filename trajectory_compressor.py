@@ -35,6 +35,7 @@ import os
 import time
 import yaml
 import logging
+import aiofiles
 import asyncio
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
@@ -1149,6 +1150,12 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
         console.print("\n[dim]Writing output files...[/dim]")
         output_dir.mkdir(parents=True, exist_ok=True)
         
+        async def write_output_file(output_path, sorted_entries):
+            async with aiofiles.open(output_path, 'w', encoding='utf-8') as f:
+                lines = [json.dumps(entry, ensure_ascii=False) + '\n' for entry in sorted_entries]
+                await f.writelines(lines)
+
+        write_tasks = []
         for file_path in jsonl_files:
             output_path = output_dir / file_path.name
             file_results = results[file_path]
@@ -1159,10 +1166,10 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
                 for idx in sorted(file_results.keys()) 
                 if file_results[idx] is not None
             ]
+            write_tasks.append(asyncio.create_task(write_output_file(output_path, sorted_entries)))
             
-            with open(output_path, 'w', encoding='utf-8') as f:
-                for entry in sorted_entries:
-                    f.write(json.dumps(entry, ensure_ascii=False) + '\n')
+        if write_tasks:
+            await asyncio.gather(*write_tasks)
         
         # Record end time
         self.aggregate_metrics.processing_end_time = datetime.now().isoformat()
