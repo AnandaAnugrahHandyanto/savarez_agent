@@ -63,6 +63,13 @@ def test_extract_public_research_url_prefers_real_slug_over_placeholder():
     )
 
 
+def test_extract_public_research_url_rejoins_pty_wrapped_slug():
+    output = "https://research.briankeefe.dev/20260516-edc-L\nas-vegas-job\x1b[0m"
+    assert _extract_public_research_url(output) == (
+        "https://research.briankeefe.dev/20260516-edc-Las-vegas-job"
+    )
+
+
 def test_research_subject_truncates_long_prompt():
     subject = _research_subject("Research " + "x" * 100)
     assert not subject.startswith("Research ")

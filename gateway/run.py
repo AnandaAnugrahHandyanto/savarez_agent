@@ -251,14 +251,17 @@ def _extract_public_research_url(text: str) -> str:
     from tools.ansi_strip import strip_ansi
 
     cleaned = strip_ansi(text)
-    matches = re.findall(r"https://research\.briankeefe\.dev/[^\s\]\)>]+", cleaned)
+    matches = re.findall(
+        r"https://research\.briankeefe\.dev/[A-Za-z0-9._~!$&'()*+,;=:@%/-]*(?:\s*\n\s*[A-Za-z0-9._~!$&'()*+,;=:@%/-]+)*",
+        cleaned,
+    )
     if not matches:
         return ""
     for match in reversed(matches):
-        candidate = match.rstrip(".,;:")
+        candidate = re.sub(r"\s*\n\s*", "", match).rstrip(".,;:")
         if not candidate.endswith("/..."):
             return candidate
-    return matches[-1].rstrip(".,;:")
+    return re.sub(r"\s*\n\s*", "", matches[-1]).rstrip(".,;:")
 
 
 def _extract_research_progress_label(output: str, fallback: str = "🧠 thinking") -> str:
