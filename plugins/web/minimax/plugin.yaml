@@ -1,0 +1,7 @@
+name: web-minimax
+version: 1.0.0
+description: "MiniMax web search via the mmx CLI — requires mmx-cli and MiniMax API key."
+author: NousResearch
+kind: backend
+provides_web_providers:
+  - minimax
