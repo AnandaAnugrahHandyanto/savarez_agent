@@ -76,6 +76,7 @@ CONFIGURABLE_TOOLSETS = [
     ("discord",         "💬 Discord (read/participate)", "fetch messages, search members, create thread"),
     ("discord_admin",   "🛡️  Discord Server Admin",    "list channels/roles, pin, assign roles"),
     ("yuanbao",          "🤖 Yuanbao",                  "group info, member queries, DM"),
+    ("nia",              "🧭 Nia Retrieval",             "external repo/docs/source search"),
     ("computer_use",     "🖱️  Computer Use (macOS)",     "background desktop control via cua-driver"),
 ]
 
@@ -86,7 +87,7 @@ CONFIGURABLE_TOOLSETS = [
 # Video gen is off by default — it's a niche, paid, slow feature. Users
 # who want it opt in via `hermes tools` → Video Generation, which walks
 # them through provider + model selection.
-_DEFAULT_OFF_TOOLSETS = {"moa", "homeassistant", "spotify", "discord", "discord_admin", "video", "video_gen"}
+_DEFAULT_OFF_TOOLSETS = {"moa", "homeassistant", "spotify", "discord", "discord_admin", "video", "video_gen", "nia"}
 
 # Platform-scoped toolsets: only appear in the `hermes tools` checklist for
 # these platforms, and only resolve/save for these platforms.  A toolset
