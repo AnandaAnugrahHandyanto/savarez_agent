@@ -567,6 +567,94 @@ class TestSkillManageDispatcher:
         assert result["success"] is True
         assert usage["review-sediment"]["created_by"] == "agent"
 
+    def test_background_create_requires_approval_when_enabled(self, tmp_path):
+        """Opt-in approval blocks background-review skill creation before write."""
+        from tools.skill_provenance import (
+            BACKGROUND_REVIEW,
+            reset_current_write_origin,
+            set_current_write_origin,
+        )
+
+        token = set_current_write_origin(BACKGROUND_REVIEW)
+        try:
+            with _skill_dir(tmp_path), \
+                 patch(
+                     "tools.skill_manager_tool.load_config",
+                     return_value={"skills": {"creation_requires_approval": True}},
+                 ):
+                raw = skill_manage(
+                    action="create",
+                    name="review-sediment",
+                    content=VALID_SKILL_CONTENT,
+                )
+        finally:
+            reset_current_write_origin(token)
+
+        result = json.loads(raw)
+        assert result["success"] is False
+        assert result["status"] == "approval_required"
+        assert result["requires_approval"] is True
+        assert result["action"] == "create"
+        assert "# Test Skill" in result["proposed_content"]
+        assert not (tmp_path / "review-sediment" / "SKILL.md").exists()
+
+    def test_foreground_create_ignores_background_approval_setting(self, tmp_path):
+        """The approval option only gates the background review fork."""
+        with _skill_dir(tmp_path), \
+             patch(
+                 "tools.skill_manager_tool.load_config",
+                 return_value={"skills": {"creation_requires_approval": True}},
+             ):
+            raw = skill_manage(
+                action="create",
+                name="test-skill",
+                content=VALID_SKILL_CONTENT,
+            )
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert (tmp_path / "test-skill" / "SKILL.md").exists()
+
+    def test_background_edit_requires_approval_with_diff(self, tmp_path):
+        """Existing skill updates return a diff and leave files unchanged."""
+        from tools.skill_provenance import (
+            BACKGROUND_REVIEW,
+            reset_current_write_origin,
+            set_current_write_origin,
+        )
+
+        with _skill_dir(tmp_path):
+            skill_manage(
+                action="create",
+                name="test-skill",
+                content=VALID_SKILL_CONTENT,
+            )
+
+            token = set_current_write_origin(BACKGROUND_REVIEW)
+            try:
+                with patch(
+                    "tools.skill_manager_tool.load_config",
+                    return_value={"skills": {"creation_requires_approval": True}},
+                ):
+                    raw = skill_manage(
+                        action="edit",
+                        name="test-skill",
+                        content=VALID_SKILL_CONTENT_2,
+                    )
+            finally:
+                reset_current_write_origin(token)
+
+            stored = (tmp_path / "test-skill" / "SKILL.md").read_text(
+                encoding="utf-8"
+            )
+
+        result = json.loads(raw)
+        assert result["success"] is False
+        assert result["status"] == "approval_required"
+        assert "-# Test Skill" in result["diff"]
+        assert "+# Test Skill v2" in result["diff"]
+        assert "# Test Skill v2" not in stored
+
     def test_delete_via_dispatcher_threads_absorbed_into(self, tmp_path):
         # Dispatcher must plumb absorbed_into through to _delete_skill so the
         # validation + message suffix paths are exercised end-to-end.

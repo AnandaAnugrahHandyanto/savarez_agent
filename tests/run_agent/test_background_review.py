@@ -193,3 +193,30 @@ def test_background_review_summary_is_attributed_to_self_improvement_loop(monkey
     assert captured_bg_callback[0].startswith("💾 Self-improvement review:"), (
         captured_bg_callback[0]
     )
+
+
+def test_background_review_summary_surfaces_skill_approval_requests():
+    """Approval-gated skill writes should be visible to the user."""
+    import json
+
+    agent = _bare_agent()
+    actions = agent._summarize_background_review_actions(
+        review_messages=[
+            {
+                "role": "tool",
+                "tool_call_id": "call_approval",
+                "content": json.dumps(
+                    {
+                        "success": False,
+                        "status": "approval_required",
+                        "requires_approval": True,
+                        "action": "create",
+                        "name": "review-sediment",
+                    }
+                ),
+            }
+        ],
+        prior_snapshot=[],
+    )
+
+    assert actions == ["Skill 'review-sediment' create requires approval"]

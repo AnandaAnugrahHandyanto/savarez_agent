@@ -4262,7 +4262,13 @@ class AIAgent:
                 data = json.loads(msg.get("content", "{}"))
             except (json.JSONDecodeError, TypeError):
                 continue
-            if not isinstance(data, dict) or not data.get("success"):
+            if not isinstance(data, dict):
+                continue
+            if not data.get("success"):
+                if data.get("status") == "approval_required" and data.get("requires_approval"):
+                    action = data.get("action") or "write"
+                    name = data.get("name") or "unknown"
+                    actions.append(f"Skill '{name}' {action} requires approval")
                 continue
             message = data.get("message", "")
             target = data.get("target", "")

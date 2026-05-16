@@ -32,6 +32,7 @@ Directory layout for user skills:
             └── SKILL.md
 """
 
+import difflib
 import json
 import logging
 import os
@@ -43,7 +44,7 @@ from hermes_constants import get_hermes_home, display_hermes_home
 from typing import Dict, Any, Optional, Tuple
 
 from utils import atomic_replace, is_truthy_value
-from hermes_cli.config import cfg_get
+from hermes_cli.config import cfg_get, load_config
 
 logger = logging.getLogger(__name__)
 
@@ -163,12 +164,22 @@ def _pinned_guard(name: str) -> Optional[str]:
 
 MAX_SKILL_CONTENT_CHARS = 100_000   # ~36k tokens at 2.75 chars/token
 MAX_SKILL_FILE_BYTES = 1_048_576    # 1 MiB per supporting file
+MAX_APPROVAL_PREVIEW_CHARS = 12_000
 
 # Characters allowed in skill names (filesystem-safe, URL-friendly)
 VALID_NAME_RE = re.compile(r'^[a-z0-9][a-z0-9._-]*$')
 
 # Subdirectories allowed for write_file/remove_file
 ALLOWED_SUBDIRS = {"references", "templates", "scripts", "assets"}
+
+APPROVAL_GATED_ACTIONS = {
+    "create",
+    "edit",
+    "patch",
+    "delete",
+    "write_file",
+    "remove_file",
+}
 
 
 # =============================================================================
@@ -251,6 +262,204 @@ def _validate_frontmatter(content: str) -> Optional[str]:
         return "SKILL.md must have content after the frontmatter (instructions, procedures, etc.)."
 
     return None
+
+
+def _background_skill_write_approval_enabled() -> bool:
+    """Return True when background review skill writes need user approval."""
+    try:
+        from tools.skill_provenance import is_background_review
+
+        if not is_background_review():
+            return False
+        cfg = load_config()
+        return is_truthy_value(
+            cfg_get(cfg, "skills", "creation_requires_approval"),
+            default=False,
+        )
+    except Exception:
+        return False
+
+
+def _approval_preview(text: str) -> str:
+    if len(text) <= MAX_APPROVAL_PREVIEW_CHARS:
+        return text
+    omitted = len(text) - MAX_APPROVAL_PREVIEW_CHARS
+    return text[:MAX_APPROVAL_PREVIEW_CHARS] + f"\n... ({omitted} chars omitted)"
+
+
+def _approval_diff(
+    before: str,
+    after: str,
+    *,
+    before_label: str,
+    after_label: str,
+) -> str:
+    diff = "".join(
+        difflib.unified_diff(
+            before.splitlines(keepends=True),
+            after.splitlines(keepends=True),
+            fromfile=before_label,
+            tofile=after_label,
+        )
+    )
+    return _approval_preview(diff)
+
+
+def _skill_write_approval_result(
+    action: str,
+    name: str,
+    *,
+    content: str = None,
+    category: str = None,
+    file_path: str = None,
+    file_content: str = None,
+    old_string: str = None,
+    new_string: str = None,
+    replace_all: bool = False,
+    absorbed_into: str = None,
+) -> Optional[Dict[str, Any]]:
+    """Build a no-write approval payload for background-review skill writes.
+
+    Returns None when the action would fail before writing anyway, so the
+    normal action handler can return its specific validation error.
+    """
+    if action not in APPROVAL_GATED_ACTIONS:
+        return None
+    if not _background_skill_write_approval_enabled():
+        return None
+
+    result: Dict[str, Any] = {
+        "success": False,
+        "status": "approval_required",
+        "requires_approval": True,
+        "action": action,
+        "name": name,
+        "message": (
+            f"Background review wants to run skill_manage(action='{action}', "
+            f"name='{name}'), but skills.creation_requires_approval is enabled."
+        ),
+    }
+
+    existing = _find_skill(name)
+    if existing:
+        result["existing_path"] = str(existing["path"])
+
+    if action == "create":
+        target = _resolve_skill_dir(name, category) / "SKILL.md"
+        result["target_path"] = str(target)
+        if category:
+            result["category"] = category
+        if existing:
+            skill_md = existing["path"] / "SKILL.md"
+            if skill_md.exists():
+                before = skill_md.read_text(encoding="utf-8")
+                result["diff"] = _approval_diff(
+                    before,
+                    content or "",
+                    before_label=str(skill_md),
+                    after_label=f"proposed:{name}/SKILL.md",
+                )
+            else:
+                result["proposed_content"] = _approval_preview(content or "")
+        else:
+            result["proposed_content"] = _approval_preview(content or "")
+        return result
+
+    if action == "edit":
+        if not existing:
+            return None
+        skill_md = existing["path"] / "SKILL.md"
+        before = skill_md.read_text(encoding="utf-8") if skill_md.exists() else ""
+        result["target_path"] = str(skill_md)
+        result["diff"] = _approval_diff(
+            before,
+            content or "",
+            before_label=str(skill_md),
+            after_label=f"proposed:{name}/SKILL.md",
+        )
+        return result
+
+    if action == "patch":
+        if not existing:
+            return None
+        skill_dir = existing["path"]
+        if file_path:
+            err = _validate_file_path(file_path)
+            if err:
+                return None
+            target, err = _resolve_skill_target(skill_dir, file_path)
+            if err:
+                return None
+        else:
+            target = skill_dir / "SKILL.md"
+        if not target.exists():
+            return None
+        before = target.read_text(encoding="utf-8")
+        try:
+            from tools.fuzzy_match import fuzzy_find_and_replace
+
+            after, _match_count, _strategy, match_error = fuzzy_find_and_replace(
+                before,
+                old_string or "",
+                new_string or "",
+                replace_all,
+            )
+            if match_error:
+                return None
+        except Exception:
+            return None
+        result["target_path"] = str(target)
+        result["diff"] = _approval_diff(
+            before,
+            after,
+            before_label=str(target),
+            after_label=f"proposed:{target.name}",
+        )
+        return result
+
+    if action == "write_file":
+        if not existing:
+            return None
+        err = _validate_file_path(file_path or "")
+        if err:
+            return None
+        target, err = _resolve_skill_target(existing["path"], file_path)
+        if err:
+            return None
+        result["target_path"] = str(target)
+        if target.exists():
+            before = target.read_text(encoding="utf-8")
+            result["diff"] = _approval_diff(
+                before,
+                file_content or "",
+                before_label=str(target),
+                after_label=f"proposed:{file_path}",
+            )
+        else:
+            result["proposed_content"] = _approval_preview(file_content or "")
+        return result
+
+    if action == "remove_file":
+        if not existing:
+            return None
+        err = _validate_file_path(file_path or "")
+        if err:
+            return None
+        target, err = _resolve_skill_target(existing["path"], file_path)
+        if err or not target.exists():
+            return None
+        result["target_path"] = str(target)
+        return result
+
+    if action == "delete":
+        if not existing:
+            return None
+        result["target_path"] = str(existing["path"])
+        if absorbed_into is not None:
+            result["absorbed_into"] = absorbed_into
+        return result
+
+    return result
 
 
 def _validate_content_size(content: str, label: str = "SKILL.md") -> Optional[str]:
@@ -730,11 +939,44 @@ def skill_manage(
     if action == "create":
         if not content:
             return tool_error("content is required for 'create'. Provide the full SKILL.md text (frontmatter + body).", success=False)
+        err = _validate_name(name)
+        if err:
+            return json.dumps({"success": False, "error": err}, ensure_ascii=False)
+        err = _validate_category(category)
+        if err:
+            return json.dumps({"success": False, "error": err}, ensure_ascii=False)
+        err = _validate_frontmatter(content)
+        if err:
+            return json.dumps({"success": False, "error": err}, ensure_ascii=False)
+        err = _validate_content_size(content)
+        if err:
+            return json.dumps({"success": False, "error": err}, ensure_ascii=False)
+        approval = _skill_write_approval_result(
+            action,
+            name,
+            content=content,
+            category=category,
+        )
+        if approval is not None:
+            return json.dumps(approval, ensure_ascii=False)
         result = _create_skill(name, content, category)
 
     elif action == "edit":
         if not content:
             return tool_error("content is required for 'edit'. Provide the full updated SKILL.md text.", success=False)
+        err = _validate_frontmatter(content)
+        if err:
+            return json.dumps({"success": False, "error": err}, ensure_ascii=False)
+        err = _validate_content_size(content)
+        if err:
+            return json.dumps({"success": False, "error": err}, ensure_ascii=False)
+        approval = _skill_write_approval_result(
+            action,
+            name,
+            content=content,
+        )
+        if approval is not None:
+            return json.dumps(approval, ensure_ascii=False)
         result = _edit_skill(name, content)
 
     elif action == "patch":
@@ -742,9 +984,26 @@ def skill_manage(
             return tool_error("old_string is required for 'patch'. Provide the text to find.", success=False)
         if new_string is None:
             return tool_error("new_string is required for 'patch'. Use empty string to delete matched text.", success=False)
+        approval = _skill_write_approval_result(
+            action,
+            name,
+            file_path=file_path,
+            old_string=old_string,
+            new_string=new_string,
+            replace_all=replace_all,
+        )
+        if approval is not None:
+            return json.dumps(approval, ensure_ascii=False)
         result = _patch_skill(name, old_string, new_string, file_path, replace_all)
 
     elif action == "delete":
+        approval = _skill_write_approval_result(
+            action,
+            name,
+            absorbed_into=absorbed_into,
+        )
+        if approval is not None:
+            return json.dumps(approval, ensure_ascii=False)
         result = _delete_skill(name, absorbed_into=absorbed_into)
 
     elif action == "write_file":
@@ -752,11 +1011,26 @@ def skill_manage(
             return tool_error("file_path is required for 'write_file'. Example: 'references/api-guide.md'", success=False)
         if file_content is None:
             return tool_error("file_content is required for 'write_file'.", success=False)
+        approval = _skill_write_approval_result(
+            action,
+            name,
+            file_path=file_path,
+            file_content=file_content,
+        )
+        if approval is not None:
+            return json.dumps(approval, ensure_ascii=False)
         result = _write_file(name, file_path, file_content)
 
     elif action == "remove_file":
         if not file_path:
             return tool_error("file_path is required for 'remove_file'.", success=False)
+        approval = _skill_write_approval_result(
+            action,
+            name,
+            file_path=file_path,
+        )
+        if approval is not None:
+            return json.dumps(approval, ensure_ascii=False)
         result = _remove_file(name, file_path)
 
     else:
