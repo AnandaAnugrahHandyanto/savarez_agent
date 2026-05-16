@@ -9098,6 +9098,21 @@ class AIAgent:
                 self._transport_cache.clear()
             self._fallback_activated = True
 
+            # Inject fallback awareness into the system prompt so the agent
+            # knows its runtime model differs from the configured primary.
+            # Uses ephemeral_system_prompt (per-call, not cached) so the note
+            # appears on the current turn's API call without breaking prefix
+            # cache stability.  See issue #25852.
+            _fallback_note = (
+                f"Note: the primary model ({old_model}) failed and this request "
+                f"is being handled by fallback model {fb_model} via {fb_provider}. "
+                f"Adjust response accordingly (e.g., model code prefixes)."
+            )
+            if getattr(self, "ephemeral_system_prompt", None):
+                self.ephemeral_system_prompt += f"\n\n{_fallback_note}"
+            else:
+                self.ephemeral_system_prompt = _fallback_note
+
             # Honor per-provider / per-model request_timeout_seconds for the
             # fallback target (same knob the primary client uses).  None = use
             # SDK default.
@@ -9259,6 +9274,17 @@ class AIAgent:
 
             # ── Reset fallback chain for the new turn ──
             self._fallback_activated = False
+
+            # Clear fallback awareness note from ephemeral system prompt.
+            # The note was injected by _try_activate_fallback; on primary
+            # restoration it must be removed so subsequent turns don't carry
+            # stale fallback messages.  See issue #25852.
+            if getattr(self, "ephemeral_system_prompt", None):
+                _marker = "Note: the primary model"
+                if _marker in self.ephemeral_system_prompt:
+                    # Remove everything from the marker to the end
+                    idx = self.ephemeral_system_prompt.index(_marker)
+                    self.ephemeral_system_prompt = self.ephemeral_system_prompt[:idx].strip() or None
             self._fallback_index = 0
 
             logging.info(
