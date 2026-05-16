@@ -3098,6 +3098,10 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
         logger.debug("No explicit MCP servers provided")
         return []
 
+    # Reap orphan MCP subprocesses from previously crashed workers BEFORE
+    # spawning any new ones — prevents the accumulation death spiral.
+    _reap_orphan_mcp_children()
+
     # Only attempt servers that aren't already connected and are enabled
     # (enabled: false skips the server entirely without removing its config)
     with _lock:
@@ -3455,6 +3459,171 @@ def _kill_orphaned_mcp_children(include_active: bool = False) -> None:
             logger.warning(
                 "Force-killed MCP process %d (%s) after SIGTERM timeout",
                 pid, server_name,
+            )
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+
+
+# MCP subprocess binary/command patterns — used by _reap_orphan_mcp_children
+# to identify MCP-related processes in /proc.
+_MCP_PROC_PATTERNS = [
+    "k8s-helm-mcp",
+    "mcp-server-github",
+    "mcp-server-filesystem",
+]
+
+# npm exec wrapper patterns (transient parents of MCP node processes)
+_NPX_PROC_PATTERNS = [
+    "npm exec",
+]
+
+
+def _reap_orphan_mcp_children() -> None:
+    """Cross-process PPID-chain orphan reaper for MCP subprocesses.
+
+    Scans /proc for MCP-related processes (k8s-helm-mcp, mcp-server-github,
+    mcp-server-filesystem, and their npm exec wrappers). For each candidate,
+    traces the PPID chain upward. If any ancestor in the chain is a hermes
+    worker process (python3 ... hermes ... NOT gateway run) and that ancestor
+    is *dead*, the MCP process is orphaned and gets killed with SIGTERM →
+    2s → SIGKILL escalation.
+
+    This is the cross-process counterpart of _kill_orphaned_mcp_children():
+    that function only kills PIDs tracked in _orphan_stdio_pids (from *this*
+    process's own session). This function finds and kills orphans from ANY
+    hermes process, including ones that exited/crashed without cleanup.
+
+    Gateway-owned MCP servers (PPID chain leads to the gateway process)
+    are NEVER killed.
+
+    Safe to call from the start of register_mcp_servers() before spawning
+    any new subprocesses — ensures no orphan accumulation from previously
+    crashed workers.
+    """
+    import signal as _signal
+    import time as _time
+
+    orphans: Dict[int, str] = {}
+
+    for entry in os.listdir("/proc"):
+        if not entry.isdigit():
+            continue
+        pid = int(entry)
+
+        try:
+            with open(f"/proc/{pid}/cmdline", "rb") as f:
+                raw_cmdline = f.read().replace(b"\0", b" ").decode("utf-8", errors="replace")
+        except (FileNotFoundError, PermissionError, ProcessLookupError):
+            continue
+        if not raw_cmdline:
+            continue
+
+        # Check if this process is an MCP server or npm exec wrapper for MCPs
+        is_mcp = any(p in raw_cmdline for p in _MCP_PROC_PATTERNS)
+        is_npx = any(p in raw_cmdline for p in _NPX_PROC_PATTERNS) and any(
+            p in raw_cmdline for p in _MCP_PROC_PATTERNS + ["@modelcontextprotocol"]
+        )
+        if not (is_mcp or is_npx):
+            continue
+
+        # Walk up the PPID chain looking for a dead hermes worker
+        try:
+            with open(f"/proc/{pid}/status") as f:
+                ppid_line = None
+                for line in f:
+                    if line.startswith("PPid:"):
+                        ppid_line = line
+                        break
+            if ppid_line is None:
+                continue
+            ppid = int(ppid_line.split()[1])
+        except (FileNotFoundError, ProcessLookupError, ValueError):
+            continue
+
+        traced: set = set()
+        found_dead_hermes = False
+        current = ppid
+
+        while current is not None and current > 1 and current not in traced:
+            traced.add(current)
+
+            # Check if this ancestor is a hermes worker process
+            try:
+                with open(f"/proc/{current}/cmdline", "rb") as f:
+                    ancestor_cmdline = f.read().replace(b"\0", b" ").decode("utf-8", errors="replace")
+            except (FileNotFoundError, ProcessLookupError):
+                # PID disappeared — treat as dead
+                found_dead_hermes = True
+                break
+
+            # Is it a hermes process?  Look for the hermes venv python.
+            if "/home/rens/.hermes/hermes-agent/venv/bin/python3" in ancestor_cmdline or \
+               "/home/rens/.hermes/hermes-agent/venv/bin/python" in ancestor_cmdline:
+                # It's a hermes python process. Is it the gateway?
+                if "gateway run" in ancestor_cmdline or "gateway" in ancestor_cmdline:
+                    # Gateway process — this MCP is legit, don't touch it
+                    break
+
+                # It's a hermes worker — is it alive?
+                try:
+                    os.kill(current, 0)  # noop: 0 = existence check
+                    # Worker is alive — this MCP is legit
+                    break
+                except ProcessLookupError:
+                    # Worker is dead!  This MCP is orphaned.
+                    found_dead_hermes = True
+                    break
+                except PermissionError:
+                    break
+
+            # Walk up one level
+            try:
+                with open(f"/proc/{current}/status") as f:
+                    for line in f:
+                        if line.startswith("PPid:"):
+                            current = int(line.split()[1])
+                            break
+                    else:
+                        break
+            except (FileNotFoundError, ProcessLookupError, ValueError):
+                break
+
+        if found_dead_hermes:
+            desc = raw_cmdline[:120]
+            orphans[pid] = desc
+
+    if not orphans:
+        return
+
+    logger.warning(
+        "MCP reaper: found %d orphaned MCP subprocess(es) from dead workers",
+        len(orphans),
+    )
+    for pid, desc in sorted(orphans.items()):
+        logger.debug("  orphan PID %d: %s", pid, desc)
+
+    # Phase 1: SIGTERM (graceful)
+    for pid in sorted(orphans.keys()):
+        try:
+            os.kill(pid, _signal.SIGTERM)
+            logger.debug("Sent SIGTERM to orphaned MCP process %d", pid)
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+
+    # Phase 2: Wait for graceful exit
+    _time.sleep(2)
+
+    # Phase 3: SIGKILL any survivors
+    _sigkill = getattr(_signal, "SIGKILL", _signal.SIGTERM)
+    from gateway.status import _pid_exists
+    for pid in sorted(orphans.keys()):
+        if not _pid_exists(pid):
+            continue  # Exited after SIGTERM
+        try:
+            os.kill(pid, _sigkill)
+            logger.warning(
+                "Force-killed orphaned MCP process %d after SIGTERM timeout",
+                pid,
             )
         except (ProcessLookupError, PermissionError, OSError):
             pass
