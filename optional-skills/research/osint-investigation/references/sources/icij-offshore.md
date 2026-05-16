@@ -1,0 +1,95 @@
+# ICIJ Offshore Leaks Database
+
+## 1. Summary
+
+The International Consortium of Investigative Journalists (ICIJ) publishes a
+combined database of offshore entities from the Panama Papers, Paradise Papers,
+Pandora Papers, Bahamas Leaks, and Offshore Leaks. ~800,000+ offshore entities
+with their officers, intermediaries, and addresses.
+
+## 2. Access Methods
+
+- **Search UI:** `https://offshoreleaks.icij.org/`
+- **Bulk download:** `https://offshoreleaks.icij.org/pages/database` (CSV ZIPs by leak)
+- **JSON-LD entities:** Per-entity URLs return structured data with `Accept: application/json`
+- **Auth:** None
+- **Rate limit:** Not formally published; be polite (~1 req/s)
+
+## 3. Data Schema
+
+Key fields emitted by `fetch_icij_offshore.py`:
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `node_id` | int | ICIJ canonical node ID |
+| `name` | str | Entity / officer / intermediary name |
+| `node_type` | str | entity / officer / intermediary / address |
+| `country_codes` | str | Semicolon-separated ISO codes |
+| `countries` | str | Country names |
+| `jurisdiction` | str | Offshore jurisdiction (BVI, Panama, etc.) |
+| `incorporation_date` | str | YYYY-MM-DD |
+| `inactivation_date` | str | YYYY-MM-DD (if struck) |
+| `source` | str | Panama Papers / Paradise Papers / Pandora Papers / etc. |
+| `entity_url` | str | Link to ICIJ page |
+| `connections` | str | Semicolon-separated node IDs of related entities |
+
+## 4. Coverage
+
+- Worldwide offshore entity records
+- Earliest records: 1970s (Bahamas Leaks). Most data 1990–2018.
+- NOT updated in real-time — new leaks added when ICIJ publishes them
+- ~810,000 offshore entities + ~750,000 officers + ~150,000 intermediaries
+
+## 5. Cross-Reference Potential
+
+- **SEC EDGAR** ↔ `name` (public companies with offshore arms)
+- **USAspending** ↔ `name` (federal contractors with offshore structure)
+- **OFAC SDN** ↔ `name` (sanctioned entities using offshore vehicles)
+- **FEC** ↔ `name` (donors with offshore ties — politically sensitive)
+
+Join key: normalized entity/officer name. `node_id` is canonical for cross-
+referencing within ICIJ. Connections graph traversal is in-script (BFS over
+`connections`).
+
+## 6. Data Quality
+
+- Offshore entity names sometimes appear in multiple leaks with slight variations
+- Officers may be nominees (front persons), not beneficial owners
+- Some entries have minimal info (just a name + jurisdiction)
+- The connections graph is incomplete — some relationships are documented in
+  source materials but not in the structured database
+- Inactive/struck-off entities are still included with `inactivation_date`
+
+## 7. Acquisition Script
+
+Path: `scripts/fetch_icij_offshore.py`
+
+```bash
+# Search by entity name
+python3 SKILL_DIR/scripts/fetch_icij_offshore.py --entity "EXAMPLE CORP" \
+    --out data/icij.csv
+
+# Search by officer (individual person)
+python3 SKILL_DIR/scripts/fetch_icij_offshore.py --officer "SMITH JOHN" \
+    --out data/icij.csv
+
+# Search by jurisdiction
+python3 SKILL_DIR/scripts/fetch_icij_offshore.py --jurisdiction "BRITISH VIRGIN ISLANDS" \
+    --out data/icij_bvi.csv
+```
+
+## 8. Legal & Licensing
+
+- Public record as published by ICIJ under explicit publication
+- No copyright on the underlying facts (entity names, jurisdictions)
+- ICIJ asks for attribution if used in derivative reporting
+- **Ethical note**: Presence in this database does NOT imply wrongdoing. Many
+  offshore structures are legal. The database is a research tool, not a list of
+  criminals.
+
+## 9. References
+
+- Database: https://offshoreleaks.icij.org/
+- About the data: https://offshoreleaks.icij.org/pages/about
+- Methodology: https://www.icij.org/investigations/panama-papers/
+- API hints: Open Refine reconciliation endpoint at `https://offshoreleaks.icij.org/reconcile`
