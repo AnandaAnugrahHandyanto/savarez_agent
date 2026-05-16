@@ -7,8 +7,12 @@ This prevents voice messages from accumulating and being sent multiple
 times per reply. (Regression test for #160)
 """
 
-import pytest
+import json
 import re
+
+import pytest
+
+from gateway.run import _extract_media_paths_from_tool_content
 
 
 def extract_media_tags_fixed(result_messages, history_len):
@@ -178,6 +182,30 @@ class TestMediaExtraction:
         seen = set()
         unique = [t for t in tags if t not in seen and not seen.add(t)]
         assert len(unique) == 2  # After dedup: same.ogg and different.ogg
+
+    def test_tool_media_parser_preserves_unicode_paths_with_spaces(self):
+        """Real gateway extraction must keep non-ASCII filenames intact.
+
+        The old MEDIA:(\\S+) scan truncated this at the first space, leaving
+        Telegram with a path like /tmp/<first-word> instead of the .ogg file.
+        """
+        filename = (
+            "\u0433\u043e\u043b\u043e\u0441\u043e\u0432\u0430\u044f "
+            "\u0437\u0430\u043f\u0438\u0441\u044c.ogg"
+        )
+        path = f"/tmp/{filename}"
+        content = json.dumps(
+            {
+                "success": True,
+                "media_tag": f"[[audio_as_voice]]\nMEDIA:{path}",
+            },
+            ensure_ascii=False,
+        )
+
+        paths, has_voice = _extract_media_paths_from_tool_content(content)
+
+        assert paths == [path]
+        assert has_voice is True
 
 
 if __name__ == "__main__":
