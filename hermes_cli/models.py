@@ -2154,6 +2154,25 @@ def _merge_with_models_dev(provider: str, curated: list[str]) -> list[str]:
     return merged
 
 
+def _apply_model_allowlist(provider: str, models: list[str]) -> list[str]:
+    """Filter *models* by the user-configured allowlist for *provider*.
+
+    If ``model_catalog.providers.<provider>.model_allowlist`` is set in the
+    user config, return only models whose normalised ID appears in that list.
+    Otherwise return *models* unchanged.
+    """
+    try:
+        from hermes_cli.model_catalog import get_provider_allowlist
+        allowlist = get_provider_allowlist(provider)
+    except Exception:
+        return models
+    if not allowlist:
+        return models
+    # Normalise both sides for case-insensitive matching
+    allowed_set = {m.lower().strip() for m in allowlist}
+    return [m for m in models if m.lower().strip() in allowed_set]
+
+
 def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) -> list[str]:
     """Return the best known model catalog for a provider.
 
@@ -2228,7 +2247,7 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
     if normalized == "ollama-cloud":
         live = fetch_ollama_cloud_models(force_refresh=force_refresh)
         if live:
-            return live
+            return _apply_model_allowlist(normalized, live)
     if normalized == "openai":
         api_key = os.getenv("OPENAI_API_KEY", "").strip()
         if api_key:
@@ -2307,8 +2326,8 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
 
     curated_static = list(_PROVIDER_MODELS.get(normalized, []))
     if normalized in _MODELS_DEV_PREFERRED:
-        return _merge_with_models_dev(normalized, curated_static)
-    return curated_static
+        return _apply_model_allowlist(normalized, _merge_with_models_dev(normalized, curated_static))
+    return _apply_model_allowlist(normalized, curated_static)
 
 
 def _fetch_anthropic_models(timeout: float = 5.0) -> Optional[list[str]]:
