@@ -47,26 +47,6 @@ def _path_within(child: Path, parent: Path) -> bool:
         return False
 
 
-import functools
-import logging
-from importlib import metadata, util
-from pathlib import Path
-from typing import Any, Dict
-
-from tools.web_providers.base import WebSearchProvider
-
-logger = logging.getLogger(__name__)
-
-
-def _path_within(child: Path, parent: Path) -> bool:
-    """Return True when ``child`` resolves inside ``parent``."""
-    try:
-        child.relative_to(parent)
-        return True
-    except ValueError:
-        return False
-
-
 @functools.lru_cache(maxsize=1)
 def ddgs_package_available() -> bool:
     """Return True when the installed ``ddgs`` distribution owns the import target.
@@ -138,13 +118,7 @@ class DDGSSearchProvider(WebSearchProvider):
 
         try:
             from ddgs import DDGS  # type: ignore
-            web_results = []
 
-        # DDGS().text yields at most `max_results` items; we cap defensively
-        # in case the package ignores the hint.
-        safe_limit = max(1, int(limit))
-
-        try:
             web_results = []
             with DDGS() as client:
                 for i, hit in enumerate(client.text(query, max_results=safe_limit)):
@@ -165,3 +139,4 @@ class DDGSSearchProvider(WebSearchProvider):
             "DDGS search '%s': %d results (limit %d)", query, len(web_results), limit
         )
         return {"success": True, "data": {"web": web_results}}
+
