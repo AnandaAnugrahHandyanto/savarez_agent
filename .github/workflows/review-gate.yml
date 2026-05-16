@@ -42,8 +42,7 @@ jobs:
             const { data: pr } = await github.rest.pulls.get({
               owner, repo, pull_number: prNumber,
             });
-            // HACK: for this PR specifically we can bypass the label check
-            const hasLabel = true;
+            const hasLabel = pr.labels.some(label => label.name === 'reviewed');
 
             // 2. Count unresolved review threads via GraphQL.
             //    The REST API doesn't expose isResolved; GraphQL does.
