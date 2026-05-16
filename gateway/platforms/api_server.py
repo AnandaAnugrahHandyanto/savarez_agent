@@ -725,7 +725,7 @@ class APIServerAdapter(BasePlatformAdapter):
     def _api_session_scope_key(self, raw: str) -> str:
         """Return a deterministic API-server-only memory scope key."""
         scope_digest = hmac.new(
-            (self._api_key or "").encode("utf-8"),
+            self._api_key.encode("utf-8"),
             raw.encode("utf-8"),
             hashlib.sha256,
         ).hexdigest()
