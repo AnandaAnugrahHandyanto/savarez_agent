@@ -1464,24 +1464,43 @@ class AIAgent:
         # Anthropic protocol (``api_mode == 'anthropic_messages'``). Reduces
         # input costs by ~75% on multi-turn conversations. Uses system_and_3
         # strategy (4 breakpoints). See ``_anthropic_prompt_cache_policy``
-        # for the layout-vs-transport decision.
-        self._use_prompt_caching, self._use_native_cache_layout = (
-            self._anthropic_prompt_cache_policy()
-        )
+        # for the layout-vs-transport decision. Users can override marker
+        # injection per provider with
+        # ``providers.<provider_id>.prompt_caching.mode`` (auto|force|off).
         # Anthropic supports "5m" (default) and "1h" cache TTL tiers. Read from
         # config.yaml under prompt_caching.cache_ttl; unknown values keep "5m".
         # 1h tier costs 2x on write vs 1.25x for 5m, but amortizes across long
         # sessions with >5-minute pauses between turns (#14971).
+        self._prompt_caching_provider_modes = {}
         self._cache_ttl = "5m"
         try:
             from hermes_cli.config import load_config as _load_pc_cfg
 
-            _pc_cfg = _load_pc_cfg().get("prompt_caching", {}) or {}
+            _cfg = _load_pc_cfg() or {}
+            _pc_cfg = _cfg.get("prompt_caching", {}) or {}
             _ttl = _pc_cfg.get("cache_ttl", "5m")
             if _ttl in {"5m", "1h"}:
                 self._cache_ttl = _ttl
+            _providers_cfg = _cfg.get("providers", {}) or {}
+            if isinstance(_providers_cfg, dict):
+                for _provider_id, _provider_cfg in _providers_cfg.items():
+                    if not isinstance(_provider_cfg, dict):
+                        continue
+                    _provider_pc = _provider_cfg.get("prompt_caching", {}) or {}
+                    if not isinstance(_provider_pc, dict):
+                        continue
+                    _mode = self._normalize_prompt_caching_mode(
+                        _provider_pc.get("mode")
+                    )
+                    if _mode != "auto":
+                        _provider_key = str(_provider_id).strip().lower()
+                        if _provider_key:
+                            self._prompt_caching_provider_modes[_provider_key] = _mode
         except Exception:
             pass
+        self._use_prompt_caching, self._use_native_cache_layout = (
+            self._anthropic_prompt_cache_policy()
+        )
 
         # Iteration budget: the LLM is only notified when it actually exhausts
         # the iteration budget (api_call_count >= max_iterations).  At that
@@ -1905,8 +1924,10 @@ class AIAgent:
                 source = "native Anthropic"
             elif self._use_native_cache_layout:
                 source = "Anthropic-compatible endpoint"
-            else:
+            elif self._is_openrouter_url():
                 source = "Claude via OpenRouter"
+            else:
+                source = f"{self.provider or 'provider'} route"
             print(f"💾 Prompt caching: ENABLED ({source}, {self._cache_ttl} TTL)")
         
         # Session logging setup - auto-save conversation trajectories for debugging
@@ -3526,6 +3547,20 @@ class AIAgent:
         """Return True when the base URL targets OpenRouter."""
         return base_url_host_matches(self._base_url_lower, "openrouter.ai")
 
+    @staticmethod
+    def _normalize_prompt_caching_mode(mode: object) -> str:
+        mode_str = str(mode or "auto").strip().lower()
+        if mode_str in {"auto", "force", "off"}:
+            return mode_str
+        return "auto"
+
+    def _prompt_caching_mode_for_provider(self, provider: str) -> str:
+        modes = getattr(self, "_prompt_caching_provider_modes", {}) or {}
+        if not isinstance(modes, dict):
+            return "auto"
+        key = str(provider or "").strip().lower()
+        return self._normalize_prompt_caching_mode(modes.get(key))
+
     def _anthropic_prompt_cache_policy(
         self,
         *,
@@ -3573,6 +3608,14 @@ class AIAgent:
         # OpenRouter-equivalent endpoint for caching layout purposes.
         is_nous_portal = "nousresearch" in eff_base_url.lower()
         is_anthropic_wire = eff_api_mode == "anthropic_messages"
+        prompt_caching_mode = self._prompt_caching_mode_for_provider(eff_provider)
+        if prompt_caching_mode == "off":
+            return False, False
+        if prompt_caching_mode == "force":
+            # Force only controls whether cache_control markers are injected;
+            # the layout still follows the active transport.
+            return True, is_anthropic_wire
+
         is_native_anthropic = (
             is_anthropic_wire
             and (eff_provider == "anthropic" or base_url_hostname(eff_base_url) == "api.anthropic.com")

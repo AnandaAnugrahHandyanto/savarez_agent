@@ -774,6 +774,8 @@ DEFAULT_CONFIG = {
     },
 
     # Anthropic prompt caching (Claude via OpenRouter or native Anthropic API).
+    # Provider-level marker injection overrides live under:
+    # providers.<provider_id>.prompt_caching.mode: auto | force | off
     # cache_ttl must be "5m" or "1h" (Anthropic-supported tiers); other values are ignored.
     "prompt_caching": {
         "cache_ttl": "5m",
