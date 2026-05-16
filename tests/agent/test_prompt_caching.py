@@ -3,6 +3,11 @@
 import copy
 import pytest
 
+from agent.anthropic_adapter import (
+    _count_cache_control,
+    build_anthropic_kwargs,
+    convert_tools_to_anthropic,
+)
 from agent.prompt_caching import (
     _apply_cache_marker,
     apply_anthropic_cache_control,
@@ -141,3 +146,53 @@ class TestApplyAnthropicCacheControl:
             elif "cache_control" in msg:
                 count += 1
         assert count <= 4
+
+
+class TestAnthropicAdapterCacheBudget:
+    def test_tool_cache_control_is_not_forwarded(self):
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "demo_tool",
+                    "description": "demo",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+                "cache_control": {"type": "ephemeral"},
+            }
+        ]
+
+        converted = convert_tools_to_anthropic(tools)
+
+        assert converted[0]["name"] == "demo_tool"
+        assert "cache_control" not in converted[0]
+
+    def test_build_kwargs_enforces_request_wide_cache_control_cap(self):
+        marker = {"type": "ephemeral"}
+        messages = [
+            {"role": "system", "content": [{"type": "text", "text": "system", "cache_control": marker}]},
+            {"role": "user", "content": [{"type": "text", "text": "one", "cache_control": marker}]},
+            {"role": "assistant", "content": [{"type": "text", "text": "two", "cache_control": marker}]},
+            {"role": "user", "content": [{"type": "text", "text": "three", "cache_control": marker}]},
+            {"role": "assistant", "content": [{"type": "text", "text": "four", "cache_control": marker}]},
+        ]
+
+        kwargs = build_anthropic_kwargs(
+            model="claude-sonnet-4-6",
+            messages=messages,
+            tools=[
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "demo_tool",
+                        "description": "demo",
+                        "parameters": {"type": "object", "properties": {}},
+                    },
+                    "cache_control": marker,
+                }
+            ],
+            max_tokens=1024,
+            reasoning_config=None,
+        )
+
+        assert _count_cache_control(kwargs) <= 4
