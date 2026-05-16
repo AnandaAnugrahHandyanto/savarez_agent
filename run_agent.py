@@ -12823,6 +12823,36 @@ class AIAgent:
             # the OpenAI SDK. Sanitizing here prevents the 3-retry cycle.
             _sanitize_messages_surrogates(api_messages)
 
+            # Per-turn ContextEngine.preassemble() hook.
+            # Pluggable engines (e.g. LCM) may substitute the api_messages
+            # list every turn — replacing evicted raw turns with summary
+            # stubs, or running a DAG-based assembly. Default no-op for
+            # the built-in ContextCompressor.
+            #
+            # Fires once per turn at the API-call boundary, AFTER all
+            # sanitization but BEFORE the retry loop. Operates on the
+            # per-call api_messages copy only; stored history is unchanged.
+            # System message at index 0 (if present) MUST be preserved by
+            # any engine that overrides this method.
+            try:
+                if (
+                    hasattr(self, "context_compressor")
+                    and self.context_compressor is not None
+                ):
+                    _pre_result = self.context_compressor.preassemble(
+                        api_messages,
+                        budget_tokens=getattr(
+                            self.context_compressor, "threshold_tokens", None
+                        ),
+                    )
+                    if isinstance(_pre_result, list) and _pre_result:
+                        api_messages = _pre_result
+            except Exception as _preassemble_exc:
+                logger.warning(
+                    "ContextEngine.preassemble() failed; using unmodified messages: %s",
+                    _preassemble_exc,
+                )
+
             # Calculate approximate request size for logging
             total_chars = sum(len(str(msg)) for msg in api_messages)
             approx_tokens = estimate_messages_tokens_rough(api_messages)

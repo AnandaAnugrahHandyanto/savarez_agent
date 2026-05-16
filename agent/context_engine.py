@@ -110,6 +110,41 @@ class ContextEngine(ABC):
         """
         return False
 
+    # -- Optional: per-turn assembly hook ----------------------------------
+
+    def preassemble(
+        self,
+        messages: List[Dict[str, Any]],
+        budget_tokens: int = None,
+    ) -> List[Dict[str, Any]]:
+        """Per-turn rewrite hook called immediately before each model API request.
+
+        Engines may return a substituted message list (e.g., replace evicted
+        raw turns with summary stubs while preserving the assistant/tool-call
+        pairing invariant). Default is a no-op: return ``messages`` unchanged.
+
+        Called every turn at the API-call boundary, regardless of
+        ``should_compress()``. Engines that only react to overflow should
+        override ``compress()`` instead and leave this method as the default.
+
+        Args:
+            messages: full in-memory message list at the call boundary.
+                Engines MUST return a valid OpenAI-format message sequence;
+                broken tool_use/tool_result pairing will fail at the provider.
+            budget_tokens: target token budget the host expects to fit under
+                (typically ``self.threshold_tokens`` from the active engine).
+                Engines may use this to decide how aggressively to substitute.
+                ``None`` means "the host did not pre-compute a budget";
+                engines should fall back to their own threshold.
+
+        Returns:
+            A (possibly new) message list. The default no-op returns
+            ``messages`` unchanged. Returning a new list does NOT mutate the
+            stored conversation history — the host applies the result to the
+            per-call API copy only.
+        """
+        return messages
+
     # -- Optional: manual /compress preflight ------------------------------
 
     def has_content_to_compress(self, messages: List[Dict[str, Any]]) -> bool:

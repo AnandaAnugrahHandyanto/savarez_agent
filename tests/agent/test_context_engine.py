@@ -103,6 +103,51 @@ class TestDefaults:
         data = json.loads(result)
         assert "error" in data
 
+    def test_default_preassemble_is_noop(self):
+        """preassemble() default returns messages unchanged."""
+        engine = StubEngine()
+        msgs = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "hello"},
+        ]
+        # Default no-op via super(): the same list object is returned.
+        result = ContextEngine.preassemble(engine, msgs, budget_tokens=1000)
+        assert result is msgs
+
+    def test_default_preassemble_no_budget(self):
+        """preassemble() works when budget_tokens is None."""
+        engine = StubEngine()
+        msgs = [{"role": "user", "content": "hi"}]
+        result = ContextEngine.preassemble(engine, msgs)
+        assert result == msgs
+
+    def test_preassemble_subclass_can_substitute(self):
+        """A subclass overriding preassemble() can return a substituted list."""
+        class SubstitutingEngine(StubEngine):
+            def preassemble(self, messages, budget_tokens=None):
+                # Replace any old turns past the first 2 with a single stub.
+                if len(messages) <= 2:
+                    return messages
+                return messages[:1] + [
+                    {"role": "user", "content": "[stub: 5 prior turns elided]"}
+                ] + messages[-1:]
+
+        engine = SubstitutingEngine()
+        msgs = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "u1"},
+            {"role": "assistant", "content": "a1"},
+            {"role": "user", "content": "u2"},
+            {"role": "assistant", "content": "a2"},
+            {"role": "user", "content": "u_current"},
+        ]
+        result = engine.preassemble(msgs, budget_tokens=1000)
+        assert len(result) == 3
+        assert result[0]["role"] == "system"
+        assert "stub" in result[1]["content"]
+        assert result[2]["content"] == "u_current"
+
     def test_default_get_status(self):
         engine = StubEngine()
         engine.last_prompt_tokens = 50000
