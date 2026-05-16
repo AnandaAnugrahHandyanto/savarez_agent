@@ -590,6 +590,22 @@ class HermesACPAgent(acp.Agent):
             from hermes_cli.models import detect_provider_for_model, parse_model_input
 
             target_provider, new_model = parse_model_input(new_model, current_provider)
+            # Be defensive around test-time/module-level provider registry
+            # pollution: explicit ``provider:model`` input must always win over
+            # the current provider for built-in providers, even if
+            # parse_model_input() was imported with a stale provider-name set.
+            if target_provider == current_provider and ":" in raw_model:
+                provider_part, model_part = raw_model.split(":", 1)
+                provider_part = provider_part.strip().lower()
+                model_part = model_part.strip()
+                explicit_builtins = {
+                    "anthropic", "openrouter", "nous", "openai-codex", "codex",
+                    "copilot", "gemini", "google", "xai", "deepseek", "zai",
+                    "kimi", "minimax", "alibaba", "bedrock", "custom",
+                }
+                if provider_part in explicit_builtins and model_part:
+                    from hermes_cli.models import normalize_provider
+                    target_provider, new_model = normalize_provider(provider_part), model_part
             if target_provider == current_provider:
                 detected = detect_provider_for_model(new_model, current_provider)
                 if detected:

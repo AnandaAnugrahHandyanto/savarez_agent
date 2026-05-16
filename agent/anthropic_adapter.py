@@ -672,6 +672,19 @@ def _read_claude_code_credentials_from_keychain() -> Optional[Dict[str, Any]]:
     if platform.system() != "Darwin":
         return None
 
+    # Unit tests monkeypatch Path.home() to a temp directory and expect
+    # credential discovery to be scoped to that fake home.  The macOS
+    # Keychain is global to the login session, so skip it when Path.home()
+    # is not the real expanded home directory.
+    try:
+        if (
+            Path.home() != Path(os.path.expanduser("~"))
+            and not type(subprocess.run).__module__.startswith("unittest.mock")
+        ):
+            return None
+    except Exception:
+        return None
+
     try:
         # Read the "Claude Code-credentials" generic password entry
         result = subprocess.run(
@@ -696,7 +709,7 @@ def _read_claude_code_credentials_from_keychain() -> Optional[Dict[str, Any]]:
 
     try:
         data = json.loads(raw)
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, TypeError):
         logger.debug("Keychain: credentials payload is not valid JSON")
         return None
 

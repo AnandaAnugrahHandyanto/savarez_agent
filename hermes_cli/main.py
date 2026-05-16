@@ -5543,6 +5543,16 @@ def cmd_kanban(args):
     return kanban_command(args)
 
 
+def cmd_symphony(args):
+    """Symphony-style issue orchestration."""
+    from symphony.cli import symphony_command
+
+    result = symphony_command(args)
+    if isinstance(result, int):
+        sys.exit(result)
+    return result
+
+
 def cmd_hooks(args):
     """Shell-hook inspection and management."""
     from hermes_cli.hooks import hooks_command
@@ -10498,6 +10508,14 @@ def main():
 
     kanban_parser = _build_kanban_parser(subparsers)
     kanban_parser.set_defaults(func=cmd_kanban)
+
+    # =========================================================================
+    # symphony command — issue orchestration with Hermes runners
+    # =========================================================================
+    from symphony.cli import build_parser as _build_symphony_parser
+
+    symphony_parser = _build_symphony_parser(subparsers)
+    symphony_parser.set_defaults(func=cmd_symphony)
 
     # =========================================================================
     # hooks command — shell-hook inspection and management

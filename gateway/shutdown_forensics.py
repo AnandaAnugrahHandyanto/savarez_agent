@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import os
 import signal
+import shutil
 import subprocess
 import sys
 import time
@@ -254,8 +255,18 @@ def spawn_async_diagnostic(
         # would also reap us anyway, but defense in depth).  Without
         # start_new_session, a SIGKILL on our cgroup takes the diag down
         # before it can flush.
+        timeout_bin = shutil.which("timeout")
+        bash_bin = shutil.which("bash") or "/bin/bash"
+        # GNU coreutils ``timeout`` is not installed by default on macOS.
+        # Keep the diagnostic useful there rather than treating the missing
+        # wrapper as a spawn failure; the shell commands are best-effort and
+        # short-lived on Darwin even without an external timeout guard.
+        cmd = [bash_bin, "-c", script]
+        if timeout_bin:
+            cmd = [timeout_bin, f"{timeout_seconds:.0f}", *cmd]
+
         proc = subprocess.Popen(
-            ["timeout", f"{timeout_seconds:.0f}", "bash", "-c", script],
+            cmd,
             stdout=fd,
             stderr=subprocess.STDOUT,
             stdin=subprocess.DEVNULL,

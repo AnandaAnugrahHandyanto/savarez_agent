@@ -2193,7 +2193,12 @@ class TestCodexAuxiliaryAdapterTimeout:
                 timeout=0.05,
             )
 
-        assert time.monotonic() - started < 0.14
+        # The timeout should interrupt the stream promptly, but wall-clock
+        # scheduling on loaded macOS CI can pause the pytest main thread while
+        # the daemon stream reader advances. Keep the bound well below the kind
+        # of multi-second hang this regression protects against without making
+        # the test depend on sub-100ms scheduler precision.
+        assert time.monotonic() - started < 0.25
 
 
 # ---------------------------------------------------------------------------

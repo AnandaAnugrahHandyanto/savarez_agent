@@ -59,6 +59,10 @@ def _ensure_telegram_mock() -> None:
     mod.constants.ChatType.GROUP = "group"
     mod.constants.ChatType.SUPERGROUP = "supergroup"
     mod.constants.ChatType.CHANNEL = "channel"
+    # ``telegram.constants`` is mapped to the root mock below, so
+    # ``from telegram.constants import ChatType`` resolves this root attr.
+    mod.ChatType = mod.constants.ChatType
+    mod.ParseMode = mod.constants.ParseMode
 
     # Real exception classes so ``except (NetworkError, ...)`` clauses
     # in production code don't blow up with TypeError.
@@ -96,7 +100,8 @@ def _ensure_discord_mock() -> None:
     this function (it short-circuits when already present) rather than
     maintaining their own mock setup.
     """
-    if "discord" in sys.modules and hasattr(sys.modules["discord"], "__file__"):
+    existing = sys.modules.get("discord")
+    if existing is not None and not isinstance(existing, MagicMock) and hasattr(existing, "__file__"):
         return  # Real library is installed — nothing to mock
 
     from types import SimpleNamespace
@@ -169,6 +174,19 @@ def _ensure_discord_mock() -> None:
             self.description = description
     discord_mod.SelectOption = _FakeSelectOption
 
+    class _FakeAllowedMentions:
+        def __init__(self, *, everyone=True, roles=True, users=True, replied_user=True):
+            self.everyone = everyone
+            self.roles = roles
+            self.users = users
+            self.replied_user = replied_user
+    discord_mod.AllowedMentions = _FakeAllowedMentions
+
+    class _FakePermissions:
+        def __init__(self, value=0, **_):
+            self.value = value
+    discord_mod.Permissions = _FakePermissions
+
     discord_mod.ui = SimpleNamespace(
         View=_FakeView,
         Select=_FakeSelect,
@@ -208,6 +226,7 @@ def _ensure_discord_mock() -> None:
         describe=lambda **kwargs: (lambda fn: fn),
         choices=lambda **kwargs: (lambda fn: fn),
         Choice=lambda **kwargs: SimpleNamespace(**kwargs),
+        autocomplete=lambda **kwargs: (lambda fn: fn),
         Group=_FakeGroup,
         Command=_FakeCommand,
     )
@@ -221,6 +240,19 @@ def _ensure_discord_mock() -> None:
         sys.modules[name] = discord_mod
     sys.modules["discord.ext"] = ext_mod
     sys.modules["discord.ext.commands"] = commands_mod
+
+    # If production discord adapter was imported before this gateway-level
+    # conftest ran, refresh its cached module globals as well.  Otherwise the
+    # full suite can keep using a partial MagicMock installed by an unrelated
+    # earlier import even though sys.modules now contains the comprehensive
+    # gateway test double.
+    imported_adapter = sys.modules.get("gateway.platforms.discord")
+    if imported_adapter is not None:
+        imported_adapter.discord = discord_mod
+        imported_adapter.DiscordMessage = discord_mod.Message
+        imported_adapter.Intents = discord_mod.Intents
+        imported_adapter.commands = commands_mod
+        imported_adapter.DISCORD_AVAILABLE = True
 
 
 # Run at collection time — before any test file's module-level imports.

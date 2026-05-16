@@ -4641,11 +4641,18 @@ class TelegramAdapter(BasePlatformAdapter):
         chat = message.chat
         user = message.from_user
         
-        # Determine chat type
+        # Determine chat type.  Compare both against PTB's ChatType constants
+        # and their raw string values so tests remain stable when another test
+        # has installed a partial telegram.constants mock before this module was
+        # imported.
         chat_type = "dm"
-        if chat.type in {ChatType.GROUP, ChatType.SUPERGROUP}:
+        chat_type_value = getattr(chat.type, "value", chat.type)
+        chat_type_norm = str(chat_type_value).lower()
+        group_constants = {getattr(ChatType, "GROUP", None), getattr(ChatType, "SUPERGROUP", None)}
+        channel_constant = getattr(ChatType, "CHANNEL", None)
+        if chat.type in group_constants or chat_type_norm in {"group", "supergroup"}:
             chat_type = "group"
-        elif chat.type == ChatType.CHANNEL:
+        elif chat.type == channel_constant or chat_type_norm == "channel":
             chat_type = "channel"
 
         # Resolve DM topic name and skill binding.

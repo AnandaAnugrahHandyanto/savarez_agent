@@ -58,7 +58,8 @@ def _ensure_telegram_mock():
 # Ensure discord module is available (mock it if not installed)
 def _ensure_discord_mock():
     """Install mock discord modules so DiscordAdapter can be imported."""
-    if "discord" in sys.modules and hasattr(sys.modules["discord"], "__file__"):
+    existing = sys.modules.get("discord")
+    if existing is not None and not isinstance(existing, MagicMock) and hasattr(existing, "__file__"):
         return # Real library installed
 
     discord_mod = MagicMock()
@@ -70,6 +71,46 @@ def _ensure_discord_mock():
     discord_mod.MessageType = SimpleNamespace(default=0, reply=19)
     discord_mod.Object = lambda *, id: SimpleNamespace(id=id)
     discord_mod.Interaction = object
+
+    class _FakeView:
+        def __init__(self, timeout=None):
+            self.timeout = timeout
+            self.children = []
+        def add_item(self, item):
+            self.children.append(item)
+        def clear_items(self):
+            self.children.clear()
+
+    class _FakeSelect:
+        def __init__(self, *, placeholder=None, options=None, custom_id=None, **_):
+            self.placeholder = placeholder
+            self.options = options or []
+            self.custom_id = custom_id
+            self.callback = None
+            self.disabled = False
+
+    class _FakeButton:
+        def __init__(self, *, label=None, style=None, custom_id=None, emoji=None, url=None, disabled=False, row=None, **_):
+            self.label = label
+            self.style = style
+            self.custom_id = custom_id
+            self.emoji = emoji
+            self.url = url
+            self.disabled = disabled
+            self.row = row
+            self.callback = None
+
+    discord_mod.ui = SimpleNamespace(
+        View=_FakeView,
+        Select=_FakeSelect,
+        Button=_FakeButton,
+        button=lambda *a, **k: (lambda fn: fn),
+    )
+    discord_mod.ButtonStyle = SimpleNamespace(success=1, primary=2, secondary=2, danger=3, green=1, grey=2, blurple=2, red=3)
+    discord_mod.Color = SimpleNamespace(orange=lambda: 1, green=lambda: 2, blue=lambda: 3, red=lambda: 4, purple=lambda: 5, greyple=lambda: 6)
+    discord_mod.AllowedMentions = type("AllowedMentions", (), {"__init__": lambda self, **kwargs: self.__dict__.update(kwargs)})
+    discord_mod.Permissions = type("Permissions", (), {"__init__": lambda self, value=0, **_: setattr(self, "value", value)})
+    discord_mod.SelectOption = type("SelectOption", (), {"__init__": lambda self, **kwargs: self.__dict__.update(kwargs)})
     discord_mod.app_commands = SimpleNamespace(
         describe=lambda **kwargs: (lambda fn: fn),
         choices=lambda **kwargs: (lambda fn: fn),
@@ -82,10 +123,17 @@ def _ensure_discord_mock():
     commands_mod.Bot = MagicMock
     ext_mod.commands = commands_mod
 
-    sys.modules.setdefault("discord", discord_mod)
-    sys.modules.setdefault("discord.ext", ext_mod)
-    sys.modules.setdefault("discord.ext.commands", commands_mod)
-    sys.modules.setdefault("discord.opus", discord_mod.opus)
+    sys.modules["discord"] = discord_mod
+    sys.modules["discord.ext"] = ext_mod
+    sys.modules["discord.ext.commands"] = commands_mod
+    sys.modules["discord.opus"] = discord_mod.opus
+
+    imported_adapter = sys.modules.get("gateway.platforms.discord")
+    if imported_adapter is not None:
+        imported_adapter.discord = discord_mod
+        imported_adapter.Intents = discord_mod.Intents
+        imported_adapter.commands = commands_mod
+        imported_adapter.DISCORD_AVAILABLE = True
 
 
 def _ensure_slack_mock():

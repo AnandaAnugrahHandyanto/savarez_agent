@@ -4390,6 +4390,12 @@ class DiscordAdapter(BasePlatformAdapter):
 
         thread_id = None
         parent_channel_id = None
+        # Prefer the concrete discord.py type check, but fall back to the
+        # Message.guild contract so tests and partially mocked Discord modules
+        # do not accidentally treat DMs as server channels when another test has
+        # replaced ``sys.modules['discord']`` with a different mock class.
+        message_guild = getattr(message, "guild", getattr(message.channel, "guild", None))
+        is_dm_channel = isinstance(message.channel, discord.DMChannel) or message_guild is None
         is_thread = isinstance(message.channel, discord.Thread)
         if is_thread:
             thread_id = str(message.channel.id)
@@ -4418,7 +4424,7 @@ class DiscordAdapter(BasePlatformAdapter):
             normalized_content = normalized_content.replace(f"<@{self._client.user.id}>", "").strip()
             normalized_content = normalized_content.replace(f"<@!{self._client.user.id}>", "").strip()
             message.content = normalized_content
-        if not isinstance(message.channel, discord.DMChannel):
+        if not is_dm_channel:
             channel_ids = {str(message.channel.id)}
             if parent_channel_id:
                 channel_ids.add(parent_channel_id)
@@ -4473,7 +4479,7 @@ class DiscordAdapter(BasePlatformAdapter):
         # Messages already inside threads or DMs are unaffected.
         # no_thread_channels: channels where bot responds directly without thread.
         auto_threaded_channel = None
-        if not is_thread and not isinstance(message.channel, discord.DMChannel):
+        if not is_thread and not is_dm_channel:
             no_thread_channels_raw = os.getenv("DISCORD_NO_THREAD_CHANNELS", "")
             no_thread_channels = {ch.strip() for ch in no_thread_channels_raw.split(",") if ch.strip()}
             skip_thread = bool(channel_ids & no_thread_channels) or is_free_channel
@@ -4517,7 +4523,7 @@ class DiscordAdapter(BasePlatformAdapter):
         effective_channel = auto_threaded_channel or message.channel
 
         # Determine chat type
-        if isinstance(message.channel, discord.DMChannel):
+        if is_dm_channel:
             chat_type = "dm"
             chat_name = message.author.name
         elif is_thread:

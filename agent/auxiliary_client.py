@@ -43,6 +43,7 @@ Payment / credit exhaustion fallback:
 import json
 import logging
 import os
+import queue
 import threading
 import time
 from pathlib import Path  # noqa: F401 — used by test mocks
@@ -735,9 +736,10 @@ class _CodexCompletionsAdapter:
             return f"Codex auxiliary Responses stream exceeded {float(total_timeout):.1f}s total timeout"
 
         def _close_client_on_timeout() -> None:
+            already_timed_out = timed_out.is_set()
             timed_out.set()
             close = getattr(self._client, "close", None)
-            if callable(close):
+            if callable(close) and not already_timed_out:
                 try:
                     close()
                 except Exception:
@@ -755,7 +757,7 @@ class _CodexCompletionsAdapter:
 
         def _check_cancelled() -> None:
             if deadline is not None and time.monotonic() >= deadline:
-                timed_out.set()
+                _close_client_on_timeout()
                 raise TimeoutError(_timeout_message())
             try:
                 from tools.interrupt import is_interrupted
@@ -767,6 +769,33 @@ class _CodexCompletionsAdapter:
                 # Interrupt state is a best-effort UX hook; never make it a
                 # new failure mode for auxiliary calls.
                 pass
+
+        def _next_stream_event(iterator: Any) -> Any:
+            if deadline is None:
+                return next(iterator)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                _close_client_on_timeout()
+                raise TimeoutError(_timeout_message())
+
+            result_q: "queue.Queue[Any]" = queue.Queue(maxsize=1)
+
+            def _read_next() -> None:
+                try:
+                    result_q.put((True, next(iterator)))
+                except BaseException as exc:
+                    result_q.put((False, exc))
+
+            reader = threading.Thread(target=_read_next, daemon=True)
+            reader.start()
+            try:
+                ok, value = result_q.get(timeout=max(0.001, remaining))
+            except queue.Empty:
+                _close_client_on_timeout()
+                raise TimeoutError(_timeout_message())
+            if ok:
+                return value
+            raise value
 
         try:
             # Collect output items and text deltas during streaming —
@@ -781,7 +810,51 @@ class _CodexCompletionsAdapter:
                 timeout_timer.start()
             _check_cancelled()
             with self._client.responses.stream(**resp_kwargs) as stream:
-                for _event in stream:
+                stream_iter = iter(stream)
+                if deadline is None:
+                    event_iter = stream_iter
+                else:
+                    # Read the potentially blocking SDK iterator from exactly one
+                    # daemon thread and let the caller enforce the total deadline
+                    # while waiting on a Queue.  Spawning a fresh reader thread for
+                    # every event left abandoned sleepers after each timeout and
+                    # made short auxiliary timeout tests flaky under load.
+                    event_q: "queue.Queue[Any]" = queue.Queue()
+
+                    def _read_stream() -> None:
+                        try:
+                            for event in stream_iter:
+                                event_q.put((True, event))
+                            event_q.put((False, StopIteration()))
+                        except BaseException as exc:
+                            event_q.put((False, exc))
+
+                    reader = threading.Thread(target=_read_stream, daemon=True)
+                    reader.start()
+
+                    def _queued_events():
+                        while True:
+                            remaining = deadline - time.monotonic()
+                            if remaining <= 0:
+                                _close_client_on_timeout()
+                                raise TimeoutError(_timeout_message())
+                            try:
+                                ok, value = event_q.get(timeout=max(0.001, remaining))
+                            except queue.Empty:
+                                _close_client_on_timeout()
+                                raise TimeoutError(_timeout_message())
+                            if not ok:
+                                if isinstance(value, StopIteration):
+                                    return
+                                raise value
+                            if time.monotonic() >= deadline or timed_out.is_set():
+                                _close_client_on_timeout()
+                                raise TimeoutError(_timeout_message())
+                            yield value
+
+                    event_iter = _queued_events()
+
+                for _event in event_iter:
                     _check_cancelled()
                     _etype = getattr(_event, "type", "")
                     if _etype == "response.output_item.done":

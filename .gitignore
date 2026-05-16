@@ -22,6 +22,9 @@ tmp/
 temp_vision_images/
 hermes-*/*
 examples/
+!docs/examples/
+!docs/examples/WORKFLOW.hermes.md
+docs/examples/.symphony/
 tests/quick_test_dataset.jsonl
 tests/sample_dataset.jsonl
 run_datagen_kimik2-thinking.sh
