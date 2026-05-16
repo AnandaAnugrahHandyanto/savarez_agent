@@ -251,9 +251,10 @@ def _get_security_getaddrinfo():
     original resolver so private/internal AAAA records cannot be masked by
     the connection-preference wrapper.
     """
-    return getattr(
-        socket.getaddrinfo, "_hermes_original_getaddrinfo", socket.getaddrinfo
-    )
+    resolver = socket.getaddrinfo
+    if getattr(resolver, "_hermes_ipv4_patched", False) is True:
+        return getattr(resolver, "_hermes_original_getaddrinfo", resolver)
+    return resolver
 
 
 def _allows_private_ip_resolution(hostname: str, scheme: str) -> bool:
