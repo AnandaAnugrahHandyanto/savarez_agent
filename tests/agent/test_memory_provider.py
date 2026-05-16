@@ -1060,3 +1060,495 @@ class TestHonchoCadenceTracking:
         p.on_turn_start(2, "second message")
         should_skip = p._injection_frequency == "first-turn" and p._turn_count > 1
         assert should_skip, "Second turn (turn 2) SHOULD be skipped"
+
+
+# -----------------------------------------------------------------------
+# Context Packet Builder tests
+# -----------------------------------------------------------------------
+
+class TestSplitRawSections:
+    """Tests for _split_raw_sections helper."""
+
+    def test_empty_string(self):
+        from agent.memory_manager import _split_raw_sections
+        assert _split_raw_sections("") == []
+
+    def test_whitespace_only_string(self):
+        from agent.memory_manager import _split_raw_sections
+        # Whitespace-only bodies are filtered out (empty body skipped)
+        result = _split_raw_sections("   \n\n   ")
+        assert all(s["body"] for s in result)  # no section has empty body
+
+    def test_provider_tags(self):
+        from agent.memory_manager import _split_raw_sections
+        raw = (
+            "[Provider: honcho]\n"
+            "user prefers python\n"
+            "[Provider: builtin]\n"
+            "file path is /tmp/test"
+        )
+        sections = _split_raw_sections(raw)
+        assert len(sections) == 2
+        assert sections[0]["source"] == "honcho"
+        assert sections[0]["label"] == "honcho"
+        assert "prefers python" in sections[0]["body"]
+        assert sections[1]["source"] == "builtin"
+        assert sections[1]["label"] == "builtin"
+
+    def test_markdown_headers(self):
+        from agent.memory_manager import _split_raw_sections
+        raw = (
+            "# Facts\n"
+            "the sky is blue\n"
+            "## Preferences\n"
+            "I prefer tab indentation\n"
+        )
+        sections = _split_raw_sections(raw)
+        assert len(sections) == 2
+        assert sections[0]["label"] == "facts"
+        assert sections[0]["body"] == "the sky is blue"
+        assert sections[1]["label"] == "preferences"
+        assert "tab indentation" in sections[1]["body"]
+
+    def test_bracketed_markdown_headers(self):
+        from agent.memory_manager import _split_raw_sections
+        raw = (
+            "# [Facts]:\n"
+            "the sky is blue\n"
+            "## [Excluded Context]:\n"
+            "skip stale item\n"
+        )
+        sections = _split_raw_sections(raw)
+        assert len(sections) == 2
+        assert sections[0]["label"] == "facts"
+        assert sections[1]["label"] == "excluded_context"
+        assert sections[1]["body"] == "skip stale item"
+
+    def test_mixed_provider_and_headers(self):
+        from agent.memory_manager import _split_raw_sections
+        raw = (
+            "[Provider: honcho]\n"
+            "# Facts\n"
+            "earth is round\n"
+        )
+        sections = _split_raw_sections(raw)
+        assert sections[0]["source"] == "honcho"
+        assert sections[0]["label"] == "facts"
+        assert "earth is round" in sections[0]["body"]
+
+    def test_no_markers_generic_label(self):
+        from agent.memory_manager import _split_raw_sections
+        raw = "just some plain text\nwith multiple lines\n"
+        sections = _split_raw_sections(raw)
+        assert len(sections) == 1
+        assert sections[0]["label"] == "generic"
+        assert sections[0]["source"] == "unknown"
+        assert "plain text" in sections[0]["body"]
+
+
+class TestClassifyMemoryContextLine:
+    """Tests for _classify_line helper."""
+
+    def test_preference_keywords(self):
+        from agent.memory_manager import _classify_line
+        assert _classify_line("Juan prefers direct Spanish") == "preference"
+        assert _classify_line("never expose secrets") == "preference"
+
+    def test_operational_keywords(self):
+        from agent.memory_manager import _classify_line
+        assert _classify_line("session is active") == "operational"
+        assert _classify_line("current mode is debug") == "operational"
+
+    def test_default_fact(self):
+        from agent.memory_manager import _classify_line
+        assert _classify_line("Darwin is a local Hermes profile") == "fact"
+
+
+class TestBuildMemoryContextPacket:
+    """Tests for build_memory_context_packet."""
+
+    def test_empty_yields_empty_packet(self):
+        from agent.memory_manager import build_memory_context_packet
+        pkt = build_memory_context_packet("")
+        assert pkt["facts"] == []
+        assert pkt["preferences"] == []
+        assert pkt["operational_state"] == []
+        assert pkt["conflicts"] == []
+        assert pkt["excluded_context"] == []
+        assert pkt["source_precedence"] == []
+        assert pkt["raw_sections"] == []
+
+    def test_facts_classification(self):
+        from agent.memory_manager import build_memory_context_packet
+        pkt = build_memory_context_packet("the sky is blue\nwater is wet")
+        assert len(pkt["facts"]) == 2
+        assert "the sky is blue" in pkt["facts"]
+
+    def test_preferences_classification(self):
+        from agent.memory_manager import build_memory_context_packet
+        pkt = build_memory_context_packet("I prefer using type hints\nalways use pytest")
+        assert len(pkt["preferences"]) >= 1
+        assert "I prefer using type hints" in pkt["preferences"]
+
+    def test_operational_classification(self):
+        from agent.memory_manager import build_memory_context_packet
+        pkt = build_memory_context_packet("session is active\ncurrent mode is debug")
+        assert len(pkt["operational_state"]) >= 1
+        assert "session is active" in pkt["operational_state"]
+
+    def test_source_precedence_deduplication(self):
+        from agent.memory_manager import build_memory_context_packet
+        raw = (
+            "[Provider: builtin]\n"
+            "fact a\n"
+            "[Provider: honcho]\n"
+            "fact b\n"
+            "[Provider: builtin]\n"
+            "fact c"
+        )
+        pkt = build_memory_context_packet(raw)
+        assert pkt["source_precedence"] == ["builtin", "honcho"]
+
+    def test_conflict_detection_identity(self):
+        from agent.memory_manager import build_memory_context_packet
+        raw = (
+            "identity: user is alice\n"
+            "identity: user is bob\n"
+        )
+        pkt = build_memory_context_packet(raw)
+        assert len(pkt["conflicts"]) >= 1
+        conflict_kinds = {c["kind"] for c in pkt["conflicts"]}
+        assert "identity" in conflict_kinds
+
+    def test_conflict_detection_model(self):
+        from agent.memory_manager import build_memory_context_packet
+        raw = (
+            "[Provider: honcho]\n"
+            "model: claude-3-5-sonnet\n"
+            "[Provider: builtin]\n"
+            "model: gpt-4o\n"
+        )
+        pkt = build_memory_context_packet(raw)
+        assert len(pkt["conflicts"]) >= 1
+        assert any(c["kind"] == "model" for c in pkt["conflicts"])
+
+    def test_conflict_detection_path(self):
+        from agent.memory_manager import build_memory_context_packet
+        raw = (
+            "path: /tmp/project-a\n"
+            "path: /tmp/project-b\n"
+        )
+        pkt = build_memory_context_packet(raw)
+        assert len(pkt["conflicts"]) >= 1
+        assert any(c["kind"] == "path" for c in pkt["conflicts"])
+
+    def test_no_conflict_when_single_value(self):
+        from agent.memory_manager import build_memory_context_packet
+        raw = (
+            "model: claude-3-5-sonnet\n"
+            "model: claude-3-5-sonnet\n"
+        )
+        pkt = build_memory_context_packet(raw)
+        model_conflicts = [c for c in pkt["conflicts"] if c["kind"] == "model"]
+        assert len(model_conflicts) == 0
+
+    def test_excluded_context_section(self):
+        from agent.memory_manager import build_memory_context_packet
+        raw = (
+            "# Excluded Context\n"
+            "do not use tool x\n"
+            "skip memory entry y\n"
+        )
+        pkt = build_memory_context_packet(raw)
+        assert len(pkt["excluded_context"]) >= 1
+
+    def test_raw_sections_preserved(self):
+        from agent.memory_manager import build_memory_context_packet
+        raw = (
+            "[Provider: honcho]\n"
+            "some fact\n"
+        )
+        pkt = build_memory_context_packet(raw)
+        assert len(pkt["raw_sections"]) == 1
+        assert pkt["raw_sections"][0]["source"] == "honcho"
+        assert pkt["raw_sections"][0]["body"] == "some fact"
+
+    def test_whitespace_only_lines_filtered(self):
+        from agent.memory_manager import build_memory_context_packet
+        raw = "  \n\nfact line\n   \n\npreference: I like tabs\n"
+        pkt = build_memory_context_packet(raw)
+        # Should not crash, facts should contain "fact line" but not empty whitespace
+        assert "fact line" in pkt["facts"]
+
+    def test_m2_realistic_raw_plus_resolved_fixture_has_named_sources(self):
+        from agent.memory_manager import build_memory_context_packet
+
+        raw = (
+            "## Session Summary\n"
+            "Juan pidió retomar mejorar su memoria/contexto, no capacidad OVH.\n"
+            "\n"
+            "## User Representation\n"
+            "[2026-05-14] The user should be called Juan; Darwin is this instance/agent.\n"
+            "\n"
+            "## User Peer Card\n"
+            "Name: Juan Carlos Verni\n"
+            "Preferred name is Darwin — call him Darwin, not Juan or Hermes\n"
+            "PREFERENCE: Communication in neutral Spanish, direct.\n"
+            "\n"
+            "## AI Identity Card\n"
+            "Name: Darwin\n"
+            "Primary model: GPT-5.5 via OpenAI Codex OAuth\n"
+            "Fallback/comparison model: DeepSeek V4 Pro only when primary model fails.\n"
+            "\n"
+            "<think>internal analysis should never be injected</think>\n"
+            "---\n"
+            "# Resolved Memory Context\n"
+            "# Sources (in priority order): unknown\n"
+            "# Preferences\n"
+            "- Preferred name is Darwin — call him Darwin, not Juan or Hermes\n"
+        )
+
+        pkt = build_memory_context_packet(raw)
+        combined = "\n".join(pkt["facts"] + pkt["preferences"] + pkt["operational_state"])
+
+        assert pkt["source_precedence"]
+        assert "unknown" not in pkt["source_precedence"]
+        assert "honcho_session_summary" in pkt["source_precedence"]
+        assert "honcho_user_peer_card" in pkt["source_precedence"]
+        assert "internal analysis" not in combined
+        assert "# Resolved Memory Context" not in combined
+        assert "Preferred name is Darwin" not in combined
+        assert any("Preferred name is Darwin" in item for item in pkt["excluded_context"])
+
+    def test_m2_identity_and_model_canon_exclude_superseded_preferences(self):
+        from agent.memory_manager import build_memory_context_packet
+
+        raw = (
+            "## User Peer Card\n"
+            "Name: Juan Carlos Verni\n"
+            "Preferred name is Darwin — call him Darwin, not Juan or Hermes\n"
+            "PREFERENCE: Model routing for Darwin — GPT-5.5 orchestrates; MiniMax M2.7 executes delegated code/SQL/debug; DeepSeek V4 Pro is fallback/contrast.\n"
+            "PREFERENCE: Model routing for Darwin — GPT-5.5 orchestrates; MiniMax M2.7 executes delegated code/SQL/debug; DeepSeek V4 Pro is fallback/contrast (CORRECTION: DeepSeek V4 Pro is the reasoning orchestrator that DELEGATES to Darwin on MiniMax, not Darwin's primary model)\n"
+            "## AI Identity Card\n"
+            "Primary model: GPT-5.5 via OpenAI Codex OAuth\n"
+            "Delegated executor: MiniMax M2.7 via delegate_task\n"
+            "Fallback/comparison model: DeepSeek V4 Pro only when primary model fails, is limited, or Juan explicitly asks for contrast\n"
+        )
+
+        pkt = build_memory_context_packet(raw)
+        rendered_items = "\n".join(pkt["facts"] + pkt["preferences"] + pkt["operational_state"])
+
+        assert "Preferred name is Darwin" not in rendered_items
+        assert "DeepSeek V4 Pro is the reasoning orchestrator" not in rendered_items
+        assert "GPT-5.5 orchestrates" in rendered_items
+        assert any(c["kind"] == "identity" for c in pkt["conflicts"])
+        assert any(c["kind"] == "model" for c in pkt["conflicts"])
+
+
+class TestPacketToText:
+    """Tests for _packet_to_text helper."""
+
+    def test_empty_packet(self):
+        from agent.memory_manager import _packet_to_text
+        text = _packet_to_text({
+            "facts": [],
+            "preferences": [],
+            "operational_state": [],
+            "conflicts": [],
+            "excluded_context": [],
+            "source_precedence": [],
+            "raw_sections": [],
+        })
+        assert "# Resolved Memory Context" in text
+        assert "Sources" not in text  # no sources
+
+    def test_sources_rendered(self):
+        from agent.memory_manager import _packet_to_text
+        text = _packet_to_text({
+            "facts": [], "preferences": [], "operational_state": [],
+            "conflicts": [], "excluded_context": [],
+            "source_precedence": ["builtin", "honcho"],
+            "raw_sections": [],
+        })
+        assert "builtin" in text
+        assert "honcho" in text
+
+    def test_conflict_count_rendered(self):
+        from agent.memory_manager import _packet_to_text
+        text = _packet_to_text({
+            "facts": [], "preferences": [], "operational_state": [],
+            "conflicts": [
+                {"kind": "model", "sources": {}, "resolution": "unresolved", "note": ""}
+            ],
+            "excluded_context": [],
+            "source_precedence": [],
+            "raw_sections": [],
+        })
+        assert "Conflicts detected: 1" in text
+        assert "model" in text
+
+    def test_facts_capped_at_20(self):
+        from agent.memory_manager import _packet_to_text
+        facts = [f"fact {i}" for i in range(30)]
+        text = _packet_to_text({
+            "facts": facts, "preferences": [], "operational_state": [],
+            "conflicts": [], "excluded_context": [],
+            "source_precedence": [], "raw_sections": [],
+        })
+        # Should include at most 20 facts (each prefixed with "- ")
+        fact_lines = [l for l in text.splitlines() if l.startswith("- ")]
+        assert len(fact_lines) <= 20
+
+
+class TestBuildMemoryContextBlock:
+    """Tests for build_memory_context_block with packet injection."""
+
+    def test_empty_input_returns_empty_string(self):
+        from agent.memory_manager import build_memory_context_block
+        assert build_memory_context_block("") == ""
+        assert build_memory_context_block("   ") == ""
+
+    def test_block_contains_memory_context_tags(self):
+        from agent.memory_manager import build_memory_context_block
+        result = build_memory_context_block("some memory content")
+        assert "<memory-context>" in result
+        assert "</memory-context>" in result
+        assert "some memory content" in result
+
+    def test_block_default_off_omits_resolved_section(self):
+        from agent.memory_manager import build_memory_context_block
+        result = build_memory_context_block("fact: sky is blue")
+        assert "fact: sky is blue" in result
+        assert "# Resolved Memory Context" not in result
+
+    def test_block_enabled_contains_resolved_section(self):
+        from agent.memory_manager import build_memory_context_block
+        result = build_memory_context_block("fact: sky is blue", packet_builder_enabled=True)
+        assert "# Resolved Memory Context" in result
+        assert "# Facts" in result
+
+    def test_block_enabled_does_not_duplicate_raw_context(self):
+        from agent.memory_manager import build_memory_context_block
+        raw = "fact one\nfact two"
+        result = build_memory_context_block(raw, packet_builder_enabled=True)
+        assert result.count("fact one") == 1
+        assert "---" not in result
+
+    def test_m2_block_enabled_rebuilds_raw_plus_resolved_as_single_packet(self):
+        from agent.memory_manager import build_memory_context_block
+
+        raw = (
+            "## Session Summary\n"
+            "Juan pidió retomar mejorar su memoria/contexto.\n"
+            "## User Peer Card\n"
+            "Preferred name is Darwin — call him Darwin, not Juan or Hermes\n"
+            "PREFERENCE: Communication in neutral Spanish, direct.\n"
+            "<think>do not leak this</think>\n"
+            "---\n"
+            "# Resolved Memory Context\n"
+            "# Sources (in priority order): unknown\n"
+            "# Preferences\n"
+            "- Preferred name is Darwin — call him Darwin, not Juan or Hermes\n"
+        )
+
+        result = build_memory_context_block(raw, packet_builder_enabled=True)
+
+        assert result.count("# Resolved Memory Context") == 1
+        assert "unknown" not in result
+        assert "honcho_session_summary" in result
+        assert "Preferred name is Darwin" not in result
+        assert "do not leak this" not in result
+        assert result.count("Juan pidió retomar") == 1
+
+    def test_pre_wraps_context_stripped(self):
+        from agent.memory_manager import build_memory_context_block
+        # Pre-wrapped context should be stripped (existing behavior)
+        wrapped = "<memory-context>inner</memory-context>"
+        result = build_memory_context_block(wrapped)
+        assert "<memory-context><memory-context>" not in result
+        assert "inner" not in result
+
+    def test_system_note_preserved(self):
+        from agent.memory_manager import build_memory_context_block
+        result = build_memory_context_block("memory fact")
+        assert "[System note:" in result
+        assert "NOT new user input" in result
+
+
+class TestMemoryContextPacketIntegration:
+    """Integration tests: full flow from raw text through packet to block."""
+
+    def test_full_flow_with_provider_tags(self):
+        from agent.memory_manager import (
+            build_memory_context_packet,
+            _packet_to_text,
+            build_memory_context_block,
+        )
+        raw = (
+            "[Provider: honcho]\n"
+            "# Facts\n"
+            "earth is round\n"
+            "# Preferences\n"
+            "I prefer dark mode\n"
+        )
+        pkt = build_memory_context_packet(raw)
+        assert "earth is round" in pkt["facts"]
+        assert "I prefer dark mode" in pkt["preferences"]
+        assert "honcho" in pkt["source_precedence"]
+
+        text = _packet_to_text(pkt)
+        assert "# Facts" in text
+        assert "# Preferences" in text
+
+        block = build_memory_context_block(raw, packet_builder_enabled=True)
+        assert "<memory-context>" in block
+        assert "# Resolved Memory Context" in block
+
+    def test_realistic_honcho_prefetch_fixture(self):
+        from agent.memory_manager import build_memory_context_packet, build_memory_context_block
+
+        raw = (
+            "## Session Summary\n"
+            "Sprint 12 Gate 2 cerró verde. `/api/chatv2/query` ahora usa worker persistente.\n"
+            "Juan pidió veredicto arquitectónico sobre mejora de memoria Darwin/Hermes.\n"
+            "\n"
+            "## User Representation\n"
+            "PREFERENCE: Communication in neutral Spanish, direct, TL;DR.\n"
+            "TRAIT: Values empirical testing over theoretical assumptions.\n"
+            "\n"
+            "## Operational State\n"
+            "memory.packet_builder.enabled is default-off until explicitly enabled.\n"
+            "\n"
+            "## Contradictions\n"
+            "model: GPT-5.5 primary\n"
+            "model: DeepSeek primary\n"
+        )
+
+        pkt = build_memory_context_packet(raw)
+        text = build_memory_context_block(raw, packet_builder_enabled=True)
+
+        assert any("Sprint 12 Gate 2" in item for item in pkt["facts"])
+        assert any("neutral Spanish" in item for item in pkt["preferences"])
+        assert any("default-off" in item for item in pkt["operational_state"])
+        assert any(c["kind"] == "model" for c in pkt["conflicts"])
+        assert "# Resolved Memory Context" in text
+        assert "# Conflicts detected:" in text
+        assert text.count("Sprint 12 Gate 2") == 1
+
+    def test_conflict_in_block(self):
+        from agent.memory_manager import build_memory_context_block
+        raw = (
+            "identity: user alice\n"
+            "identity: user bob\n"
+        )
+        block = build_memory_context_block(raw, packet_builder_enabled=True)
+        assert "Conflicts detected:" in block
+        assert "identity" in block
+
+    def test_deterministic_output(self):
+        from agent.memory_manager import build_memory_context_block
+        raw = "[Provider: builtin]\nfact one\nfact two"
+        # Calling twice should produce identical output
+        result1 = build_memory_context_block(raw)
+        result2 = build_memory_context_block(raw)
+        assert result1 == result2

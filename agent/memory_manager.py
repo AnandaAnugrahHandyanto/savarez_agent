@@ -28,7 +28,7 @@ from __future__ import annotations
 import logging
 import re
 import inspect
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from agent.memory_provider import MemoryProvider
 from tools.registry import tool_error
@@ -49,10 +49,14 @@ _INTERNAL_NOTE_RE = re.compile(
     r'\[System note:\s*The following is recalled memory context,\s*NOT new user input\.\s*Treat as (?:informational background data|authoritative reference data[^\]]*)\.\]\s*',
     re.IGNORECASE,
 )
+_THINK_BLOCK_RE = re.compile(r'<\s*think\s*>[\s\S]*?</\s*think\s*>', re.IGNORECASE)
+_RESOLVED_PACKET_RE = re.compile(r'^---\s*\n# Resolved Memory Context[\s\S]*$', re.IGNORECASE | re.MULTILINE)
 
 
 def sanitize_context(text: str) -> str:
-    """Strip fence tags, injected context blocks, and system notes from provider output."""
+    """Strip fence tags, injected context blocks, generated packets, and system notes from provider output."""
+    text = _THINK_BLOCK_RE.sub('', text)
+    text = _RESOLVED_PACKET_RE.sub('', text)
     text = _INTERNAL_CONTEXT_RE.sub('', text)
     text = _INTERNAL_NOTE_RE.sub('', text)
     text = _FENCE_TAG_RE.sub('', text)
@@ -170,19 +174,359 @@ class StreamingContextScrubber:
         return 0
 
 
-def build_memory_context_block(raw_context: str) -> str:
-    """Wrap prefetched memory in a fenced block with system note."""
+# ----------------------------------------------------------------------
+# Context Packet Builder
+# ----------------------------------------------------------------------
+# Parses raw prefetch text into a structured packet with sections.
+# Minimal conflict resolver flags identity/model/provider/path
+# contradictions via simple heuristics — does NOT delete data.
+
+# Known section markers that providers emit
+# Matches markdown headers like "## Facts", "## [Facts]:", "# Preferences", etc.
+# Groups: (label, bracketed_label)
+_SECTION_RE = re.compile(
+    r'^#+\s*\[?\s*('
+    r'facts|preferences|operational[_\s-]?state|conflicts?|excluded[_\s-]?context|'
+    r'memory|source|session[_\s-]?summary|user[_\s-]?representation|user[_\s-]?peer[_\s-]?card|'
+    r'ai[_\s-]?self[_\s-]?representation|ai[_\s-]?identity[_\s-]?card|resolved[_\s-]?memory[_\s-]?context|'
+    r'contradictions?'
+    r')\s*\]?\s*:?\s*$',
+    re.IGNORECASE,
+)
+_SECTION_LABEL_ALIASES = {
+    "session_summary": "facts",
+    "user_representation": "preferences",
+    "user_peer_card": "preferences",
+    "ai_self_representation": "facts",
+    "ai_identity_card": "operational_state",
+    "resolved_memory_context": "excluded_context",
+    "contradiction": "conflicts",
+    "contradictions": "conflicts",
+}
+_SECTION_SOURCE_ALIASES = {
+    "session_summary": "honcho_session_summary",
+    "user_representation": "honcho_user_representation",
+    "user_peer_card": "honcho_user_peer_card",
+    "ai_self_representation": "honcho_ai_self_representation",
+    "ai_identity_card": "honcho_ai_identity_card",
+    "resolved_memory_context": "generated_resolved_packet",
+    "facts": "memory_facts",
+    "preferences": "memory_preferences",
+    "operational_state": "memory_operational_state",
+    "conflict": "memory_conflicts",
+    "conflicts": "memory_conflicts",
+    "contradiction": "memory_conflicts",
+    "contradictions": "memory_conflicts",
+    "excluded_context": "memory_excluded_context",
+}
+_PROVIDER_TAG_RE = re.compile(r'^\[?(?:Provider|Memory|Source)\s*[:=]\s*([\w.-]+)\]?$', re.IGNORECASE)
+_SUPERSEDED_IDENTITY_RE = re.compile(
+    r'\bpreferred\s+name\b.*\bdarwin\b|\bcall\s+(?:him|user)\s+darwin\b',
+    re.IGNORECASE,
+)
+_SUPERSEDED_DEEPSEEK_RE = re.compile(
+    r'\bdeepseek\s+v4\s+pro\b.*\b(?:reasoning\s+)?orchestrator\b|\bdeepseek\b.*\bprimary\b',
+    re.IGNORECASE,
+)
+
+
+def _normalize_section_label(label: str) -> str:
+    return label.lower().replace(' ', '_').replace('-', '_')
+
+
+def _source_for_label(raw_label: str, current_source: str) -> str:
+    normalized = _normalize_section_label(raw_label)
+    # Provider tags remain authoritative for generic section labels.  A payload
+    # like ``[Provider: honcho]\n# Facts`` should still be sourced to honcho,
+    # not rewritten to a synthetic memory_facts source.
+    if normalized in {"facts", "preferences", "operational_state", "conflict", "conflicts", "excluded_context"}:
+        if current_source and current_source != "unknown":
+            return current_source
+    if normalized in _SECTION_SOURCE_ALIASES:
+        return _SECTION_SOURCE_ALIASES[normalized]
+    return current_source if current_source else "unknown"
+
+
+def _should_exclude_line(line: str) -> bool:
+    l = line.lower()
+    # Honcho may still contain an old peer-card conclusion that confuses the
+    # user's name with this local agent's name. Keep it as excluded evidence,
+    # but never inject it as an active preference.
+    if _SUPERSEDED_IDENTITY_RE.search(line):
+        return True
+    # Superseded model-routing claim observed in the raw peer card. The active
+    # Darwin contract is GPT-5.5 primary, MiniMax delegated executor, DeepSeek
+    # fallback/contrast; conflicting correction text should be reviewed, not
+    # treated as a live preference.
+    if _SUPERSEDED_DEEPSEEK_RE.search(line):
+        return True
+    if l.startswith("# resolved memory context") or l.startswith("# sources"):
+        return True
+    return False
+
+
+def _canonical_conflict_value(kind: str, line: str) -> str:
+    l = line.lower()
+    if kind == "identity":
+        if "preferred name is darwin" in l and "call him darwin" in l:
+            return "user_name_darwin_claim"
+        if "juan carlos verni" in l or "called juan" in l or "user should be called juan" in l:
+            return "user_name_juan_claim"
+        if "darwin is" in l and ("agent" in l or "instance" in l):
+            return "darwin_agent_claim"
+    if kind == "model":
+        if "deepseek" in l and ("orchestrator" in l or "primary" in l or "main" in l):
+            return "deepseek_primary_orchestrator_claim"
+        if "gpt-5.5" in l and ("primary" in l or "orchestrat" in l):
+            return "gpt_5_5_primary_claim"
+        if "minimax" in l and ("delegated" in l or "executor" in l or "executes" in l):
+            return "minimax_delegated_executor_claim"
+    if kind == "path":
+        try:
+            import os
+            return os.path.realpath(os.path.expanduser(line.split(":", 1)[-1].strip())).lower()
+        except Exception:
+            pass
+    return line.split(":", 1)[-1].strip().lower()
+
+
+def _split_raw_sections(raw: str) -> List[Dict[str, str]]:
+    """Split raw prefetch text into sections by provider or markdown headers.
+
+    Returns list of dicts: [{"label": "...", "body": "...", "source": "..."}, ...]
+    """
+    raw = sanitize_context(raw)
+    sections = []
+    current_label = "generic"
+    current_source = "unknown"
+    current_body_lines: List[str] = []
+
+    def _flush(label: str, body: str, source: str) -> None:
+        if body.strip():
+            sections.append({"label": label, "body": body.strip(), "source": source or "unknown"})
+
+    for line in raw.splitlines():
+        stripped_line = line.strip()
+        provider_match = _PROVIDER_TAG_RE.match(stripped_line)
+        if provider_match:
+            _flush(current_label, "\n".join(current_body_lines), current_source)
+            current_body_lines = []
+            current_source = provider_match.group(1)
+            current_label = current_source
+            continue
+
+        header_match = _SECTION_RE.match(stripped_line)
+        if header_match:
+            _flush(current_label, "\n".join(current_body_lines), current_source)
+            current_body_lines = []
+            raw_label = _normalize_section_label(header_match.group(1))
+            current_source = _source_for_label(raw_label, current_source)
+            current_label = _SECTION_LABEL_ALIASES.get(raw_label, raw_label)
+            continue
+
+        current_body_lines.append(line)
+
+    _flush(current_label, "\n".join(current_body_lines), current_source)
+    return sections
+
+
+def _classify_line(line: str) -> str:
+    """Classify a line into: fact, preference, operational, other."""
+    l = line.lower().strip()
+    if any(k in l for k in ["prefer", "like", "always", "never", "want", "avoid", "use"]):
+        return "preference"
+    if any(k in l for k in ["running", "status", "mode", "active", "current", "session"]):
+        return "operational"
+    return "fact"
+
+
+def _resolve_conflicts(sections: List[Dict[str, str]]) -> List[Dict[str, Any]]:
+    """Detect contradictions across sections via simple heuristics.
+
+    Flags identity, model, provider, and path contradictions.
+    Does NOT delete or modify source data.
+    """
+    conflicts: List[Dict[str, Any]] = []
+    identity_hints: List[Tuple[str, str]] = []
+    model_hints: List[Tuple[str, str]] = []
+    provider_hints: List[Tuple[str, str]] = []
+    path_hints: List[Tuple[str, str]] = []
+
+    # Simple extraction: lines containing identity/model/provider/path keywords
+    for sec in sections:
+        body = sec["body"]
+        for line in body.splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            l = stripped.lower()
+            if any(k in l for k in ["identity:", "user:", "persona:", "agent:", "name:", "preferred name", "called juan", "user should be called juan"]):
+                identity_hints.append((sec["source"], stripped))
+            if any(k in l for k in ["model:", "llm:", "using model", "primary model", "fallback/comparison model", "delegated executor", "model routing", "orchestrator"]):
+                model_hints.append((sec["source"], stripped))
+            if any(k in l for k in ["provider:", "backend:", "via openai", "provider `"]):
+                provider_hints.append((sec["source"], stripped))
+            if any(k in l for k in ["path:", "file:", "directory:", "config path", "home:"]):
+                path_hints.append((sec["source"], stripped))
+
+    def _check_contradictions(hints: List[Tuple[str, str]], kind: str):
+        values: Dict[str, List[Tuple[str, str]]] = {}
+        for source, line in hints:
+            key = _canonical_conflict_value(kind, line)
+            if key not in values:
+                values[key] = []
+            values[key].append((source, line))
+        if len(values) > 1:
+            conflicts.append({
+                "kind": kind,
+                "sources": {v: [s for s, _ in vs] for v, vs in values.items()},
+                "resolution": "unresolved",
+                "note": "multiple values detected — manual review recommended",
+            })
+
+    _check_contradictions(identity_hints, "identity")
+    _check_contradictions(model_hints, "model")
+    _check_contradictions(provider_hints, "provider")
+    _check_contradictions(path_hints, "path")
+
+    return conflicts
+
+
+def build_memory_context_packet(raw_text: str) -> Dict[str, Any]:
+    """Parse raw prefetch text into a structured context packet.
+
+    Returns dict with keys:
+      - facts: list of fact lines
+      - preferences: list of preference lines
+      - operational_state: list of operational lines
+      - conflicts: list of detected conflict dicts
+      - excluded_context: list of excluded lines
+      - source_precedence: list of source names in priority order
+      - raw_sections: list of {"label", "body", "source"} dicts
+    """
+    if not raw_text or not raw_text.strip():
+        return {
+            "facts": [],
+            "preferences": [],
+            "operational_state": [],
+            "conflicts": [],
+            "excluded_context": [],
+            "source_precedence": [],
+            "raw_sections": [],
+        }
+
+    sections = _split_raw_sections(raw_text)
+
+    facts: List[str] = []
+    preferences: List[str] = []
+    operational_state: List[str] = []
+    excluded_context: List[str] = []
+
+    for sec in sections:
+        label = sec["label"].lower()
+        body = sec["body"]
+        if not body:
+            continue
+        for line in body.splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            if _should_exclude_line(stripped):
+                excluded_context.append(stripped)
+                continue
+            cls = _classify_line(stripped)
+            if label == "excluded_context":
+                excluded_context.append(stripped)
+            elif label == "preferences" or cls == "preference":
+                preferences.append(stripped)
+            elif label == "operational_state" or cls == "operational":
+                operational_state.append(stripped)
+            else:
+                facts.append(stripped)
+
+    # Source precedence: deduplicated in order of appearance
+    seen_sources: set = set()
+    source_precedence: List[str] = []
+    for sec in sections:
+        if sec["source"] not in seen_sources:
+            seen_sources.add(sec["source"])
+            source_precedence.append(sec["source"])
+
+    conflicts = _resolve_conflicts(sections)
+
+    return {
+        "facts": facts,
+        "preferences": preferences,
+        "operational_state": operational_state,
+        "conflicts": conflicts,
+        "excluded_context": excluded_context,
+        "source_precedence": source_precedence,
+        "raw_sections": sections,
+    }
+
+
+def _packet_to_text(packet: Dict[str, Any]) -> str:
+    """Render a context packet as readable text for injection."""
+    parts = ["# Resolved Memory Context"]
+    if packet["source_precedence"]:
+        parts.append(f"# Sources (in priority order): {', '.join(packet['source_precedence'])}")
+    if packet["conflicts"]:
+        parts.append(f"# Conflicts detected: {len(packet['conflicts'])}")
+        for c in packet["conflicts"]:
+            parts.append(f"#   [{c['kind']}] unresolved — manual review recommended")
+    if packet["facts"]:
+        parts.append("# Facts")
+        for f in packet["facts"][:20]:  # cap at 20
+            parts.append(f"- {f}")
+    if packet["preferences"]:
+        parts.append("# Preferences")
+        for p in packet["preferences"][:20]:
+            parts.append(f"- {p}")
+    if packet["operational_state"]:
+        parts.append("# Operational State")
+        for o in packet["operational_state"][:20]:
+            parts.append(f"- {o}")
+    if packet["excluded_context"]:
+        parts.append(f"# Excluded context entries: {len(packet['excluded_context'])}")
+    return "\n".join(parts)
+
+
+def build_memory_context_block(raw_context: str, *, packet_builder_enabled: bool = False) -> str:
+    """Wrap prefetched memory in a fenced block with system note.
+
+    ``packet_builder_enabled`` is a default-off gate for the Resolved Memory
+    Context MVP.  Disabled preserves the historical raw-context injection.
+    Enabled replaces raw context with the resolved packet instead of duplicating
+    both, keeping rollback trivial and token growth measurable.
+    """
     if not raw_context or not raw_context.strip():
         return ""
     clean = sanitize_context(raw_context)
     if clean != raw_context:
         logger.warning("memory provider returned pre-wrapped context; stripped")
+
+    body = clean
+    if packet_builder_enabled:
+        packet = build_memory_context_packet(clean)
+        packet_text = _packet_to_text(packet)
+        raw_len = len(clean)
+        packet_len = len(packet_text)
+        delta = packet_len - raw_len
+        log_fn = logger.warning if raw_len and packet_len > raw_len * 1.10 else logger.info
+        log_fn(
+            "memory_packet_chars_before=%s after=%s delta=%s",
+            raw_len,
+            packet_len,
+            delta,
+        )
+        body = packet_text
+
     return (
         "<memory-context>\n"
         "[System note: The following is recalled memory context, "
         "NOT new user input. Treat as authoritative reference data — "
         "this is the agent's persistent memory and should inform all responses.]\n\n"
-        f"{clean}\n"
+        f"{body}\n"
         "</memory-context>"
     )
 
