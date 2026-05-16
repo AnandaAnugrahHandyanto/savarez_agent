@@ -33,6 +33,10 @@ _approval_session_key: contextvars.ContextVar[str] = contextvars.ContextVar(
     "approval_session_key",
     default="",
 )
+_approval_run_id: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "approval_run_id",
+    default="",
+)
 
 
 def _fire_approval_hook(hook_name: str, **kwargs) -> None:
@@ -69,6 +73,21 @@ def set_current_session_key(session_key: str) -> contextvars.Token[str]:
 def reset_current_session_key(token: contextvars.Token[str]) -> None:
     """Restore the prior approval session key context."""
     _approval_session_key.reset(token)
+
+
+def set_current_run_id(run_id: str) -> contextvars.Token[str]:
+    """Bind the active API run id to pending gateway approvals."""
+    return _approval_run_id.set(run_id or "")
+
+
+def reset_current_run_id(token: contextvars.Token[str]) -> None:
+    """Restore the prior API run id context."""
+    _approval_run_id.reset(token)
+
+
+def get_current_run_id() -> str:
+    """Return the active API run id for approval binding, if any."""
+    return _approval_run_id.get()
 
 
 def get_current_session_key(default: str = "default") -> str:
@@ -619,13 +638,15 @@ def unregister_gateway_notify(session_key: str) -> None:
 
 
 def resolve_gateway_approval(session_key: str, choice: str,
-                             resolve_all: bool = False) -> int:
+                             resolve_all: bool = False,
+                             run_id: Optional[str] = None) -> int:
     """Called by the gateway's /approve or /deny handler to unblock
     waiting agent thread(s).
 
     When *resolve_all* is True every pending approval in the session is
     resolved at once (``/approve all``).  Otherwise only the oldest one
-    is resolved (FIFO).
+    is resolved (FIFO).  When *run_id* is provided, only entries bound to
+    that API run are eligible.
 
     Returns the number of approvals resolved (0 means nothing was pending).
     """
@@ -633,7 +654,14 @@ def resolve_gateway_approval(session_key: str, choice: str,
         queue = _gateway_queues.get(session_key)
         if not queue:
             return 0
-        if resolve_all:
+        if run_id:
+            matches = [entry for entry in queue if entry.data.get("run_id") == run_id]
+            if not matches:
+                return 0
+            targets = matches if resolve_all else [matches[0]]
+            for entry in targets:
+                queue.remove(entry)
+        elif resolve_all:
             targets = list(queue)
             queue.clear()
         else:
@@ -1281,6 +1309,9 @@ def check_all_command_guards(command: str, env_type: str,
                 "pattern_keys": all_keys,
                 "description": combined_desc,
             }
+            current_run_id = get_current_run_id()
+            if current_run_id:
+                approval_data["run_id"] = current_run_id
             entry = _ApprovalEntry(approval_data)
             with _lock:
                 _gateway_queues.setdefault(session_key, []).append(entry)
