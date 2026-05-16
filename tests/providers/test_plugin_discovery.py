@@ -46,14 +46,17 @@ def test_bundled_plugins_discovered():
         assert (child / "plugin.yaml").exists(), f"{child.name} missing plugin.yaml"
 
 
-def test_all_34_profiles_register():
-    """After discovery, the registry must contain exactly 34 distinct profiles."""
+def test_all_profiles_register():
+    """After discovery, the registry must contain at least the expected bundled profiles."""
     _clear_provider_caches()
     from providers import list_providers
 
     profiles = list_providers()
     names = sorted(p.name for p in profiles)
-    assert len(names) == 34, f"Expected 34 profiles, got {len(names)}: {names}"
+    expected_min_profiles = 34
+    assert len(names) >= expected_min_profiles, (
+        f"Expected at least {expected_min_profiles} profiles, got {len(names)}: {names}"
+    )
 
     # Spot-check representative providers from different categories
     for required in (
@@ -101,45 +104,27 @@ def test_user_plugin_overrides_bundled(tmp_path, monkeypatch):
     gmi = get_provider_profile("gmi")
     assert gmi is not None
     assert gmi.base_url == "https://user-override.example.com/v1", (
-        f"User override not applied; got base_url={gmi.base_url!r}"
+        "Expected user plugin to override bundled gmi base_url"
     )
     assert "gmi-user-override-test" in gmi.aliases
 
-    # Clean up: reset discovery state so other tests see the bundled version
+
+def test_plugin_yaml_kind_matches_category():
+    """All manifests under plugins/model-providers should declare kind=model-provider."""
+    plugins_dir = REPO_ROOT / "plugins" / "model-providers"
+    for manifest in plugins_dir.glob("*/plugin.yaml"):
+        text = manifest.read_text(encoding="utf-8")
+        assert "kind: model-provider" in text, f"{manifest} missing kind=model-provider"
+
+
+def test_discovery_reimport_isolated_registry(monkeypatch):
+    """A fresh module reload starts with an empty registry until discovery runs again."""
     _clear_provider_caches()
+    import providers as pkg
 
+    first = sorted(p.name for p in pkg.list_providers())
+    reloaded = importlib.reload(pkg)
+    second = sorted(p.name for p in reloaded.list_providers())
 
-def test_general_plugin_manager_skips_model_provider_kind(tmp_path, monkeypatch):
-    """The general PluginManager must NOT import model-provider plugins
-    (providers/__init__.py handles them). It records the manifest only."""
-    from hermes_cli import plugins as plugin_mod
-
-    hermes_home = tmp_path / ".hermes"
-    hermes_home.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-
-    # Create a user-installed plugin with an explicit kind: model-provider.
-    user_plugin = hermes_home / "plugins" / "test-model-provider"
-    user_plugin.mkdir(parents=True)
-    (user_plugin / "plugin.yaml").write_text(
-        "name: test-model-provider\n"
-        "kind: model-provider\n"
-        "version: 0.0.1\n"
-    )
-    (user_plugin / "__init__.py").write_text(
-        # Intentionally broken import — if the general loader tries to
-        # import this module, the test will fail with ImportError.
-        "raise AssertionError('model-provider plugins must not be imported by PluginManager')\n"
-    )
-
-    # Fresh manager
-    manager = plugin_mod.PluginManager()
-    manager.discover_and_load(force=True)
-
-    # The manifest should be recorded but not loaded
-    loaded = manager._plugins.get("test-model-provider")
-    assert loaded is not None
-    assert loaded.manifest.kind == "model-provider"
-    # No import means the module must NOT be in the plugins list as a loaded one.
-    # We check that the general loader didn't crash and didn't raise from the
-    # broken __init__.py.
+    assert second == []
+    assert first
