@@ -17,7 +17,7 @@ curl -L https://github.com/simplex-chat/simplex-chat/releases/latest/download/si
 chmod +x simplex-chat
 ```
 
-The SimpleX Chat project does not publish a prebuilt Docker image for the chat client; to run it under Docker, build from source using the [Dockerfile in the upstream repo](https://github.com/simplex-chat/simplex-chat).
+The SimpleX Chat project does not publish a prebuilt Docker image for the chat client; to run it under Docker, build from source from the [simplex-chat repository](https://github.com/simplex-chat/simplex-chat).
 
 ## Start the daemon
 
