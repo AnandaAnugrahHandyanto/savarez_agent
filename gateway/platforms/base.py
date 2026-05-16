@@ -814,6 +814,7 @@ DOCUMENT_CACHE_DIR = get_hermes_dir("cache/documents", "document_cache")
 
 SUPPORTED_DOCUMENT_TYPES = {
     ".pdf": "application/pdf",
+    ".ics": "text/calendar",
     ".md": "text/markdown",
     ".txt": "text/plain",
     ".csv": "text/csv",
@@ -2127,7 +2128,7 @@ class BasePlatformAdapter(ABC):
         # Extract MEDIA:<path> tags, allowing optional whitespace after the colon
         # and quoted/backticked paths for LLM-formatted outputs.
         media_pattern = re.compile(
-            r'''[`"']?MEDIA:\s*(?P<path>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|(?:~/|/)\S+(?:[^\S\n]+\S+)*?\.(?:png|jpe?g|gif|webp|mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a|flac|epub|pdf|zip|rar|7z|docx?|xlsx?|pptx?|txt|csv|apk|ipa)(?=[\s`"',;:)\]}]|$)|\S+)[`"']?'''
+            r'''[`"']?MEDIA:\s*(?P<path>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|(?:~/|/)\S+(?:[^\S\n]+\S+)*?\.(?:png|jpe?g|gif|webp|mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a|flac|epub|pdf|ics|zip|rar|7z|docx?|xlsx?|pptx?|txt|csv|apk|ipa)(?=[\s`"',;:)\]}]|$)|\S+)[`"']?'''
         )
         for match in media_pattern.finditer(content):
             path = match.group("path").strip()
@@ -2150,7 +2151,7 @@ class BasePlatformAdapter(ABC):
         Detect bare local file paths in response text for native media delivery.
 
         Matches absolute paths (/...) and tilde paths (~/) ending in common
-        image or video extensions.  Validates each candidate with
+        media or document extensions. Validates each candidate with
         ``os.path.isfile()`` to avoid false positives from URLs or
         non-existent paths.
 
@@ -2161,11 +2162,16 @@ class BasePlatformAdapter(ABC):
             Tuple of (list of expanded file paths, cleaned text with the
             raw path strings removed).
         """
-        _LOCAL_MEDIA_EXTS = (
+        _LOCAL_FILE_EXTS = (
             '.png', '.jpg', '.jpeg', '.gif', '.webp',
             '.mp4', '.mov', '.avi', '.mkv', '.webm',
+            '.ogg', '.opus', '.mp3', '.wav', '.m4a', '.flac',
+            '.epub', '.pdf', '.ics', '.zip', '.rar', '.7z',
+            '.doc', '.docx', '.xlsx', '.xls', '.ppt', '.pptx',
+            '.txt', '.md', '.csv', '.json', '.xml', '.yaml', '.yml',
+            '.toml', '.ini', '.cfg', '.apk', '.ipa',
         )
-        ext_part = '|'.join(e.lstrip('.') for e in _LOCAL_MEDIA_EXTS)
+        ext_part = '|'.join(e.lstrip('.') for e in _LOCAL_FILE_EXTS)
 
         # (?<![/:\w.]) prevents matching inside URLs (e.g. https://…/img.png)
         #             and relative paths (./foo.png)

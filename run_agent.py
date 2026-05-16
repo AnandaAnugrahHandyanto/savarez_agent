@@ -2420,8 +2420,18 @@ class AIAgent:
             except Exception as _ce_err:
                 logger.debug("Context engine on_session_start: %s", _ce_err)
 
+        try:
+            from gateway.user_workspace_policy import resolve_task_cwd as _resolve_task_cwd
+
+            _subdir_working_dir = _resolve_task_cwd(
+                getattr(self, "_current_task_id", "") or "",
+                fallback=None,
+            )
+        except Exception:
+            _subdir_working_dir = os.getenv("TERMINAL_CWD") or None
+
         self._subdirectory_hints = SubdirectoryHintTracker(
-            working_dir=os.getenv("TERMINAL_CWD") or None,
+            working_dir=_subdir_working_dir,
         )
         self._user_turn_count = 0
 
@@ -6215,7 +6225,15 @@ class AIAgent:
             # mode).  The gateway process runs from the hermes-agent install
             # dir, so os.getcwd() would pick up the repo's AGENTS.md and
             # other dev files — inflating token usage by ~10k for no benefit.
-            _context_cwd = os.getenv("TERMINAL_CWD") or None
+            try:
+                from gateway.user_workspace_policy import resolve_task_cwd as _resolve_task_cwd
+
+                _context_cwd = _resolve_task_cwd(
+                    getattr(self, "_current_task_id", "") or "",
+                    fallback=None,
+                )
+            except Exception:
+                _context_cwd = os.getenv("TERMINAL_CWD") or None
             context_files_prompt = build_context_files_prompt(
                 cwd=_context_cwd, skip_soul=_soul_loaded)
             if context_files_prompt:
@@ -10933,6 +10951,19 @@ class AIAgent:
                 )
             except Exception:
                 pass
+            if block_message is None:
+                try:
+                    from gateway.user_workspace_policy import (
+                        get_tool_block_message as _workspace_tool_block_message,
+                    )
+
+                    block_message = _workspace_tool_block_message(
+                        function_name,
+                        function_args if isinstance(function_args, dict) else {},
+                        task_id=effective_task_id or "",
+                    )
+                except Exception:
+                    pass
         if block_message is not None:
             return json.dumps({"error": block_message}, ensure_ascii=False)
 
@@ -11080,7 +11111,15 @@ class AIAgent:
                 try:
                     cmd = function_args.get("command", "")
                     if _is_destructive_command(cmd):
-                        cwd = function_args.get("workdir") or os.getenv("TERMINAL_CWD", os.getcwd())
+                        try:
+                            from gateway.user_workspace_policy import resolve_task_cwd as _resolve_task_cwd
+
+                            cwd = function_args.get("workdir") or _resolve_task_cwd(
+                                effective_task_id or "",
+                                fallback=os.getcwd(),
+                            )
+                        except Exception:
+                            cwd = function_args.get("workdir") or os.getenv("TERMINAL_CWD", os.getcwd())
                         self._checkpoint_mgr.ensure_checkpoint(
                             cwd, f"before terminal: {cmd[:60]}"
                         )
@@ -11096,6 +11135,19 @@ class AIAgent:
                 )
             except Exception:
                 block_message = None
+            if block_message is None:
+                try:
+                    from gateway.user_workspace_policy import (
+                        get_tool_block_message as _workspace_tool_block_message,
+                    )
+
+                    block_message = _workspace_tool_block_message(
+                        function_name,
+                        function_args if isinstance(function_args, dict) else {},
+                        task_id=effective_task_id or "",
+                    )
+                except Exception:
+                    pass
 
             if block_message is not None:
                 block_result = json.dumps({"error": block_message}, ensure_ascii=False)
@@ -11474,6 +11526,19 @@ class AIAgent:
                 )
             except Exception:
                 pass
+            if _block_msg is None:
+                try:
+                    from gateway.user_workspace_policy import (
+                        get_tool_block_message as _workspace_tool_block_message,
+                    )
+
+                    _block_msg = _workspace_tool_block_message(
+                        function_name,
+                        function_args if isinstance(function_args, dict) else {},
+                        task_id=effective_task_id or "",
+                    )
+                except Exception:
+                    pass
 
             _guardrail_block_decision: ToolGuardrailDecision | None = None
             if _block_msg is None:
@@ -11546,7 +11611,15 @@ class AIAgent:
                 try:
                     cmd = function_args.get("command", "")
                     if _is_destructive_command(cmd):
-                        cwd = function_args.get("workdir") or os.getenv("TERMINAL_CWD", os.getcwd())
+                        try:
+                            from gateway.user_workspace_policy import resolve_task_cwd as _resolve_task_cwd
+
+                            cwd = function_args.get("workdir") or _resolve_task_cwd(
+                                effective_task_id or "",
+                                fallback=os.getcwd(),
+                            )
+                        except Exception:
+                            cwd = function_args.get("workdir") or os.getenv("TERMINAL_CWD", os.getcwd())
                         self._checkpoint_mgr.ensure_checkpoint(
                             cwd, f"before terminal: {cmd[:60]}"
                         )

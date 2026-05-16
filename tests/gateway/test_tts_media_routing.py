@@ -203,3 +203,63 @@ async def test_streaming_delivery_routes_telegram_mp3_media_tag_to_voice_sender(
         metadata={"thread_id": "topic-1"},
     )
     adapter.send_document.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_streaming_delivery_routes_bare_pdf_path_to_document_sender(monkeypatch):
+    event = _event(thread_id="topic-1")
+    adapter = SimpleNamespace(
+        name="test",
+        extract_media=BasePlatformAdapter.extract_media,
+        extract_images=BasePlatformAdapter.extract_images,
+        extract_local_files=BasePlatformAdapter.extract_local_files,
+        send_voice=AsyncMock(return_value=SendResult(success=True, message_id="voice")),
+        send_document=AsyncMock(return_value=SendResult(success=True, message_id="doc")),
+        send_image_file=AsyncMock(return_value=SendResult(success=True, message_id="image")),
+        send_video=AsyncMock(return_value=SendResult(success=True, message_id="video")),
+    )
+    monkeypatch.setattr("os.path.isfile", lambda p: p == "/tmp/report.pdf")
+
+    await GatewayRunner._deliver_media_from_response(
+        _fake_runner({"thread_id": "topic-1"}),
+        "Finished. File saved to /tmp/report.pdf",
+        event,
+        adapter,
+    )
+
+    adapter.send_document.assert_awaited_once_with(
+        chat_id="chat-1",
+        file_path="/tmp/report.pdf",
+        metadata={"thread_id": "topic-1"},
+    )
+    adapter.send_voice.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_streaming_delivery_routes_bare_ics_path_to_document_sender(monkeypatch):
+    event = _event(thread_id="topic-1")
+    adapter = SimpleNamespace(
+        name="test",
+        extract_media=BasePlatformAdapter.extract_media,
+        extract_images=BasePlatformAdapter.extract_images,
+        extract_local_files=BasePlatformAdapter.extract_local_files,
+        send_voice=AsyncMock(return_value=SendResult(success=True, message_id="voice")),
+        send_document=AsyncMock(return_value=SendResult(success=True, message_id="doc")),
+        send_image_file=AsyncMock(return_value=SendResult(success=True, message_id="image")),
+        send_video=AsyncMock(return_value=SendResult(success=True, message_id="video")),
+    )
+    monkeypatch.setattr("os.path.isfile", lambda p: p == "/tmp/team-sync.ics")
+
+    await GatewayRunner._deliver_media_from_response(
+        _fake_runner({"thread_id": "topic-1"}),
+        "Calendar ready at /tmp/team-sync.ics",
+        event,
+        adapter,
+    )
+
+    adapter.send_document.assert_awaited_once_with(
+        chat_id="chat-1",
+        file_path="/tmp/team-sync.ics",
+        metadata={"thread_id": "topic-1"},
+    )
+    adapter.send_voice.assert_not_awaited()

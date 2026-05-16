@@ -7038,7 +7038,16 @@ class GatewayRunner:
                 from agent.context_references import preprocess_context_references_async
                 from agent.model_metadata import get_model_context_length
 
-                _msg_cwd = os.environ.get("TERMINAL_CWD", os.path.expanduser("~"))
+                try:
+                    from gateway.user_workspace_policy import resolve_policy_for_source
+
+                    _source_policy = resolve_policy_for_source(source)
+                    if _source_policy and _source_policy.restricted:
+                        _msg_cwd = _source_policy.workspace_dir
+                    else:
+                        _msg_cwd = os.environ.get("TERMINAL_CWD", os.path.expanduser("~"))
+                except Exception:
+                    _msg_cwd = os.environ.get("TERMINAL_CWD", os.path.expanduser("~"))
                 _msg_runtime = _resolve_runtime_agent_kwargs()
                 _msg_config_ctx = None
                 try:
@@ -15714,6 +15723,13 @@ class GatewayRunner:
                         _run_message = message
                 else:
                     _run_message = message
+
+                try:
+                    from gateway.user_workspace_policy import apply_policy_to_task
+
+                    apply_policy_to_task(session_id, source)
+                except Exception as _policy_exc:
+                    logger.debug("user workspace policy apply failed: %s", _policy_exc)
 
                 result = agent.run_conversation(_run_message, conversation_history=agent_history, task_id=session_id)
             finally:

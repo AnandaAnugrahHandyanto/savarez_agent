@@ -18,6 +18,79 @@ _MOCK_VALIDATION = {
 }
 
 
+def test_switch_model_parses_custom_prefix_as_provider(monkeypatch):
+    """Typed `/model custom:<model>` should switch the model on the existing
+    custom endpoint instead of persisting the full prefixed string as the model.
+
+    Regression: gateway session overrides were storing ``custom:qwen...`` as
+    the actual model name, which later caused Ollama 404s because the endpoint
+    only knows ``qwen...``.
+    """
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda **kwargs: {
+            "provider": "custom",
+            "api_key": "ollama",
+            "base_url": "http://127.0.0.1:11434/v1",
+            "api_mode": "chat_completions",
+        },
+    )
+    monkeypatch.setattr("hermes_cli.models.validate_requested_model", lambda *a, **k: _MOCK_VALIDATION)
+    monkeypatch.setattr("hermes_cli.model_switch.get_model_info", lambda *a, **k: None)
+    monkeypatch.setattr("hermes_cli.model_switch.get_model_capabilities", lambda *a, **k: None)
+
+    result = switch_model(
+        raw_input="custom:qwen3-14b-64k",
+        current_provider="custom",
+        current_model="llama3.2:latest",
+        current_base_url="http://127.0.0.1:11434/v1",
+        current_api_key="ollama",
+    )
+
+    assert result.success is True
+    assert result.target_provider == "custom"
+    assert result.new_model == "qwen3-14b-64k"
+    assert result.base_url == "http://127.0.0.1:11434/v1"
+
+
+def test_switch_model_parses_named_provider_prefix_for_openrouter(monkeypatch):
+    """Typed `/model openrouter:openrouter/free` should switch providers even
+    when the current session is on a custom/Ollama endpoint.
+
+    Regression: the full string was validated against the current custom
+    endpoint instead of resolving OpenRouter credentials first.
+    """
+    calls = []
+
+    def _fake_runtime(*, requested, target_model):
+        calls.append((requested, target_model))
+        return {
+            "provider": "openrouter",
+            "api_key": "sk-or-test",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_mode": "chat_completions",
+        }
+
+    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", _fake_runtime)
+    monkeypatch.setattr("hermes_cli.models.validate_requested_model", lambda *a, **k: _MOCK_VALIDATION)
+    monkeypatch.setattr("hermes_cli.model_switch.get_model_info", lambda *a, **k: None)
+    monkeypatch.setattr("hermes_cli.model_switch.get_model_capabilities", lambda *a, **k: None)
+
+    result = switch_model(
+        raw_input="openrouter:openrouter/free",
+        current_provider="custom",
+        current_model="llama3.2:latest",
+        current_base_url="http://127.0.0.1:11434/v1",
+        current_api_key="ollama",
+    )
+
+    assert result.success is True
+    assert result.target_provider == "openrouter"
+    assert result.new_model == "openrouter/free"
+    assert result.base_url == "https://openrouter.ai/api/v1"
+    assert calls == [("openrouter", "openrouter/free")]
+
+
 def test_list_authenticated_providers_includes_custom_providers(monkeypatch):
     """No-args /model menus should include saved custom_providers entries."""
     monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})

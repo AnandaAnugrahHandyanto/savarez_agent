@@ -785,6 +785,20 @@ def handle_function_call(
             except Exception as _hook_err:
                 logger.debug("pre_tool_call hook error: %s", _hook_err)
 
+            if block_message is None:
+                try:
+                    from gateway.user_workspace_policy import (
+                        get_tool_block_message as _workspace_tool_block_message,
+                    )
+
+                    block_message = _workspace_tool_block_message(
+                        function_name,
+                        function_args if isinstance(function_args, dict) else {},
+                        task_id=task_id or "",
+                    )
+                except Exception as _policy_err:
+                    logger.debug("workspace policy check error: %s", _policy_err)
+
             if block_message is not None:
                 return json.dumps({"error": block_message}, ensure_ascii=False)
 

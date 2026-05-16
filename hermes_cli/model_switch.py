@@ -663,6 +663,7 @@ def switch_model(
     from hermes_cli.models import (
         copilot_model_api_mode,
         detect_provider_for_model,
+        parse_model_input,
         validate_requested_model,
         opencode_model_api_mode,
     )
@@ -745,8 +746,30 @@ def switch_model(
     # PATH B: No explicit provider — resolve from model input
     # =================================================================
     else:
+        # --- Step 0: Parse provider:model input up front ---
+        #
+        # ``parse_model_input`` already knows which left-hand prefixes are
+        # real provider identifiers and when a colon should remain part of the
+        # model id (for example OpenRouter ``:free`` variants).  Running this
+        # first prevents session /model switches from accidentally persisting
+        # the entire raw string as the model name, e.g.:
+        #
+        #   /model custom:qwen3-14b-64k
+        #   /model openrouter:openrouter/free
+        #
+        # Without this pre-parse, the downstream path treated those as bare
+        # model ids on the current provider, which then stored
+        # ``custom:qwen3-14b-64k`` as the actual model name and later produced
+        # runtime 404s against Ollama / other custom endpoints.
+        parsed_provider, parsed_model = parse_model_input(raw_input, current_provider)
+        if parsed_provider != current_provider or parsed_model != raw_input.strip():
+            target_provider = parsed_provider
+            new_model = parsed_model
+
         # --- Step a: Try alias resolution on current provider ---
-        alias_result = resolve_alias(raw_input, current_provider)
+        alias_lookup = new_model if target_provider != current_provider else raw_input
+        alias_provider = target_provider
+        alias_result = resolve_alias(alias_lookup, alias_provider)
 
         if alias_result is not None:
             target_provider, new_model, resolved_alias = alias_result
@@ -756,14 +779,14 @@ def switch_model(
             )
         else:
             # --- Step b: Alias exists but not on current provider -> fallback ---
-            key = raw_input.strip().lower()
+            key = (alias_lookup or "").strip().lower()
             if key in MODEL_ALIASES:
                 authed = get_authenticated_provider_slugs(
                     current_provider=current_provider,
                     user_providers=user_providers,
                     custom_providers=custom_providers,
                 )
-                fallback_result = _resolve_alias_fallback(raw_input, authed)
+                fallback_result = _resolve_alias_fallback(alias_lookup, authed)
                 if fallback_result is not None:
                     target_provider, new_model, resolved_alias = fallback_result
                     logger.debug(
@@ -786,16 +809,17 @@ def switch_model(
                 # Only convert when there's no slash — a slash means the name
                 # is already in vendor/model format and the colon is a variant
                 # tag (:free, :extended, :fast) that must be preserved.
-                colon_pos = raw_input.find(":")
-                if colon_pos > 0 and "/" not in raw_input and is_aggregator(current_provider):
-                    left = raw_input[:colon_pos].strip().lower()
-                    right = raw_input[colon_pos + 1:].strip()
+                raw_for_conversion = alias_lookup
+                colon_pos = raw_for_conversion.find(":")
+                if colon_pos > 0 and "/" not in raw_for_conversion and is_aggregator(target_provider):
+                    left = raw_for_conversion[:colon_pos].strip().lower()
+                    right = raw_for_conversion[colon_pos + 1:].strip()
                     if left and right:
                         # Colons become slashes for aggregator slugs
                         new_model = f"{left}/{right}"
                         logger.debug(
                             "Converted vendor:model '%s' to aggregator slug '%s'",
-                            raw_input, new_model,
+                            raw_for_conversion, new_model,
                         )
 
         # --- Step d: Aggregator catalog search ---
