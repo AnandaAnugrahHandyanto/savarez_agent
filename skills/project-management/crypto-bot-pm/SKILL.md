@@ -191,13 +191,17 @@ direct database insertion or token-printing workarounds.
 Runner recovery is not product work and remains gated. If the Operator
 explicitly authorizes local `crypto_bot` runner recovery, use
 `/Users/preston/.hermes/hermes-agent/tools/crypto_bot_gitea_runner_recovery.py --inspect`
-first. Execution requires the helper's exact approval phrase and may recreate
-only the `crypto-bot-linux-runner` container with the correct act_runner image
-contract: `GITEA_RUNNER_REGISTRATION_TOKEN`, `/data/.runner`,
-`crypto-bot-gitea-net`, and labels `linux,crypto-bot-python-313`. It must not
-dispatch workflows, update PR metadata/comments/statuses/checks, merge, edit
-workflow files, touch product files, print secrets, or insert tokens directly
-into the database.
+first. If inspect already reports `PASS`, the approved container is up,
+registered successfully, and token/instance empty loops are absent, consume the
+approval conservatively: do not run `--execute`, recreate the container, or
+otherwise mutate runtime state just because approval was granted. Report the
+healthy runner state and continue only with read-only CI evidence checks.
+Execution requires the helper's exact approval phrase and may recreate only the
+`crypto-bot-linux-runner` container with the correct act_runner image contract:
+`GITEA_RUNNER_REGISTRATION_TOKEN`, `/data/.runner`, `crypto-bot-gitea-net`, and
+labels `linux,crypto-bot-python-313`. It must not dispatch workflows, update PR
+metadata/comments/statuses/checks, merge, edit workflow files, touch product
+files, print secrets, or insert tokens directly into the database.
 
 Keep readiness split into `local_evidence_ready`, `remote_readiness_ready`,
 `pr_evidence_ready`, `ci_evidence_ready`, `merge_readiness_ready`,
@@ -312,7 +316,9 @@ payload used by readiness when no explicit remote-readiness JSON is supplied,
 then classify the result as a valid remote lifecycle block such as
 `IMPORT_VALID_REMOTE_LIFECYCLE_BLOCKED` when PR exists but CI evidence remains
 pending. See `references/control-plane-lifecycle-consistency.md` for the
-session-derived repair recipe, validator quartet, and reporting pattern.
+session-derived repair recipe, validator quartet, and reporting pattern. See
+`references/runner-recovery-ci-evidence.md` for the gated runner-recovery
+inspection-first pattern and runner-label mismatch triage.
 
 Evidence issue statuses are `active`, `repair_attempted`, `repaired`,
 `invalidated`, and `superseded`. A dev13-005-style completion failure stays
