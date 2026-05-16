@@ -1743,6 +1743,26 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
         def _process_job(job: dict) -> bool:
             """Run one due job end-to-end: execute, save, deliver, mark."""
             try:
+                # --- Pre-execution condition gate ---
+                # If the job has a condition script, run it first. A non-zero
+                # exit code means "skip this tick" — no execution, no delivery,
+                # no notification. next_run_at was already advanced above.
+                _condition_script = job.get("condition")
+                if _condition_script:
+                    _cond_ok, _cond_output = _run_job_script(_condition_script)
+                    if not _cond_ok:
+                        logger.info(
+                            "Job '%s': condition script '%s' returned non-zero — skipping",
+                            job["id"], _condition_script,
+                        )
+                        mark_job_run(job["id"], True, None)  # success=True, no error
+                        return True
+                    if _cond_ok and not _cond_output.strip():
+                        # Condition passed with empty output — proceed silently
+                        logger.debug(
+                            "Job '%s': condition passed (no output)", job["id"]
+                        )
+
                 success, output, final_response, error = run_job(job)
 
                 output_file = save_job_output(job["id"], output)
