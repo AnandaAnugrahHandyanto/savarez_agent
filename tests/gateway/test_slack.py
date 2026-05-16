@@ -53,8 +53,12 @@ def _ensure_slack_mock():
     ]:
         sys.modules.setdefault(name, mod)
 
-    # aiohttp is imported alongside slack-bolt; mock it if missing
-    sys.modules.setdefault("aiohttp", MagicMock())
+    # aiohttp is imported alongside slack-bolt. Do not shadow the real package,
+    # because api_server tests import aiohttp.test_utils in the same xdist workers.
+    try:
+        __import__("aiohttp")
+    except ImportError:
+        sys.modules.setdefault("aiohttp", MagicMock())
 
 
 _ensure_slack_mock()
