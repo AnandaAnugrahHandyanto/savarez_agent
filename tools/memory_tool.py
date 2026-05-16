@@ -169,6 +169,47 @@ class MemoryStore:
             "user": self._render_block("user", sanitized_user),
         }
 
+    def get_readout(self) -> dict:
+        """Return current memory state for display by platform handlers.
+
+        Re-reads from disk to pick up writes from other sessions, then
+        returns a structured dict with entries, character counts, limits,
+        and percentages for both stores.
+
+        Returns:
+            {
+                "memory": {
+                    "entries": [...],
+                    "char_count": int,
+                    "char_limit": int,
+                    "pct": int,
+                },
+                "user": {
+                    "entries": [...],
+                    "char_count": int,
+                    "char_limit": int,
+                    "pct": int,
+                },
+            }
+        """
+        self.load_from_disk()
+
+        def _build(target: str, entries: list) -> dict:
+            count = len(ENTRY_DELIMITER.join(entries)) if entries else 0
+            limit = self._char_limit(target)
+            pct = min(100, int((count / limit) * 100)) if limit > 0 else 0
+            return {
+                "entries": entries,
+                "char_count": count,
+                "char_limit": limit,
+                "pct": pct,
+            }
+
+        return {
+            "memory": _build("memory", self.memory_entries),
+            "user": _build("user", self.user_entries),
+        }
+
     @staticmethod
     def _sanitize_entries_for_snapshot(entries: List[str], filename: str) -> List[str]:
         """Return ``entries`` with any threat-matching entry replaced by a placeholder.
