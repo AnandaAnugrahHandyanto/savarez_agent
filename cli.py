@@ -4539,6 +4539,18 @@ class HermesCLI:
             # logged at DEBUG by the advisory module.
             pass
 
+    def _show_plugin_startup_advisories(self):
+        """Render plugin startup advisories in the banner-to-welcome slot."""
+        try:
+            from hermes_cli.plugins import get_plugin_manager
+
+            advisories = get_plugin_manager().get_startup_advisories()
+            for advisory in advisories:
+                print(advisory, file=sys.stderr, flush=True)
+        except Exception:
+            # Plugin advisories are best-effort and must never block startup.
+            pass
+
     def show_banner(self):
         """Display the welcome banner in Claude Code style."""
         self.console.clear()
@@ -11560,6 +11572,9 @@ class HermesCLI:
         # Surface any active supply-chain security advisories right after the
         # welcome banner. Quiet/single-query paths call this themselves.
         self._show_security_advisories()
+        # Give plugins the same visible startup slot for update/auth/config
+        # notices without injecting messages into the LLM conversation.
+        self._show_plugin_startup_advisories()
         # If resuming a session, load history and display it immediately
         # so the user has context before typing their first message.
         if self._resumed:
@@ -14154,6 +14169,7 @@ def main(
             # Surface security advisories before the agent runs — short
             # banner, doesn't depend on the welcome banner being shown.
             cli._show_security_advisories()
+            cli._show_plugin_startup_advisories()
             cli.chat(query, images=single_query_images or None)
             cli._print_exit_summary()
         return

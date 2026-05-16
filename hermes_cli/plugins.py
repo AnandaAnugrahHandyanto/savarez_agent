@@ -382,6 +382,22 @@ class PluginContext:
             cli._pending_input.put(msg)
         return True
 
+    # -- startup advisories -------------------------------------------------
+
+    def register_startup_advisory(self, callback: Callable[[], Any]) -> None:
+        """Register a one-line advisory rendered during interactive startup.
+
+        The callback is evaluated after the CLI banner and before the welcome
+        text, giving plugins a visible place for update, auth, or config
+        notices without injecting messages into the LLM conversation.
+        """
+        self._manager._startup_advisories.append((self.manifest.name, callback))
+        logger.debug(
+            "Plugin %s registered startup advisory: %s",
+            self.manifest.name,
+            getattr(callback, "__name__", repr(callback)),
+        )
+
     # -- CLI command registration --------------------------------------------
 
     def register_cli_command(
@@ -750,6 +766,7 @@ class PluginManager:
         self._cli_ref = None  # Set by CLI after plugin discovery
         # Plugin skill registry: qualified name → metadata dict.
         self._plugin_skills: Dict[str, Dict[str, Any]] = {}
+        self._startup_advisories: List[tuple[str, Callable[[], Any]]] = []
 
     # -----------------------------------------------------------------------
     # Public
@@ -771,6 +788,7 @@ class PluginManager:
             self._cli_commands.clear()
             self._plugin_commands.clear()
             self._plugin_skills.clear()
+            self._startup_advisories.clear()
             self._context_engine = None
         self._discovered = True
 
@@ -1297,6 +1315,31 @@ class PluginManager:
                 )
         return results
 
+    def get_startup_advisories(self) -> List[str]:
+        """Return visible one-line startup advisories registered by plugins.
+
+        Each plugin callback is isolated so a broken advisory cannot block
+        startup. Empty or ``None`` values are ignored. Newlines are collapsed
+        so the startup slot remains compact and predictable.
+        """
+        advisories: List[str] = []
+        for plugin_name, callback in list(self._startup_advisories):
+            try:
+                value = callback()
+            except Exception as exc:
+                logger.warning(
+                    "Plugin '%s' startup advisory callback raised: %s",
+                    plugin_name,
+                    exc,
+                )
+                continue
+            if value is None:
+                continue
+            text = " ".join(str(value).split()).strip()
+            if text:
+                advisories.append(text)
+        return advisories
+
     # -----------------------------------------------------------------------
     # Introspection
     # -----------------------------------------------------------------------
@@ -1375,6 +1418,11 @@ def invoke_hook(hook_name: str, **kwargs: Any) -> List[Any]:
     Returns a list of non-``None`` return values from plugin callbacks.
     """
     return get_plugin_manager().invoke_hook(hook_name, **kwargs)
+
+
+def get_startup_advisories() -> List[str]:
+    """Return startup advisories from all loaded plugins."""
+    return get_plugin_manager().get_startup_advisories()
 
 
 

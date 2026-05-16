@@ -102,6 +102,7 @@ Every `ctx.*` API below is available inside a plugin's `register(ctx)` function.
 | Add slash commands | `ctx.register_command(name, handler, description)` — adds `/name` in CLI and gateway sessions |
 | Dispatch tools from commands | `ctx.dispatch_tool(name, args)` — invokes a registered tool with parent-agent context auto-wired |
 | Add CLI commands | `ctx.register_cli_command(name, help, setup_fn, handler_fn)` — adds `hermes <plugin> <subcommand>` |
+| Show startup advisories | `ctx.register_startup_advisory(callback)` — prints one-line CLI startup notices before the welcome text |
 | Inject messages | `ctx.inject_message(content, role="user")` — see [Injecting Messages](#injecting-messages) |
 | Ship data files | `Path(__file__).parent / "data" / "file.yaml"` |
 | Bundle skills | `ctx.register_skill(name, path)` — namespaced as `plugin:skill`, loaded via `skill_view("plugin:skill")` |
@@ -225,6 +226,7 @@ The table above shows the four plugin categories, but within "General plugins" t
 | A **lifecycle hook** (pre/post LLM, session start/end, tool filter) | Python plugin — `ctx.register_hook()` | [Hooks reference](/docs/user-guide/features/hooks) · [Build a Hermes Plugin](/docs/guides/build-a-hermes-plugin) |
 | A **slash command** for the CLI / gateway | Python plugin — `ctx.register_command()` | [Build a Hermes Plugin](/docs/guides/build-a-hermes-plugin) · [Extending the CLI](/docs/developer-guide/extending-the-cli) |
 | A **subcommand** for `hermes <thing>` | Python plugin — `ctx.register_cli_command()` | [Extending the CLI](/docs/developer-guide/extending-the-cli) |
+| A **visible CLI startup notice** that should not become an LLM message | Python plugin — `ctx.register_startup_advisory()` | [Startup Advisories](#startup-advisories) |
 | A bundled **skill** that your plugin ships | Python plugin — `ctx.register_skill()` | [Creating Skills](/docs/developer-guide/creating-skills) |
 | An **inference backend** (LLM provider: OpenAI-compat, Codex, Anthropic-Messages, Bedrock) | Provider plugin — `register_provider(ProviderProfile(...))` in `plugins/model-providers/<name>/` | **[Model Provider Plugins](/docs/developer-guide/model-provider-plugin)** · [Adding Providers](/docs/developer-guide/adding-providers) |
 | A **gateway channel** (Discord / Telegram / IRC / Teams / etc.) | Platform plugin — `ctx.register_platform()` in `plugins/platforms/<name>/` | [Adding Platform Adapters](/docs/developer-guide/adding-platform-adapters) |
@@ -319,6 +321,26 @@ Plugins occupy one of three states:
 The default for a newly-installed or bundled plugin is `not enabled`. `hermes plugins list` shows all three distinct states so you can tell what's been explicitly turned off vs. what's just waiting to be enabled.
 
 In a running session, `/plugins` shows which plugins are currently loaded.
+
+## Startup Advisories
+
+Plugins can register a one-line startup notice using `ctx.register_startup_advisory()`:
+
+```python
+def register(ctx):
+    ctx.register_startup_advisory(
+        lambda: "⚠ Update available: 0.3.8 → 0.3.10. Run: hermes plugins update my-plugin"
+    )
+```
+
+**Signature:** `ctx.register_startup_advisory(callback: Callable[[], str | None]) -> None`
+
+How it works:
+
+- Hermes evaluates advisory callbacks during CLI startup after the banner/security advisories and before the welcome text.
+- Notices are printed to stderr so they are visible but are not injected into the conversation or sent to the LLM.
+- Empty or `None` return values are ignored, so plugins can cheaply check whether a notice is needed.
+- Exceptions are logged and skipped; a broken advisory never blocks startup.
 
 ## Injecting Messages
 

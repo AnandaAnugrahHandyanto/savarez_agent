@@ -494,6 +494,51 @@ class TestPluginHooks:
         assert any("on_banana" in record.message for record in caplog.records)
 
 
+class TestPluginStartupAdvisories:
+    """Tests for plugin-registered startup advisories."""
+
+    def test_register_startup_advisory_collects_visible_message(self, tmp_path, monkeypatch):
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        _make_plugin_dir(
+            plugins_dir,
+            "update_plugin",
+            register_body=(
+                'ctx.register_startup_advisory('
+                'lambda: "⚠ Update available: 0.3.8 → 0.3.10")'
+            ),
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        assert mgr.get_startup_advisories() == ["⚠ Update available: 0.3.8 → 0.3.10"]
+
+    def test_startup_advisories_ignore_empty_values_and_survive_exceptions(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        _make_plugin_dir(
+            plugins_dir,
+            "mixed_plugin",
+            register_body=(
+                'ctx.register_startup_advisory(lambda: "")\n'
+                '    ctx.register_startup_advisory(lambda: None)\n'
+                '    ctx.register_startup_advisory(lambda: 1/0)\n'
+                '    ctx.register_startup_advisory(lambda: "stale auth token")'
+            ),
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"):
+            assert mgr.get_startup_advisories() == ["stale auth token"]
+
+        assert any("startup advisory" in record.message for record in caplog.records)
+
+
 class TestPreToolCallBlocking:
     """Tests for the pre_tool_call block directive helper."""
 
