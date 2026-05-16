@@ -75,6 +75,7 @@ export function AlternateScreen(t0: Props) {
           (enableMouse || DISABLE_MOUSE_TRACKING)
       )
       ink?.setAltScreenActive(true, mouseTracking)
+      ink?.setAltScreenMouseTracking(mouseTracking)
 
       return () => {
         ink?.setAltScreenActive(false)
