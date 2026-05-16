@@ -65,5 +65,72 @@ These commits are on upstream main but not in our local object store (after last
 
 - `627f8a5f` security: sanitize tool error strings before injecting into model context (May 16)
 - `585d6b64` fix(gateway): merge rapid TEXT follow-ups during active sessions (May 16)
+- `068c24f8` feat(deepseek): add thinking.type + reasoning_effort mapping for DeepSeek API (Apr 24)
+- `518f3955` fix(gateway): keep running when platforms fail; per-platform circuit breaker (May 15)
+- `2d7182f7` fix(delegate): prevent orphan heartbeat thread (May 15)
+- `60683633` fix(delegate): guard heartbeat join against unstarted thread (May 15)
+- `6ba35ec3` terminal: tighten dangerous-command detection (May 16)
+- `016c772e` feat(plugins): tool override flag for replacing built-in tools (May 16)
+- `395e9dd9` feat: supports_parallel_tool_calls for MCP servers (May 16)
+- `4e89c530` fix(async): close unscheduled coroutines in threadsafe bridges (May 15)
 
-To pick these, we'd need to fetch upstream into a non-runtime temp clone, then cherry-pick from there.
+### P159 — Skip providers without credentials
+- **Cherry-picked:** 2026-05-16
+- **Upstream:** `057f5a31` fix(auxiliary): skip providers without credentials immediately
+- **Local:** `f15858e90`
+- **Files:** agent/auxiliary_client.py
+- **Why:** Faster session startup — don't attempt providers that have no credentials.
+
+### P160 — Stop retrying initial MCP auth failures
+- **Cherry-picked:** 2026-05-16
+- **Upstream:** `1247ff2d` fix: stop retrying initial MCP auth failures
+- **Local:** `db6a090fd`
+- **Files:** 2 files in agent/
+- **Why:** MCP tools fail fast instead of retry-looping on auth errors.
+
+### P161 — Perf: list+join in agent loop
+- **Cherry-picked:** 2026-05-16
+- **Upstream:** `4f8aaf10` perf(run_agent): accumulate length-continuation prefix via list+join
+- **Local:** `d5f60d81a`
+- **Files:** run_agent.py
+- **Why:** Lower latency, less memory pressure — replaces repeated string concatenation with list append/join.
+
+### P162 — Terminal safety filter false positives
+- **Cherry-picked:** 2026-05-16
+- **Upstream:** `364ddd45` fix(terminal): prevent safety filter false positives on keywords inside quoted strings
+- **Local:** `72d243b5e`
+- **Files:** tools/terminal_tool.py
+- **Why:** Our terminal commands get blocked less often when keywords appear inside quoted strings.
+
+### P163 — Gateway forward images to background tasks
+- **Cherry-picked:** 2026-05-16
+- **Upstream:** `3adde245` fix(gateway): forward image attachments to background agent tasks
+- **Local:** `a9e7eb773`
+- **Files:** gateway/run.py
+- **Why:** Image attachments in cron/scheduled tasks actually get forwarded to the agent.
+
+### P164 — Telegram model-switch fix
+- **Cherry-picked:** 2026-05-16
+- **Upstream:** `26deeea8` fix(telegram): restore model-switch success path + author map
+- **Local:** `5fce0dfd9`
+- **Files:** gateway/platforms/telegram.py
+- **Why:** Model switching in Telegram works again. Uses format_message() wrapper for safe markdown.
+- **Conflict:** telegram.py (MARKDOWN_V2 + format_message wrapper — accepted incoming), test file deleted (kept our deletion).
+
+### P165 — Gateway 429 rate-limit guard
+- **Cherry-picked:** 2026-05-16
+- **Upstream:** `23ac522d` fix(gateway): isinstance-guard string-form 429 error body
+- **Local:** `09b31ea09`
+- **Files:** gateway/run.py
+- **Why:** Properly handles rate-limit responses when OpenRouter throttles us.
+
+### P166 — Cron name-based lookup
+- **Cherry-picked:** 2026-05-16
+- **Upstream:** `6682f91b` feat(cron): support name-based lookup for job operations
+- **Local:** `ccbef02ed`
+- **Files:** cron/jobs.py, hermes_cli/cron.py, tools/cronjob_tools.py
+- **Why:** Use `cronjob action="list" --name="..."` instead of hunting job IDs. Directly useful for our 14+ cron jobs.
+
+## Skipped (not applicable)
+
+- `12f755c9` fix(codex-runtime): retire wedged sessions — Codex-only, we use DeepSeek. Files deleted in our tree.
