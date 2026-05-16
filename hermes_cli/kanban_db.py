@@ -93,6 +93,15 @@ from toolsets import get_toolset_names
 VALID_STATUSES = {"triage", "todo", "ready", "running", "blocked", "done", "archived"}
 VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
 KNOWN_TOOLSET_NAMES = frozenset(name.casefold() for name in get_toolset_names())
+VALID_MODEL_TIERS = {"cheap", "standard", "strong"}
+HIGH_RISK_MODEL_PROFILES = {"backend-eng", "frontend-eng", "reviewer", "verifier", "ops"}
+
+
+def load_config() -> dict:
+    """Late-bound config loader kept patchable in tests."""
+    from hermes_cli.config import load_config as _load_config
+
+    return _load_config()
 
 # A running task's claim is valid for 15 minutes; after that the next
 # dispatcher tick reclaims it.  Workers that outlive this window should call
@@ -574,6 +583,8 @@ class Task:
     claim_lock: Optional[str]
     claim_expires: Optional[int]
     tenant: Optional[str]
+    model_tier: Optional[str] = None
+    model_tier_escalated_to: Optional[str] = None
     result: Optional[str] = None
     idempotency_key: Optional[str] = None
     # Unified non-success counter. Incremented on any of:
@@ -635,6 +646,10 @@ class Task:
             claim_lock=row["claim_lock"],
             claim_expires=row["claim_expires"],
             tenant=row["tenant"] if "tenant" in keys else None,
+            model_tier=(row["model_tier"] if "model_tier" in keys else None),
+            model_tier_escalated_to=(
+                row["model_tier_escalated_to"] if "model_tier_escalated_to" in keys else None
+            ),
             result=row["result"] if "result" in keys else None,
             idempotency_key=row["idempotency_key"] if "idempotency_key" in keys else None,
             consecutive_failures=(
@@ -791,6 +806,11 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- Appended to the dispatcher's built-in `--skills kanban-worker`.
     -- NULL or empty array = no extras.
     skills               TEXT,
+    -- Optional task-level model tier routing. NULL preserves the assignee
+    -- profile's default provider/model. Escalated-to is set only by the
+    -- cheap-startup bounded recovery path.
+    model_tier          TEXT CHECK (model_tier IS NULL OR model_tier IN ('cheap','standard','strong')),
+    model_tier_escalated_to TEXT CHECK (model_tier_escalated_to IS NULL OR model_tier_escalated_to IN ('cheap','standard','strong')),
     -- Per-task override for the consecutive-failure circuit breaker.
     -- The value is the failure count at which the breaker trips — e.g.
     -- ``max_retries=1`` blocks on the first failure. NULL (the common
@@ -1068,6 +1088,11 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
         # for existing rows.
         _add_column_if_missing(conn, "tasks", "skills", "skills TEXT")
 
+    if "model_tier" not in cols:
+        conn.execute("ALTER TABLE tasks ADD COLUMN model_tier TEXT")
+    if "model_tier_escalated_to" not in cols:
+        conn.execute("ALTER TABLE tasks ADD COLUMN model_tier_escalated_to TEXT")
+
     if "max_retries" not in cols:
         # Per-task override for the consecutive-failure circuit breaker.
         # NULL = fall through to the dispatcher-level ``kanban.failure_limit``
@@ -1214,6 +1239,160 @@ def _claimer_id() -> str:
     return f"{host}:{os.getpid()}"
 
 
+
+# ---------------------------------------------------------------------------
+# Model tier routing
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class ModelOverride:
+    requested_tier: str
+    effective_tier: str
+    provider: str
+    model: str
+    model_escalated: bool = False
+
+
+def _normalize_model_tier(model_tier: Optional[str]) -> Optional[str]:
+    if model_tier is None:
+        return None
+    tier = str(model_tier).strip().lower()
+    if not tier:
+        return None
+    if tier not in VALID_MODEL_TIERS:
+        raise ValueError(
+            f"model_tier must be one of {sorted(VALID_MODEL_TIERS)}, got {model_tier!r}"
+        )
+    return tier
+
+
+def _should_warn_model_tier_policy(assignee: Optional[str], model_tier: Optional[str]) -> bool:
+    return bool(model_tier == "cheap" and assignee in HIGH_RISK_MODEL_PROFILES)
+
+
+def resolve_task_model_override(task: Task, config: Optional[dict] = None) -> Optional[ModelOverride]:
+    """Resolve explicit task-tier provider/model override, preserving no-tier defaults."""
+    requested = _normalize_model_tier(task.model_tier)
+    if requested is None:
+        return None
+    effective = _normalize_model_tier(task.model_tier_escalated_to) or requested
+    cfg = config if config is not None else load_config()
+    mapping = (((cfg or {}).get("kanban") or {}).get("model_tiers") or {}).get(effective)
+    if not isinstance(mapping, dict):
+        raise ValueError(f"missing kanban.model_tiers.{effective} provider/model mapping")
+    provider = str(mapping.get("provider") or "").strip()
+    model = str(mapping.get("model") or "").strip()
+    if not provider or not model:
+        raise ValueError(f"invalid kanban.model_tiers.{effective}: provider and model are required")
+    return ModelOverride(
+        requested_tier=requested,
+        effective_tier=effective,
+        provider=provider,
+        model=model,
+        model_escalated=(effective != requested),
+    )
+
+
+def _model_override_metadata(override: Optional[ModelOverride], task: Task) -> dict[str, Any]:
+    return {
+        "requested_model_tier": task.model_tier,
+        "effective_model_tier": override.effective_tier if override else None,
+        "provider": override.provider if override else None,
+        "model": override.model if override else None,
+        "model_escalated": bool(override.model_escalated) if override else False,
+    }
+
+
+def _set_active_run_metadata(conn: sqlite3.Connection, task_id: str, metadata: dict[str, Any]) -> None:
+    run_id = _current_run_id(conn, task_id)
+    if run_id is None:
+        return
+    row = conn.execute("SELECT metadata FROM task_runs WHERE id = ?", (run_id,)).fetchone()
+    base: dict[str, Any] = {}
+    if row and row["metadata"]:
+        try:
+            parsed = json.loads(row["metadata"])
+            if isinstance(parsed, dict):
+                base.update(parsed)
+        except Exception:
+            pass
+    base.update(metadata)
+    conn.execute(
+        "UPDATE task_runs SET metadata = ? WHERE id = ?",
+        (json.dumps(base, ensure_ascii=False), run_id),
+    )
+
+
+def _is_model_startup_failure(error: str) -> bool:
+    text = (error or "").lower()
+    startup_terms = (
+        "unsupported model", "unknown model", "model not found", "invalid model",
+        "provider", "auth", "unauthorized", "quota", "rate limit", "resolution",
+        "could not start", "startup", "launch", "missing bearer",
+    )
+    return any(term in text for term in startup_terms)
+
+
+def _maybe_escalate_cheap_startup_failure(
+    conn: sqlite3.Connection,
+    task: Task,
+    error: str,
+    *,
+    model_override: Optional[ModelOverride],
+    startup_failure: bool = False,
+) -> bool:
+    """Bounded cheap-tier startup escalation. Returns True when requeued."""
+    if task.model_tier != "cheap" or task.model_tier_escalated_to is not None:
+        return False
+    if not startup_failure and not _is_model_startup_failure(error):
+        return False
+    cfg = (load_config().get("kanban") or {}).get("cheap_startup_escalation") or {}
+    if cfg.get("enabled", True) is False:
+        return False
+    try:
+        max_escalations = int(cfg.get("max_escalations_per_task", 1))
+    except Exception:
+        max_escalations = 1
+    if max_escalations < 1:
+        return False
+    target = _normalize_model_tier(cfg.get("target_tier", "standard")) or "standard"
+    if target == "strong":
+        return False
+    if target == "cheap":
+        return False
+    with write_txn(conn):
+        cur = conn.execute(
+            "UPDATE tasks SET status = 'ready', claim_lock = NULL, claim_expires = NULL, "
+            "worker_pid = NULL, model_tier_escalated_to = ?, last_failure_error = ? "
+            "WHERE id = ? AND status = 'running' AND model_tier = 'cheap' "
+            "AND model_tier_escalated_to IS NULL",
+            (target, error[:500], task.id),
+        )
+        if cur.rowcount != 1:
+            return False
+        meta = _model_override_metadata(model_override, task)
+        meta.update({"startup_failure": error[:500], "escalated_to": target})
+        run_id = _end_run(
+            conn, task.id,
+            outcome="spawn_failed", status="spawn_failed",
+            error=error[:500],
+            metadata=meta,
+        )
+        _append_event(
+            conn,
+            task.id,
+            "model_escalation",
+            {
+                "from_tier": "cheap",
+                "to_tier": target,
+                "error": error[:500],
+                "provider": model_override.provider if model_override else None,
+                "model": model_override.model if model_override else None,
+            },
+            run_id=run_id,
+        )
+    return True
+
 # ---------------------------------------------------------------------------
 # Task creation / mutation
 # ---------------------------------------------------------------------------
@@ -1244,6 +1423,7 @@ def create_task(
     max_runtime_seconds: Optional[int] = None,
     skills: Optional[Iterable[str]] = None,
     max_retries: Optional[int] = None,
+    model_tier: Optional[str] = None,
 ) -> str:
     """Create a new task and optionally link it under parent tasks.
 
@@ -1277,6 +1457,7 @@ def create_task(
             f"workspace_kind must be one of {sorted(VALID_WORKSPACE_KINDS)}, "
             f"got {workspace_kind!r}"
         )
+    model_tier_value = _normalize_model_tier(model_tier)
     parents = tuple(p for p in parents if p)
 
     # Normalise + validate skills: strip whitespace, drop empties, dedupe
@@ -1377,8 +1558,8 @@ def create_task(
                         id, title, body, assignee, status, priority,
                         created_by, created_at, workspace_kind, workspace_path,
                         tenant, idempotency_key, max_runtime_seconds, skills,
-                        max_retries
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        max_retries, model_tier
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id,
@@ -1396,6 +1577,7 @@ def create_task(
                         int(max_runtime_seconds) if max_runtime_seconds else None,
                         json.dumps(skills_list) if skills_list is not None else None,
                         int(max_retries) if max_retries is not None else None,
+                        model_tier_value,
                     ),
                 )
                 for pid in parents:
@@ -1413,8 +1595,20 @@ def create_task(
                         "parents": list(parents),
                         "tenant": tenant,
                         "skills": list(skills_list) if skills_list else None,
+                        "model_tier": model_tier_value,
                     },
                 )
+                if _should_warn_model_tier_policy(assignee, model_tier_value):
+                    _append_event(
+                        conn,
+                        task_id,
+                        "model_tier_policy_warning",
+                        {
+                            "assignee": assignee,
+                            "model_tier": model_tier_value,
+                            "message": "high-risk profile requested cheap model tier",
+                        },
+                    )
             return task_id
         except sqlite3.IntegrityError:
             if attempt == 1:
@@ -3289,6 +3483,37 @@ def set_max_runtime(
     return cur.rowcount == 1
 
 
+def _run_has_post_spawn_worker_activity(conn: sqlite3.Connection, task_id: str, run_id: Optional[int]) -> bool:
+    """Return True once a worker has emitted any run event beyond claim/spawn."""
+    if run_id is None:
+        return False
+    row = conn.execute(
+        "SELECT COUNT(*) AS n FROM task_events "
+        "WHERE task_id = ? AND run_id = ? AND kind NOT IN ('claimed', 'spawned')",
+        (task_id, int(run_id)),
+    ).fetchone()
+    return bool(row and int(row["n"] or 0) > 0)
+
+
+def _is_post_spawn_cheap_startup_candidate(
+    conn: sqlite3.Connection,
+    row: sqlite3.Row,
+    *,
+    exit_kind: str,
+    error_text: str,
+) -> bool:
+    """Cheap-tier worker died before task work; eligible for one startup escalation."""
+    keys = row.keys()
+    if "model_tier" not in keys or row["model_tier"] != "cheap":
+        return False
+    if "model_tier_escalated_to" in keys and row["model_tier_escalated_to"] is not None:
+        return False
+    if exit_kind not in {"clean_exit", "nonzero_exit"} and not _is_model_startup_failure(error_text):
+        return False
+    run_id = row["current_run_id"] if "current_run_id" in keys else None
+    return not _run_has_post_spawn_worker_activity(conn, row["id"], run_id)
+
+
 def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     """Reclaim ``running`` tasks whose worker PID is no longer alive.
 
@@ -3315,10 +3540,12 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     # clean-exit-but-still-running case so we can trip the breaker
     # immediately instead of incrementing by 1.
     crash_details: list[tuple[str, int, str, bool, str]] = []
-    # (task_id, pid, claimer, protocol_violation, error_text)
+    post_spawn_startup_details: list[tuple[str, int, str, str]] = []
+    # (task_id, pid, claimer, error_text)
     with write_txn(conn):
         rows = conn.execute(
-            "SELECT id, worker_pid, claim_lock FROM tasks "
+            "SELECT id, worker_pid, claim_lock, model_tier, model_tier_escalated_to, "
+            "current_run_id FROM tasks "
             "WHERE status = 'running' AND worker_pid IS NOT NULL"
         ).fetchall()
         host_prefix = f"{_claimer_id().split(':', 1)[0]}:"
@@ -3362,6 +3589,14 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                     event_payload["exit_kind"] = kind
                     event_payload["exit_code"] = code
 
+            if _is_post_spawn_cheap_startup_candidate(
+                conn, row, exit_kind=kind, error_text=error_text,
+            ):
+                post_spawn_startup_details.append(
+                    (row["id"], pid, row["claim_lock"], error_text)
+                )
+                continue
+
             cur = conn.execute(
                 "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
                 "claim_expires = NULL, worker_pid = NULL "
@@ -3395,6 +3630,52 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     # respawn will do exactly the same thing. Better to surface to a
     # human with a clear reason than to loop ``DEFAULT_FAILURE_LIMIT``
     # times first.
+    # A cheap-tier worker that dies before emitting any worker-side event is
+    # still a startup failure even when Popen succeeded. Try the bounded
+    # cheap→standard model escalation before treating it as task-work crash or
+    # protocol violation. If escalation is disabled/exhausted, fall back to the
+    # existing crash/protocol handling below.
+    for tid, pid, claimer, error_text in post_spawn_startup_details:
+        task = get_task(conn, tid)
+        escalated = False
+        if task is not None:
+            try:
+                override = resolve_task_model_override(task)
+            except Exception:
+                override = None
+            escalated = _maybe_escalate_cheap_startup_failure(
+                conn,
+                task,
+                error_text,
+                model_override=override,
+                startup_failure=True,
+            )
+        if escalated:
+            crashed.append(tid)
+            continue
+
+        protocol_violation = "protocol violation" in (error_text or "").lower()
+        event_kind = "protocol_violation" if protocol_violation else "crashed"
+        event_payload = {"pid": pid, "claimer": claimer}
+        with write_txn(conn):
+            cur = conn.execute(
+                "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
+                "claim_expires = NULL, worker_pid = NULL "
+                "WHERE id = ? AND status = 'running'",
+                (tid,),
+            )
+            if cur.rowcount != 1:
+                continue
+            run_id = _end_run(
+                conn, tid,
+                outcome="crashed", status="crashed",
+                error=error_text,
+                metadata=dict(event_payload),
+            )
+            _append_event(conn, tid, event_kind, event_payload, run_id=run_id)
+        crashed.append(tid)
+        crash_details.append((tid, pid, claimer, protocol_violation, error_text))
+
     auto_blocked: list[str] = []
     for tid, pid, claimer, protocol_violation, error_text in crash_details:
         tripped = _record_task_failure(
@@ -3816,17 +4097,36 @@ def dispatch_once(
         # Persist the resolved workspace path so the worker can cd there.
         set_workspace_path(conn, claimed.id, str(workspace))
         _spawn = spawn_fn if spawn_fn is not None else _default_spawn
+        model_override: Optional[ModelOverride] = None
+        try:
+            model_override = resolve_task_model_override(claimed)
+            with write_txn(conn):
+                _set_active_run_metadata(
+                    conn,
+                    claimed.id,
+                    _model_override_metadata(model_override, claimed),
+                )
+        except Exception as exc:
+            auto = _record_spawn_failure(
+                conn, claimed.id, str(exc),
+                failure_limit=failure_limit,
+            )
+            if auto:
+                result.auto_blocked.append(claimed.id)
+            continue
         try:
             # Back-compat: older spawn_fn signatures accept only
             # (task, workspace). Test stubs in the suite rely on that.
-            # Introspect the callable and pass `board` only when supported.
+            # Introspect the callable and pass optional kwargs only when supported.
             import inspect
             try:
                 sig = inspect.signature(_spawn)
+                kwargs = {}
                 if "board" in sig.parameters:
-                    pid = _spawn(claimed, str(workspace), board=board)
-                else:
-                    pid = _spawn(claimed, str(workspace))
+                    kwargs["board"] = board
+                if "model_override" in sig.parameters:
+                    kwargs["model_override"] = model_override
+                pid = _spawn(claimed, str(workspace), **kwargs)
             except (TypeError, ValueError):
                 pid = _spawn(claimed, str(workspace))
             if pid:
@@ -3841,6 +4141,10 @@ def dispatch_once(
             result.spawned.append((claimed.id, claimed.assignee or "", str(workspace)))
             spawned += 1
         except Exception as exc:
+            if _maybe_escalate_cheap_startup_failure(
+                conn, claimed, str(exc), model_override=model_override,
+            ):
+                continue
             auto = _record_spawn_failure(
                 conn, claimed.id, str(exc),
                 failure_limit=failure_limit,
@@ -3907,6 +4211,7 @@ def _default_spawn(
     workspace: str,
     *,
     board: Optional[str] = None,
+    model_override: Optional[ModelOverride] = None,
 ) -> Optional[int]:
     """Fire-and-forget ``hermes -p <profile> chat -q ...`` subprocess.
 
@@ -3920,7 +4225,6 @@ def _default_spawn(
     vars all resolve to the same board the dispatcher claimed the task
     from. Workers cannot accidentally see other boards.
     """
-    import subprocess
     if not task.assignee:
         raise ValueError(f"task {task.id} has no assignee")
 
@@ -4004,6 +4308,8 @@ def _default_spawn(
         "chat",
         "-q", prompt,
     ])
+    if model_override is not None:
+        cmd.extend(["--provider", model_override.provider, "--model", model_override.model])
     # Redirect output to a per-task log under <board-root>/logs/.
     # Anchored at the board root (not the shared kanban root), so
     # `hermes kanban log` on a specific board reads its own file and

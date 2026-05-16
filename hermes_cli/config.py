@@ -1424,6 +1424,10 @@ DEFAULT_CONFIG = {
         # Wrap delivered cron responses with a header (task name) and footer
         # ("The agent cannot see this message").  Set to false for clean output.
         "wrap_response": True,
+        # Token-min mode pauses only non-critical LLM-using cron jobs.
+        # "auto" is default-safe: ambiguous jobs are treated as critical.
+        "default_criticality": "auto",
+        "criticality_overrides": {},
         # Maximum number of due jobs to run in parallel per tick.
         # null/0 = unbounded (limited only by thread count).
         # 1 = serial (pre-v0.9 behaviour).
@@ -1444,6 +1448,28 @@ DEFAULT_CONFIG = {
         # only if you run the dispatcher as a separate systemd unit or
         # don't want the gateway to spawn workers.
         "dispatch_in_gateway": True,
+        "model_tiers": {
+            "cheap": {"provider": "openai-codex", "model": "gpt-5.4-mini"},
+            "standard": {"provider": "openai-codex", "model": "gpt-5.3-codex-spark"},
+            "strong": {"provider": "openai-codex", "model": "gpt-5.5"},
+        },
+        "model_tier_defaults": {
+            "pm": "cheap",
+            "writer": "cheap",
+            "researcher": "standard",
+            "analyst": "standard",
+            "orchestrator": "standard",
+            "backend-eng": "strong",
+            "frontend-eng": "strong",
+            "reviewer": "strong",
+            "verifier": "strong",
+            "ops": "strong",
+        },
+        "cheap_startup_escalation": {
+            "enabled": True,
+            "target_tier": "standard",
+            "max_escalations_per_task": 1,
+        },
         # Seconds between dispatcher ticks (idle or not). Lower = snappier
         # pickup of newly-ready tasks; higher = less SQL pressure.
         "dispatch_interval_seconds": 60,

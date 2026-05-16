@@ -402,3 +402,9 @@ def test_run_slash_board_override_restores_prior_env(kanban_home, monkeypatch):
     kc.run_slash("--board alpha list")
 
     assert os.environ.get("HERMES_KANBAN_BOARD") == "beta"
+def test_create_model_tier_flag_persists(kanban_home):
+    out = kc.run_slash("create 'cheap child' --assignee alice --model-tier cheap --json")
+    payload = json.loads(out)
+    assert payload["model_tier"] == "cheap"
+    with kb.connect() as conn:
+        assert kb.get_task(conn, payload["id"]).model_tier == "cheap"

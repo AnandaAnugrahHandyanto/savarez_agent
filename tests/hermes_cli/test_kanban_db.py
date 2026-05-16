@@ -277,7 +277,7 @@ def test_stale_claim_reclaim_event_records_diagnostic_payload(
         assert payload["host_local"] is True
 
 
-def test_max_runtime_uses_current_run_start_after_retry(kanban_home):
+def test_max_runtime_uses_current_run_start_after_retry(kanban_home, monkeypatch):
     """A retry should get a fresh max-runtime window.
 
     ``tasks.started_at`` intentionally records the first time the task ever
@@ -285,6 +285,7 @@ def test_max_runtime_uses_current_run_start_after_retry(kanban_home):
     ``task_runs.started_at`` row; otherwise every retry of an old task is
     immediately timed out again.
     """
+    monkeypatch.setattr(kb, "_pid_alive", lambda _pid: False)
     with kb.connect() as conn:
         host = kb._claimer_id().split(":", 1)[0]
         t = kb.create_task(
@@ -1530,3 +1531,228 @@ def test_task_dict_survives_corrupt_created_at(tmp_path, monkeypatch):
         conn.close()
     age = kb.task_age(task)
     assert age["created_age_seconds"] is None
+# ---------------------------------------------------------------------------
+# Task-level model tier routing
+# ---------------------------------------------------------------------------
+
+def test_create_task_accepts_model_tier(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="tiered", assignee="alice", model_tier="cheap")
+        task = kb.get_task(conn, tid)
+    assert task is not None
+    assert task.model_tier == "cheap"
+
+
+def test_create_task_rejects_invalid_model_tier(kanban_home):
+    with kb.connect() as conn:
+        with pytest.raises(ValueError, match="model_tier"):
+            kb.create_task(conn, title="bad", assignee="alice", model_tier="nano")
+        assert conn.execute("SELECT COUNT(*) AS n FROM tasks").fetchone()["n"] == 0
+
+
+def test_existing_rows_default_model_tier_none(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="default", assignee="alice")
+        task = kb.get_task(conn, tid)
+    assert task.model_tier is None
+    assert kb.resolve_task_model_override(task, {}) is None
+
+
+def test_dispatch_passes_model_override_for_tiered_task(kanban_home, all_assignees_spawnable, monkeypatch):
+    captured = {}
+    monkeypatch.setattr(kb, "load_config", lambda: {
+        "kanban": {"model_tiers": {"cheap": {"provider": "openai-codex", "model": "gpt-5.4-mini"}}}
+    })
+
+    def fake_spawn(task, workspace, *, board=None, model_override=None):
+        captured["task"] = task
+        captured["override"] = model_override
+        captured["board"] = board
+
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="cheap task", assignee="alice", model_tier="cheap")
+        kb.dispatch_once(conn, spawn_fn=fake_spawn)
+        run = kb.latest_run(conn, tid)
+    assert captured["task"].assignee == "alice"
+    assert captured["override"].provider == "openai-codex"
+    assert captured["override"].model == "gpt-5.4-mini"
+    assert run.metadata["requested_model_tier"] == "cheap"
+    assert run.metadata["model"] == "gpt-5.4-mini"
+
+
+def test_dispatch_without_model_tier_keeps_profile_default(kanban_home, all_assignees_spawnable, monkeypatch):
+    captured = {}
+    monkeypatch.setattr(kb, "load_config", lambda: {
+        "kanban": {"model_tiers": {"cheap": {"provider": "openai-codex", "model": "gpt-5.4-mini"}}}
+    })
+
+    def fake_spawn(task, workspace, *, board=None, model_override=None):
+        captured["override"] = model_override
+
+    with kb.connect() as conn:
+        kb.create_task(conn, title="plain task", assignee="alice")
+        kb.dispatch_once(conn, spawn_fn=fake_spawn)
+    assert captured["override"] is None
+
+
+def test_missing_tier_mapping_records_spawn_failure(kanban_home, all_assignees_spawnable, monkeypatch):
+    monkeypatch.setattr(kb, "load_config", lambda: {"kanban": {"model_tiers": {}}})
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="cheap task", assignee="alice", model_tier="cheap", max_retries=1)
+        res = kb.dispatch_once(conn)
+        task = kb.get_task(conn, tid)
+        run = kb.latest_run(conn, tid)
+        events = kb.list_events(conn, tid)
+    assert tid in res.auto_blocked
+    assert task.status == "blocked"
+    assert "missing kanban.model_tiers.cheap" in (run.error or "")
+    assert any(e.kind == "gave_up" for e in events)
+
+
+def test_cheap_startup_failure_escalates_once(kanban_home, all_assignees_spawnable, monkeypatch):
+    monkeypatch.setattr(kb, "load_config", lambda: {
+        "kanban": {
+            "model_tiers": {
+                "cheap": {"provider": "openai-codex", "model": "unsupported-cheap"},
+                "standard": {"provider": "openai-codex", "model": "gpt-5.3-codex-spark"},
+            },
+            "cheap_startup_escalation": {"enabled": True, "target_tier": "standard", "max_escalations_per_task": 1},
+        }
+    })
+    seen = []
+
+    def fake_spawn(task, workspace, *, board=None, model_override=None):
+        seen.append(model_override.effective_tier)
+        if model_override.effective_tier == "cheap":
+            raise RuntimeError("unsupported model: unsupported-cheap")
+
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="cheap task", assignee="alice", model_tier="cheap")
+        first = kb.dispatch_once(conn, spawn_fn=fake_spawn)
+        assert tid not in first.auto_blocked
+        assert kb.get_task(conn, tid).status == "ready"
+        second = kb.dispatch_once(conn, spawn_fn=fake_spawn)
+        task = kb.get_task(conn, tid)
+        events = kb.list_events(conn, tid)
+        runs = kb.list_runs(conn, tid)
+    assert seen == ["cheap", "standard"]
+    assert second.spawned and second.spawned[0][0] == tid
+    assert task.status == "running"
+    assert [e.kind for e in events].count("model_escalation") == 1
+    assert runs[-1].metadata["effective_model_tier"] == "standard"
+    assert runs[-1].metadata["model_escalated"] is True
+
+
+def test_post_spawn_clean_exit_escalates_cheap_tier_once(kanban_home, all_assignees_spawnable, monkeypatch):
+    monkeypatch.setattr(kb, "load_config", lambda: {
+        "kanban": {
+            "model_tiers": {
+                "cheap": {"provider": "openai-codex", "model": "unsupported-cheap"},
+                "standard": {"provider": "openai-codex", "model": "gpt-5.3-codex-spark"},
+            },
+            "cheap_startup_escalation": {"enabled": True, "target_tier": "standard", "max_escalations_per_task": 1},
+        }
+    })
+    monkeypatch.setattr(kb, "_pid_alive", lambda pid: False)
+    pid = 4242
+    seen = []
+
+    def fake_spawn(task, workspace, *, board=None, model_override=None):
+        seen.append(model_override.effective_tier)
+        return pid if model_override.effective_tier == "cheap" else None
+
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="cheap task", assignee="alice", model_tier="cheap", max_retries=1)
+        first = kb.dispatch_once(conn, spawn_fn=fake_spawn)
+        assert first.spawned and first.spawned[0][0] == tid
+        kb._record_worker_exit(pid, 0)
+
+        crashed = kb.detect_crashed_workers(conn)
+        task = kb.get_task(conn, tid)
+        events = kb.list_events(conn, tid)
+        runs = kb.list_runs(conn, tid)
+        task_count = conn.execute("SELECT COUNT(*) AS n FROM tasks WHERE id = ?", (tid,)).fetchone()["n"]
+        second = kb.dispatch_once(conn, spawn_fn=fake_spawn)
+        task_after_retry = kb.get_task(conn, tid)
+
+    assert crashed == [tid]
+    assert task_count == 1
+    assert task.status == "ready"
+    assert task.model_tier_escalated_to == "standard"
+    assert task.consecutive_failures == 0
+    assert [e.kind for e in events].count("model_escalation") == 1
+    assert not any(e.kind == "gave_up" for e in events)
+    assert not any(e.kind == "protocol_violation" for e in events)
+    assert runs[-1].outcome == "spawn_failed"
+    assert second.spawned and second.spawned[0][0] == tid
+    assert seen == ["cheap", "standard"]
+    assert task_after_retry.status == "running"
+    assert task_after_retry.model_tier_escalated_to == "standard"
+
+
+def test_task_failure_does_not_escalate_model_tier(kanban_home, all_assignees_spawnable, monkeypatch):
+    monkeypatch.setattr(kb, "load_config", lambda: {
+        "kanban": {
+            "model_tiers": {"cheap": {"provider": "openai-codex", "model": "gpt-5.4-mini"}, "standard": {"provider": "openai-codex", "model": "gpt-5.3-codex-spark"}},
+            "cheap_startup_escalation": {"enabled": True, "target_tier": "standard", "max_escalations_per_task": 1},
+        }
+    })
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="cheap task", assignee="alice", model_tier="cheap")
+        kb.claim_task(conn, tid)
+        assert kb.block_task(conn, tid, reason="product blocker after task work")
+        events = kb.list_events(conn, tid)
+    assert not any(e.kind == "model_escalation" for e in events)
+
+
+def test_standard_failure_does_not_auto_escalate_to_strong(kanban_home, all_assignees_spawnable, monkeypatch):
+    monkeypatch.setattr(kb, "load_config", lambda: {
+        "kanban": {"model_tiers": {"standard": {"provider": "openai-codex", "model": "broken-standard"}, "strong": {"provider": "openai-codex", "model": "gpt-5.5"}}}
+    })
+
+    def boom(task, workspace, *, board=None, model_override=None):
+        raise RuntimeError("unsupported model: broken-standard")
+
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="standard task", assignee="alice", model_tier="standard", max_retries=1)
+        res = kb.dispatch_once(conn, spawn_fn=boom)
+        events = kb.list_events(conn, tid)
+        task = kb.get_task(conn, tid)
+    assert tid in res.auto_blocked
+    assert task.status == "blocked"
+    assert not any(e.kind == "model_escalation" for e in events)
+
+
+def test_high_risk_profile_cheap_tier_warns_or_rejects(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="implement risky code", assignee="backend-eng", model_tier="cheap")
+        events = kb.list_events(conn, tid)
+    assert any(e.kind == "model_tier_policy_warning" for e in events)
+
+
+def test_public_repo_boundary_unchanged_by_model_tier(monkeypatch, tmp_path):
+    popens = []
+
+    class FakeProc:
+        pid = 12345
+
+    def fake_popen(cmd, **kwargs):
+        popens.append(cmd)
+        return FakeProc()
+
+    monkeypatch.setattr(kb, "kanban_db_path", lambda board=None: tmp_path / "kanban.db")
+    monkeypatch.setattr(kb, "workspaces_root", lambda board=None: tmp_path / "workspaces")
+    monkeypatch.setattr(kb, "worker_logs_dir", lambda board=None: tmp_path / "logs")
+    monkeypatch.setattr(kb, "get_current_board", lambda: "default")
+    monkeypatch.setattr(kb.subprocess, "Popen", fake_popen)
+    task = kb.Task(
+        id="t_12345678", title="x", body=None, assignee="backend-eng", status="running",
+        priority=0, created_by="pm", created_at=1, started_at=1, completed_at=None,
+        workspace_kind="scratch", workspace_path=str(tmp_path), claim_lock="h:1", claim_expires=2,
+        tenant=None, model_tier="strong", current_run_id=42,
+    )
+    override = kb.ModelOverride(requested_tier="strong", effective_tier="strong", provider="openai-codex", model="gpt-5.5")
+    kb._default_spawn(task, str(tmp_path), model_override=override)
+    cmd = popens[0]
+    assert "--provider" in cmd and "--model" in cmd
+    assert not any(part in {"push", "pr", "pull-request"} for part in cmd)

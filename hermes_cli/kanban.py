@@ -62,6 +62,7 @@ def _task_to_dict(t: kb.Task) -> dict[str, Any]:
         "status": t.status,
         "priority": t.priority,
         "tenant": t.tenant,
+        "model_tier": t.model_tier,
         "workspace_kind": t.workspace_kind,
         "workspace_path": t.workspace_path,
         "created_by": t.created_by,
@@ -285,6 +286,9 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                                "(repeatable). Appended to the built-in "
                                "kanban-worker skill. Example: "
                                "--skill translation --skill github-code-review")
+    p_create.add_argument("--model-tier", choices=sorted(kb.VALID_MODEL_TIERS), default=None,
+                          help="Optional task-level model tier: cheap, standard, or strong. "
+                               "Omit to use the assignee profile default model/provider.")
     p_create.add_argument("--max-retries", type=int, default=None,
                           metavar="N",
                           help="Per-task override for the consecutive-failure "
@@ -1077,6 +1081,7 @@ def _cmd_create(args: argparse.Namespace) -> int:
             max_runtime_seconds=max_runtime,
             skills=getattr(args, "skills", None) or None,
             max_retries=max_retries,
+            model_tier=getattr(args, "model_tier", None),
         )
         task = kb.get_task(conn, task_id)
     if getattr(args, "json", False):

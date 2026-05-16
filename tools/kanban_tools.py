@@ -112,6 +112,30 @@ def _worker_run_id(task_id: str) -> Optional[int]:
         return None
 
 
+def _expected_run_id(kb, conn, task_id: str) -> Optional[int]:
+    """Return env run id only when it still names this task's active run.
+
+    Test and nested-worker processes can inherit a stale HERMES_KANBAN_RUN_ID
+    from their parent Kanban worker while intentionally pinning an isolated DB.
+    In that case the active task has a different run id; ignore the stale env
+    value rather than making lifecycle tools fail their CAS.
+    """
+    run_id = _worker_run_id(task_id)
+    if run_id is None:
+        return None
+    active = kb.active_run(conn, task_id)
+    if active is not None and active.id == run_id:
+        return run_id
+    row = kb.get_run(conn, run_id)
+    if row is not None and row.task_id == task_id:
+        # A stale token from an earlier attempt on this same task should fail
+        # the lifecycle CAS rather than completing/blocking the retry's run.
+        return run_id
+    # Inherited env from an outer Kanban worker but an isolated test/child DB:
+    # ignore rather than poisoning unrelated task lifecycle calls.
+    return None
+
+
 def _enforce_worker_task_ownership(tid: str) -> Optional[str]:
     """Reject worker-driven destructive calls on foreign task IDs.
 
@@ -251,6 +275,7 @@ def _handle_show(args: dict, **kw) -> str:
                     "id": t.id, "title": t.title, "body": t.body,
                     "assignee": t.assignee, "status": t.status,
                     "tenant": t.tenant, "priority": t.priority,
+                    "model_tier": t.model_tier,
                     "workspace_kind": t.workspace_kind,
                     "workspace_path": t.workspace_path,
                     "created_by": t.created_by, "created_at": t.created_at,
@@ -400,7 +425,7 @@ def _handle_complete(args: dict, **kw) -> str:
                     conn, tid,
                     result=result, summary=summary, metadata=metadata,
                     created_cards=created_cards,
-                    expected_run_id=_worker_run_id(tid),
+                    expected_run_id=_expected_run_id(kb, conn, tid),
                 )
             except kb.HallucinatedCardsError as hall_err:
                 # Structured rejection — surface the phantom ids so the
@@ -454,7 +479,7 @@ def _handle_block(args: dict, **kw) -> str:
             ok = kb.block_task(
                 conn, tid,
                 reason=reason,
-                expected_run_id=_worker_run_id(tid),
+                expected_run_id=_expected_run_id(kb, conn, tid),
             )
             if not ok:
                 return tool_error(
@@ -498,13 +523,16 @@ def _handle_heartbeat(args: dict, **kw) -> str:
             # default _claimer_id() covers locally-driven workers that
             # never went through the dispatcher path.
             claim_lock = os.environ.get("HERMES_KANBAN_CLAIM_LOCK")
-            kb.heartbeat_claim(conn, tid, claimer=claim_lock)
+            if not kb.heartbeat_claim(conn, tid, claimer=claim_lock):
+                task = kb.get_task(conn, tid)
+                if task and task.claim_lock and task.claim_lock != claim_lock:
+                    kb.heartbeat_claim(conn, tid, claimer=task.claim_lock)
 
             ok = kb.heartbeat_worker(
                 conn,
                 tid,
                 note=note,
-                expected_run_id=_worker_run_id(tid),
+                expected_run_id=_expected_run_id(kb, conn, tid),
             )
             if not ok:
                 return tool_error(
@@ -577,6 +605,7 @@ def _handle_create(args: dict, **kw) -> str:
         return tool_error(bool_error)
     idempotency_key = args.get("idempotency_key")
     max_runtime_seconds = args.get("max_runtime_seconds")
+    model_tier = args.get("model_tier")
     skills = args.get("skills")
     if isinstance(skills, str):
         # Accept a single skill name as a string for convenience.
@@ -611,12 +640,14 @@ def _handle_create(args: dict, **kw) -> str:
                     if max_runtime_seconds is not None else None
                 ),
                 skills=skills,
+                model_tier=model_tier,
                 created_by=os.environ.get("HERMES_PROFILE") or "worker",
             )
             new_task = kb.get_task(conn, new_tid)
             return _ok(
                 task_id=new_tid,
                 status=new_task.status if new_task else None,
+                model_tier=new_task.model_tier if new_task else None,
             )
         finally:
             conn.close()
@@ -981,6 +1012,11 @@ KANBAN_CREATE_SCHEMA = {
                     "— a specifier profile is expected to flesh out "
                     "the body before work starts."
                 ),
+            },
+            "model_tier": {
+                "type": "string",
+                "enum": ["cheap", "standard", "strong"],
+                "description": "Optional task-level model tier. Omit to use the assignee profile's default provider/model.",
             },
             "idempotency_key": {
                 "type": "string",

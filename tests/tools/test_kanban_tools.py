@@ -1139,3 +1139,18 @@ def test_orchestrator_complete_any_task_allowed(monkeypatch, tmp_path):
     out = kt._handle_complete({"task_id": tid, "summary": "orchestrator close"})
     d = json.loads(out)
     assert d.get("ok") is True and d.get("task_id") == tid
+
+
+def test_kanban_create_model_tier_schema_and_handler(worker_env):
+    from tools import kanban_tools as kt
+    schema = kt.KANBAN_CREATE_SCHEMA["parameters"]["properties"]
+    assert schema["model_tier"]["enum"] == ["cheap", "standard", "strong"]
+    out = kt._handle_create({"title": "tiered follow-up", "assignee": "test-worker", "model_tier": "standard"})
+    payload = json.loads(out)
+    assert payload["ok"] is True
+    from hermes_cli import kanban_db as kb
+    conn = kb.connect()
+    try:
+        assert kb.get_task(conn, payload["task_id"]).model_tier == "standard"
+    finally:
+        conn.close()
