@@ -23,6 +23,9 @@ def test_manual_research_request_heuristic_matches_target_cases():
     assert _looks_like_manual_research_request(
         "Research bagel places near my home that's open right now"
     )
+    assert _looks_like_manual_research_request(
+        "mock research the best browser for hermes"
+    )
 
 
 def test_tool_progress_label_is_abstract():
@@ -50,6 +53,10 @@ def test_research_subject_truncates_long_prompt():
     subject = _research_subject("Research " + "x" * 100)
     assert not subject.startswith("Research ")
     assert subject.endswith("...")
+
+
+def test_research_subject_strips_mock_research_prefix():
+    assert _research_subject("mock research the best browser") == "the best browser"
 
 
 def test_format_direct_research_progress_prefixes_subject():

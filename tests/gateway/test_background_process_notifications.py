@@ -246,6 +246,63 @@ async def test_no_thread_id_sends_no_metadata(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_start_manual_telegram_research_mock_path_skips_spawn_local(monkeypatch, tmp_path):
+    import gateway.run as gateway_run
+    import tools.process_registry as pr_module
+    from gateway.session import SessionSource
+
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    async def _instant_sleep(*_a, **_kw):
+        pass
+
+    monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
+
+    runner = GatewayRunner(GatewayConfig())
+
+    class _Adapter:
+        def __init__(self):
+            self.send = AsyncMock(return_value=SimpleNamespace(success=True, message_id="88"))
+            self.handle_message = AsyncMock()
+            self._edit_message = AsyncMock(return_value=SimpleNamespace(success=True, message_id="88"))
+
+        async def edit_message(self, *args, **kwargs):
+            return await self._edit_message(*args, **kwargs)
+
+    adapter = _Adapter()
+    runner.adapters[Platform.TELEGRAM] = adapter
+
+    def _boom(*_a, **_kw):
+        raise AssertionError("spawn_local should not run for mock research")
+
+    monkeypatch.setattr(pr_module.process_registry, "spawn_local", _boom)
+
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="123",
+        chat_type="dm",
+        user_id="u-1",
+        user_name="tester",
+    )
+
+    result = await runner._start_manual_telegram_research(
+        source,
+        "agent:main:telegram:dm:123",
+        "mock research the best browser",
+        "standard",
+    )
+
+    assert result == ""
+    await asyncio.gather(*list(runner._background_tasks))
+    assert adapter.send.await_count == 1
+    assert adapter._edit_message.await_count == 3
+    progress_text = adapter._edit_message.await_args_list[0].kwargs["content"]
+    final_text = adapter._edit_message.await_args_list[-1].kwargs["content"]
+    assert progress_text.startswith("Researching the best browser:\n")
+    assert final_text.startswith("Report:\nhttps://research.briankeefe.dev/")
+
+
+@pytest.mark.asyncio
 async def test_inject_watch_notification_routes_from_session_store_origin(monkeypatch, tmp_path):
     from gateway.session import SessionSource
 

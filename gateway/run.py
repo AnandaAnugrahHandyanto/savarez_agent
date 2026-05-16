@@ -65,6 +65,7 @@ _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT = 5.0
 _TELEGRAM_COMMAND_MENTION_RE = re.compile(r"(?<![\w:/])/([A-Za-z0-9][A-Za-z0-9_-]*)")
 
 _RESEARCH_RIGOR_CHOICES = ("brief", "standard", "deep")
+_MOCK_RESEARCH_PUBLIC_URL = "https://research.briankeefe.dev/20260515-shows-like-breaking-bad"
 
 
 def _normalize_research_rigor(text: str) -> str:
@@ -82,7 +83,28 @@ def _normalize_research_rigor(text: str) -> str:
 
 def _looks_like_manual_research_request(text: str) -> bool:
     lower = (text or "").strip().lower()
-    return lower.startswith("research ")
+    return (
+        lower == "research"
+        or lower.startswith("research ")
+        or lower == "mock research"
+        or lower.startswith("mock research ")
+    )
+
+
+def _looks_like_mock_manual_research_request(text: str) -> bool:
+    lower = (text or "").strip().lower()
+    return lower == "mock research" or lower.startswith("mock research ")
+
+
+def _strip_manual_research_prefix(text: str) -> str:
+    clean = (text or "").strip()
+    lower = clean.lower()
+    for prefix in ("mock research", "research"):
+        if lower == prefix:
+            return ""
+        if lower.startswith(prefix + " "):
+            return clean[len(prefix):].strip()
+    return clean
 
 
 def _tool_progress_label(tool_name: str | None, *, with_emoji: bool = True) -> str:
@@ -141,9 +163,7 @@ def _build_manual_research_child_prompt(text: str, rigor: str) -> str:
 
 
 def _research_subject(text: str, limit: int = 72) -> str:
-    subject = (text or "").strip().splitlines()[0].strip()
-    if subject.lower().startswith("research "):
-        subject = subject[9:].strip()
+    subject = _strip_manual_research_prefix((text or "").strip().splitlines()[0].strip())
     if len(subject) > limit:
         subject = subject[: limit - 3].rstrip() + "..."
     return subject or "research"
@@ -13616,14 +13636,7 @@ class GatewayRunner:
         """
         from tools.process_registry import process_registry
 
-        skill_name = _manual_research_skill_for_prompt(prompt_text)
-        child_prompt = _build_manual_research_child_prompt(prompt_text, rigor)
         subject = _research_subject(prompt_text)
-        hermes_bin = "/opt/hermes/.venv/bin/hermes"
-        command = (
-            f"{hermes_bin} -p research chat --accept-hooks --source tool "
-            f"-s {shlex.quote(skill_name)} -q {shlex.quote(child_prompt)}"
-        )
         adapter = self.adapters.get(source.platform)
         if adapter and not progress_message_id:
             try:
@@ -13645,6 +13658,38 @@ class GatewayRunner:
                 )
             except Exception as exc:
                 logger.warning("Manual Telegram research kickoff edit failed: %s", exc)
+        if _looks_like_mock_manual_research_request(prompt_text):
+            watcher = {
+                "session_id": f"mock-research-{int(time.time() * 1000)}",
+                "check_interval": 0,
+                "session_key": session_key or "",
+                "platform": source.platform.value,
+                "chat_id": source.chat_id,
+                "user_id": source.user_id or "",
+                "user_name": source.user_name or "",
+                "thread_id": source.thread_id or "",
+                "notify_on_complete": False,
+                "direct_research_delivery": True,
+                "mock_research_delivery": True,
+                "progress_message_id": progress_message_id,
+                "progress_subject": subject,
+            }
+            _watch_task = asyncio.create_task(self._run_process_watcher(watcher))
+            self._background_tasks.add(_watch_task)
+            _watch_task.add_done_callback(self._background_tasks.discard)
+            logger.info(
+                "Started mock Telegram research watcher for chat=%s session=%s",
+                source.chat_id,
+                session_key,
+            )
+            return ""
+        skill_name = _manual_research_skill_for_prompt(prompt_text)
+        child_prompt = _build_manual_research_child_prompt(prompt_text, rigor)
+        hermes_bin = "/opt/hermes/.venv/bin/hermes"
+        command = (
+            f"{hermes_bin} -p research chat --accept-hooks --source tool "
+            f"-s {shlex.quote(skill_name)} -q {shlex.quote(child_prompt)}"
+        )
         try:
             proc_session = process_registry.spawn_local(
                 command=command,
@@ -13695,6 +13740,55 @@ class GatewayRunner:
         # One quick start confirmation only. No parent wait/poll loops.
         return ""
 
+    async def _run_mock_research_watcher(self, watcher: dict) -> None:
+        platform_name = watcher.get("platform", "")
+        chat_id = watcher.get("chat_id", "")
+        thread_id = watcher.get("thread_id", "")
+        progress_message_id = watcher.get("progress_message_id")
+        progress_subject = str(watcher.get("progress_subject") or "research")
+        adapter = None
+        for p, a in self.adapters.items():
+            if p.value == platform_name:
+                adapter = a
+                break
+        if not adapter or not chat_id:
+            return
+        progress_history = ["🧠 thinking"]
+        for latest in ("🌐 browsing", "🔗 publishing"):
+            if latest != progress_history[-1]:
+                progress_history.append(latest)
+                progress_history[:] = progress_history[-3:]
+            label = _format_direct_research_progress(progress_subject, progress_history)
+            try:
+                if progress_message_id and type(adapter).edit_message is not BasePlatformAdapter.edit_message:
+                    await adapter.edit_message(
+                        chat_id=chat_id,
+                        message_id=str(progress_message_id),
+                        content=label,
+                    )
+                else:
+                    send_meta = {"thread_id": thread_id} if thread_id else None
+                    send_result = await adapter.send(chat_id, label, metadata=send_meta)
+                    if getattr(send_result, "success", False) and getattr(send_result, "message_id", None):
+                        progress_message_id = str(send_result.message_id)
+                await asyncio.sleep(0)
+            except Exception as exc:
+                logger.error("Mock research progress delivery error: %s", exc)
+                break
+        final_text = f"Report:\n{_MOCK_RESEARCH_PUBLIC_URL}"
+        try:
+            if progress_message_id and type(adapter).edit_message is not BasePlatformAdapter.edit_message:
+                await adapter.edit_message(
+                    chat_id=chat_id,
+                    message_id=str(progress_message_id),
+                    content=final_text,
+                )
+            else:
+                send_meta = {"thread_id": thread_id} if thread_id else None
+                await adapter.send(chat_id, final_text, metadata=send_meta)
+        except Exception as exc:
+            logger.error("Mock research delivery error: %s", exc)
+
     async def _run_process_watcher(self, watcher: dict) -> None:
         """
         Periodically check a background process and push updates to the user.
@@ -13724,6 +13818,10 @@ class GatewayRunner:
         progress_message_id = watcher.get("progress_message_id")
         progress_subject = str(watcher.get("progress_subject") or "research")
         progress_history = ["🧠 thinking"]
+
+        if watcher.get("mock_research_delivery"):
+            await self._run_mock_research_watcher(watcher)
+            return
 
         logger.debug("Process watcher started: %s (every %ss, notify=%s, agent_notify=%s)",
                       session_id, interval, notify_mode, agent_notify)
@@ -13850,18 +13948,10 @@ class GatewayRunner:
                             break
                     if adapter and chat_id:
                         try:
-                            label = _extract_research_progress_label(session.output_buffer)
-                            if progress_message_id and type(adapter).edit_message is not BasePlatformAdapter.edit_message:
-                                await adapter.edit_message(
-                                    chat_id=chat_id,
-                                    message_id=str(progress_message_id),
-                                    content=label,
-                                )
-                            else:
-                                send_meta = {"thread_id": thread_id} if thread_id else None
-                                await adapter.send(chat_id, label, metadata=send_meta)
+                            send_meta = {"thread_id": thread_id} if thread_id else None
+                            await adapter.send(chat_id, message_text, metadata=send_meta)
                         except Exception as e:
-                            logger.error("Direct research progress error: %s", e)
+                            logger.error("Watcher completion delivery error: %s", e)
                 elif has_new_output and notify_mode == "all" and not agent_notify:
                     # New output available -- deliver status update (only in "all" mode)
                     # Skip periodic updates for agent_notify watchers (they only care about completion)
