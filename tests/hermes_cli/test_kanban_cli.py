@@ -112,11 +112,12 @@ def test_run_slash_block_unblock_cycle(kanban_home):
 
 
 def test_run_slash_json_output(kanban_home):
-    out = kc.run_slash("create 'jsontask' --assignee alice --json")
+    out = kc.run_slash("create 'jsontask' --assignee alice --model gpt-5.5 --json")
     payload = json.loads(out)
     assert payload["title"] == "jsontask"
     assert payload["assignee"] == "alice"
     assert payload["status"] == "ready"
+    assert payload["model"] == "gpt-5.5"
 
 
 def test_run_slash_dispatch_dry_run_counts(kanban_home):

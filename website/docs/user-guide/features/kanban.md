@@ -59,7 +59,7 @@ They coexist: a kanban worker may call `delegate_task` internally during its run
   (e.g. one per project, repo, or domain); see [Boards (multi-project)](#boards-multi-project)
   below. Single-project users stay on the `default` board and never see the
   word "board" outside this docs section.
-- **Task** — a row with title, optional body, one assignee (a profile name), status (`triage | todo | ready | running | blocked | done | archived`), optional tenant namespace, optional idempotency key (dedup for retried automation).
+- **Task** — a row with title, optional body, one assignee (a profile name), status (`triage | todo | ready | running | blocked | done | archived`), optional tenant namespace, optional idempotency key (dedup for retried automation), and an optional per-task model override for worker routing.
 - **Link** — `task_links` row recording a parent → child dependency. The dispatcher promotes `todo → ready` when all parents are `done`.
 - **Comment** — the inter-agent protocol. Agents and humans append comments; when a worker is (re-)spawned it reads the full comment thread as part of its context.
 - **Workspace** — the directory a worker operates in. Three kinds:
@@ -104,6 +104,11 @@ hermes kanban boards create atm10-server \
 # Operate on a specific board without switching.
 hermes kanban --board atm10-server list
 hermes kanban --board atm10-server create "Restart ATM server" --assignee ops
+
+# Route one hard task to a stronger model without creating a new profile.
+hermes kanban create "Investigate flaky prod crash" \
+    --assignee coder \
+    --model gpt-5.5
 
 # Change which board is "current" for subsequent calls.
 hermes kanban boards switch atm10-server

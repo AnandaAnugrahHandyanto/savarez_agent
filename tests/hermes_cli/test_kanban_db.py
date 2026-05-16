@@ -61,6 +61,19 @@ def test_create_task_no_parents_is_ready(kanban_home):
     assert t.workspace_kind == "scratch"
 
 
+def test_create_task_persists_model_override(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="hard one",
+            assignee="alice",
+            model="gpt-5.5",
+        )
+        t = kb.get_task(conn, tid)
+    assert t is not None
+    assert t.model == "gpt-5.5"
+
+
 def test_create_task_with_parent_is_todo_until_parent_done(kanban_home):
     with kb.connect() as conn:
         p = kb.create_task(conn, title="parent")
@@ -1086,6 +1099,40 @@ class TestSharedBoardPaths:
         assert env["HERMES_KANBAN_TASK"] == "t_dispatch_env"
 
 
+def test_default_spawn_includes_model_flag_when_task_sets_override(monkeypatch, tmp_path):
+    captured = {}
+
+    class _FakePopen:
+        def __init__(self, cmd, **kwargs):
+            captured["cmd"] = cmd
+            self.pid = 4242
+
+    monkeypatch.setattr("subprocess.Popen", _FakePopen)
+
+    task = kb.Task(
+        id="t_model_override",
+        title="x",
+        body=None,
+        assignee="coder",
+        status="ready",
+        priority=0,
+        created_by=None,
+        created_at=0,
+        started_at=None,
+        completed_at=None,
+        workspace_kind="scratch",
+        workspace_path=None,
+        claim_lock=None,
+        claim_expires=None,
+        tenant=None,
+        model="gpt-5.5",
+    )
+    kb._default_spawn(task, str(tmp_path / "ws"))
+    cmd = captured["cmd"]
+    assert "-m" in cmd
+    assert cmd[cmd.index("-m") + 1] == "gpt-5.5"
+
+
 # ---------------------------------------------------------------------------
 # latest_summary / latest_summaries — surface task_runs.summary handoffs
 # ---------------------------------------------------------------------------
@@ -1310,7 +1357,8 @@ def test_migrate_add_optional_columns_tolerates_concurrent_migration(kanban_home
             workflow_template_id TEXT,
             current_step_key TEXT,
             skills TEXT,
-            max_retries INTEGER
+            max_retries INTEGER,
+            model TEXT
         )
         """
     )
@@ -1329,6 +1377,40 @@ def test_migrate_add_optional_columns_tolerates_concurrent_migration(kanban_home
 
     # Running migration on an already-migrated schema must not raise.
     kb._migrate_add_optional_columns(conn)
+    cols = {row["name"] for row in conn.execute("PRAGMA table_info(tasks)")}
+    assert "model" in cols
+    conn.close()
+
+
+def test_migrate_add_optional_columns_adds_model_column_for_legacy_tasks(kanban_home):
+    import sqlite3
+
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute(
+        """
+        CREATE TABLE tasks (
+            id INTEGER PRIMARY KEY,
+            title TEXT NOT NULL,
+            max_retries INTEGER
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE task_events (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id    TEXT NOT NULL DEFAULT '',
+            kind       TEXT NOT NULL DEFAULT '',
+            payload    TEXT,
+            created_at INTEGER NOT NULL DEFAULT 0
+        )
+        """
+    )
+
+    kb._migrate_add_optional_columns(conn)
+    cols = {row["name"] for row in conn.execute("PRAGMA table_info(tasks)")}
+    assert "model" in cols
     conn.close()
 
 

@@ -128,6 +128,8 @@ def worker_env(monkeypatch, tmp_path):
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setenv("HERMES_PROFILE", "test-worker")
+    monkeypatch.delenv("HERMES_KANBAN_CLAIM_LOCK", raising=False)
+    monkeypatch.delenv("HERMES_KANBAN_RUN_ID", raising=False)
     from pathlib import Path as _Path
     monkeypatch.setattr(_Path, "home", lambda: tmp_path)
 
@@ -791,6 +793,22 @@ def test_create_accepts_skills_string(worker_env):
     with kb.connect() as conn:
         task = kb.get_task(conn, d["task_id"])
     assert task.skills == ["translation"]
+
+
+def test_create_accepts_model_override(worker_env):
+    """Tool writes the per-task model override through to the kernel."""
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+    out = kt._handle_create({
+        "title": "hard task",
+        "assignee": "a",
+        "model": "gpt-5.5",
+    })
+    d = json.loads(out)
+    assert d["ok"] is True
+    with kb.connect() as conn:
+        task = kb.get_task(conn, d["task_id"])
+    assert task.model == "gpt-5.5"
 
 
 def test_create_rejects_non_list_skills(worker_env):

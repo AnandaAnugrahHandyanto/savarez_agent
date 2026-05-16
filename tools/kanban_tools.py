@@ -534,17 +534,29 @@ def _handle_heartbeat(args: dict, **kw) -> str:
         try:
             # Extend the claim TTL first. The dispatcher pins
             # HERMES_KANBAN_CLAIM_LOCK in the worker env at spawn time
-            # (see _default_spawn in kanban_db.py); falling back to the
-            # default _claimer_id() covers locally-driven workers that
-            # never went through the dispatcher path.
+            # (see _default_spawn in kanban_db.py). For locally-driven
+            # workers and tests that don't have that env, fall back to the
+            # task row's current claim_lock before finally trying the local
+            # process claimer id.
             claim_lock = os.environ.get("HERMES_KANBAN_CLAIM_LOCK")
+            task = None
+            expected_run_id = _worker_run_id(tid)
+            if not claim_lock:
+                task = kb.get_task(conn, tid)
+                claim_lock = task.claim_lock if task is not None else None
+                # In locally-driven / test contexts we may inherit an
+                # unrelated HERMES_KANBAN_RUN_ID from the parent Hermes
+                # worker. Without the dispatcher-pinned claim-lock env,
+                # prefer the task row's current run id instead of ambient
+                # process state.
+                expected_run_id = task.current_run_id if task is not None else None
             kb.heartbeat_claim(conn, tid, claimer=claim_lock)
 
             ok = kb.heartbeat_worker(
                 conn,
                 tid,
                 note=note,
-                expected_run_id=_worker_run_id(tid),
+                expected_run_id=expected_run_id,
             )
             if not ok:
                 return tool_error(
@@ -617,6 +629,7 @@ def _handle_create(args: dict, **kw) -> str:
         return tool_error(bool_error)
     idempotency_key = args.get("idempotency_key")
     max_runtime_seconds = args.get("max_runtime_seconds")
+    model = args.get("model")
     skills = args.get("skills")
     if isinstance(skills, str):
         # Accept a single skill name as a string for convenience.
@@ -651,6 +664,7 @@ def _handle_create(args: dict, **kw) -> str:
                     if max_runtime_seconds is not None else None
                 ),
                 skills=skills,
+                model=(str(model).strip() if model is not None else None),
                 created_by=os.environ.get("HERMES_PROFILE") or "worker",
             )
             new_task = kb.get_task(conn, new_tid)
@@ -1060,6 +1074,13 @@ KANBAN_CREATE_SCHEMA = {
                     "Per-task runtime cap. When exceeded, the "
                     "dispatcher SIGTERMs the worker and re-queues the "
                     "task with outcome='timed_out'."
+                ),
+            },
+            "model": {
+                "type": "string",
+                "description": (
+                    "Optional per-task worker model override. Omit to use "
+                    "the assignee profile's configured default model."
                 ),
             },
             "skills": {
