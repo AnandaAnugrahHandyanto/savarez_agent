@@ -157,6 +157,7 @@ AUTHOR_MAP = {
     "14046872+tmimmanuel@users.noreply.github.com": "tmimmanuel",
     "112875006+donramon77@users.noreply.github.com": "donramon77",
     "657290301@qq.com": "IMHaoyan",
+    "puppy@hidden.dev": "HiddenPuppy",
     "revar@users.noreply.github.com": "revaraver",
     "dengtaoyuan@dengtaoyuandeMac-mini.local": "dengtaoyuan450-a11y",
     "ysfalweshcan@gmail.com": "Junass1",
