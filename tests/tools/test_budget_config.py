@@ -49,6 +49,22 @@ class TestPinnedThresholds:
     def test_pinned_is_not_empty(self):
         assert len(PINNED_THRESHOLDS) >= 1
 
+    def test_cache_stable_reduced_budget_still_pins_read_file(self):
+        # RC5: the cache-stable BudgetConfig (20k/60k) must NOT truncate
+        # read_file — PINNED wins over the reduced default, preserving the
+        # 3-layer persistence (full payload still retrievable via read_file).
+        from tools.budget_config import BudgetConfig, DEFAULT_PREVIEW_SIZE_CHARS
+        cs = BudgetConfig(
+            default_result_size=20_000,
+            turn_budget=60_000,
+            preview_size=DEFAULT_PREVIEW_SIZE_CHARS,
+        )
+        assert cs.resolve_threshold("read_file") == float("inf")
+        assert cs.default_result_size == 20_000
+        assert cs.turn_budget == 60_000
+        # A non-pinned tool DOES get the reduced cap.
+        assert cs.resolve_threshold("some_other_tool") == 20_000
+
 
 # ---------------------------------------------------------------------------
 # BudgetConfig defaults

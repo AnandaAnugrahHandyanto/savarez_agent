@@ -24,6 +24,7 @@ from agent.prompt_builder import (
     TOOL_USE_ENFORCEMENT_GUIDANCE,
     TOOL_USE_ENFORCEMENT_MODELS,
     OPENAI_MODEL_EXECUTION_GUIDANCE,
+    OPENAI_MODEL_EXECUTION_GUIDANCE_CACHE_STABLE,
     MEMORY_GUIDANCE,
     SESSION_SEARCH_GUIDANCE,
     PLATFORM_HINTS,
@@ -1181,6 +1182,61 @@ class TestOpenAIModelExecutionGuidance:
     def test_guidance_is_string(self):
         assert isinstance(OPENAI_MODEL_EXECUTION_GUIDANCE, str)
         assert len(OPENAI_MODEL_EXECUTION_GUIDANCE) > 100
+
+
+class TestOpenAIModelExecutionGuidanceCacheStable:
+    """RC4: the cache-stable variant trims only the <verification> block."""
+
+    def test_is_derived_and_identical_except_verification(self):
+        # Everything outside <verification> must be byte-identical to the
+        # canonical constant (it's built via .replace on that single block).
+        canon = OPENAI_MODEL_EXECUTION_GUIDANCE
+        cs = OPENAI_MODEL_EXECUTION_GUIDANCE_CACHE_STABLE
+        # Split each on the verification block boundaries and compare the
+        # surrounding text.
+        pre_canon = canon.split("<verification>")[0]
+        post_canon = canon.split("</verification>")[1]
+        pre_cs = cs.split("<verification>")[0]
+        post_cs = cs.split("</verification>")[1]
+        assert pre_canon == pre_cs
+        assert post_canon == post_cs
+
+    def test_strong_reread_block_removed(self):
+        cs = OPENAI_MODEL_EXECUTION_GUIDANCE_CACHE_STABLE.lower()
+        # The strong per-step verification bullets are gone.
+        assert "before finalizing your response" not in cs
+        assert "- correctness:" not in cs
+        assert "- grounding:" not in cs
+
+    def test_single_disposition_confirm_line_present(self):
+        cs = OPENAI_MODEL_EXECUTION_GUIDANCE_CACHE_STABLE
+        assert "<verification>" in cs and "</verification>" in cs
+        assert "disposition PATCH" in cs
+        assert "2xx" in cs
+        assert "No other per-step re-reads are required." in cs
+
+    def test_other_disciplines_retained(self):
+        # Tool persistence / prerequisite / missing-context blocks must survive.
+        cs = OPENAI_MODEL_EXECUTION_GUIDANCE_CACHE_STABLE
+        assert "<tool_persistence>" in cs
+        assert "<prerequisite_checks>" in cs
+        assert "<missing_context>" in cs
+
+    def test_variant_is_byte_stable(self):
+        # Two reads of the module constant are identical — it's a fixed
+        # string, so RC2's byte-stable-prefix invariant holds when this is
+        # selected.
+        import agent.prompt_builder as pb
+        assert (
+            pb.OPENAI_MODEL_EXECUTION_GUIDANCE_CACHE_STABLE
+            == OPENAI_MODEL_EXECUTION_GUIDANCE_CACHE_STABLE
+        )
+
+    def test_canonical_constant_untouched(self):
+        # The original must still carry the strong block (other code/tests
+        # depend on it; only the call-site swap changes behavior).
+        assert "Before finalizing your response:" in OPENAI_MODEL_EXECUTION_GUIDANCE
+        assert "- Correctness:" in OPENAI_MODEL_EXECUTION_GUIDANCE
 
 
 # =========================================================================

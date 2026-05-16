@@ -133,6 +133,7 @@ from tools.terminal_tool import (
     _get_sudo_password_callback,
 )
 from tools.tool_result_storage import maybe_persist_tool_result, enforce_turn_budget
+from tools.budget_config import BudgetConfig, DEFAULT_BUDGET, DEFAULT_PREVIEW_SIZE_CHARS
 from tools.interrupt import set_interrupt as _set_interrupt
 from tools.browser_tool import cleanup_browser
 
@@ -160,7 +161,7 @@ from agent.model_metadata import (
 from agent.context_compressor import ContextCompressor
 from agent.subdirectory_hints import SubdirectoryHintTracker
 from agent.prompt_caching import apply_anthropic_cache_control
-from agent.prompt_builder import build_skills_system_prompt, build_context_files_prompt, build_environment_hints, load_soul_md, TOOL_USE_ENFORCEMENT_GUIDANCE, TOOL_USE_ENFORCEMENT_MODELS, GOOGLE_MODEL_OPERATIONAL_GUIDANCE, OPENAI_MODEL_EXECUTION_GUIDANCE
+from agent.prompt_builder import build_skills_system_prompt, build_context_files_prompt, build_environment_hints, load_soul_md, TOOL_USE_ENFORCEMENT_GUIDANCE, TOOL_USE_ENFORCEMENT_MODELS, GOOGLE_MODEL_OPERATIONAL_GUIDANCE, OPENAI_MODEL_EXECUTION_GUIDANCE, OPENAI_MODEL_EXECUTION_GUIDANCE_CACHE_STABLE
 from agent.usage_pricing import estimate_usage_cost, normalize_usage
 from agent.codex_responses_adapter import (
     _derive_responses_function_call_id as _codex_derive_responses_function_call_id,
@@ -2114,6 +2115,28 @@ class AIAgent:
         if not isinstance(_agent_section, dict):
             _agent_section = {}
         self._tool_use_enforcement = _agent_section.get("tool_use_enforcement", "auto")
+
+        # Cache-stable mode (RC4/RC5): for recurring single-wake spawns
+        # (Paperclip disposition issues) we trim per-step verification
+        # pressure and shrink in-context tool-result budgets so high-turn
+        # flows (IN_REVIEW / CONTINUATION) don't blow past OpenClaw-equivalent
+        # turn counts. Default OFF — interactive CLI/Telegram/Discord/cron
+        # are byte-for-byte unaffected. Activated by platform, env var, or
+        # the agent.cache_stable config key (operator-owned for Paperclip).
+        self._cache_stable_mode = (
+            (self.platform or "").lower().strip() == "paperclip"
+            or os.environ.get("HERMES_CACHE_STABLE", "").lower() in {"1", "true", "yes"}
+            or bool(_agent_section.get("cache_stable", False))
+        )
+        # Reduced tool-result budgets used only in cache-stable mode. Built
+        # once. PINNED_THRESHOLDS (read_file=inf) and 3-layer persistence
+        # are preserved by BudgetConfig.resolve_threshold regardless of these
+        # numbers — only the in-context footprint shrinks.
+        self._cache_stable_budget = BudgetConfig(
+            default_result_size=20_000,
+            turn_budget=60_000,
+            preview_size=DEFAULT_PREVIEW_SIZE_CHARS,
+        )
 
         # App-level API retry count (wraps each model API call).  Default 3,
         # overridable via agent.api_max_retries in config.yaml.  See #11616.
@@ -6147,8 +6170,18 @@ class AIAgent:
                     stable_parts.append(GOOGLE_MODEL_OPERATIONAL_GUIDANCE)
                 # OpenAI GPT/Codex execution discipline (tool persistence,
                 # prerequisite checks, verification, anti-hallucination).
+                # RC4: in cache-stable mode, use the variant whose
+                # <verification> block is reduced to a single end-of-run
+                # disposition-PATCH confirm — drops the per-step re-read
+                # turns that blow up high-turn Paperclip flows. The variant
+                # is itself a fixed constant, so RC2's byte-stable prefix
+                # invariant still holds.
                 if "gpt" in _model_lower or "codex" in _model_lower:
-                    stable_parts.append(OPENAI_MODEL_EXECUTION_GUIDANCE)
+                    stable_parts.append(
+                        OPENAI_MODEL_EXECUTION_GUIDANCE_CACHE_STABLE
+                        if self._cache_stable_mode
+                        else OPENAI_MODEL_EXECUTION_GUIDANCE
+                    )
 
         has_skills_tools = any(name in self.valid_tool_names for name in ['skills_list', 'skill_view', 'skill_manage'])
         if has_skills_tools:
@@ -11388,6 +11421,7 @@ class AIAgent:
                 tool_name=name,
                 tool_use_id=tc.id,
                 env=get_active_env(effective_task_id),
+                config=(self._cache_stable_budget if self._cache_stable_mode else DEFAULT_BUDGET),
             ) if not _is_multimodal_tool_result(function_result) else function_result
 
             subdir_hints = self._subdirectory_hints.check_tool_call(name, args)
@@ -11425,7 +11459,11 @@ class AIAgent:
         num_tools = len(parsed_calls)
         if num_tools > 0:
             turn_tool_msgs = messages[-num_tools:]
-            enforce_turn_budget(turn_tool_msgs, env=get_active_env(effective_task_id))
+            enforce_turn_budget(
+                turn_tool_msgs,
+                env=get_active_env(effective_task_id),
+                config=(self._cache_stable_budget if self._cache_stable_mode else DEFAULT_BUDGET),
+            )
 
         # ── /steer injection ──────────────────────────────────────────────
         # Append any pending user steer text to the last tool result so the
@@ -11810,6 +11848,7 @@ class AIAgent:
                 tool_name=function_name,
                 tool_use_id=tool_call.id,
                 env=get_active_env(effective_task_id),
+                config=(self._cache_stable_budget if self._cache_stable_mode else DEFAULT_BUDGET),
             ) if not _is_multimodal_tool_result(function_result) else function_result
 
             # Discover subdirectory context files from tool arguments
@@ -11866,7 +11905,11 @@ class AIAgent:
         # ── Per-turn aggregate budget enforcement ─────────────────────────
         num_tools_seq = len(assistant_message.tool_calls)
         if num_tools_seq > 0:
-            enforce_turn_budget(messages[-num_tools_seq:], env=get_active_env(effective_task_id))
+            enforce_turn_budget(
+                messages[-num_tools_seq:],
+                env=get_active_env(effective_task_id),
+                config=(self._cache_stable_budget if self._cache_stable_mode else DEFAULT_BUDGET),
+            )
 
         # ── /steer injection ──────────────────────────────────────────────
         # See _execute_tool_calls_parallel for the rationale. Same hook,
