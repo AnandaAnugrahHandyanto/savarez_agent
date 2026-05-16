@@ -874,6 +874,7 @@ class SlackAdapter(BasePlatformAdapter):
         message_id: str,
         content: str,
         *,
+        metadata=None,
         finalize: bool = False,
     ) -> SendResult:
         """Edit a previously sent Slack message."""
