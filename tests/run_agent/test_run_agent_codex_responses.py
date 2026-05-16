@@ -1965,3 +1965,152 @@ def test_preflight_codex_input_deduplicates_reasoning_ids(monkeypatch):
     # IDs must be stripped — with store=False the API 404s on id lookups.
     for it in reasoning_items:
         assert "id" not in it
+
+
+# ---------------------------------------------------------------------------
+# Regression tests for #27038: Codex Responses API rejects replayed assistant
+# message items with long (>64 char) id fields.
+# ---------------------------------------------------------------------------
+
+
+def test_replay_strips_oversized_message_item_id():
+    """Message items with long ids (>64 chars) must NOT include id on replay.
+
+    The Codex backend enforces a 64-char maximum on input[N].id but returns
+    ids up to 408 chars.  With store=False, server-side id lookup fails
+    anyway, so stripping is safe and consistent with reasoning-item handling.
+    """
+    from agent.codex_responses_adapter import _chat_messages_to_responses_input
+
+    long_id = "A" * 408  # Simulate a 408-char Codex-assigned id
+
+    messages = [
+        {
+            "role": "assistant",
+            "codex_message_items": [
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "status": "completed",
+                    "content": [{"type": "output_text", "text": "Hello"}],
+                    "id": long_id,
+                    "phase": "final_answer",
+                }
+            ],
+        },
+    ]
+
+    result = _chat_messages_to_responses_input(messages)
+
+    # Find the message item in the output
+    msg_items = [i for i in result if isinstance(i, dict) and i.get("type") == "message"]
+    assert len(msg_items) == 1
+    # id must NOT be present (stripped on replay)
+    assert "id" not in msg_items[0], f"id should be stripped but found: {msg_items[0]['id']}"
+    # phase must be preserved for cache performance
+    assert msg_items[0].get("phase") == "final_answer"
+
+
+def test_preflight_strips_message_item_id():
+    """Preflight normalizer must omit message item ids as a safety net."""
+    from agent.codex_responses_adapter import _preflight_codex_input_items
+
+    long_id = "B" * 408
+    items = [
+        {"role": "user", "content": "hi"},
+        {
+            "type": "message",
+            "role": "assistant",
+            "status": "completed",
+            "content": [{"type": "output_text", "text": "Response"}],
+            "id": long_id,
+            "phase": "final_answer",
+        },
+    ]
+
+    result = _preflight_codex_input_items(items)
+
+    msg_items = [i for i in result if i.get("type") == "message"]
+    assert len(msg_items) == 1
+    assert "id" not in msg_items[0]
+    assert msg_items[0].get("phase") == "final_answer"
+
+
+def test_normalize_rejects_oversized_message_item_id():
+    """_normalize_codex_response must not capture ids longer than 64 chars."""
+    from agent.codex_responses_adapter import _normalize_codex_response
+    from types import SimpleNamespace
+
+    long_id = "C" * 408
+    short_id = "D" * 32
+
+    # Build mock response with a message item carrying a long id
+    item_long = SimpleNamespace(
+        type="message",
+        id=long_id,
+        status="completed",
+        role="assistant",
+        content=[SimpleNamespace(type="output_text", text="Hello")],
+    )
+    resp_long = SimpleNamespace(
+        id="resp-1",
+        status="completed",
+        output=[item_long],
+        model="gpt-5-codex",
+    )
+
+    assistant_msg, _ = _normalize_codex_response(resp_long)
+    # codex_message_items should not contain the long id
+    items = getattr(assistant_msg, "codex_message_items", [])
+    msg_dicts = [i for i in items if isinstance(i, dict)]
+    for d in msg_dicts:
+        assert "id" not in d, f"Long id should be filtered at capture, got: {d.get('id')}"
+
+    # Short id should still be captured
+    item_short = SimpleNamespace(
+        type="message",
+        id=short_id,
+        status="completed",
+        role="assistant",
+        content=[SimpleNamespace(type="output_text", text="World")],
+    )
+    resp_short = SimpleNamespace(
+        id="resp-2",
+        status="completed",
+        output=[item_short],
+        model="gpt-5-codex",
+    )
+    assistant_msg2, _ = _normalize_codex_response(resp_short)
+    items2 = getattr(assistant_msg2, "codex_message_items", [])
+    msg_dicts2 = [i for i in items2 if isinstance(i, dict)]
+    found_short = any(d.get("id") == short_id for d in msg_dicts2)
+    assert found_short, "Short id (<=64 chars) should be preserved"
+
+
+def test_replay_preserves_phase_without_id():
+    """Phase field is preserved for cache performance even when id is stripped."""
+    from agent.codex_responses_adapter import _chat_messages_to_responses_input
+
+    messages = [
+        {
+            "role": "assistant",
+            "codex_message_items": [
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "status": "completed",
+                    "content": [{"type": "output_text", "text": "Answer"}],
+                    "id": "X" * 200,
+                    "phase": "final_answer",
+                }
+            ],
+        },
+    ]
+
+    result = _chat_messages_to_responses_input(messages)
+
+    msg_items = [i for i in result if isinstance(i, dict) and i.get("type") == "message"]
+    assert len(msg_items) == 1
+    assert "id" not in msg_items[0]
+    assert msg_items[0]["phase"] == "final_answer"
+    assert msg_items[0]["content"][0]["text"] == "Answer"

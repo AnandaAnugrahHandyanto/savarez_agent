@@ -349,9 +349,13 @@ def _chat_messages_to_responses_input(
                             "status": _normalize_responses_message_status(raw_item.get("status")),
                             "content": normalized_content_parts,
                         }
-                        item_id = raw_item.get("id")
-                        if isinstance(item_id, str) and item_id.strip():
-                            replay_item["id"] = item_id.strip()
+                        # Strip the server-assigned message id on replay.
+                        # With store=False (Hermes default), the API cannot look up
+                        # items by id server-side, and Codex returns ids up to 408
+                        # chars which exceed the 64-char input id limit.  Omitting
+                        # the id is consistent with how reasoning items are handled
+                        # (see ~line 307) and avoids HTTP 400 on session replay.
+                        # phase is preserved for cache performance.
                         phase = raw_item.get("phase")
                         if isinstance(phase, str) and phase.strip():
                             replay_item["phase"] = phase.strip()
@@ -603,9 +607,9 @@ def _preflight_codex_input_items(raw_items: Any) -> List[Dict[str, Any]]:
                 "status": _normalize_responses_message_status(item.get("status")),
                 "content": normalized_content,
             }
-            item_id = item.get("id")
-            if isinstance(item_id, str) and item_id.strip():
-                normalized_item["id"] = item_id.strip()
+            # Omit message item id — same rationale as replay path above.
+            # The preflight normalizer is a safety net for any code path that
+            # might inject oversized ids.
             phase = item.get("phase")
             if isinstance(phase, str) and phase.strip():
                 normalized_item["phase"] = phase.strip()
@@ -945,7 +949,7 @@ def _normalize_codex_response(response: Any) -> tuple[Any, str]:
                     "content": [{"type": "output_text", "text": message_text}],
                 }
                 item_id = getattr(item, "id", None)
-                if isinstance(item_id, str) and item_id:
+                if isinstance(item_id, str) and item_id and len(item_id) <= 64:
                     raw_message_item["id"] = item_id
                 if normalized_phase:
                     raw_message_item["phase"] = normalized_phase
