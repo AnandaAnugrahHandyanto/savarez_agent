@@ -5762,6 +5762,7 @@ class GatewayRunner:
                     "TELEGRAM_GROUP_ALLOWED_USERS",
                     "TELEGRAM_GROUP_ALLOWED_CHATS",
                 ),
+                Platform.WHATSAPP: ("WHATSAPP_GROUP_ALLOWED_USERS",),
                 Platform.QQBOT: ("QQ_GROUP_ALLOWED_USERS",),
             }
             if os.getenv(platform_env_map.get(platform, ""), "").strip():

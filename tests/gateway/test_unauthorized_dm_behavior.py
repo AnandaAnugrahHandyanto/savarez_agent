@@ -676,6 +676,20 @@ def test_allowlist_authorized_user_returns_ignore_for_unauthorized(monkeypatch):
     assert behavior == "ignore"
 
 
+def test_whatsapp_group_allowlist_returns_ignore_for_unauthorized(monkeypatch):
+    """WhatsApp group allowlists should not trigger pairing codes for unknown DMs."""
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("WHATSAPP_GROUP_ALLOWED_USERS", "120363001234567890@g.us")
+
+    config = GatewayConfig(
+        platforms={Platform.WHATSAPP: PlatformConfig(enabled=True)},
+    )
+    runner, _adapter = _make_runner(Platform.WHATSAPP, config)
+
+    behavior = runner._get_unauthorized_dm_behavior(Platform.WHATSAPP)
+    assert behavior == "ignore"
+
+
 def test_get_unauthorized_dm_behavior_no_allowlist_returns_pair(monkeypatch):
     """Without any allowlist, 'pair' is still the default."""
     _clear_auth_env(monkeypatch)
