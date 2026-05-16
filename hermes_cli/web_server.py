@@ -121,6 +121,27 @@ _PUBLIC_API_PATHS: frozenset = frozenset({
     "/api/dashboard/plugins/rescan",
 })
 
+_DASHBOARD_CONTENT_SECURITY_POLICY = (
+    "default-src 'self'; "
+    "script-src 'self' 'unsafe-inline'; "
+    "style-src 'self' 'unsafe-inline'; "
+    "img-src 'self' data: blob:; "
+    "font-src 'self' data:; "
+    "connect-src 'self' ws://localhost:* ws://127.0.0.1:* "
+    "wss://localhost:* wss://127.0.0.1:*; "
+    "base-uri 'self'; "
+    "form-action 'self'; "
+    "frame-ancestors 'none'"
+)
+
+_DASHBOARD_SECURITY_HEADERS: Dict[str, str] = {
+    "Content-Security-Policy": _DASHBOARD_CONTENT_SECURITY_POLICY,
+    "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
+    "Referrer-Policy": "no-referrer",
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+}
+
 
 def _has_valid_session_token(request: Request) -> bool:
     """True if the request carries a valid dashboard session token.
@@ -244,6 +265,15 @@ async def auth_middleware(request: Request, call_next):
                 content={"detail": "Unauthorized"},
             )
     return await call_next(request)
+
+
+@app.middleware("http")
+async def dashboard_security_headers_middleware(request: Request, call_next):
+    """Attach browser security headers to dashboard and API responses."""
+    response = await call_next(request)
+    for key, value in _DASHBOARD_SECURITY_HEADERS.items():
+        response.headers.setdefault(key, value)
+    return response
 
 
 # ---------------------------------------------------------------------------
