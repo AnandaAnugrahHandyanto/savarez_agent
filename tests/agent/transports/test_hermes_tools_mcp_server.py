@@ -48,6 +48,7 @@ class TestModuleSurface:
             "vision_analyze",
             "image_generate",
             "skill_view",
+            "obsidian_read_tasks",
         ):
             assert required in EXPOSED_TOOLS, f"missing {required!r}"
 

@@ -35,6 +35,8 @@ _HERMES_CORE_TOOLS = [
     "terminal", "process",
     # File manipulation
     "read_file", "write_file", "patch", "search_files",
+    # Obsidian structured note/task readers
+    "obsidian_read_tasks",
     # Vision + image generation
     "vision_analyze", "image_generate",
     # Skills
@@ -174,6 +176,12 @@ TOOLSETS = {
     "file": {
         "description": "File manipulation tools: read, write, patch (with fuzzy matching), and search (content + files)",
         "tools": ["read_file", "write_file", "patch", "search_files"],
+        "includes": []
+    },
+
+    "obsidian": {
+        "description": "Obsidian vault tools: structured task reads from Markdown notes",
+        "tools": ["obsidian_read_tasks"],
         "includes": []
     },
     
