@@ -757,6 +757,17 @@ def _try_resolve_fallback_provider() -> dict | None:
     return None
 
 
+def _substitute_quick_command_args(template: str, user_args: str) -> str:
+    """Substitute ``{args}`` in a quick-command exec template with the
+    user's input, shell-quoted so metacharacters can't break out of the
+    intended argument boundary.
+
+    Templates without ``{args}`` pass through unchanged, preserving
+    backward compatibility with fire-and-forget exec quick commands.
+    """
+    return template.replace("{args}", shlex.quote(user_args))
+
+
 def _build_media_placeholder(event) -> str:
     """Build a text placeholder for media-only events so they aren't dropped.
 
@@ -6679,6 +6690,12 @@ class GatewayRunner:
                 if qcmd.get("type") == "exec":
                     exec_cmd = qcmd.get("command", "")
                     if exec_cmd:
+                        # Forward the user's typed args into the configured
+                        # shell template via the {args} placeholder. See
+                        # _substitute_quick_command_args for the shell-quoting
+                        # contract.
+                        user_args = event.get_command_args().strip()
+                        exec_cmd = _substitute_quick_command_args(exec_cmd, user_args)
                         try:
                             # Sanitize env to prevent credential leakage —
                             # quick commands run in the gateway process which
