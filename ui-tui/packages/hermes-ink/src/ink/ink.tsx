@@ -1272,6 +1272,7 @@ export default class Ink {
 
     if (active) {
       this.resetFramesForAltScreen()
+      this.scheduleRender()
     } else {
       this.repaint()
     }
