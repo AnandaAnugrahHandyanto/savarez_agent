@@ -66,6 +66,8 @@ AUTHOR_MAP = {
     "jeremy@geocaching.com": "outdoorsea",
     "leone.parise@gmail.com": "leoneparise",
     "mr@shu.io": "mrshu",
+    "chuang.guo@hopechart.com": "郭闯",
+    "wuyefeima9@gmail.com": "wuwuzhijing",
     "adam.manning@gmail.com": "am423",
     "buraysandro9@gmail.com": "ygd58",
     "108427749+buntingszn@users.noreply.github.com": "buntingszn",
