@@ -559,3 +559,138 @@ class TestStopProfileGateway:
         assert calls["kill"] == 1          # one SIGTERM
         assert calls["alive_probes"] == 20 # 20 liveness polls over the 2s window
         assert calls["remove"] == 0
+
+
+# ---------------------------------------------------------------------------
+# start_gateway — duplicate-instance guard exits cleanly (issue #21549)
+# ---------------------------------------------------------------------------
+
+class TestStartGatewayDuplicateInstanceGuard:
+    """Verify that start_gateway returns True (exit 0) when another instance
+    is already running, so launchd/systemd don't trigger a restart loop."""
+
+    @pytest.mark.asyncio
+    async def test_returns_true_when_another_instance_detected(self, monkeypatch, caplog):
+        """When get_running_pid returns a different PID, start_gateway should
+        return True (clean exit) instead of False (which triggers sys.exit(1)
+        and launchd restart loops)."""
+        import logging
+
+        # Mock get_running_pid to simulate another instance
+        monkeypatch.setattr(
+            "gateway.status.get_running_pid",
+            lambda pid_path=None, cleanup_stale=True: 12345,
+        )
+        # Mock acquire_gateway_runtime_lock to not actually lock
+        monkeypatch.setattr(
+            "gateway.status.acquire_gateway_runtime_lock",
+            lambda: False,
+        )
+        # Mock write_pid_file to not actually write
+        monkeypatch.setattr(
+            "gateway.status.write_pid_file",
+            lambda: None,
+        )
+        # Mock release_gateway_runtime_lock
+        monkeypatch.setattr(
+            "gateway.status.release_gateway_runtime_lock",
+            lambda: None,
+        )
+        # Mock remove_pid_file
+        monkeypatch.setattr(
+            "gateway.status.remove_pid_file",
+            lambda: None,
+        )
+
+        from gateway.run import start_gateway
+
+        with caplog.at_level(logging.WARNING, logger="gateway.run"):
+            result = await start_gateway()
+
+        # Must return True (clean exit), not False (which triggers sys.exit(1))
+        assert result is True
+        # Should log a warning about exiting cleanly
+        assert "Exiting cleanly" in caplog.text
+        assert "Another gateway instance" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_returns_true_when_runtime_lock_held(self, monkeypatch, caplog):
+        """When the runtime lock is held by another instance, start_gateway
+        should return True (clean exit)."""
+        import logging
+
+        # Mock get_running_pid to return None (no PID file)
+        monkeypatch.setattr(
+            "gateway.status.get_running_pid",
+            lambda pid_path=None, cleanup_stale=True: None,
+        )
+        # Mock acquire_gateway_runtime_lock to return False (lock held)
+        monkeypatch.setattr(
+            "gateway.status.acquire_gateway_runtime_lock",
+            lambda: False,
+        )
+        # Mock write_pid_file
+        monkeypatch.setattr(
+            "gateway.status.write_pid_file",
+            lambda: None,
+        )
+        # Mock release_gateway_runtime_lock
+        monkeypatch.setattr(
+            "gateway.status.release_gateway_runtime_lock",
+            lambda: None,
+        )
+        # Mock remove_pid_file
+        monkeypatch.setattr(
+            "gateway.status.remove_pid_file",
+            lambda: None,
+        )
+
+        from gateway.run import start_gateway
+
+        with caplog.at_level(logging.WARNING, logger="gateway.run"):
+            result = await start_gateway()
+
+        assert result is True
+        assert "Exiting cleanly" in caplog.text
+        assert "runtime lock" in caplog.text.lower()
+
+    @pytest.mark.asyncio
+    async def test_returns_true_when_pid_file_race_lost(self, monkeypatch, caplog):
+        """When write_pid_file raises FileExistsError, start_gateway should
+        return True (clean exit)."""
+        import logging
+
+        # Mock get_running_pid to return None
+        monkeypatch.setattr(
+            "gateway.status.get_running_pid",
+            lambda pid_path=None, cleanup_stale=True: None,
+        )
+        # Mock acquire_gateway_runtime_lock to return True (we got the lock)
+        monkeypatch.setattr(
+            "gateway.status.acquire_gateway_runtime_lock",
+            lambda: True,
+        )
+        # Mock write_pid_file to raise FileExistsError (race lost)
+        monkeypatch.setattr(
+            "gateway.status.write_pid_file",
+            lambda: (_ for _ in ()).throw(FileExistsError("PID file exists")),
+        )
+        # Mock release_gateway_runtime_lock
+        monkeypatch.setattr(
+            "gateway.status.release_gateway_runtime_lock",
+            lambda: None,
+        )
+        # Mock remove_pid_file
+        monkeypatch.setattr(
+            "gateway.status.remove_pid_file",
+            lambda: None,
+        )
+
+        from gateway.run import start_gateway
+
+        with caplog.at_level(logging.WARNING, logger="gateway.run"):
+            result = await start_gateway()
+
+        assert result is True
+        assert "Exiting cleanly" in caplog.text
+        assert "PID file race" in caplog.text

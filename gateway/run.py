@@ -16774,18 +16774,12 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
                 pass
         else:
             hermes_home = str(get_hermes_home())
-            logger.error(
+            logger.warning(
                 "Another gateway instance is already running (PID %d, HERMES_HOME=%s). "
-                "Use 'hermes gateway restart' to replace it, or 'hermes gateway stop' first.",
+                "Exiting cleanly to avoid restart loop.",
                 existing_pid, hermes_home,
             )
-            print(
-                f"\n❌ Gateway already running (PID {existing_pid}).\n"
-                f"   Use 'hermes gateway restart' to replace it,\n"
-                f"   or 'hermes gateway stop' to kill it first.\n"
-                f"   Or use 'hermes gateway run --replace' to auto-replace.\n"
-            )
-            return False
+            return True
 
     # Sync bundled skills on gateway start (fast -- skips unchanged)
     try:
@@ -16969,24 +16963,26 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     from gateway.status import write_pid_file, remove_pid_file, get_running_pid
     _current_pid = get_running_pid()
     if _current_pid is not None and _current_pid != os.getpid():
-        logger.error(
+        logger.warning(
             "Another gateway instance (PID %d) started during our startup. "
-            "Exiting to avoid double-running.", _current_pid
+            "Exiting cleanly (another instance wins).", _current_pid
         )
-        return False
+        return True
     if not acquire_gateway_runtime_lock():
-        logger.error(
-            "Gateway runtime lock is already held by another instance. Exiting."
+        logger.warning(
+            "Gateway runtime lock is already held by another instance. "
+            "Exiting cleanly (another instance wins)."
         )
-        return False
+        return True
     try:
         write_pid_file()
     except FileExistsError:
         release_gateway_runtime_lock()
-        logger.error(
-            "PID file race lost to another gateway instance. Exiting."
+        logger.warning(
+            "PID file race lost to another gateway instance. "
+            "Exiting cleanly (another instance wins)."
         )
-        return False
+        return True
     atexit.register(remove_pid_file)
     atexit.register(release_gateway_runtime_lock)
 
