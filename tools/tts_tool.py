@@ -1844,7 +1844,9 @@ def text_to_speech_tool(
                     if opus_path:
                         file_str = opus_path
                 voice_compatible = file_str.endswith(".ogg")
-        elif provider in {"edge", "neutts", "minimax", "xai", "kittentts", "piper"} and not file_str.endswith(".ogg"):
+        # Gate OGG/Opus conversion on want_opus (Telegram delivery) so CLI/macOS
+        # users keep the native MP3/WAV output and afplay-compatible playback (#26404).
+        elif want_opus and provider in {"edge", "neutts", "minimax", "xai", "kittentts", "piper"} and not file_str.endswith(".ogg"):
             opus_path = _convert_to_opus(file_str)
             if opus_path:
                 file_str = opus_path
