@@ -1,0 +1,5 @@
+name: gemini
+version: 1.0.0
+description: "Google Gemini image generation backend (Nano Banana family). Reads API key from Hermes auth store (provider 'gemini') or GEMINI_API_KEY/GOOGLE_API_KEY env. Saves images to $HERMES_HOME/cache/images/."
+author: Dalton (local plugin)
+kind: backend

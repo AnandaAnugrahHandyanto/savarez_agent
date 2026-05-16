@@ -1,0 +1,5 @@
+name: codex-with-gemini-fallback
+version: 1.0.0
+description: "Wrapper provider — tries openai-codex first, falls back to gemini on auth/rate-limit/api errors. Set image_gen.provider to this name to use the chain."
+author: Dalton (local plugin)
+kind: backend
