@@ -558,9 +558,7 @@ class TrajectoryCompressor:
             return len(text) // 4
 
     def count_trajectory_tokens(self, trajectory: List[Dict[str, str]]) -> int:
-        """Count total tokens in a trajectory.
-        ⚡ Bolt Optimization: Delegates to count_turn_tokens which uses fast batch encoding.
-        """
+        """Count total tokens in a trajectory."""
         return sum(self.count_turn_tokens(trajectory))
 
     def count_turn_tokens(self, trajectory: List[Dict[str, str]]) -> List[int]:
