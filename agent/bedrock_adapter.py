@@ -1230,9 +1230,14 @@ def classify_bedrock_error(error_message: str) -> str:
 # detection is unavailable.
 
 BEDROCK_CONTEXT_LENGTHS: Dict[str, int] = {
-    # Anthropic Claude models on Bedrock
-    "anthropic.claude-opus-4-6":     200_000,
-    "anthropic.claude-sonnet-4-6":   200_000,
+    # Anthropic Claude models on Bedrock.
+    # Opus 4.6/4.7 and Sonnet 4.6 support 1M context windows on Bedrock natively
+    # via the Converse API — no beta header needed (the context-1m-2025-08-07
+    # beta is only for Anthropic's direct API). Verified via OpenClaw's working
+    # production config at ~/.openclaw/config-backups/working-4-2026.json.
+    "anthropic.claude-opus-4-7":   1_000_000,
+    "anthropic.claude-opus-4-6":   1_000_000,
+    "anthropic.claude-sonnet-4-6": 1_000_000,
     "anthropic.claude-sonnet-4-5":   200_000,
     "anthropic.claude-haiku-4-5":    200_000,
     "anthropic.claude-opus-4":       200_000,
