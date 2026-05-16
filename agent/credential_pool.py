@@ -386,6 +386,7 @@ class CredentialPool:
         self.provider = provider
         self._entries = sorted(entries, key=lambda entry: entry.priority)
         self._current_id: Optional[str] = None
+        self._selection_auth_type: Optional[str] = None
         self._strategy = get_pool_strategy(provider)
         self._lock = threading.Lock()
         self._active_leases: Dict[str, int] = {}
@@ -396,7 +397,22 @@ class CredentialPool:
 
     def has_available(self) -> bool:
         """True if at least one entry is not currently in exhaustion cooldown."""
-        return bool(self._available_entries())
+        return bool(self._available_entries(auth_type=self._selection_auth_type))
+
+    def restrict_selection_to_auth_type(self, auth_type: Optional[str]) -> "CredentialPool":
+        """Restrict future runtime selection/rotation to a single auth type.
+
+        This is an in-memory runtime guard. It is intentionally not persisted to
+        the credential pool store; callers use it to ensure a pool resolved for
+        an OAuth-only runtime cannot later rotate to an API-key entry.
+        """
+        normalized = str(auth_type or "").strip() or None
+        with self._lock:
+            self._selection_auth_type = normalized
+            current = self.current()
+            if normalized is not None and current is not None and current.auth_type != normalized:
+                self._current_id = None
+        return self
 
     def entries(self) -> List[PooledCredential]:
         return list(self._entries)
@@ -972,19 +988,29 @@ class CredentialPool:
 
     def select(self) -> Optional[PooledCredential]:
         with self._lock:
-            return self._select_unlocked()
+            return self._select_unlocked(auth_type=self._selection_auth_type)
 
-    def _available_entries(self, *, clear_expired: bool = False, refresh: bool = False) -> List[PooledCredential]:
+    def _available_entries(
+        self,
+        *,
+        clear_expired: bool = False,
+        refresh: bool = False,
+        auth_type: Optional[str] = None,
+    ) -> List[PooledCredential]:
         """Return entries not currently in exhaustion cooldown.
 
         When *clear_expired* is True, entries whose cooldown has elapsed are
         reset to STATUS_OK and persisted.  When *refresh* is True, entries
-        that need a token refresh are refreshed (skipped on failure).
+        that need a token refresh are refreshed (skipped on failure).  When
+        *auth_type* is supplied, only entries of that auth type are considered
+        for selection while preserving the underlying pool order and statuses.
         """
         now = time.time()
         cleared_any = False
         available: List[PooledCredential] = []
         for entry in self._entries:
+            if auth_type is not None and entry.auth_type != auth_type:
+                continue
             # For anthropic claude_code entries, sync from the credentials file
             # before any status/refresh checks. This picks up tokens refreshed
             # by other processes (Claude Code CLI, other Hermes profiles).
@@ -1055,8 +1081,8 @@ class CredentialPool:
             self._persist()
         return available
 
-    def _select_unlocked(self) -> Optional[PooledCredential]:
-        available = self._available_entries(clear_expired=True, refresh=True)
+    def _select_unlocked(self, *, auth_type: Optional[str] = None) -> Optional[PooledCredential]:
+        available = self._available_entries(clear_expired=True, refresh=True, auth_type=auth_type)
         if not available:
             self._current_id = None
             logger.info("credential pool: no available entries (all exhausted or empty)")
@@ -1088,11 +1114,103 @@ class CredentialPool:
         self._current_id = entry.id
         return entry
 
+    @staticmethod
+    def _entry_is_rate_limited(entry: PooledCredential) -> bool:
+        reason = (entry.last_error_reason or "").lower()
+        message = (entry.last_error_message or "").lower()
+        return (
+            entry.last_status == STATUS_EXHAUSTED
+            and (
+                entry.last_error_code == 429
+                or "rate" in reason
+                or "rate limit" in message
+                or "rate-limited" in message
+            )
+        )
+
+    def _anthropic_oauth_error(self, code: str, message: str) -> auth_mod.AuthError:
+        return auth_mod.AuthError(
+            message,
+            provider="anthropic",
+            code=code,
+            relogin_required=code in {"anthropic_oauth_missing", "anthropic_oauth_expired"},
+        )
+
+    def _unavailable_anthropic_oauth_error(self, oauth_entries: List[PooledCredential]) -> auth_mod.AuthError:
+        base_hint = (
+            "auth.disable_paid_api_fallback=true requires Anthropic OAuth credentials "
+            "from the credential pool. Paid API-key fallback is disabled, so Hermes "
+            "will not use ANTHROPIC_API_KEY or other Anthropic API-key entries for "
+            "this profile."
+        )
+        if not oauth_entries:
+            return self._anthropic_oauth_error(
+                "anthropic_oauth_missing",
+                "No Anthropic OAuth credential is available in the credential pool. "
+                f"{base_hint} Run `hermes model`, `claude setup-token`, or `claude /login` "
+                "to add/refresh a Claude Pro/Max OAuth credential, then retry.",
+            )
+
+        if any(self._entry_is_rate_limited(entry) for entry in oauth_entries):
+            return self._anthropic_oauth_error(
+                "anthropic_oauth_rate_limited",
+                "Anthropic OAuth credentials are currently rate limited or quota-exhausted. "
+                f"{base_hint} Wait for the provider reset window or add another OAuth credential; "
+                "Hermes will not fall through to paid API-key billing while the flag is enabled.",
+            )
+
+        now_ms = int(time.time() * 1000)
+        if any(
+            entry.expires_at_ms is not None and int(entry.expires_at_ms) <= now_ms + 120_000
+            for entry in oauth_entries
+        ):
+            return self._anthropic_oauth_error(
+                "anthropic_oauth_expired",
+                "Anthropic OAuth credentials are expired or expiring and could not be refreshed. "
+                f"{base_hint} Re-authenticate with `hermes model`, `claude setup-token`, "
+                "or `claude /login`; Hermes will not fall through to paid API-key billing "
+                "while the flag is enabled.",
+            )
+
+        return self._anthropic_oauth_error(
+            "anthropic_oauth_unavailable",
+            "Anthropic OAuth credentials exist but none are currently selectable. "
+            f"{base_hint} Check `hermes auth list anthropic`, reset exhausted credentials, "
+            "or re-authenticate before retrying.",
+        )
+
+    def select_anthropic_oauth_only(self) -> PooledCredential:
+        """Select only Anthropic OAuth credentials or raise an actionable AuthError.
+
+        Used by ``auth.disable_paid_api_fallback`` to prevent Anthropic-provider
+        profiles from silently falling through to API-key billing when a Max/OAuth
+        credential is missing, expired, or temporarily exhausted.
+        """
+        if self.provider != "anthropic":
+            selected = self.select()
+            if selected is None:
+                raise auth_mod.AuthError(
+                    f"No credential available for provider {self.provider}.",
+                    provider=self.provider,
+                    code="credential_unavailable",
+                )
+            return selected
+
+        with self._lock:
+            oauth_entries = [entry for entry in self._entries if entry.auth_type == AUTH_TYPE_OAUTH]
+            selected = self._select_unlocked(auth_type=AUTH_TYPE_OAUTH)
+            if selected is not None:
+                self._selection_auth_type = AUTH_TYPE_OAUTH
+                return selected
+            raise self._unavailable_anthropic_oauth_error(oauth_entries)
+
     def peek(self) -> Optional[PooledCredential]:
         current = self.current()
-        if current is not None:
+        if current is not None and (
+            self._selection_auth_type is None or current.auth_type == self._selection_auth_type
+        ):
             return current
-        available = self._available_entries()
+        available = self._available_entries(auth_type=self._selection_auth_type)
         return available[0] if available else None
 
     def mark_exhausted_and_rotate(
@@ -1102,7 +1220,13 @@ class CredentialPool:
         error_context: Optional[Dict[str, Any]] = None,
     ) -> Optional[PooledCredential]:
         with self._lock:
-            entry = self.current() or self._select_unlocked()
+            selection_auth_type = self._selection_auth_type
+            entry = self.current()
+            if entry is not None and (
+                selection_auth_type is not None and entry.auth_type != selection_auth_type
+            ):
+                entry = None
+            entry = entry or self._select_unlocked(auth_type=selection_auth_type)
             if entry is None:
                 return None
             _label = entry.label or entry.id[:8]
@@ -1112,7 +1236,7 @@ class CredentialPool:
             )
             self._mark_exhausted(entry, status_code, error_context)
             self._current_id = None
-            next_entry = self._select_unlocked()
+            next_entry = self._select_unlocked(auth_type=selection_auth_type)
             if next_entry:
                 _next_label = next_entry.label or next_entry.id[:8]
                 logger.info("credential pool: rotated to %s", _next_label)
@@ -1128,11 +1252,19 @@ class CredentialPool:
         """
         with self._lock:
             if credential_id:
+                if self._selection_auth_type is not None:
+                    entry = next((entry for entry in self._entries if entry.id == credential_id), None)
+                    if entry is None or entry.auth_type != self._selection_auth_type:
+                        return None
                 self._active_leases[credential_id] = self._active_leases.get(credential_id, 0) + 1
                 self._current_id = credential_id
                 return credential_id
 
-            available = self._available_entries(clear_expired=True, refresh=True)
+            available = self._available_entries(
+                clear_expired=True,
+                refresh=True,
+                auth_type=self._selection_auth_type,
+            )
             if not available:
                 return None
 
@@ -1165,6 +1297,8 @@ class CredentialPool:
     def _try_refresh_current_unlocked(self) -> Optional[PooledCredential]:
         entry = self.current()
         if entry is None:
+            return None
+        if self._selection_auth_type is not None and entry.auth_type != self._selection_auth_type:
             return None
         refreshed = self._refresh_entry(entry, force=True)
         if refreshed is not None:

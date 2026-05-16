@@ -762,6 +762,17 @@ credential_pool_strategies:
 
 Options: `fill_first` (default), `round_robin`, `least_used`, `random`. See [Credential Pools](/docs/user-guide/features/credential-pools) for full documentation.
 
+### Disable Anthropic paid API fallback
+
+If you use Claude Pro/Max OAuth credentials for Anthropic-provider profiles and want Hermes to fail loudly instead of silently falling through to a paid `ANTHROPIC_API_KEY`, enable:
+
+```yaml
+auth:
+  disable_paid_api_fallback: true
+```
+
+Default: `false` for backward compatibility. When enabled, `provider: anthropic` selects only OAuth credentials from the credential pool. If no OAuth credential is present, the OAuth credential is expired, or the OAuth credential is rate-limited/exhausted, Hermes raises an actionable auth error and does not use Anthropic API-key entries.
+
 ## Auxiliary Models
 
 Hermes uses "auxiliary" models for side tasks like image analysis, web page summarization, browser screenshot analysis, session-title generation, and context compression. By default (`auxiliary.*.provider: "auto"`), Hermes routes every auxiliary task to your **main chat model** — the same provider/model you picked in `hermes model`. You don't need to configure anything to get started, but be aware that on expensive reasoning models (Opus, MiniMax M2.7, etc.) auxiliary tasks add meaningful cost. If you want cheap-and-fast side tasks regardless of your main model, set `auxiliary.<task>.provider` and `auxiliary.<task>.model` explicitly (for example, Gemini Flash on OpenRouter for vision and web extraction).

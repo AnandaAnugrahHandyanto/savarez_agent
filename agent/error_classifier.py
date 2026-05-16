@@ -102,6 +102,12 @@ _BILLING_PATTERNS = [
     "exceeded your current quota",
     "account is deactivated",
     "plan does not include",
+    # Anthropic/Claude OAuth subscription exhaustion can arrive as HTTP 400
+    # invalid_request_error, not 402/429. Treat this as quota/billing
+    # exhaustion so credential-pool recovery marks the OAuth entry exhausted
+    # instead of surfacing it as a generic format error.
+    "out of extra usage",
+    "claude.ai/settings/usage",
 ]
 
 # Patterns that indicate rate limiting (transient, will resolve)

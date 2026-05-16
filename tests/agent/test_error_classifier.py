@@ -245,6 +245,33 @@ class TestClassifyApiError:
         assert result.reason == FailoverReason.rate_limit
         assert result.retryable is True
 
+    def test_400_anthropic_out_of_extra_usage_classified_as_billing(self):
+        e = MockAPIError(
+            "Error code: 400 - {'type': 'error'}",
+            status_code=400,
+            body={
+                "type": "error",
+                "error": {
+                    "type": "invalid_request_error",
+                    "message": "You're out of extra usage. Add more at claude.ai/settings/usage and keep going.",
+                },
+            },
+        )
+        result = classify_api_error(e, provider="anthropic", model="claude-opus-4-7")
+        assert result.reason == FailoverReason.billing
+        assert result.retryable is False
+        assert result.should_rotate_credential is True
+        assert result.should_fallback is True
+
+    def test_400_anthropic_out_of_extra_usage_message_only_classified_as_billing(self):
+        e = MockAPIError(
+            "You're out of extra usage. Add more at claude.ai/settings/usage and keep going.",
+            status_code=400,
+        )
+        result = classify_api_error(e, provider="anthropic", model="claude-opus-4-7")
+        assert result.reason == FailoverReason.billing
+        assert result.should_rotate_credential is True
+
     # ── Rate limit ──
 
     def test_429_rate_limit(self):

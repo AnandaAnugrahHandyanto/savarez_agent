@@ -473,6 +473,12 @@ DEFAULT_CONFIG = {
     "providers": {},
     "fallback_providers": [],
     "credential_pool_strategies": {},
+    "auth": {
+        # When true, Anthropic-provider profiles must resolve Claude Pro/Max
+        # OAuth credentials from the credential pool and will not silently fall
+        # through to ANTHROPIC_API_KEY / paid API-key billing.
+        "disable_paid_api_fallback": False,
+    },
     "toolsets": ["hermes-cli"],
     "agent": {
         "max_turns": 90,
@@ -3144,7 +3150,7 @@ def check_config_version() -> Tuple[int, int]:
 # Fields that are valid at root level of config.yaml
 _KNOWN_ROOT_KEYS = {
     "_config_version", "model", "providers", "fallback_model",
-    "fallback_providers", "credential_pool_strategies", "toolsets",
+    "fallback_providers", "credential_pool_strategies", "auth", "toolsets",
     "agent", "terminal", "display", "compression", "delegation",
     "auxiliary", "custom_providers", "context", "memory", "gateway",
     "sessions",

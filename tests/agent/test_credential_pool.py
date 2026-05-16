@@ -338,7 +338,7 @@ def test_mark_exhausted_and_rotate_persists_status(tmp_path, monkeypatch):
                         "auth_type": "api_key",
                         "priority": 0,
                         "source": "manual",
-                        "access_token": "sk-ant-api-primary",
+                        "access_token": "[REDACTED-PRIMARY]",
                     },
                     {
                         "id": "cred-2",
@@ -346,7 +346,7 @@ def test_mark_exhausted_and_rotate_persists_status(tmp_path, monkeypatch):
                         "auth_type": "api_key",
                         "priority": 1,
                         "source": "manual",
-                        "access_token": "sk-ant-api-secondary",
+                        "access_token": "[REDACTED-SECONDARY]",
                     },
                 ]
             },
@@ -367,6 +367,56 @@ def test_mark_exhausted_and_rotate_persists_status(tmp_path, monkeypatch):
     persisted = auth_payload["credential_pool"]["anthropic"][0]
     assert persisted["last_status"] == "exhausted"
     assert persisted["last_error_code"] == 402
+
+
+def test_anthropic_oauth_only_selection_does_not_rotate_to_api_key(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "anthropic": [
+                    {
+                        "id": "oauth-1",
+                        "label": "claude-oauth",
+                        "auth_type": "oauth",
+                        "priority": 0,
+                        "source": "manual:oauth",
+                        "access_token": "[REDACTED-OAUTH]",
+                    },
+                    {
+                        "id": "api-key-1",
+                        "label": "paid-api-key",
+                        "auth_type": "api_key",
+                        "priority": 1,
+                        "source": "manual",
+                        "access_token": "[REDACTED-API-KEY]",
+                    },
+                ]
+            },
+        },
+    )
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("anthropic")
+    selected = pool.select_anthropic_oauth_only()
+    assert selected.id == "oauth-1"
+
+    next_entry = pool.mark_exhausted_and_rotate(
+        status_code=400,
+        error_context={"reason": "out_of_extra_usage"},
+    )
+
+    assert next_entry is None
+    assert pool.has_available() is False
+
+    auth_payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    persisted_entries = auth_payload["credential_pool"]["anthropic"]
+    assert persisted_entries[0]["last_status"] == "exhausted"
+    assert persisted_entries[0]["last_error_code"] == 400
+    assert persisted_entries[1].get("last_status") != "exhausted"
 
 
 def test_load_pool_seeds_env_api_key(tmp_path, monkeypatch):

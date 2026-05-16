@@ -59,6 +59,184 @@ def test_resolve_runtime_provider_anthropic_pool_respects_config_base_url(monkey
     assert resolved["base_url"] == "https://proxy.example.com/anthropic"
 
 
+def _anthropic_pool(entries):
+    from agent.credential_pool import CredentialPool, PooledCredential
+
+    return CredentialPool(
+        "anthropic",
+        [PooledCredential.from_dict("anthropic", entry) for entry in entries],
+    )
+
+
+def _configure_anthropic_paid_fallback_flag(monkeypatch, *, disabled: bool):
+    model_cfg = {
+        "provider": "anthropic",
+        "default": "claude-opus-4-7",
+    }
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "anthropic")
+    monkeypatch.setattr(rp, "_get_model_config", lambda: dict(model_cfg))
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {
+            "model": dict(model_cfg),
+            "auth": {"disable_paid_api_fallback": disabled},
+        },
+    )
+
+
+def test_resolve_runtime_provider_anthropic_disable_paid_fallback_uses_valid_oauth(monkeypatch):
+    _configure_anthropic_paid_fallback_flag(monkeypatch, disabled=True)
+    pool = _anthropic_pool([
+        {
+            "id": "paid-key",
+            "label": "paid-api-key",
+            "auth_type": "api_key",
+            "priority": 0,
+            "source": "env:ANTHROPIC_API_KEY",
+            "access_token": "fake-paid-api-token",
+        },
+        {
+            "id": "max-oauth",
+            "label": "claude-code-max",
+            "auth_type": "oauth",
+            "priority": 1,
+            "source": "claude_code",
+            "access_token": "fake-max-oauth-token",
+            "refresh_token": "refresh-token",
+            "expires_at_ms": 4_102_444_800_000,
+        },
+    ])
+    monkeypatch.setattr(rp, "load_pool", lambda provider: pool)
+
+    resolved = rp.resolve_runtime_provider(requested="anthropic")
+
+    assert resolved["provider"] == "anthropic"
+    assert resolved["api_key"] == "fake-max-oauth-token"
+    assert resolved["source"] == "claude_code"
+
+
+def test_resolve_runtime_provider_anthropic_disable_paid_fallback_rejects_missing_oauth(monkeypatch):
+    from hermes_cli.auth import AuthError
+
+    _configure_anthropic_paid_fallback_flag(monkeypatch, disabled=True)
+    pool = _anthropic_pool([
+        {
+            "id": "paid-key",
+            "label": "paid-api-key",
+            "auth_type": "api_key",
+            "priority": 0,
+            "source": "env:ANTHROPIC_API_KEY",
+            "access_token": "fake-paid-api-token",
+        },
+    ])
+    monkeypatch.setattr(rp, "load_pool", lambda provider: pool)
+
+    with pytest.raises(AuthError) as exc_info:
+        rp.resolve_runtime_provider(requested="anthropic")
+
+    assert exc_info.value.code == "anthropic_oauth_missing"
+    message = str(exc_info.value)
+    assert "auth.disable_paid_api_fallback" in message
+    assert "No Anthropic OAuth credential" in message
+    assert "Paid API-key fallback is disabled" in message
+
+
+def test_resolve_runtime_provider_anthropic_disable_paid_fallback_rejects_expired_oauth(monkeypatch):
+    from hermes_cli.auth import AuthError
+
+    _configure_anthropic_paid_fallback_flag(monkeypatch, disabled=True)
+    pool = _anthropic_pool([
+        {
+            "id": "expired-oauth",
+            "label": "expired-max",
+            "auth_type": "oauth",
+            "priority": 0,
+            "source": "claude_code",
+            "access_token": "fake-expired-oauth-token",
+            "expires_at_ms": 1,
+        },
+        {
+            "id": "paid-key",
+            "label": "paid-api-key",
+            "auth_type": "api_key",
+            "priority": 1,
+            "source": "env:ANTHROPIC_API_KEY",
+            "access_token": "fake-paid-api-token",
+        },
+    ])
+    monkeypatch.setattr(rp, "load_pool", lambda provider: pool)
+
+    with pytest.raises(AuthError) as exc_info:
+        rp.resolve_runtime_provider(requested="anthropic")
+
+    assert exc_info.value.code == "anthropic_oauth_expired"
+    message = str(exc_info.value)
+    assert "expired" in message.lower()
+    assert "Paid API-key fallback is disabled" in message
+
+
+def test_resolve_runtime_provider_anthropic_disable_paid_fallback_rejects_rate_limited_oauth(monkeypatch):
+    from hermes_cli.auth import AuthError
+    import time
+
+    _configure_anthropic_paid_fallback_flag(monkeypatch, disabled=True)
+    pool = _anthropic_pool([
+        {
+            "id": "limited-oauth",
+            "label": "limited-max",
+            "auth_type": "oauth",
+            "priority": 0,
+            "source": "hermes_pkce",
+            "access_token": "fake-limited-oauth-token",
+            "expires_at_ms": 4_102_444_800_000,
+            "last_status": "exhausted",
+            "last_status_at": time.time(),
+            "last_error_code": 429,
+            "last_error_reason": "rate_limited",
+            "last_error_message": "Max OAuth quota is temporarily rate limited",
+        },
+        {
+            "id": "paid-key",
+            "label": "paid-api-key",
+            "auth_type": "api_key",
+            "priority": 1,
+            "source": "env:ANTHROPIC_API_KEY",
+            "access_token": "fake-paid-api-token",
+        },
+    ])
+    monkeypatch.setattr(rp, "load_pool", lambda provider: pool)
+
+    with pytest.raises(AuthError) as exc_info:
+        rp.resolve_runtime_provider(requested="anthropic")
+
+    assert exc_info.value.code == "anthropic_oauth_rate_limited"
+    message = str(exc_info.value)
+    assert "rate limited" in message.lower()
+    assert "Paid API-key fallback is disabled" in message
+
+
+def test_resolve_runtime_provider_anthropic_paid_fallback_flag_false_preserves_api_key_pool(monkeypatch):
+    _configure_anthropic_paid_fallback_flag(monkeypatch, disabled=False)
+    pool = _anthropic_pool([
+        {
+            "id": "paid-key",
+            "label": "paid-api-key",
+            "auth_type": "api_key",
+            "priority": 0,
+            "source": "env:ANTHROPIC_API_KEY",
+            "access_token": "fake-paid-api-token",
+        },
+    ])
+    monkeypatch.setattr(rp, "load_pool", lambda provider: pool)
+
+    resolved = rp.resolve_runtime_provider(requested="anthropic")
+
+    assert resolved["provider"] == "anthropic"
+    assert resolved["api_key"] == "fake-paid-api-token"
+    assert resolved["source"] == "env:ANTHROPIC_API_KEY"
+
+
 def test_resolve_runtime_provider_anthropic_explicit_override_skips_pool(monkeypatch):
     def _unexpected_pool(provider):
         raise AssertionError(f"load_pool should not be called for {provider}")

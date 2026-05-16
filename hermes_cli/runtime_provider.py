@@ -133,6 +133,35 @@ def _get_model_config() -> Dict[str, Any]:
     return {}
 
 
+def _as_config_bool(value: Any, *, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on", "enabled"}:
+            return True
+        if normalized in {"0", "false", "no", "off", "disabled", ""}:
+            return False
+    return default
+
+
+def _auth_disable_paid_api_fallback_enabled(config: Optional[Dict[str, Any]] = None) -> bool:
+    """Return whether Anthropic paid/API-key fallback is disabled by config."""
+    if config is None:
+        try:
+            config = load_config()
+        except Exception:
+            return False
+    auth_cfg = config.get("auth") if isinstance(config, dict) else None
+    if not isinstance(auth_cfg, dict):
+        return False
+    return _as_config_bool(auth_cfg.get("disable_paid_api_fallback"), default=False)
+
+
 def _provider_supports_explicit_api_mode(provider: Optional[str], configured_provider: Optional[str] = None) -> bool:
     """Check whether a persisted api_mode should be honored for a given provider.
 
@@ -1027,6 +1056,7 @@ def resolve_runtime_provider(
         explicit_base_url=explicit_base_url,
     )
     model_cfg = _get_model_config()
+    disable_paid_api_fallback = _auth_disable_paid_api_fallback_enabled()
     explicit_runtime = _resolve_explicit_runtime(
         provider=provider,
         requested_provider=requested_provider,
@@ -1061,6 +1091,27 @@ def resolve_runtime_provider(
         pool = load_pool(provider) if should_use_pool else None
     except Exception:
         pool = None
+    if provider == "anthropic" and disable_paid_api_fallback:
+        if pool is None:
+            raise AuthError(
+                "No Anthropic OAuth credential is available because the credential pool "
+                "could not be loaded. auth.disable_paid_api_fallback=true requires "
+                "Anthropic OAuth credentials from the credential pool. Paid API-key "
+                "fallback is disabled, so Hermes will not use ANTHROPIC_API_KEY for "
+                "this profile.",
+                provider="anthropic",
+                code="anthropic_oauth_missing",
+                relogin_required=True,
+            )
+        entry = pool.select_anthropic_oauth_only()
+        return _resolve_runtime_from_pool_entry(
+            provider=provider,
+            entry=entry,
+            requested_provider=requested_provider,
+            model_cfg=model_cfg,
+            pool=pool,
+            target_model=target_model,
+        )
     if pool and pool.has_credentials():
         entry = pool.select()
         pool_api_key = ""

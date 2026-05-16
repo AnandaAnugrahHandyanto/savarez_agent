@@ -992,6 +992,9 @@ with actual imports (not mocks) against a temp `HERMES_HOME`.
 ### Tests must not write to `~/.hermes/`
 The `_isolate_hermes_home` autouse fixture in `tests/conftest.py` redirects `HERMES_HOME` to a temp dir. Never hardcode `~/.hermes/` paths in tests.
 
+### Anthropic OAuth-only profiles must not silently use API keys
+When `auth.disable_paid_api_fallback=true`, `provider: anthropic` runtime resolution must select OAuth credentials from the credential pool or raise a loud auth error; do not reintroduce fallback to `ANTHROPIC_API_KEY` / paid API-key billing on that path.
+
 **Profile tests**: When testing profile features, also mock `Path.home()` so that
 `_get_profiles_root()` and `_get_default_hermes_home()` resolve within the temp dir.
 Use the pattern from `tests/hermes_cli/test_profiles.py`:
