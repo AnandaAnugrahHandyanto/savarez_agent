@@ -53,6 +53,8 @@ const PromptPrefix = memo(function PromptPrefix({
   )
 })
 
+const chatTurnSeparator = (cols: number) => '─'.repeat(Math.max(12, cols - 2))
+
 const TranscriptPane = memo(function TranscriptPane({
   actions,
   composer,
@@ -77,7 +79,7 @@ const TranscriptPane = memo(function TranscriptPane({
   }, [transcript.historyItems])
 
   // Index of the first user-role message; every later user message gets a
-  // small dash above it so multi-turn transcripts visually segment by
+  // full-width rule above it so multi-turn transcripts visually segment by
   // turn. -1 when no user message has been sent yet → no separator ever
   // renders.
   const firstUserIdx = useMemo(
@@ -106,7 +108,7 @@ const TranscriptPane = memo(function TranscriptPane({
             <Box flexDirection="column" key={row.key} ref={transcript.virtualHistory.measureRef(row.key)}>
               {row.msg.role === 'user' && firstUserIdx >= 0 && row.index > firstUserIdx && (
                 <Box marginTop={1}>
-                  <Text color={ui.theme.color.border}>───</Text>
+                  <Text color={ui.theme.color.border}>{chatTurnSeparator(composer.cols)}</Text>
                 </Box>
               )}
 
