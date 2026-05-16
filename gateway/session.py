@@ -365,6 +365,15 @@ def build_session_context_prompt(
             "If the user needs a detailed answer, give the short version first "
             "and offer to elaborate."
         )
+    elif context.source.platform == Platform.FEISHU:
+        # Inject chat_id so the agent can determine which persona to use
+        # (e.g., OPC multi-agent setup with different Feishu groups)
+        src = context.source
+        if src.chat_id:
+            lines.append("")
+            lines.append(f"**Feishu Chat ID:** `{src.chat_id}`")
+            if src.chat_type:
+                lines.append(f"**Chat Type:** {src.chat_type}")
     elif context.source.platform == Platform.YUANBAO:
         lines.append("")
         lines.append(
