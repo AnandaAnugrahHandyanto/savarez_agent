@@ -215,7 +215,8 @@ class _SlashWorker:
             process_registry.register_host_process(
                 self.proc.pid,
                 command=f"slash_worker:{session_key}",
-                task_id=session_key
+                task_id=session_key,
+                session_key=session_key,
             )
         except Exception:
             pass
