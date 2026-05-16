@@ -2579,6 +2579,84 @@ def _try_payment_fallback(
     return None, None, ""
 
 
+def _try_configured_fallback_chain(
+    task: str,
+    failed_provider: str,
+    reason: str = "error",
+) -> Tuple[Optional[Any], Optional[str], str]:
+    """Try user-configured fallback_chain for a specific auxiliary task.
+
+    Reads auxiliary.<task>.fallback_chain from config.yaml and tries each
+    entry in order.  Each entry must have at least ``provider``; ``model``,
+    ``base_url``, and ``api_key`` are optional.
+
+    Returns:
+        (client, model, provider_label) or (None, None, "") if no fallback.
+    """
+    if not task:
+        return None, None, ""
+
+    task_config = _get_auxiliary_task_config(task)
+    chain = task_config.get("fallback_chain")
+    if not chain or not isinstance(chain, list):
+        return None, None, ""
+
+    skip = failed_provider.lower().strip()
+    tried = []
+
+    for i, entry in enumerate(chain):
+        if not isinstance(entry, dict):
+            continue
+        fb_provider = str(entry.get("provider", "")).strip()
+        if not fb_provider or fb_provider.lower() == skip:
+            continue
+        fb_model = str(entry.get("model", "")).strip() or None
+        fb_base_url = str(entry.get("base_url", "")).strip() or None
+        fb_api_key = str(entry.get("api_key", "")).strip() or None
+
+        label = f"fallback_chain[{i}]({fb_provider})"
+
+        try:
+            fb_client = _resolve_single_provider(
+                fb_provider, fb_model, fb_base_url, fb_api_key)
+        except Exception:
+            fb_client = None
+
+        if fb_client is not None:
+            logger.info(
+                "Auxiliary %s: %s on %s — configured fallback to %s (%s)",
+                task, reason, failed_provider, label, fb_model or "default",
+            )
+            return fb_client, fb_model, label
+        tried.append(label)
+
+    if tried:
+        logger.debug(
+            "Auxiliary %s: configured fallback_chain exhausted (tried: %s)",
+            task, ", ".join(tried),
+        )
+    return None, None, ""
+
+
+def _resolve_single_provider(
+    provider: str,
+    model: Optional[str] = None,
+    base_url: Optional[str] = None,
+    api_key: Optional[str] = None,
+) -> Optional[Any]:
+    """Resolve a single provider entry from fallback_chain to an OpenAI client.
+
+    Uses the existing provider resolution infrastructure where possible.
+    """
+    # Reuse resolve_provider_client which handles provider→client mapping
+    client, resolved_model = resolve_provider_client(
+        provider=provider,
+        model=model,
+        base_url=base_url,
+        api_key=api_key,
+    )
+    return client
+
 def _resolve_auto(main_runtime: Optional[Dict[str, Any]] = None) -> Tuple[Optional[OpenAI], Optional[str]]:
     """Full auto-detection chain.
 
@@ -4523,7 +4601,7 @@ def call_llm(
         # configure this task's provider.  Explicit provider = hard constraint;
         # auto (the default) = best-effort fallback chain.  (#7559)
         is_auto = resolved_provider in {"auto", "", None}
-        if should_fallback and is_auto:
+        if should_fallback:
             if _is_payment_error(first_err):
                 reason = "payment error"
                 # Resolve the actual provider label (resolved_provider may be
@@ -4539,8 +4617,18 @@ def call_llm(
                 reason = "connection error"
             logger.info("Auxiliary %s: %s on %s (%s), trying fallback",
                         task or "call", reason, resolved_provider, first_err)
-            fb_client, fb_model, fb_label = _try_payment_fallback(
-                resolved_provider, task, reason=reason)
+
+            # Step 1: auto-detection chain fallback (existing behaviour)
+            fb_client = None
+            if is_auto:
+                fb_client, fb_model, fb_label = _try_payment_fallback(
+                    resolved_provider, task, reason=reason)
+
+            # Step 2: user-configured fallback_chain (new, #26882)
+            if fb_client is None:
+                fb_client, fb_model, fb_label = _try_configured_fallback_chain(
+                    task, resolved_provider or "auto", reason=reason)
+
             if fb_client is not None:
                 fb_kwargs = _build_call_kwargs(
                     fb_label, fb_model, messages,
@@ -4852,7 +4940,7 @@ async def async_call_llm(
             or _is_rate_limit_error(first_err)
         )
         is_auto = resolved_provider in {"auto", "", None}
-        if should_fallback and is_auto:
+        if should_fallback:
             if _is_payment_error(first_err):
                 reason = "payment error"
                 _mark_provider_unhealthy(
@@ -4864,8 +4952,17 @@ async def async_call_llm(
                 reason = "connection error"
             logger.info("Auxiliary %s (async): %s on %s (%s), trying fallback",
                         task or "call", reason, resolved_provider, first_err)
-            fb_client, fb_model, fb_label = _try_payment_fallback(
-                resolved_provider, task, reason=reason)
+
+            # Step 1: auto-detection chain fallback (existing behaviour)
+            fb_client = None
+            if is_auto:
+                fb_client, fb_model, fb_label = _try_payment_fallback(
+                    resolved_provider, task, reason=reason)
+
+            # Step 2: user-configured fallback_chain (new, #26882)
+            if fb_client is None:
+                fb_client, fb_model, fb_label = _try_configured_fallback_chain(
+                    task, resolved_provider or "auto", reason=reason)
             if fb_client is not None:
                 fb_kwargs = _build_call_kwargs(
                     fb_label, fb_model, messages,
