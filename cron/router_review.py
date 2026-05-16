@@ -558,10 +558,16 @@ def format_review_prompt(
                 "within the review window. No policy violations detectable."
             )
     else:
-        router_first = [o for o in outcomes if o.selected_model == "blockrun/auto"]
-        pinned = [o for o in outcomes if o.selected_model and o.selected_model != "blockrun/auto"]
+        router_first = [o for o in outcomes if _is_router_first_outcome(o)]
+        pinned = [
+            o
+            for o in outcomes
+            if o.selected_model
+            and o.selected_model != "blockrun/auto"
+            and not _is_router_first_outcome(o)
+        ]
         missing_resolved = [
-            o for o in outcomes if o.selected_model == "blockrun/auto" and o.resolved_model is None
+            o for o in outcomes if _is_router_first_outcome(o) and o.resolved_model is None
         ]
         lines.append(
             f"Router-first jobs: {len(router_first)}.  "
@@ -618,8 +624,8 @@ Do not require selectedModel to equal blockrun/auto for routing-decisions.json.
 → [warning] (ClawRouter may not be exposing the upstream model).
 4. Job with consecutive_local_failures >= {_CONSECUTIVE_LOCAL_FAILURE_THRESHOLD} \
 → [critical] (GN100 / local inference down).
-5. Explicit model pin (selected_model != blockrun/auto) with no \
-[router-pin: <reason>] marker for a non-coding job → [warning].
+5. Explicit model pin (selected_model != blockrun/auto and not a gateway/current routing-decision) \
+with no [router-pin: <reason>] marker for a non-coding job → [warning].
 
 If {ROUTING_DECISIONS_PATH} does not exist, also check {ROUTING_OUTCOMES_PATH} \
 (JSONL, one record per cron job — written by OpenClaw Items 1-4, may not yet exist).

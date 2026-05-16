@@ -789,12 +789,14 @@ class TestFormatReviewPrompt:
         outcomes = [
             _outcome(job_name="rf", selected_model="blockrun/auto",
                      resolved_model="gn100/qwen", job_type="simple"),
+            _outcome(job_name="gateway/archie", selected_model="gemini/pro",
+                     resolved_model="gemini/pro", job_type="research:medium"),
             _outcome(job_name="pinned", selected_model="claude-sonnet-4-5",
                      resolved_model=None, job_type="coding",
                      router_pin="[router-pin: coding]"),
         ]
         prompt = format_review_prompt(outcomes, [])
-        assert "Router-first jobs: 1" in prompt
+        assert "Router-first jobs: 2" in prompt
         assert "Pinned (explicit model): 1" in prompt
 
     def test_source_present_false_with_outcomes_still_works(self):

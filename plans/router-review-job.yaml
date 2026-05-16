@@ -66,8 +66,9 @@ prompt: |
      (Items 1-4 not yet integrated).
   4. Job with consecutive_local_failures >= 3 → [critical]
      (GN100 / local inference down).
-  5. Explicit model pin (selected_model != blockrun/auto) with no
-     [router-pin: <reason>] marker for a non-coding job → [warning].
+  5. Explicit model pin (selected_model != blockrun/auto and not a gateway/current
+     routing-decision) with no [router-pin: <reason>] marker for a non-coding job
+     → [warning].
 
   If ~/.openclaw/routing-decisions.json does not exist, also check
   ~/.openclaw/routing-outcomes.jsonl as a supplementary future source. Do not output
