@@ -24,15 +24,17 @@ Scope (what we expose):
     heartbeat/show/list/create/            handoff (stateless: read env var,
     unblock/link)                          write ~/.hermes/kanban.db)
 
+Stateless agent-loop tools we DO expose:
+  - memory, session_search               — local wrappers read/write the same
+                                           profile-scoped HERMES_HOME as the
+                                           spawned MCP process, without needing
+                                           the parent AIAgent loop.
+
 What we DO NOT expose:
   - terminal / shell                     — codex's own shell tool
   - read_file / write_file / patch       — codex's apply_patch + shell
   - search_files / process               — codex's shell
   - clarify                              — codex's own UX
-  - memory, session_search               — exposed through local stateless
-                                           wrappers that read the same
-                                           HERMES_HOME as the spawned MCP
-                                           process.
   - delegate_task / todo                 — `_AGENT_LOOP_TOOLS` in Hermes
                                            (model_tools.py). They require
                                            running AIAgent/TodoStore state, so
@@ -239,10 +241,11 @@ def _build_server() -> Any:
         params_schema = spec.get("parameters") or {"type": "object", "properties": {}}
 
         # FastMCP wants a Python callable. Build a closure that takes the
-        # arguments dict, dispatches via handle_function_call, and returns
-        # the result string. We use add_tool() for full control over the
-        # input schema (FastMCP's @tool() decorator inspects type hints,
-        # which we can't get from a JSON schema at runtime).
+        # keyword arguments, dispatches via handle_function_call or a local
+        # stateless wrapper, and returns the result string. The generic
+        # **kwargs signature keeps registration simple; after registration we
+        # patch the FastMCP tool object with Hermes' authoritative JSON schema
+        # so clients do not see an unhelpful variadic schema.
         def _make_handler(tool_name: str):
             def _dispatch(**kwargs: Any) -> str:
                 try:
