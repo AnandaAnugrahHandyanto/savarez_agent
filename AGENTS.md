@@ -723,6 +723,14 @@ Synchronicity rule: delegate_task is **not** durable. For long-running
 work that must outlive the current turn, use `cronjob` or
 `terminal(background=True, notify_on_complete=True)` instead.
 
+### Multi-agent orchestration defaults
+
+Before dispatching Claude Code, Codex, OpenCode, or Hermes subagents on
+this repo, use `docs/plans/2026-05-16-agent-orchestration-defaults.md` as
+the default controller checklist: read repo guidance, inspect git status,
+check Graphify artifacts, assign explicit worker roles, and run spec /
+quality / integration gates before reporting done.
+
 ---
 
 ## Curator (skill lifecycle)
