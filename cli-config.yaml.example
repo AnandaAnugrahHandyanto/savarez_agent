@@ -538,6 +538,17 @@ skills:
   # Set to 0 to disable.
   creation_nudge_interval: 15
 
+  # Auto-load these skills at the start of every NEW session (#26800).
+  # Applies to CLI (`hermes chat`), TUI gateway, and chat gateways
+  # (Telegram/Discord/...).  Order is preserved; duplicates are dropped.
+  #
+  # CLI:     prepended to `-s/--skills`; suppressed by `--ignore-rules`.
+  # Gateway: merged BEFORE per-channel `channel_skill_bindings`.
+  # Resumed sessions are NOT re-injected (the skill is already in history).
+  # auto_load:
+  #   - using-superpowers
+  #   - my-house-style
+
   # External skill directories — share skills across tools/agents without
   # copying them into ~/.hermes/skills/.  Each path is expanded (~ and ${VAR})
   # and resolved to an absolute path.  External dirs are read-only: skill

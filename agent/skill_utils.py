@@ -509,3 +509,48 @@ def is_valid_namespace(candidate: Optional[str]) -> bool:
     if not candidate:
         return False
     return bool(_NAMESPACE_RE.match(candidate))
+
+
+# ── Global auto-load skills (#26800) ─────────────────────────────────────
+
+
+def get_auto_load_skills() -> List[str]:
+    """Read ``skills.auto_load`` from config.yaml.
+
+    Returns an ordered, deduplicated list of skill identifiers that should
+    be pre-loaded at the start of every new session (CLI, TUI, gateway).
+
+    Per-channel ``auto_skill`` bindings in the gateway still apply on top
+    of this list — see ``gateway/platforms/base.py::resolve_channel_skills``.
+
+    Returns an empty list when the key is missing, the config can't be
+    parsed, or the value is the wrong type — callers should treat the
+    feature as opt-in.
+    """
+    config_path = get_config_path()
+    if not config_path.exists():
+        return []
+    try:
+        parsed = yaml_load(config_path.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    if not isinstance(parsed, dict):
+        return []
+    skills_cfg = parsed.get("skills")
+    if not isinstance(skills_cfg, dict):
+        return []
+    raw = skills_cfg.get("auto_load")
+    if not raw:
+        return []
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, list):
+        return []
+    seen: Set[str] = set()
+    out: List[str] = []
+    for item in raw:
+        name = str(item).strip()
+        if name and name not in seen:
+            seen.add(name)
+            out.append(name)
+    return out

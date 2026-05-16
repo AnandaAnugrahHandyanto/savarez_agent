@@ -13976,6 +13976,14 @@ def main(
     
     parsed_skills = _parse_skills_argument(skills)
 
+    # Prepend config-driven auto-load skills (#26800).  Suppressed by
+    # --ignore-rules (HERMES_IGNORE_RULES=1), which the docs describe as
+    # skipping auto-injection of "preloaded skills".  Explicit -s/--skills
+    # still wins via build_preloaded_skills_prompt's internal dedup.
+    if not (ignore_rules or os.environ.get("HERMES_IGNORE_RULES") == "1"):
+        from agent.skill_utils import get_auto_load_skills
+        parsed_skills = list(get_auto_load_skills()) + parsed_skills
+
     # Create CLI instance
     cli = HermesCLI(
         model=model,

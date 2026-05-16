@@ -7267,13 +7267,31 @@ class GatewayRunner:
             session_entry.was_auto_reset = False
             session_entry.auto_reset_reason = None
 
-        # Auto-load skill(s) for topic/channel bindings (Telegram DM Topics,
-        # Discord channel_skill_bindings).  Supports a single name or ordered list.
+        # Auto-load skill(s) on NEW sessions, from two sources (in order):
+        #   1. Global ``skills.auto_load`` from config.yaml (#26800)
+        #   2. Per-channel ``auto_skill`` (Telegram DM Topics, Discord
+        #      channel_skill_bindings) — supports a single name or ordered list.
         # Only inject on NEW sessions — ongoing conversations already have the
         # skill content in their conversation history from the first message.
+        _global_auto: list[str] = []
+        try:
+            from agent.skill_utils import get_auto_load_skills
+            _global_auto = get_auto_load_skills()
+        except Exception as _e:
+            logger.debug("[Gateway] skills.auto_load read failed: %s", _e)
+
         _auto = getattr(event, "auto_skill", None)
-        if _is_new_session and _auto:
-            _skill_names = [_auto] if isinstance(_auto, str) else list(_auto)
+        _per_channel = (
+            [_auto] if isinstance(_auto, str) else (list(_auto) if _auto else [])
+        )
+        _skill_names: list[str] = []
+        _seen_names: set[str] = set()
+        for _n in list(_global_auto) + _per_channel:
+            if _n and _n not in _seen_names:
+                _seen_names.add(_n)
+                _skill_names.append(_n)
+
+        if _is_new_session and _skill_names:
             try:
                 from agent.skill_commands import _load_skill_payload, _build_skill_message
                 _combined_parts: list[str] = []

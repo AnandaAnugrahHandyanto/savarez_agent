@@ -1866,6 +1866,10 @@ def _make_agent(sid: str, key: str, session_id: str | None = None):
     agent_cfg = cfg.get("agent") or {}
     system_prompt = (agent_cfg.get("system_prompt", "") or "").strip()
     startup_skills = _parse_tui_skills_env()
+    # Prepend config-driven auto-load skills (#26800).  build_preloaded_skills_prompt
+    # deduplicates internally so env-supplied skills still win when both list the same name.
+    from agent.skill_utils import get_auto_load_skills
+    startup_skills = list(get_auto_load_skills()) + list(startup_skills)
     if startup_skills:
         from agent.skill_commands import build_preloaded_skills_prompt
 
