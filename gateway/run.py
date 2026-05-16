@@ -2615,13 +2615,43 @@ class GatewayRunner:
 
         running_agent = self._running_agents.get(session_key)
 
+        # --- Control command bypass (#26813) ---
+        # /stop and /interrupt are control commands, not user input. When
+        # busy_input_mode is "steer" or "queue" they must still interrupt the
+        # running agent immediately — otherwise the user has no way to stop a
+        # long-running turn from gateway platforms (Slack, Feishu, Discord, etc.)
+        raw_text = (event.text or "").strip()
+        first_token = raw_text.split(maxsplit=1)[0] if raw_text else ""
+        # Normalize: /stop, stop, /interrupt, interrupt, /cancel, cancel
+        # Also strip @mention suffix (e.g. /stop@hermes_bot → stop)
+        _cmd_name = first_token.lstrip("/").split("@", 1)[0].lower() if first_token else ""
+        # Platforms like Feishu send /stop as plain text (no native slash).
+        _control_interrupted = False
+        if _cmd_name in {"stop", "interrupt", "cancel"}:
+            if running_agent and running_agent is not _AGENT_PENDING_SENTINEL:
+                try:
+                    running_agent.interrupt(raw_text)
+                except Exception:
+                    pass
+            logger.info(
+                "Control command %r in session %s — forced interrupt regardless of busy_input_mode=%s",
+                first_token, session_key, self._busy_input_mode,
+            )
+            _control_interrupted = True
+
         # Steer mode: inject mid-run via running_agent.steer() instead of
         # queueing + interrupting.  If the agent isn't running yet
         # (sentinel) or lacks steer(), or the payload is empty, fall back
         # to queue semantics so nothing is lost.
         effective_mode = self._busy_input_mode
         steered = False
-        if effective_mode == "steer":
+        if _control_interrupted:
+            # Control commands must not be steered, queued, or merged
+            # into pending messages.  The interrupt above is sufficient;
+            # fall through to the busy ack so the user sees confirmation.
+            effective_mode = "interrupt"
+            steered = True  # prevents merge_pending below
+        elif effective_mode == "steer":
             steer_text = (event.text or "").strip()
             can_steer = (
                 steer_text
@@ -2651,8 +2681,9 @@ class GatewayRunner:
 
         # If not in queue/steer mode, interrupt the running agent immediately.
         # This aborts in-flight tool calls and causes the agent loop to exit
-        # at the next check point.
-        if effective_mode == "interrupt" and running_agent and running_agent is not _AGENT_PENDING_SENTINEL:
+        # at the next check point.  Skip if a control-command interrupt was
+        # already performed above (#26813).
+        if effective_mode == "interrupt" and not _control_interrupted and running_agent and running_agent is not _AGENT_PENDING_SENTINEL:
             try:
                 running_agent.interrupt(event.text)
             except Exception:
