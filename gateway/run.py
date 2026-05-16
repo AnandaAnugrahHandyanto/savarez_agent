@@ -4679,6 +4679,55 @@ class GatewayRunner:
         bad_ticks = 0
         last_warn_at = 0
 
+        # Per-board quarantine for corrupt SQLite files. Keyed by slug →
+        # (mtime, size) signature of the DB file at last log time.  See
+        # issue #26479: a corrupt `kanban.db` (e.g. non-SQLite bytes,
+        # truncated WAL recovery) raises `sqlite3.DatabaseError` on every
+        # `connect()` via `PRAGMA journal_mode=WAL`.  Without dedup, the
+        # tick fires that traceback once per `dispatch_interval_seconds`
+        # forever.  We log once at WARNING, then suppress until the file
+        # signature changes (operator repaired/replaced it) — at which
+        # point we retry and either succeed or log a fresh warning.
+        corrupt_boards: dict[str, tuple[float, int]] = getattr(
+            self, "_kanban_corrupt_boards", {}
+        )
+        self._kanban_corrupt_boards = corrupt_boards
+
+        def _is_corrupt_kanban_db_error(exc: BaseException) -> bool:
+            text = str(exc).lower()
+            return any(
+                marker in text
+                for marker in (
+                    "file is not a database",
+                    "database disk image is malformed",
+                    "file is encrypted or is not a database",
+                    "malformed database schema",
+                )
+            )
+
+        def _log_corrupt_board_once(slug: str, exc: BaseException) -> None:
+            # Corrupt / non-SQLite DB file. De-duplicate the warning by file
+            # signature so the gateway isn't a traceback firehose; the file is
+            # bad until the operator changes it, and one log line per change
+            # is enough.
+            try:
+                path = _kb.kanban_db_path(board=slug)
+                st = path.stat()
+                sig = (st.st_mtime, st.st_size)
+            except Exception:
+                path = None
+                sig = (0.0, 0)
+            if corrupt_boards.get(slug) != sig:
+                corrupt_boards[slug] = sig
+                logger.warning(
+                    "kanban dispatcher: board %s DB appears corrupt "
+                    "(%s); skipping ticks until the file changes. "
+                    "Quarantine or recreate the DB to recover. (%s)",
+                    slug,
+                    path.name if path is not None else "kanban.db",
+                    exc,
+                )
+
         def _tick_once_for_board(slug: str) -> "Optional[object]":
             """Run one dispatch_once for a specific board.
 
@@ -4688,21 +4737,32 @@ class GatewayRunner:
             opened explicitly so concurrent boards never share a
             connection handle or accidentally claim across each other.
             """
+            import sqlite3
             conn = None
             try:
-                conn = _kb.connect(board=slug)
+                try:
+                    conn = _kb.connect(board=slug)
+                except sqlite3.DatabaseError as exc:
+                    if not _is_corrupt_kanban_db_error(exc):
+                        raise
+                    _log_corrupt_board_once(slug, exc)
+                    return None
                 # `connect()` runs the schema + idempotent migration on
                 # first open per process; the previous explicit
                 # `init_db()` call here busted the per-process cache and
                 # re-ran the migration on a second connection, racing
                 # the first. See the matching comment in
                 # `_kanban_notifier_watcher` and issue #21378.
-                return _kb.dispatch_once(
+                result = _kb.dispatch_once(
                     conn,
                     board=slug,
                     max_spawn=max_spawn,
                     failure_limit=failure_limit,
                 )
+                # Recovery path: a previously-corrupt board now opens
+                # cleanly. Clear quarantine so future corruption logs again.
+                corrupt_boards.pop(slug, None)
+                return result
             except Exception:
                 logger.exception("kanban dispatcher: tick failed on board %s", slug)
                 return None

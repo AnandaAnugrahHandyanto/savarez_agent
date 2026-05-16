@@ -3414,6 +3414,181 @@ def test_gateway_dispatcher_watcher_env_truthy_uses_config(monkeypatch):
     )
 
 
+def test_gateway_dispatcher_quarantines_corrupt_kanban_db(
+    kanban_home, monkeypatch, caplog
+):
+    """Corrupt default-board DB logs one WARNING per file-signature change,
+    not a traceback every tick (issue #26479).
+
+    Stages a non-SQLite file at the default kanban DB path, drives the
+    dispatcher watcher across multiple ticks, and asserts:
+      1. Exactly one WARNING per stable corrupt-file signature.
+      2. Subsequent ticks on the same file produce no further warnings
+         and no ``logger.exception`` tracebacks.
+      3. After the file's mtime/size changes, the next tick logs a new
+         WARNING (we attempt recovery once, log freshly if still bad).
+    """
+    import asyncio as _asyncio
+    import logging as _logging
+    from gateway.run import GatewayRunner
+    import hermes_cli.config as _cfg_mod
+    from hermes_cli import kanban_db as _kb
+
+    # Replace the freshly-initialised default board DB with non-SQLite bytes.
+    db_path = _kb.kanban_db_path()
+    db_path.write_bytes(b"this is not a sqlite database\n" * 32)
+
+    # Make the connection cache treat this path as needing reinit so the
+    # PRAGMA path actually fires (DatabaseError originates inside connect()).
+    _kb._INITIALIZED_PATHS.discard(str(db_path.resolve()))
+
+    monkeypatch.setattr(
+        _cfg_mod, "load_config",
+        lambda: {
+            "kanban": {
+                "dispatch_in_gateway": True,
+                "dispatch_interval_seconds": 1,
+            }
+        },
+    )
+
+    runner = object.__new__(GatewayRunner)
+    runner._running = True
+
+    tick_count = {"n": 0}
+    _orig_sleep = _asyncio.sleep
+
+    async def _fast_sleep(_secs):
+        # 5s startup sleep + per-tick interval — count only tick sleeps.
+        if _secs and _secs > 1.5:
+            await _orig_sleep(0)
+            return
+        await _orig_sleep(0)
+        tick_count["n"] += 1
+        if tick_count["n"] >= 3:
+            runner._running = False
+
+    caplog.set_level(_logging.WARNING, logger="gateway.run")
+
+    with monkeypatch.context() as m:
+        m.setattr("gateway.run.asyncio.sleep", _fast_sleep)
+        _asyncio.run(
+            _asyncio.wait_for(
+                runner._kanban_dispatcher_watcher(),
+                timeout=10.0,
+            )
+        )
+
+    corrupt_warnings = [
+        r for r in caplog.records
+        if r.levelno == _logging.WARNING
+        and "DB appears corrupt" in r.getMessage()
+    ]
+    tracebacks = [r for r in caplog.records if r.exc_info is not None]
+    assert len(corrupt_warnings) == 1, (
+        f"expected exactly one corrupt-DB warning across {tick_count['n']} "
+        f"ticks, got {len(corrupt_warnings)}: "
+        f"{[r.getMessage() for r in corrupt_warnings]}"
+    )
+    assert tracebacks == [], (
+        "dispatcher must not log a traceback when the corrupt-DB path is "
+        f"already quarantined; got {len(tracebacks)} exception record(s)"
+    )
+
+    # Mutate the file (different bytes -> different size + mtime). The
+    # dispatcher should retry once and log a fresh warning.
+    caplog.clear()
+    db_path.write_bytes(b"still not a sqlite database, but different\n" * 64)
+    _kb._INITIALIZED_PATHS.discard(str(db_path.resolve()))
+
+    runner._running = True
+    tick_count["n"] = 0
+
+    with monkeypatch.context() as m:
+        m.setattr("gateway.run.asyncio.sleep", _fast_sleep)
+        _asyncio.run(
+            _asyncio.wait_for(
+                runner._kanban_dispatcher_watcher(),
+                timeout=10.0,
+            )
+        )
+
+    refreshed = [
+        r for r in caplog.records
+        if r.levelno == _logging.WARNING
+        and "DB appears corrupt" in r.getMessage()
+    ]
+    assert len(refreshed) == 1, (
+        "after the corrupt DB's mtime/size change, the dispatcher must "
+        f"re-log once on the next attempt; got {len(refreshed)} warning(s)"
+    )
+
+
+def test_gateway_dispatcher_does_not_quarantine_dispatch_sqlite_errors(
+    kanban_home, monkeypatch, caplog
+):
+    """SQLite failures after connect() are operational bugs, not corrupt DBs."""
+    import asyncio as _asyncio
+    import logging as _logging
+    import sqlite3 as _sqlite3
+    from gateway.run import GatewayRunner
+    import hermes_cli.config as _cfg_mod
+    from hermes_cli import kanban_db as _kb
+
+    monkeypatch.setattr(
+        _cfg_mod, "load_config",
+        lambda: {
+            "kanban": {
+                "dispatch_in_gateway": True,
+                "dispatch_interval_seconds": 1,
+            }
+        },
+    )
+
+    def _raise_dispatch_sqlite_error(*_args, **_kwargs):
+        raise _sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(_kb, "dispatch_once", _raise_dispatch_sqlite_error)
+
+    runner = object.__new__(GatewayRunner)
+    runner._running = True
+
+    tick_count = {"n": 0}
+    _orig_sleep = _asyncio.sleep
+
+    async def _fast_sleep(_secs):
+        if _secs and _secs > 1.5:
+            await _orig_sleep(0)
+            return
+        await _orig_sleep(0)
+        tick_count["n"] += 1
+        if tick_count["n"] >= 2:
+            runner._running = False
+
+    caplog.set_level(_logging.WARNING, logger="gateway.run")
+
+    with monkeypatch.context() as m:
+        m.setattr("gateway.run.asyncio.sleep", _fast_sleep)
+        _asyncio.run(
+            _asyncio.wait_for(
+                runner._kanban_dispatcher_watcher(),
+                timeout=10.0,
+            )
+        )
+
+    corrupt_warnings = [
+        r for r in caplog.records
+        if "DB appears corrupt" in r.getMessage()
+    ]
+    tick_failures = [
+        r for r in caplog.records
+        if "tick failed on board" in r.getMessage()
+    ]
+    assert corrupt_warnings == []
+    assert len(tick_failures) == 2
+    assert all(r.exc_info for r in tick_failures)
+
+
 # ---------------------------------------------------------------------------
 # Hallucination gate (created_cards verify + prose scan)
 # ---------------------------------------------------------------------------
