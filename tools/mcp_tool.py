@@ -3190,6 +3190,20 @@ def discover_mcp_tools() -> List[str]:
         return []
 
     servers = _load_mcp_config()
+
+    # ── APM: discover MCP servers from apm.yml ─
+    try:
+        from agent.apm_consumer import discover_apm_mcp_servers
+        # Use TERMINAL_CWD in gateway mode so APM MCP servers in the
+        # user workspace are discovered, not those in the install dir.
+        apm_cwd = os.environ.get("TERMINAL_CWD")
+        apm_servers = discover_apm_mcp_servers(apm_cwd)
+        if apm_servers:
+            # Config-defined servers take precedence over APM
+            servers = {**apm_servers, **servers}
+    except Exception:
+        pass
+
     if not servers:
         logger.debug("No MCP servers configured")
         return []
