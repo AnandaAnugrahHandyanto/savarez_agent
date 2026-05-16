@@ -689,6 +689,7 @@ const sidebars: SidebarsConfig = {
             'developer-guide/gateway-internals',
             'developer-guide/session-storage',
             'developer-guide/provider-runtime',
+            'developer-guide/programmatic-integration',
           ],
         },
         {
