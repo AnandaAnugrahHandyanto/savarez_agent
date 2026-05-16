@@ -430,8 +430,10 @@ class DAGContextEngine(ContextEngine):
         status.update(
             {
                 "engine": self.name,
+                "engine_version": self.ENGINE_VERSION,
                 "enabled": self.enabled,
                 "projection_only": True,
+                "gateway_enabled": self.gateway_enabled,
                 "preserves_session": True,
                 "summary_count": self._last_summary_count,
                 "projection_token_estimate": self._last_projection_token_estimate,

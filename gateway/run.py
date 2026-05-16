@@ -8611,49 +8611,34 @@ class GatewayRunner:
         return output or t("gateway.kanban.no_output")
 
     def _dag_context_status_lines(self, session_id: str) -> list[str]:
-        """Return user-visible DAG context safety/status lines for /status.
+        """Return user-visible DAG context beta/safety lines for /status.
 
         Kept opt-in so legacy context users see the same /status output.
         """
         try:
             from hermes_cli.config import load_config
+            from agent.context_dag_status import dag_context_status_lines
 
             cfg = load_config() or {}
-            context_cfg = cfg.get("context") or {}
-            if context_cfg.get("engine") != "dag":
-                return []
-            dag_cfg = context_cfg.get("dag") or {}
-            if not bool(dag_cfg.get("gateway_enabled", False)):
-                return []
+            context_cfg = cfg.get("context") if isinstance(cfg, dict) else {}
+            context_cfg = context_cfg if isinstance(context_cfg, dict) else {}
+            dag_cfg = context_cfg.get("dag") if isinstance(context_cfg, dict) else {}
+            dag_cfg = dag_cfg if isinstance(dag_cfg, dict) else {}
+            gateway_flag = dag_cfg.get("gateway_enabled")
+            if gateway_flag is None:
+                gateway_flag = os.getenv("HERMES_DAG_CONTEXT_GATEWAY_ENABLED")
+            gateway_enabled = str(gateway_flag).strip().lower() in {"1", "true", "yes", "on"} if gateway_flag is not None else False
+            if str(context_cfg.get("engine") or "compressor").strip().lower() == "dag" and not gateway_enabled:
+                return [
+                    "DAG context: configured but inactive on gateway; using legacy compressor fallback until context.dag.gateway_enabled is explicitly enabled."
+                ]
+            return dag_context_status_lines(
+                config=cfg,
+                session_id=session_id,
+                session_db=self._session_db,
+            )
         except Exception:
             return []
-
-        checkpoint = None
-        try:
-            if self._session_db:
-                from agent.context_dag_store import ContextDAGStore
-
-                checkpoint = ContextDAGStore(self._session_db).read_checkpoint(session_id)
-        except Exception:
-            checkpoint = None
-
-        lines = [
-            "",
-            "DAG context: projection-only; raw transcript is not rewritten, truncated, or rotated.",
-        ]
-        if checkpoint is None:
-            lines.append("DAG reconciliation: no checkpoint yet.")
-            return lines
-
-        metadata = checkpoint.metadata or {}
-        warnings = metadata.get("warnings") or []
-        lines.append(
-            "DAG reconciliation: checkpointed "
-            f"through message {checkpoint.last_ingested_message_id} "
-            f"({metadata.get('transcript_message_count', 0)} transcript message(s), "
-            f"{metadata.get('inserted', 0)} mirrored, {len(warnings)} warning(s))."
-        )
-        return lines
 
     async def _handle_status_command(self, event: MessageEvent) -> str:
         """Handle /status command."""

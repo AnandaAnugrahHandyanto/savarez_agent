@@ -175,6 +175,33 @@ async def test_gateway_status_surfaces_dag_projection_reconciliation_state_when_
 
 
 @pytest.mark.asyncio
+async def test_gateway_status_dag_config_without_gateway_flag_reports_inactive_fallback(tmp_path):
+    runner, store, entry, event = _make_gateway(tmp_path)
+    cfg = {"context": {"engine": "dag"}, "agent": {}, "compression": {"enabled": True}}
+
+    with patch("hermes_cli.config.load_config", return_value=cfg):
+        result = await runner._handle_status_command(event)
+
+    assert "DAG context: configured but inactive on gateway" in result
+    assert "legacy compressor fallback" in result
+    assert "DAG context: projection-only/no transcript rewrite ENABLED" not in result
+
+
+@pytest.mark.asyncio
+async def test_gateway_status_dag_config_with_gateway_env_flag_reports_enabled(tmp_path, monkeypatch):
+    runner, store, entry, event = _make_gateway(tmp_path)
+    store.append_to_transcript(entry.session_id, {"role": "user", "content": "one"})
+    cfg = {"context": {"engine": "dag"}, "agent": {}, "compression": {"enabled": True}}
+    monkeypatch.setenv("HERMES_DAG_CONTEXT_GATEWAY_ENABLED", "true")
+
+    with patch("hermes_cli.config.load_config", return_value=cfg):
+        result = await runner._handle_status_command(event)
+
+    assert "DAG context: projection-only/no transcript rewrite ENABLED" in result
+    assert "configured but inactive on gateway" not in result
+
+
+@pytest.mark.asyncio
 async def test_gateway_status_legacy_output_does_not_include_dag_lines_by_default(tmp_path):
     runner, store, entry, event = _make_gateway(tmp_path)
     cfg = {"context": {"engine": "legacy"}, "agent": {}, "compression": {"enabled": True}}
