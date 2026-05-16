@@ -2990,6 +2990,59 @@ class TestRunConversation:
         assert result["completed"] is True
         assert result["final_response"] == "Recovered after remint"
 
+    def test_persistent_401_same_pool_entry_triggers_fallback(self, agent):
+        """Repeated same-entry auth refreshes must not block fallback activation."""
+        self._setup_agent(agent)
+        agent._fallback_chain = [{"provider": "openrouter", "model": "anthropic/claude-sonnet-4"}]
+        agent._fallback_index = 0
+        agent._fallback_activated = False
+
+        class _UnauthorizedError(RuntimeError):
+            def __init__(self):
+                super().__init__("Error code: 401 - unauthorized")
+                self.status_code = 401
+
+        refreshed_entry = SimpleNamespace(label="primary", id="abc")
+
+        class _Pool:
+            def try_refresh_current(self):
+                return refreshed_entry
+
+            def mark_exhausted_and_rotate(self, *, status_code, error_context=None):
+                return None
+
+        agent._credential_pool = _Pool()
+        agent._swap_credential = MagicMock()
+        agent.client.chat.completions.create.side_effect = [
+            _UnauthorizedError(),
+            _UnauthorizedError(),
+            _UnauthorizedError(),
+            _mock_response(content="Fallback answer.", finish_reason="stop"),
+        ]
+
+        fallback_called = {"called": 0}
+
+        def _mock_fallback():
+            fallback_called["called"] += 1
+            agent._fallback_index = 1
+            agent._fallback_activated = True
+            agent.model = "anthropic/claude-sonnet-4"
+            agent.provider = "openrouter"
+            return True
+
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch.object(agent, "_try_activate_fallback", side_effect=_mock_fallback),
+        ):
+            result = agent.run_conversation("answer me")
+
+        assert fallback_called["called"] == 1
+        assert result["completed"] is True
+        assert result["final_response"] == "Fallback answer."
+        assert agent._swap_credential.call_count == 2
+
     def test_context_compression_triggered(self, agent):
         """When compressor says should_compress, compression runs."""
         self._setup_agent(agent)
@@ -3812,6 +3865,36 @@ class TestCredentialPoolRecovery:
 
         assert recovered is False
         agent._swap_credential.assert_not_called()
+
+    def test_recover_with_pool_401_same_entry_refreshes_stop_after_two(self, agent):
+        """Repeated auth refreshes for the same entry must eventually fall through."""
+
+        refreshed_entry = SimpleNamespace(label="primary", id="abc")
+
+        class _Pool:
+            def try_refresh_current(self):
+                return refreshed_entry
+
+        agent._credential_pool = _Pool()
+        agent._swap_credential = MagicMock()
+
+        first = agent._recover_with_credential_pool(
+            status_code=401,
+            has_retried_429=False,
+        )
+        second = agent._recover_with_credential_pool(
+            status_code=401,
+            has_retried_429=False,
+        )
+        third = agent._recover_with_credential_pool(
+            status_code=401,
+            has_retried_429=False,
+        )
+
+        assert first == (True, False)
+        assert second == (True, False)
+        assert third == (False, False)
+        assert agent._swap_credential.call_count == 2
 
     def test_extract_api_error_context_uses_reset_timestamp_and_reason(self, agent):
         response = SimpleNamespace(headers={})

@@ -7618,6 +7618,22 @@ class AIAgent:
                 return False, has_retried_429
             refreshed = pool.try_refresh_current()
             if refreshed is not None:
+                refreshed_id = getattr(refreshed, "id", None)
+                if refreshed_id is not None:
+                    refresh_counts = getattr(self, "_auth_pool_refresh_counts", {})
+                    refresh_key = (self.provider, refreshed_id)
+                    refresh_counts[refresh_key] = refresh_counts.get(refresh_key, 0) + 1
+                    self._auth_pool_refresh_counts = refresh_counts
+                    # A token refresh can still leave us pinned to the same dead
+                    # credential if the upstream keeps rejecting it. Let fallback
+                    # activate instead of looping forever on the same entry.
+                    if refresh_counts[refresh_key] > 2:
+                        logger.warning(
+                            "Credential auth failure persists after %s refreshes for pool entry %s; allowing fallback",
+                            refresh_counts[refresh_key] - 1,
+                            refreshed_id,
+                        )
+                        return False, has_retried_429
                 logger.info(f"Credential auth failure — refreshed pool entry {getattr(refreshed, 'id', '?')}")
                 self._swap_credential(refreshed)
                 return True, has_retried_429
@@ -12802,6 +12818,7 @@ class AIAgent:
             retry_count = 0
             max_retries = self._api_max_retries
             primary_recovery_attempted = False
+            self._auth_pool_refresh_counts = {}
             max_compression_attempts = 3
             codex_auth_retry_attempted=False
             anthropic_auth_retry_attempted=False
