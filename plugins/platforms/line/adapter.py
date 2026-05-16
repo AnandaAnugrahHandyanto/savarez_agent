@@ -424,6 +424,24 @@ def _allowed_for_source(
     return False
 
 
+def _resolve_display_names(chat_id: str, user_id: str) -> Tuple[str, str]:
+    """Look up display names from local YAML.  Returns (user_nick, group_name)."""
+    map_path = Path.home() / ".hermes" / ".line_group_maps.yaml"
+    if not map_path.exists():
+        return "", ""
+    try:
+        import yaml
+        data = yaml.safe_load(map_path.read_text(encoding="utf-8"))
+        groups = (data or {}).get("groups", {})
+        group = groups.get(chat_id, {})
+        members = group.get("members", {})
+        nick = members.get(user_id, "")
+        gname = group.get("name", "")
+        return (str(nick) if nick else "", str(gname) if gname else "")
+    except Exception:
+        return "", ""
+
+
 # ---------------------------------------------------------------------------
 # LINE Reply / Push HTTP client
 # ---------------------------------------------------------------------------
@@ -959,17 +977,30 @@ class LineAdapter(BasePlatformAdapter):
         if chat_type == "dm" and self._client:
             asyncio.create_task(self._client.loading(chat_id))
 
+        # Look up display names from local YAML (best-effort fallback to raw id).
+        nick, gname = _resolve_display_names(chat_id, user_id)
+
         source_obj = self.build_source(
             chat_id=chat_id,
             chat_type=chat_type,
             user_id=user_id,
-            user_name=user_id,
-            chat_name=chat_id,
+            user_name=nick or user_id,
+            chat_name=gname or chat_id,
         )
+
+        _MSG_TYPE_MAP = {
+            "text": MessageType.TEXT,
+            "image": MessageType.PHOTO,
+            "audio": MessageType.AUDIO,
+            "video": MessageType.VIDEO,
+            "file": MessageType.DOCUMENT,
+            "sticker": MessageType.STICKER,
+            "location": MessageType.LOCATION,
+        }
 
         event_obj = MessageEvent(
             text=text,
-            message_type=MessageType.TEXT if msg_type == "text" else MessageType.IMAGE,
+            message_type=_MSG_TYPE_MAP.get(msg_type, MessageType.TEXT),
             source=source_obj,
             raw_message=event,
             message_id=message_id,
