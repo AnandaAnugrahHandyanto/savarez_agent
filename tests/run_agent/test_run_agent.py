@@ -2582,6 +2582,147 @@ class TestRunConversation:
         assert any(msg.get("role") == "user" and msg.get("content") == "search something" for msg in pre_request_calls[0]["request_messages"])
         assert all("usage" in c and "response" in c and "assistant_message" in c for c in post_request_calls)
 
+    def test_pre_llm_call_runtime_override_routes_turn_then_restores_main(self, agent):
+        self._setup_agent(agent)
+        agent.model = "primary-model"
+        agent.provider = "openrouter"
+        agent.base_url = "https://primary.example/v1"
+        agent.api_mode = "chat_completions"
+        agent.api_key = "primary-key"
+        agent._client_kwargs = {"api_key": "primary-key", "base_url": "https://primary.example/v1"}
+        agent._primary_runtime.update({
+            "model": agent.model,
+            "provider": agent.provider,
+            "base_url": agent.base_url,
+            "api_mode": agent.api_mode,
+            "api_key": agent.api_key,
+            "client_kwargs": dict(agent._client_kwargs),
+        })
+        agent._fallback_chain = [{"provider": "zai", "model": "glm-4.7"}]
+        agent._fallback_model = agent._fallback_chain[0]
+        agent.client.chat.completions.create.return_value = _mock_response(content="Final answer", finish_reason="stop")
+
+        hook_calls = []
+
+        def _fake_switch_model(new_model, new_provider, api_key="", base_url="", api_mode=""):
+            # Deliberately mimic the persistent /model path mutating runtime;
+            # the plugin override wrapper must restore this after the turn.
+            agent.model = new_model
+            agent.provider = new_provider
+            agent.base_url = base_url
+            agent.api_key = api_key
+            agent.api_mode = api_mode or "chat_completions"
+            agent._client_kwargs = {"api_key": api_key, "base_url": base_url}
+            agent._primary_runtime = {
+                "model": new_model,
+                "provider": new_provider,
+                "base_url": base_url,
+                "api_mode": agent.api_mode,
+                "api_key": api_key,
+                "client_kwargs": dict(agent._client_kwargs),
+            }
+            agent._fallback_chain = []
+            agent._fallback_model = None
+
+        def _fake_hook(name, **kwargs):
+            hook_calls.append((name, kwargs))
+            if name == "pre_llm_call":
+                return [{
+                    "context": "plugin context",
+                    "runtime_override": {
+                        "model": "override-model",
+                        "provider": "custom",
+                        "base_url": "https://override.example/v1",
+                        "api_key": "override-key",
+                        "api_mode": "chat_completions",
+                    },
+                }]
+            if name == "transform_llm_output":
+                assert kwargs["model"] == "override-model"
+                assert kwargs["provider"] == "custom"
+                assert kwargs["base_url"] == "https://override.example/v1"
+                return [f"{kwargs['response_text']} via {kwargs['provider']}"]
+            return []
+
+        with (
+            patch.object(agent, "switch_model", side_effect=_fake_switch_model) as mock_switch,
+            patch.object(agent, "_create_openai_client", return_value=agent.client),
+            patch("hermes_cli.plugins.invoke_hook", side_effect=_fake_hook),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hello")
+
+        mock_switch.assert_called_once_with(
+            "override-model",
+            "custom",
+            api_key="override-key",
+            base_url="https://override.example/v1",
+            api_mode="chat_completions",
+        )
+        request_kwargs = agent.client.chat.completions.create.call_args.kwargs
+        assert request_kwargs["model"] == "override-model"
+        assert "plugin context" in request_kwargs["messages"][-1]["content"]
+        assert result["final_response"] == "Final answer via custom"
+        assert agent.model == "primary-model"
+        assert agent.provider == "openrouter"
+        assert agent.base_url == "https://primary.example/v1"
+        assert agent._primary_runtime["model"] == "primary-model"
+        assert agent._fallback_chain == [{"provider": "zai", "model": "glm-4.7"}]
+        pre_call = next(kwargs for name, kwargs in hook_calls if name == "pre_llm_call")
+        assert pre_call["provider"] == "openrouter"
+        assert pre_call["base_url"] == "https://primary.example/v1"
+
+    def test_pre_llm_call_runtime_override_can_persist_when_restore_main_false(self, agent):
+        self._setup_agent(agent)
+        agent.model = "primary-model"
+        agent.provider = "openrouter"
+        agent.base_url = "https://primary.example/v1"
+        agent.api_mode = "chat_completions"
+        agent.client.chat.completions.create.return_value = _mock_response(content="Done", finish_reason="stop")
+
+        def _fake_switch_model(new_model, new_provider, api_key="", base_url="", api_mode=""):
+            agent.model = new_model
+            agent.provider = new_provider
+            agent.base_url = base_url
+            agent.api_key = api_key
+            agent.api_mode = api_mode or "chat_completions"
+            agent._client_kwargs = {"api_key": api_key, "base_url": base_url}
+            agent._primary_runtime = {
+                "model": new_model,
+                "provider": new_provider,
+                "base_url": base_url,
+                "api_mode": agent.api_mode,
+                "api_key": api_key,
+                "client_kwargs": dict(agent._client_kwargs),
+            }
+
+        def _fake_hook(name, **kwargs):
+            if name == "pre_llm_call":
+                return [{"runtime_override": {
+                    "model": "persistent-model",
+                    "provider": "custom",
+                    "base_url": "https://persistent.example/v1",
+                    "api_key": "persistent-key",
+                    "restore_main": False,
+                }}]
+            return []
+
+        with (
+            patch.object(agent, "switch_model", side_effect=_fake_switch_model),
+            patch("hermes_cli.plugins.invoke_hook", side_effect=_fake_hook),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hello")
+
+        assert result["final_response"] == "Done"
+        assert agent.model == "persistent-model"
+        assert agent.provider == "custom"
+        assert agent.base_url == "https://persistent.example/v1"
+
     def test_content_with_tool_calls_stays_silent_for_non_cli_quiet_mode(self, agent):
         self._setup_agent(agent)
         agent.platform = None

@@ -2833,6 +2833,147 @@ class AIAgent:
             old_model, old_provider, new_model, new_provider,
         )
 
+    def _runtime_snapshot(self) -> dict:
+        """Capture mutable model/provider runtime state for scoped overrides."""
+        snapshot = {
+            "model": self.model,
+            "provider": self.provider,
+            "base_url": self.base_url,
+            "api_mode": self.api_mode,
+            "api_key": getattr(self, "api_key", ""),
+            "client_kwargs": dict(getattr(self, "_client_kwargs", {}) or {}),
+            "primary_runtime": dict(getattr(self, "_primary_runtime", {}) or {}),
+            "fallback_chain": list(getattr(self, "_fallback_chain", []) or []),
+            "fallback_model": getattr(self, "_fallback_model", None),
+            "fallback_index": getattr(self, "_fallback_index", 0),
+            "fallback_activated": getattr(self, "_fallback_activated", False),
+            "use_prompt_caching": getattr(self, "_use_prompt_caching", False),
+            "use_native_cache_layout": getattr(self, "_use_native_cache_layout", False),
+            "use_long_lived_prefix_cache": getattr(self, "_use_long_lived_prefix_cache", False),
+            "cached_system_prompt": getattr(self, "_cached_system_prompt", None),
+        }
+        if hasattr(self, "context_compressor") and self.context_compressor:
+            cc = self.context_compressor
+            snapshot["compressor"] = {
+                "model": getattr(cc, "model", self.model),
+                "context_length": getattr(cc, "context_length", 0),
+                "base_url": getattr(cc, "base_url", self.base_url),
+                "api_key": getattr(cc, "api_key", ""),
+                "provider": getattr(cc, "provider", self.provider),
+            }
+        if getattr(self, "api_mode", "") == "anthropic_messages":
+            snapshot.update({
+                "anthropic_api_key": getattr(self, "_anthropic_api_key", ""),
+                "anthropic_base_url": getattr(self, "_anthropic_base_url", None),
+                "is_anthropic_oauth": getattr(self, "_is_anthropic_oauth", False),
+            })
+        return snapshot
+
+    def _restore_runtime_snapshot(self, snapshot: dict) -> bool:
+        """Restore runtime state captured by ``_runtime_snapshot``.
+
+        This is used for plugin-requested, per-turn runtime overrides.  It
+        intentionally restores the fallback chain too because ``switch_model``
+        prunes fallback entries for user-initiated persistent switches.
+        """
+        try:
+            self.model = snapshot["model"]
+            self.provider = snapshot["provider"]
+            self.base_url = snapshot["base_url"]
+            self.api_mode = snapshot["api_mode"]
+            self.api_key = snapshot.get("api_key", "")
+            self._client_kwargs = dict(snapshot.get("client_kwargs", {}) or {})
+            self._primary_runtime = dict(snapshot.get("primary_runtime", {}) or {})
+            self._fallback_chain = list(snapshot.get("fallback_chain", []) or [])
+            self._fallback_model = snapshot.get("fallback_model")
+            self._fallback_index = snapshot.get("fallback_index", 0)
+            self._fallback_activated = snapshot.get("fallback_activated", False)
+            self._use_prompt_caching = snapshot.get("use_prompt_caching", False)
+            self._use_native_cache_layout = snapshot.get("use_native_cache_layout", False)
+            self._use_long_lived_prefix_cache = snapshot.get("use_long_lived_prefix_cache", False)
+            self._cached_system_prompt = snapshot.get("cached_system_prompt")
+            if hasattr(self, "_transport_cache"):
+                self._transport_cache.clear()
+
+            if self.api_mode == "anthropic_messages":
+                from agent.anthropic_adapter import build_anthropic_client
+                self._anthropic_api_key = snapshot.get("anthropic_api_key", "")
+                self._anthropic_base_url = snapshot.get("anthropic_base_url")
+                self._is_anthropic_oauth = snapshot.get("is_anthropic_oauth", False)
+                self._anthropic_client = build_anthropic_client(
+                    self._anthropic_api_key,
+                    self._anthropic_base_url,
+                    timeout=get_provider_request_timeout(self.provider, self.model),
+                )
+                self.client = None
+            else:
+                self.client = self._create_openai_client(
+                    dict(self._client_kwargs),
+                    reason="restore_runtime_override",
+                    shared=True,
+                )
+
+            compressor = snapshot.get("compressor")
+            if compressor and hasattr(self, "context_compressor") and self.context_compressor:
+                self.context_compressor.update_model(
+                    model=compressor["model"],
+                    context_length=compressor["context_length"],
+                    base_url=compressor["base_url"],
+                    api_key=compressor["api_key"],
+                    provider=compressor["provider"],
+                )
+            return True
+        except Exception as exc:
+            logger.warning("Failed to restore plugin runtime override: %s", exc)
+            return False
+
+    def _apply_runtime_override(self, runtime_override: dict) -> Optional[dict]:
+        """Apply a plugin-provided runtime override for the current turn.
+
+        ``pre_llm_call`` hooks may return ``{"runtime_override": {...}}`` to
+        route a single turn to another provider/model.  By default the main
+        runtime is restored after the turn; plugins can set
+        ``restore_main=False`` to make the switch persistent.
+        """
+        if not isinstance(runtime_override, dict):
+            return None
+
+        new_model = runtime_override.get("model") or self.model
+        new_provider = runtime_override.get("provider") or self.provider
+        base_url = runtime_override.get("base_url") or ""
+        api_key = runtime_override.get("api_key") or ""
+        api_mode = runtime_override.get("api_mode") or ""
+        restore_main = runtime_override.get("restore_main", True)
+
+        # Ignore no-op overrides that do not change runtime selection.
+        if not any(runtime_override.get(k) for k in ("model", "provider", "base_url", "api_key", "api_mode")):
+            return None
+
+        snapshot = self._runtime_snapshot() if restore_main else None
+        fallback_chain = list(getattr(self, "_fallback_chain", []) or [])
+        fallback_model = getattr(self, "_fallback_model", None)
+        fallback_index = getattr(self, "_fallback_index", 0)
+        try:
+            self.switch_model(new_model, new_provider, api_key=api_key, base_url=base_url, api_mode=api_mode)
+            # ``switch_model`` deliberately prunes fallback entries for
+            # user-initiated persistent /model changes.  Plugin routing is
+            # scoped and should preserve the configured failover chain.
+            self._fallback_chain = fallback_chain
+            self._fallback_model = fallback_model
+            self._fallback_index = fallback_index
+            logger.info(
+                "Plugin runtime_override applied: %s (%s), restore_main=%s",
+                self.model,
+                self.provider,
+                bool(restore_main),
+            )
+            return snapshot
+        except Exception as exc:
+            logger.warning("runtime_override hook failed: %s", exc)
+            if snapshot:
+                self._restore_runtime_snapshot(snapshot)
+            return None
+
     def _safe_print(self, *args, **kwargs):
         """Print that silently handles broken pipes / closed stdout.
 
@@ -12386,6 +12527,10 @@ class AIAgent:
         #
         # All injected context is ephemeral (not persisted to session DB).
         _plugin_user_context = ""
+        _runtime_override_snapshot = None
+        _llm_output_model = self.model
+        _llm_output_provider = self.provider
+        _llm_output_base_url = self.base_url
         try:
             from hermes_cli.plugins import invoke_hook as _invoke_hook
             _pre_results = _invoke_hook(
@@ -12395,13 +12540,21 @@ class AIAgent:
                 conversation_history=list(messages),
                 is_first_turn=(not bool(conversation_history)),
                 model=self.model,
+                provider=self.provider,
+                base_url=self.base_url,
                 platform=getattr(self, "platform", None) or "",
                 sender_id=getattr(self, "_user_id", None) or "",
             )
             _ctx_parts: list[str] = []
             for r in _pre_results:
-                if isinstance(r, dict) and r.get("context"):
-                    _ctx_parts.append(str(r["context"]))
+                if isinstance(r, dict):
+                    if r.get("context"):
+                        _ctx_parts.append(str(r["context"]))
+                    if _runtime_override_snapshot is None and isinstance(r.get("runtime_override"), dict):
+                        _runtime_override_snapshot = self._apply_runtime_override(r["runtime_override"])
+                        _llm_output_model = self.model
+                        _llm_output_provider = self.provider
+                        _llm_output_base_url = self.base_url
                 elif isinstance(r, str) and r.strip():
                     _ctx_parts.append(r)
             if _ctx_parts:
@@ -15814,6 +15967,9 @@ class AIAgent:
             except Exception as _ver_err:
                 logger.debug("file-mutation verifier footer failed: %s", _ver_err)
 
+        if _runtime_override_snapshot is not None:
+            self._restore_runtime_snapshot(_runtime_override_snapshot)
+
         # Plugin hook: transform_llm_output
         # Fired once per turn after the tool-calling loop completes.
         # Plugins can transform the LLM's output text before it's returned.
@@ -15825,7 +15981,9 @@ class AIAgent:
                     "transform_llm_output",
                     response_text=final_response,
                     session_id=self.session_id or "",
-                    model=self.model,
+                    model=_llm_output_model,
+                    provider=_llm_output_provider,
+                    base_url=_llm_output_base_url,
                     platform=getattr(self, "platform", None) or "",
                 )
                 for _hook_result in _transform_results:
