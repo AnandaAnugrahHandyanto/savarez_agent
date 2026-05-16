@@ -301,7 +301,9 @@ def get_provider_allowlist(provider: str) -> list[str] | None:
     if not isinstance(block, dict):
         return None
     allowlist = block.get("model_allowlist")
-    if isinstance(allowlist, list) and allowlist:
+    if isinstance(allowlist, list):
+        if not allowlist:
+            return []  # explicit empty list = show nothing
         return [str(m) for m in allowlist]
     return None
 

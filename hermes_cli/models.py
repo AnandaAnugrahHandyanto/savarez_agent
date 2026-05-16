@@ -2247,7 +2247,7 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
     if normalized == "ollama-cloud":
         live = fetch_ollama_cloud_models(force_refresh=force_refresh)
         if live:
-            return _apply_model_allowlist(normalized, live)
+            return live
     if normalized == "openai":
         api_key = os.getenv("OPENAI_API_KEY", "").strip()
         if api_key:
@@ -2326,8 +2326,19 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
 
     curated_static = list(_PROVIDER_MODELS.get(normalized, []))
     if normalized in _MODELS_DEV_PREFERRED:
-        return _apply_model_allowlist(normalized, _merge_with_models_dev(normalized, curated_static))
-    return _apply_model_allowlist(normalized, curated_static)
+        return _merge_with_models_dev(normalized, curated_static)
+    return curated_static
+
+
+
+def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) -> list[str]:
+    """Return the best known model catalog for a provider, filtered by allowlist.
+
+    Delegates to :func:`_provider_model_ids_unfiltered` for discovery, then
+    applies the user-configured ``model_allowlist`` if one exists.
+    """
+    result = _provider_model_ids_unfiltered(provider, force_refresh=force_refresh)
+    return _apply_model_allowlist((provider or "").lower().strip(), result)
 
 
 def _fetch_anthropic_models(timeout: float = 5.0) -> Optional[list[str]]:
