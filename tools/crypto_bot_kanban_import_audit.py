@@ -51,6 +51,25 @@ def maybe_read_json(path: Path | None) -> dict[str, Any] | None:
     return read_json(path)
 
 
+def live_pr_ci_readiness() -> tuple[dict[str, Any] | None, list[str]]:
+    """Return the live read-only S006 PR/CI audit payload when available.
+
+    The Kanban import audit is used as a control-plane consistency check. When
+    no explicit remote-readiness JSON is supplied, it must not fall back to
+    stale preview metadata and report ``pr_absent`` while the PR/CI audit can
+    discover an existing PR. This helper performs the same GET-only PR/CI
+    discovery used by readiness, without writing a durable PR/CI artifact.
+    """
+    try:
+        import crypto_bot_pr_ci_audit as pr_ci_audit  # type: ignore
+    except Exception as exc:  # noqa: BLE001 - report as audit warning
+        return None, [f"Unable to import PR/CI audit helper: {exc}"]
+    try:
+        return pr_ci_audit.evaluate_pr_ci_audit(write_artifact=False), []
+    except Exception as exc:  # noqa: BLE001 - report as audit warning
+        return None, [f"Unable to run live PR/CI audit helper: {exc}"]
+
+
 def kanban_db_path(kanban_home: Path, board_slug: str) -> Path:
     if board_slug == "default":
         return kanban_home / "kanban.db"
@@ -347,6 +366,14 @@ def s006_remote_status(
     preview_by_id: dict[str, dict[str, Any]],
     remote_readiness: dict[str, Any] | None,
 ) -> dict[str, Any]:
+    """Return S006 remote lifecycle status from readiness or PR/CI audit data.
+
+    ``remote_readiness`` may be either the autonomy-readiness payload or the
+    PR/CI audit payload. Both expose the fields this function consumes
+    (``pr_exists``, ``ci_evidence_ready``, ``merge_ready`` and
+    ``s006_remote_lifecycle_state``), which keeps the Kanban import audit in
+    lockstep with live PR/CI discovery when a PR already exists.
+    """
     metadata = preview_by_id.get("S006", {}).get("evidence_metadata")
     metadata = metadata if isinstance(metadata, dict) else {}
     pr_exists = bool(metadata.get("pr_exists"))
@@ -533,6 +560,7 @@ def evaluate_kanban_import_audit(
     board_slug: str = "crypto_bot",
     kanban_home: Path = DEFAULT_KANBAN_HOME,
     remote_readiness_path: Path | None = None,
+    remote_readiness_payload: dict[str, Any] | None = None,
     expected_card_count: int = 90,
     expected_dependency_count: int | None = None,
 ) -> dict[str, Any]:
@@ -626,7 +654,17 @@ def evaluate_kanban_import_audit(
         preview_by_id=preview_by_id,
     )
     blockers.extend(done_audit["blockers"])
-    remote_readiness = maybe_read_json(remote_readiness_path)
+    remote_readiness = remote_readiness_payload or maybe_read_json(remote_readiness_path)
+    remote_readiness_source = "argument" if remote_readiness_payload else None
+    if remote_readiness is None and remote_readiness_path:
+        remote_readiness_source = "missing_or_unreadable_remote_readiness_json"
+    elif remote_readiness is not None and remote_readiness_path:
+        remote_readiness_source = str(remote_readiness_path)
+    if remote_readiness is None:
+        remote_readiness, pr_ci_warnings = live_pr_ci_readiness()
+        warnings.extend(pr_ci_warnings)
+        if remote_readiness is not None:
+            remote_readiness_source = "live_pr_ci_audit"
     s006_local = s006_local_status(preview_by_id, tasks, comments_by_task)
     s006_remote = s006_remote_status(preview_by_id, remote_readiness)
     s006_safety = s006_card_safety(tasks, comments_by_task, actual_links, s006_remote)
@@ -681,6 +719,14 @@ def evaluate_kanban_import_audit(
         "IMPORT_VALID_SAFE_TO_REQUEST_S006_PR_PILOT": (
             "Request exact Operator approval for the S006 PR pilot retry."
         ),
+        "IMPORT_VALID_REMOTE_LIFECYCLE_BLOCKED": (
+            "Hold next-task dispatch until S006 PR, CI, and merge evidence "
+            "close the remote lifecycle."
+        ),
+        "IMPORT_VALID_READY_FOR_NEXT_TASK": (
+            "S006 remote lifecycle is complete; proceed only with gated "
+            "branch-local next-task work."
+        ),
         "IMPORT_NEEDS_BOARD_STATE_REPAIR": (
             "Repair native Kanban lifecycle state before autonomous work resumes."
         ),
@@ -715,6 +761,7 @@ def evaluate_kanban_import_audit(
         "evidence_metadata_preserved": not missing_cards and not unexpected_cards,
         "done_card_evidence_audit": done_audit,
         "s006_local_completion_status": s006_local,
+        "s006_remote_readiness_source": remote_readiness_source,
         "s006_remote_completion_status": s006_remote,
         "s006_card_state_safety": s006_safety,
         "s006_lifecycle_status_ok": s006_lifecycle_status_ok,

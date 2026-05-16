@@ -12,6 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 
 import crypto_bot_autonomy_readiness as readiness  # noqa: E402
+import crypto_bot_kanban_import_audit as kanban_import_audit  # noqa: E402
 
 PLAN = Path(
     "/Users/preston/robinhood/crypto_bot/docs/planning/"
@@ -218,6 +219,22 @@ def test_project_descriptor_classifies_legacy_and_task_scoped_artifacts() -> Non
     assert "task_scoped_validators:" in body
     assert "task_scoped_validator_missing_warning" in body
     assert "required_global_validator_blocker" in body
+
+
+def test_kanban_import_audit_uses_pr_ci_payload_for_s006_remote_state() -> None:
+    payload = kanban_import_audit.s006_remote_status(
+        {"S006": {"evidence_metadata": {}}},
+        {
+            "pr_exists": True,
+            "ci_evidence_ready": False,
+            "merge_ready": False,
+            "s006_remote_lifecycle_state": "pr_created_ci_pending",
+        },
+    )
+
+    assert payload["pr_exists"] is True
+    assert payload["remote_done"] is False
+    assert payload["remote_lifecycle_state"] == "pr_created_ci_pending"
 
 
 def test_generated_configs_have_no_secret_like_values_after_tenacity_update() -> None:
