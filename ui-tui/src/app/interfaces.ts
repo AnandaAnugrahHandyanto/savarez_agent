@@ -79,6 +79,7 @@ export interface OverlayState {
   pager: null | PagerState
   picker: boolean
   secret: null | SecretReq
+  sessions: boolean
   skillsHub: boolean
   sudo: null | SudoReq
 }
@@ -278,6 +279,7 @@ export interface SlashHandlerContext {
     closeSession: (targetSid?: null | string) => Promise<unknown>
     die: () => void
     guardBusySessionSwitch: (what?: string) => boolean
+    newLiveSession: (msg?: string, title?: string) => void
     newSession: (msg?: string, title?: string) => void
     resetVisibleHistory: (info?: null | SessionInfo) => void
     resumeById: (id: string) => void
@@ -304,6 +306,8 @@ export interface AppLayoutActions {
   answerSecret: (value: string) => void
   answerSudo: (pw: string) => void
   clearSelection: () => void
+  activateLiveSession: (id: string) => void
+  newLiveSession: () => void
   onModelSelect: (value: string) => void
   resumeById: (id: string) => void
   setStickyPrompt: (value: string) => void
@@ -362,7 +366,9 @@ export interface AppOverlaysProps {
   completions: CompletionItem[]
   onApprovalChoice: (choice: string) => void
   onClarifyAnswer: (value: string) => void
+  onActiveSessionSelect: (sessionId: string) => void
   onModelSelect: (value: string) => void
+  onNewLiveSession: () => void
   onPickerSelect: (sessionId: string) => void
   onSecretSubmit: (value: string) => void
   onSudoSubmit: (pw: string) => void

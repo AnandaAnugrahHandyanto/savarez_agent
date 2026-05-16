@@ -644,6 +644,7 @@ export function useMainApp(gw: GatewayClient) {
           closeSession: session.closeSession,
           die,
           guardBusySessionSwitch: session.guardBusySessionSwitch,
+          newLiveSession: session.newLiveSession,
           newSession: session.newSession,
           resetVisibleHistory: session.resetVisibleHistory,
           resumeById: session.resumeById,
@@ -771,16 +772,28 @@ export function useMainApp(gw: GatewayClient) {
 
   const appActions = useMemo(
     () => ({
+      activateLiveSession: session.activateLiveSession,
+      answerApproval,
+      answerClarify,
+      answerSecret,
+      answerSudo,
+      clearSelection,
+      newLiveSession: () => session.newLiveSession(),
+      onModelSelect,
+      resumeById: session.resumeById,
+      setStickyPrompt
+    }),
+    [
       answerApproval,
       answerClarify,
       answerSecret,
       answerSudo,
       clearSelection,
       onModelSelect,
-      resumeById: session.resumeById,
-      setStickyPrompt
-    }),
-    [answerApproval, answerClarify, answerSecret, answerSudo, clearSelection, onModelSelect, session.resumeById]
+      session.activateLiveSession,
+      session.newLiveSession,
+      session.resumeById
+    ]
   )
 
   const appComposer = useMemo(

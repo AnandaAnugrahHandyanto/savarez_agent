@@ -118,6 +118,7 @@ from tui_gateway.render import make_stream_renderer, render_diff, render_message
 _sessions: dict[str, dict] = {}
 _methods: dict[str, callable] = {}
 _pending: dict[str, tuple[str, threading.Event]] = {}
+_pending_prompt_payloads: dict[str, tuple[str, dict]] = {}
 _answers: dict[str, str] = {}
 _db = None
 _db_error: str | None = None
@@ -729,9 +730,13 @@ def _block(event: str, sid: str, payload: dict, timeout: int = 300) -> str:
     ev = threading.Event()
     _pending[rid] = (sid, ev)
     payload["request_id"] = rid
-    _emit(event, sid, payload)
-    ev.wait(timeout=timeout)
-    _pending.pop(rid, None)
+    _pending_prompt_payloads[rid] = (event, dict(payload))
+    try:
+        _emit(event, sid, payload)
+        ev.wait(timeout=timeout)
+    finally:
+        _pending.pop(rid, None)
+        _pending_prompt_payloads.pop(rid, None)
     return _answers.pop(rid, "")
 
 
@@ -1912,12 +1917,15 @@ def _make_agent(sid: str, key: str, session_id: str | None = None):
 
 
 def _init_session(sid: str, key: str, agent, history: list, cols: int = 80):
+    now = time.time()
     _sessions[sid] = {
         "agent": agent,
         "session_key": key,
         "history": history,
         "history_lock": threading.Lock(),
         "history_version": 0,
+        "created_at": now,
+        "last_active": now,
         "running": False,
         "attached_images": [],
         "image_counter": 0,
@@ -2100,6 +2108,7 @@ def _(rid, params: dict) -> dict:
     _enable_gateway_prompts()
 
     ready = threading.Event()
+    now = time.time()
 
     _sessions[sid] = {
         "agent": None,
@@ -2107,11 +2116,13 @@ def _(rid, params: dict) -> dict:
         "agent_ready": ready,
         "attached_images": [],
         "cols": cols,
+        "created_at": now,
         "edit_snapshots": {},
         "history": [],
         "history_lock": threading.Lock(),
         "history_version": 0,
         "image_counter": 0,
+        "last_active": now,
         "pending_title": None,
         "running": False,
         "session_key": key,
@@ -2280,6 +2291,127 @@ def _(rid, params: dict) -> dict:
             "message_count": len(messages),
             "messages": messages,
             "info": _session_info(agent),
+        },
+    )
+
+
+def _session_pending_kind(sid: str) -> str:
+    for rid, (owner_sid, _ev) in list(_pending.items()):
+        if owner_sid != sid:
+            continue
+        event, _payload = _pending_prompt_payloads.get(rid, ("input.request", {}))
+        return str(event).removesuffix(".request")
+    return ""
+
+
+def _session_live_status(sid: str, session: dict) -> str:
+    if _session_pending_kind(sid):
+        return "waiting"
+    ready = session.get("agent_ready")
+    if ready is not None and not ready.is_set():
+        return "starting"
+    if session.get("running"):
+        return "working"
+    return "idle"
+
+
+def _message_preview(history: list) -> str:
+    for msg in reversed(history or []):
+        text = _content_display_text(msg.get("content", msg.get("text", ""))).strip()
+        if text:
+            return " ".join(text.split())[:160]
+    return ""
+
+
+def _session_live_title(session: dict, key: str) -> str:
+    title = str(session.get("pending_title") or "").strip()
+    db = _get_db()
+    if db is not None:
+        try:
+            title = str(db.get_session_title(key) or title or "").strip()
+        except Exception:
+            pass
+    return title
+
+
+def _session_live_item(sid: str, session: dict, current_sid: str = "") -> dict:
+    key = str(session.get("session_key") or sid)
+    agent = session.get("agent")
+    history = list(session.get("history") or [])
+    status = _session_live_status(sid, session)
+    now = time.time()
+    return {
+        "current": sid == current_sid,
+        "id": sid,
+        "last_active": float(session.get("last_active") or session.get("created_at") or now),
+        "message_count": len(history),
+        "model": str(getattr(agent, "model", "") or _resolve_model()),
+        "preview": _message_preview(history),
+        "session_key": key,
+        "started_at": float(session.get("created_at") or now),
+        "status": status,
+        "title": _session_live_title(session, key),
+    }
+
+
+def _fallback_session_info(session: dict) -> dict:
+    agent = session.get("agent")
+    if agent is not None:
+        return _session_info(agent)
+    return {
+        "cwd": os.getenv("TERMINAL_CWD", os.getcwd()),
+        "lazy": True,
+        "model": _resolve_model(),
+        "skills": {},
+        "tools": {},
+    }
+
+
+@method("session.active_list")
+def _(rid, params: dict) -> dict:
+    """Return live TUI sessions in this gateway process.
+
+    Unlike ``session.list`` this is not a historical DB browser: it reports only
+    sessions with in-memory agents/workers that the current TUI can switch to
+    without closing siblings.
+    """
+    current = str(params.get("current_session_id") or "")
+    try:
+        snapshot = list(_sessions.items())
+    except Exception as e:
+        return _err(rid, 5036, f"could not enumerate active sessions: {e}")
+
+    rows = [_session_live_item(sid, session, current) for sid, session in snapshot]
+    rows.sort(key=lambda row: (not row.get("current", False), -float(row.get("last_active") or 0)))
+    return _ok(rid, {"sessions": rows})
+
+
+@method("session.activate")
+def _(rid, params: dict) -> dict:
+    """Attach the frontend to an already-live TUI session.
+
+    This intentionally does not close the previously focused session; it merely
+    returns enough state for Ink to redraw around another live session id.
+    """
+    sid = str(params.get("session_id") or "")
+    session, err = _sess_nowait({"session_id": sid}, rid)
+    if err:
+        return err
+
+    session["last_active"] = time.time()
+    history = list(session.get("display_history") or session.get("history") or [])
+    status = _session_live_status(sid, session)
+    return _ok(
+        rid,
+        {
+            "info": _fallback_session_info(session),
+            "message_count": len(history),
+            "messages": _history_to_messages(history),
+            "running": bool(session.get("running")),
+            "session_id": sid,
+            "session_key": session.get("session_key") or sid,
+            "started_at": float(session.get("created_at") or time.time()),
+            "status": status,
         },
     )
 
@@ -3008,6 +3140,7 @@ def _(rid, params: dict) -> dict:
         if session.get("running"):
             return _err(rid, 4009, "session busy")
         session["running"] = True
+        session["last_active"] = time.time()
 
     _start_agent_build(sid, session)
 
@@ -3463,6 +3596,7 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
             _clear_session_context(session_tokens)
             with session["history_lock"]:
                 session["running"] = False
+                session["last_active"] = time.time()
 
         # Chain a goal-continuation turn if the judge said so. We do
         # this AFTER the finally releases session["running"], so the
@@ -4384,6 +4518,7 @@ _TUI_EXTRA: list[tuple[str, str, str]] = [
     ("/compact", "Toggle compact display mode", "TUI"),
     ("/logs", "Show recent gateway log lines", "TUI"),
     ("/mouse", "Toggle mouse/wheel tracking [on|off|toggle]", "TUI"),
+    ("/sessions", "Switch between live TUI sessions", "TUI"),
 ]
 
 # Commands that queue messages onto _pending_input in the CLI.

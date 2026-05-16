@@ -9,6 +9,7 @@ import { introMsg, toTranscriptMessages } from '../domain/messages.js'
 import { ZERO } from '../domain/usage.js'
 import { type GatewayClient } from '../gatewayClient.js'
 import type {
+  SessionActivateResponse,
   SessionCloseResponse,
   SessionCreateResponse,
   SessionResumeResponse,
@@ -25,6 +26,18 @@ import { patchTurnState } from './turnStore.js'
 import { getUiState, patchUiState } from './uiStore.js'
 
 const usageFrom = (info: null | SessionInfo): Usage => (info?.usage ? { ...ZERO, ...info.usage } : ZERO)
+
+const statusFromLiveSession = (status?: string, running = false) => {
+  if (status === 'waiting') {
+    return 'waiting for input…'
+  }
+
+  if (status === 'starting') {
+    return 'starting agent…'
+  }
+
+  return running || status === 'working' ? 'running…' : 'ready'
+}
 
 export const writeActiveSessionFile = (sessionId: null | string, file = process.env.HERMES_TUI_ACTIVE_SESSION_FILE) => {
   if (!file || !sessionId) {
@@ -122,8 +135,8 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
     [composerActions, setHistoryItems, setLastUserMsg, setStickyPrompt]
   )
 
-  const newSession = useCallback(
-    async (msg?: string, title?: string) => {
+  const startNewSession = useCallback(
+    async (msg?: string, title?: string, keepCurrent = false) => {
       const setup = await rpc<SetupStatusResponse>('setup.status', {})
 
       if (setup?.provider_configured === false) {
@@ -133,7 +146,9 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
         return
       }
 
-      await closeSession(getUiState().sid)
+      if (!keepCurrent) {
+        await closeSession(getUiState().sid)
+      }
 
       const r = await rpc<SessionCreateResponse>('session.create', { cols: colsRef.current })
 
@@ -196,6 +211,58 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
       }
     },
     [closeSession, colsRef, panel, resetSession, rpc, setHistoryItems, setSessionStartedAt, sys]
+  )
+
+  const newSession = useCallback(
+    (msg?: string, title?: string) => startNewSession(msg, title, false),
+    [startNewSession]
+  )
+
+  const newLiveSession = useCallback(
+    (msg = 'new live session started', title?: string) => {
+      patchOverlayState({ sessions: false })
+      void startNewSession(msg, title, true)
+    },
+    [startNewSession]
+  )
+
+  const activateLiveSession = useCallback(
+    (id: string) => {
+      patchOverlayState({ sessions: false })
+      patchUiState({ status: 'switching session…' })
+
+      gw.request<SessionActivateResponse>('session.activate', { session_id: id })
+        .then(raw => {
+          const r = asRpcResult<SessionActivateResponse>(raw)
+
+          if (!r) {
+            sys('error: invalid response: session.activate')
+
+            return patchUiState({ status: 'ready' })
+          }
+
+          const info = r.info ?? null
+          const running = Boolean(r.running || r.status === 'working' || r.status === 'waiting')
+
+          resetSession()
+          setSessionStartedAt(r.started_at ? r.started_at * 1000 : Date.now())
+          setHistoryItems(info ? [introMsg(info), ...toTranscriptMessages(r.messages)] : toTranscriptMessages(r.messages))
+          writeActiveSessionFile(r.session_key ?? r.session_id)
+          patchUiState({
+            busy: running,
+            info,
+            sid: r.session_id,
+            status: statusFromLiveSession(r.status, running),
+            usage: usageFrom(info)
+          })
+          setTimeout(() => scrollRef.current?.scrollToBottom(), 0)
+        })
+        .catch((e: Error) => {
+          sys(`error: ${e.message}`)
+          patchUiState({ status: 'ready' })
+        })
+    },
+    [gw, resetSession, scrollRef, setHistoryItems, setSessionStartedAt, sys]
   )
 
   const resumeById = useCallback(
@@ -262,8 +329,10 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
   )
 
   return {
+    activateLiveSession,
     closeSession,
     guardBusySessionSwitch,
+    newLiveSession,
     newSession,
     resetSession,
     resetVisibleHistory,

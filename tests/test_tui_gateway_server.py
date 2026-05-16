@@ -3721,6 +3721,98 @@ def test_prompt_submit_preserves_empty_response_without_error(monkeypatch):
     assert text in ("", None), f"expected empty text, got {text!r}"
 
 
+# ── active live TUI sessions ─────────────────────────────────────────
+
+
+def test_session_active_list_reports_live_sessions(monkeypatch):
+    class _DB:
+        def get_session_title(self, key):
+            return {"key-a": "Research", "key-b": "Implement"}.get(key, "")
+
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+    server._sessions["sid-a"] = _session(
+        agent=types.SimpleNamespace(model="model-a"),
+        history=[{"role": "user", "content": "find docs"}],
+        session_key="key-a",
+        created_at=10.0,
+        last_active=20.0,
+    )
+    server._sessions["sid-b"] = _session(
+        agent=types.SimpleNamespace(model="model-b"),
+        history=[{"role": "assistant", "content": "writing code"}],
+        running=True,
+        session_key="key-b",
+        created_at=11.0,
+        last_active=30.0,
+    )
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "session.active_list",
+                "params": {"current_session_id": "sid-a"},
+            }
+        )
+    finally:
+        server._sessions.pop("sid-a", None)
+        server._sessions.pop("sid-b", None)
+
+    rows = {row["id"]: row for row in resp["result"]["sessions"]}
+    assert rows["sid-a"] == {
+        "current": True,
+        "id": "sid-a",
+        "last_active": 20.0,
+        "message_count": 1,
+        "model": "model-a",
+        "preview": "find docs",
+        "session_key": "key-a",
+        "started_at": 10.0,
+        "status": "idle",
+        "title": "Research",
+    }
+    assert rows["sid-b"]["current"] is False
+    assert rows["sid-b"]["status"] == "working"
+    assert rows["sid-b"]["title"] == "Implement"
+    assert rows["sid-b"]["preview"] == "writing code"
+
+
+def test_session_activate_switches_live_session_without_closing_siblings(monkeypatch):
+    monkeypatch.setattr(server, "_session_info", lambda agent: {"model": agent.model})
+    server._sessions["sid-a"] = _session(
+        agent=types.SimpleNamespace(model="model-a"),
+        history=[{"role": "user", "content": "old"}],
+        session_key="key-a",
+    )
+    server._sessions["sid-b"] = _session(
+        agent=types.SimpleNamespace(model="model-b"),
+        history=[
+            {"role": "user", "content": "new prompt"},
+            {"role": "assistant", "content": "new answer"},
+        ],
+        running=True,
+        session_key="key-b",
+    )
+    try:
+        resp = server.handle_request(
+            {"id": "1", "method": "session.activate", "params": {"session_id": "sid-b"}}
+        )
+
+        assert "sid-a" in server._sessions
+        assert "sid-b" in server._sessions
+        assert resp["result"]["session_id"] == "sid-b"
+        assert resp["result"]["session_key"] == "key-b"
+        assert resp["result"]["running"] is True
+        assert resp["result"]["status"] == "working"
+        assert resp["result"]["info"] == {"model": "model-b"}
+        assert resp["result"]["messages"] == [
+            {"role": "user", "text": "new prompt"},
+            {"role": "assistant", "text": "new answer"},
+        ]
+    finally:
+        server._sessions.pop("sid-a", None)
+        server._sessions.pop("sid-b", None)
+
+
 # ── session.most_recent ──────────────────────────────────────────────
 
 
