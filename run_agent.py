@@ -1395,6 +1395,7 @@ class AIAgent:
         self.clarify_callback = clarify_callback
         self.step_callback = step_callback
         self.stream_delta_callback = stream_delta_callback
+        self.assistant_message_metadata_callback = None
         self.interim_assistant_callback = interim_assistant_callback
         self.status_callback = status_callback
         self.tool_gen_callback = tool_gen_callback
@@ -4545,6 +4546,21 @@ class AIAgent:
             msg = messages[idx]
             if isinstance(msg, dict) and msg.get("role") == "user":
                 msg["content"] = override
+
+    def _apply_assistant_message_metadata(self, msg: Dict) -> Dict:
+        callback = getattr(self, "assistant_message_metadata_callback", None)
+        if not callable(callback) or not isinstance(msg, dict) or msg.get("role") != "assistant":
+            return msg
+        try:
+            metadata = callback(msg)
+        except Exception as exc:
+            logger.debug("assistant message metadata callback failed: %s", exc)
+            return msg
+        if isinstance(metadata, dict):
+            for key, value in metadata.items():
+                if value is not None and value != "":
+                    msg[key] = value
+        return msg
 
     def _persist_session(self, messages: List[Dict], conversation_history: List[Dict] = None):
         """Save session state to both JSON log and SQLite on any exit path.
@@ -15657,7 +15673,9 @@ class AIAgent:
                     
                     final_response = self._strip_think_blocks(final_response).strip()
                     
-                    final_msg = self._build_assistant_message(assistant_message, finish_reason)
+                    final_msg = self._apply_assistant_message_metadata(
+                        self._build_assistant_message(assistant_message, finish_reason)
+                    )
 
                     # Pop thinking-only prefill and empty-response retry
                     # scaffolding before appending the final response.  These
