@@ -1704,7 +1704,7 @@ class SlackAdapter(BasePlatformAdapter):
         #   "none"     — ignore all bot messages (default, backward-compatible)
         #   "mentions" — accept bot messages only when they @mention us
         #   "all"      — accept all bot messages (except our own)
-        if event.get("bot_id") or event.get("subtype") == "bot_message":
+        if (event.get("bot_id") or event.get("subtype") == "bot_message") and not event.get("channel", "").startswith("D"):
             allow_bots = self.config.extra.get("allow_bots", "")
             if not allow_bots:
                 allow_bots = os.getenv("SLACK_ALLOW_BOTS", "none")
