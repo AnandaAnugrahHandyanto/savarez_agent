@@ -3867,7 +3867,11 @@ class AIAgent:
             return False
 
         has_future_ack = bool(
-            re.search(r"\b(i['’]ll|i will|let me|i can do that|i can help with that)\b", assistant_text)
+            re.search(
+                r"\b(i['’]ll|i will|let me|i can do that|i can help with that)\b",
+                assistant_text,
+            )
+            or re.search(r"(我会|我将|我先|接下来|现在开始|开始|马上|准备)", assistant_text)
         )
         if not has_future_ack:
             return False
@@ -3892,6 +3896,13 @@ class AIAgent:
             "walkthrough",
             "report back",
             "summarize",
+            "write",
+            "draft",
+            "save",
+            "撰写",
+            "写",
+            "保存",
+            "写入",
         )
         workspace_markers = (
             "directory",
@@ -3908,6 +3919,22 @@ class AIAgent:
             "files",
             "path",
         )
+        persistent_output_markers = (
+            "save to local",
+            "save locally",
+            "save to file",
+            "write to file",
+            "write it to",
+            "persist to",
+            "local file",
+            "保存到本地",
+            "保存到文件",
+            "写入本地",
+            "写入文件",
+            "写到本地",
+            "写到文件",
+            "保存为",
+        )
 
         user_text = (user_message or "").strip().lower()
         user_targets_workspace = (
@@ -3915,11 +3942,25 @@ class AIAgent:
             or "~/" in user_text
             or "/" in user_text
         )
+        user_targets_persistent_output = any(
+            marker in user_text for marker in persistent_output_markers
+        )
         assistant_mentions_action = any(marker in assistant_text for marker in action_markers)
         assistant_targets_workspace = any(
             marker in assistant_text for marker in workspace_markers
         )
-        return (user_targets_workspace or assistant_targets_workspace) and assistant_mentions_action
+        assistant_targets_persistent_output = any(
+            marker in assistant_text for marker in persistent_output_markers
+        )
+        return (
+            (
+                user_targets_workspace
+                or assistant_targets_workspace
+                or user_targets_persistent_output
+                or assistant_targets_persistent_output
+            )
+            and assistant_mentions_action
+        )
 
 
     def _extract_reasoning(self, assistant_message) -> Optional[str]:
