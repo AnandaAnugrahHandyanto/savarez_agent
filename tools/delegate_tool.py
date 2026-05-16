@@ -446,6 +446,30 @@ def _get_orchestrator_enabled() -> bool:
     return True
 
 
+def _get_delegation_enabled() -> bool:
+    """Master switch for delegation (``delegation.enabled``).
+
+    When False, ``delegate_task`` is excluded from the toolset entirely
+    (via ``dynamic_schema_overrides``) and any direct call returns an
+    error immediately.  This gives operators a hard off-switch rather
+    than relying on ``max_iterations: 0`` or manual toolset filtering.
+
+    Config key: ``delegation.enabled`` (bool, default True).
+    Priority: config.yaml > env ``DELEGATION_ENABLED`` > default True.
+    """
+    cfg = _load_config()
+    val = cfg.get("enabled")
+    if val is not None:
+        if isinstance(val, bool):
+            return val
+        if isinstance(val, str):
+            return val.strip().lower() in {"true", "1", "yes", "on"}
+    env_val = os.getenv("DELEGATION_ENABLED")
+    if env_val is not None:
+        return env_val.strip().lower() in {"true", "1", "yes", "on"}
+    return True
+
+
 def _get_inherit_mcp_toolsets() -> bool:
     """Whether narrowed child toolsets should keep the parent's MCP toolsets."""
     cfg = _load_config()
@@ -2641,7 +2665,14 @@ def _build_dynamic_schema_overrides() -> dict:
     Plugged into ToolEntry.dynamic_schema_overrides so every
     get_definitions() pass rewrites the description fields to the user's
     actual limits.
+
+    When ``delegation.enabled`` is False, returns an empty dict so the
+    tool is excluded from the schema entirely — the model never sees the
+    tool and cannot attempt to call it.
     """
+    if not _get_delegation_enabled():
+        return {}  # Tool hidden from model when delegation is disabled
+
     overrides_params = {
         **DELEGATE_TASK_SCHEMA["parameters"],
     }
