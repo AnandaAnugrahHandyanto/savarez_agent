@@ -137,6 +137,17 @@ def _dispatch_memory_stateless(**kwargs: Any) -> str:
     )
 
 
+def _coerce_session_search_limit(value: Any) -> int:
+    """Normalize MCP-provided session_search limit values before dispatch."""
+    if isinstance(value, bool):
+        return 3
+    try:
+        limit = int(value)
+    except (TypeError, ValueError):
+        return 3
+    return max(1, min(limit, 5))
+
+
 def _dispatch_session_search_stateless(**kwargs: Any) -> str:
     """Run session_search against the profile-scoped SessionDB.
 
@@ -149,7 +160,7 @@ def _dispatch_session_search_stateless(**kwargs: Any) -> str:
     return session_search(
         query=kwargs.get("query", ""),
         role_filter=kwargs.get("role_filter"),  # type: ignore[arg-type]
-        limit=kwargs.get("limit", 3),
+        limit=_coerce_session_search_limit(kwargs.get("limit", 3)),
         current_session_id=kwargs.get("current_session_id"),  # type: ignore[arg-type]
     )
 

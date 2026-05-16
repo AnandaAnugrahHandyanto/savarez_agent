@@ -118,9 +118,43 @@ class TestModuleSurface:
         assert calls == [{
             "query": "oauth",
             "role_filter": "assistant",
-            "limit": "2",
+            "limit": 2,
             "current_session_id": "sid-123",
         }]
+
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            (None, 3),
+            ("2", 2),
+            (10, 5),
+            (0, 1),
+            ("not-an-int", 3),
+            (True, 3),
+        ],
+    )
+    def test_session_search_limit_is_normalized_before_stateless_dispatch(
+        self,
+        raw,
+        expected,
+        monkeypatch,
+    ):
+        from agent.transports import hermes_tools_mcp_server as m
+        import tools.session_search_tool as session_search_tool
+
+        calls = []
+
+        def fake_session_search(**kwargs):
+            calls.append(kwargs)
+            return '{"success": true}'
+
+        monkeypatch.setattr(session_search_tool, "session_search", fake_session_search)
+
+        assert (
+            m._dispatch_session_search_stateless(query="oauth", limit=raw)
+            == '{"success": true}'
+        )
+        assert calls[0]["limit"] == expected
 
     def test_build_server_routes_stateless_agent_loop_tools_without_handle_function_call(self, monkeypatch):
         """_build_server must route memory/session_search through local wrappers.
