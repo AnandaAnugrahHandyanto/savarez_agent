@@ -15952,13 +15952,14 @@ class AIAgent:
         # handled by the CLI (atexit / /reset) and gateway (session expiry /
         # _reset_session).
 
-        # Plugin hook: on_session_end
-        # Fired at the very end of every run_conversation call.
-        # Plugins can use this for cleanup, flushing buffers, etc.
+        # Plugin hook: on_turn_end (fires every run_conversation call,
+        # i.e. once per user message — NOT at session boundaries).
+        # Use on_session_end for actual session-end cleanup (CLI exit,
+        # /reset, gateway session expiry).
         try:
             from hermes_cli.plugins import invoke_hook as _invoke_hook
             _invoke_hook(
-                "on_session_end",
+                "on_turn_end",
                 session_id=self.session_id,
                 completed=completed,
                 interrupted=interrupted,
@@ -15966,7 +15967,7 @@ class AIAgent:
                 platform=getattr(self, "platform", None) or "",
             )
         except Exception as exc:
-            logger.warning("on_session_end hook failed: %s", exc)
+            logger.warning("on_turn_end hook failed: %s", exc)
 
         return result
 

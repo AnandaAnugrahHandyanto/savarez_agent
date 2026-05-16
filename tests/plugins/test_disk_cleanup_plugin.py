@@ -5,7 +5,7 @@ Covers the bundled plugin at ``plugins/disk-cleanup/``:
   * ``disk_cleanup`` library: track / forget / dry_run / quick / status,
     ``is_safe_path`` and ``guess_category`` filtering.
   * Plugin ``__init__``: ``post_tool_call`` hook auto-tracks files created
-    by ``write_file`` / ``terminal``; ``on_session_end`` hook runs quick
+    by ``write_file`` / ``terminal``; ``on_turn_end`` hook runs quick
     cleanup when anything was tracked during the turn.
   * Slash command handler: status / dry-run / quick / track / forget /
     unknown subcommand behaviours.
@@ -394,7 +394,7 @@ class TestBundledDiscovery:
         loaded = mgr._plugins["disk-cleanup"]
         assert loaded.enabled
         assert "post_tool_call" in loaded.hooks_registered
-        assert "on_session_end" in loaded.hooks_registered
+        assert "on_turn_end" in loaded.hooks_registered
         assert "disk-cleanup" in loaded.commands_registered
 
     def test_disabled_beats_enabled(self, _isolate_env):
