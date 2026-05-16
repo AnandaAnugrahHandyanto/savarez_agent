@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
+import re
 import subprocess
 import time
 from pathlib import Path
@@ -14,20 +15,26 @@ SCHEMA = "hermes.autonomy.crypto_bot_gitea_runner_recovery.v1"
 RUNNER_NAME = "crypto-bot-linux-runner"
 GITEA_CONTAINER = "crypto-bot-gitea"
 RUNNER_IMAGE = "gitea/act_runner:0.2.12"
+REPO_ROOT = Path(__file__).resolve().parents[1]
+CI_JOB_IMAGE = "crypto-bot-ci-runner:python313-node20-go"
+CI_JOB_IMAGE_DOCKERFILE = REPO_ROOT / "docker/crypto_bot_ci_runner/Dockerfile"
+CI_JOB_IMAGE_LABEL = f"ubuntu-latest:docker://{CI_JOB_IMAGE}"
 RUNNER_NETWORK = "crypto-bot-gitea-net"
 RUNNER_VOLUME = "crypto-bot-linux-runner-data"
 RUNNER_STATE_FILE = "/data/.runner"
 RUNNER_DAEMON_COMMAND = "act_runner daemon"
 INSTANCE_URL = "http://crypto-bot-gitea:3000"
-RUNNER_LABELS = "linux,crypto-bot-python-313,ubuntu-latest"
+RUNNER_LABELS = f"linux,crypto-bot-python-313,{CI_JOB_IMAGE_LABEL}"
 REPO_SCOPE = "preston/crypto_bot"
+CI_JOB_IMAGE_LABEL_RE = re.compile(rf"(?<!\S){re.escape(CI_JOB_IMAGE_LABEL)}(?=\s|\])")
 GITEA_CONFIG_PATH = "/data/gitea/conf/app.ini"
 GITEA_WORK_PATH = "/data/gitea"
 APPROVAL_PHRASE = (
     "APPROVE CRYPTO_BOT GITEA RUNNER RECOVERY "
     "container=crypto-bot-linux-runner "
     "network=crypto-bot-gitea-net "
-    "labels=linux,crypto-bot-python-313,ubuntu-latest "
+    f"labels=linux,crypto-bot-python-313,{CI_JOB_IMAGE_LABEL} "
+    f"ci_image={CI_JOB_IMAGE} "
     "no_workflow_dispatch=true "
     "no_pr_mutation=true "
     "no_merge=true"
@@ -101,6 +108,8 @@ def inspect_runner(
         "token_empty_loop_detected": "token is empty" in log_text,
         "instance_empty_loop_detected": "instance address is empty" in log_text,
         "registered_successfully_detected": "Runner registered successfully" in log_text,
+        "dedicated_ci_image_label_detected": bool(CI_JOB_IMAGE_LABEL_RE.search(log_text)),
+        "host_ubuntu_latest_label_detected": "ubuntu-latest:host" in log_text,
         "recent_log_tail": log_text[-2000:],
     }
 
@@ -144,6 +153,30 @@ def generate_registration_token(
     return (value if value else None), summary
 
 
+def build_ci_job_image(
+    *,
+    runner: CommandRunner = run_command,
+) -> dict[str, Any]:
+    result = runner(
+        [
+            "docker",
+            "build",
+            "--pull",
+            "-t",
+            CI_JOB_IMAGE,
+            "-f",
+            str(CI_JOB_IMAGE_DOCKERFILE),
+            str(CI_JOB_IMAGE_DOCKERFILE.parent),
+        ],
+        300,
+    )
+    summary = command_summary(result)
+    summary["image"] = CI_JOB_IMAGE
+    summary["dockerfile"] = str(CI_JOB_IMAGE_DOCKERFILE)
+    summary["stdout_tail"] = str(result.get("stdout") or "")[-500:]
+    return summary
+
+
 def execute_recovery(
     *,
     approval_phrase: str | None,
@@ -155,6 +188,12 @@ def execute_recovery(
     steps: list[dict[str, Any]] = []
     if approval_phrase != APPROVAL_PHRASE:
         blockers.append("exact_runner_recovery_approval_phrase_required")
+        return build_report(mode="execute", blockers=blockers, steps=steps, runner=runner)
+
+    image_step = build_ci_job_image(runner=runner)
+    steps.append({"step": "build_dedicated_ci_job_image", **image_step})
+    if image_step["exit_code"] != 0:
+        blockers.append("dedicated_ci_job_image_build_failed")
         return build_report(mode="execute", blockers=blockers, steps=steps, runner=runner)
 
     token, token_step = generate_registration_token(runner=runner)
@@ -245,6 +284,9 @@ def build_report(
         "runner_container": RUNNER_NAME,
         "gitea_container": GITEA_CONTAINER,
         "runner_image": RUNNER_IMAGE,
+        "ci_job_image": CI_JOB_IMAGE,
+        "ci_job_image_dockerfile": str(CI_JOB_IMAGE_DOCKERFILE),
+        "ci_job_image_label": CI_JOB_IMAGE_LABEL,
         "runner_network": RUNNER_NETWORK,
         "runner_volume": RUNNER_VOLUME,
         "runner_state_file": RUNNER_STATE_FILE,
@@ -268,6 +310,18 @@ def build_report(
         "direct_db_token_insertion_invoked": False,
     }
     report["conclusion"] = "FAIL" if blockers else "PASS"
+    inspection = report["runner_inspection"]
+    if inspection["host_ubuntu_latest_label_detected"]:
+        report["blockers"].append("runner_host_mode_ubuntu_latest_label_detected")
+        report["conclusion"] = "FAIL"
+    elif (
+        inspection["docker_ps_exit_code"] == 0
+        and inspection["docker_logs_exit_code"] == 0
+        and inspection["registered_successfully_detected"]
+        and not inspection["dedicated_ci_image_label_detected"]
+    ):
+        report["blockers"].append("runner_dedicated_ci_image_label_not_detected")
+        report["conclusion"] = "FAIL"
     return report
 
 
