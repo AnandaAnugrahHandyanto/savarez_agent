@@ -5,10 +5,17 @@ Connects to a self-hosted (or cloud) Mattermost instance via its REST API
 required — uses aiohttp which is already a Hermes dependency.
 
 Environment variables:
-    MATTERMOST_URL              Server URL (e.g. https://mm.example.com)
-    MATTERMOST_TOKEN            Bot token or personal-access token
-    MATTERMOST_ALLOWED_USERS    Comma-separated user IDs
-    MATTERMOST_HOME_CHANNEL     Channel ID for cron/notification delivery
+    MATTERMOST_URL                      Server URL (e.g. https://mm.example.com)
+    MATTERMOST_TOKEN                    Bot token or personal-access token
+    MATTERMOST_ALLOWED_USERS            Comma-separated user IDs
+    MATTERMOST_HOME_CHANNEL             Channel ID for cron/notification delivery
+    MATTERMOST_AMBIENT_CHANNELS         Comma-separated channel IDs where messages
+                                        are silently ingested into session history
+                                        without triggering an LLM response.  The
+                                        bot will only reply when explicitly
+                                        @mentioned, a slash command is used, or
+                                        another trigger fires.
+    MATTERMOST_SILENT_SESSION_CHANNELS  Alias for MATTERMOST_AMBIENT_CHANNELS.
 """
 
 from __future__ import annotations
@@ -738,6 +745,26 @@ class MattermostAdapter(BasePlatformAdapter):
             free_channels = {ch.strip() for ch in free_channels_raw.split(",") if ch.strip()}
             is_free_channel = channel_id in free_channels
 
+            # Ambient channels: ingest message into session history silently.
+            # Supports both MATTERMOST_AMBIENT_CHANNELS and its alias
+            # MATTERMOST_SILENT_SESSION_CHANNELS.
+            ambient_raw = (
+                self.config.extra.get("ambient_channels")
+                if self.config.extra
+                else None
+            )
+            if ambient_raw is None:
+                ambient_raw = os.getenv("MATTERMOST_AMBIENT_CHANNELS") or os.getenv(
+                    "MATTERMOST_SILENT_SESSION_CHANNELS", ""
+                )
+            if isinstance(ambient_raw, list):
+                ambient_channels = {str(c).strip() for c in ambient_raw if str(c).strip()}
+            else:
+                ambient_channels = {
+                    c.strip() for c in str(ambient_raw).split(",") if c.strip()
+                }
+            is_ambient_channel = channel_id in ambient_channels
+
             mention_patterns = [
                 f"@{self._bot_username}",
                 f"@{self._bot_user_id}",
@@ -747,19 +774,40 @@ class MattermostAdapter(BasePlatformAdapter):
                 for pattern in mention_patterns
             )
 
-            if require_mention and not is_free_channel and not has_mention:
-                logger.debug(
-                    "Mattermost: skipping non-DM message without @mention (channel=%s)",
-                    channel_id,
-                )
-                return
+            if is_ambient_channel:
+                # Ambient channel: always ingest, but only trigger LLM on
+                # explicit @mention (falls through with trigger_llm=False when
+                # there is no mention).
+                if has_mention:
+                    # Strip mention so the agent sees clean input.
+                    for pattern in mention_patterns:
+                        message_text = re.sub(
+                            re.escape(pattern), "", message_text, flags=re.IGNORECASE
+                        ).strip()
+                    trigger_llm = True
+                else:
+                    logger.debug(
+                        "Mattermost: ambient ingestion (no LLM) for channel=%s", channel_id
+                    )
+                    trigger_llm = False
+            else:
+                trigger_llm = True
+                if require_mention and not is_free_channel and not has_mention:
+                    logger.debug(
+                        "Mattermost: skipping non-DM message without @mention (channel=%s)",
+                        channel_id,
+                    )
+                    return
 
-            # Strip @mention from the message text so the agent sees clean input.
-            if has_mention:
-                for pattern in mention_patterns:
-                    message_text = re.sub(
-                        re.escape(pattern), "", message_text, flags=re.IGNORECASE
-                    ).strip()
+                # Strip @mention from the message text so the agent sees clean input.
+                if has_mention:
+                    for pattern in mention_patterns:
+                        message_text = re.sub(
+                            re.escape(pattern), "", message_text, flags=re.IGNORECASE
+                        ).strip()
+        else:
+            # DMs always trigger LLM.
+            trigger_llm = True
 
         # Resolve sender info.
         sender_id = post.get("user_id", "")
@@ -845,6 +893,7 @@ class MattermostAdapter(BasePlatformAdapter):
             media_urls=media_urls if media_urls else None,
             media_types=media_types if media_types else None,
             channel_prompt=_channel_prompt,
+            trigger_llm=trigger_llm,
         )
 
         await self.handle_message(msg_event)

@@ -966,6 +966,12 @@ class MessageEvent:
     # completion notifications) that must bypass user authorization checks.
     internal: bool = False
 
+    # When False, the message is ingested into session history but does NOT
+    # trigger an LLM response.  Used by ambient/silent-ingestion channels
+    # (e.g. MATTERMOST_AMBIENT_CHANNELS) where Hermes should accumulate
+    # context passively and only respond when explicitly triggered.
+    trigger_llm: bool = True
+
     # Timestamps
     timestamp: datetime = field(default_factory=datetime.now)
     
@@ -2816,8 +2822,35 @@ class BasePlatformAdapter(ABC):
         This method returns quickly by spawning background tasks.
         This allows new messages to be processed even while an agent is running,
         enabling interruption support.
+
+        When ``event.trigger_llm`` is False (ambient/silent-ingestion mode) the
+        message is appended to the session transcript so it becomes part of the
+        conversational context, but no LLM response is generated.
         """
         if not self._message_handler:
+            return
+
+        # Ambient ingestion: store to session history without invoking the LLM.
+        if not event.trigger_llm:
+            if self._session_store is not None:
+                try:
+                    session_entry = self._session_store.get_or_create_session(event.source)
+                    self._session_store.append_to_transcript(
+                        session_entry.session_id,
+                        {
+                            "role": "user",
+                            "content": event.text,
+                            "ambient": True,
+                        },
+                    )
+                    logger.debug(
+                        "Ambient ingestion: stored message to session %s (no LLM invocation)",
+                        session_entry.session_id,
+                    )
+                except Exception as exc:
+                    logger.warning("Ambient ingestion: failed to store message: %s", exc)
+            else:
+                logger.debug("Ambient ingestion: session_store not available, message discarded")
             return
 
         coerce_plaintext_gateway_command(event)
