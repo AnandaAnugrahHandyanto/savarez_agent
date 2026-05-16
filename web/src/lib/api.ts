@@ -198,6 +198,23 @@ export const api = {
     fetchJSON<PluginManifestResponse[]>("/api/dashboard/plugins"),
   rescanPlugins: () =>
     fetchJSON<{ ok: boolean; count: number }>("/api/dashboard/plugins/rescan"),
+
+  // Voice — TTS
+  speak: async (opts: { text: string; provider?: string; voice?: string }): Promise<Blob> => {
+    const token = window.__HERMES_SESSION_TOKEN__;
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    if (token) headers["Authorization"] = `Bearer ${token}`;
+    const res = await fetch("/api/tts/speak", {
+      method: "POST",
+      headers,
+      body: JSON.stringify(opts),
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => res.statusText);
+      throw new Error(`${res.status}: ${text}`);
+    }
+    return res.blob();
+  },
 };
 
 export interface PlatformStatus {

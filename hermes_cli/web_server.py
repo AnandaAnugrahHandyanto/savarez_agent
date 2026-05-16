@@ -48,7 +48,7 @@ from hermes_cli.config import (
 from gateway.status import get_running_pid, read_runtime_status
 
 try:
-    from fastapi import FastAPI, HTTPException, Request
+    from fastapi import FastAPI, File, HTTPException, Request, UploadFile
     from fastapi.middleware.cors import CORSMiddleware
     from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
     from fastapi.staticfiles import StaticFiles
@@ -2148,6 +2148,150 @@ async def set_dashboard_theme(body: ThemeSetBody):
     config["dashboard"]["theme"] = body.name
     save_config(config)
     return {"ok": True, "theme": body.name}
+
+
+# ---------------------------------------------------------------------------
+# Voice: TTS playback + STT transcription
+# ---------------------------------------------------------------------------
+
+class TTSSpeakBody(BaseModel):
+    text: str
+    provider: Optional[str] = None  # override the configured provider for this call
+    voice: Optional[str] = None      # override the configured voice for this call
+
+
+_TTS_MEDIA_TYPES = {".wav": "audio/wav", ".mp3": "audio/mpeg", ".ogg": "audio/ogg"}
+
+
+@app.post("/api/tts/speak")
+async def tts_speak(body: TTSSpeakBody):
+    """Synthesize text to audio and stream the file back.
+
+    Uses the provider configured in ~/.hermes/config.yaml unless `provider`
+    is passed in the body, in which case that provider (and optional voice)
+    are used for this single call without persisting to config.
+    """
+    text = (body.text or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="text is required")
+
+    try:
+        from tools.tts_tool import text_to_speech_tool, _load_tts_config
+        import tools.tts_tool as _tts_mod
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"tts module unavailable: {e}")
+
+    import tempfile
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+        out_path = f.name
+
+    # If the caller supplied an override, swap the loader for this call only.
+    original_loader = _tts_mod._load_tts_config
+    try:
+        if body.provider:
+            base_cfg = original_loader() or {}
+            base_cfg = dict(base_cfg)
+            base_cfg["provider"] = body.provider
+            if body.voice:
+                # Per-provider voice keys vary — set the common ones we know.
+                pc = dict(base_cfg.get(body.provider, {}))
+                for k in ("voice", "voice_id"):
+                    if k in pc or body.provider in ("edge", "openai", "supertonic"):
+                        pc[k] = body.voice
+                        break
+                base_cfg[body.provider] = pc
+            _tts_mod._load_tts_config = lambda: base_cfg
+        result_json = text_to_speech_tool(text, output_path=out_path)
+    finally:
+        _tts_mod._load_tts_config = original_loader
+
+    try:
+        result = json.loads(result_json)
+    except Exception:
+        raise HTTPException(status_code=500, detail="tts returned invalid response")
+
+    if not result.get("success"):
+        try:
+            os.remove(out_path)
+        except Exception:
+            pass
+        raise HTTPException(status_code=500, detail=result.get("error", "tts failed"))
+
+    served_path = result.get("file_path", out_path)
+    ext = Path(served_path).suffix.lower()
+    media_type = _TTS_MEDIA_TYPES.get(ext, "application/octet-stream")
+    return FileResponse(served_path, media_type=media_type, filename=f"speak{ext}")
+
+
+# Browser MediaRecorder typically produces audio/webm; we also accept common
+# audio types. The transcribe pipeline (faster-whisper / cloud STT) handles
+# format internally, but the filename suffix matters for _validate_audio_file().
+_STT_MIME_TO_EXT = {
+    "audio/webm": ".webm",
+    "audio/ogg": ".ogg",
+    "audio/mp4": ".m4a",
+    "audio/x-m4a": ".m4a",
+    "audio/wav": ".wav",
+    "audio/x-wav": ".wav",
+    "audio/wave": ".wav",
+    "audio/mpeg": ".mp3",
+    "audio/mp3": ".mp3",
+    "audio/flac": ".flac",
+}
+
+
+@app.post("/api/voice/transcribe")
+async def voice_transcribe(audio: UploadFile = File(...)):
+    """Transcribe an uploaded audio blob via the configured STT provider.
+
+    Accepts a multipart upload. Saves the bytes to a tempfile with an
+    extension inferred from the content type (browser MediaRecorder
+    defaults to audio/webm), then calls transcribe_audio() which
+    dispatches to faster-whisper / Groq / OpenAI / Mistral depending
+    on stt.provider in config.yaml.
+    """
+    content_type = (audio.content_type or "").split(";")[0].strip().lower()
+    ext = _STT_MIME_TO_EXT.get(content_type)
+    if not ext:
+        # Fall back to the filename extension if the browser sent one.
+        fn_ext = Path(audio.filename or "").suffix.lower()
+        ext = fn_ext if fn_ext in {".webm", ".ogg", ".wav", ".mp3", ".m4a", ".flac"} else ".webm"
+
+    import tempfile
+    data = await audio.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="empty audio upload")
+    if len(data) > 25 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="audio exceeds 25 MB limit")
+
+    with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as f:
+        f.write(data)
+        tmp_path = f.name
+
+    try:
+        from tools.transcription_tools import transcribe_audio
+    except Exception as e:
+        try:
+            os.remove(tmp_path)
+        except Exception:
+            pass
+        raise HTTPException(status_code=500, detail=f"stt module unavailable: {e}")
+
+    try:
+        result = transcribe_audio(tmp_path)
+    finally:
+        try:
+            os.remove(tmp_path)
+        except Exception:
+            pass
+
+    if not result.get("success"):
+        raise HTTPException(status_code=500, detail=result.get("error", "transcription failed"))
+
+    return {
+        "transcript": result.get("transcript", ""),
+        "provider": result.get("provider", ""),
+    }
 
 
 # ---------------------------------------------------------------------------

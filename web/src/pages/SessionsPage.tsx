@@ -20,6 +20,7 @@ import { Markdown } from "@/components/Markdown";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { MicButton } from "@/components/MicButton";
 import { useI18n } from "@/i18n";
 
 const SOURCE_CONFIG: Record<string, { icon: typeof Terminal; color: string }> = {
@@ -388,27 +389,33 @@ export default function SessionsPage() {
             {total}
           </Badge>
         </div>
-        <div className="relative w-full sm:w-64">
-          {searching ? (
-            <div className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 animate-spin rounded-full border-[1.5px] border-primary border-t-transparent" />
-          ) : (
-            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
-          )}
-          <Input
-            placeholder={t.sessions.searchPlaceholder}
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            className="pl-8 pr-7 h-8 text-xs"
+        <div className="flex items-center gap-1 w-full sm:w-auto">
+          <div className="relative w-full sm:w-64">
+            {searching ? (
+              <div className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 animate-spin rounded-full border-[1.5px] border-primary border-t-transparent" />
+            ) : (
+              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+            )}
+            <Input
+              placeholder={t.sessions.searchPlaceholder}
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className="pl-8 pr-7 h-8 text-xs"
+            />
+            {search && (
+              <button
+                type="button"
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground cursor-pointer"
+                onClick={() => setSearch("")}
+              >
+                <X className="h-3 w-3" />
+              </button>
+            )}
+          </div>
+          <MicButton
+            onTranscript={(text) => setSearch(text.trim())}
+            onError={(msg) => console.error("[mic]", msg)}
           />
-          {search && (
-            <button
-              type="button"
-              className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground cursor-pointer"
-              onClick={() => setSearch("")}
-            >
-              <X className="h-3 w-3" />
-            </button>
-          )}
         </div>
       </div>
 

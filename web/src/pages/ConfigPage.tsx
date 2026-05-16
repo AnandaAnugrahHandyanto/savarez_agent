@@ -33,6 +33,7 @@ import { getNestedValue, setNestedValue } from "@/lib/nested";
 import { useToast } from "@/hooks/useToast";
 import { Toast } from "@/components/Toast";
 import { AutoField } from "@/components/AutoField";
+import { SpeakButton } from "@/components/SpeakButton";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -266,6 +267,21 @@ export default function ConfigPage() {
                 {section.replace(/_/g, " ")}
               </span>
               <div className="flex-1 border-t border-border" />
+              {section === "tts" && (() => {
+                const cfg = config as Record<string, unknown> | null;
+                const tts = (cfg?.tts as Record<string, unknown> | undefined) ?? {};
+                const provider = (tts.provider as string | undefined) ?? undefined;
+                const pCfg = (provider ? (tts[provider] as Record<string, unknown> | undefined) : undefined) ?? {};
+                const voice = (pCfg.voice ?? pCfg.voice_id) as string | undefined;
+                return (
+                  <SpeakButton
+                    text="Hello from Hermes. This is a quick test of your text to speech settings."
+                    provider={provider}
+                    voice={voice}
+                    onError={(msg) => showToast(`TTS error: ${msg}`, "error")}
+                  />
+                );
+              })()}
             </div>
           )}
           <div className="py-1">
