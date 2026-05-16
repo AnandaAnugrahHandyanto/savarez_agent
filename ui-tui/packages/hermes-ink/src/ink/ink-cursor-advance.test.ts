@@ -186,6 +186,37 @@ describe('Ink.noteExternalCursorAdvance', () => {
     ink.unmount()
   })
 
+  // Closes Copilot follow-up on PR #26717: the dy half of the notifier
+  // contract was tested for `displayCursor` but not for
+  // `cursorDeclaration.relativeY`. Newlines in fast-echoed text never
+  // hit the bypass today (canFastAppendShape rejects '\n'), but `dy`
+  // is part of the public API and must propagate symmetrically with
+  // dx so future callers (e.g. multi-line paste shortcuts) don't get
+  // a half-implemented contract.
+  it('advances cursorDeclaration.relativeY when dy is non-zero', () => {
+    const { ink } = makeInk()
+
+    ink.render(React.createElement(Text, null, 'hi'))
+    ink.onRender()
+
+    const fakeNode = {} as unknown as Record<string, unknown>
+
+    peek(ink).cursorDeclaration = { node: fakeNode, relativeX: 2, relativeY: 1 }
+    peek(ink).displayCursor = { x: 4, y: 2 }
+
+    ink.noteExternalCursorAdvance(1, 3)
+
+    expect(peek(ink).displayCursor).toEqual({ x: 5, y: 5 })
+    expect(peek(ink).cursorDeclaration).toEqual({ node: fakeNode, relativeX: 3, relativeY: 4 })
+
+    // Negative dy too — cursor moving up across visual rows.
+    ink.noteExternalCursorAdvance(0, -2)
+    expect(peek(ink).displayCursor).toEqual({ x: 5, y: 3 })
+    expect(peek(ink).cursorDeclaration).toEqual({ node: fakeNode, relativeX: 3, relativeY: 2 })
+
+    ink.unmount()
+  })
+
   it('leaves cursorDeclaration unchanged when no declaration is active', () => {
     const { ink } = makeInk()
 

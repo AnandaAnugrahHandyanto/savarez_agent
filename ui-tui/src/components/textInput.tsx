@@ -240,20 +240,23 @@ export function canFastAppendShape(
  * tabs, ANSI fragments) goes through the normal render path so Ink can
  * recompute cell widths.
  *
- * Additionally rejects when the physical cursor sits at visual column
- * 0 — i.e., right after a soft-wrap boundary. The "\b \b" sequence
- * cannot move the cursor onto the previous visual row (terminals don't
- * back-step across line wraps), so the physical cursor would stay put
- * while the logical caret moves to the end of the previous visual
- * line. That desyncs both Ink's `displayCursor` model and the user-
- * visible position. Closes Copilot PR #26717 round 3 follow-up.
+ * When `columns` is supplied, ALSO rejects when the physical cursor
+ * sits at visual column 0 — i.e., right after a soft-wrap boundary.
+ * The "\b \b" sequence cannot move the cursor onto the previous visual
+ * row (terminals don't back-step across line wraps), so the physical
+ * cursor would stay put while the logical caret moves to the end of
+ * the previous visual line, desyncing both Ink's `displayCursor` model
+ * and the user-visible position.
  *
- * `columns` is the composer's render width — pass it from the live
- * TextInput state so the wrap-boundary check can fire. When omitted
- * (e.g. unit tests of the pre-wrap shape contract, callers that don't
- * track render width), the wrap-boundary check is SKIPPED and the
- * function falls back to the legacy non-wrap-aware contract; do NOT
- * rely on the wrap-boundary protection unless you actually pass it.
+ * When `columns` is OMITTED, the wrap-boundary check is skipped
+ * entirely and the function reverts to the legacy non-wrap-aware
+ * contract — values like `'hello '` will return `true` even though
+ * they would be unsafe at a width of 6. Production callers (the
+ * composer's `canFastBackspace` helper) always pass `columns`;
+ * `columns` is optional only so unit tests of the pre-wrap shape
+ * contract can keep calling the helper without threading width
+ * through. Do NOT omit it from any new caller that relies on the
+ * wrap-boundary protection.
  */
 export function canFastBackspaceShape(current: string, cursor: number, columns?: number): boolean {
   if (cursor !== current.length) {
