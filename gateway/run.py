@@ -16978,7 +16978,6 @@ class GatewayRunner:
                             task, exc,
                         )
                     maybe_auto_title_kwargs = {
-                        "failure_callback": _title_failure_cb,
                         "main_runtime": {
                             "model": getattr(agent, "model", None),
                             "provider": getattr(agent, "provider", None),

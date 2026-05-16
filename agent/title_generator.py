@@ -164,6 +164,9 @@ def generate_title(
         except Exception as e:
             last_exc = e
             err_str = str(e)
+            # Only retry on 429 (rate limit). Auth errors (401), payment
+            # errors (402), and other non-transient failures won't resolve
+            # by retrying the same provider — skip straight to failure.
             if "429" in err_str and attempt < retry_count - 1:
                 wait = retry_base_delay * (attempt + 1)
                 logger.warning(
@@ -175,8 +178,8 @@ def generate_title(
             # Non-retryable error or last attempt — fall through to failure handling
             break
 
-    # All attempts failed
-    logger.warning("Title generation failed: %s", last_exc)
+    # All attempts failed — this is cosmetic, log at debug level
+    logger.debug("Title generation failed: %s", last_exc)
     logger.debug("Title generation traceback", exc_info=True)
     if failure_callback is not None and last_exc is not None:
         try:
