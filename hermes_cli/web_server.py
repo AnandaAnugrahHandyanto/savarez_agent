@@ -2591,11 +2591,14 @@ async def get_profile_setup_command(name: str):
 
 @app.post("/api/profiles/{name}/open-terminal")
 async def open_profile_terminal_endpoint(name: str):
+    from tools.environments.local import _sanitize_subprocess_env
+
     try:
         command = _profile_setup_command(name)
+        sanitized_env = _sanitize_subprocess_env(os.environ.copy())
 
         if sys.platform.startswith("win"):
-            subprocess.Popen(["cmd.exe", "/c", "start", "", command])
+            subprocess.Popen(["cmd.exe", "/c", "start", "", command], env=sanitized_env)
         elif sys.platform == "darwin":
             escaped = command.replace("\\", "\\\\").replace('"', '\\"')
             applescript = (
@@ -2604,7 +2607,7 @@ async def open_profile_terminal_endpoint(name: str):
                 f'do script "{escaped}"\n'
                 "end tell"
             )
-            subprocess.Popen(["osascript", "-e", applescript])
+            subprocess.Popen(["osascript", "-e", applescript], env=sanitized_env)
         else:
             terminal_commands = [
                 ("x-terminal-emulator", ["x-terminal-emulator", "-e", "sh", "-lc", command]),
@@ -2624,7 +2627,7 @@ async def open_profile_terminal_endpoint(name: str):
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                 ) == 0:
-                    subprocess.Popen(popen_args)
+                    subprocess.Popen(popen_args, env=sanitized_env)
                     break
             else:
                 raise HTTPException(
