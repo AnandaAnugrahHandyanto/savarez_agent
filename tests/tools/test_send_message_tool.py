@@ -2034,7 +2034,7 @@ class TestSendSignalChunking:
         assert "UntrustedIdentityException" in result["error"]
         assert len(fake.calls) == 1  # no retry on non-429
 
-    def test_skipped_missing_files_reported_in_warnings(self, tmp_path, monkeypatch):
+    def test_skipped_missing_files_reported_in_warnings(self, monkeypatch):
         good = _write_signal_cache_png("ok.png")
 
         fake = _FakeSignalHttp([{"result": {"timestamp": 1}}])
@@ -2045,7 +2045,7 @@ class TestSendSignalChunking:
                 {"http_url": "http://localhost:8080", "account": "+15551234567"},
                 "+15557654321",
                 "msg",
-                media_files=[(str(good), False), (str(tmp_path / "missing.png"), False)],
+                media_files=[(str(good), False), ("/definitely/missing.png", False)],
             )
         )
 
