@@ -2114,6 +2114,11 @@ class AIAgent:
         if not isinstance(_agent_section, dict):
             _agent_section = {}
         self._tool_use_enforcement = _agent_section.get("tool_use_enforcement", "auto")
+        # When tool_use_enforcement is set to the explicit string "required",
+        # this flag enables a runtime post-response check that nudges the
+        # model to actually invoke a tool when it produced a short narrative
+        # ack instead of a tool_call. Set in the enforcement block below.
+        self._tool_use_required_runtime = False
 
         # App-level API retry count (wraps each model API call).  Default 3,
         # overridable via agent.api_max_retries in config.yaml.  See #11616.
@@ -6134,6 +6139,15 @@ class AIAgent:
             elif isinstance(_enforce, list):
                 model_lower = (self.model or "").lower()
                 _inject = any(p.lower() in model_lower for p in _enforce if isinstance(p, str))
+            elif isinstance(_enforce, str) and _enforce.lower() == "required":
+                # "required" — inject the prompt guidance AND enable the
+                # runtime post-response check (see _tool_use_required_runtime).
+                # This goes beyond a prompt-only nudge: if the model returns a
+                # short narrative ack without any tool_call, the agent loop
+                # will append a system nudge and re-prompt instead of ending
+                # the turn on a promise. Compatible with any api_mode/model.
+                _inject = True
+                self._tool_use_required_runtime = True
             else:
                 # "auto" or any unrecognised value — use hardcoded defaults
                 model_lower = (self.model or "").lower()
@@ -15621,8 +15635,16 @@ class AIAgent:
                     self._empty_content_retries = 0
                     self._thinking_prefill_retries = 0
 
+                    # Trigger the intermediate-ack nudge when either:
+                    #   - api_mode is codex_responses (existing behaviour), OR
+                    #   - tool_use_enforcement: "required" is set (explicit
+                    #     opt-in for any model/api_mode — covers chat_completions
+                    #     paths like grok-4 via OpenRouter, DeepSeek, etc.)
                     if (
-                        self.api_mode == "codex_responses"
+                        (
+                            self.api_mode == "codex_responses"
+                            or getattr(self, "_tool_use_required_runtime", False)
+                        )
                         and self.valid_tool_names
                         and codex_ack_continuations < 2
                         and self._looks_like_codex_intermediate_ack(

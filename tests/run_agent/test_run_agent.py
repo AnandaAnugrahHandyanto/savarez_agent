@@ -1155,6 +1155,58 @@ class TestToolUseEnforcementConfig:
             prompt = a._build_system_prompt()
             assert TOOL_USE_ENFORCEMENT_GUIDANCE not in prompt
 
+    def test_required_injects_guidance_for_any_model(self):
+        """`required` injects the prompt guidance regardless of model family."""
+        from agent.prompt_builder import TOOL_USE_ENFORCEMENT_GUIDANCE
+        agent = self._make_agent(
+            model="anthropic/claude-sonnet-4",
+            tool_use_enforcement="required",
+        )
+        prompt = agent._build_system_prompt()
+        assert TOOL_USE_ENFORCEMENT_GUIDANCE in prompt
+
+    def test_required_sets_runtime_flag(self):
+        """`required` sets the runtime flag that gates the post-response nudge."""
+        agent = self._make_agent(
+            model="x-ai/grok-4.3",
+            tool_use_enforcement="required",
+        )
+        # The flag is set inside _build_system_prompt() (which runs the
+        # enforcement block).  Trigger it by building the prompt once.
+        agent._build_system_prompt()
+        assert agent._tool_use_required_runtime is True
+
+    def test_auto_does_not_set_runtime_flag(self):
+        """`auto` (default) leaves the runtime flag off — only prompt-level guidance."""
+        agent = self._make_agent(
+            model="openai/gpt-4.1",
+            tool_use_enforcement="auto",
+        )
+        agent._build_system_prompt()
+        assert agent._tool_use_required_runtime is False
+
+    def test_required_is_case_insensitive(self):
+        """Accept `REQUIRED`, `Required`, `required` interchangeably."""
+        for value in ("required", "REQUIRED", "Required"):
+            agent = self._make_agent(
+                model="x-ai/grok-4.3",
+                tool_use_enforcement=value,
+            )
+            agent._build_system_prompt()
+            assert agent._tool_use_required_runtime is True, f"failed for value={value!r}"
+
+    def test_required_runtime_flag_independent_from_api_mode(self):
+        """The runtime flag is set purely from config, independent of api_mode.
+        This is what unlocks the post-response nudge for chat_completions models
+        (DeepSeek, OpenRouter grok, etc.) that previously fell through the
+        codex_responses-only gate."""
+        agent = self._make_agent(
+            model="deepseek/deepseek-v4-pro",  # not a codex_responses model
+            tool_use_enforcement="required",
+        )
+        agent._build_system_prompt()
+        assert agent._tool_use_required_runtime is True
+
 
 class TestInvalidateSystemPrompt:
     def test_clears_cache(self, agent):
