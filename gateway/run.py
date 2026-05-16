@@ -2552,6 +2552,21 @@ class GatewayRunner:
         # (sentinel) or lacks steer(), or the payload is empty, fall back
         # to queue semantics so nothing is lost.
         effective_mode = self._busy_input_mode
+
+        # Control commands always interrupt, regardless of busy_input_mode.
+        # Without this override ``steer`` mode feeds ``/stop`` and
+        # ``/interrupt`` into ``running_agent.steer(...)`` as mid-turn
+        # text — the agent treats them as more user instructions and
+        # keeps running, which is the worst possible answer to a kill
+        # command (#26813).  ``MessageEvent.get_command`` already strips
+        # the leading slash and any ``@botname`` suffix.
+        try:
+            _cmd = event.get_command()
+        except Exception:
+            _cmd = None
+        if _cmd in ("stop", "interrupt"):
+            effective_mode = "interrupt"
+
         steered = False
         if effective_mode == "steer":
             steer_text = (event.text or "").strip()
