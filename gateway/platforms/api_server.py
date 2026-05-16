@@ -65,79 +65,42 @@ MAX_CONTENT_LIST_SIZE = 1_000  # Max items when content is an array
 # Agent pool configuration — caches AIAgent instances per session to skip
 # the ~1-3s cold-start penalty of agent initialisation on every request.
 # Prewarming creates agents at startup so new sessions don't pay init cost.
-DEFAULT_PREWARM_COUNT = 3  # agents created at startup; 0 to disable
+DEFAULT_PREWARM_COUNT = 3  # agents created at startup; 0 to disable (unused in LRU-only mode)
 DEFAULT_AGENT_POOL_SIZE = 10  # max concurrent cached agents
 DEFAULT_AGENT_TTL = 300  # idle eviction in seconds
 
 
 class AgentPool:
-    """LRU pool of warm AIAgent instances, keyed by session_id.
+    """LRU cache of AIAgent instances keyed by session_id.
 
-    On startup, pre-creates ``prewarm_count`` agents so the first N new
-    sessions skip the ~1-3s cold-start. A background refill loop keeps
-    the queue topped up.
+    First request for a session_id cold-creates (as today) and caches the
+    agent. Subsequent requests with the same session_id reuse the warm
+    agent — eliminating the ~1-3s agent initialisation cost on every turn
+    of multi-turn conversations (BoltAI, Cursor, Open WebUI, etc.).
+
+    Does NOT support per-request ``ephemeral_system_prompt``. If a client
+    sends a system message in the request body, it is merged into the
+    conversation history just like any other message — the agent's own
+    system prompt is always used.
     """
 
-    def __init__(
-        self,
-        create_agent_fn,
-        max_size: int = 10,
-        ttl: int = 300,
-        prewarm_count: int = 3,
-    ):
-        self._create_agent = create_agent_fn
+    def __init__(self, max_size: int = 10, ttl: int = 300):
         self.max_size = max_size
         self.ttl = ttl
-        self.prewarm_count = prewarm_count
         self._agents: Dict[str, tuple[Any, float]] = {}
         self._order: list[str] = []  # LRU order (front = oldest)
         self._lock = asyncio.Lock()
-        self._prewarm_queue: asyncio.Queue = asyncio.Queue(maxsize=prewarm_count or 1)
-        self._refill_task: Optional[asyncio.Task] = None
-        if prewarm_count == 0:
-            # Disable prewarm for users who prefer zero startup overhead
-            self._prewarm_queue = asyncio.Queue(maxsize=1)
 
-    async def start_prewarm(self):
-        """Create ``prewarm_count`` agents at startup."""
-        if self.prewarm_count == 0:
-            logger.info("[agent_pool] Prewarming disabled (PREWARM_COUNT=0)")
-            return
-        logger.info("[agent_pool] Prewarming %d agents...", self.prewarm_count)
-        for i in range(self.prewarm_count):
-            try:
-                agent = await self._create_agent_fresh()
-                await self._prewarm_queue.put(agent)
-            except Exception:
-                logger.exception("[agent_pool] Prewarm agent %d/%d failed", i + 1, self.prewarm_count)
-        logger.info(
-            "[agent_pool] Prewarming done — %d/%d ready",
-            self._prewarm_queue.qsize(), self.prewarm_count,
-        )
-        self._refill_task = asyncio.ensure_future(self._refill_loop())
+    async def get_or_create(
+        self, session_id: str, factory
+    ) -> tuple[Any, bool]:
+        """Get an agent for *session_id*.
 
-    async def _create_agent_fresh(self) -> Any:
-        """Create a new AIAgent (without session_id — auto-generated)."""
-        loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(None, self._create_agent)
-
-    async def _refill_loop(self):
-        """Keep the prewarm queue topped up."""
-        while True:
-            try:
-                await asyncio.sleep(0.5)
-                if not self._prewarm_queue.full():
-                    agent = await self._create_agent_fresh()
-                    await self._prewarm_queue.put(agent)
-            except asyncio.CancelledError:
-                break
-            except Exception:
-                logger.exception("[agent_pool] Refill error")
-
-    async def get(self, session_id: str, create_agent_params: dict) -> Any:
-        """Get an agent for the session.
-
-        Priority: LRU hit → prewarm queue → fresh creation.
+        Returns ``(agent, hit)`` where *hit* is True if the agent was
+        found in the LRU cache (warm reuse) and False if it was freshly
+        created.  *hit*==False callers should compute usage absolutely;
+        *hit*==True callers should compute usage as a delta from a
+        pre-call snapshot to account for the agent's cumulative counters.
         """
         # 1. LRU hit
         async with self._lock:
@@ -147,53 +110,26 @@ class AgentPool:
                     self._order.remove(session_id)
                     self._order.append(session_id)
                     self._agents[session_id] = (agent, time.monotonic())
-                    return agent
-                # Expired
+                    return agent, True
+                # Expired — remove below
                 del self._agents[session_id]
                 self._order.remove(session_id)
 
-        # 2. Prewarm queue (non-blocking)
-        if self.prewarm_count > 0 and not self._prewarm_queue.empty():
-            try:
-                agent = self._prewarm_queue.get_nowait()
-                # Re-assign session identity
-                agent.session_id = session_id
-                os.environ["HERMES_SESSION_ID"] = session_id
-                try:
-                    from hermes_cli.runner import _SESSION_ID
-                    _SESSION_ID.set(session_id)
-                except ImportError:
-                    pass
-                async with self._lock:
-                    self._agents[session_id] = (agent, time.monotonic())
-                    self._order.append(session_id)
-                return agent
-            except Exception:
-                logger.warning("[agent_pool] Prewarm assignment failed (falling through)")
-
-        # 3. Fresh create
+        # 2. Cold create
         loop = asyncio.get_running_loop()
-        agent = await loop.run_in_executor(
-            None,
-            lambda: self._create_agent(**create_agent_params),
-        )
+        agent = await loop.run_in_executor(None, factory)
+
         async with self._lock:
-            # Evict LRU if over capacity
             while len(self._agents) >= self.max_size:
                 oldest_sid = self._order.pop(0)
                 del self._agents[oldest_sid]
                 logger.info("[agent_pool] Evicted LRU session=%s", oldest_sid[:16])
             self._agents[session_id] = (agent, time.monotonic())
             self._order.append(session_id)
-        return agent
+
+        return agent, False
 
     async def shutdown(self):
-        if self._refill_task:
-            self._refill_task.cancel()
-            try:
-                await self._refill_task
-            except asyncio.CancelledError:
-                pass
         async with self._lock:
             self._agents.clear()
             self._order.clear()
@@ -201,12 +137,6 @@ class AgentPool:
     @property
     def cached_count(self) -> int:
         return len(self._agents)
-
-    @property
-    def prewarm_ready(self) -> int:
-        if self.prewarm_count == 0:
-            return 0
-        return self._prewarm_queue.qsize()
 
 
 def _coerce_port(value: Any, default: int = DEFAULT_PORT) -> int:
@@ -1058,15 +988,6 @@ class APIServerAdapter(BasePlatformAdapter):
         )
         return agent
 
-    def _create_agent_kwargs(self, **overrides: Any) -> Any:
-        """Create an agent with default params (no session_id, no callbacks).
-
-        Used by the AgentPool for prewarming. For request-scoped creation
-        with specific session_id/callbacks, the pool calls ``_create_agent``
-        directly.
-        """
-        return self._create_agent()
-
     # ------------------------------------------------------------------
     # HTTP Handlers
     # ------------------------------------------------------------------
@@ -1078,7 +999,6 @@ class APIServerAdapter(BasePlatformAdapter):
             "status": "ok",
             "platform": "hermes-agent",
             "agents_cached": pool.cached_count if pool else 0,
-            "prewarm_ready": pool.prewarm_ready if pool else 0,
         })
 
     async def _handle_health_detailed(self, request: "web.Request") -> "web.Response":
@@ -2920,25 +2840,37 @@ class APIServerAdapter(BasePlatformAdapter):
         loop = asyncio.get_running_loop()
 
         # Try agent pool first (async, outside the sync _run() closure)
-        pool_agent = None
+        pool_hit = False
+        pre_usage = {"prompt": 0, "completion": 0}
         if session_id and self._agent_pool is not None:
             try:
-                pool_agent = await self._agent_pool.get(
+                agent, pool_hit = await self._agent_pool.get_or_create(
                     session_id,
-                    create_agent_params={},
+                    lambda: self._create_agent(
+                        ephemeral_system_prompt=ephemeral_system_prompt,
+                        session_id=session_id,
+                        stream_delta_callback=stream_delta_callback,
+                        tool_progress_callback=tool_progress_callback,
+                        tool_start_callback=tool_start_callback,
+                        tool_complete_callback=tool_complete_callback,
+                        gateway_session_key=gateway_session_key,
+                    ),
                 )
+                if pool_hit:
+                    # Snapshot cumulative counters before run so we can
+                    # report per-request usage as a delta.  Fresh agents
+                    # always start at 0 so absolute is correct for misses.
+                    pre_usage = {
+                        "prompt": getattr(agent, "session_prompt_tokens", 0) or 0,
+                        "completion": getattr(agent, "session_completion_tokens", 0) or 0,
+                    }
             except Exception:
-                logger.warning("[agent_pool] get() failed, falling through", exc_info=True)
+                logger.warning("[agent_pool] get_or_create failed, falling through", exc_info=True)
 
         def _run():
-            if pool_agent is not None:
-                agent = pool_agent
-                # Set per-request callbacks on the cached/warm agent
-                agent.stream_delta_callback = stream_delta_callback
-                agent.tool_progress_callback = tool_progress_callback
-                agent.tool_start_callback = tool_start_callback
-                agent.tool_complete_callback = tool_complete_callback
-            else:
+            nonlocal agent, pool_hit
+            if not pool_hit:
+                # Cold path — create fresh agent with all per-request params
                 agent = self._create_agent(
                     ephemeral_system_prompt=ephemeral_system_prompt,
                     session_id=session_id,
@@ -2948,6 +2880,16 @@ class APIServerAdapter(BasePlatformAdapter):
                     tool_complete_callback=tool_complete_callback,
                     gateway_session_key=gateway_session_key,
                 )
+            else:
+                # Warm path — set per-request callbacks on cached agent.
+                # ephemeral_system_prompt and gateway_session_key are
+                # intentionally NOT re-applied here: the agent's own
+                # system prompt is fixed per session (prefix caching
+                # invariant), and the session key was bound at creation.
+                agent.stream_delta_callback = stream_delta_callback
+                agent.tool_progress_callback = tool_progress_callback
+                agent.tool_start_callback = tool_start_callback
+                agent.tool_complete_callback = tool_complete_callback
             if agent_ref is not None:
                 agent_ref[0] = agent
             effective_task_id = session_id or str(uuid.uuid4())
@@ -2956,11 +2898,22 @@ class APIServerAdapter(BasePlatformAdapter):
                 conversation_history=conversation_history,
                 task_id=effective_task_id,
             )
-            usage = {
-                "input_tokens": getattr(agent, "session_prompt_tokens", 0) or 0,
-                "output_tokens": getattr(agent, "session_completion_tokens", 0) or 0,
-                "total_tokens": getattr(agent, "session_total_tokens", 0) or 0,
-            }
+            if pool_hit:
+                # Delta-based usage to account for cumulative counters on
+                # reused agents (see teknium1 review PR #27074).
+                _p = getattr(agent, "session_prompt_tokens", 0) or 0
+                _c = getattr(agent, "session_completion_tokens", 0) or 0
+                usage = {
+                    "input_tokens": max(0, _p - pre_usage["prompt"]),
+                    "output_tokens": max(0, _c - pre_usage["completion"]),
+                    "total_tokens": max(0, _p + _c - pre_usage["prompt"] - pre_usage["completion"]),
+                }
+            else:
+                usage = {
+                    "input_tokens": getattr(agent, "session_prompt_tokens", 0) or 0,
+                    "output_tokens": getattr(agent, "session_completion_tokens", 0) or 0,
+                    "total_tokens": getattr(agent, "session_total_tokens", 0) or 0,
+                }
             # Include the effective session ID in the result so callers
             # (e.g. X-Hermes-Session-Id header) can track compression-
             # triggered session rotations. (#16938)
@@ -3578,13 +3531,7 @@ class APIServerAdapter(BasePlatformAdapter):
             extra = self.config.extra or {}
             pool_size = int(extra.get("agent_pool_size", os.getenv("AGENT_POOL_SIZE", str(DEFAULT_AGENT_POOL_SIZE))))
             pool_ttl = int(extra.get("agent_pool_ttl", os.getenv("AGENT_POOL_TTL", str(DEFAULT_AGENT_TTL))))
-            prewarm = int(extra.get("prewarm_count", os.getenv("PREWARM_COUNT", str(DEFAULT_PREWARM_COUNT))))
-            self._agent_pool = AgentPool(
-                create_agent_fn=self._create_agent_kwargs,
-                max_size=pool_size,
-                ttl=pool_ttl,
-                prewarm_count=prewarm,
-            )
+            self._agent_pool = AgentPool(max_size=pool_size, ttl=pool_ttl)
 
             mws = [mw for mw in (cors_middleware, body_limit_middleware, security_headers_middleware) if mw is not None]
             self._app = web.Application(middlewares=mws, client_max_size=MAX_REQUEST_BYTES)
@@ -3662,11 +3609,6 @@ class APIServerAdapter(BasePlatformAdapter):
             await self._runner.setup()
             self._site = web.TCPSite(self._runner, self._host, self._port)
             await self._site.start()
-
-            # Fire prewarm after server is listening (fire-and-forget so
-            # prewarming doesn't delay the first request handler).
-            if self._agent_pool is not None:
-                asyncio.ensure_future(self._agent_pool.start_prewarm())
 
             self._mark_connected()
             if not self._api_key:
