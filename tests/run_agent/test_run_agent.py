@@ -5142,6 +5142,72 @@ class TestNormalizeCodexDictArguments:
         assert tc.function.arguments == args_str
 
 
+class TestNormalizeCodexPhases:
+    """Codex commentary/analysis phase text must not reach user-visible content."""
+
+    def _message_item(self, text, phase=None):
+        item = SimpleNamespace(
+            type="message",
+            status="completed",
+            role="assistant",
+            content=[SimpleNamespace(type="output_text", text=text)],
+        )
+        if phase is not None:
+            item.phase = phase
+        return item
+
+    def test_commentary_only_message_is_incomplete_and_hidden(self, agent):
+        response = SimpleNamespace(
+            output=[self._message_item("Need patch skill. Search old section.", phase="commentary")],
+            status="completed",
+        )
+
+        msg, finish_reason = _normalize_codex_response(response)
+
+        assert finish_reason == "incomplete"
+        assert msg.content == ""
+        assert msg.codex_message_items[0]["phase"] == "commentary"
+        assert "Need patch skill" in msg.codex_message_items[0]["content"][0]["text"]
+
+    def test_commentary_plus_final_surfaces_only_final_text(self, agent):
+        response = SimpleNamespace(
+            output=[
+                self._message_item("Need inspect config first.", phase="commentary"),
+                self._message_item("结论：配置正常。", phase="final_answer"),
+            ],
+            status="completed",
+        )
+
+        msg, finish_reason = _normalize_codex_response(response)
+
+        assert finish_reason == "stop"
+        assert msg.content == "结论：配置正常。"
+        assert len(msg.codex_message_items) == 2
+
+    def test_commentary_plus_tool_call_has_empty_visible_content(self, agent):
+        response = SimpleNamespace(
+            output=[
+                self._message_item("Need maybe memory add to memory?", phase="commentary"),
+                SimpleNamespace(
+                    type="function_call",
+                    status="completed",
+                    name="memory",
+                    arguments='{"action":"add"}',
+                    call_id="call_abc123",
+                    id="fc_abc123",
+                ),
+            ],
+            status="completed",
+        )
+
+        msg, finish_reason = _normalize_codex_response(response)
+
+        assert finish_reason == "tool_calls"
+        assert msg.content == ""
+        assert len(msg.tool_calls) == 1
+        assert msg.codex_message_items[0]["phase"] == "commentary"
+
+
 # ---------------------------------------------------------------------------
 # OAuth flag and nudge counter fixes (salvaged from PR #1797)
 # ---------------------------------------------------------------------------
