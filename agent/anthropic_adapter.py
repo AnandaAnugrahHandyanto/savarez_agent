@@ -399,6 +399,15 @@ _KIMI_FAMILY_MODEL_PREFIXES = (
     "k25", "k2.5",
 )
 
+# Model-name prefixes that identify the Xiaomi MiMo family.
+# MiMo models use an extended-thinking / reasoning mode that requires
+# ``reasoning_content`` (thinking blocks) to round-trip on subsequent
+# requests when accessed through Anthropic-compatible relays.
+# Matched case-insensitively, same as the Kimi family above.
+_MIMO_FAMILY_MODEL_PREFIXES = (
+    "mimo-", "mimo_",
+)
+
 
 def _model_name_is_kimi_family(model: str | None) -> bool:
     if not isinstance(model, str):
@@ -410,6 +419,22 @@ def _model_name_is_kimi_family(model: str | None) -> bool:
     if "/" in m:
         m = m.rsplit("/", 1)[-1]
     return m.startswith(_KIMI_FAMILY_MODEL_PREFIXES)
+
+
+def _model_name_is_mimo_family(model: str | None) -> bool:
+    """Return True for Xiaomi MiMo model names that use extended thinking.
+
+    MiMo's reasoning mode returns ``reasoning_content`` that must be passed
+    back on subsequent API calls, same contract as Kimi/DeepSeek thinking.
+    """
+    if not isinstance(model, str):
+        return False
+    m = model.strip().lower()
+    if not m:
+        return False
+    if "/" in m:
+        m = m.rsplit("/", 1)[-1]
+    return m.startswith(_MIMO_FAMILY_MODEL_PREFIXES)
 
 
 def _is_kimi_family_endpoint(base_url: str | None, model: str | None = None) -> bool:
@@ -1754,6 +1779,7 @@ def convert_messages_to_anthropic(
     _preserve_unsigned_thinking = (
         _is_kimi_family_endpoint(base_url, model)
         or _is_deepseek_anthropic_endpoint(base_url)
+        or _model_name_is_mimo_family(model)
     )
 
     last_assistant_idx = None
