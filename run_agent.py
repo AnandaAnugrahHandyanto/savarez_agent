@@ -1352,9 +1352,10 @@ class AIAgent:
         if (
             api_mode is None
             and self.api_mode == "chat_completions"
-            and self.provider != "copilot-acp"
+            and self.provider not in {"copilot-acp", "grok-build"}
             and not str(self.base_url or "").lower().startswith("acp://copilot")
             and not str(self.base_url or "").lower().startswith("acp+tcp://")
+            and not str(self.base_url or "").lower().startswith("grok-cli://")
             and not self._is_azure_openai_url()
             and (
                 self._is_direct_openai_url()
@@ -1672,7 +1673,7 @@ class AIAgent:
                     client_kwargs = {"api_key": api_key, "base_url": base_url}
                 if _provider_timeout is not None:
                     client_kwargs["timeout"] = _provider_timeout
-                if self.provider == "copilot-acp":
+                if self.provider in {"copilot-acp", "grok-build"}:
                     client_kwargs["command"] = self.acp_command
                     client_kwargs["args"] = self.acp_args
                 effective_base = base_url
@@ -6769,6 +6770,17 @@ class AIAgent:
             client = CopilotACPClient(**client_kwargs)
             logger.info(
                 "Copilot ACP client created (%s, shared=%s) %s",
+                reason,
+                shared,
+                self._client_log_context(),
+            )
+            return client
+        if self.provider == "grok-build" or str(client_kwargs.get("base_url", "")).startswith("grok-cli://"):
+            from agent.grok_cli_client import GrokCliClient
+
+            client = GrokCliClient(**client_kwargs)
+            logger.info(
+                "Grok CLI client created (%s, shared=%s) %s",
                 reason,
                 shared,
                 self._client_log_context(),
@@ -13003,6 +13015,8 @@ class AIAgent:
                         self.provider == "copilot-acp"
                         or str(self.base_url or "").lower().startswith("acp://copilot")
                         or str(self.base_url or "").lower().startswith("acp+tcp://")
+                        or self.provider == "grok-build"
+                        or str(self.base_url or "").lower().startswith("grok-cli://")
                     ):
                         _use_streaming = False
                     elif not self._has_stream_consumers():
