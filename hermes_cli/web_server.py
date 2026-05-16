@@ -2595,7 +2595,14 @@ async def open_profile_terminal_endpoint(name: str):
 
     try:
         command = _profile_setup_command(name)
+        profile_dir = _resolve_profile_dir(name)
         sanitized_env = _sanitize_subprocess_env(os.environ.copy())
+        sanitized_env["HERMES_HOME"] = str(profile_dir)
+
+        # Ensure HOME isolation matches the target profile, not the server's profile.
+        profile_home = profile_dir / "home"
+        if profile_home.is_dir():
+            sanitized_env["HOME"] = str(profile_home)
 
         if sys.platform.startswith("win"):
             subprocess.Popen(["cmd.exe", "/c", "start", "", command], env=sanitized_env)
