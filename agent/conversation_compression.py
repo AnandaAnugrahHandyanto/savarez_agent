@@ -115,7 +115,7 @@ def check_compression_model_feasibility(agent: Any) -> None:
                     "Run `hermes setup` or set OPENROUTER_API_KEY."
                 )
             agent._compression_warning = msg
-            agent._emit_status(msg)
+            agent._emit_compression_status(msg)
             logger.warning(
                 "No auxiliary LLM provider for compression — "
                 "summaries will be unavailable."

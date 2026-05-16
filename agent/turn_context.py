@@ -286,7 +286,7 @@ def build_turn_context(
                 agent.model,
                 f"{_compressor.context_length:,}",
             )
-            agent._emit_status(
+            agent._emit_compression_status(
                 f"📦 Preflight compression: ~{_preflight_tokens:,} tokens "
                 f">= {_compressor.threshold_tokens:,} threshold. "
                 "This may take a moment."
@@ -295,7 +295,7 @@ def build_turn_context(
                 _orig_len = len(messages)
                 messages, active_system_prompt = agent._compress_context(
                     messages, system_message, approx_tokens=_preflight_tokens,
-                    task_id=effective_task_id,
+                    task_id=effective_task_id, emit_status=False,
                 )
                 if len(messages) >= _orig_len:
                     break  # Cannot compress further
