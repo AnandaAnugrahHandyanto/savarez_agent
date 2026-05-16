@@ -5,6 +5,7 @@ Covers the fix for slash commands not being recognized when sent via
 """
 
 import asyncio
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -104,3 +105,47 @@ class TestAutoThreadingPreservesCommand:
         response = get_response_text(discord_adapter)
         assert response is not None
         assert "/new" in response
+
+
+class TestReplyReferenceMentionsAreNotHandoffs:
+    async def test_reply_reference_only_mention_does_not_satisfy_require_mention(
+        self, discord_adapter, bot_user, monkeypatch
+    ):
+        """Discord reply metadata may include the replied bot in message.mentions;
+        without a visible <@bot> token in content, it must not wake the bot.
+        """
+        monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+        msg = make_discord_message(
+            content="replying in thread without visible mention",
+            mentions=[bot_user],
+        )
+
+        await dispatch(discord_adapter, msg)
+
+        assert get_response_text(discord_adapter) is None
+
+    async def test_bot_messages_require_textual_self_mention(self, discord_adapter, bot_user, monkeypatch):
+        """Bot-authored messages should pass DISCORD_ALLOW_BOTS=mentions only
+        when the handoff mention is present in raw message content, not merely
+        in Discord's metadata from a reply reference.
+        """
+        monkeypatch.setenv("DISCORD_ALLOW_BOTS", "mentions")
+        other_bot = SimpleNamespace(
+            id=12345,
+            name="OtherBot",
+            display_name="OtherBot",
+            bot=True,
+        )
+        reply_only = make_discord_message(
+            content="no visible target mention here",
+            author=other_bot,
+            mentions=[bot_user],
+        )
+        textual_handoff = make_discord_message(
+            content=f"<@{BOT_USER_ID}> please take this",
+            author=other_bot,
+            mentions=[bot_user],
+        )
+
+        assert discord_adapter._allows_incoming_bot_message(reply_only) is False
+        assert discord_adapter._allows_incoming_bot_message(textual_handoff) is True

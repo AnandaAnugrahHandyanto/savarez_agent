@@ -594,6 +594,43 @@ class DiscordAdapter(BasePlatformAdapter):
         # scanning channel.history() on cache miss (cold start / restart).
         self._last_self_message_id: Dict[str, str] = {}
 
+    @staticmethod
+    def _message_text_mentions_user(message: Any, user: Any) -> bool:
+        """Return True only for a visible/raw ``<@user>`` token in content.
+
+        ``discord.py`` can include the replied-to user in ``message.mentions``
+        for reply-reference metadata even when the message body contains no
+        visible mention token. Cross-agent bot handoffs must use explicit text
+        mentions, so reply metadata must not satisfy mention gates.
+        """
+        if not user:
+            return False
+        user_id = getattr(user, "id", None)
+        if user_id is None:
+            return False
+        content = str(getattr(message, "content", "") or "")
+        return f"<@{user_id}>" in content or f"<@!{user_id}>" in content
+
+    def _message_text_mentions(self, message: Any) -> list[Any]:
+        """Return mentions that are actually present as raw text tokens."""
+        return [
+            mention
+            for mention in (getattr(message, "mentions", None) or [])
+            if self._message_text_mentions_user(message, mention)
+        ]
+
+    def _allows_incoming_bot_message(self, message: Any) -> bool:
+        """Apply DISCORD_ALLOW_BOTS without counting reply-reference mentions."""
+        allow_bots = os.getenv("DISCORD_ALLOW_BOTS", "none").lower().strip()
+        if allow_bots == "none":
+            return False
+        if allow_bots == "mentions":
+            current_user = self._client.user if self._client else None
+            return self._message_text_mentions_user(message, current_user)
+        # Preserve the historical behavior: any non-"none"/"mentions" value
+        # falls through like "all".
+        return True
+
     async def connect(self) -> bool:
         """Connect to Discord and start receiving events."""
         if not DISCORD_AVAILABLE:
@@ -747,12 +784,8 @@ class DiscordAdapter(BasePlatformAdapter):
                 # permitted by DISCORD_ALLOW_BOTS are not rejected for
                 # not being in DISCORD_ALLOWED_USERS (fixes #4466).
                 if getattr(message.author, "bot", False):
-                    allow_bots = os.getenv("DISCORD_ALLOW_BOTS", "none").lower().strip()
-                    if allow_bots == "none":
+                    if not adapter_self._allows_incoming_bot_message(message):
                         return
-                    elif allow_bots == "mentions":
-                        if not self._client.user or self._client.user not in message.mentions:
-                            return
                     # "all" falls through; bot is permitted — skip the
                     # human-user allowlist below (bots aren't in it).
                 else:
@@ -779,14 +812,15 @@ class DiscordAdapter(BasePlatformAdapter):
                 # This replaces the older DISCORD_IGNORE_NO_MENTION logic
                 # with bot-aware filtering that works correctly when multiple
                 # agents share a channel.
-                if not isinstance(message.channel, discord.DMChannel) and message.mentions:
+                text_mentions = adapter_self._message_text_mentions(message)
+                if not isinstance(message.channel, discord.DMChannel) and text_mentions:
                     _self_mentioned = (
                         self._client.user is not None
-                        and self._client.user in message.mentions
+                        and self._client.user in text_mentions
                     )
                     _other_bots_mentioned = any(
-                        m.bot and m != self._client.user
-                        for m in message.mentions
+                        getattr(m, "bot", False) and m != self._client.user
+                        for m in text_mentions
                     )
                     # If other bots are mentioned but we're not → not for us
                     if _other_bots_mentioned and not _self_mentioned:
@@ -4386,7 +4420,7 @@ class DiscordAdapter(BasePlatformAdapter):
         #   discord.ignored_channels: Channel IDs where bot NEVER responds (even when mentioned)
         #   discord.allowed_channels: If set, bot ONLY responds in these channels (whitelist)
         #   discord.no_thread_channels: Channel IDs where bot responds directly without creating thread
-        #   discord.auto_thread: Auto-create thread on @mention in channels (default: true)
+        #   discord.auto_thread: Auto-create thread for top-level channel messages that pass the response gate (default: true)
 
         thread_id = None
         parent_channel_id = None
@@ -4413,7 +4447,7 @@ class DiscordAdapter(BasePlatformAdapter):
             if snapshot_text_parts and not raw_content:
                 raw_content = "\n".join(snapshot_text_parts)
                 normalized_content = raw_content
-        if self._client.user and self._client.user in message.mentions:
+        if self._client.user and self._message_text_mentions_user(message, self._client.user):
             mention_prefix = True
             normalized_content = normalized_content.replace(f"<@{self._client.user.id}>", "").strip()
             normalized_content = normalized_content.replace(f"<@!{self._client.user.id}>", "").strip()
@@ -4466,17 +4500,18 @@ class DiscordAdapter(BasePlatformAdapter):
             )
 
             if require_mention and not is_free_channel and not in_bot_thread:
-                if self._client.user not in message.mentions and not mention_prefix:
+                if not mention_prefix:
                     return
         # Auto-thread: when enabled, automatically create a thread for every
-        # @mention in a text channel so each conversation is isolated (like Slack).
+        # top-level text-channel message that passed the mention/free-response
+        # gate so each conversation is isolated (like Slack).
         # Messages already inside threads or DMs are unaffected.
         # no_thread_channels: channels where bot responds directly without thread.
         auto_threaded_channel = None
         if not is_thread and not isinstance(message.channel, discord.DMChannel):
             no_thread_channels_raw = os.getenv("DISCORD_NO_THREAD_CHANNELS", "")
             no_thread_channels = {ch.strip() for ch in no_thread_channels_raw.split(",") if ch.strip()}
-            skip_thread = bool(channel_ids & no_thread_channels) or is_free_channel
+            skip_thread = bool(channel_ids & no_thread_channels)
             auto_thread = os.getenv("DISCORD_AUTO_THREAD", "true").lower() in {"true", "1", "yes"}
             is_reply_message = getattr(message, "type", None) == discord.MessageType.reply
             if auto_thread and not skip_thread and not is_voice_linked_channel and not is_reply_message:
