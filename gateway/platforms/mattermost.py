@@ -44,10 +44,22 @@ _CHANNEL_TYPE_MAP = {
     "O": "channel",
 }
 
+_MATTERMOST_DISABLE_MENTIONS_PROPS = {"disable_mentions": True}
+
 # Reconnect parameters (exponential backoff).
 _RECONNECT_BASE_DELAY = 2.0
 _RECONNECT_MAX_DELAY = 60.0
 _RECONNECT_JITTER = 0.2
+
+
+def _with_mentions_disabled(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Return a post payload that prevents Mattermost from firing mentions."""
+    props = payload.get("props")
+    if isinstance(props, dict):
+        payload["props"] = {**props, **_MATTERMOST_DISABLE_MENTIONS_PROPS}
+    else:
+        payload["props"] = dict(_MATTERMOST_DISABLE_MENTIONS_PROPS)
+    return payload
 
 
 def check_mattermost_requirements() -> bool:
@@ -265,10 +277,10 @@ class MattermostAdapter(BasePlatformAdapter):
 
         last_id = None
         for chunk in chunks:
-            payload: Dict[str, Any] = {
+            payload: Dict[str, Any] = _with_mentions_disabled({
                 "channel_id": chat_id,
                 "message": chunk,
-            }
+            })
             # Thread support: reply_to is the root post ID.
             if reply_to and self._reply_mode == "thread":
                 payload["root_id"] = reply_to
@@ -310,7 +322,7 @@ class MattermostAdapter(BasePlatformAdapter):
         formatted = self.format_message(content)
         data = await self._api_put(
             f"posts/{message_id}/patch",
-            {"message": formatted},
+            _with_mentions_disabled({"message": formatted}),
         )
         if not data or "id" not in data:
             return SendResult(success=False, error="Failed to edit post")
@@ -445,11 +457,11 @@ class MattermostAdapter(BasePlatformAdapter):
         if not file_id:
             return await self.send(chat_id, f"{caption or ''}\n{url}".strip(), reply_to)
 
-        payload: Dict[str, Any] = {
+        payload: Dict[str, Any] = _with_mentions_disabled({
             "channel_id": chat_id,
             "message": caption or "",
             "file_ids": [file_id],
-        }
+        })
         if reply_to and self._reply_mode == "thread":
             payload["root_id"] = reply_to
 
@@ -483,11 +495,11 @@ class MattermostAdapter(BasePlatformAdapter):
         if not file_id:
             return SendResult(success=False, error="File upload failed")
 
-        payload: Dict[str, Any] = {
+        payload: Dict[str, Any] = _with_mentions_disabled({
             "channel_id": chat_id,
             "message": caption or "",
             "file_ids": [file_id],
-        }
+        })
         if reply_to and self._reply_mode == "thread":
             payload["root_id"] = reply_to
 
@@ -570,11 +582,11 @@ class MattermostAdapter(BasePlatformAdapter):
                 if not file_ids:
                     continue
 
-                payload: Dict[str, Any] = {
+                payload: Dict[str, Any] = _with_mentions_disabled({
                     "channel_id": chat_id,
                     "message": "\n".join(caption_parts),
                     "file_ids": file_ids,
-                }
+                })
                 logger.info(
                     "Mattermost: sending %d image(s) as single post (chunk %d/%d)",
                     len(file_ids), chunk_idx + 1, len(chunks),
