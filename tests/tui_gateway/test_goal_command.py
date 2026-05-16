@@ -73,6 +73,30 @@ def _call(server, method, **params):
     return handler(1, params)
 
 
+def test_goal_manager_uses_current_hermes_home_after_state_import(tmp_path, monkeypatch):
+    import hermes_state  # noqa: F401 - import order regression coverage
+    from hermes_cli.goals import GoalManager
+    from hermes_cli import goals
+
+    first_home = tmp_path / "first" / ".hermes"
+    second_home = tmp_path / "second" / ".hermes"
+    first_home.mkdir(parents=True)
+    second_home.mkdir(parents=True)
+    session_key = "goal-hermes-home-switch"
+
+    try:
+        goals._DB_CACHE.clear()
+        monkeypatch.setenv("HERMES_HOME", str(first_home))
+        GoalManager(session_key).set("write a story")
+
+        goals._DB_CACHE.clear()
+        monkeypatch.setenv("HERMES_HOME", str(second_home))
+
+        assert "No active goal" in GoalManager(session_key).status_line()
+    finally:
+        goals._DB_CACHE.clear()
+
+
 # ── command.dispatch /goal ────────────────────────────────────────────
 
 
