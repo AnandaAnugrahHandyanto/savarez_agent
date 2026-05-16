@@ -314,10 +314,11 @@ def _contains_sudo_stdin_invocation(command: str) -> bool:
 
     expect_command = True
     for index, word in enumerate(words):
-        # Pipe/semicolon/subshell operators start a new command.  Bash process
-        # substitution tokens also introduce an inner command, unlike plain
-        # redirections (<, >), which only introduce filename/fd arguments.
-        if set(word) <= set(";&|()`") or word in {"{", "<(", ">("}:
+        # Pipe/semicolon/subshell operators start a new command.
+        # Redirections (<, >) do NOT start a new command (they introduce a
+        # filename/fd argument), so we intentionally exclude them here to avoid
+        # treating 'echo hi > sudo -S ...' as a sudo invocation.
+        if set(word) <= set(";&|()`"):
             expect_command = True
             continue
         if not expect_command:

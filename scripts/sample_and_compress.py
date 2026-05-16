@@ -115,13 +115,12 @@ def _count_tokens_for_entry(entry: Dict) -> Tuple[Dict, int]:
             return entry, total
         except Exception:
             # Fallback to loop if batching fails or not supported
-            for text in texts:
-                try:
+            try:
+                for text in texts:
                     total += len(_TOKENIZER.encode(text))
-                except Exception:
-                    # Preserve per-text fallback behavior when encoding fails
-                    total += len(text) // 4
-            return entry, total
+                return entry, total
+            except Exception:
+                pass
 
     # Fallback to character estimate
     total = sum(len(text) // 4 for text in texts)
