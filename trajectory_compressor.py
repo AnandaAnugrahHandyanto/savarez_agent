@@ -36,6 +36,7 @@ import time
 import yaml
 import logging
 import asyncio
+import aiofiles
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
 from dataclasses import dataclass, field
@@ -1181,8 +1182,8 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
         # Save metrics
         if self.config.metrics_enabled:
             metrics_path = output_dir / self.config.metrics_output_file
-            with open(metrics_path, 'w', encoding="utf-8") as f:
-                json.dump(self.aggregate_metrics.to_dict(), f, indent=2)
+            async with aiofiles.open(metrics_path, 'w', encoding="utf-8") as f:
+                await f.write(json.dumps(self.aggregate_metrics.to_dict(), indent=2))
             console.print(f"\n💾 Metrics saved to {metrics_path}")
     
     def _print_summary(self):
