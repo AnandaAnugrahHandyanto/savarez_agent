@@ -3833,6 +3833,7 @@ def _(rid, params: dict) -> dict:
                 )
 
         _write_config_key("agent.service_tier", nv)
+        result = {"key": key, "value": nv}
         if agent is not None:
             agent.service_tier = "priority" if nv == "fast" else None
             current_overrides = dict(getattr(agent, "request_overrides", {}) or {})
@@ -3841,12 +3842,14 @@ def _(rid, params: dict) -> dict:
             if nv == "fast":
                 current_overrides.update(overrides)
             agent.request_overrides = current_overrides
+            info = _session_info(agent)
             _emit(
                 "session.info",
                 params.get("session_id", ""),
-                _session_info(agent),
+                info,
             )
-        return _ok(rid, {"key": key, "value": nv})
+            result["info"] = info
+        return _ok(rid, result)
 
     if key == "busy":
         raw = str(value or "").strip().lower()
@@ -3932,8 +3935,11 @@ def _(rid, params: dict) -> dict:
                 _save_cfg(cfg)
                 if session:
                     session["show_reasoning"] = True
-                return _ok(rid, {"key": key, "value": "show"})
-            if arg in {"hide", "off"}:
+                result = {"key": key, "value": "show"}
+                if session and session.get("agent") is not None:
+                    result["info"] = _session_info(session["agent"])
+                return _ok(rid, result)
+            if arg in ("hide", "off"):
                 cfg = _load_cfg()
                 display = (
                     cfg.get("display") if isinstance(cfg.get("display"), dict) else {}
@@ -3950,15 +3956,22 @@ def _(rid, params: dict) -> dict:
                 _save_cfg(cfg)
                 if session:
                     session["show_reasoning"] = False
-                return _ok(rid, {"key": key, "value": "hide"})
+                result = {"key": key, "value": "hide"}
+                if session and session.get("agent") is not None:
+                    result["info"] = _session_info(session["agent"])
+                return _ok(rid, result)
 
             parsed = parse_reasoning_effort(arg)
             if parsed is None:
                 return _err(rid, 4002, f"unknown reasoning value: {value}")
             _write_config_key("agent.reasoning_effort", arg)
+            result = {"key": key, "value": arg}
             if session and session.get("agent") is not None:
                 session["agent"].reasoning_config = parsed
-            return _ok(rid, {"key": key, "value": arg})
+                info = _session_info(session["agent"])
+                _emit("session.info", params.get("session_id", ""), info)
+                result["info"] = info
+            return _ok(rid, result)
         except Exception as e:
             return _err(rid, 5001, str(e))
 

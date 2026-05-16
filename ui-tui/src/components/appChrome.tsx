@@ -229,8 +229,10 @@ const effortLabel = (effort?: string) => {
     .trim()
     .toLowerCase()
 
-  return value && value !== 'medium' && value !== 'normal' && value !== 'default' ? value : ''
+  return value && value !== 'normal' && value !== 'default' ? value : ''
 }
+
+const fastLabel = (fast?: boolean) => (fast ? 'fast' : '')
 
 const shortModelLabel = (model: string) =>
   model
@@ -243,7 +245,7 @@ const shortModelLabel = (model: string) =>
     .trim()
 
 const modelLabel = (model: string, effort?: string, fast?: boolean) =>
-  [shortModelLabel(model), effortLabel(effort), fast ? 'fast' : ''].filter(Boolean).join(' ')
+  [shortModelLabel(model), effortLabel(effort), fastLabel(fast)].filter(Boolean).join(' · ')
 
 export function GoodVibesHeart({ tick, t }: { tick: number; t: Theme }) {
   const [active, setActive] = useState(false)
@@ -261,7 +263,7 @@ export function GoodVibesHeart({ tick, t }: { tick: number; t: Theme }) {
     const id = setTimeout(() => setActive(false), 650)
 
     return () => clearTimeout(id)
-  }, [t.color.accent, tick])
+  }, [t.color.accent, t.color.error, t.color.warn, tick])
 
   if (!active) {
     return null
@@ -297,18 +299,18 @@ export function StatusRule({
       : ''
 
   const bar = usage.context_max ? ctxBar(pct) : ''
-  const leftWidth = Math.max(12, cols - cwdLabel.length - 3)
+  const leftWidth = Math.max(12, cols)
+  const chatStatus = busy ? 'working' : (status || 'ready')
 
   return (
     <Box height={1}>
       <Box flexShrink={1} width={leftWidth}>
         <Text color={t.color.border} wrap="truncate-end">
           {'─ '}
+          <Text color={statusColor}>{chatStatus}</Text>
           {busy ? (
-            <FaceTicker color={statusColor} startedAt={turnStartedAt} />
-          ) : (
-            <Text color={statusColor}>{status}</Text>
-          )}
+            <Text color={statusColor}> <FaceTicker color={statusColor} startedAt={turnStartedAt} /></Text>
+          ) : null}
           <Text color={t.color.muted}> │ {modelLabel(model, modelReasoningEffort, modelFast)}</Text>
           {ctxLabel ? <Text color={t.color.muted}> │ {ctxLabel}</Text> : null}
           {bar ? (
@@ -317,6 +319,7 @@ export function StatusRule({
               <Text color={barColor}>[{bar}]</Text> <Text color={barColor}>{pct != null ? `${pct}%` : ''}</Text>
             </Text>
           ) : null}
+          {cwdLabel ? <Text color={t.color.label}> │ {cwdLabel}</Text> : null}
           {sessionStartedAt ? (
             <Text color={t.color.muted}>
               {' │ '}
@@ -348,9 +351,6 @@ export function StatusRule({
           ) : null}
         </Text>
       </Box>
-
-      <Text color={t.color.border}> ─ </Text>
-      <Text color={t.color.label}>{cwdLabel}</Text>
     </Box>
   )
 }

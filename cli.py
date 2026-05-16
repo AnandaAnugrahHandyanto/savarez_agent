@@ -3078,6 +3078,46 @@ class HermesCLI:
         emoji = "⏱" if live else "⏲"
         return f"{emoji} {time_str}"
 
+    @staticmethod
+    def _reasoning_effort_label(reasoning_config: Any) -> str:
+        """Return the compact reasoning-effort label for status bars."""
+        if reasoning_config is None:
+            return "medium"
+        if isinstance(reasoning_config, dict):
+            if reasoning_config.get("enabled") is False:
+                return "none"
+            return str(reasoning_config.get("effort", "") or "medium")
+        return ""
+
+    def _status_bar_model_label(self, model_short: str) -> str:
+        """Return model + reasoning + fast status for the status bar."""
+        agent = getattr(self, "agent", None)
+        reasoning_config = getattr(agent, "reasoning_config", None) if agent else None
+        if reasoning_config is None:
+            reasoning_config = getattr(self, "reasoning_config", None)
+        effort_label = self._reasoning_effort_label(reasoning_config)
+        service_tier = getattr(agent, "service_tier", None) if agent else None
+        if service_tier is None:
+            service_tier = getattr(self, "service_tier", None)
+        parts = [model_short]
+        if effort_label:
+            parts.append(effort_label)
+        if service_tier == "priority":
+            parts.append("fast")
+        return " · ".join(parts)
+
+    @staticmethod
+    def _status_bar_workspace_label() -> str:
+        """Return the compact active workspace label for status bars."""
+        cwd = os.getenv("TERMINAL_CWD", os.getcwd())
+        try:
+            path = Path(cwd).expanduser()
+            if path == Path.home():
+                return "~"
+            return path.name or str(path)
+        except Exception:
+            return str(cwd).rstrip("/\\").split("/")[-1] or str(cwd)
+
     def _get_status_bar_snapshot(self) -> Dict[str, Any]:
         # Prefer the agent's model name — it updates on fallback.
         # self.model reflects the originally configured model and never
@@ -3090,11 +3130,17 @@ class HermesCLI:
             model_short = model_short[:-5]
         if len(model_short) > 26:
             model_short = f"{model_short[:23]}..."
+        model_label = self._status_bar_model_label(model_short)
+        workspace_label = self._status_bar_workspace_label()
+        chat_status = "working" if getattr(self, "_agent_running", False) else "ready"
 
         elapsed_seconds = max(0.0, (datetime.now() - self.session_start).total_seconds())
         snapshot = {
+            "chat_status": chat_status,
             "model_name": model_name,
             "model_short": model_short,
+            "model_label": model_label,
+            "workspace_label": workspace_label,
             "duration": format_duration_compact(elapsed_seconds),
             "prompt_elapsed": self._format_prompt_elapsed(
                 getattr(self, "_prompt_start_time", None),
@@ -3352,12 +3398,13 @@ class HermesCLI:
 
             yolo_active = bool(os.getenv("HERMES_YOLO_MODE"))
             if width < 52:
-                text = f"⚕ {snapshot['model_short']} · {duration_label}"
+                text = f"{snapshot['chat_status']} │ ⚕ {snapshot['model_label']} · {duration_label}"
                 if yolo_active:
                     text += " · ⚠ YOLO"
                 return self._trim_status_bar_text(text, width)
             if width < 76:
-                parts = [f"⚕ {snapshot['model_short']}", percent_label]
+                compact_model = self._status_bar_model_label(self._trim_status_bar_text(snapshot["model_short"], 12))
+                parts = [snapshot["chat_status"], f"⚕ {compact_model}", percent_label, snapshot["workspace_label"]]
                 compressions = snapshot.get("compressions", 0)
                 if compressions:
                     parts.append(f"🗜️ {compressions}")
@@ -3377,7 +3424,7 @@ class HermesCLI:
                 context_label = "ctx --"
 
             compressions = snapshot.get("compressions", 0)
-            parts = [f"⚕ {snapshot['model_short']}", context_label, percent_label]
+            parts = [snapshot["chat_status"], f"⚕ {snapshot['model_label']}", context_label, percent_label, snapshot["workspace_label"]]
             if compressions:
                 parts.append(f"🗜️ {compressions}")
             bg_count = snapshot.get("active_background_tasks", 0)
@@ -3409,8 +3456,10 @@ class HermesCLI:
 
             if width < 52:
                 frags = [
-                    ("class:status-bar", " ⚕ "),
-                    ("class:status-bar-strong", snapshot["model_short"]),
+                    ("class:status-bar-strong", f" {snapshot['chat_status']}"),
+                    ("class:status-bar-dim", " │ "),
+                    ("class:status-bar", "⚕ "),
+                    ("class:status-bar-strong", snapshot["model_label"]),
                     ("class:status-bar-dim", " · "),
                     ("class:status-bar-dim", duration_label),
                 ]
@@ -3422,13 +3471,18 @@ class HermesCLI:
                 percent = snapshot["context_percent"]
                 percent_label = f"{percent}%" if percent is not None else "--"
                 if width < 76:
+                    compact_model = self._status_bar_model_label(self._trim_status_bar_text(snapshot["model_short"], 12))
                     compressions = snapshot.get("compressions", 0)
                     bg_count = snapshot.get("active_background_tasks", 0)
                     frags = [
-                        ("class:status-bar", " ⚕ "),
-                        ("class:status-bar-strong", snapshot["model_short"]),
+                        ("class:status-bar-strong", f" {snapshot['chat_status']}"),
+                        ("class:status-bar-dim", " │ "),
+                        ("class:status-bar", "⚕ "),
+                        ("class:status-bar-strong", compact_model),
                         ("class:status-bar-dim", " · "),
                         (self._status_bar_context_style(percent), percent_label),
+                        ("class:status-bar-dim", " · "),
+                        ("class:status-bar-dim", snapshot["workspace_label"]),
                     ]
                     if compressions:
                         frags.append(("class:status-bar-dim", " · "))
@@ -3456,14 +3510,18 @@ class HermesCLI:
                     compressions = snapshot.get("compressions", 0)
                     bg_count = snapshot.get("active_background_tasks", 0)
                     frags = [
-                        ("class:status-bar", " ⚕ "),
-                        ("class:status-bar-strong", snapshot["model_short"]),
+                        ("class:status-bar-strong", f" {snapshot['chat_status']}"),
+                        ("class:status-bar-dim", " │ "),
+                        ("class:status-bar", "⚕ "),
+                        ("class:status-bar-strong", snapshot["model_label"]),
                         ("class:status-bar-dim", " │ "),
                         ("class:status-bar-dim", context_label),
                         ("class:status-bar-dim", " │ "),
                         (bar_style, self._build_context_bar(percent)),
                         ("class:status-bar-dim", " "),
                         (bar_style, percent_label),
+                        ("class:status-bar-dim", " │ "),
+                        ("class:status-bar-dim", snapshot["workspace_label"]),
                     ]
                     if compressions:
                         frags.append(("class:status-bar-dim", " │ "))

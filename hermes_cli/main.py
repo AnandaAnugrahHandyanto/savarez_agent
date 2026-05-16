@@ -7690,6 +7690,41 @@ def _run_pre_update_backup(args) -> None:
     print()
 
 
+def _run_local_post_update_hooks() -> None:
+    """Run user-owned post-update hooks that live outside the source tree.
+
+    Local source edits are replaced during `hermes update`, so durable
+    customizations need a hook stored under HERMES_HOME.  This is intentionally
+    best-effort: a broken local patch should be visible but must not corrupt the
+    update flow.
+    """
+    try:
+        from hermes_constants import get_hermes_home
+
+        hooks = [
+            get_hermes_home() / "local-patches" / "hermes-statusbar" / "apply.sh",
+        ]
+    except Exception:
+        hooks = [Path.home() / ".hermes" / "local-patches" / "hermes-statusbar" / "apply.sh"]
+
+    existing = [hook for hook in hooks if hook.exists()]
+    if not existing:
+        return
+
+    print()
+    print("→ Running local post-update hooks...")
+    for hook in existing:
+        try:
+            result = subprocess.run([str(hook)], cwd=PROJECT_ROOT, text=True)
+        except Exception as exc:
+            print(f"  ⚠ {hook}: failed to start ({exc})")
+            continue
+        if result.returncode == 0:
+            print(f"  ✓ {hook}")
+        else:
+            print(f"  ⚠ {hook}: exited {result.returncode}")
+
+
 def cmd_update(args):
     """Update Hermes Agent to the latest version.
 
@@ -8210,6 +8245,8 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 print("Skipped. Run 'hermes config migrate' later to configure.")
         else:
             print("  ✓ Configuration is up to date")
+
+        _run_local_post_update_hooks()
 
         print()
         print("✓ Update complete!")

@@ -1,3 +1,4 @@
+import os
 import time
 from datetime import datetime, timedelta
 from types import SimpleNamespace
@@ -73,13 +74,68 @@ class TestCLIStatusBar:
             context_length=200_000,
         )
 
-        text = cli_obj._build_status_bar_text(width=120)
+        with patch.dict(os.environ, {"TERMINAL_CWD": "/tmp/example-workspace"}):
+            text = cli_obj._build_status_bar_text(width=120)
 
-        assert "claude-sonnet-4-20250514" in text
+        assert text.startswith("ready │ ")
+        assert "claude-sonnet-4-20250514 · medium" in text
+        assert "fast" not in text
         assert "12.4K/200K" in text
-        assert "6%" in text
+        assert "6% │ example-workspace" in text
         assert "$0.06" not in text  # cost hidden by default
         assert "15m" in text
+
+    def test_build_status_bar_text_shows_reasoning_effort_and_fast_when_on(self):
+        cli_obj = _attach_agent(
+            _make_cli("openai/gpt-5.4"),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+        )
+        cli_obj.agent.reasoning_config = {"enabled": True, "effort": "high"}
+        cli_obj.agent.service_tier = "priority"
+
+        text = cli_obj._build_status_bar_text(width=120)
+
+        assert "gpt-5.4 · high · fast" in text
+        assert "fast on" not in text
+        assert "fast off" not in text
+
+    def test_build_status_bar_text_shows_reasoning_none(self):
+        cli_obj = _attach_agent(
+            _make_cli("openai/gpt-5.4"),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+        )
+        cli_obj.agent.reasoning_config = {"enabled": False}
+
+        text = cli_obj._build_status_bar_text(width=120)
+
+        assert "gpt-5.4 · none" in text
+        assert "fast" not in text
+
+    def test_build_status_bar_text_shows_working_when_agent_running(self):
+        cli_obj = _attach_agent(
+            _make_cli("openai/gpt-5.4"),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+        )
+        cli_obj._agent_running = True
+
+        text = cli_obj._build_status_bar_text(width=120)
+
+        assert text.startswith("working │ ")
 
     def test_input_height_counts_wide_characters_using_cell_width(self):
         cli_obj = _make_cli()
@@ -294,9 +350,12 @@ class TestCLIStatusBar:
         )
         cli_obj._status_bar_visible = True
 
-        frags = cli_obj._get_status_bar_fragments()
+        with patch.dict(os.environ, {"TERMINAL_CWD": "/tmp/example-workspace"}):
+            with patch.object(HermesCLI, "_get_tui_terminal_width", return_value=120):
+                frags = cli_obj._get_status_bar_fragments()
         frag_texts = [text for _, text in frags]
 
+        assert "example-workspace" in frag_texts
         assert "🗜️ 7" in frag_texts
         frag_styles = {text: style for style, text in frags}
         assert frag_styles["🗜️ 7"] == "class:status-bar-warn"
