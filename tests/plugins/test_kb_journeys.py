@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 from types import SimpleNamespace
 
 from gateway.config import Platform
@@ -313,9 +314,9 @@ def test_register_exposes_single_clear_kb_menu_command():
     kb_journeys.register(ctx)
 
     assert sorted(ctx.commands) == ["kb"]
-    assert ctx.commands["kb"]["description"] == "KB dashboard, queue, status, runs, and sync."
+    assert ctx.commands["kb"]["description"] == "KB dashboard, queue, status, reasoning, runs, and sync."
     assert ctx.commands["kb"]["handler"]("") == (
-        "Use /kb in Telegram. Try: /kb queue, /kb status, /kb runs, /kb run sync."
+        "Use /kb in Telegram. Try: /kb queue, /kb status, /kb reasoning xhigh, /kb run sync."
     )
     assert "pre_gateway_dispatch" in ctx.hooks
 
@@ -907,11 +908,26 @@ def test_status_reports_noc_lane_and_reasoning(monkeypatch):
     monkeypatch.setenv("HERMES_MODEL_API_MODE", "responses")
     monkeypatch.setenv("HERMES_REASONING_EFFORT", "xhigh")
 
-    card = _render_status({"readiness": {"status": "ready"}}, "kb_engine_staging")
+    card = _render_status(
+        {"readiness": {"status": "ready"}},
+        "kb_engine_staging",
+        {
+            "targets": [
+                {
+                    "role": "primary",
+                    "adapter": "plugin:openai-compatible",
+                    "model": "gpt-5.5",
+                    "reasoning_effort": "low",
+                }
+            ]
+        },
+    )
 
     assert "Lane: staging" in card["text"]
     assert "Environment: staging-dev" in card["text"]
-    assert "Reasoning: xhigh" in card["text"]
+    assert "Hermes reasoning: xhigh" in card["text"]
+    assert "KB reasoning: low" in card["text"]
+    assert "KB model: gpt-5.5" in card["text"]
     assert "responses" in card["text"]
 
 
@@ -935,3 +951,92 @@ def test_status_reports_live_attention_summary_shape(monkeypatch):
 
     assert "Readiness: degraded" in card["text"]
     assert "Publication: dirty" in card["text"]
+
+
+def test_kb_status_fetches_provider_status_and_shows_both_reasoning(monkeypatch):
+    from plugins.kb_journeys import build_pre_gateway_dispatch_hook
+
+    monkeypatch.setenv("HERMES_KB_MCP_TARGET", "kb_engine_prod")
+    monkeypatch.setenv("HERMES_REASONING_EFFORT", "xhigh")
+    ctx = FakeContext(
+        {
+            "mcp_kb_engine_prod_attention_cockpit": {
+                "result": {
+                    "readiness": {"status": "degraded"},
+                    "publication": {"status": "clean"},
+                }
+            },
+            "mcp_kb_engine_prod_provider_status": {
+                "result": {
+                    "status": "ready",
+                    "targets": [
+                        {
+                            "role": "primary",
+                            "adapter": "plugin:openai-compatible",
+                            "model": "gpt-5.5",
+                            "reasoning_effort": "low",
+                        }
+                    ],
+                }
+            },
+        }
+    )
+    adapter = FakeKbActionsAdapter()
+    hook = build_pre_gateway_dispatch_hook(ctx)
+
+    result = hook(event=_event("/kb status"), gateway=_authorized_gateway(adapter), session_store=None)
+    _drain_scheduled_tasks()
+
+    assert result == {"action": "skip", "reason": "kb_journeys"}
+    assert ctx.calls == [
+        (
+            "mcp_kb_engine_prod_attention_cockpit",
+            {
+                "attention_limit": 5,
+                "include_publication": True,
+                "include_readiness": True,
+                "run_limit": 3,
+            },
+        ),
+        ("mcp_kb_engine_prod_provider_status", {}),
+    ]
+    text = adapter.sent[0]["text"]
+    assert "Hermes reasoning: xhigh" in text
+    assert "KB reasoning: low" in text
+    assert "KB model: gpt-5.5" in text
+    assert "KB provider: plugin:openai-compatible" in text
+
+
+def test_kb_reasoning_sets_env_and_reloads_mcp(monkeypatch, tmp_path):
+    from plugins.kb_journeys import build_pre_gateway_dispatch_hook
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.delenv("HERMES_KB_REASONING_EFFORT", raising=False)
+    monkeypatch.setenv("HERMES_KB_MCP_TARGET", "kb_engine_prod")
+    ctx = FakeContext({})
+    adapter = FakeKbActionsAdapter()
+    reload_events = []
+
+    async def _execute_mcp_reload(event):
+        reload_events.append(getattr(event, "text", ""))
+        return "MCP Reload\nReconnected: kb_engine_prod"
+
+    gateway = SimpleNamespace(
+        adapters={Platform.TELEGRAM: adapter},
+        _is_user_authorized=lambda _source: True,
+        _execute_mcp_reload=_execute_mcp_reload,
+    )
+    hook = build_pre_gateway_dispatch_hook(ctx)
+
+    result = hook(event=_event("/kb reasoning xhigh"), gateway=gateway, session_store=None)
+    _drain_scheduled_tasks()
+    _drain_scheduled_tasks()
+
+    assert result == {"action": "skip", "reason": "kb_journeys"}
+    env_text = (tmp_path / ".env").read_text()
+    assert "HERMES_KB_REASONING_EFFORT=xhigh" in env_text
+    assert os.environ["HERMES_KB_REASONING_EFFORT"] == "xhigh"
+    assert reload_events == ["/kb reasoning xhigh"]
+    assert "KB reasoning set to xhigh" in adapter.sent[0]["text"]
+    assert "MCP reload started" in adapter.sent[0]["text"]
+    assert "MCP Reload" in adapter.sent[1]["text"]

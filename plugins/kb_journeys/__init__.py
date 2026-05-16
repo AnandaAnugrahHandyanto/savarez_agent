@@ -23,6 +23,7 @@ DEFAULT_MCP_TARGET = "kb_engine_prod"
 MENU_COMMANDS = {"kb"}
 LEGACY_COMMANDS = {"kbtoday", "kbstatus", "kbruns", "kbqueue", "kbreview", "kbrun"}
 SUPPORTED_COMMANDS = MENU_COMMANDS
+KB_REASONING_LEVELS = {"none", "minimal", "low", "medium", "high", "xhigh"}
 
 
 def _sanitize_component(value: str) -> str:
@@ -431,8 +432,39 @@ def _config_snapshot() -> dict[str, str]:
     }
 
 
-def _render_status(data: Any, target: str) -> dict[str, Any]:
+def _primary_provider_target(provider_data: Any) -> dict[str, Any]:
+    if not isinstance(provider_data, dict):
+        return {}
+    targets = provider_data.get("targets")
+    if not isinstance(targets, list):
+        return {}
+    dict_targets = [target for target in targets if isinstance(target, dict)]
+    for item in dict_targets:
+        if _short(item.get("role"), "").lower() == "primary":
+            return item
+    return dict_targets[0] if dict_targets else {}
+
+
+def _provider_status_summary(provider_data: Any) -> dict[str, str]:
+    primary = _primary_provider_target(provider_data)
+    if not primary:
+        return {
+            "provider": "unknown",
+            "model": "unknown",
+            "reasoning": "unknown",
+            "status": "unknown",
+        }
+    return {
+        "provider": _short(primary.get("adapter") or primary.get("provider")),
+        "model": _short(primary.get("model")),
+        "reasoning": _short(primary.get("reasoning_effort"), "not set"),
+        "status": _short(primary.get("status")),
+    }
+
+
+def _render_status(data: Any, target: str, provider_data: Any | None = None) -> dict[str, Any]:
     snap = _config_snapshot()
+    kb = _provider_status_summary(provider_data)
     readiness = "unknown"
     publication = "unknown"
     if isinstance(data, dict):
@@ -444,9 +476,12 @@ def _render_status(data: Any, target: str) -> dict[str, Any]:
         f"Environment: {snap['environment']}",
         f"MCP target: {target}",
         f"Workspace: {snap['workspace']}",
-        f"Model: {snap['model']}",
-        f"Provider/API: {snap['provider']} / {snap['api_mode']} / {snap['api']}",
-        f"Reasoning: {snap['reasoning']}",
+        f"Hermes model: {snap['model']}",
+        f"Hermes provider/API: {snap['provider']} / {snap['api_mode']} / {snap['api']}",
+        f"Hermes reasoning: {snap['reasoning']}",
+        f"KB provider: {kb['provider']}",
+        f"KB model: {kb['model']}",
+        f"KB reasoning: {kb['reasoning']}",
         f"Readiness: {readiness}",
         f"Publication: {publication}",
     ]
@@ -1362,6 +1397,8 @@ def _kb_root_command(args: str) -> tuple[str, str]:
         return "kbtoday", rest
     if key in {"status", "info"}:
         return "kbstatus", rest
+    if key in {"reasoning", "reasoning-effort", "kb-reasoning"}:
+        return "kbreasoning", rest
     if key in {"runs", "runlog", "history"}:
         return "kbruns", rest
     if key in {"queue", "q"}:
@@ -1390,7 +1427,8 @@ def _kb_command_help() -> dict[str, Any]:
                 "/kb queue reject 1 confirm - apply a previewed decision",
                 "/kb publish - preview KB Git publication",
                 "/kb publish confirm - commit and push after preview",
-                "/kb status - lane, model, readiness, publication",
+                "/kb status - lane, Hermes/KB reasoning, readiness, publication",
+                "/kb reasoning xhigh - set KB engine reasoning and reload MCP",
                 "/kb runs - active and recent workflow runs",
                 "/kb run sync - preview a KB sync",
             ]
@@ -1399,7 +1437,55 @@ def _kb_command_help() -> dict[str, Any]:
     }
 
 
-def _card_for_command(ctx: Any, command: str, *, args: str = "", adapter: Any = None) -> dict[str, Any]:
+def _normalize_kb_reasoning_effort(args: str) -> tuple[str, str]:
+    effort = ((args or "").strip().split(maxsplit=1) or [""])[0].lower()
+    if not effort:
+        return "", f"Send /kb reasoning <level>. Options: {', '.join(sorted(KB_REASONING_LEVELS))}."
+    if effort not in KB_REASONING_LEVELS:
+        return "", f"Unknown KB reasoning effort '{effort}'. Options: {', '.join(sorted(KB_REASONING_LEVELS))}."
+    return effort, ""
+
+
+def _render_kb_reasoning_command(args: str, *, reload_available: bool) -> dict[str, Any]:
+    effort, error = _normalize_kb_reasoning_effort(args)
+    if error:
+        return {"title": "KB Reasoning", "text": f"KB Reasoning\n{error}", "actions": []}
+    try:
+        from hermes_cli.config import get_env_path, save_env_value
+
+        save_env_value("HERMES_KB_REASONING_EFFORT", effort)
+        env_path = get_env_path()
+    except Exception as exc:
+        logger.warning("kb_journeys: failed to save KB reasoning effort", exc_info=True)
+        return {
+            "title": "KB Reasoning",
+            "text": f"KB Reasoning\nCould not save KB reasoning effort: {_short(exc)}",
+            "actions": [],
+        }
+
+    reload_line = "MCP reload started." if reload_available else "Run /reload-mcp to apply it to the KB MCP server."
+    return {
+        "title": "KB Reasoning",
+        "text": "\n".join(
+            [
+                f"KB reasoning set to {effort}.",
+                f"Saved: {env_path}:HERMES_KB_REASONING_EFFORT",
+                reload_line,
+            ]
+        ),
+        "actions": [],
+        "_reload_mcp": reload_available,
+    }
+
+
+def _card_for_command(
+    ctx: Any,
+    command: str,
+    *,
+    args: str = "",
+    adapter: Any = None,
+    gateway: Any = None,
+) -> dict[str, Any]:
     target = _mcp_target()
     cockpit_args = {
         "attention_limit": 5,
@@ -1412,7 +1498,7 @@ def _card_for_command(ctx: Any, command: str, *, args: str = "", adapter: Any = 
         if routed_command == "kbhelp":
             return _kb_command_help()
         if routed_command != "kb":
-            return _card_for_command(ctx, routed_command, args=routed_args, adapter=adapter)
+            return _card_for_command(ctx, routed_command, args=routed_args, adapter=adapter, gateway=gateway)
         _, data, errors = _dispatch_first(
             ctx,
             target,
@@ -1437,7 +1523,11 @@ def _card_for_command(ctx: Any, command: str, *, args: str = "", adapter: Any = 
         return _render_error("KB Today", target, errors) if data is None else _render_today(data)
     if command == "kbstatus":
         _, data, _errors = _dispatch_first(ctx, target, [("attention.cockpit", cockpit_args)])
-        return _render_status(data, target)
+        _, provider_data, _provider_errors = _dispatch_first(ctx, target, [("provider.status", {})])
+        return _render_status(data, target, provider_data)
+    if command == "kbreasoning":
+        reload_available = callable(getattr(gateway, "_execute_mcp_reload", None))
+        return _render_kb_reasoning_command(args, reload_available=reload_available)
     if command == "kbruns":
         _, data, errors = _dispatch_first(
             ctx,
@@ -1560,6 +1650,21 @@ async def _send_card(adapter: Any, event: Any, card: dict[str, Any]) -> None:
         await result
 
 
+async def _send_mcp_reload_result(adapter: Any, event: Any, gateway: Any) -> None:
+    reload_fn = getattr(gateway, "_execute_mcp_reload", None)
+    if not callable(reload_fn):
+        return
+    try:
+        result = reload_fn(event)
+        if inspect.isawaitable(result):
+            result = await result
+        text = "KB MCP Reload\n" + _short(result, "complete")
+    except Exception as exc:
+        logger.warning("kb_journeys: MCP reload after KB reasoning change failed", exc_info=True)
+        text = f"KB MCP Reload\nReload failed: {_short(exc)}"
+    await _send_card(adapter, event, {"title": "KB MCP Reload", "text": text, "actions": []})
+
+
 def _run_delivery(coro: Any) -> None:
     try:
         loop = asyncio.get_running_loop()
@@ -1584,8 +1689,11 @@ def build_pre_gateway_dispatch_hook(ctx: Any) -> Callable[..., dict[str, str] | 
         if adapter is None:
             logger.debug("kb_journeys: no Telegram adapter available")
             return None
-        card = _card_for_command(ctx, command, args=args, adapter=adapter)
+        card = _card_for_command(ctx, command, args=args, adapter=adapter, gateway=gateway)
+        reload_mcp = bool(card.pop("_reload_mcp", False))
         _run_delivery(_send_card(adapter, event, card))
+        if reload_mcp:
+            _run_delivery(_send_mcp_reload_result(adapter, event, gateway))
         return {"action": "skip", "reason": "kb_journeys"}
 
     return _hook
@@ -1593,14 +1701,14 @@ def build_pre_gateway_dispatch_hook(ctx: Any) -> Callable[..., dict[str, str] | 
 
 def register(ctx: Any) -> None:
     def _command_help(_: str = "") -> str:
-        return "Use /kb in Telegram. Try: /kb queue, /kb status, /kb runs, /kb run sync."
+        return "Use /kb in Telegram. Try: /kb queue, /kb status, /kb reasoning xhigh, /kb run sync."
 
     for command in sorted(MENU_COMMANDS):
         try:
             ctx.register_command(
                 command,
                 _command_help,
-                description="KB dashboard, queue, status, runs, and sync.",
+                description="KB dashboard, queue, status, reasoning, runs, and sync.",
             )
         except Exception:
             logger.debug("kb_journeys: failed to register /%s", command, exc_info=True)
