@@ -46,8 +46,8 @@ _HERMES_CORE_TOOLS = [
     "browser_vision", "browser_console", "browser_cdp", "browser_dialog",
     # Text-to-speech
     "text_to_speech",
-    # Planning & memory
-    "todo", "memory",
+    # Planning, standing goals & memory
+    "todo", "set_goal", "memory",
     # Session history search
     "session_search",
     # Clarifying questions
@@ -197,6 +197,12 @@ TOOLSETS = {
     "todo": {
         "description": "Task planning and tracking for multi-step work",
         "tools": ["todo"],
+        "includes": []
+    },
+
+    "goal": {
+        "description": "Set a persistent per-session goal for autonomous continuation",
+        "tools": ["set_goal"],
         "includes": []
     },
     

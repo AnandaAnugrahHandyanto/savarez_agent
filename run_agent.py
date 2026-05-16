@@ -10935,6 +10935,13 @@ class AIAgent:
             )
         elif function_name == "delegate_task":
             return self._dispatch_delegate_task(function_args)
+        elif function_name == "set_goal":
+            from tools.goal_tool import set_goal_tool as _set_goal_tool
+            return _set_goal_tool(
+                goal=function_args.get("goal", ""),
+                max_turns=function_args.get("max_turns"),
+                session_id=self.session_id or "",
+            )
         else:
             return handle_function_call(
                 function_name, function_args, effective_task_id,
@@ -11596,6 +11603,16 @@ class AIAgent:
                         spinner.stop(cute_msg)
                     elif self._should_emit_quiet_tool_messages():
                         self._vprint(f"  {cute_msg}")
+            elif function_name == "set_goal":
+                from tools.goal_tool import set_goal_tool as _set_goal_tool
+                function_result = _set_goal_tool(
+                    goal=function_args.get("goal", ""),
+                    max_turns=function_args.get("max_turns"),
+                    session_id=self.session_id or "",
+                )
+                tool_duration = time.time() - tool_start_time
+                if self._should_emit_quiet_tool_messages():
+                    self._vprint(f"  {_get_cute_tool_message_impl('set_goal', function_args, tool_duration, result=function_result)}")
             elif self._context_engine_tool_names and function_name in self._context_engine_tool_names:
                 # Context engine tools (lcm_grep, lcm_describe, lcm_expand, etc.)
                 spinner = None
