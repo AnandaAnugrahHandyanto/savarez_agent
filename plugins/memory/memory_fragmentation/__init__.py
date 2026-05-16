@@ -19,8 +19,10 @@ import math
 import os
 import re
 import threading
+import time
 import uuid
 from collections import Counter
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List
@@ -34,6 +36,11 @@ _CONFIG_DIRNAME = "memory_fragmentation"
 _CONFIG_FILENAME = "config.json"
 _RECORDS_FILENAME = "fragments.jsonl"
 _FULL_DIRNAME = "full"
+_STORAGE_LOCK_FILENAME = ".storage.lock"
+_STORAGE_LOCK_TIMEOUT_SECONDS = 10.0
+_STORAGE_LOCK_STALE_SECONDS = 60.0
+_ACTIVE_STORAGE_LOCK_TOKENS: set[str] = set()
+_ACTIVE_STORAGE_LOCK_TOKENS_LOCK = threading.Lock()
 _HASHING_EMBEDDING_MODEL = "memory-fragmentation-hashing-v1"
 _OPENAI_EMBEDDING_MODEL = "text-embedding-3-small"
 
@@ -278,6 +285,115 @@ def _records_path(hermes_home: str | Path) -> Path:
 
 def _full_dir(hermes_home: str | Path) -> Path:
     return _config_dir(hermes_home) / _FULL_DIRNAME
+
+
+def _storage_lock_path(hermes_home: str | Path) -> Path:
+    return _config_dir(hermes_home) / _STORAGE_LOCK_FILENAME
+
+
+def _current_process_started_at() -> float | None:
+    try:
+        import psutil  # type: ignore
+
+        return float(psutil.Process(os.getpid()).create_time())
+    except Exception:
+        return None
+
+
+def _lock_owner_is_alive(lock_path: Path) -> bool:
+    try:
+        payload = json.loads(lock_path.read_text(encoding="utf-8") or "{}")
+        pid = int(payload.get("pid") or 0)
+    except Exception:
+        return False
+    if pid <= 0:
+        return False
+    if pid == os.getpid():
+        try:
+            current_token = lock_path.read_text(encoding="utf-8")
+        except OSError:
+            return False
+        with _ACTIVE_STORAGE_LOCK_TOKENS_LOCK:
+            return current_token in _ACTIVE_STORAGE_LOCK_TOKENS
+    try:
+        import psutil  # type: ignore
+
+        proc = psutil.Process(pid)
+        expected_started_at = payload.get("process_started_at")
+        if expected_started_at is not None and abs(proc.create_time() - float(expected_started_at)) > 1.0:
+            return False
+        return proc.is_running() and proc.status() != psutil.STATUS_ZOMBIE
+    except ModuleNotFoundError:
+        return True
+    except Exception:
+        return False
+
+
+@contextmanager
+def _storage_lock(hermes_home: str | Path):
+    lock_path = _storage_lock_path(hermes_home)
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    token = json.dumps(
+        {
+            "pid": os.getpid(),
+            "thread_id": threading.get_ident(),
+            "created_ns": time.time_ns(),
+            "process_started_at": _current_process_started_at(),
+        },
+        sort_keys=True,
+    )
+    deadline = time.monotonic() + _STORAGE_LOCK_TIMEOUT_SECONDS
+    acquired = False
+
+    while True:
+        try:
+            fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except (FileExistsError, PermissionError):
+            try:
+                stat = lock_path.stat()
+                age = time.time() - stat.st_mtime
+            except FileNotFoundError:
+                continue
+            except PermissionError:
+                if time.monotonic() >= deadline:
+                    raise TimeoutError("Timed out waiting for memory fragmentation storage lock")
+                time.sleep(0.02)
+                continue
+            if age > _STORAGE_LOCK_STALE_SECONDS and not _lock_owner_is_alive(lock_path):
+                try:
+                    if lock_path.stat().st_mtime_ns == stat.st_mtime_ns:
+                        lock_path.unlink()
+                except FileNotFoundError:
+                    pass
+                except PermissionError:
+                    pass
+                continue
+            if time.monotonic() >= deadline:
+                raise TimeoutError("Timed out waiting for memory fragmentation storage lock")
+            time.sleep(0.02)
+            continue
+        else:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(token)
+            with _ACTIVE_STORAGE_LOCK_TOKENS_LOCK:
+                _ACTIVE_STORAGE_LOCK_TOKENS.add(token)
+            acquired = True
+            break
+
+    try:
+        yield
+    finally:
+        if acquired:
+            try:
+                if lock_path.read_text(encoding="utf-8") == token:
+                    lock_path.unlink()
+            except FileNotFoundError:
+                pass
+            except OSError:
+                logger.warning("Failed to release memory fragmentation storage lock")
+            finally:
+                with _ACTIVE_STORAGE_LOCK_TOKENS_LOCK:
+                    _ACTIVE_STORAGE_LOCK_TOKENS.discard(token)
 
 
 def _tokenize_terms(text: str) -> list[str]:
@@ -864,7 +980,7 @@ class MemoryFragmentationProvider(MemoryProvider):
         }
         record["embedding"] = self._build_embedding_metadata(record)
 
-        with self._lock:
+        with self._lock, _storage_lock(self._home()):
             existing_records = self._load_records()
             record["semantic_neighbors"] = self._build_semantic_neighbors(record, existing_records)
             full_path.parent.mkdir(parents=True, exist_ok=True)

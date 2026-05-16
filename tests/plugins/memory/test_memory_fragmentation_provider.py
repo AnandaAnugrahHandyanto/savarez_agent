@@ -1,5 +1,8 @@
 import json
+import time
 from pathlib import Path
+
+import pytest
 
 import plugins.memory.memory_fragmentation as mf_module
 from plugins.memory.memory_fragmentation import (
@@ -1098,3 +1101,170 @@ def test_session_switch_updates_cached_session_for_full_source(tmp_path):
     assert records[0]["session_id"] == "new-session"
     full_text = (tmp_path / "memory_fragmentation" / records[0]["full_content_ref"]).read_text(encoding="utf-8")
     assert "Session: new-session" in full_text
+
+
+def test_sync_turn_respects_cross_instance_storage_lock(tmp_path):
+    lock_path = mf_module._storage_lock_path(tmp_path)
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path.write_text("held", encoding="utf-8")
+
+    provider = MemoryFragmentationProvider()
+    provider.initialize("session-1", hermes_home=str(tmp_path), platform="cli")
+    started = time.monotonic()
+
+    def release_lock() -> None:
+        time.sleep(0.12)
+        lock_path.unlink()
+
+    thread = mf_module.threading.Thread(target=release_lock)
+    thread.start()
+    try:
+        provider.sync_turn(
+            "Develop a quant strategy while another writer holds the storage lock.",
+            "Finished lock-aware strategy notes.",
+            session_id="session-1",
+        )
+    finally:
+        thread.join(timeout=2)
+
+    assert time.monotonic() - started >= 0.08
+    assert not lock_path.exists()
+    records = _read_jsonl(tmp_path / "memory_fragmentation" / "fragments.jsonl")
+    assert len(records) == 1
+
+
+def test_sync_turn_recovers_from_stale_storage_lock(tmp_path, monkeypatch):
+    monkeypatch.setattr(mf_module, "_STORAGE_LOCK_STALE_SECONDS", 0.01)
+    lock_path = mf_module._storage_lock_path(tmp_path)
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path.write_text("stale", encoding="utf-8")
+    old_time = time.time() - 120
+    mf_module.os.utime(lock_path, (old_time, old_time))
+
+    provider = MemoryFragmentationProvider()
+    provider.initialize("session-1", hermes_home=str(tmp_path), platform="cli")
+    provider.sync_turn(
+        "Develop a quant strategy after stale lock recovery.",
+        "Finished stale-lock recovery strategy notes.",
+        session_id="session-1",
+    )
+
+    assert not lock_path.exists()
+    records = _read_jsonl(tmp_path / "memory_fragmentation" / "fragments.jsonl")
+    assert len(records) == 1
+
+
+def test_sync_turn_recovers_from_inactive_same_process_stale_lock(tmp_path, monkeypatch):
+    monkeypatch.setattr(mf_module, "_STORAGE_LOCK_STALE_SECONDS", 0.01)
+    lock_path = mf_module._storage_lock_path(tmp_path)
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    token = json.dumps(
+        {
+            "created_ns": time.time_ns(),
+            "pid": mf_module.os.getpid(),
+            "process_started_at": mf_module._current_process_started_at(),
+            "thread_id": 999999,
+        },
+        sort_keys=True,
+    )
+    lock_path.write_text(token, encoding="utf-8")
+    old_time = time.time() - 120
+    mf_module.os.utime(lock_path, (old_time, old_time))
+
+    provider = MemoryFragmentationProvider()
+    provider.initialize("session-1", hermes_home=str(tmp_path), platform="cli")
+    provider.sync_turn(
+        "Develop a quant strategy after inactive same-process stale lock recovery.",
+        "Finished inactive same-process stale-lock recovery strategy notes.",
+        session_id="session-1",
+    )
+
+    assert not lock_path.exists()
+    records = _read_jsonl(tmp_path / "memory_fragmentation" / "fragments.jsonl")
+    assert len(records) == 1
+
+
+def test_sync_turn_does_not_preempt_active_storage_lock(tmp_path, monkeypatch):
+    monkeypatch.setattr(mf_module, "_STORAGE_LOCK_STALE_SECONDS", 0.01)
+    provider = MemoryFragmentationProvider()
+    provider.initialize("session-1", hermes_home=str(tmp_path), platform="cli")
+    lock_path = mf_module._storage_lock_path(tmp_path)
+    thread_started = mf_module.threading.Event()
+    errors: list[BaseException] = []
+
+    def write_while_locked() -> None:
+        thread_started.set()
+        try:
+            provider.sync_turn(
+                "Develop a quant strategy while an active writer holds the storage lock.",
+                "Finished active-lock strategy notes.",
+                session_id="session-1",
+            )
+        except BaseException as exc:  # pragma: no cover - surfaced below
+            errors.append(exc)
+
+    with mf_module._storage_lock(tmp_path):
+        thread = mf_module.threading.Thread(target=write_while_locked)
+        thread.start()
+        assert thread_started.wait(timeout=1)
+        time.sleep(0.12)
+        assert thread.is_alive()
+        assert lock_path.exists()
+        assert not (tmp_path / "memory_fragmentation" / "fragments.jsonl").exists()
+    thread.join(timeout=2)
+
+    assert not thread.is_alive()
+    assert errors == []
+    assert not lock_path.exists()
+    records = _read_jsonl(tmp_path / "memory_fragmentation" / "fragments.jsonl")
+    assert len(records) == 1
+
+
+def test_storage_lock_timeout_message_omits_absolute_path(tmp_path, monkeypatch):
+    monkeypatch.setattr(mf_module, "_STORAGE_LOCK_TIMEOUT_SECONDS", 0.05)
+    monkeypatch.setattr(mf_module, "_STORAGE_LOCK_STALE_SECONDS", 60.0)
+    provider = MemoryFragmentationProvider()
+    provider.initialize("session-1", hermes_home=str(tmp_path), platform="cli")
+
+    with mf_module._storage_lock(tmp_path):
+        with pytest.raises(TimeoutError) as exc_info:
+            provider.sync_turn(
+                "Develop a quant strategy while storage lock timeout is tested.",
+                "Finished timeout-path strategy notes.",
+                session_id="session-1",
+            )
+
+    message = str(exc_info.value)
+    assert str(tmp_path) not in message
+    assert "storage lock" in message
+
+
+def test_concurrent_provider_instances_write_readable_jsonl_records(tmp_path):
+    errors: list[BaseException] = []
+
+    def write_record(index: int) -> None:
+        try:
+            provider = MemoryFragmentationProvider()
+            provider.initialize(f"session-{index}", hermes_home=str(tmp_path), platform="cli")
+            provider.sync_turn(
+                f"Develop quant strategy shard {index} with concurrency-safe storage.",
+                f"Finished concurrency-safe strategy shard {index}.",
+                session_id=f"session-{index}",
+            )
+        except BaseException as exc:  # pragma: no cover - surfaced below
+            errors.append(exc)
+
+    threads = [mf_module.threading.Thread(target=write_record, args=(index,)) for index in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=5)
+
+    assert errors == []
+    records = _read_jsonl(tmp_path / "memory_fragmentation" / "fragments.jsonl")
+    assert len(records) == 8
+    assert {record["session_id"] for record in records} == {f"session-{index}" for index in range(8)}
+    for record in records:
+        full_path = tmp_path / "memory_fragmentation" / record["full_content_ref"]
+        assert full_path.exists()
+        assert f"Session: {record['session_id']}" in full_path.read_text(encoding="utf-8")
