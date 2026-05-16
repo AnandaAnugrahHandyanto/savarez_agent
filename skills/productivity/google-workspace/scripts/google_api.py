@@ -98,11 +98,17 @@ def _safe_drive_download_path(output: str, remote_name: str, default_ext: str = 
 def _open_drive_download_destination(path: Path, cwd: Path):
     """Open a Drive download destination without following symlinks in any path component.
 
-    Parent directories are created and opened component-by-component via
-    dir_fd-relative operations. Each directory component is opened with
-    O_NOFOLLOW, and the final file is opened with O_NOFOLLOW relative to the
-    already-open parent directory. This avoids symlink-swap races between path
-    validation, parent creation, and the final file open.
+    On POSIX systems: parent directories are created and opened
+    component-by-component via dir_fd-relative operations. Each directory
+    component is opened with O_NOFOLLOW, and the final file is opened with
+    O_NOFOLLOW relative to the already-open parent directory. This avoids
+    symlink-swap races between path validation, parent creation, and the final
+    file open.
+
+    On Windows: dir_fd and O_NOFOLLOW are not supported, so the function falls
+    back to a lexically-validated path open. The _safe_drive_download_path
+    caller already performed resolve()-based confinement checks before this
+    function is called.
     """
     try:
         relative = path.relative_to(cwd)
@@ -115,6 +121,10 @@ def _open_drive_download_destination(path: Path, cwd: Path):
 
     for part in parts:
         _validate_drive_download_filename(part, label="path component")
+
+    if sys.platform == "win32":
+        path.parent.mkdir(parents=True, exist_ok=True)
+        return open(str(path), "wb")  # noqa: SIM115
 
     directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_CLOEXEC", 0)
     nofollow_directory_flags = directory_flags | getattr(os, "O_NOFOLLOW", 0)
@@ -137,7 +147,7 @@ def _open_drive_download_destination(path: Path, cwd: Path):
             os.close(dir_fd)
             dir_fd = next_fd
 
-        fd = os.open(parts[-1], file_flags, 0o666, dir_fd=dir_fd)
+        fd = os.open(parts[-1], file_flags, 0o666, dir_fd=dir_fd)  # dir_fd: guarded POSIX-only above
     except OSError as exc:
         raise ValueError(
             f"Unsafe Drive download output path contains a symlink or non-directory component: {path}"
@@ -145,7 +155,8 @@ def _open_drive_download_destination(path: Path, cwd: Path):
     finally:
         os.close(dir_fd)
 
-    return os.fdopen(fd, "wb")
+    return os.fdopen(fd, "wb")  # transfers fd ownership; no double-close
+
 
 SCOPES = [
     "https://www.googleapis.com/auth/gmail.readonly",
