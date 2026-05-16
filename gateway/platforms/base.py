@@ -2835,16 +2835,27 @@ class BasePlatformAdapter(ABC):
             if self._session_store is not None:
                 try:
                     session_entry = self._session_store.get_or_create_session(event.source)
+                    # Prefix the message with sender attribution so the agent
+                    # has full context when it is eventually triggered.
+                    sender = (
+                        event.source.user_name
+                        or event.source.user_id
+                        or "unknown"
+                    ) if event.source else "unknown"
+                    attributed_content = f"[{sender}]: {event.text}"
                     self._session_store.append_to_transcript(
                         session_entry.session_id,
                         {
                             "role": "user",
-                            "content": event.text,
+                            "content": attributed_content,
                             "ambient": True,
+                            "sender_id": event.source.user_id if event.source else None,
+                            "sender_name": event.source.user_name if event.source else None,
                         },
                     )
                     logger.debug(
-                        "Ambient ingestion: stored message to session %s (no LLM invocation)",
+                        "Ambient ingestion: stored message from %s to session %s (no LLM invocation)",
+                        sender,
                         session_entry.session_id,
                     )
                 except Exception as exc:
