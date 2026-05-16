@@ -1028,6 +1028,81 @@ class TestBuildSystemPrompt:
         assert mock_skills.call_args.kwargs["available_toolsets"] == {"web", "skills"}
 
 
+class TestCacheStableMode:
+    """RC4/RC5: _cache_stable_mode scoping + gating. Default OFF."""
+
+    def _make_agent(self, **kwargs):
+        with (
+            patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+        ):
+            a = AIAgent(
+                api_key="test-key-1234567890",
+                base_url="https://openrouter.ai/api/v1",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+                **kwargs,
+            )
+            a.client = MagicMock()
+            return a
+
+    def test_default_off_for_interactive(self, agent):
+        # No platform / env / config → flag OFF, interactive unaffected.
+        assert agent._cache_stable_mode is False
+
+    def test_reduced_budget_built_with_expected_caps(self, agent):
+        b = agent._cache_stable_budget
+        assert b.default_result_size == 20_000
+        assert b.turn_budget == 60_000
+        # read_file stays inf regardless of the reduced numbers (PINNED).
+        assert b.resolve_threshold("read_file") == float("inf")
+
+    def test_platform_paperclip_enables(self):
+        a = self._make_agent(platform="paperclip")
+        assert a._cache_stable_mode is True
+
+    def test_env_var_enables(self, monkeypatch):
+        monkeypatch.setenv("HERMES_CACHE_STABLE", "1")
+        a = self._make_agent()
+        assert a._cache_stable_mode is True
+
+    def test_non_paperclip_platform_stays_off(self):
+        a = self._make_agent(platform="telegram")
+        assert a._cache_stable_mode is False
+
+    def test_rc4_off_uses_strong_verification_for_gpt(self, agent):
+        agent.model = "gpt-5.5"
+        if hasattr(agent, "_invalidate_system_prompt"):
+            agent._invalidate_system_prompt()
+        prompt = agent._build_system_prompt()
+        assert "Before finalizing your response:" in prompt
+        assert "disposition PATCH" not in prompt
+
+    def test_rc4_on_uses_trimmed_verification_for_gpt(self):
+        a = self._make_agent(platform="paperclip")
+        a.model = "gpt-5.5"
+        if hasattr(a, "_invalidate_system_prompt"):
+            a._invalidate_system_prompt()
+        prompt = a._build_system_prompt()
+        assert "disposition PATCH" in prompt
+        assert "2xx" in prompt
+        assert "Before finalizing your response:" not in prompt
+
+    def test_rc4_byte_stable_across_sessions_when_on(self):
+        # RC2 invariant must still hold with the trimmed (fixed) constant.
+        a = self._make_agent(platform="paperclip")
+        a.model = "gpt-5.5"
+        a.session_id = "20260101_000000_aaaaaa"
+        first = a._build_system_prompt()
+        if hasattr(a, "_invalidate_system_prompt"):
+            a._invalidate_system_prompt()
+        a.session_id = "20260101_000001_bbbbbb"
+        second = a._build_system_prompt()
+        assert first == second
+
+
 class TestToolUseEnforcementConfig:
     """Tests for the agent.tool_use_enforcement config option."""
 

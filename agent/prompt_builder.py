@@ -334,6 +334,45 @@ OPENAI_MODEL_EXECUTION_GUIDANCE = (
     "</missing_context>"
 )
 
+# Cache-stable variant of the OpenAI execution guidance (RC4).
+#
+# For recurring single-wake spawns (Paperclip disposition issues) the strong
+# "verify every requirement / re-check after every mutation" <verification>
+# block drives gpt-5.x to ~30-40 model turns vs OpenClaw's ~10-15 on the same
+# work (measured: AOS-10 H-IN_REVIEW 225s / 1.43M input tok). Paperclip only
+# strictly requires the end-of-run disposition PATCH; the per-step re-reads
+# are pure latency. This variant keeps every other discipline (tool
+# persistence, mandatory tool use, prerequisite checks, anti-hallucination)
+# and replaces ONLY the <verification> block with a single end-of-run
+# disposition-confirm line. Derived from the canonical constant via
+# string replacement so the two can never drift apart; the assertion makes
+# a drifted/removed block a hard import-time failure rather than a silent
+# no-op. Selected at the call site only when _cache_stable_mode is on.
+_OPENAI_VERIFICATION_BLOCK_STRONG = (
+    "<verification>\n"
+    "Before finalizing your response:\n"
+    "- Correctness: does the output satisfy every stated requirement?\n"
+    "- Grounding: are factual claims backed by tool outputs or provided context?\n"
+    "- Formatting: does the output match the requested format or schema?\n"
+    "- Safety: if the next step has side effects (file writes, commands, API calls), "
+    "confirm scope before executing.\n"
+    "</verification>\n"
+)
+_OPENAI_VERIFICATION_BLOCK_CACHE_STABLE = (
+    "<verification>\n"
+    "Before exiting, confirm the disposition PATCH to the issue returned a 2xx "
+    "status. No other per-step re-reads are required.\n"
+    "</verification>\n"
+)
+assert _OPENAI_VERIFICATION_BLOCK_STRONG in OPENAI_MODEL_EXECUTION_GUIDANCE, (
+    "OPENAI_MODEL_EXECUTION_GUIDANCE <verification> block drifted; update "
+    "_OPENAI_VERIFICATION_BLOCK_STRONG in prompt_builder.py to match (RC4)."
+)
+OPENAI_MODEL_EXECUTION_GUIDANCE_CACHE_STABLE = OPENAI_MODEL_EXECUTION_GUIDANCE.replace(
+    _OPENAI_VERIFICATION_BLOCK_STRONG,
+    _OPENAI_VERIFICATION_BLOCK_CACHE_STABLE,
+)
+
 # Gemini/Gemma-specific operational guidance, adapted from OpenCode's gemini.txt.
 # Injected alongside TOOL_USE_ENFORCEMENT_GUIDANCE when the model is Gemini or Gemma.
 GOOGLE_MODEL_OPERATIONAL_GUIDANCE = (
