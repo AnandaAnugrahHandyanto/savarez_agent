@@ -569,7 +569,7 @@ DEFAULT_CONFIG = {
     
     # Text-to-speech configuration
     "tts": {
-        "provider": "edge",  # "edge" (free) | "elevenlabs" (premium) | "openai" | "xai" | "minimax" | "mistral" | "neutts" (local)
+        "provider": "edge",  # "edge" (free) | "elevenlabs" (premium) | "openai" | "xai" | "minimax" | "mistral" | "gemini" | "neutts" (local) | "supertonic" (local)
         "edge": {
             "voice": "en-US-AriaNeural",
             # Popular: AriaNeural, JennyNeural, AndrewNeural, BrianNeural, SoniaNeural
@@ -598,6 +598,13 @@ DEFAULT_CONFIG = {
             "ref_text": "",   # Path to reference voice transcript (empty = bundled default)
             "model": "neuphonic/neutts-air-q4-gguf",  # HuggingFace model repo
             "device": "cpu",  # cpu, cuda, or mps
+        },
+        "supertonic": {
+            "model": "supertonic-3",  # supertonic, supertonic-2, supertonic-3
+            "voice": "M1",            # M1, M3, M4, M5, F3, F4, F5
+            "language": "",           # "" = auto-detect; or one of 32 codes (en, ko, ja, es, fr, de, ...)
+            "speed": 1.05,            # synthesis speed multiplier
+            "total_steps": 8,         # diffusion steps; higher = better quality, slower
         },
     },
     

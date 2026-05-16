@@ -158,12 +158,12 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
     "tts.provider": {
         "type": "select",
         "description": "Text-to-speech provider",
-        "options": ["edge", "elevenlabs", "openai", "neutts"],
+        "options": ["edge", "elevenlabs", "openai", "xai", "minimax", "mistral", "gemini", "neutts", "supertonic"],
     },
     "stt.provider": {
         "type": "select",
         "description": "Speech-to-text provider",
-        "options": ["local", "openai", "mistral"],
+        "options": ["local", "groq", "openai", "mistral"],
     },
     "display.skin": {
         "type": "select",
@@ -173,7 +173,7 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
     "dashboard.theme": {
         "type": "select",
         "description": "Web dashboard visual theme",
-        "options": ["default", "midnight", "ember", "mono", "cyberpunk", "rose"],
+        "options": ["default", "midnight", "ember", "mono", "cyberpunk", "rose", "paper"],
     },
     "display.resume_display": {
         "type": "select",
@@ -2092,6 +2092,7 @@ _BUILTIN_DASHBOARD_THEMES = [
     {"name": "mono",      "label": "Mono",           "description": "Clean grayscale — minimal and focused"},
     {"name": "cyberpunk", "label": "Cyberpunk",      "description": "Neon green on black — matrix terminal"},
     {"name": "rose",      "label": "Rosé",           "description": "Soft pink and warm ivory — easy on the eyes"},
+    {"name": "paper",     "label": "Paper",          "description": "White background, black text — bright and minimal"},
 ]
 
 

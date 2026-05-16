@@ -218,6 +218,41 @@ export const roseTheme: DashboardTheme = {
   },
 };
 
+export const paperTheme: DashboardTheme = {
+  name: "paper",
+  label: "Paper",
+  description: "White background, black text — bright and minimal",
+  colors: {
+    background: "#ffffff",
+    foreground: "#000000",
+    card: "#ffffff",
+    "card-foreground": "#000000",
+    primary: "#111111",
+    "primary-foreground": "#ffffff",
+    secondary: "#f4f4f5",
+    "secondary-foreground": "#000000",
+    muted: "#f4f4f5",
+    "muted-foreground": "#52525b",
+    accent: "#e4e4e7",
+    "accent-foreground": "#000000",
+    destructive: "#dc2626",
+    "destructive-foreground": "#ffffff",
+    success: "#16a34a",
+    warning: "#d97706",
+    border: "color-mix(in srgb, #000000 14%, transparent)",
+    input: "color-mix(in srgb, #000000 14%, transparent)",
+    ring: "#000000",
+    popover: "#ffffff",
+    "popover-foreground": "#000000",
+  },
+  overlay: {
+    noiseOpacity: 0.0,
+    noiseBlendMode: "normal",
+    warmGlowOpacity: 0.0,
+    warmGlowColor: "rgba(0,0,0,0)",
+  },
+};
+
 /** All built-in themes, keyed by name. */
 export const BUILTIN_THEMES: Record<string, DashboardTheme> = {
   default: defaultTheme,
@@ -226,4 +261,5 @@ export const BUILTIN_THEMES: Record<string, DashboardTheme> = {
   mono: monoTheme,
   cyberpunk: cyberpunkTheme,
   rose: roseTheme,
+  paper: paperTheme,
 };

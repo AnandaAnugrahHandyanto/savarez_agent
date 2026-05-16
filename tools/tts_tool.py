@@ -2,7 +2,7 @@
 """
 Text-to-Speech Tool Module
 
-Supports seven TTS providers:
+Supports eight TTS providers:
 - Edge TTS (default, free, no API key): Microsoft Edge neural voices
 - ElevenLabs (premium): High-quality voices, needs ELEVENLABS_API_KEY
 - OpenAI TTS: Good quality, needs OPENAI_API_KEY
@@ -10,6 +10,7 @@ Supports seven TTS providers:
 - Mistral (Voxtral TTS): Multilingual, native Opus, needs MISTRAL_API_KEY
 - Google Gemini TTS: Controllable, 30 prebuilt voices, needs GEMINI_API_KEY
 - NeuTTS (local, free, no API key): On-device TTS via neutts_cli, needs neutts installed
+- Supertonic (local, free, no API key): On-device ONNX TTS, 32 languages, needs supertonic installed
 
 Output formats:
 - Opus (.ogg) for Telegram voice bubbles (requires ffmpeg for Edge TTS)
@@ -759,6 +760,78 @@ def _generate_neutts(text: str, output_path: str, tts_config: Dict[str, Any]) ->
 
 
 # ===========================================================================
+# Supertonic (local, ONNX-based TTS — 32 languages, auto-downloads on first run)
+# ===========================================================================
+
+_supertonic_tts_instance = None  # (model_name, TTS) — cached across calls
+_supertonic_tts_lock = threading.Lock()
+
+
+def _check_supertonic_available() -> bool:
+    """Check if the supertonic package is importable (installed locally)."""
+    try:
+        import importlib.util
+        return importlib.util.find_spec("supertonic") is not None
+    except Exception:
+        return False
+
+
+def _get_supertonic_tts(model: str):
+    """Return a cached supertonic TTS instance, loading on first use.
+
+    The TTS object holds ONNX sessions and is expensive to construct,
+    so we cache it module-wide and rebuild only if the model changes.
+    """
+    global _supertonic_tts_instance
+    with _supertonic_tts_lock:
+        if _supertonic_tts_instance is None or _supertonic_tts_instance[0] != model:
+            from supertonic import TTS
+            _supertonic_tts_instance = (model, TTS(model=model, auto_download=True))
+        return _supertonic_tts_instance[1]
+
+
+def _generate_supertonic(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
+    """Generate speech using the local Supertonic ONNX TTS engine.
+
+    Supertonic outputs WAV (numpy array → soundfile-saved). If the caller
+    requested a non-WAV extension we synthesize to a temp .wav and ffmpeg-
+    convert to the target format — same pattern as _generate_neutts.
+    """
+    sup_config = tts_config.get("supertonic", {})
+    model = sup_config.get("model", "supertonic-3")
+    voice = sup_config.get("voice", "M1")
+    lang = sup_config.get("language") or None  # None → auto-detect
+    speed = float(sup_config.get("speed", 1.05))
+    total_steps = int(sup_config.get("total_steps", 8))
+
+    tts = _get_supertonic_tts(model)
+    style = tts.get_voice_style(voice_name=voice)
+    wav, _duration = tts.synthesize(
+        text,
+        voice_style=style,
+        lang=lang,
+        speed=speed,
+        total_steps=total_steps,
+    )
+
+    wav_path = output_path
+    if not output_path.endswith(".wav"):
+        wav_path = output_path.rsplit(".", 1)[0] + ".wav"
+    tts.save_audio(wav, wav_path)
+
+    if wav_path != output_path:
+        ffmpeg = shutil.which("ffmpeg")
+        if ffmpeg:
+            conv_cmd = [ffmpeg, "-i", wav_path, "-y", "-loglevel", "error", output_path]
+            subprocess.run(conv_cmd, check=True, timeout=30)
+            os.remove(wav_path)
+        else:
+            os.rename(wav_path, output_path)
+
+    return output_path
+
+
+# ===========================================================================
 # Main tool function
 # ===========================================================================
 def text_to_speech_tool(
@@ -877,6 +950,16 @@ def text_to_speech_tool(
             logger.info("Generating speech with NeuTTS (local)...")
             _generate_neutts(text, file_str, tts_config)
 
+        elif provider == "supertonic":
+            if not _check_supertonic_available():
+                return json.dumps({
+                    "success": False,
+                    "error": "Supertonic provider selected but the 'supertonic' package is not installed. "
+                             "Install with: pip install supertonic"
+                }, ensure_ascii=False)
+            logger.info("Generating speech with Supertonic (local)...")
+            _generate_supertonic(text, file_str, tts_config)
+
         else:
             # Default: Edge TTS (free), with NeuTTS as local fallback
             edge_available = True
@@ -916,7 +999,7 @@ def text_to_speech_tool(
         # Try Opus conversion for Telegram compatibility
         # Edge TTS outputs MP3, NeuTTS outputs WAV — both need ffmpeg conversion
         voice_compatible = False
-        if provider in ("edge", "neutts", "minimax", "xai") and not file_str.endswith(".ogg"):
+        if provider in ("edge", "neutts", "supertonic", "minimax", "xai") and not file_str.endswith(".ogg"):
             opus_path = _convert_to_opus(file_str)
             if opus_path:
                 file_str = opus_path
@@ -1000,6 +1083,8 @@ def check_tts_requirements() -> bool:
     except ImportError:
         pass
     if _check_neutts_available():
+        return True
+    if _check_supertonic_available():
         return True
     return False
 
