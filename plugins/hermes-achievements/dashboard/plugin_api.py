@@ -23,11 +23,27 @@ except ImportError:
 try:
     from fastapi import APIRouter
 except Exception:  # Allows local unit tests without dashboard dependencies.
+    class _FallbackRoute:
+        def __init__(self, path: str, methods: Set[str], endpoint: Any):
+            self.path = path
+            self.methods = methods
+            self.endpoint = endpoint
+
     class APIRouter:  # type: ignore
-        def get(self, *_args, **_kwargs):
-            return lambda fn: fn
-        def post(self, *_args, **_kwargs):
-            return lambda fn: fn
+        def __init__(self):
+            self.routes: List[_FallbackRoute] = []
+
+        def _route(self, method: str, path: str):
+            def decorator(fn):
+                self.routes.append(_FallbackRoute(path, {method}, fn))
+                return fn
+            return decorator
+
+        def get(self, path: str, *_args, **_kwargs):
+            return self._route("GET", path)
+
+        def post(self, path: str, *_args, **_kwargs):
+            return self._route("POST", path)
 
 router = APIRouter()
 

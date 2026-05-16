@@ -1,3 +1,4 @@
+import builtins
 import importlib.util
 import unittest
 from pathlib import Path
@@ -150,6 +151,29 @@ class AchievementEngineTests(unittest.TestCase):
         self.assertEqual(stats["config_events"], 0)
         stats = plugin_api.analyze_messages("s2", "Real config", [{"content": "edited config.yaml, manifest.json, and .env.local"}])
         self.assertGreaterEqual(stats["config_events"], 3)
+
+    def test_fallback_router_tracks_route_surface_without_fastapi(self):
+        original_import = builtins.__import__
+
+        def blocked_import(name, *args, **kwargs):
+            if name == "fastapi":
+                raise ImportError("fastapi intentionally unavailable")
+            return original_import(name, *args, **kwargs)
+
+        spec = importlib.util.spec_from_file_location("plugin_api_no_fastapi", MODULE_PATH)
+        module = importlib.util.module_from_spec(spec)
+
+        try:
+            builtins.__import__ = blocked_import
+            spec.loader.exec_module(module)
+        finally:
+            builtins.__import__ = original_import
+
+        routes_by_path = {route.path: route.methods for route in module.router.routes}
+        self.assertIn("/achievements", routes_by_path)
+        self.assertEqual(routes_by_path["/achievements"], {"GET"})
+        self.assertEqual(routes_by_path["/rescan"], {"POST"})
+        self.assertNotIn("/overview", routes_by_path)
 
 
 if __name__ == "__main__":
