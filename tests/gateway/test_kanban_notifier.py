@@ -195,8 +195,6 @@ def test_notifier_redelivers_same_kind_on_dispatch_cycle(tmp_path, monkeypatch):
         tid = kb.create_task(conn, title="cycle test", assignee="worker")
         kb.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat-1")
         # First crash — fired by the dispatcher when the worker PID dies.
-        # Lifecycle events are appended under write_txn so hook delivery
-        # observes committed state and rollback suppression semantics.
         with kb.write_txn(conn):
             kb._append_event(conn, tid, kind="crashed")
     finally:

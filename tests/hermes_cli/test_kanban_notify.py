@@ -94,8 +94,6 @@ async def test_notifier_unsubs_after_abnormal_events(kind, kanban_home):
     try:
         tid = kb.create_task(conn, title=f"test {kind} task", assignee="worker1")
         kb.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat1")
-        # Lifecycle events are appended under write_txn so hook delivery
-        # observes committed state and rollback suppression semantics.
         with kb.write_txn(conn):
             kb._append_event(conn, tid, kind=kind)
     finally:

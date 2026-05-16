@@ -505,7 +505,7 @@ def register(ctx):
 
 ### `pre_llm_call`
 
-Fires **once per turn**, before the tool-calling loop begins. This is the **only hook whose return value is used** — it can inject context into the current turn's user message.
+Fires **once per turn**, before the tool-calling loop begins. Its return value can inject context into the current turn's user message.
 
 **Callback signature:**
 
