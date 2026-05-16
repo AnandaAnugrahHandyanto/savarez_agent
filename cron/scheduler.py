@@ -537,6 +537,60 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
 
     delivery_errors = []
 
+    def _maybe_pin_telegram_home_delivery(runtime_adapter, *, chat_id: str, message_id: str | None) -> None:
+        if not message_id:
+            return
+        if _get_home_target_chat_id("telegram") != str(chat_id):
+            return
+        bot = getattr(runtime_adapter, "_bot", None)
+        if bot is None or not hasattr(bot, "pin_chat_message"):
+            return
+
+        async def _pin_now() -> None:
+            await bot.pin_chat_message(
+                chat_id=int(chat_id),
+                message_id=int(message_id),
+                disable_notification=True,
+            )
+
+        try:
+            asyncio.run_coroutine_threadsafe(_pin_now(), loop).result(timeout=10)
+        except Exception as exc:
+            logger.debug(
+                "Job '%s': failed to pin Telegram cron delivery: %s",
+                job.get("id", "?"),
+                exc,
+                exc_info=True,
+            )
+            return
+
+        if not hasattr(bot, "unpin_chat_message"):
+            return
+
+        async def _unpin_later() -> None:
+            try:
+                await asyncio.sleep(60.0)
+                await bot.unpin_chat_message(
+                    chat_id=int(chat_id),
+                    message_id=int(message_id),
+                )
+            except Exception:
+                logger.debug(
+                    "Job '%s': failed to unpin Telegram cron delivery",
+                    job.get("id", "?"),
+                    exc_info=True,
+                )
+
+        try:
+            asyncio.run_coroutine_threadsafe(_unpin_later(), loop)
+        except Exception as exc:
+            logger.debug(
+                "Job '%s': failed to schedule Telegram cron unpin: %s",
+                job.get("id", "?"),
+                exc,
+                exc_info=True,
+            )
+
     for target in targets:
         platform_name = target["platform"]
         chat_id = target["chat_id"]
@@ -615,6 +669,11 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                     )
 
                 if adapter_ok:
+                    _maybe_pin_telegram_home_delivery(
+                        runtime_adapter,
+                        chat_id=chat_id,
+                        message_id=getattr(send_result, "message_id", None),
+                    )
                     logger.info("Job '%s': delivered to %s:%s via live adapter", job["id"], platform_name, chat_id)
                     delivered = True
             except Exception as e:

@@ -1,8 +1,10 @@
 """Tests for cron/scheduler.py — origin resolution, delivery routing, and error logging."""
 
+import asyncio
 import json
 import logging
 import os
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch, MagicMock
 
 import pytest
@@ -725,6 +727,121 @@ class TestDeliverResultWrapping:
         text_sent = adapter.send.call_args[0][1]
         assert "MEDIA:" not in text_sent
         assert "Report" in text_sent
+
+    def test_live_telegram_home_delivery_pins_and_unpins_message(self, monkeypatch):
+        """Telegram cron deliveries to the configured home channel should pin briefly."""
+        from gateway.config import Platform
+        from concurrent.futures import Future
+
+        adapter = MagicMock()
+        adapter.send = AsyncMock(return_value=MagicMock(success=True, message_id="777"))
+        adapter._bot = SimpleNamespace(
+            pin_chat_message=AsyncMock(),
+            unpin_chat_message=AsyncMock(),
+        )
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+
+        loop = MagicMock()
+        loop.is_running.return_value = True
+        sleep_calls = []
+
+        async def _instant_sleep(delay=0, *_a, **_kw):
+            sleep_calls.append(delay)
+
+        def fake_run_coro(coro, _loop):
+            future = Future()
+            try:
+                result = asyncio.run(coro)
+            except Exception as exc:
+                future.set_exception(exc)
+            else:
+                future.set_result(result)
+            return future
+
+        job = {
+            "id": "pin-job",
+            "deliver": "origin",
+            "origin": {"platform": "telegram", "chat_id": "555"},
+        }
+
+        monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "555")
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("cron.scheduler.asyncio.sleep", _instant_sleep), \
+             patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro):
+            _deliver_result(
+                job,
+                "Report",
+                adapters={Platform.TELEGRAM: adapter},
+                loop=loop,
+            )
+
+        adapter._bot.pin_chat_message.assert_awaited_once_with(
+            chat_id=555,
+            message_id=777,
+            disable_notification=True,
+        )
+        adapter._bot.unpin_chat_message.assert_awaited_once_with(
+            chat_id=555,
+            message_id=777,
+        )
+        assert sleep_calls == [60.0]
+
+    def test_live_telegram_non_home_delivery_does_not_pin_message(self, monkeypatch):
+        """Telegram cron deliveries outside the home channel must not pin."""
+        from gateway.config import Platform
+        from concurrent.futures import Future
+
+        adapter = MagicMock()
+        adapter.send = AsyncMock(return_value=MagicMock(success=True, message_id="777"))
+        adapter._bot = SimpleNamespace(
+            pin_chat_message=AsyncMock(),
+            unpin_chat_message=AsyncMock(),
+        )
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+
+        loop = MagicMock()
+        loop.is_running.return_value = True
+
+        def fake_run_coro(coro, _loop):
+            future = Future()
+            try:
+                result = asyncio.run(coro)
+            except Exception as exc:
+                future.set_exception(exc)
+            else:
+                future.set_result(result)
+            return future
+
+        job = {
+            "id": "no-pin-job",
+            "deliver": "origin",
+            "origin": {"platform": "telegram", "chat_id": "555"},
+        }
+
+        monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "999")
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro):
+            _deliver_result(
+                job,
+                "Report",
+                adapters={Platform.TELEGRAM: adapter},
+                loop=loop,
+            )
+
+        adapter._bot.pin_chat_message.assert_not_called()
+        adapter._bot.unpin_chat_message.assert_not_called()
 
     def test_no_mirror_to_session_call(self):
         """Cron deliveries should NOT mirror into the gateway session."""
