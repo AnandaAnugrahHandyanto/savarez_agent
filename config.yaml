@@ -1,7 +1,7 @@
 model:
   default: ~moonshotai/kimi-latest
   provider: openrouter
-  max_tokens: 8192
+  max_tokens: 16384
   context_length: 131072
 providers: {}
 fallback_providers: []
