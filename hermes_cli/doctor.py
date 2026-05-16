@@ -1450,6 +1450,16 @@ def run_doctor(args):
             }
             if base_url_host_matches(base, "api.kimi.com"):
                 headers["User-Agent"] = "claude-code/0.1.0"
+            # Google AI Studio (generativelanguage.googleapis.com) only
+            # accepts `?key=` query-param auth. Sending Authorization: Bearer
+            # returns 401 ACCESS_TOKEN_TYPE_UNSUPPORTED, which the generic
+            # 401 branch below mislabels as "invalid API key" for every user
+            # with a working GEMINI_API_KEY. Switch auth scheme for this host
+            # so the probe reflects real key validity.
+            if base_url_host_matches(url, "generativelanguage.googleapis.com"):
+                _sep = "&" if "?" in url else "?"
+                url = f"{url}{_sep}key={key}"
+                del headers["Authorization"]
             r = httpx.get(url, headers=headers, timeout=10)
             if (
                 pname == "Alibaba/DashScope"
