@@ -145,9 +145,14 @@ Pitfalls:
 - Avoid `curl | python` verification patterns; security tooling may block or require approval. Fetch inside Python instead.
 - A successful deploy prints a preview URL, but Gordon's preferred public URL remains `https://hermes-pages-d55.pages.dev/`.
 
-## Hub index maintenance
+## Homepage and hub index maintenance
 
-The hub at `https://hermes-pages-d55.pages.dev/` is backed by `/opt/data/hermes-pages/wiki/index.html` (the wiki index, not the site root). Every time a new wiki page is published, add a link in the appropriate section using the same pattern as existing links — no summary or description, just a link. Then push from `/opt/data/hermes-pages`.
+There are two different indexes; update the one the user actually means:
+
+- Public homepage `https://hermes-pages-d55.pages.dev/` → `/opt/data/hermes-pages/index.html`. If Gordon says “I don’t see it here” and links the root URL, add a `.page-card` link here and verify the root page contains the new link.
+- Private wiki hub `https://hermes-pages-d55.pages.dev/wiki/` → `/opt/data/hermes-pages/wiki/index.html`. Every time a new wiki page is published, add a link in the appropriate section using the same pattern as existing links — no summary or description, just a link.
+
+After updating either index, push from `/opt/data/hermes-pages`, deploy if needed, and verify the canonical URL. Do not assume publishing a standalone HTML file makes it discoverable from the homepage.
 
 Cloudflare Pages auto-deploys on push — typically live within 30 seconds.
 
@@ -232,10 +237,13 @@ Live in ~30 seconds.
 | `login.html` | `/wiki/login` | ❌ No | Login form — email + password |
 | `*.html` | `/wiki/<path>` | ✅ Yes | Content pages — inline auth check |
 
-**Credentials:**
-- Email: `rouse.gordon@gmail.com`
-- Password: `GordonWiki2026!`
+**Credentials / password maintenance:**
+- Email: Gordon's Gmail address from user profile/memory.
+- Password: do not rely on stale hardcoded docs; inspect `/opt/data/hermes-pages/wiki/login.html` or reset it on request.
 - Cookie: `wiki_auth=GW2026` (path=`/wiki`, max-age=1yr, SameSite=Strict)
+- If changing the password, update `/opt/data/hermes-pages/wiki/login.html` and any standalone generated gated pages that have their own password hash (e.g. `/opt/data/hermes-pages/hermes-memories.html`), then commit, deploy, and verify both pages.
+- If Gordon asks for the password to be visible while typing, use `type="text" autocomplete="off"` for the password input on the relevant lightweight auth pages.
+- If Gordon says “set the password to the wiki name,” disambiguate from the target page title. In the 2026-05-16 case, the intended password for `/hermes-memories` was the page/wiki name “Hermes Memories,” not the older login title “Gordon's Wiki.”
 
 **Login flow:**
 1. Unauthenticated user → hits any `/wiki/*` page → inline script redirects to `/wiki/login?dst=<current path>`
