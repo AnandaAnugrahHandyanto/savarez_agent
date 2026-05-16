@@ -11382,6 +11382,47 @@ class GatewayRunner:
         except Exception:
             logger.debug("Failed to pin Telegram System topic intro", exc_info=True)
 
+    async def _pin_telegram_message_temporarily(
+        self,
+        source: SessionSource,
+        message_id: Optional[str],
+        *,
+        delay_seconds: float = 60.0,
+    ) -> None:
+        """Pin a Telegram message now, then unpin it later."""
+        if getattr(source, "platform", None) != Platform.TELEGRAM or not source.chat_id or not message_id:
+            return
+        adapter = self.adapters.get(source.platform) if getattr(self, "adapters", None) else None
+        bot = getattr(adapter, "_bot", None) if adapter is not None else None
+        if bot is None or not hasattr(bot, "pin_chat_message"):
+            return
+        try:
+            await bot.pin_chat_message(
+                chat_id=int(source.chat_id),
+                message_id=int(message_id),
+                disable_notification=True,
+            )
+        except Exception:
+            logger.debug("Failed to pin Telegram research message", exc_info=True)
+            return
+
+        if not hasattr(bot, "unpin_chat_message"):
+            return
+
+        async def _delayed_unpin() -> None:
+            try:
+                await asyncio.sleep(max(0.0, delay_seconds))
+                await bot.unpin_chat_message(
+                    chat_id=int(source.chat_id),
+                    message_id=int(message_id),
+                )
+            except Exception:
+                logger.debug("Failed to unpin Telegram research message", exc_info=True)
+
+        _unpin_task = asyncio.create_task(_delayed_unpin())
+        self._background_tasks.add(_unpin_task)
+        _unpin_task.add_done_callback(self._background_tasks.discard)
+
     async def _send_telegram_topic_setup_image(self, source: SessionSource) -> None:
         """Send the bundled BotFather Threads Settings screenshot when available."""
         adapter = self.adapters.get(source.platform) if getattr(self, "adapters", None) else None
@@ -13752,6 +13793,11 @@ class GatewayRunner:
                 )
             except Exception as exc:
                 logger.warning("Manual Telegram research kickoff edit failed: %s", exc)
+        await self._pin_telegram_message_temporarily(
+            source,
+            progress_message_id,
+            delay_seconds=60.0,
+        )
         if is_mock_research:
             watcher = {
                 "session_id": f"mock-research-{int(time.time() * 1000)}",

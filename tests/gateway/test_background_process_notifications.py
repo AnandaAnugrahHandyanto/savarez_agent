@@ -267,6 +267,10 @@ async def test_start_manual_telegram_research_mock_path_skips_spawn_local(monkey
             self.send = AsyncMock(return_value=SimpleNamespace(success=True, message_id="88"))
             self.handle_message = AsyncMock()
             self._edit_message = AsyncMock(return_value=SimpleNamespace(success=True, message_id="88"))
+            self._bot = SimpleNamespace(
+                pin_chat_message=AsyncMock(),
+                unpin_chat_message=AsyncMock(),
+            )
 
         async def edit_message(self, *args, **kwargs):
             return await self._edit_message(*args, **kwargs)
@@ -309,8 +313,18 @@ async def test_start_manual_telegram_research_mock_path_skips_spawn_local(monkey
     assert "◉ browsing" in progress_text
     assert final_text.startswith("Research complete · the best browser\n")
     assert final_text.endswith("https://research.briankeefe.dev/20260515-shows-like-breaking-bad")
-    assert len(sleep_calls) == 4
-    assert all(delay > 1 for delay in sleep_calls)
+    adapter._bot.pin_chat_message.assert_awaited_once_with(
+        chat_id=123,
+        message_id=88,
+        disable_notification=True,
+    )
+    adapter._bot.unpin_chat_message.assert_awaited_once_with(
+        chat_id=123,
+        message_id=88,
+    )
+    assert len(sleep_calls) == 5
+    assert sleep_calls.count(60.0) == 1
+    assert sum(1 for delay in sleep_calls if delay > 1 and delay != 60.0) == 4
 
 
 @pytest.mark.asyncio
