@@ -161,7 +161,7 @@ def test_replace_primary_openai_client_backfills_minimax_api_key_from_headers():
 
     agent._client_kwargs = {
         "base_url": "https://api.minimax.io/anthropic",
-        "default_headers": {"x-api-key": "mm-header-key"},
+        "default_headers": {"X-API-Key": "mm-header-key"},
     }
 
     with patch("run_agent.OpenAI", _ValidatingFakeOpenAI):
@@ -172,7 +172,7 @@ def test_replace_primary_openai_client_backfills_minimax_api_key_from_headers():
     assert constructed[0]._kwargs["api_key"] == "mm-header-key"
     assert agent._client_kwargs == {
         "base_url": "https://api.minimax.io/anthropic",
-        "default_headers": {"x-api-key": "mm-header-key"},
+        "default_headers": {"X-API-Key": "mm-header-key"},
     }
 
 
