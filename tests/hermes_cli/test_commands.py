@@ -110,6 +110,15 @@ class TestResolveCommand:
         assert resolve_command("codex_runtime").name == "codex-runtime"
         assert resolve_command("tasks").name == "agents"
 
+    def test_afterwork_available_in_cli_and_gateway(self):
+        afterwork = next(cmd for cmd in COMMAND_REGISTRY if cmd.name == "afterwork")
+
+        assert not afterwork.cli_only
+        assert not afterwork.gateway_only
+        assert "afterwork" in GATEWAY_KNOWN_COMMANDS
+        assert "퇴근" in GATEWAY_KNOWN_COMMANDS
+        assert "퇴근모드" in GATEWAY_KNOWN_COMMANDS
+
     def test_topic_is_gateway_command(self):
         topic = resolve_command("topic")
         assert topic is not None

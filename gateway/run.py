@@ -6894,6 +6894,38 @@ class GatewayRunner:
             if _cmd_def_inner and _cmd_def_inner.name == "background":
                 return await self._handle_background_command(event)
 
+            # /afterwork is a project-session control command. It must be safe
+            # while an agent is running: dispatch the command hook directly so
+            # the project/tmux router can send a non-interrupting /steer to the
+            # target pane instead of rejecting it or treating it as follow-up
+            # text that interrupts the current run.
+            if _cmd_def_inner and _cmd_def_inner.name == "afterwork":
+                raw_args = event.get_command_args().strip()
+                hook_ctx = {
+                    "platform": source.platform.value if source.platform else "",
+                    "user_id": source.user_id,
+                    "command": "afterwork",
+                    "raw_command": _evt_cmd,
+                    "args": raw_args,
+                    "raw_args": raw_args,
+                }
+                try:
+                    hook_results = await self.hooks.emit_collect("command:afterwork", hook_ctx)
+                except Exception as _hook_err:
+                    logger.debug("command:afterwork hook dispatch failed (non-fatal): %s", _hook_err)
+                    hook_results = []
+                for hook_result in hook_results:
+                    if not isinstance(hook_result, dict):
+                        continue
+                    decision = str(hook_result.get("decision", "")).strip().lower()
+                    if decision == "handled":
+                        message = hook_result.get("message")
+                        return message if isinstance(message, str) and message else None
+                    if decision == "deny":
+                        message = hook_result.get("message")
+                        return message if isinstance(message, str) and message else "Command `/afterwork` was blocked by a hook."
+                return "퇴근모드 hook이 설정되어 있지 않습니다. 터미널에서는 /afterwork 또는 퇴근모드를 사용하세요."
+
             # /kanban must bypass the guard. It writes to a profile-agnostic
             # DB (kanban.db), not to the running agent's state. In fact
             # /kanban unblock is often the only way to free a worker that

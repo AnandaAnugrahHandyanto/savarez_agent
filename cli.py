@@ -7346,6 +7346,87 @@ class HermesCLI:
         except Exception:
             return False
 
+    @staticmethod
+    def _looks_like_afterwork_plaintext(text: str) -> bool:
+        """Return True for exact Korean/plaintext away-mode commands.
+
+        These phrases are intentionally exact-match only so normal Korean chat
+        does not accidentally become a control-plane command. The Enter handler
+        rewrites them to /afterwork before busy-input routing, which prevents
+        the default interrupt mode from killing the current run.
+        """
+        normalized = (text or "").strip().lower()
+        return normalized in {"퇴근", "퇴근모드", "퇴근 모드", "afterwork", "awaymode"}
+
+    def _should_handle_afterwork_command_inline(self, text: str, has_images: bool = False) -> bool:
+        """Return True when away mode should be handled as a command now.
+
+        /afterwork is a control-plane command. If Hermes is busy, routing it
+        through the normal pending/interrupt path is exactly the bug away mode
+        is meant to avoid. Dispatch it on the UI thread like /steer.
+        """
+        if not text or has_images:
+            return False
+        if self._looks_like_afterwork_plaintext(text):
+            return True
+        if not _looks_like_slash_command(text):
+            return False
+        try:
+            from hermes_cli.commands import resolve_command
+            base = text.split(None, 1)[0].lower().lstrip('/')
+            cmd = resolve_command(base)
+            return bool(cmd and cmd.name == "afterwork")
+        except Exception:
+            return False
+
+    def _afterwork_prompt(self) -> tuple[str, Path]:
+        """Build the local away-mode instruction and handoff path."""
+        try:
+            workdir = Path(getattr(self, "cwd", None) or os.getcwd())
+        except Exception:
+            workdir = Path.cwd()
+        handoff = workdir / ".hermes" / "handoff" / "current.md"
+        prompt = (
+            "퇴근모드로 전환해. 현재 진행 중인 작업은 중단하지 말고 계속 진행해. "
+            "먼저 현재 상태, 완료/진행/대기 항목, 다음 계획, 사용자 확인이 필요한 결정을 간단히 정리해. "
+            "가능하면 프로젝트 handoff 파일을 업데이트해: "
+            f"{handoff}. "
+            "막히면 Telegram 알림으로 결정이 필요한 사항만 짧게 보고해."
+        )
+        return prompt, handoff
+
+    def _handle_afterwork_command(self, cmd: str):
+        """Handle /afterwork, /awaymode, /퇴근, /퇴근모드 in the local CLI.
+
+        This is deliberately non-interrupting: when an agent is running, prefer
+        agent.steer() so the instruction lands after the next tool call; if
+        steering is unavailable, queue it for the next turn instead.
+        """
+        prompt, handoff = self._afterwork_prompt()
+        try:
+            handoff.parent.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+
+        if self._agent_running and self.agent is not None and hasattr(self.agent, "steer"):
+            try:
+                if self.agent.steer(prompt):
+                    _cprint(f"  {_ACCENT}퇴근모드 전환 요청을 현재 작업에 주입했습니다. 작업은 중단하지 않습니다.{_RST}")
+                    _cprint(f"  {_DIM}handoff: {handoff}{_RST}")
+                    return
+            except Exception as exc:
+                _cprint(f"  {_DIM}Steer failed ({exc}) — queued for next turn.{_RST}")
+
+        if hasattr(self, "_pending_input"):
+            self._pending_input.put(prompt)
+            if self._agent_running:
+                _cprint(f"  {_ACCENT}퇴근모드 요청을 다음 턴으로 큐잉했습니다. 현재 작업은 interrupt하지 않습니다.{_RST}")
+            else:
+                _cprint(f"  {_ACCENT}퇴근모드 요청을 시작합니다.{_RST}")
+            _cprint(f"  {_DIM}handoff: {handoff}{_RST}")
+        else:
+            _cprint("  (._.) Cannot enter away mode: input queue is unavailable.")
+
     def _output_console(self):
         """Use prompt_toolkit-safe Rich rendering once the TUI is live."""
         if getattr(self, "_app", None):
@@ -8116,6 +8197,8 @@ class HermesCLI:
             self._handle_stop_command()
         elif canonical == "agents":
             self._handle_agents_command()
+        elif canonical == "afterwork":
+            self._handle_afterwork_command(cmd_original)
         elif canonical == "background":
             self._handle_background_command(cmd_original)
         elif canonical == "queue":
@@ -12333,6 +12416,16 @@ class HermesCLI:
                 # agent.steer() is thread-safe (holds _pending_steer_lock).
                 if self._should_handle_steer_command_inline(text, has_images=has_images):
                     self.process_command(text)
+                    event.app.current_buffer.reset(append_to_history=True)
+                    return
+
+                # Handle away-mode commands before busy-input routing. Plain
+                # Korean commands like "퇴근모드" must not be treated as a
+                # normal busy message, because the default busy mode interrupts
+                # the running task.
+                if self._should_handle_afterwork_command_inline(text, has_images=has_images):
+                    command_text = "/afterwork" if self._looks_like_afterwork_plaintext(text) else text
+                    self.process_command(command_text)
                     event.app.current_buffer.reset(append_to_history=True)
                     return
 

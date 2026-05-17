@@ -1029,6 +1029,10 @@ _PLAINTEXT_GATEWAY_RESTART_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"^(?:please\s+)?restart\s+hermes[.!?\s]*$", re.IGNORECASE),
 )
 
+_PLAINTEXT_AFTERWORK_COMMANDS: frozenset[str] = frozenset(
+    {"퇴근", "퇴근모드", "퇴근 모드", "afterwork", "awaymode"}
+)
+
 
 def coerce_plaintext_gateway_command(event: "MessageEvent") -> None:
     """Rewrite a tiny set of DM plaintext admin phrases into slash commands.
@@ -1046,6 +1050,9 @@ def coerce_plaintext_gateway_command(event: "MessageEvent") -> None:
             return
         text = (event.text or "").strip()
         if not text or text.startswith("/"):
+            return
+        if text.lower() in _PLAINTEXT_AFTERWORK_COMMANDS:
+            event.text = "/afterwork"
             return
         source = getattr(event, "source", None)
         if getattr(source, "chat_type", None) != "dm":

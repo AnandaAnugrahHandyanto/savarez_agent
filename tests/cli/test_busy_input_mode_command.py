@@ -1,6 +1,7 @@
 """Tests for the /busy CLI command and busy-input-mode config handling."""
 
 import unittest
+from queue import Queue
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -121,3 +122,61 @@ class TestBusyCommandRegistry(unittest.TestCase):
         busy = next(c for c in COMMAND_REGISTRY if c.name == "busy")
         assert busy.args_hint == "[queue|steer|interrupt|status]"
         assert busy.category == "Configuration"
+
+
+class TestAfterworkCommand(unittest.TestCase):
+    def test_plaintext_afterwork_phrases_are_recognized(self):
+        cli_mod = _import_cli()
+
+        for text in ("퇴근", "퇴근모드", "퇴근 모드", "afterwork", "awaymode"):
+            self.assertTrue(cli_mod.HermesCLI._looks_like_afterwork_plaintext(text))
+
+        self.assertFalse(cli_mod.HermesCLI._looks_like_afterwork_plaintext("그냥 퇴근할까?"))
+
+    def test_afterwork_steers_running_agent_without_interrupt_queue(self):
+        cli_mod = _import_cli()
+
+        class FakeAgent:
+            def __init__(self):
+                self.payloads = []
+
+            def steer(self, text):
+                self.payloads.append(text)
+                return True
+
+        agent = FakeAgent()
+        pending = Queue()
+        stub = SimpleNamespace(
+            _agent_running=True,
+            agent=agent,
+            _pending_input=pending,
+            cwd="/tmp/example-project",
+        )
+        stub._afterwork_prompt = lambda: cli_mod.HermesCLI._afterwork_prompt(stub)
+
+        with patch.object(cli_mod, "_cprint"):
+            cli_mod.HermesCLI._handle_afterwork_command(stub, "/afterwork")
+
+        self.assertEqual(pending.qsize(), 0)
+        self.assertEqual(len(agent.payloads), 1)
+        self.assertIn("퇴근모드로 전환", agent.payloads[0])
+        self.assertIn("중단하지 말고", agent.payloads[0])
+
+    def test_afterwork_queues_when_steer_unavailable(self):
+        cli_mod = _import_cli()
+        pending = Queue()
+        stub = SimpleNamespace(
+            _agent_running=True,
+            agent=None,
+            _pending_input=pending,
+            cwd="/tmp/example-project",
+        )
+        stub._afterwork_prompt = lambda: cli_mod.HermesCLI._afterwork_prompt(stub)
+
+        with patch.object(cli_mod, "_cprint"):
+            cli_mod.HermesCLI._handle_afterwork_command(stub, "퇴근모드")
+
+        self.assertEqual(pending.qsize(), 1)
+        queued = pending.get_nowait()
+        self.assertIn("퇴근모드로 전환", queued)
+        self.assertIn("중단하지 말고", queued)

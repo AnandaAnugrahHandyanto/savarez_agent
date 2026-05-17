@@ -121,8 +121,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                gateway_only=True),
     CommandDef("psend", "Send a prompt to the active Telegram project tmux pane", "Session",
                gateway_only=True, args_hint="<prompt>"),
-    CommandDef("afterwork", "Put current/all Telegram project sessions into away mode", "Session",
-               gateway_only=True, aliases=("awaymode",), args_hint="[current|all]"),
+    CommandDef("afterwork", "Put current/all project sessions into away mode", "Session",
+               aliases=("awaymode", "퇴근", "퇴근모드"), args_hint="[current|all]"),
 
     # Configuration
     CommandDef("sessions", "Browse and resume previous sessions", "Session"),
@@ -500,8 +500,14 @@ def telegram_bot_commands() -> list[tuple[str, str]]:
     """
     overrides = _resolve_config_gates()
     result: list[tuple[str, str]] = []
+    menu_excluded = {"afterwork"}
     for cmd in COMMAND_REGISTRY:
         if not _is_gateway_available(cmd, overrides):
+            continue
+        if cmd.name in menu_excluded:
+            # Control-plane commands that are mainly typed via aliases/hooks do
+            # not need a Telegram menu slot, and keeping them out preserves
+            # Slack parity under Slack's 50-command cap.
             continue
         # Built-in arg-taking commands are included — their handlers show
         # usage text when invoked without arguments, and hiding them from
@@ -996,6 +1002,7 @@ def slack_native_slashes() -> list[tuple[str, str, str]]:
     gets dropped by the clamp or for free-form questions.
     """
     overrides = _resolve_config_gates()
+    menu_excluded = {"afterwork"}
     entries: list[tuple[str, str, str]] = []
     seen: set[str] = set()
 
@@ -1015,15 +1022,33 @@ def slack_native_slashes() -> list[tuple[str, str, str]]:
         entries.append((slack_name, desc[:140], hint[:100]))
         seen.add(slack_name)
 
-    # First pass: canonical names (so they win slots if we hit the cap).
+    # Preserve compact high-value aliases before the generic canonical pass so
+    # Slack's 50-command cap cannot silently evict them when new gateway
+    # commands are added.
+    priority_aliases = {"btw", "bg", "q", "reset"}
     for cmd in COMMAND_REGISTRY:
         if not _is_gateway_available(cmd, overrides):
             continue
-        _add(cmd.name, cmd.description, cmd.args_hint or "")
+        if cmd.name in menu_excluded:
+            continue
+        for alias in cmd.aliases:
+            if alias in priority_aliases:
+                _add(alias, f"Alias for /{cmd.name} — {cmd.description}", cmd.args_hint or "")
 
-    # Second pass: aliases.
+    # First pass: canonical names (so they win slots after the reserved aliases
+    # above if we hit the cap).
     for cmd in COMMAND_REGISTRY:
         if not _is_gateway_available(cmd, overrides):
+            continue
+        if cmd.name in menu_excluded:
+            continue
+        _add(cmd.name, cmd.description, cmd.args_hint or "")
+
+    # Second pass: remaining aliases.
+    for cmd in COMMAND_REGISTRY:
+        if not _is_gateway_available(cmd, overrides):
+            continue
+        if cmd.name in menu_excluded:
             continue
         for alias in cmd.aliases:
             # Skip aliases that only differ from canonical by case/punctuation
