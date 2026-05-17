@@ -1415,8 +1415,10 @@
     }, []);
 
     useEffect(function () {
-      if (expanded && settings === null) loadAll();
-    }, [expanded, settings, loadAll]);
+      // Load on mount so the collapsed pill shows the real mode without
+      // requiring the user to expand the panel first.
+      if (settings === null) loadAll();
+    }, [settings, loadAll]);
 
     const saveSettings = function (patch) {
       setMsg(null);
@@ -1480,8 +1482,39 @@
       ? "▾ Orchestration settings"
       : "▸ Orchestration settings";
 
+    // Mode pill — always visible (collapsed or expanded). One click flips
+    // between Auto and Manual. Auto = dispatcher decomposes new triage tasks
+    // every tick. Manual = pre-PR behavior, the user clicks ⚗ Decompose on
+    // each triage card (or runs `hermes kanban decompose <id>`) and tasks
+    // stay in triage until then.
+    const autoOn = !!(settings && settings.auto_decompose);
+    const modePillTitle = settings === null
+      ? "Loading mode…"
+      : (autoOn
+          ? "Auto-decompose ON — the dispatcher decomposes new triage tasks automatically every tick. Click to switch to Manual (pre-PR behavior)."
+          : "Auto-decompose OFF (Manual mode) — triage tasks stay in triage until you click ⚗ Decompose on each card. Click to switch to Auto.");
+    const modePill = h("button", {
+      type: "button",
+      onClick: function () {
+        if (settings === null) return;  // not loaded yet
+        saveSettings({ auto_decompose: !autoOn });
+      },
+      disabled: settings === null,
+      title: modePillTitle,
+      className: "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 "
+                 + "text-xs font-medium "
+                 + (autoOn
+                    ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
+                    : "border-muted-foreground/30 bg-muted/30 text-muted-foreground"),
+    },
+      "⚗ Decompose: ",
+      h("span", { className: "ml-1 font-semibold" },
+        settings === null ? "…" : (autoOn ? "AUTO" : "MANUAL"))
+    );
+
     if (!expanded) {
-      return h("div", { className: "text-xs" },
+      return h("div", { className: "flex items-center gap-3 text-xs" },
+        modePill,
         h("button", {
           type: "button",
           onClick: function () { setExpanded(true); },
@@ -1504,6 +1537,7 @@
             onClick: function () { setExpanded(false); },
             className: "text-sm font-medium underline-offset-2 hover:underline",
           }, headerLabel),
+          modePill,
           h(Button, { onClick: loadAll, size: "sm" }, "Reload"),
         ),
         msg ? h("div", {
@@ -1549,7 +1583,7 @@
           ),
           h("div", { className: "flex flex-col gap-1" },
             h(Label, { className: "text-xs text-muted-foreground" },
-              "Auto-decompose on triage"),
+              "Decompose mode"),
             h("label", { className: "flex items-center gap-2 text-xs h-8" },
               h("input", {
                 type: "checkbox",
@@ -1558,7 +1592,7 @@
                   saveSettings({ auto_decompose: !!e.target.checked });
                 },
               }),
-              settings.auto_decompose ? "Enabled" : "Disabled",
+              settings.auto_decompose ? "Auto (default)" : "Manual",
             ),
             h("div", { className: "text-[10px] text-muted-foreground" },
               "When on, the dispatcher decomposes new triage tasks automatically."),
