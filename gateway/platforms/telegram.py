@@ -2897,6 +2897,76 @@ class TelegramAdapter(BasePlatformAdapter):
                     )
             return
 
+        # --- Blog review callbacks (br:approve|reject:review_id) ---
+        if data.startswith("br:"):
+            parts = data.split(":", 2)
+            if len(parts) != 3 or parts[1] not in {"approve", "reject"}:
+                await query.answer(text="Invalid blog review action.")
+                return
+            action = parts[1]
+            review_id = parts[2]
+            bridge_dir = _Path("/home/hermes/didik-bridge")
+            bridge_env = bridge_dir / ".env"
+            allowed_user = os.getenv("ADMIN_USER_ID", "5978641389")
+            allowed_chat = os.getenv("GROUP_CHAT_ID", "-1003959197523")
+            if bridge_env.is_file():
+                try:
+                    for line in bridge_env.read_text().splitlines():
+                        line = line.strip()
+                        if not line or line.startswith("#") or "=" not in line:
+                            continue
+                        k, v = line.split("=", 1)
+                        v = v.strip().strip('"').strip("'")
+                        if k.strip() == "ADMIN_USER_ID":
+                            allowed_user = v
+                        elif k.strip() == "GROUP_CHAT_ID":
+                            allowed_chat = v
+                except Exception:
+                    pass
+            caller_id = str(getattr(query.from_user, "id", ""))
+            chat_id_str = str(query_chat_id) if query_chat_id is not None else ""
+            if caller_id != str(allowed_user):
+                await query.answer(text="⛔ Hanya Yoventius yang bisa approve/reject blog.")
+                return
+            if allowed_chat and chat_id_str != str(allowed_chat):
+                await query.answer(text="⛔ Tombol ini hanya aktif di approval group.")
+                return
+
+            await query.answer(text="Diproses…")
+            cmd = [sys.executable, str(bridge_dir / "bridge_cli.py"), action, review_id]
+            if action == "reject":
+                cmd.append("skipped via Telegram button")
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    *cmd,
+                    cwd=str(bridge_dir),
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=180)
+                ok = proc.returncode == 0
+                label = "✅ Approved" if action == "approve" else "⏭ Rejected / skipped"
+                if not ok:
+                    err = (stderr or stdout).decode("utf-8", "replace")[:300]
+                    label = f"⚠ Blog action failed: {err}"
+                user_display = getattr(query.from_user, "first_name", "User")
+                try:
+                    await query.edit_message_caption(
+                        caption=f"{label} by {user_display} · {review_id[:8]}",
+                        parse_mode=ParseMode.HTML,
+                        reply_markup=None,
+                    )
+                except Exception:
+                    try:
+                        await query.edit_message_reply_markup(reply_markup=None)
+                    except Exception:
+                        pass
+                return
+            except Exception as exc:
+                logger.error("[%s] blog-review callback failed: %s", self.name, exc, exc_info=True)
+                await query.answer(text=f"⚠ Gagal: {str(exc)[:120]}")
+                return
+
         # --- Update prompt callbacks ---
         if not data.startswith("update_prompt:"):
             return

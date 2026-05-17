@@ -378,6 +378,79 @@ class TestTelegramClarifyCallback:
 
 
 # ===========================================================================
+# Blog review callback dispatch — br:approve|reject:<review_id>
+# ===========================================================================
+
+class TestTelegramBlogReviewCallback:
+    """Verify Unitree blog approval buttons are admin- and group-gated."""
+
+    @staticmethod
+    def _query(data="br:approve:review-1234567890", *, user_id="5978641389", chat_id=-1003959197523):
+        query = AsyncMock()
+        query.data = data
+        query.message = MagicMock()
+        query.message.chat_id = chat_id
+        query.message.chat.type = "supergroup"
+        query.from_user = MagicMock()
+        query.from_user.id = user_id
+        query.from_user.first_name = "Yoventius"
+        query.answer = AsyncMock()
+        query.edit_message_caption = AsyncMock()
+        query.edit_message_reply_markup = AsyncMock()
+        return query
+
+    @pytest.mark.asyncio
+    async def test_authorized_approve_runs_bridge_cli_and_edits_caption(self):
+        adapter = _make_adapter()
+        query = self._query()
+        update = MagicMock()
+        update.callback_query = query
+
+        proc = SimpleNamespace(
+            returncode=0,
+            communicate=AsyncMock(return_value=(b"ok", b"")),
+        )
+
+        with patch.dict(
+            os.environ,
+            {"ADMIN_USER_ID": "5978641389", "GROUP_CHAT_ID": "-1003959197523"},
+            clear=False,
+        ), patch(
+            "gateway.platforms.telegram.asyncio.create_subprocess_exec",
+            AsyncMock(return_value=proc),
+        ) as create_proc:
+            await adapter._handle_callback_query(update, MagicMock())
+
+        query.answer.assert_any_call(text="Diproses…")
+        create_proc.assert_called_once()
+        args = create_proc.call_args[0]
+        assert args[-2:] == ("approve", "review-1234567890")
+        query.edit_message_caption.assert_called_once()
+        assert "Approved" in query.edit_message_caption.call_args[1]["caption"]
+
+    @pytest.mark.asyncio
+    async def test_reject_denies_non_admin_without_running_bridge(self):
+        adapter = _make_adapter()
+        query = self._query(data="br:reject:review-1", user_id="111")
+        update = MagicMock()
+        update.callback_query = query
+
+        with patch.dict(
+            os.environ,
+            {"ADMIN_USER_ID": "5978641389", "GROUP_CHAT_ID": "-1003959197523"},
+            clear=False,
+        ), patch(
+            "gateway.platforms.telegram.asyncio.create_subprocess_exec",
+            AsyncMock(),
+        ) as create_proc:
+            await adapter._handle_callback_query(update, MagicMock())
+
+        create_proc.assert_not_called()
+        query.answer.assert_called_once()
+        assert "Hanya Yoventius" in query.answer.call_args[1]["text"]
+
+
+# ===========================================================================
 # Base adapter fallback render — text numbered list
 # ===========================================================================
 
