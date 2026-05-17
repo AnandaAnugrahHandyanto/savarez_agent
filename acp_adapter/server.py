@@ -1526,7 +1526,8 @@ class HermesACPAgent(acp.Agent):
         try:
             from hermes_cli.models import parse_model_flags
             parsed, explicit_provider = parse_model_flags(args)
-            args = parsed or args
+            # If only flags were provided (no model), avoid forwarding flags as model name
+            args = parsed if parsed else ("" if explicit_provider else args)
         except ImportError:
             explicit_provider = None
 
