@@ -67,7 +67,7 @@ class TestCommandRegistry:
                         f"Alias '{alias}' of '{cmd.name}' shadows canonical '{target.name}'"
 
     def test_every_entry_has_valid_category(self):
-        valid_categories = {"Session", "Configuration", "Tools & Skills", "Info", "Exit"}
+        valid_categories = {"Session", "Configuration", "Tools & Skills", "Info", "Exit", "Workflow"}
         for cmd in COMMAND_REGISTRY:
             assert cmd.category in valid_categories, f"{cmd.name} has invalid category '{cmd.category}'"
 
@@ -118,6 +118,29 @@ class TestResolveCommand:
         assert "afterwork" in GATEWAY_KNOWN_COMMANDS
         assert "퇴근" in GATEWAY_KNOWN_COMMANDS
         assert "퇴근모드" in GATEWAY_KNOWN_COMMANDS
+
+    def test_workflow_skill_wrappers_are_registered_for_cli_and_gateway(self):
+        workflow_names = {
+            "autopilot",
+            "ralplan",
+            "deep-interview",
+            "verify",
+            "ultraqa",
+            "trace",
+            "deepsearch",
+            "devflow",
+            "tdd",
+        }
+        registry = {cmd.name: cmd for cmd in COMMAND_REGISTRY}
+        for name in workflow_names:
+            cmd = registry[name]
+            assert cmd.category == "Workflow"
+            assert not cmd.cli_only
+            assert not cmd.gateway_only
+            assert f"/{name}" in COMMANDS
+            assert name in GATEWAY_KNOWN_COMMANDS
+            assert resolve_command(name).name == name
+        assert resolve_command("deepinterview").name == "deep-interview"
 
     def test_topic_is_gateway_command(self):
         topic = resolve_command("topic")

@@ -7344,6 +7344,45 @@ class GatewayRunner:
         if canonical == "voice":
             return await self._handle_voice_command(event)
 
+        if canonical in {
+            "autopilot",
+            "ralplan",
+            "deep-interview",
+            "verify",
+            "ultraqa",
+            "trace",
+            "deepsearch",
+            "devflow",
+            "tdd",
+        }:
+            try:
+                from agent.skill_commands import (
+                    build_skill_invocation_message,
+                    get_skill_commands,
+                    resolve_skill_command_key,
+                )
+                skill_cmds = get_skill_commands()
+                cmd_key = resolve_skill_command_key(canonical)
+                if cmd_key is None:
+                    return (
+                        f"Workflow skill `/{canonical}` is not installed or is disabled. "
+                        "Run `/reload-skills` after installing or enabling skills."
+                    )
+                msg = build_skill_invocation_message(
+                    cmd_key,
+                    event.get_command_args().strip(),
+                    task_id=_quick_key,
+                )
+                if msg:
+                    event.text = msg
+                    command = None
+                else:
+                    skill_name = skill_cmds.get(cmd_key, {}).get("name", canonical)
+                    return f"Failed to load workflow skill `{skill_name}`."
+            except Exception as e:
+                logger.debug("Workflow skill wrapper failed (non-fatal): %s", e)
+                return f"Workflow skill `/{canonical}` could not be loaded."
+
         if self._draining:
             return f"⏳ Gateway is {self._status_action_gerund()} and is not accepting new work right now."
 

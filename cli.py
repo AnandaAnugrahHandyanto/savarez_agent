@@ -2509,6 +2509,7 @@ from agent.skill_commands import (
     get_skill_commands,
     build_skill_invocation_message,
     build_preloaded_skills_prompt,
+    resolve_skill_command_key,
 )
 from agent.skill_bundles import (
     get_skill_bundles,
@@ -7890,6 +7891,42 @@ class HermesCLI:
             print(f"    2. Or configure settings in {display_hermes_home()}/config.yaml")
             print()
     
+    _WORKFLOW_SKILL_WRAPPER_COMMANDS = frozenset({
+        "autopilot",
+        "ralplan",
+        "deep-interview",
+        "verify",
+        "ultraqa",
+        "trace",
+        "deepsearch",
+        "devflow",
+        "tdd",
+    })
+
+    def _handle_workflow_skill_command(self, cmd_original: str, canonical: str) -> None:
+        """Load a workflow skill from a built-in slash-command wrapper."""
+        user_instruction = cmd_original.split(None, 1)[1].strip() if len(cmd_original.split(None, 1)) > 1 else ""
+        skill_cmds = get_skill_commands()
+        cmd_key = resolve_skill_command_key(canonical)
+        if cmd_key is None:
+            ChatConsole().print(
+                f"[bold red]Workflow skill '/{canonical}' is not installed or is disabled.[/]"
+            )
+            ChatConsole().print("[dim]Run /reload-skills after installing or enabling skills.[/]")
+            return
+        msg = build_skill_invocation_message(
+            cmd_key,
+            user_instruction,
+            task_id=self.session_id,
+        )
+        if msg:
+            skill_name = skill_cmds.get(cmd_key, {}).get("name", canonical)
+            print(f"\n⚡ Loading skill: {skill_name}")
+            if hasattr(self, '_pending_input'):
+                self._pending_input.put(msg)
+        else:
+            ChatConsole().print(f"[bold red]Failed to load skill for /{canonical}[/]")
+
     def process_command(self, command: str) -> bool:
         """
         Process a slash command.
@@ -8199,6 +8236,8 @@ class HermesCLI:
             self._handle_agents_command()
         elif canonical == "afterwork":
             self._handle_afterwork_command(cmd_original)
+        elif canonical in self._WORKFLOW_SKILL_WRAPPER_COMMANDS:
+            self._handle_workflow_skill_command(cmd_original, canonical)
         elif canonical == "background":
             self._handle_background_command(cmd_original)
         elif canonical == "queue":

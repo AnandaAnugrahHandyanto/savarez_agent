@@ -124,6 +124,26 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("afterwork", "Put current/all project sessions into away mode", "Session",
                aliases=("awaymode", "퇴근", "퇴근모드"), args_hint="[current|all]"),
 
+    # Workflow skill wrappers
+    CommandDef("autopilot", "Run the autopilot goal-completion workflow skill", "Workflow",
+               args_hint="<instruction>"),
+    CommandDef("ralplan", "Create a rigorous action/implementation plan", "Workflow",
+               args_hint="<topic>"),
+    CommandDef("deep-interview", "Run a structured requirements interview", "Workflow",
+               aliases=("deepinterview",), args_hint="<topic>"),
+    CommandDef("verify", "Verify completion against acceptance criteria", "Workflow",
+               args_hint="<target>"),
+    CommandDef("ultraqa", "Iterate on tests/build/lint/typecheck until clean or blocked", "Workflow",
+               args_hint="<target>"),
+    CommandDef("trace", "Trace a bug, request path, or data/control flow", "Workflow",
+               args_hint="<target>"),
+    CommandDef("deepsearch", "Run a deep source-grounded research workflow", "Workflow",
+               args_hint="<question>"),
+    CommandDef("devflow", "Run plan/verify -> develop -> verify workflow", "Workflow",
+               args_hint="<task>"),
+    CommandDef("tdd", "Run strict RED-GREEN-REFACTOR development workflow", "Workflow",
+               args_hint="<task>"),
+
     # Configuration
     CommandDef("sessions", "Browse and resume previous sessions", "Session"),
 
@@ -503,6 +523,8 @@ def telegram_bot_commands() -> list[tuple[str, str]]:
     menu_excluded = {"afterwork"}
     for cmd in COMMAND_REGISTRY:
         if not _is_gateway_available(cmd, overrides):
+            continue
+        if cmd.category == "Workflow":
             continue
         if cmd.name in menu_excluded:
             # Control-plane commands that are mainly typed via aliases/hooks do
@@ -1029,7 +1051,7 @@ def slack_native_slashes() -> list[tuple[str, str, str]]:
     for cmd in COMMAND_REGISTRY:
         if not _is_gateway_available(cmd, overrides):
             continue
-        if cmd.name in menu_excluded:
+        if cmd.category == "Workflow" or cmd.name in menu_excluded:
             continue
         for alias in cmd.aliases:
             if alias in priority_aliases:
@@ -1040,7 +1062,7 @@ def slack_native_slashes() -> list[tuple[str, str, str]]:
     for cmd in COMMAND_REGISTRY:
         if not _is_gateway_available(cmd, overrides):
             continue
-        if cmd.name in menu_excluded:
+        if cmd.category == "Workflow" or cmd.name in menu_excluded:
             continue
         _add(cmd.name, cmd.description, cmd.args_hint or "")
 
@@ -1048,7 +1070,7 @@ def slack_native_slashes() -> list[tuple[str, str, str]]:
     for cmd in COMMAND_REGISTRY:
         if not _is_gateway_available(cmd, overrides):
             continue
-        if cmd.name in menu_excluded:
+        if cmd.category == "Workflow" or cmd.name in menu_excluded:
             continue
         for alias in cmd.aliases:
             # Skip aliases that only differ from canonical by case/punctuation
