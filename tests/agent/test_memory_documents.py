@@ -52,8 +52,22 @@ def test_metadata_preservation_and_required_fields():
     assert chunk.confidence == 0.8
     assert chunk.tags == ("pinecone", "memory")
     assert chunk.canonical is True
+    assert chunk.metadata["text"] == "Useful memory content for retrieval."
     assert chunk.metadata["source_kind"] == "file"
     assert chunk.metadata["tags"] == ["pinecone", "memory"]
+
+
+def test_to_pinecone_record_includes_chunk_text_in_metadata():
+    chunk = _make_document("# Title\nUseful memory content for retrieval.").chunk(target_chars=200, max_chars=300)[0]
+
+    record = chunk.to_pinecone_record([0.1, 0.2, 0.3])
+
+    assert record == {
+        "id": chunk.id,
+        "values": [0.1, 0.2, 0.3],
+        "metadata": chunk.metadata,
+    }
+    assert record["metadata"]["text"] == chunk.text
 
 
 def test_chunk_ids_are_stable_for_same_input():

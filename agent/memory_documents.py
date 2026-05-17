@@ -75,6 +75,7 @@ class MemoryChunk:
     @property
     def metadata(self) -> dict[str, object]:
         return {
+            "text": self.text,
             "memory_type": self.memory_type,
             "scope": self.scope,
             "source_kind": self.source_kind,
@@ -89,6 +90,13 @@ class MemoryChunk:
             "header_path": list(self.header_path),
             "chunk_index": self.chunk_index,
             "document_id": self.document_id,
+        }
+
+    def to_pinecone_record(self, values: Sequence[float]) -> dict[str, object]:
+        return {
+            "id": self.id,
+            "values": [float(value) for value in values],
+            "metadata": self.metadata,
         }
 
 
