@@ -256,6 +256,7 @@ def test_api_get_credentials_refresh_persists_authorized_user_type(api_module, m
 def test_api_uses_read_only_drive_and_docs_scopes(api_module):
     assert "https://www.googleapis.com/auth/drive.readonly" in api_module.SCOPES
     assert "https://www.googleapis.com/auth/documents.readonly" in api_module.SCOPES
+    assert "https://www.googleapis.com/auth/tasks" in api_module.SCOPES
     assert "https://www.googleapis.com/auth/drive" not in api_module.SCOPES
     assert "https://www.googleapis.com/auth/documents" not in api_module.SCOPES
 
@@ -263,6 +264,7 @@ def test_api_uses_read_only_drive_and_docs_scopes(api_module):
 def test_setup_uses_read_only_drive_and_docs_scopes(setup_module):
     assert "https://www.googleapis.com/auth/drive.readonly" in setup_module.SCOPES
     assert "https://www.googleapis.com/auth/documents.readonly" in setup_module.SCOPES
+    assert "https://www.googleapis.com/auth/tasks" in setup_module.SCOPES
     assert "https://www.googleapis.com/auth/drive" not in setup_module.SCOPES
     assert "https://www.googleapis.com/auth/documents" not in setup_module.SCOPES
 
