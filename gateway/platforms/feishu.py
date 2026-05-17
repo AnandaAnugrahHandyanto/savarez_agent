@@ -1409,6 +1409,11 @@ class FeishuAdapter(BasePlatformAdapter):
     """Feishu/Lark bot adapter."""
 
     MAX_MESSAGE_LENGTH = 8000
+    # Feishu post-type messages can hold significantly more content than
+    # plain text — the post JSON payload limit is ~30 KB.  Use a higher
+    # ceiling so tabular / rich content stays in a single message instead
+    # of being split into multiple chunks.
+    _MAX_POST_CONTENT_CHARS = 28000
     # Threshold for detecting Feishu client-side message splits.
     # When a chunk is near the ~4096-char practical limit, a continuation
     # is almost certain.
@@ -1767,7 +1772,15 @@ class FeishuAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
 
         formatted = self.format_message(content)
-        chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+        # Post-type messages can hold much more content than plain text
+        # (~30 KB vs ~8 KB).  Detect the likely outbound message type
+        # before splitting so rich content stays in a single message.
+        post_likely = bool(
+            _MARKDOWN_HINT_RE.search(formatted)
+            or _MARKDOWN_IMAGE_RE.search(formatted)
+        )
+        max_len = self._MAX_POST_CONTENT_CHARS if post_likely else self.MAX_MESSAGE_LENGTH
+        chunks = self.truncate_message(formatted, max_len)
         last_response = None
 
         try:
@@ -4330,7 +4343,7 @@ class FeishuAdapter(BasePlatformAdapter):
         if _MARKDOWN_TABLE_RE.search(content):
             text_payload = {"text": content}
             return "text", json.dumps(text_payload, ensure_ascii=False)
-        if _MARKDOWN_HINT_RE.search(content):
+        if _MARKDOWN_HINT_RE.search(content) or _MARKDOWN_IMAGE_RE.search(content):
             return "post", await self._build_markdown_post_payload_with_images(content)
         text_payload = {"text": content}
         return "text", json.dumps(text_payload, ensure_ascii=False)
