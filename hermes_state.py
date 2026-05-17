@@ -55,7 +55,37 @@ _WAL_INCOMPAT_MARKERS = (
     "locking protocol",       # SQLITE_PROTOCOL on NFS/SMB
     "not authorized",         # Some FUSE mounts block WAL pragma outright
     "disk i/o error",         # Flaky network FS during WAL setup
+    "unable to open database file",  # WSL/DrvFS can reject WAL sidecar setup
+    "database is locked",     # Existing connections can block mode changes
 )
+
+
+def _is_wsl_windows_mount(path: Path | str | None) -> bool:
+    """Return True for Windows drives mounted into WSL, e.g. ``/mnt/c/...``."""
+    if path is None:
+        return False
+    normalized = str(path).replace("\\", "/")
+    if normalized.startswith("/mnt/"):
+        return True
+    try:
+        parts = Path(path).expanduser().parts
+    except (OSError, TypeError, ValueError):
+        return False
+    return len(parts) >= 3 and parts[0] == "/" and parts[1] == "mnt"
+
+
+def _sqlite_header_uses_wal(path: Path | str | None) -> Optional[bool]:
+    """Inspect SQLite header bytes to tell WAL from rollback-journal mode."""
+    if path is None:
+        return None
+    try:
+        with open(path, "rb") as handle:
+            header = handle.read(20)
+    except OSError:
+        return None
+    if len(header) < 20 or not header.startswith(b"SQLite format 3\x00"):
+        return None
+    return header[18] == 2 and header[19] == 2
 
 # Last SessionDB() init error, per-process.  Surfaced in /resume and
 # related slash-command error strings so users know WHY the DB is
@@ -129,6 +159,7 @@ def apply_wal_with_fallback(
     conn: sqlite3.Connection,
     *,
     db_label: str = "state.db",
+    db_path: Path | str | None = None,
 ) -> str:
     """Set ``journal_mode=WAL`` on ``conn``, falling back to DELETE on failure.
 
@@ -148,6 +179,13 @@ def apply_wal_with_fallback(
     Shared by :class:`SessionDB` and ``hermes_cli.kanban_db.connect`` so
     both databases get identical fallback behavior.
     """
+    if _is_wsl_windows_mount(db_path):
+        _log_wal_fallback_once(db_label, RuntimeError(f"{db_path} is on a WSL Windows mount"))
+        if _sqlite_header_uses_wal(db_path) is False:
+            return "delete"
+        conn.execute("PRAGMA journal_mode=DELETE")
+        return "delete"
+
     try:
         conn.execute("PRAGMA journal_mode=WAL")
         return "wal"
@@ -350,7 +388,7 @@ class SessionDB:
                 isolation_level=None,
             )
             self._conn.row_factory = sqlite3.Row
-            apply_wal_with_fallback(self._conn, db_label="state.db")
+            apply_wal_with_fallback(self._conn, db_label="state.db", db_path=self.db_path)
             self._conn.execute("PRAGMA foreign_keys=ON")
 
             self._init_schema()
