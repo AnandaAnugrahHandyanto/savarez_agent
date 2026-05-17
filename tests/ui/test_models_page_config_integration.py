@@ -488,3 +488,215 @@ class TestConfigFileFormat:
         config = await _get_configured_models(page)
         assert "fallbacks" in config
         assert len(config["fallbacks"]) >= 1
+
+
+# ======================================================================
+# UI interaction tests — exercise the ModelPickerDialog + Save flow
+# ======================================================================
+
+async def _get_model_options(page: Page) -> dict:
+    """GET /api/model/options to see available providers/models."""
+    return await page.evaluate("""async () => {
+        const token = window.__HERMES_SESSION_TOKEN__;
+        const response = await fetch('/api/model/options', {
+            headers: {
+                'X-Hermes-Session-Token': token,
+                'Content-Type': 'application/json'
+            }
+        });
+        return await response.json();
+    }""")
+
+
+async def _get_current_fallbacks_from_ui(page: Page) -> list:
+    """Read fallback items currently displayed in the UI."""
+    items = await page.evaluate("""() => {
+        return Array.from(document.querySelectorAll('[data-testid^="fallback-item-"]')).map(el => {
+            const text = el.querySelector('span.font-mono')?.textContent || '';
+            return text.split(' · ').map(s => s.trim());
+        });
+    }""")
+    return items
+
+
+class TestAddFallbackViaUI:
+    """Test adding fallback providers through the UI picker flow."""
+
+    @pytest.mark.asyncio
+    async def test_ui_add_provider_then_save_persists(self, page: Page):
+        """Full UI flow: Add → picker → select provider → select model → Save → verify config.yaml."""
+        # Clear any existing fallbacks first (test isolation)
+        await _save_fallbacks(page, [])
+        await _go_to_fallback_chain(page)
+
+        # Step 1: Get available providers from the options API
+        options = await _get_model_options(page)
+        providers = options.get("providers", [])
+        assert len(providers) > 0, "There should be at least one provider available"
+
+        # Pick the first available provider
+        first_provider = providers[0]
+        provider_slug = first_provider["slug"]
+        provider_models = first_provider.get("models", [])
+
+        # Skip providers with no models listed (they may need dynamic loading)
+        if not provider_models:
+            pytest.skip(f"Provider '{provider_slug}' has no models listed for picker")
+
+        # Pick the first model
+        first_model = provider_models[0]
+
+        # Step 2: Click Add to open the picker
+        add_button = page.get_by_role("button", name="Add")
+        await add_button.click()
+        await page.wait_for_timeout(1500)  # Picker loads providers
+
+        # Step 3: Verify picker is open
+        picker_title = page.locator("text=Add Fallback Provider")
+        await expect(picker_title).to_be_visible(timeout=5000)
+
+        # Step 4: Select the provider from the left column
+        # ListItem renders as <button>, not <li>
+        provider_found = False
+        for p in providers:
+            locator = page.locator(f"button:has-text('{p['name']}')")
+            if await locator.count() > 0:
+                await locator.first.click()
+                provider_found = True
+                break
+        assert provider_found, f"Should find provider '{first_provider['name']}' in picker"
+        await page.wait_for_timeout(500)
+
+        # Step 5: Select the model from the right column
+        # ListItem renders as <button>, not <li>
+        model_item = page.locator(f"button:has-text('{first_model}')")
+        if await model_item.count() > 0:
+            await model_item.first.click()
+        else:
+            # Model might not be visible if there are many — try filtering
+            search_input = page.locator("input[placeholder*='Filter']")
+            if await search_input.count() > 0:
+                await search_input.fill(first_model)
+                await page.wait_for_timeout(500)
+                model_item = page.locator(f"button:has-text('{first_model}')")
+                if await model_item.count() > 0:
+                    await model_item.first.click()
+                else:
+                    pytest.skip(f"Model '{first_model}' not found in picker after filtering")
+            else:
+                pytest.skip(f"Model '{first_model}' not found in picker and no search input")
+
+        # Step 6: Click the Switch/Confirm button
+        # There are multiple "Switch" buttons on the page — use exact match
+        confirm_button = page.get_by_role("button", name="Switch", exact=True)
+        if await confirm_button.is_enabled():
+            await confirm_button.click()
+            await page.wait_for_timeout(1000)
+        else:
+            # Double-click the model to confirm
+            await model_item.first.dblclick()
+            await page.wait_for_timeout(1000)
+
+        # Step 7: Verify picker closed and item appeared in UI
+        fallback_items = page.locator("[data-testid^='fallback-item-']")
+        item_count = await fallback_items.count()
+        assert item_count >= 1, "Fallback item should appear in UI after selection"
+
+        # Step 8: Click Save to persist to config.yaml
+        save_button = page.get_by_role("button", name="Save", exact=True)
+        await save_button.click()
+        await page.wait_for_timeout(1000)
+
+        # Step 9: Verify config.yaml has the new fallback
+        yaml_text = await _get_raw_config_yaml(page)
+        config = _parse_yaml_config(yaml_text)
+        fallbacks = config.get("fallback_providers", [])
+        assert len(fallbacks) >= 1, "Config should have at least one fallback"
+        assert fallbacks[0]["provider"] == provider_slug
+        assert fallbacks[0]["model"] == first_model
+
+    @pytest.mark.asyncio
+    async def test_ui_add_then_save_clears_legacy_key(self, page: Page):
+        """Adding via UI picker and saving should clear legacy fallback_model."""
+        # Clear any existing fallbacks first (test isolation)
+        await _save_fallbacks(page, [])
+        await _go_to_fallback_chain(page)
+
+        # Get a provider to add
+        options = await _get_model_options(page)
+        providers = options.get("providers", [])
+        if not providers:
+            pytest.skip("No providers available")
+
+        p = providers[0]
+        if not p.get("models"):
+            pytest.skip(f"Provider '{p['slug']}' has no models")
+
+        # Add via UI
+        await _add_via_picker(page, p["slug"], p["models"][0])
+
+        # Verify config.yaml
+        yaml_text = await _get_raw_config_yaml(page)
+        config = _parse_yaml_config(yaml_text)
+        assert "fallback_model" not in config
+        assert "fallback_providers" in config
+        assert len(config["fallback_providers"]) >= 1
+
+
+async def _add_via_picker(page: Page, provider_slug: str, model_name: str) -> None:
+    """Full UI flow: open picker → select provider → select model → confirm → save."""
+    # Click Add
+    add_button = page.get_by_role("button", name="Add", exact=True)
+    await add_button.click()
+    await page.wait_for_timeout(2000)
+
+    # Get providers from options API to find the one we want
+    options = await _get_model_options(page)
+    providers = options.get("providers", [])
+
+    # Find and click the provider
+    # ListItem renders as <button>, not <li>
+    provider_found = False
+    for p in providers:
+        locator = page.locator(f"button:has-text('{p['name']}')")
+        if await locator.count() > 0:
+            await locator.first.click()
+            provider_found = True
+            break
+    if not provider_found:
+        # Fallback: use the slug
+        locator = page.locator(f"button:has-text('{provider_slug}')")
+        if await locator.count() > 0:
+            await locator.first.click()
+            provider_found = True
+    assert provider_found, f"Provider '{provider_slug}' not found in picker"
+
+    await page.wait_for_timeout(500)
+
+    # Find and click the model
+    model_locator = page.locator(f"button:has-text('{model_name}')")
+    if await model_locator.count() > 0:
+        await model_locator.first.click()
+    else:
+        # Try search
+        search = page.locator("input[placeholder*='Filter']")
+        if await search.count() > 0:
+            await search.fill(model_name)
+            await page.wait_for_timeout(500)
+            model_locator = page.locator(f"button:has-text('{model_name}')")
+            if await model_locator.count() > 0:
+                await model_locator.first.click()
+
+    # Confirm
+    # There are multiple "Switch" buttons on the page — use exact match
+    confirm = page.get_by_role("button", name="Switch", exact=True)
+    if await confirm.is_enabled():
+        await confirm.click()
+    else:
+        await model_locator.first.dblclick()
+    await page.wait_for_timeout(1000)
+
+    # Save
+    save_button = page.get_by_role("button", name="Save", exact=True)
+    await save_button.click()
+    await page.wait_for_timeout(1000)
