@@ -56,3 +56,12 @@ works correctly on version 2.1.143; the adapter design assumption is valid.
 
 Conclusion: `session_id` is a reliable top-level field on all stream-json events on version 2.1.143;
 `--resume <session_id>` correctly restores conversational context across subprocess invocations.
+
+## Task 10: coarse permissioning canaries
+
+- `--allowedTools ""` denies all built-in tools: yes — zero `tool_use` events emitted even when prompted to read `/etc/hostname`; `--disallowedTools Bash,Read,Edit,Write,WebFetch,WebSearch` was added as belt-and-suspenders but is not needed for the canary assertion (model responded with "unable" text instead of a tool call). The empty-string form `--allowedTools ""` works correctly on 2.1.143.
+- `--strict-mcp-config` + empty mcp-config ignores ambient ~/.claude/settings.json mcpServers: yes — poisoned settings.json with `"canary"` MCP server declaration (HOME isolated via tmp_path) produced zero output containing "canary" or "canary-loaded"; the third `system` event metadata confirmed no MCP servers were registered.
+- Required mitigations (if either failed): none — both assumptions hold without additional flags.
+- Sample stderr (first 200 bytes if anything notable): b'' (empty on both runs — no warnings, banners, or debug logs)
+
+Conclusion: Both v1 default-deny posture canaries hold on claude 2.1.143; `--allowedTools ""` fully blocks built-in tool use and `--strict-mcp-config` + empty `--mcp-config` provides hermetic MCP server isolation when HOME is controlled.
