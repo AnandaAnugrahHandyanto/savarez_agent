@@ -1729,7 +1729,7 @@ def claim_task(
                SET status        = 'running',
                    claim_lock    = ?,
                    claim_expires = ?,
-                   started_at    = COALESCE(started_at, ?)
+                   started_at    = ?
              WHERE id = ?
                AND status = 'ready'
                AND claim_lock IS NULL
@@ -2268,17 +2268,28 @@ def enforce_max_runtime(
     host_prefix = f"{_claimer_id().split(':', 1)[0]}:"
 
     rows = conn.execute(
-        "SELECT id, worker_pid, started_at, max_runtime_seconds, claim_lock "
-        "FROM tasks "
-        "WHERE status = 'running' AND max_runtime_seconds IS NOT NULL "
-        "  AND started_at IS NOT NULL AND worker_pid IS NOT NULL"
+        """
+        SELECT t.id,
+               COALESCE(r.worker_pid, t.worker_pid) AS worker_pid,
+               COALESCE(r.started_at, t.started_at) AS run_started_at,
+               COALESCE(r.max_runtime_seconds, t.max_runtime_seconds) AS max_runtime_seconds,
+               COALESCE(r.claim_lock, t.claim_lock) AS claim_lock
+          FROM tasks t
+          LEFT JOIN task_runs r ON r.id = t.current_run_id
+         WHERE t.status = 'running'
+           AND COALESCE(r.max_runtime_seconds, t.max_runtime_seconds) IS NOT NULL
+           AND COALESCE(r.started_at, t.started_at) IS NOT NULL
+           AND COALESCE(r.worker_pid, t.worker_pid) IS NOT NULL
+           AND (t.current_run_id IS NULL OR r.status = 'running')
+        """
     ).fetchall()
     for row in rows:
         lock = row["claim_lock"] or ""
         if not lock.startswith(host_prefix):
             continue
-        elapsed = now - int(row["started_at"])
-        if elapsed < int(row["max_runtime_seconds"]):
+        elapsed = now - int(row["run_started_at"])
+        limit = int(row["max_runtime_seconds"])
+        if elapsed < limit:
             continue
 
         pid = int(row["worker_pid"])
@@ -2316,7 +2327,7 @@ def enforce_max_runtime(
                 (
                     f"ORCHESTRATOR_PROCESS_BLOCK: worker exceeded "
                     f"max_runtime_seconds ({int(elapsed)}s > "
-                    f"{int(row['max_runtime_seconds'])}s); inspect/recover "
+                    f"{limit}s); inspect/recover "
                     f"before retry",
                     tid,
                 ),
@@ -2325,13 +2336,13 @@ def enforce_max_runtime(
                 payload = {
                     "pid": pid,
                     "elapsed_seconds": int(elapsed),
-                    "limit_seconds": int(row["max_runtime_seconds"]),
+                    "limit_seconds": limit,
                     "sigkill": killed,
                 }
                 run_id = _end_run(
                     conn, tid,
                     outcome="timed_out", status="timed_out",
-                    error=f"elapsed {int(elapsed)}s > limit {int(row['max_runtime_seconds'])}s",
+                    error=f"elapsed {int(elapsed)}s > limit {limit}s",
                     metadata=payload,
                 )
                 _append_event(

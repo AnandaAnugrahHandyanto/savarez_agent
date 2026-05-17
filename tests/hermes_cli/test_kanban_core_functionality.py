@@ -663,11 +663,17 @@ def test_max_runtime_terminates_overrun_worker(kanban_home):
             # Spawn by hand: claim + set pid + set started_at to the past.
             kb.claim_task(conn, tid)
             kb._set_worker_pid(conn, tid, os.getpid())   # any live pid works
-            # Backdate started_at so elapsed > limit.
+            # Backdate the active run so elapsed > limit.
             with kb.write_txn(conn):
+                run_id = kb._current_run_id(conn, tid)
+                assert run_id is not None
                 conn.execute(
                     "UPDATE tasks SET started_at = ? WHERE id = ?",
                     (int(time.time()) - 30, tid),
+                )
+                conn.execute(
+                    "UPDATE task_runs SET started_at = ? WHERE id = ?",
+                    (int(time.time()) - 30, run_id),
                 )
 
             timed_out = kb.enforce_max_runtime(conn, signal_fn=_signal_fn)
@@ -701,9 +707,15 @@ def test_max_runtime_none_means_no_cap(kanban_home):
         kb._set_worker_pid(conn, tid, os.getpid())
         # Backdate aggressively; no cap means we don't care.
         with kb.write_txn(conn):
+            run_id = kb._current_run_id(conn, tid)
+            assert run_id is not None
             conn.execute(
                 "UPDATE tasks SET started_at = ? WHERE id = ?",
                 (int(time.time()) - 100_000, tid),
+            )
+            conn.execute(
+                "UPDATE task_runs SET started_at = ? WHERE id = ?",
+                (int(time.time()) - 100_000, run_id),
             )
         timed_out = kb.enforce_max_runtime(conn)
         assert timed_out == []
@@ -748,9 +760,15 @@ def test_enforce_max_runtime_integrates_with_dispatch(kanban_home, monkeypatch):
         kb.claim_task(conn, tid)
         kb._set_worker_pid(conn, tid, os.getpid())
         with kb.write_txn(conn):
+            run_id = kb._current_run_id(conn, tid)
+            assert run_id is not None
             conn.execute(
                 "UPDATE tasks SET started_at = ? WHERE id = ?",
                 (int(time.time()) - 30, tid),
+            )
+            conn.execute(
+                "UPDATE task_runs SET started_at = ? WHERE id = ?",
+                (int(time.time()) - 30, run_id),
             )
         # Use enforce_max_runtime directly with our signal stub — dispatch_once
         # uses the default os.kill, but integration-wise calling
@@ -767,6 +785,70 @@ def test_enforce_max_runtime_integrates_with_dispatch(kanban_home, monkeypatch):
         task = kb.get_task(conn, tid)
         assert task.status == "blocked"
         assert res.spawned == []
+    finally:
+        conn.close()
+
+
+def test_max_runtime_uses_current_run_start_after_unblock(kanban_home, monkeypatch):
+    """A re-run must not time out against stale tasks.started_at from a
+    previous blocked attempt.
+
+    This reproduces the dispatcher-restart failure mode where a task with a
+    fresh task_runs.started_at was immediately blocked because the timeout
+    check used the logical task's old started_at value.
+    """
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setattr(_kb, "_pid_alive", lambda pid: False)
+    killed = []
+
+    def _signal(pid, sig):
+        killed.append((pid, sig))
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(
+            conn,
+            title="rerun should use fresh run clock",
+            assignee="worker",
+            max_runtime_seconds=3600,
+        )
+
+        kb.claim_task(conn, tid)
+        stale_started_at = int(time.time()) - 28_000
+        with kb.write_txn(conn):
+            first_run_id = kb._current_run_id(conn, tid)
+            assert first_run_id is not None
+            conn.execute(
+                "UPDATE tasks SET started_at = ? WHERE id = ?",
+                (stale_started_at, tid),
+            )
+            conn.execute(
+                "UPDATE task_runs SET started_at = ? WHERE id = ?",
+                (stale_started_at, first_run_id),
+            )
+        assert kb.block_task(conn, tid, reason="operator recovery")
+        assert kb.unblock_task(conn, tid)
+
+        before_second_claim = int(time.time())
+        second = kb.claim_task(conn, tid)
+        assert second is not None
+        kb._set_worker_pid(conn, tid, os.getpid())
+
+        task = kb.get_task(conn, tid)
+        assert task.started_at >= before_second_claim
+        second_run_id = kb._current_run_id(conn, tid)
+        assert second_run_id is not None
+        second_run = conn.execute(
+            "SELECT started_at FROM task_runs WHERE id = ?",
+            (second_run_id,),
+        ).fetchone()
+        assert second_run["started_at"] >= before_second_claim
+
+        timed_out = kb.enforce_max_runtime(conn, signal_fn=_signal)
+        assert timed_out == []
+        assert killed == []
+        assert kb.get_task(conn, tid).status == "running"
     finally:
         conn.close()
 
