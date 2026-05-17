@@ -403,8 +403,18 @@ class ProfileInfo:
     path: Path
     is_default: bool
     gateway_running: bool
+    config_path: Optional[Path] = None
+    env_path: Optional[Path] = None
+    gateway_pid: Optional[int] = None
     model: Optional[str] = None
     provider: Optional[str] = None
+    reasoning_effort: Optional[str] = None
+    delegation_model: Optional[str] = None
+    delegation_provider: Optional[str] = None
+    delegation_reasoning_effort: Optional[str] = None
+    auth_kind: Optional[str] = None
+    auth_configured: bool = False
+    auth_sources: tuple = ()
     has_env: bool = False
     skill_count: int = 0
     alias_path: Optional[Path] = None
@@ -441,30 +451,222 @@ def _read_distribution_meta(profile_dir: Path) -> tuple:
 
 def _read_config_model(profile_dir: Path) -> tuple:
     """Read model/provider from a profile's config.yaml. Returns (model, provider)."""
+    summary = _read_config_runtime_summary(profile_dir)
+    return summary.get("model"), summary.get("provider")
+
+
+def _read_config_runtime_summary(profile_dir: Path) -> dict:
+    """Read non-secret runtime settings from a profile's config.yaml."""
     config_path = profile_dir / "config.yaml"
+    empty = {
+        "model": None,
+        "provider": None,
+        "reasoning_effort": None,
+        "delegation_model": None,
+        "delegation_provider": None,
+        "delegation_reasoning_effort": None,
+    }
     if not config_path.exists():
-        return None, None
+        return empty
     try:
         import yaml
         with open(config_path, "r", encoding="utf-8") as f:
             cfg = yaml.safe_load(f) or {}
+        if not isinstance(cfg, dict):
+            return empty
+
+        summary = dict(empty)
         model_cfg = cfg.get("model", {})
         if isinstance(model_cfg, str):
-            return model_cfg, None
-        if isinstance(model_cfg, dict):
-            return model_cfg.get("default") or model_cfg.get("model"), model_cfg.get("provider")
-        return None, None
+            summary["model"] = model_cfg
+        elif isinstance(model_cfg, dict):
+            summary["model"] = (
+                model_cfg.get("default")
+                or model_cfg.get("name")
+                or model_cfg.get("model")
+            )
+            summary["provider"] = model_cfg.get("provider")
+
+        agent_cfg = cfg.get("agent", {})
+        if isinstance(agent_cfg, dict):
+            summary["reasoning_effort"] = agent_cfg.get("reasoning_effort")
+
+        delegation_cfg = cfg.get("delegation", {})
+        if isinstance(delegation_cfg, dict):
+            summary["delegation_model"] = delegation_cfg.get("model")
+            summary["delegation_provider"] = delegation_cfg.get("provider")
+            summary["delegation_reasoning_effort"] = delegation_cfg.get("reasoning_effort")
+
+        return summary
     except Exception:
-        return None, None
+        return empty
+
+
+def _read_gateway_pid(profile_dir: Path) -> Optional[int]:
+    """Return the running gateway PID for a profile, if present."""
+    try:
+        from gateway.status import get_running_pid
+        return get_running_pid(profile_dir / "gateway.pid", cleanup_stale=False)
+    except Exception:
+        return None
 
 
 def _check_gateway_running(profile_dir: Path) -> bool:
     """Check if a gateway is running for a given profile directory."""
+    return _read_gateway_pid(profile_dir) is not None
+
+
+def _read_env_file(profile_dir: Path) -> dict:
+    """Read a profile .env file without exposing secret values."""
+    env_path = profile_dir / ".env"
+    if not env_path.exists():
+        return {}
+    env_vars = {}
     try:
-        from gateway.status import get_running_pid
-        return get_running_pid(profile_dir / "gateway.pid", cleanup_stale=False) is not None
+        with open(env_path, "r", encoding="utf-8-sig", errors="replace") as f:
+            for raw_line in f:
+                line = raw_line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, _, value = line.partition("=")
+                env_vars[key.strip()] = value.strip().strip('"\'')
     except Exception:
+        return {}
+    return env_vars
+
+
+def _read_auth_store(path: Path) -> dict:
+    if not path.exists():
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _profile_auth_entries(profile_dir: Path, provider: str) -> tuple[list, str]:
+    """Return credential pool entries using Hermes' per-provider fallback rule."""
+    profile_store = _read_auth_store(profile_dir / "auth.json")
+    profile_pool = profile_store.get("credential_pool")
+    if isinstance(profile_pool, dict):
+        entries = profile_pool.get(provider)
+        if isinstance(entries, list) and entries:
+            return entries, "profile auth.json"
+
+    global_home = Path.home() / ".hermes"
+    if profile_dir.resolve(strict=False) != global_home.resolve(strict=False):
+        global_store = _read_auth_store(global_home / "auth.json")
+        global_pool = global_store.get("credential_pool")
+        if isinstance(global_pool, dict):
+            entries = global_pool.get(provider)
+            if isinstance(entries, list) and entries:
+                return entries, "global auth.json"
+    return [], ""
+
+
+def _auth_provider_state_exists(profile_dir: Path, provider: str) -> tuple[bool, str]:
+    profile_store = _read_auth_store(profile_dir / "auth.json")
+    providers = profile_store.get("providers")
+    if isinstance(providers, dict) and isinstance(providers.get(provider), dict):
+        return True, "profile auth.json"
+
+    global_home = Path.home() / ".hermes"
+    if profile_dir.resolve(strict=False) != global_home.resolve(strict=False):
+        global_store = _read_auth_store(global_home / "auth.json")
+        providers = global_store.get("providers")
+        if isinstance(providers, dict) and isinstance(providers.get(provider), dict):
+            return True, "global auth.json"
+    return False, ""
+
+
+def _looks_like_anthropic_oauth_token(value: str) -> bool:
+    if not value:
         return False
+    if value.startswith("sk-ant-api"):
+        return False
+    return value.startswith(("sk-ant-", "eyJ", "cc-"))
+
+
+def _classify_env_auth_kind(provider: str, env_var: str, value: str) -> Optional[str]:
+    if not value:
+        return None
+    if provider == "anthropic":
+        if env_var in {"ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"}:
+            return "oauth"
+        if env_var == "ANTHROPIC_API_KEY" and _looks_like_anthropic_oauth_token(value):
+            return "oauth"
+    return "api_key"
+
+
+def _read_auth_summary(profile_dir: Path, provider: Optional[str]) -> dict:
+    """Return non-secret auth method metadata for the profile's provider."""
+    provider_id = (provider or "").strip()
+    empty = {"kind": None, "configured": False, "sources": ()}
+    if not provider_id:
+        return empty
+
+    methods: set[str] = set()
+    sources: list[str] = []
+
+    entries, pool_source = _profile_auth_entries(profile_dir, provider_id)
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        auth_type = str(entry.get("auth_type") or "").strip().lower()
+        if auth_type in {"oauth", "oauth_device_code", "oauth_external", "oauth_pkce"}:
+            methods.add("oauth")
+        elif auth_type in {"api_key", "key"}:
+            methods.add("api_key")
+        elif auth_type:
+            methods.add(auth_type)
+    if entries and pool_source:
+        sources.append(pool_source)
+
+    try:
+        from hermes_cli.auth import PROVIDER_REGISTRY
+        pconfig = PROVIDER_REGISTRY.get(provider_id)
+    except Exception:
+        pconfig = None
+
+    if pconfig and getattr(pconfig, "auth_type", "") == "api_key":
+        env_vars = _read_env_file(profile_dir)
+        for env_var in getattr(pconfig, "api_key_env_vars", ()) or ():
+            kind = _classify_env_auth_kind(provider_id, env_var, env_vars.get(env_var, ""))
+            if kind:
+                methods.add(kind)
+                sources.append(f".env:{env_var}")
+    elif pconfig and str(getattr(pconfig, "auth_type", "")).startswith("oauth"):
+        state_exists, state_source = _auth_provider_state_exists(profile_dir, provider_id)
+        if state_exists:
+            methods.add("oauth")
+            sources.append(state_source)
+
+    if not methods and pconfig:
+        auth_type = getattr(pconfig, "auth_type", "")
+        if auth_type == "external_process":
+            methods.add("external_process")
+        elif auth_type == "aws_sdk":
+            methods.add("aws_sdk")
+
+    if not methods:
+        return empty
+    if "oauth" in methods and "api_key" in methods:
+        kind = "mixed"
+    elif "oauth" in methods:
+        kind = "oauth"
+    elif "api_key" in methods:
+        kind = "api_key"
+    else:
+        kind = sorted(methods)[0]
+
+    deduped_sources = tuple(dict.fromkeys(sources))
+    return {
+        "kind": kind,
+        "configured": bool(deduped_sources or entries),
+        "sources": deduped_sources,
+    }
 
 
 def _count_skills(profile_dir: Path) -> int:
@@ -491,15 +693,27 @@ def list_profiles() -> List[ProfileInfo]:
     # Default profile
     default_home = _get_default_hermes_home()
     if default_home.is_dir():
-        model, provider = _read_config_model(default_home)
+        runtime = _read_config_runtime_summary(default_home)
+        auth = _read_auth_summary(default_home, runtime.get("provider"))
+        gateway_pid = _read_gateway_pid(default_home)
         dist_name, dist_version, dist_source = _read_distribution_meta(default_home)
         profiles.append(ProfileInfo(
             name="default",
             path=default_home,
             is_default=True,
-            gateway_running=_check_gateway_running(default_home),
-            model=model,
-            provider=provider,
+            config_path=default_home / "config.yaml",
+            env_path=default_home / ".env",
+            gateway_running=gateway_pid is not None,
+            gateway_pid=gateway_pid,
+            model=runtime.get("model"),
+            provider=runtime.get("provider"),
+            reasoning_effort=runtime.get("reasoning_effort"),
+            delegation_model=runtime.get("delegation_model"),
+            delegation_provider=runtime.get("delegation_provider"),
+            delegation_reasoning_effort=runtime.get("delegation_reasoning_effort"),
+            auth_kind=auth.get("kind"),
+            auth_configured=bool(auth.get("configured")),
+            auth_sources=auth.get("sources") or (),
             has_env=(default_home / ".env").exists(),
             skill_count=_count_skills(default_home),
             distribution_name=dist_name,
@@ -516,16 +730,28 @@ def list_profiles() -> List[ProfileInfo]:
             name = entry.name
             if not _PROFILE_ID_RE.match(name):
                 continue
-            model, provider = _read_config_model(entry)
+            runtime = _read_config_runtime_summary(entry)
+            auth = _read_auth_summary(entry, runtime.get("provider"))
+            gateway_pid = _read_gateway_pid(entry)
             alias_path = wrapper_dir / name
             dist_name, dist_version, dist_source = _read_distribution_meta(entry)
             profiles.append(ProfileInfo(
                 name=name,
                 path=entry,
                 is_default=False,
-                gateway_running=_check_gateway_running(entry),
-                model=model,
-                provider=provider,
+                config_path=entry / "config.yaml",
+                env_path=entry / ".env",
+                gateway_running=gateway_pid is not None,
+                gateway_pid=gateway_pid,
+                model=runtime.get("model"),
+                provider=runtime.get("provider"),
+                reasoning_effort=runtime.get("reasoning_effort"),
+                delegation_model=runtime.get("delegation_model"),
+                delegation_provider=runtime.get("delegation_provider"),
+                delegation_reasoning_effort=runtime.get("delegation_reasoning_effort"),
+                auth_kind=auth.get("kind"),
+                auth_configured=bool(auth.get("configured")),
+                auth_sources=auth.get("sources") or (),
                 has_env=(entry / ".env").exists(),
                 skill_count=_count_skills(entry),
                 alias_path=alias_path if alias_path.exists() else None,

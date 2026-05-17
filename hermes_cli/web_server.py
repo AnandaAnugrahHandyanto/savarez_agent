@@ -2628,12 +2628,27 @@ def _profile_attr(info, name: str, default: Any = None) -> Any:
 
 
 def _profile_to_dict(info) -> Dict[str, Any]:
+    config_path = _profile_attr(info, "config_path")
+    env_path = _profile_attr(info, "env_path")
     return {
         "name": _profile_attr(info, "name", ""),
         "path": str(_profile_attr(info, "path", "")),
         "is_default": bool(_profile_attr(info, "is_default", False)),
+        "config_path": str(config_path) if config_path else None,
+        "env_path": str(env_path) if env_path else None,
+        "gateway_running": bool(_profile_attr(info, "gateway_running", False)),
+        "gateway_pid": _profile_attr(info, "gateway_pid"),
         "model": _profile_attr(info, "model"),
         "provider": _profile_attr(info, "provider"),
+        "reasoning_effort": _profile_attr(info, "reasoning_effort"),
+        "delegation_model": _profile_attr(info, "delegation_model"),
+        "delegation_provider": _profile_attr(info, "delegation_provider"),
+        "delegation_reasoning_effort": _profile_attr(
+            info, "delegation_reasoning_effort"
+        ),
+        "auth_kind": _profile_attr(info, "auth_kind"),
+        "auth_configured": bool(_profile_attr(info, "auth_configured", False)),
+        "auth_sources": list(_profile_attr(info, "auth_sources", ()) or ()),
         "has_env": bool(_profile_attr(info, "has_env", False)),
         "skill_count": int(_profile_attr(info, "skill_count", 0) or 0),
     }
@@ -2649,13 +2664,26 @@ def _fallback_profile_dicts(profiles_mod) -> List[Dict[str, Any]]:
     profiles: List[Dict[str, Any]] = []
     default_home = profiles_mod._get_default_hermes_home()
     if default_home.is_dir():
-        model, provider = _safe(lambda: profiles_mod._read_config_model(default_home), (None, None))
+        runtime = _safe(lambda: profiles_mod._read_config_runtime_summary(default_home), {})
+        auth = _safe(lambda: profiles_mod._read_auth_summary(default_home, runtime.get("provider")), {})
+        gateway_pid = _safe(lambda: profiles_mod._read_gateway_pid(default_home), None)
         profiles.append({
             "name": "default",
             "path": str(default_home),
             "is_default": True,
-            "model": model,
-            "provider": provider,
+            "config_path": str(default_home / "config.yaml"),
+            "env_path": str(default_home / ".env"),
+            "gateway_running": gateway_pid is not None,
+            "gateway_pid": gateway_pid,
+            "model": runtime.get("model"),
+            "provider": runtime.get("provider"),
+            "reasoning_effort": runtime.get("reasoning_effort"),
+            "delegation_model": runtime.get("delegation_model"),
+            "delegation_provider": runtime.get("delegation_provider"),
+            "delegation_reasoning_effort": runtime.get("delegation_reasoning_effort"),
+            "auth_kind": auth.get("kind"),
+            "auth_configured": bool(auth.get("configured")),
+            "auth_sources": list(auth.get("sources") or ()),
             "has_env": (default_home / ".env").exists(),
             "skill_count": _safe(lambda: profiles_mod._count_skills(default_home), 0),
         })
@@ -2665,13 +2693,26 @@ def _fallback_profile_dicts(profiles_mod) -> List[Dict[str, Any]]:
         for entry in sorted(profiles_root.iterdir()):
             if not entry.is_dir() or not profiles_mod._PROFILE_ID_RE.match(entry.name):
                 continue
-            model, provider = _safe(lambda entry=entry: profiles_mod._read_config_model(entry), (None, None))
+            runtime = _safe(lambda entry=entry: profiles_mod._read_config_runtime_summary(entry), {})
+            auth = _safe(lambda entry=entry, runtime=runtime: profiles_mod._read_auth_summary(entry, runtime.get("provider")), {})
+            gateway_pid = _safe(lambda entry=entry: profiles_mod._read_gateway_pid(entry), None)
             profiles.append({
                 "name": entry.name,
                 "path": str(entry),
                 "is_default": False,
-                "model": model,
-                "provider": provider,
+                "config_path": str(entry / "config.yaml"),
+                "env_path": str(entry / ".env"),
+                "gateway_running": gateway_pid is not None,
+                "gateway_pid": gateway_pid,
+                "model": runtime.get("model"),
+                "provider": runtime.get("provider"),
+                "reasoning_effort": runtime.get("reasoning_effort"),
+                "delegation_model": runtime.get("delegation_model"),
+                "delegation_provider": runtime.get("delegation_provider"),
+                "delegation_reasoning_effort": runtime.get("delegation_reasoning_effort"),
+                "auth_kind": auth.get("kind"),
+                "auth_configured": bool(auth.get("configured")),
+                "auth_sources": list(auth.get("sources") or ()),
                 "has_env": (entry / ".env").exists(),
                 "skill_count": _safe(lambda entry=entry: profiles_mod._count_skills(entry), 0),
             })

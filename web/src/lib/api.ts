@@ -505,8 +505,19 @@ export interface ProfileInfo {
   name: string;
   path: string;
   is_default: boolean;
+  config_path: string | null;
+  env_path: string | null;
+  gateway_running: boolean;
+  gateway_pid: number | null;
   model: string | null;
   provider: string | null;
+  reasoning_effort: string | null;
+  delegation_model: string | null;
+  delegation_provider: string | null;
+  delegation_reasoning_effort: string | null;
+  auth_kind: string | null;
+  auth_configured: boolean;
+  auth_sources: string[];
   has_env: boolean;
   skill_count: number;
 }
