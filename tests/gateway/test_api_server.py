@@ -705,6 +705,46 @@ class TestChatCompletionsEndpoint:
                 assert "Hello!" in body
 
     @pytest.mark.asyncio
+    async def test_stream_show_reasoning_emits_think_block_before_answer(self, adapter):
+        """display.show_reasoning exposes final reasoning as inline <think> tags."""
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            async def _mock_run_agent(**kwargs):
+                cb = kwargs.get("stream_delta_callback")
+                if cb:
+                    cb("Visible ")
+                    cb("answer.")
+                return (
+                    {
+                        "final_response": "Visible answer.",
+                        "last_reasoning": "I should answer directly.",
+                        "messages": [],
+                        "api_calls": 1,
+                    },
+                    {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+                )
+
+            with (
+                patch("gateway.platforms.api_server._api_server_show_reasoning_enabled", return_value=True),
+                patch.object(adapter, "_run_agent", side_effect=_mock_run_agent),
+            ):
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "test",
+                        "messages": [{"role": "user", "content": "hi"}],
+                        "stream": True,
+                    },
+                )
+                assert resp.status == 200
+                body = await resp.text()
+
+        assert "<think>" in body
+        assert "I should answer directly." in body
+        assert "Visible answer." in body
+        assert body.index("<think>") < body.index("Visible answer.")
+
+    @pytest.mark.asyncio
     async def test_stream_task_done_callback_enqueues_eos_for_chat_completions(self, adapter):
         """Regression guard for #24451: completion callback must signal SSE EOS."""
         app = _create_app(adapter)
@@ -1172,6 +1212,65 @@ class TestChatCompletionsEndpoint:
             assert len(call_kwargs["conversation_history"]) == 2
             assert call_kwargs["conversation_history"][0] == {"role": "user", "content": "1+1=?"}
             assert call_kwargs["conversation_history"][1] == {"role": "assistant", "content": "2"}
+
+    @pytest.mark.asyncio
+    async def test_assistant_history_think_blocks_are_stripped_before_agent(self, adapter):
+        """Inline display reasoning from stateless clients must not be replayed."""
+        mock_result = {"final_response": "4", "messages": [], "api_calls": 1}
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "hermes-agent",
+                        "messages": [
+                            {"role": "user", "content": "1+1=?"},
+                            {
+                                "role": "assistant",
+                                "content": "<think>private scratchpad</think>2",
+                            },
+                            {"role": "user", "content": "Now add 2 more"},
+                        ],
+                    },
+                )
+
+        assert resp.status == 200
+        history = mock_run.call_args.kwargs["conversation_history"]
+        assert history[1] == {"role": "assistant", "content": "2"}
+
+    @pytest.mark.asyncio
+    async def test_show_reasoning_prepends_think_block_to_non_streaming_content(self, adapter):
+        """display.show_reasoning is honored on /v1/chat/completions."""
+        mock_result = {
+            "final_response": "17 * 23 = 391.",
+            "last_reasoning": "Compute 17 * 20 + 17 * 3.",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with (
+                patch("gateway.platforms.api_server._api_server_show_reasoning_enabled", return_value=True),
+                patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run,
+            ):
+                mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "hermes-agent",
+                        "messages": [{"role": "user", "content": "What is 17 * 23?"}],
+                    },
+                )
+                assert resp.status == 200
+                data = await resp.json()
+
+        content = data["choices"][0]["message"]["content"]
+        assert content.startswith("<think>\nCompute 17 * 20 + 17 * 3.\n</think>\n\n")
+        assert content.endswith("17 * 23 = 391.")
 
     @pytest.mark.asyncio
     async def test_agent_error_returns_500(self, adapter):

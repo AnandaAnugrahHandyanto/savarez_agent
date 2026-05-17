@@ -271,6 +271,77 @@ def _content_has_visible_payload(content: Any) -> bool:
     return False
 
 
+def _strip_inline_reasoning_blocks(text: str) -> str:
+    """Remove display-only reasoning tags from replayed assistant content."""
+    if not text:
+        return ""
+    text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL | re.IGNORECASE)
+    text = re.sub(r'<thinking>.*?</thinking>', '', text, flags=re.DOTALL | re.IGNORECASE)
+    text = re.sub(r'<reasoning>.*?</reasoning>', '', text, flags=re.DOTALL | re.IGNORECASE)
+    text = re.sub(
+        r'<REASONING_SCRATCHPAD>.*?</REASONING_SCRATCHPAD>',
+        '',
+        text,
+        flags=re.DOTALL | re.IGNORECASE,
+    )
+    text = re.sub(r'<thought>.*?</thought>', '', text, flags=re.DOTALL | re.IGNORECASE)
+    text = re.sub(
+        r'(?:^|\n)[ \t]*<(?:think|thinking|reasoning|thought|REASONING_SCRATCHPAD)\b[^>]*>.*$',
+        '',
+        text,
+        flags=re.DOTALL | re.IGNORECASE,
+    )
+    return re.sub(
+        r'</?(?:think|thinking|reasoning|thought|REASONING_SCRATCHPAD)>\s*',
+        '',
+        text,
+        flags=re.IGNORECASE,
+    )
+
+
+def _strip_assistant_display_reasoning(content: Any) -> Any:
+    """Strip inline reasoning blocks from assistant history sent by clients."""
+    if isinstance(content, str):
+        return _strip_inline_reasoning_blocks(content)
+    if isinstance(content, list):
+        cleaned: List[Any] = []
+        for part in content:
+            if isinstance(part, dict) and str(part.get("type") or "").strip().lower() in _TEXT_PART_TYPES:
+                next_part = dict(part)
+                next_part["text"] = _strip_inline_reasoning_blocks(str(next_part.get("text") or ""))
+                cleaned.append(next_part)
+            else:
+                cleaned.append(part)
+        return cleaned
+    return content
+
+
+def _api_server_show_reasoning_enabled() -> bool:
+    """Resolve display.show_reasoning for the API server platform."""
+    try:
+        from gateway.display_config import resolve_display_setting
+        from gateway.run import _load_gateway_config
+
+        return bool(
+            resolve_display_setting(
+                _load_gateway_config(),
+                "api_server",
+                "show_reasoning",
+                False,
+            )
+        )
+    except Exception:
+        return False
+
+
+def _prepend_reasoning_think_block(content: str, reasoning: Any) -> str:
+    """Expose reasoning to OpenAI-compatible UIs using inline think tags."""
+    reasoning_text = str(reasoning or "").strip()
+    if not content or not reasoning_text:
+        return content
+    return f"<think>\n{reasoning_text}\n</think>\n\n{content}"
+
+
 def _multimodal_validation_error(exc: ValueError, *, param: str) -> "web.Response":
     """Translate a ``_normalize_multimodal_content`` ValueError into a 400 response."""
     raw = str(exc)
@@ -1027,6 +1098,8 @@ class APIServerAdapter(BasePlatformAdapter):
                     content = _normalize_multimodal_content(raw_content)
                 except ValueError as exc:
                     return _multimodal_validation_error(exc, param=f"messages[{idx}].content")
+                if role == "assistant":
+                    content = _strip_assistant_display_reasoning(content)
                 conversation_messages.append({"role": role, "content": content})
 
         # Extract the last user message as the primary input
@@ -1103,6 +1176,7 @@ class APIServerAdapter(BasePlatformAdapter):
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:29]}"
         model_name = body.get("model", self._model_name)
         created = int(time.time())
+        show_reasoning = _api_server_show_reasoning_enabled()
 
         if stream:
             import queue as _q
@@ -1195,6 +1269,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 request, completion_id, model_name, created, _stream_q,
                 agent_task, agent_ref, session_id=session_id,
                 gateway_session_key=gateway_session_key,
+                show_reasoning=show_reasoning,
             )
 
         # Non-streaming: run the agent (with optional Idempotency-Key)
@@ -1229,6 +1304,11 @@ class APIServerAdapter(BasePlatformAdapter):
                 )
 
         final_response = result.get("final_response") or ""
+        if show_reasoning:
+            final_response = _prepend_reasoning_think_block(
+                final_response,
+                result.get("last_reasoning"),
+            )
         is_partial = bool(result.get("partial"))
         is_failed = bool(result.get("failed"))
         completed = bool(result.get("completed", True))
@@ -1311,6 +1391,7 @@ class APIServerAdapter(BasePlatformAdapter):
         self, request: "web.Request", completion_id: str, model: str,
         created: int, stream_q, agent_task, agent_ref=None, session_id: str = None,
         gateway_session_key: str = None,
+        show_reasoning: bool = False,
     ) -> "web.StreamResponse":
         """Write real streaming SSE from agent's stream_delta_callback queue.
 
@@ -1340,6 +1421,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
         try:
             last_activity = time.monotonic()
+            buffered_content_parts: List[str] = []
 
             # Role chunk
             role_chunk = {
@@ -1351,6 +1433,14 @@ class APIServerAdapter(BasePlatformAdapter):
             last_activity = time.monotonic()
 
             # Helper — route a queue item to the correct SSE event.
+            async def _write_content_delta(text: str):
+                content_chunk = {
+                    "id": completion_id, "object": "chat.completion.chunk",
+                    "created": created, "model": model,
+                    "choices": [{"index": 0, "delta": {"content": text}, "finish_reason": None}],
+                }
+                await response.write(f"data: {json.dumps(content_chunk)}\n\n".encode())
+
             async def _emit(item):
                 """Write a single queue item to the SSE stream.
 
@@ -1367,12 +1457,10 @@ class APIServerAdapter(BasePlatformAdapter):
                         f"event: hermes.tool.progress\ndata: {event_data}\n\n".encode()
                     )
                 else:
-                    content_chunk = {
-                        "id": completion_id, "object": "chat.completion.chunk",
-                        "created": created, "model": model,
-                        "choices": [{"index": 0, "delta": {"content": item}, "finish_reason": None}],
-                    }
-                    await response.write(f"data: {json.dumps(content_chunk)}\n\n".encode())
+                    if show_reasoning:
+                        buffered_content_parts.append(str(item))
+                    else:
+                        await _write_content_delta(str(item))
                 return time.monotonic()
 
             # Stream content chunks as they arrive from the agent
@@ -1404,11 +1492,22 @@ class APIServerAdapter(BasePlatformAdapter):
 
             # Get usage from completed agent
             usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+            result: Dict[str, Any] = {}
             try:
                 result, agent_usage = await agent_task
                 usage = agent_usage or usage
             except Exception as exc:
                 logger.warning("Agent task %s failed, usage data lost: %s", completion_id, exc)
+
+            if show_reasoning:
+                buffered_content = "".join(buffered_content_parts)
+                content = buffered_content or str(result.get("final_response") or "")
+                content = _prepend_reasoning_think_block(
+                    content,
+                    result.get("last_reasoning"),
+                )
+                if content:
+                    await _write_content_delta(content)
 
             # Finish chunk
             finish_chunk = {
