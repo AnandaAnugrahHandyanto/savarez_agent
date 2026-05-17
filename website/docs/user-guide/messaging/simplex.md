@@ -45,7 +45,7 @@ Add these to `~/.hermes/.env`:
 ```
 SIMPLEX_WS_URL=ws://127.0.0.1:5225
 SIMPLEX_ALLOWED_USERS=<contact-id-1>,<contact-id-2>
-SIMPLEX_HOME_CHANNEL=<contact-id>
+SIMPLEX_HOME_CHANNEL=<contact-display-name-or-group-display-name>
 ```
 
 | Variable | Required | Description |
@@ -53,19 +53,36 @@ SIMPLEX_HOME_CHANNEL=<contact-id>
 | `SIMPLEX_WS_URL` | Yes | WebSocket URL of the simplex-chat daemon |
 | `SIMPLEX_ALLOWED_USERS` | Recommended | Comma-separated contact IDs allowed to use the agent |
 | `SIMPLEX_ALLOW_ALL_USERS` | Optional | Set `true` to allow every contact (use carefully) |
-| `SIMPLEX_HOME_CHANNEL` | Optional | Default contact ID for cron job delivery |
+| `SIMPLEX_HOME_CHANNEL` | Optional | Default DM display name or `group:<group-display-name>` for cron job delivery |
 | `SIMPLEX_HOME_CHANNEL_NAME` | Optional | Human label for the home channel |
 
-## Find your contact ID
+## Find your contact ID and delivery target
 
-After starting the daemon, open a conversation with your agent contact. The contact ID will appear in session logs or via `hermes send_message action=list`.
+After starting the daemon, open a conversation with your agent contact and run:
+
+```bash
+simplex-chat -e '/info <display-name>' -t 2 --execute-log messages
+```
+
+Use the numeric `contact ID` in `SIMPLEX_ALLOWED_USERS` for authorization.
+For outbound delivery, SimpleX's text command interface sends DMs to local
+display names (for example `@alice hi`), so use the contact's local display
+name for `SIMPLEX_HOME_CHANNEL` and `send_message` targets such as
+`simplex:alice`. Use `simplex:group:<group-display-name>` for group delivery.
+
+The SimpleX adapter receives live `newChatItem` events over the daemon
+WebSocket. If the socket reconnects while Hermes is still running, it does a
+one-time `/chats` + targeted `/tail @contact` catch-up over the same persistent
+socket to recover items that arrived during the connection gap. On fresh
+startup it primes recent history without replaying it, so old messages do not
+trigger duplicate bot replies.
 
 ## Authorization
 
 By default **all contacts are denied**. You must either:
 
 1. Set `SIMPLEX_ALLOWED_USERS` to a comma-separated list of contact IDs, or
-2. Use **DM pairing** — send any message to the bot and it will reply with a pairing code. Enter that code via `hermes gateway pair`.
+2. Use **DM pairing** — send any message to the bot and it will reply with a pairing code. Enter that code via `hermes pairing approve <code>`.
 
 ## Using SimpleX with cron jobs
 
@@ -81,7 +98,7 @@ cronjob(
 Or target a specific contact:
 
 ```python
-send_message(target="simplex:<contact-id>", message="Done!")
+send_message(target="simplex:<contact-display-name>", message="Done!")
 ```
 
 ## Privacy notes
@@ -96,4 +113,4 @@ send_message(target="simplex:<contact-id>", message="Done!")
 
 **"websockets not installed"** — Run `pip install websockets`.
 
-**Messages not received** — Check that the contact's ID is in `SIMPLEX_ALLOWED_USERS` or approve them via DM pairing.
+**Messages not received** — Check that the contact's numeric ID is in `SIMPLEX_ALLOWED_USERS` or approve them via DM pairing. Also verify `simplex-chat -p 5225` is still running; Hermes receives live events over the daemon WebSocket and does one catch-up pass after an in-process reconnect.

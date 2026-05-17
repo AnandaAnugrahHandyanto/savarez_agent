@@ -215,7 +215,7 @@ async def test_send_dm():
     result = await adapter.send("contact-42", "Hello, SimpleX!")
     mock_ws.send.assert_called_once()
     payload = json.loads(mock_ws.send.call_args[0][0])
-    assert payload["cmd"] == "@[contact-42] Hello, SimpleX!"
+    assert payload["cmd"] == "@contact-42 Hello, SimpleX!"
     assert payload["corrId"].startswith(_CORR_PREFIX)
     assert result.success is True
 
@@ -231,18 +231,52 @@ async def test_send_group():
 
     result = await adapter.send("group:grp-99", "Hello, group!")
     payload = json.loads(mock_ws.send.call_args[0][0])
-    assert payload["cmd"] == "#[grp-99] Hello, group!"
+    assert payload["cmd"] == "#grp-99 Hello, group!"
     assert result.success is True
 
 
 @pytest.mark.asyncio
-async def test_send_when_ws_not_connected_does_not_crash():
+async def test_send_quotes_display_names_with_spaces():
     from gateway.config import PlatformConfig
     cfg = PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"})
     adapter = SimplexAdapter(cfg)
-    # No _ws assigned — _send_ws should drop quietly
+
+    mock_ws = AsyncMock()
+    adapter._ws = mock_ws
+
+    result = await adapter.send("Alice Smith", "Hello")
+    payload = json.loads(mock_ws.send.call_args[0][0])
+    assert payload["cmd"] == "@'Alice Smith' Hello"
+    assert result.success is True
+
+
+@pytest.mark.asyncio
+async def test_send_quotes_group_names_with_spaces():
+    from gateway.config import PlatformConfig
+    cfg = PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"})
+    adapter = SimplexAdapter(cfg)
+
+    mock_ws = AsyncMock()
+    adapter._ws = mock_ws
+
+    result = await adapter.send("group:Team Chat", "Hello")
+    payload = json.loads(mock_ws.send.call_args[0][0])
+    assert payload["cmd"] == "#'Team Chat' Hello"
+    assert result.success is True
+
+
+@pytest.mark.asyncio
+async def test_send_when_ws_not_connected_reports_failure():
+    from gateway.config import PlatformConfig
+    cfg = PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"})
+    adapter = SimplexAdapter(cfg)
+    adapter._send_ws = AsyncMock(return_value=False)  # type: ignore
+
     result = await adapter.send("contact-42", "hi")
-    assert result.success is True  # send() always returns success — fire-and-forget
+
+    assert result.success is False
+    assert "WebSocket unavailable" in (result.error or "")
+    adapter._send_ws.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------
@@ -262,6 +296,183 @@ async def test_handle_event_filters_own_corr_id():
     await adapter._handle_event({"corrId": own, "type": "newChatItem"})
     handler_mock.assert_not_called()
     assert own not in adapter._pending_corr_ids  # discarded
+
+
+@pytest.mark.asyncio
+async def test_handle_event_unwraps_simplex_resp_new_chat_item():
+    from gateway.config import PlatformConfig
+    cfg = PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"})
+    adapter = SimplexAdapter(cfg)
+    handler_mock = AsyncMock()
+    adapter._handle_new_chat_item = handler_mock  # type: ignore
+
+    payload = {"chatInfo": {"type": "direct"}, "chatItem": {"meta": {"itemId": 1}}}
+    await adapter._handle_event({"corrId": "", "resp": {"type": "newChatItem", **payload}})
+
+    handler_mock.assert_awaited_once_with({"type": "newChatItem", **payload})
+
+
+@pytest.mark.asyncio
+async def test_handle_event_unwraps_nested_simplex_new_chat_item():
+    from gateway.config import PlatformConfig
+    cfg = PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"})
+    adapter = SimplexAdapter(cfg)
+    handler_mock = AsyncMock()
+    adapter._handle_new_chat_item = handler_mock  # type: ignore
+
+    wrapper = {"chatInfo": {"type": "direct"}, "chatItem": {"meta": {"itemId": 1}}}
+    await adapter._handle_event({"corrId": "", "resp": {"type": "newChatItem", "chatItem": wrapper}})
+
+    handler_mock.assert_awaited_once_with(wrapper)
+
+
+@pytest.mark.asyncio
+async def test_handle_event_normalizes_chatdata_catch_up_items():
+    from gateway.config import PlatformConfig
+    cfg = PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"})
+    adapter = SimplexAdapter(cfg)
+    handler_mock = AsyncMock()
+    adapter._handle_new_chat_item = handler_mock  # type: ignore
+    adapter._catch_up_primed = True
+
+    chat_info = {"type": "direct", "contact": {"contactId": 4, "localDisplayName": "gdg"}}
+    item = {
+        "meta": {"itemId": 2, "itemStatus": {"type": "rcvNew"}},
+        "content": {"type": "rcvMsgContent", "msgContent": {"type": "text", "text": "hi"}},
+    }
+    await adapter._handle_event({
+        "corrId": "simplex-catchup-tail-1",
+        "resp": {"type": "chatItems", "chatItems": {"chatInfo": chat_info, "chatItems": [item]}},
+    })
+
+    handler_mock.assert_awaited_once_with({"chatInfo": chat_info, "chatItem": item}, dedupe=False)
+
+
+@pytest.mark.asyncio
+async def test_request_catch_up_uses_persistent_websocket_only():
+    from gateway.config import PlatformConfig
+    cfg = PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"})
+    adapter = SimplexAdapter(cfg)
+    send_mock = AsyncMock(return_value=True)
+    adapter._send_ws = send_mock  # type: ignore
+
+    await adapter._request_catch_up()
+
+    send_mock.assert_awaited_once()
+    assert send_mock.await_args is not None
+    args, kwargs = send_mock.await_args
+    payload = args[0]
+    assert payload["cmd"] == "/chats"
+    assert kwargs == {"persistent_only": True}
+
+
+@pytest.mark.asyncio
+async def test_catch_up_chats_requests_tails_on_persistent_websocket_only():
+    from gateway.config import PlatformConfig
+    cfg = PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"})
+    adapter = SimplexAdapter(cfg)
+    send_mock = AsyncMock(return_value=True)
+    adapter._send_ws = send_mock  # type: ignore
+
+    await adapter._handle_catch_up_chats([
+        {"chatInfo": {"type": "direct", "contact": {"localDisplayName": "gdg"}}}
+    ])
+
+    send_mock.assert_awaited_once()
+    assert send_mock.await_args is not None
+    args, kwargs = send_mock.await_args
+    payload = args[0]
+    assert payload["cmd"] == "/tail @gdg 50"
+    assert kwargs == {"persistent_only": True}
+    assert adapter._catch_up_pending == 1
+
+
+@pytest.mark.asyncio
+async def test_catch_up_chat_items_primes_then_processes_only_new_received_items():
+    from gateway.config import PlatformConfig
+    cfg = PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"})
+    adapter = SimplexAdapter(cfg)
+    handler_mock = AsyncMock()
+    adapter._handle_new_chat_item = handler_mock  # type: ignore
+
+    old_received = {
+        "chatInfo": {"type": "direct", "contact": {"contactId": 4, "localDisplayName": "gdg"}},
+        "chatItem": {
+            "meta": {"itemId": 20, "itemStatus": {"type": "rcvNew"}},
+            "content": {"type": "rcvMsgContent", "msgContent": {"type": "text", "text": "old"}},
+        },
+    }
+    new_received = {
+        "chatInfo": {"type": "direct", "contact": {"contactId": 4, "localDisplayName": "gdg"}},
+        "chatItem": {
+            "meta": {"itemId": 21, "itemStatus": {"type": "rcvNew"}},
+            "content": {"type": "rcvMsgContent", "msgContent": {"type": "text", "text": "new"}},
+        },
+    }
+    own_sent = {
+        "chatInfo": {"type": "direct", "contact": {"contactId": 4, "localDisplayName": "gdg"}},
+        "chatItem": {
+            "meta": {"itemId": 22, "itemStatus": {"type": "sndRcvd"}},
+            "content": {"type": "sndMsgContent", "msgContent": {"type": "text", "text": "sent"}},
+        },
+    }
+
+    await adapter._handle_event({"corrId": "catchup-1", "resp": {"type": "chatItems", "chatItems": [old_received]}})
+    handler_mock.assert_not_called()
+
+    await adapter._handle_event({"corrId": "catchup-2", "resp": {"type": "chatItems", "chatItems": [old_received, own_sent, new_received]}})
+
+    handler_mock.assert_awaited_once_with(new_received, dedupe=False)
+
+
+@pytest.mark.asyncio
+async def test_live_then_catch_up_duplicate_is_processed_once():
+    from gateway.config import PlatformConfig
+    cfg = PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"})
+    adapter = SimplexAdapter(cfg)
+    handler_mock = AsyncMock()
+    adapter.handle_message = handler_mock  # type: ignore
+
+    item = {
+        "chatInfo": {"type": "direct", "contact": {"contactId": 4, "localDisplayName": "gdg"}},
+        "chatItem": {
+            "meta": {"itemId": 30, "itemStatus": {"type": "rcvNew"}, "itemTs": "2026-05-15T18:20:00Z"},
+            "content": {"type": "rcvMsgContent", "msgContent": {"type": "text", "text": "once"}},
+        },
+    }
+
+    await adapter._handle_event({"corrId": "", "resp": {"type": "newChatItem", **item}})
+    assert handler_mock.await_count == 1
+
+    adapter._catch_up_primed = True
+    await adapter._handle_event({"corrId": "catchup", "resp": {"type": "chatItems", "chatItems": [item]}})
+    assert handler_mock.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_group_inbound_chat_id_uses_display_name_for_reply_target():
+    from gateway.config import PlatformConfig
+    cfg = PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"})
+    adapter = SimplexAdapter(cfg)
+    handler_mock = AsyncMock()
+    adapter.handle_message = handler_mock  # type: ignore
+
+    await adapter._handle_new_chat_item({
+        "chatInfo": {
+            "type": "group",
+            "groupInfo": {"groupId": 99, "localDisplayName": "Team Chat"},
+        },
+        "chatItem": {
+            "meta": {"itemId": 31, "itemStatus": {"type": "rcvNew"}},
+            "content": {"type": "rcvMsgContent", "msgContent": {"type": "text", "text": "hi"}},
+            "chatItemMember": {"memberId": 7, "localDisplayName": "Alice"},
+        },
+    })
+
+    assert handler_mock.await_args is not None
+    event = handler_mock.await_args.args[0]
+    assert event.source.chat_id == "group:Team Chat"
+    assert event.source.chat_name == "Team Chat"
 
 
 # ---------------------------------------------------------------------------

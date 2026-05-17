@@ -844,6 +844,22 @@ class TestParseTargetRefDiscord:
         assert is_explicit is True
 
 
+class TestParseTargetRefSimpleX:
+    """_parse_target_ref treats SimpleX display names and group refs as explicit."""
+
+    def test_simplex_display_name_is_explicit(self):
+        chat_id, thread_id, is_explicit = _parse_target_ref("simplex", "gdg")
+        assert chat_id == "gdg"
+        assert thread_id is None
+        assert is_explicit is True
+
+    def test_simplex_group_ref_is_explicit(self):
+        chat_id, thread_id, is_explicit = _parse_target_ref("simplex", "group:team")
+        assert chat_id == "group:team"
+        assert thread_id is None
+        assert is_explicit is True
+
+
 class TestParseTargetRefMatrix:
     """_parse_target_ref correctly handles Matrix room IDs and user MXIDs."""
 
