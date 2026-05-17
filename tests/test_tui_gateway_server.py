@@ -59,6 +59,34 @@ def test_write_json_returns_false_on_broken_pipe(monkeypatch):
     assert server.write_json({"ok": True}) is False
 
 
+def test_get_usage_prefers_live_display_prompt_tokens():
+    agent = types.SimpleNamespace(
+        model="minimax/MiniMax-M2.7",
+        session_input_tokens=0,
+        session_output_tokens=0,
+        session_cache_read_tokens=0,
+        session_cache_write_tokens=0,
+        session_reasoning_tokens=0,
+        session_prompt_tokens=109_000,
+        session_completion_tokens=0,
+        session_total_tokens=109_000,
+        session_api_calls=7,
+        provider="minimax",
+        base_url="",
+        context_compressor=types.SimpleNamespace(
+            display_prompt_tokens=165_349,
+            last_prompt_tokens=109_000,
+            context_length=204_800,
+            compression_count=1,
+        ),
+    )
+
+    usage = server._get_usage(agent)
+
+    assert usage["context_used"] == 165_349
+    assert usage["context_percent"] == 81
+
+
 def test_dispatch_rejects_non_object_request():
     resp = server.dispatch([])
 

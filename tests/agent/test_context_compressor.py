@@ -47,11 +47,13 @@ class TestUpdateFromResponse:
             "total_tokens": 6000,
         })
         assert compressor.last_prompt_tokens == 5000
+        assert compressor.display_prompt_tokens == 5000
         assert compressor.last_completion_tokens == 1000
 
     def test_missing_fields_default_zero(self, compressor):
         compressor.update_from_response({})
         assert compressor.last_prompt_tokens == 0
+        assert compressor.display_prompt_tokens == 0
 
 
 

@@ -112,12 +112,22 @@ class TestDefaults:
         assert status["threshold_tokens"] == 100000
         assert 0 < status["usage_percent"] <= 100
 
+    def test_default_get_status_prefers_display_prompt_tokens(self):
+        engine = StubEngine()
+        engine.last_prompt_tokens = 109000
+        engine.display_prompt_tokens = 165349
+        status = engine.get_status()
+        assert status["display_prompt_tokens"] == 165349
+        assert status["usage_percent"] == pytest.approx(82.6745)
+
     def test_on_session_reset(self):
         engine = StubEngine()
         engine.last_prompt_tokens = 999
+        engine.display_prompt_tokens = 1234
         engine.compression_count = 3
         engine.on_session_reset()
         assert engine.last_prompt_tokens == 0
+        assert engine.display_prompt_tokens == 0
         assert engine.compression_count == 0
 
     def test_should_compress_preflight_default_false(self):

@@ -570,6 +570,7 @@ class ContextCompressor(ContextEngine):
         self._context_probed = False  # True after a step-down from context error
 
         self.last_prompt_tokens = 0
+        self.display_prompt_tokens = 0
         self.last_completion_tokens = 0
 
         self.summary_model = summary_model_override or ""
@@ -596,6 +597,7 @@ class ContextCompressor(ContextEngine):
     def update_from_response(self, usage: Dict[str, Any]):
         """Update tracked token usage from API response."""
         self.last_prompt_tokens = usage.get("prompt_tokens", 0)
+        self.display_prompt_tokens = self.last_prompt_tokens
         self.last_completion_tokens = usage.get("completion_tokens", 0)
 
     def should_compress(self, prompt_tokens: int = None) -> bool:

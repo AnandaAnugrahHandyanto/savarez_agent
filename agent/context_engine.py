@@ -44,6 +44,7 @@ class ContextEngine(ABC):
     # Engines MUST maintain these. run_agent.py reads them directly.
 
     last_prompt_tokens: int = 0
+    display_prompt_tokens: int = 0
     last_completion_tokens: int = 0
     last_total_tokens: int = 0
     threshold_tokens: int = 0
@@ -147,6 +148,7 @@ class ContextEngine(ABC):
         Default resets compression_count and token tracking.
         """
         self.last_prompt_tokens = 0
+        self.display_prompt_tokens = 0
         self.last_completion_tokens = 0
         self.last_total_tokens = 0
         self.compression_count = 0
@@ -182,10 +184,16 @@ class ContextEngine(ABC):
         """
         return {
             "last_prompt_tokens": self.last_prompt_tokens,
+            "display_prompt_tokens": self.display_prompt_tokens,
             "threshold_tokens": self.threshold_tokens,
             "context_length": self.context_length,
             "usage_percent": (
-                min(100, self.last_prompt_tokens / self.context_length * 100)
+                min(
+                    100,
+                    (self.display_prompt_tokens or self.last_prompt_tokens)
+                    / self.context_length
+                    * 100,
+                )
                 if self.context_length else 0
             ),
             "compression_count": self.compression_count,
