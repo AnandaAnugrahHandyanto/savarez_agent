@@ -32,6 +32,7 @@ import { usePageHeader } from "@/contexts/usePageHeader";
 import { useI18n } from "@/i18n";
 import { PluginSlot } from "@/plugins";
 import { ModelPickerDialog } from "@/components/ModelPickerDialog";
+import { Tabs, TabsList, TabsTrigger } from "@nous-research/ui/ui/components/tabs";
 
 const PERIODS = [
   { label: "7d", days: 7 },
@@ -1041,120 +1042,191 @@ export default function ModelsPage() {
     <div className="flex flex-col gap-6">
       <PluginSlot name="models:top" />
 
-      <div className="grid gap-6 lg:grid-cols-2">
-        <ModelSettingsPanel
-          aux={aux}
-          refreshKey={saveKey}
-          onSaved={onAssigned}
-        />
+      <Tabs defaultValue="settings">
+        {(activeTab, setActiveTab) => (
+          <>
+            <TabsList className="mb-2">
+              <TabsTrigger
+                value="settings"
+                active={activeTab === "settings"}
+                onClick={() => setActiveTab("settings")}
+              >
+                Settings
+              </TabsTrigger>
+              <TabsTrigger
+                value="used-models"
+                active={activeTab === "used-models"}
+                onClick={() => setActiveTab("used-models")}
+              >
+                Used Models
+              </TabsTrigger>
+            </TabsList>
 
-        {data && (
-          <Card>
-            <CardContent className="py-6">
-              <Stats
-                items={
-                  showTokens
-                    ? [
-                        {
-                          label: t.models.modelsUsed,
-                          value: String(data.totals.distinct_models),
-                        },
-                        {
-                          label: t.analytics.totalTokens,
-                          value: formatTokens(
-                            data.totals.total_input + data.totals.total_output,
-                          ),
-                        },
-                        {
-                          label: t.analytics.input,
-                          value: formatTokens(data.totals.total_input),
-                        },
-                        {
-                          label: t.analytics.output,
-                          value: formatTokens(data.totals.total_output),
-                        },
-                        {
-                          label: t.models.estimatedCost,
-                          value: formatCost(data.totals.total_estimated_cost),
-                        },
-                        {
-                          label: t.analytics.totalSessions,
-                          value: String(data.totals.total_sessions),
-                        },
-                      ]
-                    : [
-                        {
-                          label: t.models.modelsUsed,
-                          value: String(data.totals.distinct_models),
-                        },
-                        {
-                          label: t.analytics.totalSessions,
-                          value: String(data.totals.total_sessions),
-                        },
-                      ]
-                }
-              />
-              {!showTokens && (
-                <p className="mt-4 text-[10px] text-muted-foreground/70 leading-relaxed">
-                  Token & cost analytics are hidden because the local counts
-                  exclude auxiliary calls (compression, vision, web extract,
-                  …) and provider retries, so they diverge from your provider
-                  bill. Enable{" "}
-                  <span className="font-mono">dashboard.show_token_analytics</span>{" "}
-                  in <a href="/config" className="underline">Config</a> to
-                  show the local debug estimate anyway.
-                </p>
-              )}
-            </CardContent>
-          </Card>
-        )}
-      </div>
+            {activeTab === "settings" && (
+              <>
+                <div className="grid gap-6 lg:grid-cols-2">
+                  <ModelSettingsPanel
+                    aux={aux}
+                    refreshKey={saveKey}
+                    onSaved={onAssigned}
+                  />
 
-      {loading && !data && (
-        <div className="flex items-center justify-center py-24">
-          <Spinner className="text-2xl text-primary" />
-        </div>
-      )}
-
-      {error && (
-        <Card>
-          <CardContent className="py-6">
-            <p className="text-sm text-destructive text-center">{error}</p>
-          </CardContent>
-        </Card>
-      )}
-
-      {data && (
-        <>
-          {data.models.length > 0 ? (
-            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-              {data.models.map((m, i) => (
-                <ModelCard
-                  key={`${m.model}:${m.provider}`}
-                  entry={m}
-                  rank={i + 1}
-                  main={aux?.main ?? null}
-                  aux={aux?.tasks ?? []}
-                  onAssigned={onAssigned}
-                  showTokens={showTokens}
-                />
-              ))}
-            </div>
-          ) : (
-            <Card>
-              <CardContent className="py-12">
-                <div className="flex flex-col items-center text-muted-foreground">
-                  <Cpu className="h-8 w-8 mb-3 opacity-40" />
-                  <p className="text-sm font-medium">{t.models.noModelsData}</p>
-                  <p className="text-xs mt-1 text-muted-foreground/60">
-                    {t.models.startSession}
-                  </p>
+                  {data && (
+                    <Card>
+                      <CardContent className="py-6">
+                        <Stats
+                          items={
+                            showTokens
+                              ? [
+                                  {
+                                    label: t.models.modelsUsed,
+                                    value: String(data.totals.distinct_models),
+                                  },
+                                  {
+                                    label: t.analytics.totalTokens,
+                                    value: formatTokens(
+                                      data.totals.total_input + data.totals.total_output,
+                                    ),
+                                  },
+                                  {
+                                    label: t.analytics.input,
+                                    value: formatTokens(data.totals.total_input),
+                                  },
+                                  {
+                                    label: t.analytics.output,
+                                    value: formatTokens(data.totals.total_output),
+                                  },
+                                  {
+                                    label: t.models.estimatedCost,
+                                    value: formatCost(data.totals.total_estimated_cost),
+                                  },
+                                  {
+                                    label: t.analytics.totalSessions,
+                                    value: String(data.totals.total_sessions),
+                                  },
+                                ]
+                              : [
+                                  {
+                                    label: t.models.modelsUsed,
+                                    value: String(data.totals.distinct_models),
+                                  },
+                                  {
+                                    label: t.analytics.totalSessions,
+                                    value: String(data.totals.total_sessions),
+                                  },
+                                ]
+                          }
+                        />
+                        {!showTokens && (
+                          <p className="mt-4 text-[10px] text-muted-foreground/70 leading-relaxed">
+                            Token &amp; cost analytics are hidden because the local counts
+                            exclude auxiliary calls (compression, vision, web extract,
+                            …) and provider retries, so they diverge from your provider
+                            bill. Enable{" "}
+                            <span className="font-mono">dashboard.show_token_analytics</span>{" "}
+                            in <a href="/config" className="underline">Config</a> to
+                            show the local debug estimate anyway.
+                          </p>
+                        )}
+                      </CardContent>
+                    </Card>
+                  )}
                 </div>
-              </CardContent>
-            </Card>
-          )}
-        </>
-      )}
+
+                {loading && !data && (
+                  <div className="flex items-center justify-center py-24">
+                    <Spinner className="text-2xl text-primary" />
+                  </div>
+                )}
+
+                {error && (
+                  <Card>
+                    <CardContent className="py-6">
+                      <p className="text-sm text-destructive text-center">{error}</p>
+                    </CardContent>
+                  </Card>
+                )}
+              </>
+            )}
+
+            {activeTab === "used-models" && (
+              <>
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    {PERIODS.map((p) => (
+                      <Button
+                        key={p.label}
+                        type="button"
+                        size="sm"
+                        outlined={days !== p.days}
+                        onClick={() => setDays(p.days)}
+                      >
+                        {p.label}
+                      </Button>
+                    ))}
+                  </div>
+                  <Button
+                    type="button"
+                    size="sm"
+                    outlined
+                    onClick={load}
+                    disabled={loading}
+                    prefix={loading ? <Spinner /> : <RefreshCw />}
+                  >
+                    {t.common.refresh}
+                  </Button>
+                </div>
+
+                {loading && !data && (
+                  <div className="flex items-center justify-center py-24">
+                    <Spinner className="text-2xl text-primary" />
+                  </div>
+                )}
+
+                {error && (
+                  <Card>
+                    <CardContent className="py-6">
+                      <p className="text-sm text-destructive text-center">{error}</p>
+                    </CardContent>
+                  </Card>
+                )}
+
+                {data && (
+                  <>
+                    {data.models.length > 0 ? (
+                      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+                        {data.models.map((m, i) => (
+                          <ModelCard
+                            key={`${m.model}:${m.provider}`}
+                            entry={m}
+                            rank={i + 1}
+                            main={aux?.main ?? null}
+                            aux={aux?.tasks ?? []}
+                            onAssigned={onAssigned}
+                            showTokens={showTokens}
+                          />
+                        ))}
+                      </div>
+                    ) : (
+                      <Card>
+                        <CardContent className="py-12">
+                          <div className="flex flex-col items-center text-muted-foreground">
+                            <Cpu className="h-8 w-8 mb-3 opacity-40" />
+                            <p className="text-sm font-medium">{t.models.noModelsData}</p>
+                            <p className="text-xs mt-1 text-muted-foreground/60">
+                              {t.models.startSession}
+                            </p>
+                          </div>
+                        </CardContent>
+                      </Card>
+                    )}
+                  </>
+                )}
+              </>
+            )}
+          </>
+        )}
+      </Tabs>
 
       <PluginSlot name="models:bottom" />
     </div>
