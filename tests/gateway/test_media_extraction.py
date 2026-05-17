@@ -14,6 +14,8 @@ text-only reply, even when the path-based dedup set fails to capture it.
 import pytest
 import re
 
+from gateway.platforms.base import BasePlatformAdapter, SUPPORTED_DOCUMENT_TYPES
+
 
 def extract_media_tags_fixed(result_messages, history_len):
     """
@@ -369,6 +371,35 @@ class TestStaleToolMediaLeak:
             "On the compression fallback path, path-dedup must still exclude "
             f"known-old media, got {tags}"
         )
+
+
+class TestAttachmentPathExtraction:
+    """Regression coverage for native document attachment paths."""
+
+    def test_media_tag_extracts_html_document(self):
+        media, cleaned = BasePlatformAdapter.extract_media(
+            "Done\nMEDIA:/tmp/hermes/report.html"
+        )
+
+        assert media == [("/tmp/hermes/report.html", False)]
+        assert "MEDIA:" not in cleaned
+
+    def test_bare_local_html_path_is_auto_detected(self, tmp_path):
+        html_path = tmp_path / "preview.html"
+        html_path.write_text("<html><body>ok</body></html>", encoding="utf-8")
+
+        files, cleaned = BasePlatformAdapter.extract_local_files(
+            f"I generated {html_path} for you."
+        )
+
+        assert files == [str(html_path)]
+        assert str(html_path) not in cleaned
+
+    def test_html_and_common_text_document_mimes_are_known(self):
+        assert SUPPORTED_DOCUMENT_TYPES[".html"] == "text/html"
+        assert SUPPORTED_DOCUMENT_TYPES[".htm"] == "text/html"
+        assert SUPPORTED_DOCUMENT_TYPES[".css"] == "text/css"
+        assert SUPPORTED_DOCUMENT_TYPES[".js"] == "text/javascript"
 
 
 if __name__ == "__main__":
