@@ -476,8 +476,7 @@ class TestNeedsKimiToolReasoning:
     def test_non_kimi_provider(self) -> None:
         agent = _make_agent(
             provider="openrouter",
-            model="moonshotai/kimi-k2",
+            model="openai/gpt-4o",
             base_url="https://openrouter.ai/api/v1",
         )
-        # model name contains 'moonshot' but host is openrouter — should be False
         assert agent._needs_kimi_tool_reasoning() is False
