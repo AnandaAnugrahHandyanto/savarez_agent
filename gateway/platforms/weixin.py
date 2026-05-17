@@ -1001,7 +1001,10 @@ def _extract_text(item_list: List[Dict[str, Any]]) -> str:
         if item.get("type") == ITEM_VOICE:
             voice_text = str((item.get("voice_item") or {}).get("text") or "")
             if voice_text:
-                return voice_text
+                # Prefix so the agent can distinguish auto-transcribed voice
+                # messages from typed text (Weixin's callback delivers them as
+                # indistinguishable plain strings otherwise).
+                return f"[voice:transcribed] {voice_text}"
     return ""
 
 
