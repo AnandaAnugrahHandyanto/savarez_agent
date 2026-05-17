@@ -132,28 +132,50 @@ def _resolve_team_id(key_or_name: str) -> str | None:
 
 
 def _resolve_label_id(name: str, team_id: str) -> str | None:
-    """Map a label name to UUID within a team (case-insensitive)."""
-    q = """query($id: String!) {
-      team(id: $id) { labels(first: 100) { nodes { id name } } }
+    """Map a label name to UUID within a team (case-insensitive), paginating if needed."""
+    q = """query($id: String!, $after: String) {
+      team(id: $id) {
+        labels(first: 250, after: $after) {
+          nodes { id name }
+          pageInfo { hasNextPage endCursor }
+        }
+      }
     }"""
-    nodes = gql(q, {"id": team_id}).get("team", {}).get("labels", {}).get("nodes", [])
     nl = name.lower()
-    for label in nodes:
-        if label["name"].lower() == nl:
-            return label["id"]
+    cursor = None
+    while True:
+        labels = gql(q, {"id": team_id, "after": cursor}).get("team", {}).get("labels", {})
+        for label in labels.get("nodes", []):
+            if label["name"].lower() == nl:
+                return label["id"]
+        page_info = labels.get("pageInfo", {})
+        if not page_info.get("hasNextPage"):
+            break
+        cursor = page_info.get("endCursor")
     return None
 
 
 def _resolve_member_id(name: str, team_id: str) -> str | None:
-    """Map a member display name or username to UUID within a team (case-insensitive)."""
-    q = """query($id: String!) {
-      team(id: $id) { members(first: 100) { nodes { id name displayName } } }
+    """Map a member display name or username to UUID within a team (case-insensitive), paginating if needed."""
+    q = """query($id: String!, $after: String) {
+      team(id: $id) {
+        members(first: 250, after: $after) {
+          nodes { id name displayName }
+          pageInfo { hasNextPage endCursor }
+        }
+      }
     }"""
-    nodes = gql(q, {"id": team_id}).get("team", {}).get("members", {}).get("nodes", [])
     nl = name.lower()
-    for member in nodes:
-        if member["name"].lower() == nl or member["displayName"].lower() == nl:
-            return member["id"]
+    cursor = None
+    while True:
+        members = gql(q, {"id": team_id, "after": cursor}).get("team", {}).get("members", {})
+        for member in members.get("nodes", []):
+            if member["name"].lower() == nl or (member.get("displayName") or "").lower() == nl:
+                return member["id"]
+        page_info = members.get("pageInfo", {})
+        if not page_info.get("hasNextPage"):
+            break
+        cursor = page_info.get("endCursor")
     return None
 
 
@@ -291,7 +313,10 @@ def cmd_update_issue(args: argparse.Namespace) -> None:
         if not issue:
             sys.stderr.write(f"Issue not found: {args.identifier}\n")
             sys.exit(1)
-        tid = issue["team"]["id"]
+        tid = (issue.get("team") or {}).get("id")
+        if not tid:
+            sys.stderr.write(f"Could not determine team for issue: {args.identifier}\n")
+            sys.exit(1)
         if args.label:
             lid = _resolve_label_id(args.label, tid)
             if lid is None:
