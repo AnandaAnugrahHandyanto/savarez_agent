@@ -50,7 +50,7 @@ from gateway.status import get_running_pid, read_runtime_status
 try:
     from fastapi import FastAPI, File, HTTPException, Request, UploadFile
     from fastapi.middleware.cors import CORSMiddleware
-    from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+    from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
     from fastapi.staticfiles import StaticFiles
     from pydantic import BaseModel
 except ImportError:
@@ -2292,6 +2292,133 @@ async def voice_transcribe(audio: UploadFile = File(...)):
         "transcript": result.get("transcript", ""),
         "provider": result.get("provider", ""),
     }
+
+
+# ---------------------------------------------------------------------------
+# Chat: agent-run streaming API  (Phase 4 — see plans/voice-and-chat.md)
+# ---------------------------------------------------------------------------
+
+class ChatSendBody(BaseModel):
+    text: str
+
+
+class ChatApprovalBody(BaseModel):
+    call_id: str
+    decision: str  # "once" | "session" | "always" | "deny"
+
+
+class ChatClarifyBody(BaseModel):
+    call_id: str
+    answer: str
+
+
+@app.post("/api/chat/sessions")
+async def chat_create_session():
+    """Create a new in-process chat session.  Returns its session_id."""
+    from hermes_cli import chat_session
+    sess = chat_session.create_session(asyncio.get_running_loop())
+    return {"session_id": sess.session_id}
+
+
+@app.get("/api/chat/sessions/{session_id}/stream")
+async def chat_stream(session_id: str, request: Request):
+    """SSE stream for a chat session.  Stays open for the session lifetime."""
+    from hermes_cli import chat_session
+    sess = chat_session.get_or_reattach(session_id, asyncio.get_running_loop())
+    if sess is None:
+        raise HTTPException(status_code=404, detail="session not found")
+
+    async def gen():
+        try:
+            async for frame in sess.stream():
+                if await request.is_disconnected():
+                    break
+                yield frame
+        except asyncio.CancelledError:
+            pass
+
+    return StreamingResponse(
+        gen(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
+
+
+@app.post("/api/chat/sessions/{session_id}/send")
+async def chat_send(session_id: str, body: ChatSendBody):
+    """Enqueue a user message and start a turn.  Returns 202 immediately."""
+    from hermes_cli import chat_session
+    sess = chat_session.get(session_id)
+    if sess is None:
+        raise HTTPException(status_code=404, detail="session not found")
+    text = (body.text or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="text is required")
+    try:
+        sess.send(text)
+    except RuntimeError as e:
+        # A previous turn is still running.
+        raise HTTPException(status_code=409, detail=str(e))
+    return JSONResponse(status_code=202, content={"ok": True})
+
+
+@app.post("/api/chat/sessions/{session_id}/approve")
+async def chat_approve(session_id: str, body: ChatApprovalBody):
+    """Resolve a pending approval-request from the browser."""
+    from hermes_cli import chat_session
+    sess = chat_session.get(session_id)
+    if sess is None:
+        raise HTTPException(status_code=404, detail="session not found")
+    if body.decision not in ("once", "session", "always", "deny"):
+        raise HTTPException(status_code=400, detail="invalid decision")
+    if not sess.resolve_approval(body.call_id, body.decision):
+        raise HTTPException(status_code=404, detail="call_id not pending")
+    return {"ok": True}
+
+
+@app.post("/api/chat/sessions/{session_id}/clarify")
+async def chat_clarify(session_id: str, body: ChatClarifyBody):
+    """Resolve a pending clarify-request from the browser."""
+    from hermes_cli import chat_session
+    sess = chat_session.get(session_id)
+    if sess is None:
+        raise HTTPException(status_code=404, detail="session not found")
+    if not sess.resolve_clarify(body.call_id, body.answer):
+        raise HTTPException(status_code=404, detail="call_id not pending")
+    return {"ok": True}
+
+
+@app.post("/api/chat/sessions/{session_id}/cancel")
+async def chat_cancel(session_id: str):
+    """Signal cooperative cancellation of the current turn (Step 6 wires this)."""
+    from hermes_cli import chat_session
+    sess = chat_session.get(session_id)
+    if sess is None:
+        raise HTTPException(status_code=404, detail="session not found")
+    was_running = sess.cancel_turn()
+    return {"ok": True, "was_running": was_running}
+
+
+@app.get("/api/chat/sessions/{session_id}/messages")
+async def chat_messages(session_id: str):
+    """Return the full message history for a chat session (for reattach)."""
+    from hermes_cli import chat_session
+    sess = chat_session.get_or_reattach(session_id, asyncio.get_running_loop())
+    if sess is None:
+        raise HTTPException(status_code=404, detail="session not found")
+    return {"session_id": session_id, "messages": sess.history}
+
+
+@app.delete("/api/chat/sessions/{session_id}")
+async def chat_delete(session_id: str):
+    """Tear down a chat session (in-process only; SessionDB history survives)."""
+    from hermes_cli import chat_session
+    removed = chat_session.remove(session_id)
+    return {"ok": removed}
 
 
 # ---------------------------------------------------------------------------
