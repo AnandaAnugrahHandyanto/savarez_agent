@@ -1491,8 +1491,8 @@
     const modePillTitle = settings === null
       ? "Loading mode…"
       : (autoOn
-          ? "Auto-decompose ON — the dispatcher decomposes new triage tasks automatically every tick. Click to switch to Manual (pre-PR behavior)."
-          : "Auto-decompose OFF (Manual mode) — triage tasks stay in triage until you click ⚗ Decompose on each card. Click to switch to Auto.");
+          ? "Orchestration: Auto — the dispatcher decomposes new triage tasks automatically every tick. Click to switch to Manual (pre-PR behavior)."
+          : "Orchestration: Manual — triage tasks stay in triage until you click ⚗ Decompose on each card. Click to switch to Auto.");
     const modePill = h("button", {
       type: "button",
       onClick: function () {
@@ -1507,9 +1507,9 @@
                     ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
                     : "border-muted-foreground/30 bg-muted/30 text-muted-foreground"),
     },
-      "⚗ Decompose: ",
+      "Orchestration: ",
       h("span", { className: "ml-1 font-semibold" },
-        settings === null ? "…" : (autoOn ? "AUTO" : "MANUAL"))
+        settings === null ? "…" : (autoOn ? "Auto" : "Manual"))
     );
 
     if (!expanded) {
@@ -1583,7 +1583,7 @@
           ),
           h("div", { className: "flex flex-col gap-1" },
             h(Label, { className: "text-xs text-muted-foreground" },
-              "Decompose mode"),
+              "Orchestration mode"),
             h("label", { className: "flex items-center gap-2 text-xs h-8" },
               h("input", {
                 type: "checkbox",
