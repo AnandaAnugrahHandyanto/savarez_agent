@@ -8028,6 +8028,8 @@ class HermesCLI:
             self._handle_skin_command(cmd_original)
         elif canonical == "voice":
             self._handle_voice_command(cmd_original)
+        elif canonical == "indicator":
+            self._handle_indicator_command(cmd_original)
         elif canonical == "busy":
             self._handle_busy_command(cmd_original)
         else:
@@ -9015,6 +9017,44 @@ class HermesCLI:
             _cprint(f"  {_ACCENT}✓ Reasoning effort set to '{arg}' (saved to config){_RST}")
         else:
             _cprint(f"  {_ACCENT}✓ Reasoning effort set to '{arg}' (session only){_RST}")
+
+    def _handle_indicator_command(self, cmd: str):
+        """Handle /indicator — pick the TUI busy-indicator style.
+
+        Usage:
+            /indicator                 Show current indicator style
+            /indicator status          Show current indicator style
+            /indicator kaomoji         Use animated kaomoji faces (default)
+            /indicator emoji           Use emoji indicator
+            /indicator unicode         Use unicode (braille) spinner
+            /indicator ascii           Use plain ASCII indicator
+        """
+        valid = {"kaomoji", "emoji", "unicode", "ascii"}
+        try:
+            cfg = load_cli_config()
+            current = ((cfg.get("display") if isinstance(cfg, dict) else None) or {}).get(
+                "tui_status_indicator", "kaomoji"
+            ) or "kaomoji"
+        except Exception:
+            current = "kaomoji"
+
+        parts = cmd.strip().split(maxsplit=1)
+        if len(parts) < 2 or parts[1].strip().lower() == "status":
+            _cprint(f"  {_ACCENT}Busy indicator style: {current}{_RST}")
+            _cprint(f"  {_DIM}Usage: /indicator [kaomoji|emoji|unicode|ascii|status]{_RST}")
+            return
+
+        arg = parts[1].strip().lower()
+        if arg not in valid:
+            _cprint(f"  {_DIM}(._.) Unknown argument: {arg}{_RST}")
+            _cprint(f"  {_DIM}Usage: /indicator [kaomoji|emoji|unicode|ascii|status]{_RST}")
+            return
+
+        if save_config_value("display.tui_status_indicator", arg):
+            _cprint(f"  {_ACCENT}✓ Busy indicator style set to '{arg}' (saved to config){_RST}")
+            _cprint(f"  {_DIM}Takes effect on next CLI/TUI start.{_RST}")
+        else:
+            _cprint(f"  {_ACCENT}✓ Busy indicator style set to '{arg}' (session only){_RST}")
 
     def _handle_busy_command(self, cmd: str):
         """Handle /busy — control what Enter does while Hermes is working.
