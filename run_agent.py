@@ -9116,6 +9116,18 @@ class AIAgent:
                 self._transport_cache.clear()
             self._fallback_activated = True
 
+            # Per-provider streaming toggle (issue #21522).
+            # Custom providers that don't support SSE streaming can set
+            # ``stream: false`` in their fallback config to force
+            # non-streaming API calls.  When advancing to a provider
+            # that does support streaming, the flag is cleared.
+            _fb_stream_raw = fb.get("stream", True)
+            if isinstance(_fb_stream_raw, str):
+                _fb_stream = _fb_stream_raw.lower() not in ("false", "0", "no", "off")
+            else:
+                _fb_stream = bool(_fb_stream_raw) if _fb_stream_raw is not None else True
+            self._disable_streaming = not _fb_stream
+
             # Honor per-provider / per-model request_timeout_seconds for the
             # fallback target (same knob the primary client uses).  None = use
             # SDK default.
