@@ -480,3 +480,104 @@ def test_no_direct_anthropic_egress_from_test_process():
     assert pid > 0
     # Operator: while integration tests run, sample `ss -tnp` for this pid.
     # Document findings manually.
+
+
+@pytest.mark.asyncio
+@pytest.mark.live_system_guard_bypass
+async def test_no_session_persistence_omits_session_id():
+    """`--no-session-persistence` produces no resumable session_id.
+
+    Spawns claude -p with --no-session-persistence. Asserts EITHER no
+    session_id appears in the stream OR that resume against the captured id
+    fails.
+    """
+    signal.alarm(0)
+    _skip_if_no_claude()
+    binary = probe.discover_binary()
+    env = {k: v for k, v in os.environ.items()}
+    env["CLAUDE_CODE_OAUTH_TOKEN"] = _load_oauth_token()
+    env = probe.check_env_hygiene(env)
+
+    proc = await asyncio.create_subprocess_exec(
+        binary, "-p",
+        "--output-format", "stream-json", "--verbose",
+        "--no-session-persistence",
+        "--allowedTools", "",
+        env=env,
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    assert proc.stdin is not None
+    proc.stdin.write(b"Reply with: ok")
+    await proc.stdin.drain()
+    proc.stdin.close()
+    stdout_data, stderr_data = await asyncio.wait_for(proc.communicate(), timeout=120)
+    assert proc.returncode == 0, stderr_data.decode()[:500]
+    parser = StreamJsonParser()
+    events = list(parser.feed(stdout_data)) + list(parser.close())
+
+    sid = probe.extract_session_id(events)
+    # Either no session_id at all, OR it's not resumable.
+    if sid is not None:
+        # Try to resume; expect failure.
+        proc2 = await asyncio.create_subprocess_exec(
+            binary, "-p",
+            "--output-format", "stream-json", "--verbose",
+            "--resume", sid,
+            "--allowedTools", "",
+            env=env,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        assert proc2.stdin is not None
+        proc2.stdin.write(b"hi")
+        await proc2.stdin.drain()
+        proc2.stdin.close()
+        _, stderr2 = await asyncio.wait_for(proc2.communicate(), timeout=60)
+        # Either non-zero exit or an error event indicates persistence was
+        # honored. If proc2 succeeds AND has prior context, this assertion
+        # records a finding (persistence flag may not work as expected).
+        assert proc2.returncode != 0 or "not found" in stderr2.decode().lower(), (
+            f"--no-session-persistence stored a resumable session anyway; "
+            f"resumed session ok. stderr: {stderr2.decode()[:500]}"
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.live_system_guard_bypass
+@pytest.mark.parametrize("model_alias", [
+    "claude-opus-4-6",
+    "claude-sonnet-4-6",
+    "claude-haiku-4-5-20251001",
+])
+async def test_model_id_accepted(model_alias):
+    """Each model alias the adapter will use is accepted by `claude --model`."""
+    signal.alarm(0)
+    _skip_if_no_claude()
+    binary = probe.discover_binary()
+    env = {k: v for k, v in os.environ.items()}
+    env["CLAUDE_CODE_OAUTH_TOKEN"] = _load_oauth_token()
+    env = probe.check_env_hygiene(env)
+
+    proc = await asyncio.create_subprocess_exec(
+        binary, "-p",
+        "--output-format", "json",
+        "--no-session-persistence",
+        "--allowedTools", "",
+        "--model", model_alias,
+        env=env,
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    assert proc.stdin is not None
+    proc.stdin.write(b"Reply with: ok")
+    await proc.stdin.drain()
+    proc.stdin.close()
+    stdout_data, stderr_data = await asyncio.wait_for(proc.communicate(), timeout=120)
+    assert proc.returncode == 0, (
+        f"model alias {model_alias!r} rejected: "
+        f"exit={proc.returncode}, stderr={stderr_data.decode()[:500]}"
+    )

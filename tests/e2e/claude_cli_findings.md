@@ -90,3 +90,17 @@ Conclusion: `--settings <file>` reliably overrides ambient `~/.claude/settings.j
 - Network egress from child claude pid: observed (expected — the child `claude` process makes outbound TLS to api.anthropic.com; this is the intended pattern)
 
 Conclusion: `start_new_session=True` + `os.killpg(SIGTERM→SIGKILL)` reliably reaps the entire claude process tree with no orphaned children; operator-side `ss -tnp` is the correct methodology for verifying that network egress to api.anthropic.com originates only from the child process, not from the Hermes parent.
+
+## Task 13: --no-session-persistence + model ID mapping
+
+- Test: `test_no_session_persistence_omits_session_id`
+- Result: PASS
+- `--no-session-persistence` prevents resume: yes — the flag still emits a `session_id` UUID in every stream-json event (same top-level `session_id` field as a persistent session), BUT attempting `--resume <that_sid>` exits with code 1 and stderr: `"No conversation found with session ID: <sid>"`. The session_id field is present but the server-side session is not persisted. The adapter must NOT treat this session_id as resumable.
+- Test: `test_model_id_accepted` (parametrized over 3 aliases)
+- Accepted model aliases:
+  - `claude-opus-4-6`: pass (exit 0, empty stderr)
+  - `claude-sonnet-4-6`: pass (exit 0, empty stderr)
+  - `claude-haiku-4-5-20251001`: pass (exit 0, empty stderr)
+- Model alias translation required for adapter: none — all three Hermes model aliases are accepted verbatim by `claude --model` on version 2.1.143; no translation table needed.
+
+Conclusion: `--no-session-persistence` works correctly (prevents server-side session persistence even though session_id still appears in stream events), and all three Hermes model aliases are accepted natively by the CLI without any alias mapping.
