@@ -18,7 +18,7 @@ The same OAuth bearer token is also reused by every direct-to-xAI surface in Her
 |------|-------|
 | Provider ID | `xai-oauth` |
 | Display name | xAI Grok OAuth (SuperGrok Subscription) |
-| Auth type | Browser OAuth 2.0 PKCE (loopback callback) |
+| Auth type | Browser OAuth 2.0 PKCE (loopback callback, with manual-code fallback for remote sessions) |
 | Transport | xAI Responses API (`codex_responses`) |
 | Default model | `grok-4.3` |
 | Endpoint | `https://api.x.ai/v1` |
@@ -31,7 +31,8 @@ The same OAuth bearer token is also reused by every direct-to-xAI surface in Her
 - Python 3.9+
 - Hermes Agent installed
 - An active SuperGrok subscription on your xAI account
-- A browser available on the local machine (or use `--no-browser` for remote sessions)
+- A browser on either the Hermes machine or another device
+- For phone/Discord/SSH/headless setup, use `--manual-code` so Hermes prompts you to paste the xAI redirect URL instead of waiting on a local callback
 
 ## Quick Start
 
@@ -57,11 +58,23 @@ You can trigger a login without going through the model picker:
 hermes auth add xai-oauth
 ```
 
-### Remote / headless sessions
+### Remote / phone / headless sessions
 
-On servers, containers, or SSH sessions where no browser is available, Hermes detects the remote environment and prints the authorization URL instead of opening a browser.
+If Hermes is running somewhere other than the browser device — SSH, a container, WSL driven from Discord, or a phone-only setup — use the manual-code fallback:
 
-**Important:** the loopback listener still runs on the remote machine at `127.0.0.1:56121`. The xAI redirect needs to reach *that* listener, so opening the URL on your laptop will fail (`Could not establish connection. We couldn't reach your app.`) unless you forward the port:
+```bash
+hermes auth add xai-oauth --manual-code
+# or, through the provider picker:
+# hermes model --manual-code
+```
+
+Hermes prints the xAI authorize URL. Open it in any browser, approve access, then xAI redirects to `http://127.0.0.1:56121/callback`. On a different device that page may fail to load; that is expected. Copy the full failed redirect URL from the browser address bar and paste it back into Hermes. Hermes validates the OAuth `state` when the full URL is pasted, exchanges the one-time code with the same PKCE verifier and redirect URI, and stores the tokens normally.
+
+If your browser only lets you copy the one-time `code`, you can paste just the code, but the full redirect URL is preferred because it includes `state`.
+
+### SSH tunnel alternative
+
+You can still use the traditional loopback callback flow with an SSH local-forward. This is useful if you want a fully automatic callback or if you are authenticating a provider that does not support manual paste mode.
 
 ```bash
 # In a separate terminal on your local machine:
@@ -74,7 +87,7 @@ hermes auth add xai-oauth --no-browser
 
 Through a jump box / bastion: add `-J jump-user@jump-host`.
 
-See [OAuth over SSH / Remote Hosts](./oauth-over-ssh.md) for the full step-by-step, including ProxyJump chains, mosh/tmux, and ControlMaster gotchas.
+See [OAuth over SSH / Remote Hosts](./oauth-over-ssh.md) for the full tunnel step-by-step, including ProxyJump chains, mosh/tmux, and ControlMaster gotchas.
 
 ## How the Login Works
 
@@ -184,9 +197,9 @@ Hermes refreshes the token before each session and again reactively on a 401. If
 
 ### Authorization timed out
 
-The loopback listener has a finite expiry window (default 180 s). If you don't approve the login in time, Hermes raises a timeout error.
+The loopback listener has a finite expiry window. If you don't approve the login in time, Hermes raises a timeout error.
 
-**Fix:** re-run `hermes auth add xai-oauth` (or `hermes model`). The flow starts fresh.
+**Fix:** re-run `hermes auth add xai-oauth` (or `hermes model`). If the browser is on another device, use `hermes auth add xai-oauth --manual-code` so Hermes prompts for the redirect URL/code instead of waiting for the callback listener.
 
 ### State mismatch (possible CSRF)
 
@@ -194,19 +207,17 @@ Hermes detected that the `state` value returned by the authorization server does
 
 **Fix:** re-run the login. If it persists, check for a proxy or redirect that is modifying the OAuth response.
 
-### Logging in from a remote server
+### Logging in from a remote server or phone
 
-On SSH or container sessions Hermes prints the authorization URL instead of opening a browser. The loopback callback listener still binds `127.0.0.1:56121` on the remote host — your laptop's browser can't reach it without an SSH local-forward:
+Use manual-code mode when the browser is not on the Hermes machine:
 
 ```bash
-# Local machine, separate terminal:
-ssh -N -L 56121:127.0.0.1:56121 user@remote-host
-
-# Remote machine:
-hermes auth add xai-oauth --no-browser
+hermes auth add xai-oauth --manual-code
 ```
 
-Full walkthrough (jump boxes, mosh/tmux, port conflicts): [OAuth over SSH / Remote Hosts](./oauth-over-ssh.md).
+Open the printed URL, approve access, then paste the full failed `127.0.0.1:56121/callback?...` redirect URL back into Hermes. The failed localhost page is expected when using a phone, Discord-driven setup, or a browser on a different computer.
+
+If you prefer the automatic callback flow, use an SSH local-forward and run `hermes auth add xai-oauth --no-browser`; see [OAuth over SSH / Remote Hosts](./oauth-over-ssh.md).
 
 ### "No xAI credentials found" error at runtime
 
@@ -226,7 +237,7 @@ This clears both the singleton OAuth entry in `auth.json` and any credential-poo
 
 ## See Also
 
-- [OAuth over SSH / Remote Hosts](./oauth-over-ssh.md) — required reading if Hermes is on a different machine than your browser
+- [OAuth over SSH / Remote Hosts](./oauth-over-ssh.md) — SSH tunnel alternative when Hermes is on a different machine than your browser
 - [AI Providers reference](../integrations/providers.md)
 - [Environment Variables](../reference/environment-variables.md)
 - [Configuration](../user-guide/configuration.md)

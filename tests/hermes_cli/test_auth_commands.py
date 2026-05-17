@@ -310,6 +310,53 @@ def test_auth_add_codex_oauth_persists_pool_entry(tmp_path, monkeypatch):
     assert entry["base_url"] == "https://chatgpt.com/backend-api/codex"
 
 
+def test_auth_add_xai_oauth_manual_code_uses_manual_flow(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(tmp_path, {"version": 1, "providers": {}})
+    token = _jwt_with_email("xai@example.com")
+    calls = {}
+
+    def _manual_login(**kwargs):
+        calls["manual_kwargs"] = kwargs
+        return {
+            "tokens": {
+                "access_token": token,
+                "refresh_token": "refresh-token",
+            },
+            "base_url": "https://api.x.ai/v1",
+            "last_refresh": "2026-05-17T10:00:00Z",
+            "source": "oauth-manual-code",
+        }
+
+    monkeypatch.setattr("hermes_cli.auth._xai_oauth_manual_code_login", _manual_login)
+    monkeypatch.setattr(
+        "hermes_cli.auth._xai_oauth_loopback_login",
+        lambda **kwargs: pytest.fail("manual-code auth add must not start loopback login"),
+    )
+
+    from hermes_cli.auth_commands import auth_add_command
+
+    class _Args:
+        provider = "xai-oauth"
+        auth_type = "oauth"
+        api_key = None
+        label = None
+        no_browser = False
+        manual_code = True
+        timeout = 11.0
+
+    auth_add_command(_Args())
+
+    assert calls["manual_kwargs"] == {"timeout_seconds": 11.0}
+    payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    entries = payload["credential_pool"]["xai-oauth"]
+    entry = next(item for item in entries if item["source"] == "manual:xai_pkce")
+    assert entry["label"] == "xai@example.com"
+    assert entry["access_token"] == token
+    assert entry["refresh_token"] == "refresh-token"
+    assert entry["base_url"] == "https://api.x.ai/v1"
+
+
 def test_auth_remove_reindexes_priorities(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     # Prevent pool auto-seeding from host env vars and file-backed sources

@@ -5264,11 +5264,15 @@ def _login_xai_oauth(
     print()
 
     timeout_seconds = float(getattr(args, "timeout", None) or 20.0)
+    manual_code = bool(getattr(args, "manual_code", False) or getattr(args, "paste_code", False))
     open_browser = not getattr(args, "no_browser", False)
     if _is_remote_session():
         open_browser = False
 
-    creds = _xai_oauth_loopback_login(timeout_seconds=timeout_seconds, open_browser=open_browser)
+    if manual_code:
+        creds = _xai_oauth_manual_code_login(timeout_seconds=timeout_seconds)
+    else:
+        creds = _xai_oauth_loopback_login(timeout_seconds=timeout_seconds, open_browser=open_browser)
     _save_xai_oauth_tokens(
         creds["tokens"],
         discovery=creds.get("discovery"),
@@ -5310,6 +5314,243 @@ def _xai_oauth_build_authorize_url(
         "referrer": "hermes-agent",
     }
     return f"{authorization_endpoint}?{urlencode(authorize_params)}"
+
+
+def _xai_default_loopback_redirect_uri() -> str:
+    return f"http://{XAI_OAUTH_REDIRECT_HOST}:{XAI_OAUTH_REDIRECT_PORT}{XAI_OAUTH_REDIRECT_PATH}"
+
+
+def _xai_parse_pasted_callback(raw: str) -> Dict[str, Optional[str]]:
+    """Parse a manually pasted xAI OAuth callback URL, query string, or code.
+
+    Remote/phone flows often end on a failed ``localhost`` page. The failed URL
+    still contains the authorization ``code`` and usually ``state``. Prefer the
+    full URL/query form so we can validate state; accept a bare code as a last
+    resort for browsers that make copying the full URL awkward.
+    """
+    text = str(raw or "").strip()
+    empty: Dict[str, Optional[str]] = {
+        "code": None,
+        "state": None,
+        "error": None,
+        "error_description": None,
+    }
+    if not text:
+        return empty
+
+    query = ""
+    if text.startswith(("http://", "https://")):
+        parsed = urlparse(text)
+        query = parsed.query
+        if not query and parsed.fragment:
+            fragment = parsed.fragment
+            if "?" in fragment:
+                fragment = fragment.split("?", 1)[1]
+            query = fragment.lstrip("#?")
+    elif text.startswith(("?", "#")):
+        query = text[1:]
+    elif "code=" in text or "error=" in text or "state=" in text:
+        query = text.lstrip("?#")
+    else:
+        parsed = dict(empty)
+        parsed["code"] = text
+        return parsed
+
+    params = parse_qs(query, keep_blank_values=True)
+
+    def _first(name: str) -> Optional[str]:
+        value = params.get(name, [None])[0]
+        if value is None:
+            return None
+        value = str(value).strip()
+        return value or None
+
+    return {
+        "code": _first("code"),
+        "state": _first("state"),
+        "error": _first("error"),
+        "error_description": _first("error_description"),
+    }
+
+
+def _xai_exchange_authorization_code(
+    *,
+    token_endpoint: str,
+    code: str,
+    redirect_uri: str,
+    code_verifier: str,
+    timeout_seconds: float = 20.0,
+) -> Dict[str, Any]:
+    _xai_validate_oauth_endpoint(token_endpoint, field="token_endpoint")
+    try:
+        response = httpx.post(
+            token_endpoint,
+            headers={"Content-Type": "application/x-www-form-urlencoded", "Accept": "application/json"},
+            data={
+                "grant_type": "authorization_code",
+                "code": code,
+                "redirect_uri": redirect_uri,
+                "client_id": XAI_OAUTH_CLIENT_ID,
+                "code_verifier": code_verifier,
+            },
+            timeout=max(20.0, timeout_seconds),
+        )
+    except Exception as exc:
+        raise AuthError(
+            f"xAI token exchange failed: {exc}",
+            provider="xai-oauth",
+            code="xai_token_exchange_failed",
+        ) from exc
+    if response.status_code != 200:
+        detail = response.text.strip()
+        raise AuthError(
+            "xAI token exchange failed."
+            + (f" Response: {detail}" if detail else ""),
+            provider="xai-oauth",
+            code="xai_token_exchange_failed",
+        )
+    try:
+        payload = response.json()
+    except Exception as exc:
+        raise AuthError(
+            f"xAI token exchange returned invalid JSON: {exc}",
+            provider="xai-oauth",
+            code="xai_token_exchange_invalid",
+        ) from exc
+    if not isinstance(payload, dict):
+        raise AuthError(
+            "xAI token exchange response was not a JSON object.",
+            provider="xai-oauth",
+            code="xai_token_exchange_invalid",
+        )
+    access_token = str(payload.get("access_token", "") or "").strip()
+    refresh_token = str(payload.get("refresh_token", "") or "").strip()
+    if not access_token:
+        raise AuthError(
+            "xAI token exchange did not return an access_token.",
+            provider="xai-oauth",
+            code="xai_token_exchange_invalid",
+        )
+    if not refresh_token:
+        raise AuthError(
+            "xAI token exchange did not return a refresh_token.",
+            provider="xai-oauth",
+            code="xai_token_exchange_invalid",
+        )
+    return payload
+
+
+def _xai_oauth_credentials_from_token_payload(
+    payload: Dict[str, Any],
+    *,
+    discovery: Dict[str, str],
+    redirect_uri: str,
+    source: str,
+) -> Dict[str, Any]:
+    access_token = str(payload.get("access_token", "") or "").strip()
+    refresh_token = str(payload.get("refresh_token", "") or "").strip()
+    base_url = (
+        os.getenv("HERMES_XAI_BASE_URL", "").strip().rstrip("/")
+        or os.getenv("XAI_BASE_URL", "").strip().rstrip("/")
+        or DEFAULT_XAI_OAUTH_BASE_URL
+    )
+    return {
+        "tokens": {
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+            "id_token": str(payload.get("id_token", "") or "").strip(),
+            "expires_in": payload.get("expires_in"),
+            "token_type": str(payload.get("token_type") or "Bearer").strip() or "Bearer",
+        },
+        "discovery": discovery,
+        "redirect_uri": redirect_uri,
+        "base_url": base_url,
+        "last_refresh": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "source": source,
+    }
+
+
+def _xai_oauth_manual_code_login(
+    *,
+    timeout_seconds: float = 20.0,
+) -> Dict[str, Any]:
+    discovery = _xai_oauth_discovery(timeout_seconds)
+    authorization_endpoint = discovery["authorization_endpoint"]
+    token_endpoint = discovery["token_endpoint"]
+    redirect_uri = _xai_default_loopback_redirect_uri()
+    _xai_validate_loopback_redirect_uri(redirect_uri)
+
+    code_verifier = _oauth_pkce_code_verifier()
+    code_challenge = _oauth_pkce_code_challenge(code_verifier)
+    state = uuid.uuid4().hex
+    nonce = uuid.uuid4().hex
+    authorize_url = _xai_oauth_build_authorize_url(
+        authorization_endpoint=authorization_endpoint,
+        redirect_uri=redirect_uri,
+        code_challenge=code_challenge,
+        state=state,
+        nonce=nonce,
+    )
+
+    print("Open this URL in a browser on any device to authorize Hermes with xAI:")
+    print(authorize_url)
+    print()
+    print("After xAI redirects to localhost, the page may fail to load. That is expected")
+    print("when the browser is on another device. Copy the full failed redirect URL")
+    print("from the address bar and paste it below. If you cannot copy the full URL,")
+    print("paste the one-time authorization code instead.")
+    print()
+    try:
+        pasted = input("Paste full redirect URL or authorization code: ").strip()
+    except KeyboardInterrupt:
+        print("\nLogin cancelled.")
+        raise SystemExit(130)
+    except EOFError as exc:
+        raise AuthError(
+            "xAI authorization failed: no redirect URL or authorization code was pasted.",
+            provider="xai-oauth",
+            code="xai_code_missing",
+        ) from exc
+
+    callback = _xai_parse_pasted_callback(pasted)
+    if callback.get("error"):
+        detail = callback.get("error_description") or callback["error"]
+        raise AuthError(
+            f"xAI authorization failed: {detail}",
+            provider="xai-oauth",
+            code="xai_authorization_failed",
+        )
+    callback_state = callback.get("state")
+    if callback_state is not None and callback_state != state:
+        raise AuthError(
+            "xAI authorization failed: state mismatch.",
+            provider="xai-oauth",
+            code="xai_state_mismatch",
+        )
+    if callback_state is None:
+        print("Warning: no OAuth state was provided; continuing with PKCE-only verification.")
+
+    code = str(callback.get("code") or "").strip()
+    if not code:
+        raise AuthError(
+            "xAI authorization failed: missing authorization code.",
+            provider="xai-oauth",
+            code="xai_code_missing",
+        )
+
+    payload = _xai_exchange_authorization_code(
+        token_endpoint=token_endpoint,
+        code=code,
+        redirect_uri=redirect_uri,
+        code_verifier=code_verifier,
+        timeout_seconds=timeout_seconds,
+    )
+    return _xai_oauth_credentials_from_token_payload(
+        payload,
+        discovery=discovery,
+        redirect_uri=redirect_uri,
+        source="oauth-manual-code",
+    )
 
 
 def _xai_oauth_loopback_login(
@@ -5392,81 +5633,19 @@ def _xai_oauth_loopback_login(
             code="xai_code_missing",
         )
 
-    try:
-        response = httpx.post(
-            token_endpoint,
-            headers={"Content-Type": "application/x-www-form-urlencoded", "Accept": "application/json"},
-            data={
-                "grant_type": "authorization_code",
-                "code": code,
-                "redirect_uri": redirect_uri,
-                "client_id": XAI_OAUTH_CLIENT_ID,
-                "code_verifier": code_verifier,
-            },
-            timeout=max(20.0, timeout_seconds),
-        )
-    except Exception as exc:
-        raise AuthError(
-            f"xAI token exchange failed: {exc}",
-            provider="xai-oauth",
-            code="xai_token_exchange_failed",
-        ) from exc
-    if response.status_code != 200:
-        detail = response.text.strip()
-        raise AuthError(
-            "xAI token exchange failed."
-            + (f" Response: {detail}" if detail else ""),
-            provider="xai-oauth",
-            code="xai_token_exchange_failed",
-        )
-    try:
-        payload = response.json()
-    except Exception as exc:
-        raise AuthError(
-            f"xAI token exchange returned invalid JSON: {exc}",
-            provider="xai-oauth",
-            code="xai_token_exchange_invalid",
-        ) from exc
-    if not isinstance(payload, dict):
-        raise AuthError(
-            "xAI token exchange response was not a JSON object.",
-            provider="xai-oauth",
-            code="xai_token_exchange_invalid",
-        )
-    access_token = str(payload.get("access_token", "") or "").strip()
-    refresh_token = str(payload.get("refresh_token", "") or "").strip()
-    if not access_token:
-        raise AuthError(
-            "xAI token exchange did not return an access_token.",
-            provider="xai-oauth",
-            code="xai_token_exchange_invalid",
-        )
-    if not refresh_token:
-        raise AuthError(
-            "xAI token exchange did not return a refresh_token.",
-            provider="xai-oauth",
-            code="xai_token_exchange_invalid",
-        )
-
-    base_url = (
-        os.getenv("HERMES_XAI_BASE_URL", "").strip().rstrip("/")
-        or os.getenv("XAI_BASE_URL", "").strip().rstrip("/")
-        or DEFAULT_XAI_OAUTH_BASE_URL
+    payload = _xai_exchange_authorization_code(
+        token_endpoint=token_endpoint,
+        code=code,
+        redirect_uri=redirect_uri,
+        code_verifier=code_verifier,
+        timeout_seconds=timeout_seconds,
     )
-    return {
-        "tokens": {
-            "access_token": access_token,
-            "refresh_token": refresh_token,
-            "id_token": str(payload.get("id_token", "") or "").strip(),
-            "expires_in": payload.get("expires_in"),
-            "token_type": str(payload.get("token_type") or "Bearer").strip() or "Bearer",
-        },
-        "discovery": discovery,
-        "redirect_uri": redirect_uri,
-        "base_url": base_url,
-        "last_refresh": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-        "source": "oauth-loopback",
-    }
+    return _xai_oauth_credentials_from_token_payload(
+        payload,
+        discovery=discovery,
+        redirect_uri=redirect_uri,
+        source="oauth-loopback",
+    )
 
 
 def _codex_device_code_login() -> Dict[str, Any]:

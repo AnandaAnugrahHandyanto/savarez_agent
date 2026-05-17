@@ -6,11 +6,18 @@ description: "How to complete browser-based OAuth (xAI, Spotify) when Hermes run
 
 # OAuth over SSH / Remote Hosts
 
-Some Hermes providers — currently **xAI Grok OAuth** and **Spotify** — use a *loopback redirect* OAuth flow. The auth server (xAI, Spotify) redirects your browser to `http://127.0.0.1:<port>/callback` so a tiny HTTP listener started by the `hermes auth ...` command can grab the authorization code.
+Some Hermes providers use a *loopback redirect* OAuth flow. The auth server redirects your browser to `http://127.0.0.1:<port>/callback` so a tiny HTTP listener started by the `hermes auth ...` command can grab the authorization code.
 
 This works perfectly when Hermes and your browser are on the same machine. It breaks the moment they aren't: your laptop's browser tries to reach `127.0.0.1` on **your laptop**, but the listener is bound to `127.0.0.1` on **the remote server**.
 
-The fix is a one-line SSH local-forward.
+For **xAI Grok OAuth**, the easiest remote fix is now manual-code mode:
+
+```bash
+hermes auth add xai-oauth --manual-code
+# Open the printed URL anywhere, then paste the full failed redirect URL/code.
+```
+
+For providers that still require a live loopback callback, or if you prefer xAI's automatic callback flow, use an SSH local-forward.
 
 ## TL;DR
 
@@ -29,15 +36,15 @@ Port `56121` is what xAI OAuth uses. For Spotify, replace it with `43827`. Herme
 
 ## Which Providers Need This
 
-| Provider | Loopback port | Tunnel needed? |
-|----------|---------------|----------------|
-| `xai-oauth` (Grok SuperGrok) | `56121` | Yes, when Hermes is remote |
-| Spotify | `43827` | Yes, when Hermes is remote |
-| `anthropic` (Claude Pro/Max) | n/a | No — paste-the-code flow |
-| `openai-codex` (ChatGPT Plus/Pro) | n/a | No — device code flow |
-| `minimax`, `nous-portal` | n/a | No — device code flow |
+| Provider | Loopback port | Remote option |
+|----------|---------------|---------------|
+| `xai-oauth` (Grok SuperGrok) | `56121` | Prefer `--manual-code`; tunnel only for automatic callback |
+| Spotify | `43827` | SSH tunnel needed when Hermes is remote |
+| `anthropic` (Claude Pro/Max) | n/a | Paste-the-code flow |
+| `openai-codex` (ChatGPT Plus/Pro) | n/a | Device code flow |
+| `minimax`, `nous-portal` | n/a | Device code flow |
 
-If your provider isn't in the table, you don't need a tunnel.
+If your provider isn't in the table, you probably don't need a tunnel.
 
 ## Why the listener can't just bind 0.0.0.0
 

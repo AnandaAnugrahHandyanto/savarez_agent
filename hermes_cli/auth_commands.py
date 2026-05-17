@@ -336,10 +336,15 @@ def auth_add_command(args) -> None:
         return
 
     if provider == "xai-oauth":
-        creds = auth_mod._xai_oauth_loopback_login(
-            timeout_seconds=getattr(args, "timeout", None) or 20.0,
-            open_browser=not getattr(args, "no_browser", False),
-        )
+        if bool(getattr(args, "manual_code", False) or getattr(args, "paste_code", False)):
+            creds = auth_mod._xai_oauth_manual_code_login(
+                timeout_seconds=getattr(args, "timeout", None) or 20.0,
+            )
+        else:
+            creds = auth_mod._xai_oauth_loopback_login(
+                timeout_seconds=getattr(args, "timeout", None) or 20.0,
+                open_browser=not getattr(args, "no_browser", False),
+            )
         label = (getattr(args, "label", None) or "").strip() or label_from_token(
             creds["tokens"]["access_token"],
             _oauth_default_label(provider, len(pool.entries()) + 1),
@@ -647,7 +652,7 @@ def _interactive_add() -> None:
     auth_add_command(SimpleNamespace(
         provider=provider, auth_type=auth_type, label=label, api_key=None,
         portal_url=None, inference_url=None, client_id=None, scope=None,
-        no_browser=False, timeout=None, insecure=False, ca_bundle=None,
+        no_browser=False, manual_code=False, timeout=None, insecure=False, ca_bundle=None,
     ))
 
 

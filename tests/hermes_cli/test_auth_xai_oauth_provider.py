@@ -1,12 +1,15 @@
 """Tests for xAI Grok OAuth — tokens stored in Hermes auth store (~/.hermes/auth.json)."""
 
+import argparse
 import base64
 import json
 import time
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 
+from hermes_cli import auth as auth_mod
 from hermes_cli.auth import (
     AuthError,
     DEFAULT_XAI_OAUTH_BASE_URL,
@@ -260,6 +263,151 @@ def test_xai_oauth_authorize_url_includes_pkce_and_oidc_params():
     assert params["code_challenge_method"] == "S256"
     assert params["state"] == "state-abc"
     assert params["nonce"] == "nonce-def"
+
+
+# ---------------------------------------------------------------------------
+# Manual code paste fallback
+# ---------------------------------------------------------------------------
+
+
+def test_xai_parse_pasted_callback_accepts_full_redirect_url():
+    parsed = auth_mod._xai_parse_pasted_callback(
+        "http://127.0.0.1:56121/callback?code=auth-code&state=state-abc"
+    )
+    assert parsed["code"] == "auth-code"
+    assert parsed["state"] == "state-abc"
+    assert parsed["error"] is None
+
+
+def test_xai_parse_pasted_callback_accepts_query_string():
+    parsed = auth_mod._xai_parse_pasted_callback("?code=auth-code&state=state-abc")
+    assert parsed["code"] == "auth-code"
+    assert parsed["state"] == "state-abc"
+    assert parsed["error"] is None
+
+
+def test_xai_parse_pasted_callback_accepts_bare_code():
+    parsed = auth_mod._xai_parse_pasted_callback("auth-code-without-state")
+    assert parsed["code"] == "auth-code-without-state"
+    assert parsed["state"] is None
+    assert parsed["error"] is None
+
+
+def test_xai_parse_pasted_callback_surfaces_oauth_error():
+    parsed = auth_mod._xai_parse_pasted_callback(
+        "http://127.0.0.1:56121/callback?error=access_denied&error_description=Nope"
+    )
+    assert parsed["code"] is None
+    assert parsed["error"] == "access_denied"
+    assert parsed["error_description"] == "Nope"
+
+
+def test_xai_manual_code_login_uses_same_redirect_uri_for_authorize_and_token(
+    monkeypatch, capsys
+):
+    discovery = {
+        "authorization_endpoint": "https://auth.x.ai/oauth2/authorize",
+        "token_endpoint": "https://auth.x.ai/oauth2/token",
+    }
+    monkeypatch.setattr("hermes_cli.auth._xai_oauth_discovery", lambda timeout: discovery)
+    monkeypatch.setattr("hermes_cli.auth._oauth_pkce_code_verifier", lambda: "verifier")
+    monkeypatch.setattr("hermes_cli.auth._oauth_pkce_code_challenge", lambda verifier: "challenge")
+
+    class _UUID:
+        def __init__(self, value):
+            self.hex = value
+
+    uuids = iter([_UUID("state-abc"), _UUID("nonce-def")])
+    monkeypatch.setattr("hermes_cli.auth.uuid.uuid4", lambda: next(uuids))
+    monkeypatch.setattr(
+        "builtins.input",
+        lambda prompt="": "http://127.0.0.1:56121/callback?code=auth-code&state=state-abc",
+    )
+
+    token_post = {}
+
+    def _fake_post(url, **kwargs):
+        token_post["url"] = url
+        token_post.update(kwargs)
+        return _StubHTTPResponse(
+            200,
+            {
+                "access_token": "access-token",
+                "refresh_token": "refresh-token",
+                "expires_in": 3600,
+                "token_type": "Bearer",
+            },
+        )
+
+    monkeypatch.setattr("hermes_cli.auth.httpx.post", _fake_post)
+
+    creds = auth_mod._xai_oauth_manual_code_login(timeout_seconds=2.0)
+
+    output = capsys.readouterr().out
+    auth_url = next(line for line in output.splitlines() if line.startswith("https://auth.x.ai/"))
+    authorize_params = {k: v[0] for k, v in parse_qs(urlparse(auth_url).query).items()}
+    assert authorize_params["redirect_uri"] == "http://127.0.0.1:56121/callback"
+    assert token_post["url"] == discovery["token_endpoint"]
+    assert token_post["data"]["redirect_uri"] == authorize_params["redirect_uri"]
+    assert token_post["data"]["code_verifier"] == "verifier"
+    assert creds["source"] == "oauth-manual-code"
+    assert creds["tokens"]["access_token"] == "access-token"
+
+
+def test_xai_manual_code_login_rejects_state_mismatch(monkeypatch):
+    discovery = {
+        "authorization_endpoint": "https://auth.x.ai/oauth2/authorize",
+        "token_endpoint": "https://auth.x.ai/oauth2/token",
+    }
+    monkeypatch.setattr("hermes_cli.auth._xai_oauth_discovery", lambda timeout: discovery)
+    monkeypatch.setattr("hermes_cli.auth._oauth_pkce_code_verifier", lambda: "verifier")
+    monkeypatch.setattr("hermes_cli.auth._oauth_pkce_code_challenge", lambda verifier: "challenge")
+
+    class _UUID:
+        def __init__(self, value):
+            self.hex = value
+
+    uuids = iter([_UUID("expected-state"), _UUID("nonce-def")])
+    monkeypatch.setattr("hermes_cli.auth.uuid.uuid4", lambda: next(uuids))
+    monkeypatch.setattr(
+        "builtins.input",
+        lambda prompt="": "http://127.0.0.1:56121/callback?code=auth-code&state=wrong-state",
+    )
+    monkeypatch.setattr(
+        "hermes_cli.auth.httpx.post",
+        lambda *args, **kwargs: pytest.fail("state mismatch must not exchange the code"),
+    )
+
+    with pytest.raises(AuthError) as exc:
+        auth_mod._xai_oauth_manual_code_login(timeout_seconds=2.0)
+    assert exc.value.code == "xai_state_mismatch"
+
+
+def test_model_flow_xai_oauth_passes_manual_code_flags_to_login(monkeypatch):
+    from hermes_cli import main as main_mod
+
+    monkeypatch.setattr("hermes_cli.auth.get_xai_oauth_auth_status", lambda: {"logged_in": False})
+    monkeypatch.setattr("hermes_cli.auth._prompt_model_selection", lambda *args, **kwargs: None)
+
+    captured = {}
+
+    def _fake_login(args, pconfig, **kwargs):
+        captured["manual_code"] = getattr(args, "manual_code", False)
+        captured["no_browser"] = getattr(args, "no_browser", False)
+        captured["timeout"] = getattr(args, "timeout", None)
+        captured["force_new_login"] = kwargs.get("force_new_login")
+
+    monkeypatch.setattr("hermes_cli.auth._login_xai_oauth", _fake_login)
+
+    args = argparse.Namespace(manual_code=True, no_browser=True, timeout=7.0)
+    main_mod._model_flow_xai_oauth({}, current_model="", args=args)
+
+    assert captured == {
+        "manual_code": True,
+        "no_browser": True,
+        "timeout": 7.0,
+        "force_new_login": None,
+    }
 
 
 # ---------------------------------------------------------------------------
