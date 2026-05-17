@@ -56,15 +56,16 @@ Every claim must end in exactly one of:
 
 The kanban kernel enforces that exactly one of these terminates each run. A worker that calls neither and exits normally is treated as crashed.
 
-## Outputs and the review-required convention
+## Outputs and the review-handoff convention
 
-For most code-changing tasks, the work isn't truly *done* the moment the worker finishes — it needs a human reviewer. The kanban kernel doesn't enforce this distinction (a "code-changing task" is fuzzy and forcing block-instead-of-complete on every code worker would break flows where no review is wanted). It's a convention layered on top:
+For code-changing tasks, first distinguish a **review handoff** from a **real blocker**. The kanban kernel only knows `done` vs `blocked`; dependency promotion treats `done` parents as satisfied and leaves `blocked` parents unsatisfied. That matters when an orchestrator pre-creates a review child.
 
-- **Block instead of complete**, with `reason` prefixed `review-required: ` so the dashboard / `hermes kanban show` surfaces the row as awaiting review.
-- **Drop structured metadata into a `kanban_comment` first** since `kanban_block` only carries the human-readable `reason`. Comments are the durable annotation channel — every audit-relevant field (changed_files, tests_run, diff_path or PR url, decisions) belongs there.
-- **Reviewer either approves and unblocks**, which respawns the worker with the comment thread for follow-ups; or asks for changes via another comment, which the next worker run sees as part of `kanban_show`'s context.
+- **If a linked/pre-created review child exists and implementation/tests pass**, complete the implementation parent with a `GO-for-review` summary plus structured metadata (`changed_files`, `tests_run`, `diff_path`/PR URL, decisions, risks). This lets the dependency engine promote the review child. The reviewer/fan-in owns the final `GO`/`BLOCK`/`NEED_MORE` verdict.
+- **Use `kanban_block(reason="review-required: ...")` only when no valid review child/path exists** and the intended workflow is manual operator review of the parent itself.
+- **Use `kanban_block(reason=...)` for real blockers**: failed tests, missing credentials, unsafe/destructive scope, or missing user decision.
+- **Drop structured metadata into a `kanban_comment` or completion metadata first**. Comments/metadata are the durable annotation channel — every audit-relevant field belongs there.
 
-The [`kanban-worker`](https://github.com/NousResearch/hermes-agent/blob/main/skills/devops/kanban-worker/SKILL.md) skill has worked examples for both `kanban_complete` (truly terminal tasks — typo fixes, docs changes, research writeups) and the `review-required` block pattern.
+A blocked parent with a waiting review child is an operational anomaly (`review_todo_stalled_due_parent_blocked`), not a healthy review gate. The [`kanban-worker`](https://github.com/NousResearch/hermes-agent/blob/main/skills/devops/kanban-worker/SKILL.md) skill has worked examples for both `GO-for-review` handoff and explicit `review-required` blocking.
 
 ## Logs and audit trail
 
