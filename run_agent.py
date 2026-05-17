@@ -1238,6 +1238,7 @@ class AIAgent:
         checkpoint_max_total_size_mb: int = 500,
         checkpoint_max_file_size_mb: int = 10,
         pass_session_id: bool = False,
+        preloaded_skills: list[str] = None,
     ):
         """
         Initialize the AI Agent.
@@ -1316,6 +1317,7 @@ class AIAgent:
         self.skip_context_files = skip_context_files
         self.load_soul_identity = load_soul_identity
         self.pass_session_id = pass_session_id
+        self._preloaded_skills = preloaded_skills if preloaded_skills is not None else []
         self._credential_pool = credential_pool
         self.log_prefix_chars = log_prefix_chars
         self.log_prefix = f"{log_prefix} " if log_prefix else ""
@@ -12391,6 +12393,42 @@ class AIAgent:
             else:
                 # First turn of a new session — build from scratch.
                 self._cached_system_prompt = self._build_system_prompt(system_message)
+
+                # ── Auto-skill preloading ──────────────────────────────────
+                # Analyze session context and auto-load relevant skills.
+                # This is additive: explicit --skills preloads (stored in
+                # self._preloaded_skills) are merged and de-duplicated.
+                if self._preloaded_skills is not None:
+                    try:
+                        from agent.session_skill_analyzer import (
+                            _analyze_session_context,
+                            merge_preloads,
+                        )
+                        from agent.skill_commands import build_preloaded_skills_prompt
+
+                        auto_preloads = _analyze_session_context(
+                            cwd=os.getenv("TERMINAL_CWD"),
+                        )
+                        merged = merge_preloads(
+                            auto_preloads=auto_preloads,
+                            explicit_preloads=self._preloaded_skills,
+                            max_auto=5,
+                        )
+                        if merged:
+                            skills_text, loaded, missing = build_preloaded_skills_prompt(
+                                merged,
+                                task_id=self.session_id,
+                            )
+                            if skills_text:
+                                self._cached_system_prompt = (
+                                    self._cached_system_prompt.rstrip() + "\n\n" + skills_text
+                                )
+                            if missing and self.verbose_logging:
+                                logger.debug("Auto-preload missing skills: %s", missing)
+                    except Exception as exc:
+                        # Non-fatal: skill preloading must never break the agent.
+                        logger.debug("Skill auto-preload failed: %s", exc)
+
                 # Plugin hook: on_session_start
                 # Fired once when a brand-new session is created (not on
                 # continuation).  Plugins can use this to initialise
