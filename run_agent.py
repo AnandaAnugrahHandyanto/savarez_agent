@@ -9932,8 +9932,8 @@ class AIAgent:
                 try:
                     from tools.schema_sanitizer import strip_pattern_and_format
                     tools_for_api, _ = strip_pattern_and_format(tools_for_api)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logging.warning(f"{self.log_prefix}⚠️ Failed to sanitize tool schemas for xAI: {e}")
 
             return _ct.build_kwargs(
                 model=self.model,

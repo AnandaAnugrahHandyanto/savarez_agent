@@ -304,6 +304,30 @@ def test_strip_none_returns_zero():
     assert stripped == 0
 
 
+
+def test_strip_responses_format_strips_format_keyword():
+    """Responses-format:  keyword should be stripped."""
+    from tools.schema_sanitizer import strip_pattern_and_format
+
+    tools = [
+        {
+            "name": "get_event",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "ts": {"type": "string", "format": "date-time"},
+                }
+            },
+            "type": "function"
+        }
+    ]
+
+    result, stripped = strip_pattern_and_format(tools)
+    assert stripped == 1, f"Expected 1 format stripped, got {stripped}"
+    assert "format" not in result[0]["parameters"]["properties"]["ts"], "format should be stripped"
+    assert result[0]["parameters"]["properties"]["ts"]["type"] == "string", "type should be preserved"
+
+
 def test_top_level_allof_stripped_for_codex_backend_compat():
     """OpenAI Codex backend rejects top-level allOf/oneOf/anyOf/enum/not."""
     tools = [_tool("memory", {
