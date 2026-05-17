@@ -107,7 +107,7 @@ def _kanban_create_assignee_error(assignee: str) -> Optional[str]:
     """
     caller = _current_profile_name()
     assignee_key = assignee.lower()
-    if assignee_key == caller:
+    if assignee_key == caller.lower():
         return None
     allowed = _configured_kanban_assignees(caller)
     if "*" in allowed or assignee_key in allowed:
