@@ -46,10 +46,10 @@ def _serialize_dashboard_config_tests():
 
 
 async def _go_to_fallback_chain(page: Page) -> None:
-    """Navigate to Models page and switch to the Fallback Chain outer tab."""
+    """Navigate to Models page and switch to the Fallback Chain tab."""
     await page.goto(MODELS_PAGE_URL)
     await page.wait_for_timeout(2000)
-    await page.locator("[data-testid='models-fallback-chain-tab']").click()
+    await page.locator("[data-testid='models-settings-fallback-tab']").click()
     await page.wait_for_timeout(1000)
 
 

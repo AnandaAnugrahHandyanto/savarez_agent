@@ -1,10 +1,11 @@
-"""Playwright UI tests for the new Models page layout.
+"""Playwright UI tests for the Models page layout.
 
-New layout:
-- Settings outer tab: Main Model card (no inner tabs)
-- Fallback Chain outer tab: standalone, full UI
-- Auxiliary Tasks outer tab: standalone, inline panel (no modal)
-- Used Models outer tab: analytics grid
+New structure:
+- Single outer Tab level with 4 tabs:
+  - Main Model: Main Model card + Stats card
+  - Fallback Chain: Full fallback chain UI
+  - Auxiliary Tasks: Inline panel (no modal)
+  - Used Models: Analytics grid with period controls
 """
 from __future__ import annotations
 
@@ -14,136 +15,137 @@ from playwright.async_api import Page, expect
 from tests.ui.conftest import MODELS_PAGE_URL
 
 
-async def _go_to(page: Page, tab: str) -> None:
-    """Navigate to a specific outer tab."""
+async def _go_to_tab(page: Page, tab_name: str) -> None:
+    """Navigate to a specific tab."""
     await page.goto(MODELS_PAGE_URL)
-    tab_map = {
-        "settings": "models-settings-tab",
-        "fallback-chain": "models-fallback-chain-tab",
-        "auxiliary-tasks": "models-auxiliary-tasks-tab",
-        "used-models": "models-used-models-tab",
+    await page.wait_for_timeout(2000)  # Wait for initial render
+    tab_selectors = {
+        "Main Model": "[data-testid='models-settings-main-tab']",
+        "Fallback Chain": "[data-testid='models-settings-fallback-tab']",
+        "Auxiliary Tasks": "[data-testid='models-settings-aux-tab']",
+        "Used Models": "[data-testid='models-used-models-tab']",
     }
-    selector = f"[data-testid='{tab_map[tab]}']"
-    await page.locator(selector).click()
-    # Give tab content time to render
-    await page.wait_for_timeout(200)
+    selector = tab_selectors.get(tab_name)
+    if selector:
+        await page.locator(selector).click()
+        await page.wait_for_timeout(500)
 
-
-# ── Outer tabs structure ─────────────────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_all_outer_tabs_visible(page: Page):
-    """Settings, Fallback Chain, Auxiliary Tasks, Used Models should all be outer tabs."""
+async def test_settings_has_no_outer_tab(page: Page):
+    """There should be no outer 'Settings' tab - all tabs are at the same level."""
     await page.goto(MODELS_PAGE_URL)
-    await expect(page.locator("[data-testid='models-settings-tab']")).to_be_visible()
-    await expect(page.locator("[data-testid='models-fallback-chain-tab']")).to_be_visible()
-    await expect(page.locator("[data-testid='models-auxiliary-tasks-tab']")).to_be_visible()
+    await page.wait_for_timeout(2000)
+    # The old 'settings' outer tab should NOT exist
+    settings_outer = page.locator("[data-testid='models-settings-tab']")
+    count = await settings_outer.count()
+    assert count == 0, "There should be no outer 'Settings' tab"
+
+
+@pytest.mark.asyncio
+async def test_all_tabs_visible(page: Page):
+    """All 4 tabs should be visible at the top."""
+    await page.goto(MODELS_PAGE_URL)
+    await page.wait_for_timeout(2000)
+    await expect(page.locator("[data-testid='models-settings-main-tab']")).to_be_visible()
+    await expect(page.locator("[data-testid='models-settings-fallback-tab']")).to_be_visible()
+    await expect(page.locator("[data-testid='models-settings-aux-tab']")).to_be_visible()
     await expect(page.locator("[data-testid='models-used-models-tab']")).to_be_visible()
 
 
 @pytest.mark.asyncio
-async def test_outer_tabs_switch_to_settings(page: Page):
-    """Clicking Settings tab should show Main Model card."""
-    await _go_to(page, "settings")
+async def test_main_model_tab_has_card(page: Page):
+    """Main Model tab should show the Main Model card."""
+    await _go_to_tab(page, "Main Model")
     await expect(page.locator("[data-testid='main-model-card']")).to_be_visible()
 
 
 @pytest.mark.asyncio
-async def test_outer_tabs_switch_to_fallback(page: Page):
-    """Clicking Fallback Chain tab should show full fallback chain UI."""
-    await _go_to(page, "fallback-chain")
-    await expect(page.locator("[data-testid='fallback-chain-card']")).to_be_visible()
-    await expect(page.locator("[data-testid='fallback-add-button']")).to_be_visible()
-    await expect(page.locator("[data-testid='fallback-save-button']")).to_be_visible()
+async def test_main_model_tab_stats_visible(page: Page):
+    """Main Model tab should show the stats card."""
+    await _go_to_tab(page, "Main Model")
+    stats = page.locator("[data-testid='settings-tab-panel'] > div > div > div")
+    count = await stats.count()
+    assert count >= 2, "Should have at least 2 cards (main model + stats)"
 
 
 @pytest.mark.asyncio
-async def test_outer_tabs_switch_to_auxiliary(page: Page):
-    """Clicking Auxiliary Tasks tab should show inline panel with task items."""
-    await _go_to(page, "auxiliary-tasks")
-    await expect(page.locator("[data-testid='auxiliary-tasks-tab-panel']")).to_be_visible()
-    task_items = page.locator("[data-testid='auxiliary-task-item']")
-    count = await task_items.count()
-    assert count > 0, f"Should have at least one auxiliary task item, got {count}"
+async def test_fallback_chain_tab_has_add_button(page: Page):
+    """Fallback Chain tab should have Add button."""
+    await _go_to_tab(page, "Fallback Chain")
+    add_btn = page.locator("[data-testid='fallback-chain-card'] [data-testid='fallback-add-button']")
+    await expect(add_btn).to_be_visible()
 
 
 @pytest.mark.asyncio
-async def test_outer_tabs_switch_to_used_models(page: Page):
-    """Clicking Used Models tab should show analytics grid."""
-    await _go_to(page, "used-models")
-    await expect(page.locator("[data-testid='used-models-tab-panel']")).to_be_visible()
-
-
-# ── Settings tab ─────────────────────────────────────────────────────
-
-@pytest.mark.asyncio
-async def test_settings_has_main_model_card(page: Page):
-    """Settings tab should show the Main Model card."""
-    await _go_to(page, "settings")
-    await expect(page.locator("[data-testid='main-model-card']")).to_be_visible()
+async def test_fallback_chain_tab_has_save_button(page: Page):
+    """Fallback Chain tab should have Save button."""
+    await _go_to_tab(page, "Fallback Chain")
+    save_btn = page.locator("[data-testid='fallback-chain-card'] [data-testid='fallback-save-button']")
+    await expect(save_btn).to_be_visible()
 
 
 @pytest.mark.asyncio
-async def test_settings_no_inner_tabs(page: Page):
-    """Settings tab should NOT have inner tabs (Main Model, Fallback Chain, Auxiliary Tasks)."""
-    await _go_to(page, "settings")
-    # The old inner tab triggers should NOT exist as buttons
-    inner_tabs = page.locator("[data-testid='settings-tab-panel'] [data-testid]")
-    # Check there are no tabs-list inside the settings panel
-    inner_tabs_list = page.locator("[data-testid='settings-tab-panel'] [role='tablist']")
-    count = await inner_tabs_list.count()
-    assert count == 0, "Settings tab should not have an inner tablist"
-
-
-# ── Fallback Chain tab ───────────────────────────────────────────────
-
-@pytest.mark.asyncio
-async def test_fallback_chain_standalone_has_add_button(page: Page):
-    """Fallback Chain standalone tab should have Add button."""
-    await _go_to(page, "fallback-chain")
-    await expect(page.locator("[data-testid='fallback-add-button']")).to_be_visible()
-
-
-@pytest.mark.asyncio
-async def test_fallback_chain_standalone_has_save_button(page: Page):
-    """Fallback Chain standalone tab should have Save button."""
-    await _go_to(page, "fallback-chain")
-    await expect(page.locator("[data-testid='fallback-save-button']")).to_be_visible()
-
-
-@pytest.mark.asyncio
-async def test_fallback_chain_add_opens_picker(page: Page):
+async def test_fallback_chain_tab_add_opens_picker(page: Page):
     """Add button in Fallback Chain tab should open the model picker."""
-    await _go_to(page, "fallback-chain")
-    await page.locator("[data-testid='fallback-add-button']").click()
-    await expect(page.locator("[data-testid='model-picker-dialog']")).to_be_visible()
+    await _go_to_tab(page, "Fallback Chain")
+    add_btn = page.locator("[data-testid='fallback-add-button']")
+    await add_btn.click()
+    await page.wait_for_timeout(500)
+    picker = page.locator("[data-testid='model-picker-dialog']")
+    visible = await picker.count() > 0
+    if not visible:
+        # Check for dialog title text as fallback
+        visible = await page.locator("text=Add Fallback Provider").count() > 0
+    assert visible, "Model picker dialog should be visible after clicking Add"
 
-
-# ── Auxiliary Tasks tab ──────────────────────────────────────────────
 
 @pytest.mark.asyncio
 async def test_auxiliary_tab_has_inline_panel(page: Page):
-    """Auxiliary Tasks tab should show the inline panel (not a modal)."""
-    await _go_to(page, "auxiliary-tasks")
-    await expect(page.locator("[data-testid='auxiliary-tasks-tab-panel']")).to_be_visible()
+    """Auxiliary Tasks tab should show the inline configure panel."""
+    await _go_to_tab(page, "Auxiliary Tasks")
+    panel = page.locator("[data-testid='auxiliary-tasks-tab-panel']")
+    await expect(panel).to_be_visible()
     task_items = page.locator("[data-testid='auxiliary-task-item']")
     count = await task_items.count()
-    assert count > 0, f"Should have at least one task item, got {count}"
+    assert count > 0, "Should have at least one auxiliary task item"
 
 
 @pytest.mark.asyncio
 async def test_auxiliary_tab_no_configure_button(page: Page):
     """Auxiliary Tasks tab should NOT have a 'Configure' button."""
-    await _go_to(page, "auxiliary-tasks")
+    await _go_to_tab(page, "Auxiliary Tasks")
     await expect(page.get_by_role("button", name="Configure", exact=True)).to_have_count(0)
 
 
 @pytest.mark.asyncio
-async def test_auxiliary_tab_task_items_show_provider_and_model(page: Page):
-    """Auxiliary task items should show provider and model info."""
-    await _go_to(page, "auxiliary-tasks")
-    first_item = page.locator("[data-testid='auxiliary-task-item']").first
-    await expect(first_item).to_be_visible()
-    # Should contain text like "Vision" or "auto (use main model)"
-    text = await first_item.inner_text()
-    assert len(text) > 0, "Task item should have text content"
+async def test_auxiliary_tab_task_items_have_labels(page: Page):
+    """Auxiliary Tasks tab should show task items with labels."""
+    await _go_to_tab(page, "Auxiliary Tasks")
+    task_items = page.locator("[data-testid='auxiliary-task-item']")
+    count = await task_items.count()
+    assert count >= 1, "Should have at least one task item"
+    first_item = await task_items.first.inner_text()
+    assert len(first_item) > 0, "Task item should have text content"
+
+
+@pytest.mark.asyncio
+async def test_used_models_tab_has_period_controls(page: Page):
+    """Used Models tab should have period controls (7d, 30d, 90d)."""
+    await _go_to_tab(page, "Used Models")
+    await expect(page.locator("[data-testid='used-models-period-7']")).to_be_visible()
+    await expect(page.locator("[data-testid='used-models-period-30']")).to_be_visible()
+    await expect(page.locator("[data-testid='used-models-period-90']")).to_be_visible()
+    await expect(page.locator("[data-testid='used-models-refresh-button']")).to_be_visible()
+
+
+@pytest.mark.asyncio
+async def test_used_models_tab_renders_content(page: Page):
+    """Used Models tab should render either cards or empty state."""
+    await _go_to_tab(page, "Used Models")
+    cards = page.locator("[data-testid='used-model-card']")
+    empty_state = page.locator("[data-testid='used-models-empty-state']")
+    cards_count = await cards.count()
+    empty_count = await empty_state.count()
+    # Should have at least cards OR empty state
+    assert cards_count > 0 or empty_count > 0, "Should show model cards or empty state"

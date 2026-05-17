@@ -23,12 +23,10 @@ from tests.ui.conftest import MODELS_PAGE_URL
 
 
 async def _go_to_fallback_chain(page: Page):
-    """Navigate to Models page and switch to the Fallback Chain outer tab."""
+    """Navigate to Models page and switch to the Fallback Chain tab."""
     await page.goto(MODELS_PAGE_URL)
     await page.wait_for_timeout(2000)  # Wait for data to load
-    # Click the "Fallback Chain" outer tab
-    await page.locator("[data-testid='models-fallback-chain-tab']").click()
-    # Wait for React to render the new tab content
+    await page.locator("[data-testid='models-settings-fallback-tab']").click()
     await page.wait_for_timeout(1000)
 
 
