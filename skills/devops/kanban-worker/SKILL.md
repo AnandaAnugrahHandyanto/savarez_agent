@@ -49,7 +49,28 @@ kanban_complete(
 
 **Coding task that needs human review (review-required):**
 
-For most code-changing tasks, the work isn't truly *done* until a human reviewer has eyes on it. Block instead of complete, with `reason` prefixed `review-required: ` so the dashboard surfaces the row as needing review. Drop the structured metadata (changed files, test counts, diff/PR url) into a comment first, since `kanban_block` only carries the human-readable reason — comments are the durable annotation channel. Reviewer either approves and runs `hermes kanban unblock <id>` (which re-spawns you with the comment thread for any follow-ups) or asks for changes via another comment.
+For code-changing tasks, first distinguish **review handoff** from a **real blocker**. If the orchestrator already created or linked a review child, your successful implementation should close the parent as `done` with a `GO-for-review` handoff summary so the dependency engine can promote the review child. Do **not** block the parent with `review-required:` in that graph shape; a blocked parent strands the review child in `todo`. Use `kanban_block(reason="review-required: ...")` only when there is no linked/pre-created review child and the intended workflow is manual operator review of the parent itself. In every case, drop structured metadata (changed files, test counts, diff/PR url, risks) into a comment or completion metadata first — comments/metadata are the durable annotation channel.
+
+```python
+import json
+
+kanban_comment(
+    body="GO-for-review handoff:\n" + json.dumps({
+        "changed_files": ["rate_limiter.py", "tests/test_rate_limiter.py"],
+        "tests_run": 14,
+        "tests_passed": 14,
+        "diff_path": "/path/to/worktree",  # or PR url if pushed
+        "decisions": ["user_id primary, IP fallback for unauthenticated requests"],
+        "next_gate": "linked review child",
+    }, indent=2),
+)
+kanban_complete(
+    summary="GO-for-review: rate limiter shipped, 14/14 tests pass; linked reviewer owns final GO/BLOCK verdict",
+    metadata={"handoff": "GO-for-review", "tests_passed": 14},
+)
+```
+
+If no review child/path exists and manual operator review of the parent is the intended gate, use the explicit block shape:
 
 ```python
 import json
@@ -64,7 +85,7 @@ kanban_comment(
     }, indent=2),
 )
 kanban_block(
-    reason="review-required: rate limiter shipped, 14/14 tests pass — needs eyes on the user_id/IP fallback choice before merging",
+    reason="review-required: rate limiter shipped, 14/14 tests pass — no linked reviewer child exists",
 )
 ```
 
