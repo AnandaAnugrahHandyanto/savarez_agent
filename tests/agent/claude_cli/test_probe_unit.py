@@ -1,5 +1,8 @@
 """Unit tests for probe helpers — no real subprocess calls."""
 
+import dataclasses
+import hashlib
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -101,3 +104,88 @@ def test_check_env_hygiene_strips_additional_vars_from_config():
     sanitized = probe.check_env_hygiene(env, strip_env=["FOO", "BAZ"])
     assert "FOO" not in sanitized
     assert "BAZ" not in sanitized
+
+
+def test_cache_key_is_stable_for_same_inputs():
+    """Same inputs always produce the same cache key."""
+    inputs = probe.CacheKeyInputs(
+        binary_hash="abc123",
+        version=(2, 1, 143),
+        provider_config_hash="def456",
+        settings_schema_version="1.0",
+        mcp_config_hash="ghi789",
+        env_hygiene_state="ANTHROPIC_API_KEY=stripped,CLAUDE_CODE_OAUTH_TOKEN=set",
+        adapter_code_version="0.1.0",
+    )
+    assert probe.cache_key(inputs) == probe.cache_key(inputs)
+
+
+def test_cache_key_changes_when_binary_changes():
+    """A different binary hash produces a different cache key."""
+    inputs_a = probe.CacheKeyInputs(
+        binary_hash="abc123",
+        version=(2, 1, 143),
+        provider_config_hash="x",
+        settings_schema_version="1.0",
+        mcp_config_hash="y",
+        env_hygiene_state="z",
+        adapter_code_version="0.1.0",
+    )
+    inputs_b = dataclasses.replace(inputs_a, binary_hash="different")
+    assert probe.cache_key(inputs_a) != probe.cache_key(inputs_b)
+
+
+def test_cache_key_changes_when_adapter_code_version_changes():
+    """A different adapter code version produces a different cache key.
+
+    Ensures that probe results from a previous adapter version don't satisfy
+    the current adapter, which may rely on a different set of assertions.
+    """
+    inputs_a = probe.CacheKeyInputs(
+        binary_hash="abc123",
+        version=(2, 1, 143),
+        provider_config_hash="x",
+        settings_schema_version="1.0",
+        mcp_config_hash="y",
+        env_hygiene_state="z",
+        adapter_code_version="0.1.0",
+    )
+    inputs_b = dataclasses.replace(inputs_a, adapter_code_version="0.2.0")
+    assert probe.cache_key(inputs_a) != probe.cache_key(inputs_b)
+
+
+def test_cache_save_and_load_roundtrip(tmp_path):
+    """A saved probe result reloads from disk with identical fields."""
+    cache_path = tmp_path / "probe.json"
+    result = probe.ProbeResult(
+        cache_key="testkey",
+        binary_path="/usr/local/bin/claude",
+        version=(2, 1, 143),
+        timestamp=1234567890.0,
+        ok=True,
+        assertions={"prompt_via_stdin": "ok", "resume_continuity": "ok"},
+        error=None,
+    )
+    probe.save_cache(result, cache_path)
+    loaded = probe.load_cache(cache_path)
+    assert loaded == result
+
+
+def test_cache_load_returns_none_when_missing(tmp_path):
+    """load_cache returns None when the cache file does not exist."""
+    assert probe.load_cache(tmp_path / "nonexistent.json") is None
+
+
+def test_cache_load_returns_none_when_malformed(tmp_path):
+    """load_cache returns None (not raises) when the cache file is corrupt."""
+    cache_path = tmp_path / "probe.json"
+    cache_path.write_text("not json at all")
+    assert probe.load_cache(cache_path) is None
+
+
+def test_compute_binary_hash_matches_sha256(tmp_path):
+    """compute_binary_hash returns the SHA-256 of the file bytes."""
+    binary = tmp_path / "fake-claude"
+    binary.write_bytes(b"fake content")
+    expected = hashlib.sha256(b"fake content").hexdigest()
+    assert probe.compute_binary_hash(str(binary)) == expected

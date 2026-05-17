@@ -20,12 +20,19 @@ Public surface:
 
 from __future__ import annotations
 
+import hashlib
+import json
+import logging
 import os
 import re
 import shutil
-from typing import Optional
+from dataclasses import asdict, dataclass, field
+from pathlib import Path
+from typing import Any, Optional
 
 from agent.claude_cli import errors
+
+logger = logging.getLogger(__name__)
 
 _VERSION_RE = re.compile(r"v?(\d+)\.(\d+)\.(\d+)")
 
@@ -125,3 +132,80 @@ def check_env_hygiene(
                 "in /root/.hermes/.env. See docs/integrations/providers."
             )
     return sanitized
+
+
+@dataclass(frozen=True)
+class CacheKeyInputs:
+    """Inputs that, if changed, invalidate a cached probe result."""
+
+    binary_hash: str
+    version: tuple[int, int, int]
+    provider_config_hash: str
+    settings_schema_version: str
+    mcp_config_hash: str
+    env_hygiene_state: str
+    adapter_code_version: str
+
+
+@dataclass
+class ProbeResult:
+    """Outcome of a probe run, persistable to disk for cache reuse."""
+
+    cache_key: str
+    binary_path: str
+    version: tuple[int, int, int]
+    timestamp: float
+    ok: bool
+    assertions: dict[str, str] = field(default_factory=dict)
+    error: Optional[str] = None
+
+
+def cache_key(inputs: CacheKeyInputs) -> str:
+    """Compute a stable cache key from the inputs.
+
+    Uses SHA-256 over the JSON-serialized fields so any change in any
+    field invalidates the cache.
+    """
+    payload = {
+        "binary_hash": inputs.binary_hash,
+        "version": list(inputs.version),
+        "provider_config_hash": inputs.provider_config_hash,
+        "settings_schema_version": inputs.settings_schema_version,
+        "mcp_config_hash": inputs.mcp_config_hash,
+        "env_hygiene_state": inputs.env_hygiene_state,
+        "adapter_code_version": inputs.adapter_code_version,
+    }
+    canonical = json.dumps(payload, sort_keys=True).encode("utf-8")
+    return hashlib.sha256(canonical).hexdigest()
+
+
+def compute_binary_hash(path: str) -> str:
+    """Return the SHA-256 hexdigest of the file at ``path``."""
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(65536), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def save_cache(result: ProbeResult, path: Path) -> None:
+    """Persist a probe result to ``path`` (JSON, mode 0600)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = asdict(result)
+    payload["version"] = list(result.version)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(payload, indent=2))
+    tmp.chmod(0o600)
+    tmp.replace(path)
+
+
+def load_cache(path: Path) -> Optional[ProbeResult]:
+    """Load a cached probe result from ``path``, or return None on any error."""
+    try:
+        raw = path.read_text()
+        payload = json.loads(raw)
+        payload["version"] = tuple(payload["version"])
+        return ProbeResult(**payload)
+    except (FileNotFoundError, PermissionError, json.JSONDecodeError, KeyError, TypeError) as exc:
+        logger.debug("probe cache at %s unreadable, ignoring: %s", path, exc)
+        return None
