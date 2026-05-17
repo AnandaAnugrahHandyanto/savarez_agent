@@ -44,6 +44,7 @@ class TestHandleFunctionCall:
         with (
             patch("model_tools.registry.dispatch", return_value='{"ok":true}'),
             patch("hermes_cli.plugins.invoke_hook") as mock_invoke_hook,
+            patch("hermes_cli.profiles.get_active_profile_name", return_value="coder"),
         ):
             result = handle_function_call(
                 "web_search",
@@ -62,6 +63,7 @@ class TestHandleFunctionCall:
                 task_id="task-1",
                 session_id="session-1",
                 tool_call_id="call-1",
+                profile="coder",
             ),
             call(
                 "post_tool_call",
@@ -72,6 +74,7 @@ class TestHandleFunctionCall:
                 session_id="session-1",
                 tool_call_id="call-1",
                 duration_ms=ANY,
+                profile="coder",
             ),
             call(
                 "transform_tool_result",
