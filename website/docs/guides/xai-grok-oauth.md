@@ -4,7 +4,7 @@ title: "xAI Grok OAuth (SuperGrok Subscription)"
 description: "Sign in with your SuperGrok subscription to use Grok models in Hermes Agent — no API key required"
 ---
 
-# xAI Grok OAuth (SuperGrok Subscription)
+# xAI Grok OAuth (SuperGrok Subscription) DON'T USE SUPERGROK BUSINESS -- WILL USE TOKENS LIKE API -- INCOMPLETE INFORMATION FROM xAI
 
 Hermes Agent supports xAI Grok through a browser-based OAuth login flow against [accounts.x.ai](https://accounts.x.ai), using your existing **SuperGrok subscription**. No `XAI_API_KEY` is required — log in once and Hermes automatically refreshes your session in the background.
 
@@ -38,7 +38,7 @@ The same OAuth bearer token is also reused by every direct-to-xAI surface in Her
 ```bash
 # Launch the provider and model picker
 hermes model
-# → Select "xAI Grok OAuth (SuperGrok Subscription)" from the provider list
+# → Select "xAI Grok OAuth (SuperGrok Subscription)" from the provider list DON'T USE SUPERGROK BUSINESS -- WILL USE TOKENS LIKE API -- INCOMPLETE INFORMATION FROM xAI
 # → Hermes opens your browser to accounts.x.ai
 # → Approve access in the browser
 # → Pick a model (grok-4.3 is at the top)
