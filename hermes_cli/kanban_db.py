@@ -2892,6 +2892,32 @@ DEFAULT_SPAWN_FAILURE_LIMIT = DEFAULT_FAILURE_LIMIT
 # and rotates on spawn if the file is larger than this at spawn time.
 DEFAULT_LOG_ROTATE_BYTES = 2 * 1024 * 1024   # 2 MiB
 
+# ---------------------------------------------------------------------------
+# Respawn guard constants
+# ---------------------------------------------------------------------------
+
+# Patterns in last_failure_error that indicate a quota / auth blocker.
+# These errors won't resolve by retrying immediately — auto-block instead.
+_RESPAWN_BLOCKER_RE = re.compile(
+    r"\b(quota|rate[\s_\-]?limit|429|auth(?:entic|oriz)|"
+    r"403|unauthorized|forbidden|billing|subscription|"
+    r"access[\s_]denied|permission[\s_]denied|"
+    r"invalid[\s_]api[\s_]key)\b",
+    re.IGNORECASE,
+)
+
+# Within this window a completed run counts as "recent proof"; don't re-spawn.
+_RESPAWN_GUARD_SUCCESS_WINDOW = 3600  # 1 hour
+
+# Within this window a GitHub PR URL in a comment blocks re-spawn.
+_RESPAWN_GUARD_PR_WINDOW = 86400  # 24 hours
+
+# Pattern matching a GitHub PR URL in task comments.
+_RESPAWN_GUARD_PR_URL_RE = re.compile(
+    r"https?://github\.com/[^/\s]+/[^/\s]+/pull/\d+",
+    re.IGNORECASE,
+)
+
 
 @dataclass
 class DispatchResult:
@@ -2917,6 +2943,13 @@ class DispatchResult:
     """Task ids auto-blocked by the spawn-failure circuit breaker."""
     timed_out: list[str] = field(default_factory=list)
     """Task ids whose workers exceeded ``max_runtime_seconds``."""
+    respawn_guarded: list[tuple[str, str]] = field(default_factory=list)
+    """Tasks skipped by the respawn guard, as ``(task_id, reason)`` pairs.
+
+    Reasons: ``"blocker_auth"`` (quota/auth error — also auto-blocked),
+    ``"recent_success"`` (completed run within guard window),
+    ``"active_pr"`` (GitHub PR URL in a recent comment).
+    """
 
 
 # Bounded registry of recently-reaped worker child exits, populated by the
@@ -3631,6 +3664,67 @@ def _clear_failure_counter(conn: sqlite3.Connection, task_id: str) -> None:
 _clear_spawn_failures = _clear_failure_counter
 
 
+def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]:
+    """Return a guard reason if ``task_id`` should NOT be re-spawned, else None.
+
+    Called per ready task in ``dispatch_once`` before any claim attempt.
+    Checks in priority order:
+
+    ``"blocker_auth"``
+        The task's last failure error matches a quota / authentication
+        pattern.  Retrying immediately will not help; the dispatcher
+        should auto-block the task to stop the respawn cycle.
+
+    ``"recent_success"``
+        A completed run exists within ``_RESPAWN_GUARD_SUCCESS_WINDOW``
+        seconds.  Useful work already succeeded for this task; wait for
+        human review rather than immediately re-spawning.
+
+    ``"active_pr"``
+        A GitHub PR URL appears in a recent task comment (within
+        ``_RESPAWN_GUARD_PR_WINDOW`` seconds).  A prior worker already
+        opened a PR; re-spawning risks a duplicate PR on the same task.
+
+    Stale / dead claim locks are NOT a guard reason — they are handled
+    by ``release_stale_claims`` and ``detect_crashed_workers`` which
+    reset the task to ``ready`` only after verifying the lock is
+    genuinely dead (no live PID on this host).
+    """
+    row = conn.execute(
+        "SELECT last_failure_error FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    if row is None:
+        return None
+
+    # 1. Quota / auth blocker: retrying immediately will not help.
+    err = row["last_failure_error"]
+    if err and _RESPAWN_BLOCKER_RE.search(err):
+        return "blocker_auth"
+
+    now = int(time.time())
+
+    # 2. Completed run within guard window — proof of recent success.
+    cutoff = now - _RESPAWN_GUARD_SUCCESS_WINDOW
+    if conn.execute(
+        "SELECT id FROM task_runs "
+        "WHERE task_id = ? AND outcome = 'completed' AND ended_at >= ?",
+        (task_id, cutoff),
+    ).fetchone():
+        return "recent_success"
+
+    # 3. GitHub PR URL in a recent comment — prior worker already opened a PR.
+    pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
+    for c in conn.execute(
+        "SELECT body FROM task_comments WHERE task_id = ? AND created_at >= ?",
+        (task_id, pr_cutoff),
+    ).fetchall():
+        if c["body"] and _RESPAWN_GUARD_PR_URL_RE.search(c["body"]):
+            return "active_pr"
+
+    return None
+
+
 def has_spawnable_ready(conn: sqlite3.Connection) -> bool:
     """Return True iff there is at least one ready+assigned+unclaimed task
     whose assignee maps to a real Hermes profile.
@@ -3796,6 +3890,21 @@ def dispatch_once(
             # multi-lane setups where the ready queue is steadily full
             # of human-pulled work.
             result.skipped_nonspawnable.append(row["id"])
+            continue
+        # Respawn guard: refuse to re-spawn when useful work is already
+        # in-flight/recent, or when the last failure is a deterministic
+        # blocker (quota / auth) that retrying won't resolve.
+        guard_reason = check_respawn_guard(conn, row["id"])
+        if guard_reason is not None:
+            if guard_reason == "blocker_auth" and not dry_run:
+                # Auto-block to stop the cycle — quota/auth errors are
+                # deterministic and retrying immediately wastes quota.
+                if block_task(conn, row["id"], reason=f"respawn_guard: {guard_reason}"):
+                    result.auto_blocked.append(row["id"])
+                else:
+                    result.respawn_guarded.append((row["id"], guard_reason))
+            else:
+                result.respawn_guarded.append((row["id"], guard_reason))
             continue
         if dry_run:
             result.spawned.append((row["id"], row["assignee"], ""))
