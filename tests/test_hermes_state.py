@@ -1447,13 +1447,20 @@ class TestSchemaInit:
     def test_schema_version(self, db):
         cursor = db._conn.execute("SELECT version FROM schema_version")
         version = cursor.fetchone()[0]
-        assert version == 11
+        assert version == 13
 
     def test_title_column_exists(self, db):
         """Verify the title column was created in the sessions table."""
         cursor = db._conn.execute("PRAGMA table_info(sessions)")
         columns = {row[1] for row in cursor.fetchall()}
         assert "title" in columns
+
+    def test_workspace_columns_exist(self, db):
+        """Verify session workspace columns are present."""
+        cursor = db._conn.execute("PRAGMA table_info(sessions)")
+        columns = {row[1] for row in cursor.fetchall()}
+        assert "workspace_path" in columns
+        assert "last_cwd" in columns
 
     def test_topic_mode_schema_is_not_auto_migrated_on_open(self, tmp_path):
         """Opening an old DB should not add topic-mode columns until /topic opts in.
@@ -1739,12 +1746,12 @@ class TestSchemaInit:
         conn.commit()
         conn.close()
 
-        # Open with SessionDB — should migrate to v9
+        # Open with SessionDB — should migrate to current schema
         migrated_db = SessionDB(db_path=db_path)
 
         # Verify migration
         cursor = migrated_db._conn.execute("SELECT version FROM schema_version")
-        assert cursor.fetchone()[0] == 11
+        assert cursor.fetchone()[0] == 13
 
         # Verify title column exists and is NULL for existing sessions
         session = migrated_db.get_session("existing")
@@ -2516,6 +2523,43 @@ class TestResolveSessionByNameOrId:
 # =========================================================================
 
 class TestConcurrentWriteSafety:
+    def test_create_session_stores_workspace_context(self, db):
+        """create_session persists workspace_path and last_cwd."""
+        db.create_session(
+            session_id="workspace-session",
+            source="cli",
+            workspace_path="/repo",
+            last_cwd="/repo/subdir",
+        )
+        row = db.get_session("workspace-session")
+        assert row["workspace_path"] == "/repo"
+        assert row["last_cwd"] == "/repo/subdir"
+
+    def test_ensure_session_stores_workspace_context(self, db):
+        """ensure_session accepts workspace metadata for fallback session rows."""
+        db.ensure_session(
+            "fallback-session",
+            source="gateway",
+            workspace_path="/workspace",
+            last_cwd="/workspace/current",
+        )
+        row = db.get_session("fallback-session")
+        assert row["workspace_path"] == "/workspace"
+        assert row["last_cwd"] == "/workspace/current"
+
+    def test_update_session_cwd_updates_only_last_cwd(self, db):
+        """update_session_cwd tracks cwd changes without rewriting workspace_path."""
+        db.create_session(
+            session_id="cwd-session",
+            source="cli",
+            workspace_path="/repo",
+            last_cwd="/repo",
+        )
+        db.update_session_cwd("cwd-session", "/repo/packages/app")
+        row = db.get_session("cwd-session")
+        assert row["workspace_path"] == "/repo"
+        assert row["last_cwd"] == "/repo/packages/app"
+
     def test_create_session_insert_or_ignore_is_idempotent(self, db):
         """create_session with the same ID twice must not raise (INSERT OR IGNORE)."""
         db.create_session(session_id="dup-1", source="cli", model="m")
@@ -2939,7 +2983,6 @@ class TestFTS5ToolCallMigration:
                 "SELECT version FROM schema_version LIMIT 1"
             ).fetchone()
             version = row["version"] if hasattr(row, "keys") else row[0]
-            assert version == 11
+            assert version == 13
         finally:
             session_db.close()
-

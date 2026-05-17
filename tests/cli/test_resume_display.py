@@ -610,6 +610,80 @@ class TestPreloadResumedSession:
         assert "1 user message," in output
         assert "1 user messages" not in output
 
+    def test_preload_restores_last_cwd(self, tmp_path, monkeypatch):
+        """Early --resume restores TERMINAL_CWD from session metadata."""
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+        cli = _make_cli(resume="cwd_session")
+        messages = [{"role": "user", "content": "hi"}]
+        mock_db = MagicMock()
+        mock_db.get_session.return_value = {
+            "id": "cwd_session",
+            "title": None,
+            "last_cwd": str(project_dir),
+        }
+        mock_db.get_messages_as_conversation.return_value = messages
+        mock_db._conn = MagicMock()
+        cli._session_db = mock_db
+        monkeypatch.setenv("TERMINAL_ENV", "local")
+        monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
+
+        assert cli._preload_resumed_session() is True
+        assert os.environ["TERMINAL_CWD"] == str(project_dir)
+
+    def test_preload_ignores_missing_local_last_cwd(self, tmp_path, monkeypatch):
+        """Local --resume keeps the current cwd when saved cwd is gone."""
+        cli = _make_cli(resume="cwd_session")
+        messages = [{"role": "user", "content": "hi"}]
+        mock_db = MagicMock()
+        mock_db.get_session.return_value = {
+            "id": "cwd_session",
+            "title": None,
+            "last_cwd": str(tmp_path / "missing"),
+        }
+        mock_db.get_messages_as_conversation.return_value = messages
+        mock_db._conn = MagicMock()
+        cli._session_db = mock_db
+        monkeypatch.setenv("TERMINAL_ENV", "local")
+        monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
+
+        assert cli._preload_resumed_session() is True
+        assert os.environ["TERMINAL_CWD"] == str(tmp_path)
+
+
+class TestResumeCommandWorkspace:
+    """Interactive /resume restores session cwd."""
+
+    def test_resume_command_restores_last_cwd(self, tmp_path, monkeypatch):
+        from hermes_state import SessionDB
+
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+        db = SessionDB(db_path=tmp_path / "state.db")
+        try:
+            db.create_session("current", "cli")
+            db.create_session(
+                "target",
+                "cli",
+                workspace_path=str(project_dir),
+                last_cwd=str(project_dir),
+            )
+            db.append_message("target", "user", "hello")
+            cli = _make_cli()
+            cli._session_db.close()
+            cli._session_db = db
+            cli.session_id = "current"
+            cli.agent = None
+            monkeypatch.setenv("TERMINAL_ENV", "local")
+            monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
+
+            cli._handle_resume_command("/resume target")
+
+            assert cli.session_id == "target"
+            assert os.environ["TERMINAL_CWD"] == str(project_dir)
+        finally:
+            db.close()
+
 
 # ── Integration: _init_agent skips when preloaded ────────────────────
 

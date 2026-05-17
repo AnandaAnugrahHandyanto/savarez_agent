@@ -96,6 +96,10 @@ from agent.markdown_tables import (
 # top — it transitively pulls the OpenAI SDK chain (~230 ms cold) and is only
 # needed when the user runs `/limits`. Lazy-imported inside the handler below.
 from hermes_cli.banner import _format_context_length, format_banner_version_label
+from session_workspace import (
+    current_session_workspace_metadata,
+    restore_terminal_cwd_from_session,
+)
 
 _COMMAND_SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
 
@@ -4426,6 +4430,7 @@ class HermesCLI:
                 resolved_meta = self._session_db.get_session(self.session_id)
                 if resolved_meta:
                     session_meta = resolved_meta
+            restore_terminal_cwd_from_session(session_meta)
             restored = self._session_db.get_messages_as_conversation(self.session_id)
             if restored:
                 restored = [m for m in restored if m.get("role") != "session_meta"]
@@ -4690,6 +4695,7 @@ class HermesCLI:
             if resolved_meta:
                 session_meta = resolved_meta
 
+        restore_terminal_cwd_from_session(session_meta)
         restored = self._session_db.get_messages_as_conversation(self.session_id)
         if restored:
             restored = [m for m in restored if m.get("role") != "session_meta"]
@@ -5934,6 +5940,7 @@ class HermesCLI:
                             "max_iterations": self.max_turns,
                             "reasoning_config": self.reasoning_config,
                         },
+                        **current_session_workspace_metadata(),
                     )
                     self.agent._session_db_created = True
                 except Exception:
@@ -6193,6 +6200,7 @@ class HermesCLI:
         self.session_id = target_id
         self._resumed = True
         self._pending_title = None
+        restore_terminal_cwd_from_session(session_meta)
 
         # Load conversation history (strip transcript-only metadata entries)
         restored = self._session_db.get_messages_as_conversation(target_id)
@@ -6335,6 +6343,7 @@ class HermesCLI:
                     "reasoning_config": self.reasoning_config,
                 },
                 parent_session_id=parent_session_id,
+                **current_session_workspace_metadata(),
             )
         except Exception as e:
             _cprint(f"  Failed to create branch session: {e}")
