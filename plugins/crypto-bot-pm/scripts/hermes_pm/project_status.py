@@ -3,61 +3,149 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import importlib
 import json
 import re
 import subprocess
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-try:
-    from scripts.hermes_pm.gitea_readonly_snapshot import capture_gitea_snapshot
-    from scripts.hermes_pm.issue_lifecycle_status import (
-        EXPECTED_PM_SEED_ISSUE_TITLE,
-        capture_issue_lifecycle_status,
-        compact_lifecycle_summary,
-        summarize_seed_issue_from_snapshot,
-    )
-    from scripts.hermes_pm.work_state import build_work_state
-    from scripts.hermes_operator.gitea_ci_evidence_contracts import (
-        build_gitea_ci_evidence_summary,
-    )
-    from scripts.hermes_operator.policy_audit import redact_text
-except ModuleNotFoundError:  # pragma: no cover - direct script execution path
-    repo_root_for_import = Path(__file__).resolve().parents[2]
-    if str(repo_root_for_import) not in sys.path:
-        sys.path.insert(0, str(repo_root_for_import))
-    try:
-        from scripts.hermes_pm.gitea_readonly_snapshot import capture_gitea_snapshot
-        from scripts.hermes_pm.issue_lifecycle_status import (
-            EXPECTED_PM_SEED_ISSUE_TITLE,
-            capture_issue_lifecycle_status,
-            compact_lifecycle_summary,
-            summarize_seed_issue_from_snapshot,
-        )
-        from scripts.hermes_pm.work_state import build_work_state
-        from scripts.hermes_operator.gitea_ci_evidence_contracts import (
-            build_gitea_ci_evidence_summary,
-        )
-        from scripts.hermes_operator.policy_audit import redact_text
-    except ModuleNotFoundError:
-        capture_gitea_snapshot = None  # type: ignore[assignment]
-        capture_issue_lifecycle_status = None  # type: ignore[assignment]
-        compact_lifecycle_summary = None  # type: ignore[assignment]
-        summarize_seed_issue_from_snapshot = None  # type: ignore[assignment]
-        build_work_state = None  # type: ignore[assignment]
-        build_gitea_ci_evidence_summary = None  # type: ignore[assignment]
-        EXPECTED_PM_SEED_ISSUE_TITLE = (  # type: ignore[assignment]
-            "[Hermes PM] Establish initial PM-managed backlog item"
-        )
+repo_root_for_import = Path(__file__).resolve().parents[2]
+if str(repo_root_for_import) not in sys.path:
+    sys.path.insert(0, str(repo_root_for_import))
 
-        def redact_text(value: str) -> str:  # type: ignore[no-redef]
-            redacted = re.sub(
-                r"(?i)(token|secret|password|private[_ -]?key|credential)(=|:)\S+",
-                r"\1\2<redacted>",
-                value,
+
+@dataclass(frozen=True)
+class ProviderImportStatus:
+    provider: str
+    available: bool
+    module: str | None = None
+    error_type: str | None = None
+    error: str | None = None
+
+    def as_dict(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "provider": self.provider,
+            "available": self.available,
+        }
+        if self.module:
+            payload["module"] = self.module
+        if self.error_type:
+            payload["error_type"] = self.error_type
+        if self.error:
+            payload["error"] = _fallback_redact_text(self.error)
+        return payload
+
+
+def _fallback_redact_text(value: str) -> str:
+    redacted = re.sub(
+        r"(?i)(token|secret|password|private[_ -]?key|credential)(=|:)\S+",
+        r"\1\2<redacted>",
+        value,
+    )
+    return redacted
+
+
+def _import_provider_attrs(
+    provider: str,
+    module_candidates: tuple[str, ...],
+    attr_names: tuple[str, ...],
+) -> tuple[dict[str, Any], ProviderImportStatus]:
+    errors: list[str] = []
+    for module_name in module_candidates:
+        try:
+            module = importlib.import_module(module_name)
+            return (
+                {attr_name: getattr(module, attr_name) for attr_name in attr_names},
+                ProviderImportStatus(
+                    provider=provider,
+                    available=True,
+                    module=module_name,
+                ),
             )
-            return redacted
+        except (AttributeError, ImportError) as exc:
+            errors.append(f"{module_name}: {type(exc).__name__}: {exc}")
+    return (
+        {attr_name: None for attr_name in attr_names},
+        ProviderImportStatus(
+            provider=provider,
+            available=False,
+            module=module_candidates[0] if module_candidates else None,
+            error_type="ImportUnavailable",
+            error="; ".join(errors),
+        ),
+    )
+
+
+def _provider_import_blocker(status: ProviderImportStatus) -> dict[str, str]:
+    return {
+        "endpoint": "<local-import>",
+        "code": "provider_import_failed",
+        "provider": status.provider,
+        "module": status.module or "<unknown>",
+        "error": _fallback_redact_text(
+            status.error or f"{status.provider} provider is unavailable."
+        ),
+    }
+
+
+_gitea_attrs, _gitea_import_status = _import_provider_attrs(
+    "gitea_snapshot",
+    ("scripts.hermes_pm.gitea_readonly_snapshot",),
+    ("capture_gitea_snapshot",),
+)
+capture_gitea_snapshot = _gitea_attrs["capture_gitea_snapshot"]
+
+_lifecycle_attrs, _lifecycle_import_status = _import_provider_attrs(
+    "issue_lifecycle",
+    ("scripts.hermes_pm.issue_lifecycle_status",),
+    (
+        "EXPECTED_PM_SEED_ISSUE_TITLE",
+        "capture_issue_lifecycle_status",
+        "compact_lifecycle_summary",
+        "summarize_seed_issue_from_snapshot",
+    ),
+)
+EXPECTED_PM_SEED_ISSUE_TITLE = (
+    _lifecycle_attrs["EXPECTED_PM_SEED_ISSUE_TITLE"]
+    or "[Hermes PM] Establish initial PM-managed backlog item"
+)
+capture_issue_lifecycle_status = _lifecycle_attrs["capture_issue_lifecycle_status"]
+compact_lifecycle_summary = _lifecycle_attrs["compact_lifecycle_summary"]
+summarize_seed_issue_from_snapshot = _lifecycle_attrs[
+    "summarize_seed_issue_from_snapshot"
+]
+
+_work_state_attrs, _work_state_import_status = _import_provider_attrs(
+    "work_state",
+    ("scripts.hermes_pm.work_state",),
+    ("build_work_state",),
+)
+build_work_state = _work_state_attrs["build_work_state"]
+
+_ci_attrs, _ci_import_status = _import_provider_attrs(
+    "ci_evidence",
+    ("scripts.hermes_operator.gitea_ci_evidence_contracts",),
+    ("build_gitea_ci_evidence_summary",),
+)
+build_gitea_ci_evidence_summary = _ci_attrs["build_gitea_ci_evidence_summary"]
+
+_policy_attrs, _policy_import_status = _import_provider_attrs(
+    "policy_audit",
+    ("scripts.hermes_operator.policy_audit",),
+    ("redact_text",),
+)
+redact_text = _policy_attrs["redact_text"] or _fallback_redact_text
+
+PROVIDER_IMPORT_STATUS = {
+    "gitea_snapshot": _gitea_import_status,
+    "issue_lifecycle": _lifecycle_import_status,
+    "work_state": _work_state_import_status,
+    "ci_evidence": _ci_import_status,
+    "policy_audit": _policy_import_status,
+}
 
 
 PM_STATUS_SCHEMA_VERSION = "hermes.pm.project_status.v1"
@@ -294,14 +382,13 @@ def _optional_gitea_snapshot(
         if capture_gitea_snapshot is None:
             return {
                 "schema_version": "hermes.pm.gitea_readonly_snapshot.v1",
-                "blockers": [
-                    {
-                        "endpoint": "<local-import>",
-                        "error": "Gitea snapshot module is unavailable.",
-                    }
-                ],
+                "provider_status": _gitea_import_status.as_dict(),
+                "blockers": [_provider_import_blocker(_gitea_import_status)],
             }
-        return capture_gitea_snapshot()
+        snapshot = capture_gitea_snapshot()
+        if isinstance(snapshot, dict):
+            snapshot.setdefault("provider_status", _gitea_import_status.as_dict())
+        return snapshot
     if snapshot_path is None:
         return None
     return _load_json_file(snapshot_path)
@@ -364,6 +451,126 @@ def _work_state_from_snapshot(
         gitea_snapshot=gitea_snapshot,
         issue_lifecycle=issue_lifecycle,
     )
+
+
+def _has_local_import_blocker(summary_or_snapshot: dict[str, Any]) -> bool:
+    blockers = summary_or_snapshot.get("blockers")
+    if not isinstance(blockers, list):
+        return False
+    return any(
+        isinstance(blocker, dict) and blocker.get("endpoint") == "<local-import>"
+        for blocker in blockers
+    )
+
+
+def _recommendation_class(
+    *,
+    gitea_summary: dict[str, Any],
+    work_state: dict[str, Any] | None,
+) -> str:
+    if _has_local_import_blocker(gitea_summary):
+        return "control_plane_regression"
+    if work_state is None:
+        return "stale_context"
+    if work_state.get("blocked_items") or work_state.get("untriaged_items"):
+        return "approval_required"
+    ci_status = work_state.get("ci_status_summary")
+    if isinstance(ci_status, dict) and not bool(
+        ci_status.get("evidence_ready_for_future_workflow_trial")
+    ):
+        return "approval_required"
+    if gitea_summary.get("blockers"):
+        return "external_gitea_degraded"
+    return "no_action_required"
+
+
+def _fallback_next_pm_action(recommendation_class: str) -> str:
+    if recommendation_class == "control_plane_regression":
+        return (
+            "Repair PM status provider import isolation before trusting PM/Kanban "
+            "recommendations."
+        )
+    if recommendation_class == "external_gitea_degraded":
+        return "Review live Gitea read blockers before planning mutations."
+    if recommendation_class == "stale_context":
+        return "Regenerate PM/Kanban context after provider health is restored."
+    if recommendation_class == "approval_required":
+        return "Resolve blocked PM items or request explicit approvals."
+    return "No PM action is required from the current read-only status."
+
+
+def _safe_int(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        stripped = value.strip()
+        if stripped and re.fullmatch(r"[-+]?\d+", stripped):
+            return int(stripped)
+    return None
+
+
+def classify_pm_kanban_semantic_parity(
+    *,
+    pm_status: dict[str, Any],
+    kanban_packet: dict[str, Any],
+) -> dict[str, Any]:
+    raw_pm_gitea = pm_status.get("gitea_pm_snapshot_summary")
+    pm_gitea: dict[str, Any] = raw_pm_gitea if isinstance(raw_pm_gitea, dict) else {}
+    raw_pm_lifecycle = pm_status.get("issue_lifecycle_summary")
+    pm_lifecycle: dict[str, Any] = (
+        raw_pm_lifecycle if isinstance(raw_pm_lifecycle, dict) else {}
+    )
+    raw_kanban_summary = kanban_packet.get("daily_summary")
+    kanban_summary: dict[str, Any] = (
+        raw_kanban_summary if isinstance(raw_kanban_summary, dict) else {}
+    )
+    blockers: list[dict[str, Any]] = []
+    pm_open_issue_count = _safe_int(pm_gitea.get("open_issue_count"))
+    kanban_open_issue_count = _safe_int(kanban_summary.get("open_issue_count"))
+    if pm_open_issue_count is None or kanban_open_issue_count is None:
+        blockers.append(
+            {
+                "code": "open_issue_count_unparseable",
+                "pm_status_open_issue_count": pm_gitea.get("open_issue_count"),
+                "kanban_open_issue_count": kanban_summary.get("open_issue_count"),
+            }
+        )
+    elif pm_open_issue_count != kanban_open_issue_count:
+        blockers.append(
+            {
+                "code": "open_issue_count_mismatch",
+                "pm_status_open_issue_count": pm_open_issue_count,
+                "kanban_open_issue_count": kanban_open_issue_count,
+            }
+        )
+    if bool(pm_lifecycle.get("exists")) != bool(
+        kanban_summary.get("seed_pm_issue_exists")
+    ):
+        blockers.append(
+            {
+                "code": "seed_issue_existence_mismatch",
+                "pm_status_seed_exists": bool(pm_lifecycle.get("exists")),
+                "kanban_seed_exists": bool(
+                    kanban_summary.get("seed_pm_issue_exists")
+                ),
+            }
+        )
+    if _has_local_import_blocker(pm_gitea):
+        blockers.append(
+            {
+                "code": "pm_status_local_import_blocker",
+                "blockers": pm_gitea.get("blockers") or [],
+            }
+        )
+    return {
+        "consistent": not blockers,
+        "recommendation_class": (
+            "control_plane_regression" if blockers else "no_action_required"
+        ),
+        "blockers": blockers,
+    }
 
 
 def _approval_candidates(
@@ -585,6 +792,10 @@ def build_project_status(
         "known_blockers": sorted(dict.fromkeys(blockers)),
         "warnings": sorted(dict.fromkeys(redact_text(item) for item in warnings)),
         "ci_locality_readiness": ci_summary,
+        "provider_import_status": {
+            name: status.as_dict()
+            for name, status in PROVIDER_IMPORT_STATUS.items()
+        },
         "runner_readiness": runner_summary,
         "outstanding_approval_gates": [
             "branch_write requires scoped operator approval and evidence gates",
@@ -626,6 +837,15 @@ def build_project_status(
         blocked_count = (
             len(work_state.get("blocked_items") or []) if work_state else 0
         )
+        recommendation_class = _recommendation_class(
+            gitea_summary=gitea_summary,
+            work_state=work_state,
+        )
+        next_pm_action = (
+            (work_state.get("recommended_next_actions") or [None])[0]
+            if work_state
+            else None
+        ) or _fallback_next_pm_action(recommendation_class)
         status["gitea_pm_snapshot_summary"] = gitea_summary
         status["issue_lifecycle_summary"] = {
             "issue_index": seed_summary.get("issue_index"),
@@ -654,18 +874,12 @@ def build_project_status(
             "ci_status_summary": (
                 work_state.get("ci_status_summary") if work_state else {}
             ),
+            "recommendation_class": recommendation_class,
             "approval_candidates": _approval_candidates(
                 gitea_summary=gitea_summary,
                 work_state=work_state,
             ),
-            "next_pm_action": (
-                (work_state.get("recommended_next_actions") or [None])[0]
-                if work_state
-                else (
-                    "Review the Gitea snapshot blockers and regenerate the "
-                    "Kanban packet."
-                )
-            ),
+            "next_pm_action": next_pm_action,
         }
         status["recommended_next_pm_action"] = (
             status["pm_work_state_summary"]["next_pm_action"]

@@ -9,4 +9,3 @@ except ModuleNotFoundError:  # pragma: no cover - direct script execution path
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

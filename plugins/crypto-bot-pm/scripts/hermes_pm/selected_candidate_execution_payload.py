@@ -329,4 +329,3 @@ def approval_scope_from_execution_payload(payload: dict[str, Any]) -> dict[str, 
         "requires_exact_plan_hash": False,
         "requires_exact_approval_token": True,
     }
-
