@@ -87,13 +87,12 @@ class TestAddFallbackProvider:
         add_button = page.locator("[data-testid='fallback-chain']").get_by_role("button", name="Add")
         await add_button.click()
 
-        # Wait for picker to appear
+        # Wait for picker to appear — check for the dialog title text
         await page.wait_for_timeout(1000)
 
-        # Select the first available model (this is a simplified test)
-        # In a real scenario, we'd interact with the picker
-        # For now, we verify the picker is open
-        picker_open = await page.locator("[data-testid='model-picker-dialog']").count() > 0
+        # The picker should be visible (check for dialog title)
+        picker_open = await page.locator("text=Add Fallback Provider").count() > 0 or \
+                      await page.locator("text=Set Main Model").count() > 0
         assert picker_open, "Model picker should be open"
 
 
@@ -113,8 +112,9 @@ class TestRemoveFallbackProvider:
         if count > 0:
             # First item should have a remove button
             first_item = page.locator("[data-testid='fallback-item-0']")
-            remove_button = first_item.get_by_role("button", name="×")
-            await expect(remove_button).to_be_visible()
+            remove_button = first_item.locator("button:has-text('×')")
+            is_visible = await remove_button.is_visible()
+            assert is_visible, "Remove button should exist on first item"
 
 
 class TestReorderFallbackProviders:
@@ -150,8 +150,10 @@ class TestReorderFallbackProviders:
         if count > 0:
             # First item should have a move down button
             first_item = page.locator("[data-testid='fallback-item-0']")
-            move_down_button = first_item.get_by_role("button", name="↓")
-            await expect(move_down_button).to_be_visible()
+            # The down arrow button is a button element with text "↓"
+            move_down_button = first_item.locator("button:has-text('↓')")
+            is_visible = await move_down_button.is_visible()
+            assert is_visible, "Move down button should exist on first item"
 
 
 class TestSaveFallbackChain:

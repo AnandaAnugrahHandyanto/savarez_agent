@@ -741,7 +741,7 @@ function ModelSettingsPanel({
       </CardHeader>
 
       <CardContent className="space-y-3 pt-3">
-        {/* Main row */}
+        {/* Main model */}
         <div className="flex items-center justify-between gap-3 bg-muted/20 border border-border/50 px-3 py-2">
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2 mb-0.5">
@@ -765,32 +765,7 @@ function ModelSettingsPanel({
           </Button>
         </div>
 
-        {/* Auxiliary tasks summary + open modal */}
-        <div className="flex items-center justify-between gap-3 bg-muted/20 border border-border/50 px-3 py-2">
-          <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-2 mb-0.5">
-              <Cpu className="h-3 w-3 text-muted-foreground" />
-              <span className="text-xs font-medium uppercase tracking-wider">
-                Auxiliary tasks
-              </span>
-            </div>
-            <div className="text-xs font-mono text-muted-foreground truncate">
-              {auxOverrideCount > 0
-                ? `${auxOverrideCount} override${auxOverrideCount > 1 ? "s" : ""} · ${AUX_TASKS.length - auxOverrideCount} auto`
-                : `${AUX_TASKS.length} tasks · all auto`}
-            </div>
-          </div>
-          <Button
-            size="sm"
-            outlined
-            onClick={() => setAuxModalOpen(true)}
-            className="text-xs"
-          >
-            Configure
-          </Button>
-        </div>
-
-        {/* Fallback chain */}
+        {/* Fallback chain — full list below main model */}
         <div className="space-y-2" data-testid="fallback-chain">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
@@ -888,6 +863,31 @@ function ModelSettingsPanel({
               {fallbackError}
             </div>
           )}
+        </div>
+
+        {/* Auxiliary tasks summary + open modal */}
+        <div className="flex items-center justify-between gap-3 bg-muted/20 border border-border/50 px-3 py-2">
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2 mb-0.5">
+              <Cpu className="h-3 w-3 text-muted-foreground" />
+              <span className="text-xs font-medium uppercase tracking-wider">
+                Auxiliary tasks
+              </span>
+            </div>
+            <div className="text-xs font-mono text-muted-foreground truncate">
+              {auxOverrideCount > 0
+                ? `${auxOverrideCount} override${auxOverrideCount > 1 ? "s" : ""} · ${AUX_TASKS.length - auxOverrideCount} auto`
+                : `${AUX_TASKS.length} tasks · all auto`}
+            </div>
+          </div>
+          <Button
+            size="sm"
+            outlined
+            onClick={() => setAuxModalOpen(true)}
+            className="text-xs"
+          >
+            Configure
+          </Button>
         </div>
 
         {picker && (

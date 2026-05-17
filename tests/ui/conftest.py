@@ -12,7 +12,7 @@ DASHBOARD_URL = "http://127.0.0.1:9119"
 MODELS_PAGE_URL = f"{DASHBOARD_URL}/models"
 
 
-@pytest.fixture(scope="function")
+@pytest.fixture
 async def browser():
     """Launch a headless Chromium browser for the test suite."""
     async with async_playwright() as p:
@@ -26,18 +26,19 @@ async def browser():
 @pytest.fixture
 async def page(browser: Browser) -> Page:
     """Create a new page with the session token injected."""
-    async with browser.new_context() as context:
-        page = await context.new_page()
+    context = await browser.new_context()
+    page = await context.new_page()
 
-        # Fetch the session token from the running dashboard
-        await page.goto(DASHBOARD_URL)
-        token = await page.evaluate(
-            "() => { const m = document.body.innerHTML.match(/__HERMES_SESSION_TOKEN__=\"([^\"]+)\"/); return m ? m[1] : null; }",
+    # Fetch the session token from the running dashboard
+    await page.goto(DASHBOARD_URL)
+    token = await page.evaluate(
+        "() => { const m = document.body.innerHTML.match(/__HERMES_SESSION_TOKEN__=\\\"([^\\\"]+)\\\"/); return m ? m[1] : null; }",
+    )
+
+    if token:
+        await page.add_init_script(
+            f"window.__HERMES_SESSION_TOKEN__ = \"{token}\";",
         )
 
-        if token:
-            await page.add_init_script(
-                f"window.__HERMES_SESSION_TOKEN__ = \"{token}\";",
-            )
-
-        yield page
+    yield page
+    await context.close()
