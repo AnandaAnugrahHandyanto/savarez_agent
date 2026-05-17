@@ -1,0 +1,5 @@
+name: tenstorrent-provider
+kind: model-provider
+version: 1.0.0
+description: Tenstorrent AI OpenAI-compatible provider
+author: Nous Research
