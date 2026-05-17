@@ -344,6 +344,18 @@ def test_pr_ci_audit_remote_lifecycle_reports_stale_head_mismatch() -> None:
     )
 
 
+def test_pr_ci_audit_remote_lifecycle_reports_merged_before_merge_ready() -> None:
+    assert (
+        pr_ci_audit.remote_lifecycle_state(
+            pr_exists=True,
+            ci_state="passed",
+            ready_for_merge=True,
+            pr_merged=True,
+        )
+        == "merged"
+    )
+
+
 def test_policy_scanner_allows_explicit_non_always_block_code_but_not_workflows() -> None:
     findings = policy_scanner.scan_blocked_surfaces(
         [

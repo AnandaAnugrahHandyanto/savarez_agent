@@ -117,7 +117,7 @@ def run_git(repo: Path, args: list[str]) -> tuple[int, str, str]:
 
 def simple_yaml_values(path: Path) -> dict[str, str]:
     values: dict[str, str] = {}
-    for line in path.read_text().splitlines():
+    for line in path.read_text(encoding="utf-8").splitlines():
         if not line or line.lstrip().startswith("#") or line.startswith(" "):
             continue
         if ":" not in line:
@@ -329,7 +329,7 @@ def native_kanban_status(
 def migration_inventory_missing_paths(repo: Path, inventory_path: Path) -> list[str]:
     if not inventory_path.exists():
         return hermes_related_crypto_bot_paths(repo)
-    body = inventory_path.read_text()
+    body = inventory_path.read_text(encoding="utf-8")
     return [
         path
         for path in hermes_related_crypto_bot_paths(repo)
@@ -389,7 +389,7 @@ def verify_repaired_completion_issue(issue: dict[str, Any]) -> list[str]:
             f"{report_path}"
         ]
     try:
-        report = json.loads(report_path.read_text())
+        report = json.loads(report_path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
         return [
             f"Repaired issue {issue['issue_id']} gate report is invalid JSON: {exc}"

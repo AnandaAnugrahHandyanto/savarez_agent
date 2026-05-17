@@ -15,10 +15,10 @@ SCHEMA = "hermes.autonomy.crypto_bot_pr_ci_audit.v1"
 DEFAULT_STATE_ROOT = Path("/Users/preston/.local/state/hermes-operator")
 DEFAULT_REPO_ROOT = Path("/Users/preston/robinhood/crypto_bot")
 DEFAULT_PR_EVIDENCE = (
-    DEFAULT_STATE_ROOT / "pr-evidence/20260513T182102Z-S006-8be208b.json"
+    DEFAULT_STATE_ROOT / "pr-evidence/20260517T171808Z-S006-e731758.json"
 )
 DEFAULT_COMPLETION_GATE = (
-    DEFAULT_STATE_ROOT / "completion-gates/20260513T182025Z-S006-8be208b.json"
+    DEFAULT_STATE_ROOT / "completion-gates/20260517T163517Z-S006-e731758.json"
 )
 PASSING_CONCLUSIONS = {"PASS", "pass", "passed"}
 VALID_CI_STATES = {"absent", "pending", "failed", "passed", "stale", "inaccessible"}
@@ -405,9 +405,12 @@ def remote_lifecycle_state(
     pr_exists: bool,
     ci_state: str,
     ready_for_merge: bool,
+    pr_merged: bool = False,
 ) -> str:
     if not pr_exists:
         return "pr_absent"
+    if pr_merged:
+        return "merged"
     if ready_for_merge:
         return "merge_ready"
     if ci_state == "passed":
@@ -546,14 +549,23 @@ def evaluate_pr_ci_audit(
     if ci["blocker"]:
         blockers.append(str(ci["blocker"]))
 
+    pr_merged = bool(pull and pull.get("merged"))
     ready_for_merge = (
         pr_exists
+        and not pr_merged
         and bool(identity["matches"])
         and gate_ok
         and packet_ok
         and ci_state == "passed"
         and bool(actual_body_status and actual_body_status["ok"])
     )
+    remote_state = remote_lifecycle_state(
+        pr_exists=pr_exists,
+        ci_state=ci_state,
+        ready_for_merge=ready_for_merge,
+        pr_merged=pr_merged,
+    )
+    remote_lifecycle_complete = remote_state == "merged"
     report: dict[str, Any] = {
         "schema": SCHEMA,
         "generated_at": utc_now(),
@@ -585,6 +597,8 @@ def evaluate_pr_ci_audit(
         "pr_api_status": pull_record.get("status"),
         "pr_identity": identity,
         "pr_matches_spec": bool(pr_exists and identity["matches"]),
+        "pr_merged": pr_merged,
+        "remote_lifecycle_complete": remote_lifecycle_complete,
         "completion_gate_pass": gate_ok,
         "completion_gate_blockers": gate_blockers,
         "evidence_packet_pass": packet_ok,
@@ -595,11 +609,7 @@ def evaluate_pr_ci_audit(
         "ci": ci,
         "ci_status_api_status": statuses_record.get("status"),
         "ci_combined_api_status": combined_record.get("status"),
-        "s006_remote_lifecycle_state": remote_lifecycle_state(
-            pr_exists=pr_exists,
-            ci_state=ci_state,
-            ready_for_merge=ready_for_merge,
-        ),
+        "s006_remote_lifecycle_state": remote_state,
         "ci_evidence_ready": ci_state == "passed",
         "merge_ready": ready_for_merge,
         "ready_for_merge": ready_for_merge,
@@ -627,7 +637,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--source-head",
-        default="8be208ba317972da03060eb0170a40d2a678aa99",
+        default="e7317586bf24cc064fcbcb1865599cc2b0273774",
     )
     parser.add_argument("--target-branch", default="main")
     parser.add_argument("--pr-evidence-packet", type=Path, default=DEFAULT_PR_EVIDENCE)
@@ -655,7 +665,7 @@ def main() -> int:
         write_artifact=not args.no_write_audit,
     )
     print(json.dumps(report, indent=2, sort_keys=True))
-    return 0 if report["merge_ready"] else 1
+    return 0 if report["merge_ready"] or report.get("remote_lifecycle_complete") else 1
 
 
 if __name__ == "__main__":
