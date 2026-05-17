@@ -585,6 +585,7 @@ class QQAdapter(BasePlatformAdapter):
                     if backoff_idx >= MAX_RECONNECT_ATTEMPTS:
                         logger.error("[%s] Max reconnect attempts reached (QQCloseError)", self._log_tag)
                         return
+                    self._running = True  # allow loop to continue retrying
 
             except Exception as exc:
                 if not self._running:
@@ -602,6 +603,7 @@ class QQAdapter(BasePlatformAdapter):
                     quick_disconnect_count = 0
                 else:
                     backoff_idx += 1
+                    self._running = True  # allow loop to continue retrying
 
     async def _reconnect(self, backoff_idx: int) -> bool:
         """Attempt to reconnect the WebSocket. Returns True on success."""
