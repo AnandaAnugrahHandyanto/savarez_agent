@@ -1141,7 +1141,7 @@ Manage profiles — multiple isolated Hermes instances, each with its own config
 |------------|-------------|
 | `list` | List all profiles. |
 | `use <name>` | Set a sticky default profile. |
-| `create <name> [--clone] [--clone-all] [--clone-from <source>] [--no-alias]` | Create a new profile. `--clone` copies config, `.env`, and `SOUL.md` from the active profile. `--clone-all` copies all state. `--clone-from` specifies a source profile. |
+| `create <name> [--clone] [--clone-all] [--clone-from <source>] [--no-skills] [--no-alias]` | Create a new profile. `--clone` copies config, `.env`, and `SOUL.md` from the active profile. `--clone-all` copies all state. `--clone-from` specifies a source profile. `--no-skills` skips bundled-skill seeding and future bundled-skill sync until `.no-bundled-skills` is deleted. |
 | `delete <name> [-y]` | Delete a profile. |
 | `show <name>` | Show profile details (home directory, config, etc.). |
 | `alias <name> [--remove] [--name NAME]` | Manage wrapper scripts for quick profile access. |
@@ -1157,6 +1157,7 @@ Examples:
 ```bash
 hermes profile list
 hermes profile create work --clone
+hermes profile create minimal --no-skills
 hermes profile use work
 hermes profile alias work --name h-work
 hermes profile export work -o work-backup.tar.gz
