@@ -7,8 +7,9 @@ This caused quarantined skills (.hub/quarantine/) to appear as installed.
 Now uses Path.parts which is platform-independent.
 """
 
-import os
-from pathlib import Path, PurePosixPath, PureWindowsPath
+from pathlib import Path
+
+from agent.skill_utils import skill_path_has_excluded_dir
 
 
 def _old_filter_matches(path_str: str) -> bool:
@@ -19,12 +20,12 @@ def _old_filter_matches(path_str: str) -> bool:
     return '/.git/' in path_str or '/.github/' in path_str or '/.hub/' in path_str
 
 
-def _new_filter_matches(path: Path) -> bool:
+def _new_filter_matches(path: Path, root: Path) -> bool:
     """The FIXED filter using Path.parts.
 
     Returns True when the path SHOULD be filtered out.
     """
-    return any(part in ('.git', '.github', '.hub') for part in path.parts)
+    return skill_path_has_excluded_dir(path, root)
 
 
 class TestOldFilterBrokenOnWindows:
@@ -51,33 +52,39 @@ class TestNewFilterCrossPlatform:
 
     def test_hub_quarantine_filtered(self, tmp_path):
         """A SKILL.md inside .hub/quarantine/ must be filtered out."""
-        p = tmp_path / ".hermes" / "skills" / ".hub" / "quarantine" / "evil" / "SKILL.md"
-        assert _new_filter_matches(p) is True
+        root = tmp_path / "skills"
+        p = root / ".hub" / "quarantine" / "evil" / "SKILL.md"
+        assert _new_filter_matches(p, root) is True
 
     def test_git_dir_filtered(self, tmp_path):
         """A SKILL.md inside .git/ must be filtered out."""
-        p = tmp_path / ".hermes" / "skills" / ".git" / "hooks" / "SKILL.md"
-        assert _new_filter_matches(p) is True
+        root = tmp_path / "skills"
+        p = root / ".git" / "hooks" / "SKILL.md"
+        assert _new_filter_matches(p, root) is True
 
     def test_github_dir_filtered(self, tmp_path):
         """A SKILL.md inside .github/ must be filtered out."""
-        p = tmp_path / ".hermes" / "skills" / ".github" / "workflows" / "SKILL.md"
-        assert _new_filter_matches(p) is True
+        root = tmp_path / "skills"
+        p = root / ".github" / "workflows" / "SKILL.md"
+        assert _new_filter_matches(p, root) is True
 
     def test_normal_skill_not_filtered(self, tmp_path):
         """A regular skill SKILL.md must NOT be filtered out."""
-        p = tmp_path / ".hermes" / "skills" / "my-cool-skill" / "SKILL.md"
-        assert _new_filter_matches(p) is False
+        root = tmp_path / "skills"
+        p = root / "my-cool-skill" / "SKILL.md"
+        assert _new_filter_matches(p, root) is False
 
     def test_nested_skill_not_filtered(self, tmp_path):
         """A deeply nested regular skill must NOT be filtered out."""
-        p = tmp_path / ".hermes" / "skills" / "org" / "deep-skill" / "SKILL.md"
-        assert _new_filter_matches(p) is False
+        root = tmp_path / "skills"
+        p = root / "org" / "deep-skill" / "SKILL.md"
+        assert _new_filter_matches(p, root) is False
 
-    def test_dot_prefix_not_false_positive(self, tmp_path):
-        """A skill dir starting with dot but not in the filter list passes."""
-        p = tmp_path / ".hermes" / "skills" / ".my-hidden-skill" / "SKILL.md"
-        assert _new_filter_matches(p) is False
+    def test_dot_prefix_filtered(self, tmp_path):
+        """Any hidden workspace directory is filtered out."""
+        root = tmp_path / "skills"
+        p = root / ".my-hidden-skill" / "SKILL.md"
+        assert _new_filter_matches(p, root) is True
 
 
 class TestWindowsPathParts:

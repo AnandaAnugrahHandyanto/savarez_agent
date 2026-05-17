@@ -101,7 +101,6 @@ _PLATFORM_MAP = {
     "windows": "win32",
 }
 _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-_EXCLUDED_SKILL_DIRS = frozenset((".git", ".github", ".hub", ".archive"))
 _REMOTE_ENV_BACKENDS = frozenset(
     {"docker", "singularity", "modal", "ssh", "daytona", "vercel_sandbox"}
 )
@@ -558,7 +557,11 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
     Returns:
         List of skill metadata dicts (name, description, category).
     """
-    from agent.skill_utils import get_external_skills_dirs, iter_skill_index_files
+    from agent.skill_utils import (
+        get_external_skills_dirs,
+        iter_skill_index_files,
+        skill_path_has_excluded_dir,
+    )
 
     skills = []
     seen_names: set = set()
@@ -574,7 +577,7 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
 
     for scan_dir in dirs_to_scan:
         for skill_md in iter_skill_index_files(scan_dir, "SKILL.md"):
-            if any(part in _EXCLUDED_SKILL_DIRS for part in skill_md.parts):
+            if skill_path_has_excluded_dir(skill_md, scan_dir):
                 continue
 
             skill_dir = skill_md.parent
@@ -963,12 +966,14 @@ def skill_view(
         # the caller — silent shadowing of a local skill by a same-named
         # external skill is a real bug class (`/skills` shows one, agent
         # loaded the other) so we surface it loudly instead of guessing.
-        from agent.skill_utils import iter_skill_index_files
+        from agent.skill_utils import iter_skill_index_files, skill_path_has_excluded_dir
 
         candidates: List[Tuple[Optional[Path], Path]] = []  # (skill_dir, skill_md)
         seen_md: set = set()
 
-        def _record(sd: Optional[Path], smd: Path) -> None:
+        def _record(sd: Optional[Path], smd: Path, search_root: Path) -> None:
+            if skill_path_has_excluded_dir(smd, search_root):
+                return
             try:
                 key = smd.resolve()
             except Exception:
@@ -983,9 +988,9 @@ def skill_view(
             # at the top of the dir).
             direct_path = search_dir / name
             if direct_path.is_dir() and (direct_path / "SKILL.md").exists():
-                _record(direct_path, direct_path / "SKILL.md")
+                _record(direct_path, direct_path / "SKILL.md", search_dir)
             elif direct_path.with_suffix(".md").exists():
-                _record(None, direct_path.with_suffix(".md"))
+                _record(None, direct_path.with_suffix(".md"), search_dir)
 
             # Strategy 1b: categorized form for plugin namespace fall-through
             # (e.g., a "myplugin:explore" name with no plugin registered also
@@ -993,20 +998,20 @@ def skill_view(
             if local_category_name:
                 categorized_path = search_dir / local_category_name
                 if categorized_path.is_dir() and (categorized_path / "SKILL.md").exists():
-                    _record(categorized_path, categorized_path / "SKILL.md")
+                    _record(categorized_path, categorized_path / "SKILL.md", search_dir)
                 elif categorized_path.with_suffix(".md").exists():
-                    _record(None, categorized_path.with_suffix(".md"))
+                    _record(None, categorized_path.with_suffix(".md"), search_dir)
 
             # Strategy 2: recursive by directory name (catches nested skills
             # like "foundations/runtime/explore-codebase" called by bare name).
             for found_skill_md in iter_skill_index_files(search_dir, "SKILL.md"):
                 if found_skill_md.parent.name == name:
-                    _record(found_skill_md.parent, found_skill_md)
+                    _record(found_skill_md.parent, found_skill_md, search_dir)
 
             # Strategy 3: legacy flat <name>.md files anywhere under the dir.
-            for found_md in search_dir.rglob(f"{name}.md"):
+            for found_md in iter_skill_index_files(search_dir, f"{name}.md"):
                 if found_md.name != "SKILL.md":
-                    _record(None, found_md)
+                    _record(None, found_md, search_dir)
 
         if len(candidates) > 1:
             paths = [str(smd) for _, smd in candidates]
