@@ -10,10 +10,11 @@ from plugins.memory.openviking import OpenVikingMemoryProvider, _VikingClient
 
 @pytest.fixture(autouse=True)
 def stub_openviking_httpx(monkeypatch):
-    httpx_stub = SimpleNamespace(
-        get=lambda *args, **kwargs: None,
-        post=lambda *args, **kwargs: None,
-    )
+    mock_resp = MagicMock(status_code=200)
+    mock_resp.json.return_value = {}
+    httpx_stub = MagicMock()
+    httpx_stub.get.return_value = mock_resp
+    httpx_stub.post.return_value = mock_resp
     monkeypatch.setattr(openviking, "_get_httpx", lambda: httpx_stub)
 
 
