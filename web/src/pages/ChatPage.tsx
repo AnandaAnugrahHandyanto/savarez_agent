@@ -19,6 +19,7 @@ import { ApprovalDialog } from "@/components/chat/ApprovalDialog";
 
 type Action =
   | { type: "push-user"; text: string }
+  | { type: "push-user-slash"; text: string }  // user typed /something; no assistant placeholder
   | { type: "event"; e: ChatEvent }
   | { type: "reset" }
   | { type: "set"; items: ChatItem[] };
@@ -36,6 +37,12 @@ function itemsReducer(items: ChatItem[], action: Action): ChatItem[] {
         ...items,
         { id: id(), kind: "user", text: action.text },
         { id: id(), kind: "assistant", text: "", pending: true },
+      ];
+    case "push-user-slash":
+      // Slash commands don't trigger an agent turn — no assistant placeholder.
+      return [
+        ...items,
+        { id: id(), kind: "user", text: action.text },
       ];
     case "event": {
       const e = action.e;
@@ -103,6 +110,8 @@ function itemsReducer(items: ChatItem[], action: Action): ChatItem[] {
             ),
             { id: id(), kind: "error", detail: e.detail },
           ];
+        case "system-message":
+          return [...items, { id: id(), kind: "system", detail: e.detail }];
         default:
           return items;
       }
@@ -223,13 +232,20 @@ export default function ChatPage() {
   const handleSend = async () => {
     const text = draft.trim();
     if (!text || !clientRef.current || busy) return;
+    const isSlash = text.startsWith("/");
     setDraft("");
-    dispatch({ type: "push-user", text });
-    setBusy(true);
+    if (isSlash) {
+      // Slash commands are handled server-side without an agent turn,
+      // so we don't enter busy mode and we don't push an assistant placeholder.
+      dispatch({ type: "push-user-slash", text });
+    } else {
+      dispatch({ type: "push-user", text });
+      setBusy(true);
+    }
     try {
       await clientRef.current.send(text);
     } catch (err) {
-      setBusy(false);
+      if (!isSlash) setBusy(false);
       dispatch({
         type: "event",
         e: { type: "error", detail: err instanceof Error ? err.message : String(err) },

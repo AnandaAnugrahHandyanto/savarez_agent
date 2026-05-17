@@ -1,6 +1,6 @@
 import { Markdown } from "@/components/Markdown";
 import { SpeakButton } from "@/components/SpeakButton";
-import { CheckCircle2, XCircle, Loader2, AlertCircle, ChevronDown, ChevronRight } from "lucide-react";
+import { CheckCircle2, XCircle, Loader2, AlertCircle, ChevronDown, ChevronRight, Info } from "lucide-react";
 import { useState } from "react";
 
 /* ------------------------------------------------------------------ */
@@ -19,6 +19,7 @@ export type ChatItem =
       status: "running" | "ok" | "failed";
       summary?: string;
     }
+  | { id: string; kind: "system"; detail: string }
   | { id: string; kind: "error"; detail: string };
 
 /* ------------------------------------------------------------------ */
@@ -131,6 +132,17 @@ export function ToolCallCard({
   );
 }
 
+export function SystemBubble({ detail }: { detail: string }) {
+  return (
+    <div className="flex justify-center">
+      <div className="max-w-[90%] rounded-md border border-border bg-muted/40 px-3 py-2 text-xs flex items-start gap-2">
+        <Info className="h-3.5 w-3.5 text-muted-foreground mt-0.5 shrink-0" />
+        <pre className="whitespace-pre-wrap font-mono text-foreground/80 leading-snug">{detail}</pre>
+      </div>
+    </div>
+  );
+}
+
 export function ErrorBanner({ detail }: { detail: string }) {
   return (
     <div className="flex justify-start">
@@ -157,6 +169,8 @@ export function MessageItem({ item }: { item: ChatItem }) {
           summary={item.summary}
         />
       );
+    case "system":
+      return <SystemBubble detail={item.detail} />;
     case "error":
       return <ErrorBanner detail={item.detail} />;
   }

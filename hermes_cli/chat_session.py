@@ -198,10 +198,16 @@ class ChatSession:
         return self.agent
 
     def send(self, user_text: str) -> None:
-        """Start a turn in a background worker thread.  Returns immediately.
+        """Start a turn, or dispatch a slash command.
 
-        Raises if a previous turn is still running.
+        If the input starts with "/", treat it as a slash command and
+        process it inline (no agent turn).  Otherwise spawn a worker
+        thread to drive AIAgent.run_conversation.
         """
+        stripped = user_text.strip()
+        if stripped.startswith("/"):
+            self._handle_slash_command(stripped)
+            return
         with self.lock:
             if self._worker is not None and self._worker.is_alive():
                 raise RuntimeError("A turn is already in progress")
@@ -211,6 +217,138 @@ class ChatSession:
                                  name=f"chat-{self.session_id[:8]}")
             self._worker = t
             t.start()
+
+    # ------------------------------------------------------------------ #
+    # Slash commands                                                      #
+    # ------------------------------------------------------------------ #
+
+    def _handle_slash_command(self, raw: str) -> None:
+        """Route /foo args to a specific handler.  Emits system-message events."""
+        parts = raw.lstrip("/").split(None, 1)
+        name = parts[0].lower() if parts else ""
+        args = parts[1] if len(parts) > 1 else ""
+        if name == "model":
+            self._handle_model_command(args)
+        elif name in ("help", "?"):
+            self._emit("system-message", {"detail": (
+                "Slash commands available in the dashboard chat:\n"
+                "  /model                              — show usage\n"
+                "  /model <name>                       — switch model for this session\n"
+                "  /model <name> --global              — switch + persist to config.yaml\n"
+                "  /model <name> --provider <p>        — switch model + provider\n"
+                "Aliases: haiku, sonnet, opus, gpt, gpt5, gemini, grok, deepseek, llama, claude\n"
+                "  /help                               — this list"
+            )})
+        else:
+            self._emit("system-message", {"detail": (
+                f"Unknown slash command: /{name}\n"
+                "Try /help for the list."
+            )})
+
+    def _handle_model_command(self, raw_args: str) -> None:
+        """Mirror gateway/run.py:_handle_model_command for the dashboard chat.
+
+        Uses the shared switch_model() pipeline so behavior matches the CLI:
+        same aliases (haiku, sonnet, opus, ...), same --provider / --global
+        flags, same error messages.
+        """
+        try:
+            import yaml
+            from hermes_cli.model_switch import (
+                switch_model as _switch_model,
+                parse_model_flags,
+                MODEL_ALIASES,
+            )
+            from hermes_cli.config import load_config, save_config
+        except Exception as e:  # noqa: BLE001
+            self._emit("system-message", {"detail": f"⚠ /model unavailable: {e}"})
+            return
+
+        model_input, explicit_provider, persist_global = parse_model_flags(raw_args.strip())
+
+        if not model_input and not explicit_provider:
+            # No args — show the current model and a hint.
+            cfg_now = load_config() or {}
+            model_cfg = cfg_now.get("model") if isinstance(cfg_now.get("model"), dict) else {}
+            cur_model = (model_cfg or {}).get("default", "") or cfg_now.get("model", "")
+            cur_provider = (model_cfg or {}).get("provider", "") if isinstance(model_cfg, dict) else ""
+            aliases = ", ".join(sorted(MODEL_ALIASES.keys()))
+            self._emit("system-message", {"detail": (
+                f"Current model: {cur_model or '(unset)'}   provider: {cur_provider or '(auto)'}\n\n"
+                f"Usage:  /model <name> [--provider <p>] [--global]\n"
+                f"Aliases: {aliases}\n"
+                f"Example: /model haiku --global"
+            )})
+            return
+
+        cfg = load_config() or {}
+        model_cfg = cfg.get("model") if isinstance(cfg.get("model"), dict) else {}
+        current_model = (model_cfg or {}).get("default", "") if isinstance(model_cfg, dict) else ""
+        current_provider = (model_cfg or {}).get("provider", "openrouter") if isinstance(model_cfg, dict) else "openrouter"
+        current_base_url = (model_cfg or {}).get("base_url", "") if isinstance(model_cfg, dict) else ""
+
+        try:
+            result = _switch_model(
+                raw_input=model_input,
+                current_provider=current_provider,
+                current_model=current_model,
+                current_base_url=current_base_url,
+                current_api_key="",
+                is_global=persist_global,
+                explicit_provider=explicit_provider,
+                user_providers=cfg.get("providers"),
+                custom_providers=cfg.get("custom_providers"),
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.exception("ChatSession %s: switch_model raised", self.session_id)
+            self._emit("system-message", {"detail": f"⚠ Model switch failed: {e}"})
+            return
+
+        if not result.success:
+            self._emit("system-message", {"detail": f"⚠ {result.error_message or 'Unknown error'}"})
+            return
+
+        # Update the cached agent in-place if it exists and supports switch_model.
+        agent = self.agent
+        if agent is not None:
+            try:
+                agent.switch_model(
+                    new_model=result.new_model,
+                    new_provider=result.target_provider,
+                    api_key=result.api_key,
+                    base_url=result.base_url,
+                    api_mode=result.api_mode,
+                )
+            except Exception:
+                # Fall back to rebuilding on next turn.
+                logger.exception("In-place agent.switch_model failed; will rebuild on next turn")
+                self.agent = None
+
+        # Persist if --global.
+        persisted_note = ""
+        if persist_global:
+            try:
+                model_cfg_w = cfg.setdefault("model", {}) if isinstance(cfg.get("model"), dict) else {}
+                if not isinstance(cfg.get("model"), dict):
+                    cfg["model"] = {"default": result.new_model, "provider": result.target_provider}
+                else:
+                    cfg["model"]["default"] = result.new_model
+                    cfg["model"]["provider"] = result.target_provider
+                    if result.base_url:
+                        cfg["model"]["base_url"] = result.base_url
+                    else:
+                        cfg["model"].pop("base_url", None)
+                save_config(cfg)
+                persisted_note = "  (saved to ~/.hermes/config.yaml)"
+            except Exception as e:  # noqa: BLE001
+                logger.exception("Persisting /model --global failed")
+                persisted_note = f"  (⚠ persist failed: {e})"
+
+        alias_note = f" (alias '{result.resolved_via_alias}')" if result.resolved_via_alias else ""
+        prov_label = result.provider_label or result.target_provider
+        self._emit("system-message", {"detail": (
+            f"Switched to {result.new_model}{alias_note} on {prov_label}{persisted_note}"
+        )})
 
     def _run_turn(self, user_text: str) -> None:
         """Worker-thread entry point.  Runs one agent turn end-to-end."""

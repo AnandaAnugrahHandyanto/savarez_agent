@@ -47,6 +47,10 @@ export interface ErrorEvent extends BaseEvent {
   type: "error";
   detail: string;
 }
+export interface SystemMessageEvent extends BaseEvent {
+  type: "system-message";
+  detail: string;
+}
 
 export type ChatEvent =
   | StatusEvent
@@ -57,6 +61,7 @@ export type ChatEvent =
   | ToolCallResultEvent
   | ApprovalRequestEvent
   | ClarifyRequestEvent
+  | SystemMessageEvent
   | ErrorEvent;
 
 type Listener = (e: ChatEvent) => void;
