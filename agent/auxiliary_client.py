@@ -4517,12 +4517,19 @@ def call_llm(
         # and providers the user never configured that got picked up by
         # the auto-detection chain.
         #
+        # ── Auth error fallback (#21165) ────────────────────────────
+        # When the resolved provider returns 401 and neither the Nous
+        # refresh path nor explicit provider credential refresh applies,
+        # fall back to an alternative provider instead of dropping the
+        # auxiliary task on the floor.
+        #
         # ── Rate-limit fallback (#13579) ─────────────────────────────
         # When the provider returns a 429 rate-limit (not billing), fall
         # back to an alternative provider instead of exhausting retries
         # against the same rate-limited endpoint.
         should_fallback = (
-            _is_payment_error(first_err)
+            _is_auth_error(first_err)
+            or _is_payment_error(first_err)
             or _is_connection_error(first_err)
             or _is_rate_limit_error(first_err)
         )
@@ -4531,7 +4538,9 @@ def call_llm(
         # auto (the default) = best-effort fallback chain.  (#7559)
         is_auto = resolved_provider in {"auto", "", None}
         if should_fallback and is_auto:
-            if _is_payment_error(first_err):
+            if _is_auth_error(first_err):
+                reason = "auth error"
+            elif _is_payment_error(first_err):
                 reason = "payment error"
                 # Resolve the actual provider label (resolved_provider may be
                 # "auto"; the client's base_url tells us which backend got the
@@ -4853,14 +4862,23 @@ async def async_call_llm(
                 )
 
         # ── Payment / connection / rate-limit fallback (mirrors sync call_llm) ──
+        #
+        # ── Auth error fallback (#21165) ────────────────────────────
+        # When the resolved provider returns 401 and neither the Nous
+        # refresh path nor explicit provider credential refresh applies,
+        # fall back to an alternative provider instead of dropping the
+        # auxiliary task on the floor.
         should_fallback = (
-            _is_payment_error(first_err)
+            _is_auth_error(first_err)
+            or _is_payment_error(first_err)
             or _is_connection_error(first_err)
             or _is_rate_limit_error(first_err)
         )
         is_auto = resolved_provider in {"auto", "", None}
         if should_fallback and is_auto:
-            if _is_payment_error(first_err):
+            if _is_auth_error(first_err):
+                reason = "auth error"
+            elif _is_payment_error(first_err):
                 reason = "payment error"
                 _mark_provider_unhealthy(
                     _recoverable_pool_provider(resolved_provider, client) or resolved_provider
