@@ -2127,10 +2127,37 @@ def _make_xai_callback_handler(expected_path: str) -> tuple[type[BaseHTTPRequest
                 return
 
             params = parse_qs(parsed.query)
-            result["code"] = params.get("code", [None])[0]
-            result["state"] = params.get("state", [None])[0]
-            result["error"] = params.get("error", [None])[0]
-            result["error_description"] = params.get("error_description", [None])[0]
+            code = params.get("code", [None])[0]
+            state = params.get("state", [None])[0]
+            error = params.get("error", [None])[0]
+            error_description = params.get("error_description", [None])[0]
+
+            # Treat a hit on the callback path with neither `code` nor `error`
+            # as a missing OAuth callback (e.g. xAI's auth backend failed to
+            # redirect and the user navigated to the bare loopback URL by hand).
+            # Show an explicit "not received" page rather than the success page —
+            # otherwise the browser claims authorization succeeded while the CLI
+            # is still waiting for a real callback and eventually times out.
+            if code is None and error is None:
+                self.send_response(400)
+                self._maybe_write_cors_headers()
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.end_headers()
+                body = (
+                    "<html><body>"
+                    "<h1>xAI authorization not received.</h1>"
+                    "<p>No authorization code was present in this callback URL. "
+                    "Return to the terminal and re-run "
+                    "<code>hermes auth add xai-oauth</code> to retry.</p>"
+                    "</body></html>"
+                )
+                self.wfile.write(body.encode("utf-8"))
+                return
+
+            result["code"] = code
+            result["state"] = state
+            result["error"] = error
+            result["error_description"] = error_description
 
             self.send_response(200)
             self._maybe_write_cors_headers()
