@@ -5805,6 +5805,7 @@ def _run_npm_install_deterministic(
             encoding="utf-8",
             errors="replace",
             check=False,
+            env={**os.environ, "NODE_ENV": "development"},
         )
         if ci_result.returncode == 0:
             return ci_result
@@ -5819,6 +5820,7 @@ def _run_npm_install_deterministic(
         encoding="utf-8",
         errors="replace",
         check=False,
+        env={**os.environ, "NODE_ENV": "development"},
     )
 
 
