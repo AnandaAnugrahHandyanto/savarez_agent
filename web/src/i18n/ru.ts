@@ -142,6 +142,8 @@ export const ru: Translations = {
     resumeInChat: "Продолжить в чате",
     previousPage: "Предыдущая страница",
     nextPage: "Следующая страница",
+    filterByPlatform: "Filter by platform",
+allPlatforms: "All platforms",
     roles: {
       user: "Пользователь",
       assistant: "Ассистент",

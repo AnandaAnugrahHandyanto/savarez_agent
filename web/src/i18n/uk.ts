@@ -142,6 +142,8 @@ export const uk: Translations = {
     resumeInChat: "Продовжити в чаті",
     previousPage: "Попередня сторінка",
     nextPage: "Наступна сторінка",
+    filterByPlatform: "Filter by platform",
+allPlatforms: "All platforms",
     roles: {
       user: "Користувач",
       assistant: "Асистент",

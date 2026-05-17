@@ -142,6 +142,8 @@ export const tr: Translations = {
     resumeInChat: "Sohbette Devam Et",
     previousPage: "Önceki sayfa",
     nextPage: "Sonraki sayfa",
+    filterByPlatform: "Filter by platform",
+allPlatforms: "All platforms",
     roles: {
       user: "Kullanıcı",
       assistant: "Asistan",

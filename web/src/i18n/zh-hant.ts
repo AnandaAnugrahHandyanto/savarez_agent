@@ -142,6 +142,8 @@ export const zhHant: Translations = {
     resumeInChat: "在對話中繼續",
     previousPage: "上一頁",
     nextPage: "下一頁",
+    filterByPlatform: "Filter by platform",
+allPlatforms: "All platforms",
     roles: {
       user: "使用者",
       assistant: "助理",

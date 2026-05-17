@@ -142,6 +142,8 @@ export const pt: Translations = {
     resumeInChat: "Retomar no Chat",
     previousPage: "Página anterior",
     nextPage: "Página seguinte",
+    filterByPlatform: "Filter by platform",
+allPlatforms: "All platforms",
     roles: {
       user: "Utilizador",
       assistant: "Assistente",

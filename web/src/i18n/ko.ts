@@ -142,6 +142,8 @@ export const ko: Translations = {
     resumeInChat: "채팅에서 다시 시작",
     previousPage: "이전 페이지",
     nextPage: "다음 페이지",
+    filterByPlatform: "Filter by platform",
+allPlatforms: "All platforms",
     roles: {
       user: "사용자",
       assistant: "어시스턴트",
