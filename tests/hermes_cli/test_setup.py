@@ -573,6 +573,38 @@ def test_vercel_setup_prefills_project_and_team_from_link_file(tmp_path, monkeyp
     assert defaults["    Vercel team ID"] == "linked-team"
 
 
+def test_fastvm_setup_persists_snapshot_settings(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _clear_vercel_env(monkeypatch)
+    monkeypatch.setitem(sys.modules, "fastvm", types.ModuleType("fastvm"))
+    config = load_config()
+
+    def fake_prompt_choice(question, choices, default=0):
+        if question == "Select terminal backend:":
+            return 6
+        raise AssertionError(f"Unexpected prompt_choice call: {question}")
+
+    prompt_values = iter(["fv-key", "c2m4", "snap-base", "yes", "yes", "20480"])
+
+    monkeypatch.setattr("hermes_cli.setup.prompt_choice", fake_prompt_choice)
+    monkeypatch.setattr("hermes_cli.setup.prompt", lambda *args, **kwargs: next(prompt_values))
+
+    from hermes_cli.setup import setup_terminal_backend
+
+    setup_terminal_backend(config)
+
+    assert config["terminal"]["backend"] == "fastvm"
+    assert config["terminal"]["fastvm_machine"] == "c2m4"
+    assert config["terminal"]["fastvm_base_snapshot_id"] == "snap-base"
+    assert config["terminal"]["fastvm_live_resume"] is True
+    assert config["terminal"]["container_persistent"] is True
+    assert config["terminal"]["container_disk"] == 20480
+    assert os.environ["FASTVM_API_KEY"] == "fv-key"
+    assert os.environ["TERMINAL_FASTVM_MACHINE"] == "c2m4"
+    assert os.environ["TERMINAL_FASTVM_BASE_SNAPSHOT_ID"] == "snap-base"
+    assert os.environ["TERMINAL_FASTVM_LIVE_RESUME"] == "true"
+
+
 def test_setup_slack_saves_home_channel(monkeypatch):
     """_setup_slack() saves SLACK_HOME_CHANNEL when the user provides one."""
     saved = {}

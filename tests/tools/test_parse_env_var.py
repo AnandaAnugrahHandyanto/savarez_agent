@@ -2,11 +2,12 @@
 
 import importlib
 import json
+import sys
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 
-import sys
 import tools.terminal_tool  # noqa: F401 -- ensure module is loaded
 _tt_mod = sys.modules["tools.terminal_tool"]
 from tools.terminal_tool import _parse_env_var
@@ -39,6 +40,24 @@ class TestParseEnvVar:
             config = _tt_mod._get_env_config()
             assert config["docker_forward_env"] == ["GITHUB_TOKEN", "NPM_TOKEN"]
 
+    def test_get_env_config_computes_fastvm_lease_ttl(self):
+        with patch.dict("os.environ", {
+            "TERMINAL_ENV": "fastvm",
+            "TERMINAL_TIMEOUT": "800",
+            "TERMINAL_LIFETIME_SECONDS": "300",
+        }, clear=False):
+            config = _tt_mod._get_env_config()
+            assert config["fastvm_lease_ttl_seconds"] == 1600
+
+    def test_get_env_config_fastvm_lease_ttl_has_floor(self):
+        with patch.dict("os.environ", {
+            "TERMINAL_ENV": "fastvm",
+            "TERMINAL_TIMEOUT": "60",
+            "TERMINAL_LIFETIME_SECONDS": "120",
+        }, clear=False):
+            config = _tt_mod._get_env_config()
+            assert config["fastvm_lease_ttl_seconds"] == 900
+
     def test_create_environment_passes_docker_forward_env(self):
         fake_env = object()
         with patch.object(_tt_mod, "_DockerEnvironment", return_value=fake_env) as mock_docker:
@@ -52,6 +71,35 @@ class TestParseEnvVar:
 
         assert result is fake_env
         assert mock_docker.call_args.kwargs["forward_env"] == ["GITHUB_TOKEN"]
+
+    def test_create_environment_coerces_fastvm_live_resume_string(self, monkeypatch):
+        captured = {}
+        fake_env = object()
+
+        def _fake_fastvm_environment(**kwargs):
+            captured.update(kwargs)
+            return fake_env
+
+        monkeypatch.setitem(
+            sys.modules,
+            "tools.environments.fastvm",
+            SimpleNamespace(FastVMEnvironment=_fake_fastvm_environment),
+        )
+
+        result = _tt_mod._create_environment(
+            "fastvm",
+            image="ignored",
+            cwd="/root",
+            timeout=180,
+            container_config={
+                "container_disk": 51200,
+                "container_persistent": True,
+                "fastvm_live_resume": "false",
+            },
+        )
+
+        assert result is fake_env
+        assert captured["live_resume"] is False
 
     def test_falls_back_to_default(self):
         with patch.dict("os.environ", {}, clear=False):

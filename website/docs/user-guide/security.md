@@ -14,7 +14,7 @@ The security model has seven layers:
 
 1. **User authorization** — who can talk to the agent (allowlists, DM pairing)
 2. **Dangerous command approval** — human-in-the-loop for destructive operations
-3. **Container isolation** — Docker/Singularity/Modal sandboxing with hardened settings
+3. **Container isolation** — Docker/Singularity/Modal/FastVM sandboxing with hardened settings
 4. **MCP credential filtering** — environment variable isolation for MCP subprocesses
 5. **Context file scanning** — prompt injection detection in project files
 6. **Cross-session isolation** — sessions cannot access each other's data or state; cron job storage paths are hardened against path traversal attacks
@@ -142,7 +142,7 @@ The following patterns trigger approval prompts (defined in `tools/approval.py`)
 | `gateway run` with `&`/`disown`/`nohup`/`setsid` | Prevents starting gateway outside service manager |
 
 :::info
-**Container bypass**: When running in `docker`, `singularity`, `modal`, `daytona`, or `vercel_sandbox` backends, dangerous command checks are **skipped** because the container itself is the security boundary. Destructive commands inside a container can't harm the host.
+**Container bypass**: When running in `docker`, `singularity`, `modal`, `daytona`, `vercel_sandbox`, or `fastvm` backends, dangerous command checks are **skipped** because the sandbox itself is the security boundary. Destructive commands inside a container or cloud VM can't harm the host running Hermes.
 :::
 
 ### Approval Flow (CLI)
@@ -338,7 +338,7 @@ terminal:
 - **Ephemeral mode** (`container_persistent: false`): Uses tmpfs for workspace — everything is lost on cleanup
 
 :::tip
-For production gateway deployments, use `docker`, `modal`, `daytona`, or `vercel_sandbox` backend to isolate agent commands from your host system. This eliminates the need for dangerous command approval entirely.
+For production gateway deployments, use `docker`, `modal`, `daytona`, `vercel_sandbox`, or `fastvm` backend to isolate agent commands from your host system. This eliminates the need for dangerous command approval entirely.
 :::
 
 :::warning
@@ -356,6 +356,7 @@ If you add names to `terminal.docker_forward_env`, those variables are intention
 | **modal** | Cloud sandbox | ❌ Skipped | Scalable cloud isolation |
 | **daytona** | Cloud sandbox | ❌ Skipped | Persistent cloud workspaces |
 | **vercel_sandbox** | Cloud microVM | ❌ Skipped | Cloud execution with snapshot persistence |
+| **fastvm** | Cloud VM | ❌ Skipped | Snapshot-backed live resume |
 
 ## Environment Variable Passthrough {#environment-variable-passthrough}
 
@@ -377,10 +378,10 @@ required_environment_variables:
     help: Get a key from https://developers.google.com/tenor
 ```
 
-After loading this skill, `TENOR_API_KEY` passes through to `execute_code`, `terminal` (local), **and remote backends (Docker, Modal)** — no manual configuration needed.
+After loading this skill, `TENOR_API_KEY` passes through to `execute_code`, `terminal` (local), **and remote backends such as Docker, Modal, Daytona, Vercel Sandbox, and FastVM** — no manual configuration needed.
 
-:::info Docker & Modal
-Prior to v0.5.1, Docker's `forward_env` was a separate system from the skill passthrough. They are now merged — skill-declared env vars are automatically forwarded into Docker containers and Modal sandboxes without needing to add them to `docker_forward_env` manually.
+:::info Remote sandboxes
+Prior to v0.5.1, Docker's `forward_env` was a separate system from the skill passthrough. They are now merged — skill-declared env vars are automatically forwarded into container and cloud sandbox backends without needing to add them to `docker_forward_env` manually.
 :::
 
 **2. Config-based passthrough (manual)**
@@ -409,7 +410,7 @@ required_credential_files:
 When loaded, Hermes checks if these files exist in the active profile's `HERMES_HOME` and registers them for mounting:
 
 - **Docker**: Read-only bind mounts (`-v host:container:ro`)
-- **Modal**: Mounted at sandbox creation + synced before each command (handles mid-session OAuth setup)
+- **Modal / Daytona / Vercel Sandbox / FastVM**: Uploaded at sandbox creation + synced before each command where supported (handles mid-session OAuth setup)
 - **Local**: No action needed (files already accessible)
 
 You can also list credential files manually in `config.yaml`:
@@ -431,6 +432,7 @@ Paths are relative to `~/.hermes/`. Files are mounted to `/root/.hermes/` inside
 | **terminal** (local) | Blocks explicit Hermes infrastructure vars (provider keys, gateway tokens, tool API keys) | ✅ Passthrough vars bypass the blocklist |
 | **terminal** (Docker) | No host env vars by default | ✅ Passthrough vars + `docker_forward_env` forwarded via `-e` |
 | **terminal** (Modal) | No host env/files by default | ✅ Credential files mounted; env passthrough via sync |
+| **terminal** (FastVM) | No host env/files by default | ✅ Credential files uploaded; env passthrough via sync |
 | **MCP** | Blocks everything except safe system vars + explicitly configured `env` | ❌ Not affected by passthrough (use MCP `env` config instead) |
 
 ### Security Considerations
@@ -567,7 +569,7 @@ Blocked files show a warning:
 ### Gateway Deployment Checklist
 
 1. **Set explicit allowlists** — never use `GATEWAY_ALLOW_ALL_USERS=true` in production
-2. **Use container backend** — set `terminal.backend: docker` in config.yaml
+2. **Use an isolated backend** — set `terminal.backend: docker`, `fastvm`, or another cloud sandbox in config.yaml
 3. **Restrict resource limits** — set appropriate CPU, memory, and disk limits
 4. **Store secrets securely** — keep API keys in `~/.hermes/.env` with proper file permissions
 5. **Enable DM pairing** — use pairing codes instead of hardcoding user IDs when possible

@@ -27,6 +27,20 @@ def check_mark(ok: bool) -> str:
         return color("✓", Colors.GREEN)
     return color("✗", Colors.RED)
 
+
+def _coerce_bool(value, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    normalized = str(value).strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    return default
+
+
 def redact_key(key: str) -> str:
     """Redact an API key for display.
 
@@ -376,6 +390,28 @@ def show_status(args):
             print(f"  Auth detail:  {line}")
         print(f"  Persistence:  {'snapshot filesystem' if persist_enabled else 'ephemeral filesystem'}")
         print("  Processes:    live processes do not survive cleanup, snapshots, or sandbox recreation")
+    elif terminal_env == "fastvm":
+        machine = os.getenv("TERMINAL_FASTVM_MACHINE") or terminal_cfg.get("fastvm_machine") or "c1m2"
+        base_snapshot = os.getenv("TERMINAL_FASTVM_BASE_SNAPSHOT_ID") or terminal_cfg.get("fastvm_base_snapshot_id") or ""
+        live_raw = os.getenv("TERMINAL_FASTVM_LIVE_RESUME")
+        if live_raw is None:
+            live_resume = _coerce_bool(terminal_cfg.get("fastvm_live_resume"), True)
+        else:
+            live_resume = _coerce_bool(live_raw, True)
+        persist = os.getenv("TERMINAL_CONTAINER_PERSISTENT")
+        if persist is None:
+            persist_enabled = _coerce_bool(terminal_cfg.get("container_persistent"), True)
+        else:
+            persist_enabled = _coerce_bool(persist, True)
+        sdk_ok = importlib.util.find_spec("fastvm") is not None
+        key_ok = bool(os.getenv("FASTVM_API_KEY"))
+        sdk_label = "installed" if sdk_ok else "missing (install: pip install 'hermes-agent[fastvm]')"
+        print(f"  Machine:      {machine}")
+        print(f"  SDK:          {check_mark(sdk_ok)} {sdk_label}")
+        print(f"  API key:      {check_mark(key_ok)} {'configured' if key_ok else 'not set'}")
+        print(f"  Base snap:    {base_snapshot or '(fresh VM)'}")
+        print(f"  Persistence:  {'VM snapshots' if persist_enabled else 'ephemeral VM'}")
+        print(f"  Live resume:  {'required' if live_resume else 'filesystem fallback allowed'}")
 
     sudo_password = os.getenv("SUDO_PASSWORD", "")
     print(f"  Sudo:         {check_mark(bool(sudo_password))} {'enabled' if sudo_password else 'disabled'}")

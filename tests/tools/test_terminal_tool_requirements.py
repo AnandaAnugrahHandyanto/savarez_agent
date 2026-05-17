@@ -90,6 +90,42 @@ class TestTerminalRequirements:
         assert "terminal" not in names
         assert "execute_code" not in names
 
+    def test_terminal_and_execute_code_tools_resolve_for_fastvm(self, monkeypatch):
+        monkeypatch.setenv("FASTVM_API_KEY", "fv-key")
+        monkeypatch.setattr(
+            terminal_tool_module,
+            "_get_env_config",
+            lambda: {"env_type": "fastvm"},
+        )
+        monkeypatch.setattr(
+            terminal_tool_module.importlib.util,
+            "find_spec",
+            lambda name: object() if name == "fastvm" else None,
+        )
+        tools = get_tool_definitions(enabled_toolsets=["terminal", "code_execution"], quiet_mode=True)
+        names = {tool["function"]["name"] for tool in tools}
+
+        assert "terminal" in names
+        assert "execute_code" in names
+
+    def test_terminal_and_execute_code_tools_hide_for_fastvm_without_key(self, monkeypatch):
+        monkeypatch.delenv("FASTVM_API_KEY", raising=False)
+        monkeypatch.setattr(
+            terminal_tool_module,
+            "_get_env_config",
+            lambda: {"env_type": "fastvm"},
+        )
+        monkeypatch.setattr(
+            terminal_tool_module.importlib.util,
+            "find_spec",
+            lambda name: object() if name == "fastvm" else None,
+        )
+        tools = get_tool_definitions(enabled_toolsets=["terminal", "code_execution"], quiet_mode=True)
+        names = {tool["function"]["name"] for tool in tools}
+
+        assert "terminal" not in names
+        assert "execute_code" not in names
+
     def test_terminal_and_execute_code_tools_hide_for_vercel_without_auth(self, monkeypatch):
         monkeypatch.delenv("VERCEL_OIDC_TOKEN", raising=False)
         monkeypatch.delenv("VERCEL_TOKEN", raising=False)

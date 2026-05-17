@@ -122,7 +122,14 @@ class TestCwdHandling:
         config = _tt_mod._get_env_config()
         assert config["cwd"] == "/vercel/sandbox"
 
-    @pytest.mark.parametrize("backend", ["modal", "docker", "singularity", "daytona"])
+    def test_host_path_replaced_for_fastvm(self, monkeypatch):
+        """Host paths should be discarded for FastVM."""
+        monkeypatch.setenv("TERMINAL_ENV", "fastvm")
+        monkeypatch.setenv("TERMINAL_CWD", "/Users/someone/projects")
+        config = _tt_mod._get_env_config()
+        assert config["cwd"] == "/root"
+
+    @pytest.mark.parametrize("backend", ["modal", "docker", "singularity", "daytona", "fastvm"])
     def test_default_cwd_is_root_for_container_backends(self, backend, monkeypatch):
         """Container backends should default to /root, not ~."""
         monkeypatch.setenv("TERMINAL_ENV", backend)

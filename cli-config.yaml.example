@@ -248,8 +248,27 @@ terminal:
 #   daytona_image: "nikolaik/python-nodejs:python3.11-nodejs20"
 #   container_disk: 10240          # Daytona max is 10GB per sandbox
 
+# -----------------------------------------------------------------------------
+# OPTION 7: FastVM cloud execution
+# Commands run in FastVM cloud VMs. Persistent mode snapshots the VM on cleanup,
+# deletes the live VM to stop compute spend, and restores from the latest
+# snapshot on the next use.
+# Great for: VM-backed sandboxes that should sleep when idle and resume state.
+# Requires: pip install 'hermes-agent[fastvm]', FASTVM_API_KEY env var
+# -----------------------------------------------------------------------------
+# terminal:
+#   backend: "fastvm"
+#   cwd: "/root"
+#   timeout: 180
+#   lifetime_seconds: 300
+#   fastvm_machine: "c1m2"
+#   fastvm_base_snapshot_id: ""    # Optional base snapshot for first launch
+#   fastvm_live_resume: true       # Refuse fresh fallback if restore fails
+#   container_disk: 51200          # MB; converted to GiB for FastVM launch
+#   container_persistent: true     # Snapshot on cleanup and restore on next use
+
 #
-# --- Container resource limits (docker, singularity, modal, daytona -- ignored for local/ssh) ---
+# --- Container resource limits (docker, singularity, modal, daytona, fastvm -- ignored for local/ssh) ---
 # These settings apply to all container backends. They control the resources
 # allocated to the sandbox and whether its filesystem persists across sessions.
   container_cpu: 1              # CPU cores

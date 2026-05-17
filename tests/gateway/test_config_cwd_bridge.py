@@ -34,6 +34,9 @@ def _simulate_config_bridge(cfg: dict, initial_env: dict | None = None):
             "cwd": "TERMINAL_CWD",
             "timeout": "TERMINAL_TIMEOUT",
             "vercel_runtime": "TERMINAL_VERCEL_RUNTIME",
+            "fastvm_machine": "TERMINAL_FASTVM_MACHINE",
+            "fastvm_base_snapshot_id": "TERMINAL_FASTVM_BASE_SNAPSHOT_ID",
+            "fastvm_live_resume": "TERMINAL_FASTVM_LIVE_RESUME",
             "container_persistent": "TERMINAL_CONTAINER_PERSISTENT",
             "container_cpu": "TERMINAL_CONTAINER_CPU",
             "container_memory": "TERMINAL_CONTAINER_MEMORY",
@@ -265,4 +268,25 @@ class TestVercelTerminalBridge:
         assert result["TERMINAL_CONTAINER_PERSISTENT"] == "True"
         assert result["TERMINAL_CONTAINER_CPU"] == "2"
         assert result["TERMINAL_CONTAINER_MEMORY"] == "4096"
+        assert result["TERMINAL_CONTAINER_DISK"] == "51200"
+
+
+class TestFastVMTerminalBridge:
+    def test_fastvm_terminal_settings_bridge(self):
+        cfg = {
+            "terminal": {
+                "backend": "fastvm",
+                "fastvm_machine": "c4m16",
+                "fastvm_base_snapshot_id": "snap-base-123",
+                "fastvm_live_resume": True,
+                "container_persistent": True,
+                "container_disk": 51200,
+            }
+        }
+        result = _simulate_config_bridge(cfg, {"MESSAGING_CWD": "/from/env"})
+        assert result["TERMINAL_ENV"] == "fastvm"
+        assert result["TERMINAL_FASTVM_MACHINE"] == "c4m16"
+        assert result["TERMINAL_FASTVM_BASE_SNAPSHOT_ID"] == "snap-base-123"
+        assert result["TERMINAL_FASTVM_LIVE_RESUME"] == "True"
+        assert result["TERMINAL_CONTAINER_PERSISTENT"] == "True"
         assert result["TERMINAL_CONTAINER_DISK"] == "51200"

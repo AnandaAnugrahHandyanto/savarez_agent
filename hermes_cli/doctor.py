@@ -1161,6 +1161,31 @@ def run_doctor(args):
         else:
             check_info("Vercel persistence: ephemeral filesystem")
 
+    # FastVM (if using fastvm backend)
+    if terminal_env == "fastvm":
+        if os.getenv("FASTVM_API_KEY"):
+            check_ok("FastVM API key", "(configured)")
+        else:
+            check_fail("FASTVM_API_KEY not set", "(required for TERMINAL_ENV=fastvm)")
+            issues.append("Set FASTVM_API_KEY environment variable")
+
+        if importlib.util.find_spec("fastvm") is not None:
+            check_ok("fastvm SDK", "(installed)")
+        else:
+            check_fail("fastvm SDK not installed", "(pip install 'hermes-agent[fastvm]')")
+            issues.append("Install the FastVM optional dependency: pip install 'hermes-agent[fastvm]'")
+
+        machine = os.getenv("TERMINAL_FASTVM_MACHINE", "c1m2").strip() or "c1m2"
+        check_info(f"FastVM machine: {machine}")
+        base_snapshot = os.getenv("TERMINAL_FASTVM_BASE_SNAPSHOT_ID", "").strip()
+        if base_snapshot:
+            check_info(f"FastVM base snapshot: {base_snapshot}")
+        live_resume = os.getenv("TERMINAL_FASTVM_LIVE_RESUME", "true").lower() in ("1", "true", "yes", "on")
+        if live_resume:
+            check_info("FastVM persistence: VM snapshots with live-resume required")
+        else:
+            check_info("FastVM persistence: snapshot restore may fall back to fresh VM")
+
     # Node.js + agent-browser (for browser automation tools)
     if _safe_which("node"):
         check_ok("Node.js")

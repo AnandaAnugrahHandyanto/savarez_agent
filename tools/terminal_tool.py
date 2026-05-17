@@ -3,7 +3,7 @@
 Terminal Tool Module
 
 A terminal tool that executes commands in local, Docker, Modal, SSH,
-Singularity, Daytona, and Vercel Sandbox environments. Supports local
+Singularity, Daytona, FastVM, and Vercel Sandbox environments. Supports local
 execution, containerized backends, and cloud sandboxes, including managed
 Modal mode.
 
@@ -12,16 +12,18 @@ Environment Selection (via TERMINAL_ENV environment variable):
 - "docker": Execute in Docker containers (isolated, requires Docker)
 - "modal": Execute in Modal cloud sandboxes (direct Modal or managed gateway)
 - "vercel_sandbox": Execute in Vercel Sandbox cloud sandboxes
+- "fastvm": Execute in FastVM cloud VMs with snapshot-backed sleep/wake
 
 Features:
-- Multiple execution backends (local, docker, modal, vercel_sandbox)
+- Multiple execution backends (local, docker, modal, vercel_sandbox, fastvm)
 - Background task support
 - VM/container lifecycle management
 - Automatic cleanup after inactivity
 
 Cloud sandbox note:
 - Persistent filesystems preserve working state across sandbox recreation
-- Persistent filesystems do NOT guarantee the same live sandbox or long-running processes survive cleanup, idle reaping, or Hermes exit
+- FastVM live-resume mode restores from VM snapshots; other cloud backends only
+  promise filesystem persistence across cleanup, idle reaping, or Hermes exit
 
 Usage:
     from terminal_tool import terminal_tool
@@ -36,6 +38,7 @@ Usage:
 import importlib.util
 import json
 import logging
+import math
 import os
 import platform
 import re
@@ -120,6 +123,7 @@ DISK_USAGE_WARNING_THRESHOLD_GB = _safe_parse_import_env(
     "number",
 )
 _VERCEL_SANDBOX_DEFAULT_CWD = "/vercel/sandbox"
+_FASTVM_DEFAULT_CWD = "/root"
 _SUPPORTED_VERCEL_RUNTIMES = ("node24", "node22", "python3.13")
 
 
@@ -181,6 +185,39 @@ def _check_vercel_sandbox_requirements(config: dict[str, Any]) -> bool:
         "development only."
     )
     return False
+
+
+def _check_fastvm_requirements(config: dict[str, Any]) -> bool:
+    """Validate FastVM terminal backend requirements."""
+    del config
+    if importlib.util.find_spec("fastvm") is None:
+        logger.error(
+            "fastvm is required for the FastVM terminal backend: pip install fastvm"
+        )
+        return False
+    if not os.getenv("FASTVM_API_KEY"):
+        logger.error(
+            "FastVM backend selected but FASTVM_API_KEY is not set. "
+            "Set FASTVM_API_KEY or choose a different TERMINAL_ENV."
+        )
+        return False
+    return True
+
+
+def _coerce_bool(value: Any, default: bool = False) -> bool:
+    """Coerce common config/env boolean spellings."""
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    normalized = str(value).strip().lower()
+    if normalized in ("1", "true", "yes", "on"):
+        return True
+    if normalized in ("0", "false", "no", "off"):
+        return False
+    return default
 
 
 def _check_disk_usage_warning():
@@ -1023,6 +1060,8 @@ def _get_env_config() -> Dict[str, Any]:
         default_cwd = "~"
     elif env_type == "vercel_sandbox":
         default_cwd = _VERCEL_SANDBOX_DEFAULT_CWD
+    elif env_type == "fastvm":
+        default_cwd = _FASTVM_DEFAULT_CWD
     else:
         default_cwd = "/root"
 
@@ -1044,7 +1083,7 @@ def _get_env_config() -> Dict[str, Any]:
         ):
             host_cwd = candidate
             cwd = "/workspace"
-    elif env_type in {"modal", "docker", "singularity", "daytona", "vercel_sandbox"} and cwd:
+    elif env_type in {"modal", "docker", "singularity", "daytona", "vercel_sandbox", "fastvm"} and cwd:
         # Host paths and relative paths that won't work inside containers
         is_host_path = any(cwd.startswith(p) for p in host_prefixes)
         is_relative = not os.path.isabs(cwd)  # e.g. "." or "src/"
@@ -1053,6 +1092,10 @@ def _get_env_config() -> Dict[str, Any]:
                         "(host/relative path won't work in sandbox). Using %r instead.",
                         cwd, env_type, default_cwd)
             cwd = default_cwd
+
+    timeout = _parse_env_var("TERMINAL_TIMEOUT", "180")
+    lifetime_seconds = _parse_env_var("TERMINAL_LIFETIME_SECONDS", "300")
+    fastvm_lease_ttl_seconds = max(2 * max(timeout, lifetime_seconds), 900)
 
     return {
         "env_type": env_type,
@@ -1063,11 +1106,17 @@ def _get_env_config() -> Dict[str, Any]:
         "modal_image": os.getenv("TERMINAL_MODAL_IMAGE", default_image),
         "daytona_image": os.getenv("TERMINAL_DAYTONA_IMAGE", default_image),
         "vercel_runtime": os.getenv("TERMINAL_VERCEL_RUNTIME", "").strip(),
+        "fastvm_machine": os.getenv("TERMINAL_FASTVM_MACHINE", "c1m2").strip() or "c1m2",
+        "fastvm_base_snapshot_id": os.getenv("TERMINAL_FASTVM_BASE_SNAPSHOT_ID", "").strip(),
+        "fastvm_live_resume": os.getenv("TERMINAL_FASTVM_LIVE_RESUME", "true").lower() in ("true", "1", "yes", "on"),
+        "fastvm_launch_timeout": _parse_env_var("TERMINAL_FASTVM_LAUNCH_TIMEOUT", "300"),
+        "fastvm_snapshot_timeout": _parse_env_var("TERMINAL_FASTVM_SNAPSHOT_TIMEOUT", "300"),
+        "fastvm_lease_ttl_seconds": fastvm_lease_ttl_seconds,
         "cwd": cwd,
         "host_cwd": host_cwd,
         "docker_mount_cwd_to_workspace": mount_docker_cwd,
-        "timeout": _parse_env_var("TERMINAL_TIMEOUT", "180"),
-        "lifetime_seconds": _parse_env_var("TERMINAL_LIFETIME_SECONDS", "300"),
+        "timeout": timeout,
+        "lifetime_seconds": lifetime_seconds,
         # SSH-specific config
         "ssh_host": os.getenv("TERMINAL_SSH_HOST", ""),
         "ssh_user": os.getenv("TERMINAL_SSH_USER", ""),
@@ -1082,7 +1131,7 @@ def _get_env_config() -> Dict[str, Any]:
         ).lower() in {"true", "1", "yes"},
         "local_persistent": os.getenv("TERMINAL_LOCAL_PERSISTENT", "false").lower() in {"true", "1", "yes"},
         # Container resource config (applies to docker, singularity, modal,
-        # daytona, and vercel_sandbox -- ignored for local/ssh)
+        # daytona, vercel_sandbox, and fastvm -- ignored for local/ssh)
         "container_cpu": _parse_env_var("TERMINAL_CONTAINER_CPU", "1", float, "number"),
         "container_memory": _parse_env_var("TERMINAL_CONTAINER_MEMORY", "5120"),     # MB (default 5GB)
         "container_disk": _parse_env_var("TERMINAL_CONTAINER_DISK", "51200"),        # MB (default 50GB)
@@ -1113,7 +1162,7 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
     
     Args:
         env_type: One of "local", "docker", "singularity", "modal",
-            "daytona", "vercel_sandbox", "ssh"
+            "daytona", "vercel_sandbox", "fastvm", "ssh"
         image: Docker/Singularity/Modal image name (ignored for local/ssh/vercel)
         cwd: Working directory
         timeout: Default command timeout
@@ -1235,6 +1284,24 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
             task_id=task_id,
         )
 
+    elif env_type == "fastvm":
+        from tools.environments.fastvm import FastVMEnvironment as _FastVMEnvironment
+
+        disk_gib = max(1, math.ceil(float(disk) / 1024)) if disk else 50
+        return _FastVMEnvironment(
+            machine_type=cc.get("fastvm_machine") or "c1m2",
+            base_snapshot_id=cc.get("fastvm_base_snapshot_id") or None,
+            cwd=cwd,
+            timeout=timeout,
+            disk_gib=disk_gib,
+            persistent_filesystem=persistent,
+            live_resume=_coerce_bool(cc.get("fastvm_live_resume"), True),
+            task_id=task_id,
+            launch_timeout=int(cc.get("fastvm_launch_timeout") or 300),
+            snapshot_timeout=int(cc.get("fastvm_snapshot_timeout") or 300),
+            lease_ttl_seconds=int(cc.get("fastvm_lease_ttl_seconds") or 900),
+        )
+
     elif env_type == "ssh":
         if not ssh_config or not ssh_config.get("host") or not ssh_config.get("user"):
             raise ValueError("SSH environment requires ssh_host and ssh_user to be configured")
@@ -1250,7 +1317,7 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
     else:
         raise ValueError(
             f"Unknown environment type: {env_type}. Use 'local', 'docker', "
-            f"'singularity', 'modal', 'daytona', 'vercel_sandbox', or 'ssh'"
+            f"'singularity', 'modal', 'daytona', 'vercel_sandbox', 'fastvm', or 'ssh'"
         )
 
 
@@ -1809,7 +1876,7 @@ def terminal_tool(
                             }
 
                         container_config = None
-                        if env_type in {"docker", "singularity", "modal", "daytona", "vercel_sandbox"}:
+                        if env_type in {"docker", "singularity", "modal", "daytona", "vercel_sandbox", "fastvm"}:
                             container_config = {
                                 "container_cpu": config.get("container_cpu", 1),
                                 "container_memory": config.get("container_memory", 5120),
@@ -1817,6 +1884,12 @@ def terminal_tool(
                                 "container_persistent": config.get("container_persistent", True),
                                 "modal_mode": config.get("modal_mode", "auto"),
                                 "vercel_runtime": config.get("vercel_runtime", ""),
+                                "fastvm_machine": config.get("fastvm_machine", "c1m2"),
+                                "fastvm_base_snapshot_id": config.get("fastvm_base_snapshot_id", ""),
+                                "fastvm_live_resume": config.get("fastvm_live_resume", True),
+                                "fastvm_launch_timeout": config.get("fastvm_launch_timeout", 300),
+                                "fastvm_snapshot_timeout": config.get("fastvm_snapshot_timeout", 300),
+                                "fastvm_lease_ttl_seconds": config.get("fastvm_lease_ttl_seconds", 900),
                                 "docker_volumes": config.get("docker_volumes", []),
                                 "docker_mount_cwd_to_workspace": config.get("docker_mount_cwd_to_workspace", False),
                                 "docker_forward_env": config.get("docker_forward_env", []),
@@ -2238,6 +2311,9 @@ def check_terminal_requirements() -> bool:
         elif env_type == "vercel_sandbox":
             return _check_vercel_sandbox_requirements(config)
 
+        elif env_type == "fastvm":
+            return _check_fastvm_requirements(config)
+
         elif env_type == "daytona":
             from daytona import Daytona  # noqa: F401 — SDK presence check
             return os.getenv("DAYTONA_API_KEY") is not None
@@ -2245,7 +2321,7 @@ def check_terminal_requirements() -> bool:
         else:
             logger.error(
                 "Unknown TERMINAL_ENV '%s'. Use one of: local, docker, singularity, "
-                "modal, daytona, vercel_sandbox, ssh.",
+                "modal, daytona, vercel_sandbox, fastvm, ssh.",
                 env_type,
             )
             return False
@@ -2288,7 +2364,7 @@ if __name__ == "__main__":
     print(
         "  TERMINAL_ENV: "
         f"{os.getenv('TERMINAL_ENV', 'local')} "
-        "(local/docker/singularity/modal/daytona/vercel_sandbox/ssh)"
+        "(local/docker/singularity/modal/daytona/vercel_sandbox/fastvm/ssh)"
     )
     print(f"  TERMINAL_DOCKER_IMAGE: {os.getenv('TERMINAL_DOCKER_IMAGE', default_img)}")
     print(f"  TERMINAL_SINGULARITY_IMAGE: {os.getenv('TERMINAL_SINGULARITY_IMAGE', f'docker://{default_img}')}")

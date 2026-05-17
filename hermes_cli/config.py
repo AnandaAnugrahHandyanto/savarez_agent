@@ -127,6 +127,9 @@ _EXTRA_ENV_KEYS = frozenset({
     "IRC_SERVER", "IRC_PORT", "IRC_NICKNAME", "IRC_CHANNEL",
     "IRC_USE_TLS", "IRC_SERVER_PASSWORD", "IRC_NICKSERV_PASSWORD",
     "TERMINAL_ENV", "TERMINAL_SSH_KEY", "TERMINAL_SSH_PORT",
+    "FASTVM_API_KEY", "TERMINAL_FASTVM_MACHINE", "TERMINAL_FASTVM_BASE_SNAPSHOT_ID",
+    "TERMINAL_FASTVM_LIVE_RESUME", "TERMINAL_FASTVM_LAUNCH_TIMEOUT",
+    "TERMINAL_FASTVM_SNAPSHOT_TIMEOUT",
     "WHATSAPP_MODE", "WHATSAPP_ENABLED",
     "MATTERMOST_HOME_CHANNEL", "MATTERMOST_HOME_CHANNEL_NAME", "MATTERMOST_REPLY_MODE",
     "MATRIX_PASSWORD", "MATRIX_ENCRYPTION", "MATRIX_DEVICE_ID", "MATRIX_HOME_ROOM",
@@ -602,7 +605,10 @@ DEFAULT_CONFIG = {
         "modal_image": "nikolaik/python-nodejs:python3.11-nodejs20",
         "daytona_image": "nikolaik/python-nodejs:python3.11-nodejs20",
         "vercel_runtime": "node24",
-        # Container resource limits (docker, singularity, modal, daytona, vercel_sandbox — ignored for local/ssh)
+        "fastvm_machine": "c1m2",
+        "fastvm_base_snapshot_id": "",
+        "fastvm_live_resume": True,
+        # Container resource limits (docker, singularity, modal, daytona, vercel_sandbox, fastvm — ignored for local/ssh)
         "container_cpu": 1,
         "container_memory": 5120,       # MB (default 5GB)
         "container_disk": 51200,        # MB (default 50GB)
@@ -4909,6 +4915,10 @@ def show_config():
     elif terminal.get('backend') == 'vercel_sandbox':
         print(f"  Vercel runtime: {terminal.get('vercel_runtime', 'node24')}")
         print(f"  Vercel auth:    {'configured' if get_env_value('VERCEL_OIDC_TOKEN') or (get_env_value('VERCEL_TOKEN') and get_env_value('VERCEL_PROJECT_ID') and get_env_value('VERCEL_TEAM_ID')) else '(not set)'}")
+    elif terminal.get('backend') == 'fastvm':
+        print(f"  FastVM machine: {terminal.get('fastvm_machine', 'c1m2')}")
+        print(f"  FastVM snapshot: {terminal.get('fastvm_base_snapshot_id') or '(fresh VM)'}")
+        print(f"  FastVM key:     {'configured' if get_env_value('FASTVM_API_KEY') else '(not set)'}")
     elif terminal.get('backend') == 'ssh':
         ssh_host = get_env_value('TERMINAL_SSH_HOST')
         ssh_user = get_env_value('TERMINAL_SSH_USER')
@@ -5106,6 +5116,9 @@ def set_config_value(key: str, value: str):
         "terminal.modal_image": "TERMINAL_MODAL_IMAGE",
         "terminal.daytona_image": "TERMINAL_DAYTONA_IMAGE",
         "terminal.vercel_runtime": "TERMINAL_VERCEL_RUNTIME",
+        "terminal.fastvm_machine": "TERMINAL_FASTVM_MACHINE",
+        "terminal.fastvm_base_snapshot_id": "TERMINAL_FASTVM_BASE_SNAPSHOT_ID",
+        "terminal.fastvm_live_resume": "TERMINAL_FASTVM_LIVE_RESUME",
         "terminal.docker_mount_cwd_to_workspace": "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE",
         "terminal.docker_run_as_host_user": "TERMINAL_DOCKER_RUN_AS_HOST_USER",
         "terminal.docker_env": "TERMINAL_DOCKER_ENV",
@@ -5121,7 +5134,8 @@ def set_config_value(key: str, value: str):
         "terminal.container_persistent": "TERMINAL_CONTAINER_PERSISTENT",
     }
     if key in _config_to_env_sync:
-        save_env_value(_config_to_env_sync[key], str(value))
+        env_value = str(value).lower() if isinstance(value, bool) else str(value)
+        save_env_value(_config_to_env_sync[key], env_value)
 
     print(f"✓ Set {key} = {value} in {config_path}")
 

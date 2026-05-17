@@ -17,6 +17,9 @@ def _clear_terminal_env(monkeypatch):
         "TERMINAL_DOCKER_VOLUMES",
         "TERMINAL_LIFETIME_SECONDS",
         "TERMINAL_MODAL_MODE",
+        "TERMINAL_FASTVM_BASE_SNAPSHOT_ID",
+        "TERMINAL_FASTVM_LIVE_RESUME",
+        "TERMINAL_FASTVM_MACHINE",
         "TERMINAL_SSH_HOST",
         "TERMINAL_SSH_PORT",
         "TERMINAL_SSH_USER",
@@ -28,6 +31,7 @@ def _clear_terminal_env(monkeypatch):
         "VERCEL_TOKEN",
         "VERCEL_PROJECT_ID",
         "VERCEL_TEAM_ID",
+        "FASTVM_API_KEY",
         "HOME",
         "USERPROFILE",
     ]
@@ -314,3 +318,43 @@ def test_vercel_backend_rejects_malformed_disk_without_raising(monkeypatch, capl
         "Invalid value for TERMINAL_CONTAINER_DISK" in record.getMessage()
         for record in caplog.records
     )
+
+
+def test_fastvm_backend_without_sdk_logs_specific_error(monkeypatch, caplog):
+    _clear_terminal_env(monkeypatch)
+    monkeypatch.setenv("TERMINAL_ENV", "fastvm")
+    monkeypatch.setenv("FASTVM_API_KEY", "fv-key")
+    monkeypatch.setattr(terminal_tool_module.importlib.util, "find_spec", lambda name: None if name == "fastvm" else object())
+
+    with caplog.at_level(logging.ERROR):
+        ok = terminal_tool_module.check_terminal_requirements()
+
+    assert ok is False
+    assert any(
+        "fastvm is required for the FastVM terminal backend" in record.getMessage()
+        for record in caplog.records
+    )
+
+
+def test_fastvm_backend_without_api_key_logs_specific_error(monkeypatch, caplog):
+    _clear_terminal_env(monkeypatch)
+    monkeypatch.setenv("TERMINAL_ENV", "fastvm")
+    monkeypatch.setattr(terminal_tool_module.importlib.util, "find_spec", lambda _name: object())
+
+    with caplog.at_level(logging.ERROR):
+        ok = terminal_tool_module.check_terminal_requirements()
+
+    assert ok is False
+    assert any(
+        "FASTVM_API_KEY is not set" in record.getMessage()
+        for record in caplog.records
+    )
+
+
+def test_fastvm_backend_accepts_sdk_and_api_key(monkeypatch):
+    _clear_terminal_env(monkeypatch)
+    monkeypatch.setenv("TERMINAL_ENV", "fastvm")
+    monkeypatch.setenv("FASTVM_API_KEY", "fv-key")
+    monkeypatch.setattr(terminal_tool_module.importlib.util, "find_spec", lambda _name: object())
+
+    assert terminal_tool_module.check_terminal_requirements() is True
