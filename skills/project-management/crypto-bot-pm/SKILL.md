@@ -325,7 +325,9 @@ session-derived repair recipe, validator quartet, and reporting pattern. See
 inspection-first pattern and runner-label mismatch triage. See
 `references/dedicated-ci-runner-image.md` for the dedicated job image,
 act_runner job-container network requirement, rerun evidence sequence, and
-temporary-token hygiene.
+temporary-token hygiene. See `references/runner-networking-ci-recovery.md` for
+fail-closed repair/inspection of `actions/checkout` DNS failures caused by job
+containers not joining `crypto-bot-gitea-net`.
 
 Evidence issue statuses are `active`, `repair_attempted`, `repaired`,
 `invalidated`, and `superseded`. A dev13-005-style completion failure stays
