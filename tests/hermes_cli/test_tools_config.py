@@ -1,5 +1,6 @@
 """Tests for hermes_cli.tools_config platform tool persistence."""
 
+from copy import deepcopy
 from unittest.mock import patch
 
 import pytest
@@ -673,6 +674,121 @@ def test_first_install_nous_auto_configures_managed_defaults(monkeypatch):
     assert configured == []
 
 # ── Platform / toolset consistency ────────────────────────────────────────────
+
+
+def _run_tools_menu(monkeypatch, config, menu_choices, checklist_result, platforms=None):
+    save_calls = []
+    checklists = []
+    menu = iter(menu_choices)
+
+    monkeypatch.setattr(
+        "hermes_cli.tools_config._get_enabled_platforms",
+        lambda: platforms or ["cli"],
+    )
+
+    def fake_prompt_choice(question, choices, default=0, *, cancel_returns=None):
+        if question == "Select an option:":
+            assert cancel_returns == -1
+        return next(menu)
+
+    monkeypatch.setattr("hermes_cli.tools_config._prompt_choice", fake_prompt_choice)
+    monkeypatch.setattr(
+        "hermes_cli.tools_config._toolset_needs_configuration_prompt",
+        lambda ts_key, config: False,
+    )
+    monkeypatch.setattr(
+        "hermes_cli.tools_config.save_config",
+        lambda cfg: save_calls.append(deepcopy(cfg)),
+    )
+
+    def fake_checklist(*args, **kwargs):
+        checklists.append(args)
+        return checklist_result
+
+    monkeypatch.setattr("hermes_cli.tools_config._prompt_toolset_checklist", fake_checklist)
+    tools_command(config=config)
+    return save_calls, checklists
+
+
+def test_prompt_toolset_checklist_returns_none_on_interactive_cancel(monkeypatch):
+    import hermes_cli.tools_config as tc
+
+    def fake_checklist(title, items, selected, *, cancel_returns=None, status_fn=None):
+        return cancel_returns
+
+    monkeypatch.setattr("hermes_cli.curses_ui.curses_checklist", fake_checklist)
+
+    with patch("sys.stdin") as mock_stdin:
+        mock_stdin.isatty.return_value = True
+        assert tc._prompt_toolset_checklist("CLI", {"web"}, "cli") is None
+
+
+def test_tools_command_top_level_esc_exits_without_entering_platform(monkeypatch):
+    config = {"platform_toolsets": {"cli": ["web", "browser"]}}
+    save_calls, checklists = _run_tools_menu(monkeypatch, config, [-1], {"web"})
+
+    assert checklists == []
+    assert save_calls == []
+
+
+def test_tools_command_cancel_paths_are_non_mutating(monkeypatch):
+    config = {"platform_toolsets": {"cli": ["web", "browser", "kanban"]}}
+    original = deepcopy(config)
+    save_calls, checklists = _run_tools_menu(monkeypatch, config, [0, -1], None)
+
+    assert config == original
+    assert len(checklists) == 1
+    assert save_calls == []
+
+
+def test_tools_command_hidden_toolset_does_not_force_save(monkeypatch):
+    config = {"platform_toolsets": {"cli": ["web", "browser", "kanban"]}}
+    original = deepcopy(config)
+    save_calls, _ = _run_tools_menu(monkeypatch, config, [0, -1], {"web", "browser"})
+
+    assert config == original
+    assert save_calls == []
+
+
+def test_tools_command_visible_toggle_preserves_hidden_and_saves_once(monkeypatch):
+    config = {"platform_toolsets": {"cli": ["web", "kanban"]}}
+    save_calls, _ = _run_tools_menu(monkeypatch, config, [0, -1], {"web", "terminal"})
+
+    saved = set(config["platform_toolsets"]["cli"])
+    assert {"web", "terminal", "kanban"}.issubset(saved)
+    assert len(save_calls) == 1
+
+
+def test_tools_command_all_platform_cancel_and_change(monkeypatch):
+    config = {
+        "platform_toolsets": {
+            "cli": ["web", "kanban"],
+            "telegram": ["web", "kanban"],
+        }
+    }
+    original = deepcopy(config)
+    save_calls, _ = _run_tools_menu(
+        monkeypatch,
+        config,
+        [2, -1],
+        None,
+        platforms=["cli", "telegram"],
+    )
+    assert config == original
+    assert save_calls == []
+
+    save_calls, _ = _run_tools_menu(
+        monkeypatch,
+        config,
+        [2, -1],
+        {"web", "terminal"},
+        platforms=["cli", "telegram"],
+    )
+
+    for platform in ("cli", "telegram"):
+        saved = set(config["platform_toolsets"][platform])
+        assert {"web", "terminal", "kanban"}.issubset(saved)
+    assert len(save_calls) == 1
 
 
 class TestPlatformToolsetConsistency:

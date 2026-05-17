@@ -1281,7 +1281,13 @@ def _get_platform_tools(
     return enabled_toolsets
 
 
-def _save_platform_tools(config: dict, platform: str, enabled_toolset_keys: Set[str]):
+def _save_platform_tools(
+    config: dict,
+    platform: str,
+    enabled_toolset_keys: Set[str],
+    *,
+    persist: bool = True,
+):
     """Save the selected toolset keys for a platform to config.
 
     Preserves any non-configurable toolset entries (like MCP server names)
@@ -1334,7 +1340,8 @@ def _save_platform_tools(config: dict, platform: str, enabled_toolset_keys: Set[
         config.setdefault("known_plugin_toolsets", {})
         config["known_plugin_toolsets"][platform] = sorted(plugin_keys)
 
-    save_config(config)
+    if persist:
+        save_config(config)
 
 
 def _toolset_has_keys(ts_key: str, config: dict = None) -> bool:
@@ -1377,10 +1384,23 @@ def _toolset_has_keys(ts_key: str, config: dict = None) -> bool:
 
 # ─── Menu Helpers ─────────────────────────────────────────────────────────────
 
-def _prompt_choice(question: str, choices: list, default: int = 0) -> int:
+def _prompt_choice(
+    question: str,
+    choices: list,
+    default: int = 0,
+    *,
+    cancel_returns: int | None = None,
+) -> int:
     """Single-select menu (arrow keys). Delegates to curses_radiolist."""
     from hermes_cli.curses_ui import curses_radiolist
-    return curses_radiolist(question, choices, selected=default, cancel_returns=default)
+    if cancel_returns is None:
+        cancel_returns = default
+    return curses_radiolist(
+        question,
+        choices,
+        selected=default,
+        cancel_returns=cancel_returns,
+    )
 
 
 # ─── Token Estimation ────────────────────────────────────────────────────────
@@ -1431,8 +1451,19 @@ def _estimate_tool_tokens() -> Dict[str, int]:
     return _tool_token_cache
 
 
-def _prompt_toolset_checklist(platform_label: str, enabled: Set[str], platform: str = "cli") -> Set[str]:
-    """Multi-select checklist of toolsets. Returns set of selected toolset keys."""
+_CHECKLIST_CANCELLED = object()
+
+
+def _prompt_toolset_checklist(
+    platform_label: str,
+    enabled: Set[str],
+    platform: str = "cli",
+) -> Optional[Set[str]]:
+    """Multi-select checklist of toolsets.
+
+    Returns the visible/configurable selected toolset keys, or ``None`` when
+    the user cancels from an interactive checklist.
+    """
     from hermes_cli.curses_ui import curses_checklist
     from toolsets import resolve_toolset
 
@@ -1473,14 +1504,30 @@ def _prompt_toolset_checklist(platform_label: str, enabled: Set[str], platform: 
                 return f"Est. tool context: ~{total / 1000:.1f}k tokens"
             return f"Est. tool context: ~{total} tokens"
 
+    cancel_returns = _CHECKLIST_CANCELLED if sys.stdin.isatty() else pre_selected
     chosen = curses_checklist(
         f"Tools for {platform_label}",
         labels,
         pre_selected,
-        cancel_returns=pre_selected,
+        cancel_returns=cancel_returns,
         status_fn=status_fn,
     )
+    if chosen is _CHECKLIST_CANCELLED:
+        return None
     return {effective[i][0] for i in chosen}
+
+
+def _merge_visible_toolset_selection(
+    platform: str,
+    current_enabled: Set[str],
+    selected_visible: Set[str],
+) -> Set[str]:
+    configurable = {
+        ts_key
+        for ts_key, _, _ in _get_effective_configurable_toolsets()
+        if _toolset_allowed_for_platform(ts_key, platform)
+    }
+    return (current_enabled - configurable) | (selected_visible & configurable)
 
 
 # ─── Provider-Aware Configuration ────────────────────────────────────────────
@@ -2745,7 +2792,20 @@ def tools_command(args=None, first_install: bool = False, config: dict = None):
             checklist_preselected = current_enabled - _DEFAULT_OFF_TOOLSETS
 
             # Show checklist
-            new_enabled = _prompt_toolset_checklist(pinfo["label"], checklist_preselected, pkey)
+            selected_visible = _prompt_toolset_checklist(
+                pinfo["label"],
+                checklist_preselected,
+                pkey,
+            )
+            if selected_visible is None:
+                print(color(f"  Cancelled {pinfo['label']} tool configuration", Colors.DIM))
+                print()
+                return
+            new_enabled = _merge_visible_toolset_selection(
+                pkey,
+                current_enabled,
+                selected_visible,
+            )
 
             added = new_enabled - current_enabled
             removed = current_enabled - new_enabled
@@ -2788,7 +2848,7 @@ def tools_command(args=None, first_install: bool = False, config: dict = None):
                 for ts_key in to_configure:
                     _configure_toolset(ts_key, config)
 
-            _save_platform_tools(config, pkey, new_enabled)
+            _save_platform_tools(config, pkey, new_enabled, persist=False)
             save_config(config)
             print(color(f"  ✓ Saved {pinfo['label']} tool configuration", Colors.GREEN))
             print()
@@ -2825,10 +2885,15 @@ def tools_command(args=None, first_install: bool = False, config: dict = None):
     _done_idx = _reconfig_idx + (2 if _has_mcp else 1)
 
     while True:
-        idx = _prompt_choice("Select an option:", platform_choices, default=0)
+        idx = _prompt_choice(
+            "Select an option:",
+            platform_choices,
+            default=0,
+            cancel_returns=-1,
+        )
 
         # "Done" selected
-        if idx == _done_idx:
+        if idx in {-1, _done_idx}:
             break
 
         # "Reconfigure" selected
@@ -2849,27 +2914,39 @@ def tools_command(args=None, first_install: bool = False, config: dict = None):
             all_current = set()
             for pk in platform_keys:
                 all_current |= _get_platform_tools(config, pk, include_default_mcp_servers=False)
-            new_enabled = _prompt_toolset_checklist("All platforms", all_current)
-            if new_enabled != all_current:
-                for pk in platform_keys:
-                    prev = _get_platform_tools(config, pk, include_default_mcp_servers=False)
-                    added = new_enabled - prev
-                    removed = prev - new_enabled
-                    pinfo_inner = PLATFORMS[pk]
-                    if added or removed:
-                        print(color(f"  {pinfo_inner['label']}:", Colors.DIM))
-                        for ts in sorted(added):
-                            label = next((l for k, l, _ in _get_effective_configurable_toolsets() if k == ts), ts)
-                            print(color(f"    + {label}", Colors.GREEN))
-                        for ts in sorted(removed):
-                            label = next((l for k, l, _ in _get_effective_configurable_toolsets() if k == ts), ts)
-                            print(color(f"    - {label}", Colors.RED))
-                    # Configure API keys for newly enabled tools
-                    for ts_key in sorted(added):
-                        if (TOOL_CATEGORIES.get(ts_key) or TOOLSET_ENV_REQUIREMENTS.get(ts_key)):
-                            if _toolset_needs_configuration_prompt(ts_key, config):
-                                _configure_toolset(ts_key, config)
-                    _save_platform_tools(config, pk, new_enabled)
+            selected_visible = _prompt_toolset_checklist("All platforms", all_current)
+            if selected_visible is None:
+                print(color("  Cancelled all-platform tool configuration", Colors.DIM))
+                print()
+                continue
+
+            changed = False
+            for pk in platform_keys:
+                prev = _get_platform_tools(config, pk, include_default_mcp_servers=False)
+                new_enabled = _merge_visible_toolset_selection(pk, prev, selected_visible)
+                if new_enabled == prev:
+                    continue
+
+                changed = True
+                added = new_enabled - prev
+                removed = prev - new_enabled
+                pinfo_inner = PLATFORMS[pk]
+                if added or removed:
+                    print(color(f"  {pinfo_inner['label']}:", Colors.DIM))
+                    for ts in sorted(added):
+                        label = next((l for k, l, _ in _get_effective_configurable_toolsets() if k == ts), ts)
+                        print(color(f"    + {label}", Colors.GREEN))
+                    for ts in sorted(removed):
+                        label = next((l for k, l, _ in _get_effective_configurable_toolsets() if k == ts), ts)
+                        print(color(f"    - {label}", Colors.RED))
+                # Configure API keys for newly enabled tools
+                for ts_key in sorted(added):
+                    if (TOOL_CATEGORIES.get(ts_key) or TOOLSET_ENV_REQUIREMENTS.get(ts_key)):
+                        if _toolset_needs_configuration_prompt(ts_key, config):
+                            _configure_toolset(ts_key, config)
+                _save_platform_tools(config, pk, new_enabled, persist=False)
+
+            if changed:
                 save_config(config)
                 print(color("  ✓ Saved configuration for all platforms", Colors.GREEN))
                 # Update choice labels
@@ -2889,7 +2966,16 @@ def tools_command(args=None, first_install: bool = False, config: dict = None):
         current_enabled = _get_platform_tools(config, pkey, include_default_mcp_servers=False)
 
         # Show checklist
-        new_enabled = _prompt_toolset_checklist(pinfo["label"], current_enabled)
+        selected_visible = _prompt_toolset_checklist(pinfo["label"], current_enabled, pkey)
+        if selected_visible is None:
+            print(color(f"  Cancelled {pinfo['label']} tool configuration", Colors.DIM))
+            print()
+            continue
+        new_enabled = _merge_visible_toolset_selection(
+            pkey,
+            current_enabled,
+            selected_visible,
+        )
 
         if new_enabled != current_enabled:
             added = new_enabled - current_enabled
@@ -2910,7 +2996,7 @@ def tools_command(args=None, first_install: bool = False, config: dict = None):
                     if _toolset_needs_configuration_prompt(ts_key, config):
                         _configure_toolset(ts_key, config)
 
-            _save_platform_tools(config, pkey, new_enabled)
+            _save_platform_tools(config, pkey, new_enabled, persist=False)
             save_config(config)
             print(color(f"  ✓ Saved {pinfo['label']} configuration", Colors.GREEN))
         else:
