@@ -618,6 +618,7 @@ class TestRunAgentMultimodalHelpers:
         from run_agent import AIAgent
 
         agent = object.__new__(AIAgent)
+        agent.provider = "openrouter"
         result = {
             "_multimodal": True,
             "content": [
@@ -626,11 +627,42 @@ class TestRunAgentMultimodalHelpers:
             ],
         }
 
-        with patch.object(agent, "_model_supports_vision", return_value=True):
+        with patch.object(agent, "_model_supports_vision", return_value=True), \
+             patch.object(agent, "_provider_supports_multimodal_tool_content", return_value=True):
             content = agent._tool_result_content_for_active_model("computer_use", result)
 
         assert content is result["content"]
         assert any(part.get("type") == "image_url" for part in content)
+
+    def test_computer_use_image_result_downgraded_for_vision_model_without_tool_support(self):
+        """Vision-capable model whose provider doesn't support multimodal tool content.
+
+        Regression test for #27344: MiMo supports images in user messages but
+        requires string content in tool messages.  The multimodal image should
+        be downgraded to text_summary, not passed through as a list.
+        """
+        from run_agent import AIAgent
+
+        agent = object.__new__(AIAgent)
+        agent.provider = "xiaomi"
+        agent.model = "mimo-v2.5"
+        result = {
+            "_multimodal": True,
+            "content": [
+                {"type": "text", "text": "screen captured"},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,x"}},
+            ],
+            "text_summary": "screen captured summary",
+        }
+
+        with patch.object(agent, "_model_supports_vision", return_value=True), \
+             patch.object(agent, "_provider_supports_multimodal_tool_content", return_value=False):
+            content = agent._tool_result_content_for_active_model("computer_use", result)
+
+        # Should NOT contain image_url — must be downgraded to error + text_summary
+        parsed = json.loads(content)
+        assert "computer_use returned screenshot/image content" in parsed["error"]
+        assert "image_url" not in str(content)
 
     def test_other_multimodal_tool_uses_text_summary_for_text_only_model(self):
         from run_agent import AIAgent

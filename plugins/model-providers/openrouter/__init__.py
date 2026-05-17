@@ -103,6 +103,7 @@ openrouter = OpenRouterProfile(
     signup_url="https://openrouter.ai/keys",
     base_url="https://openrouter.ai/api/v1",
     models_url="https://openrouter.ai/api/v1/models",
+    supports_multimodal_tool_content=True,
     fallback_models=(
         "anthropic/claude-sonnet-4.6",
         "openai/gpt-5.4",

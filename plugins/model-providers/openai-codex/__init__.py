@@ -10,6 +10,7 @@ openai_codex = ProviderProfile(
     env_vars=(),  # OAuth external — no API key
     base_url="https://chatgpt.com/backend-api/codex",
     auth_type="oauth_external",
+    supports_multimodal_tool_content=True,
 )
 
 register_provider(openai_codex)

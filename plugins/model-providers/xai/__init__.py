@@ -10,6 +10,7 @@ xai = ProviderProfile(
     env_vars=("XAI_API_KEY",),
     base_url="https://api.x.ai/v1",
     auth_type="api_key",
+    supports_multimodal_tool_content=True,
 )
 
 register_provider(xai)

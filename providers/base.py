@@ -68,6 +68,13 @@ class ProviderProfile:
     # ── Client-level quirks (set once at client construction) ─
     default_headers: dict[str, str] = field(default_factory=dict)
 
+    # Whether the provider accepts multimodal content (list of text + image_url
+    # parts) inside ``role: "tool"`` messages.  Most OpenAI-compatible providers
+    # only accept plain-string content for tool messages even when they support
+    # images in user messages.  Default False — only providers known to support
+    # it should set True (e.g. Anthropic, OpenAI GPT-4o).
+    supports_multimodal_tool_content: bool = False
+
     # ── Request-level quirks ─────────────────────────────────
     # Temperature: None = use caller's default, OMIT_TEMPERATURE = don't send
     fixed_temperature: Any = None

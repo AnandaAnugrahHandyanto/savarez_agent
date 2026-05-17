@@ -47,6 +47,7 @@ anthropic = AnthropicProfile(
     base_url="https://api.anthropic.com",
     auth_type="api_key",
     default_aux_model="claude-haiku-4-5-20251001",
+    supports_multimodal_tool_content=True,
 )
 
 register_provider(anthropic)

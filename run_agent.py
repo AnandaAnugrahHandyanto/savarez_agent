@@ -3182,6 +3182,24 @@ class AIAgent:
         except Exception:
             return False
 
+    def _provider_supports_multimodal_tool_content(self) -> bool:
+        """Return True if the provider accepts multimodal content in tool messages.
+
+        Many providers support images in user messages but require string-only
+        content in ``role: "tool"`` messages.  This checks the provider profile
+        flag; defaults to True for known multimodal-friendly providers
+        (OpenAI, Anthropic) and False otherwise.  See #27344.
+        """
+        try:
+            from providers import get_provider_profile
+            profile = get_provider_profile(self.provider)
+            if profile is not None:
+                return bool(profile.supports_multimodal_tool_content)
+        except Exception:
+            pass
+        # Conservative default: assume no multimodal tool support unless declared.
+        return False
+
     def _preprocess_anthropic_content(self, content: Any, role: str) -> Any:
         if not self._content_has_image_parts(content):
             return content
@@ -3321,7 +3339,12 @@ class AIAgent:
             return content
 
         if self._model_supports_vision():
-            return content
+            # Even if the model supports images in user messages, the provider
+            # may not accept multimodal content (list of text+image parts) inside
+            # tool-role messages.  Check the provider profile flag; fall back to
+            # text summary when not supported.  (#27344)
+            if self._provider_supports_multimodal_tool_content():
+                return content
 
         summary = _multimodal_text_summary(result)
         if tool_name == "computer_use":
