@@ -86,12 +86,13 @@ def adapter(monkeypatch):
     return adapter
 
 
-def make_message(*, channel, content: str, mentions=None):
+def make_message(*, channel, content: str, mentions=None, role_mentions=None):
     author = SimpleNamespace(id=42, display_name="TestUser", name="TestUser")
     return SimpleNamespace(
         id=123,
         content=content,
         mentions=list(mentions or []),
+        role_mentions=list(role_mentions or []),
         attachments=[],
         reference=None,
         created_at=datetime.now(timezone.utc),
@@ -144,6 +145,47 @@ async def test_non_ignored_channel_processes_normally(adapter, monkeypatch):
     await adapter._handle_message(message)
 
     adapter.handle_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_configured_role_mention_satisfies_require_mention(adapter, monkeypatch):
+    """Opt-in role mentions can act as bot mention aliases."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_MENTION_ROLE_IDS", "1504407943003639891")
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+
+    role = SimpleNamespace(id=1504407943003639891)
+    message = make_message(
+        channel=FakeTextChannel(channel_id=700),
+        content="<@&1504407943003639891> fix bug",
+        role_mentions=[role],
+    )
+
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.text == "fix bug"
+    assert message.content == "fix bug"
+
+
+@pytest.mark.asyncio
+async def test_unconfigured_role_mention_does_not_satisfy_require_mention(adapter, monkeypatch):
+    """Unconfigured role pings must not wake the bot."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_MENTION_ROLE_IDS", "1504407943003639891")
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+
+    role = SimpleNamespace(id=999)
+    message = make_message(
+        channel=FakeTextChannel(channel_id=700),
+        content="<@&999> fix bug",
+        role_mentions=[role],
+    )
+
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_not_awaited()
 
 
 @pytest.mark.asyncio
