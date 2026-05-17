@@ -728,13 +728,16 @@ def read_claude_code_credentials() -> Optional[Dict[str, Any]]:
 
     Returns dict with {accessToken, refreshToken?, expiresAt?} or None.
     """
-    # Try macOS Keychain first (covers Claude Code >=2.1.114)
-    kc_creds = _read_claude_code_credentials_from_keychain()
-    if kc_creds:
-        return kc_creds
-
     # Fall back to JSON file
     cred_path = Path.home() / ".claude" / ".credentials.json"
+    if cred_path == Path(os.path.expanduser("~")) / ".claude" / ".credentials.json":
+        # Try macOS Keychain first (covers Claude Code >=2.1.114).  When tests
+        # or callers sandbox Path.home(), do not pierce that sandbox by reading
+        # host Keychain credentials.
+        kc_creds = _read_claude_code_credentials_from_keychain()
+        if kc_creds:
+            return kc_creds
+
     if cred_path.exists():
         try:
             data = json.loads(cred_path.read_text(encoding="utf-8"))
@@ -2082,5 +2085,4 @@ def build_anthropic_kwargs(
         kwargs["extra_headers"] = {"anthropic-beta": ",".join(betas)}
 
     return kwargs
-
 

@@ -108,6 +108,7 @@ class TestReadClaudeCodeCredentialsPriority:
             }
         }))
         monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
+        monkeypatch.setattr("agent.anthropic_adapter.os.path.expanduser", lambda path: str(tmp_path) if path == "~" else path)
 
         # Mock Keychain to return a "newer" token
         with patch("agent.anthropic_adapter.platform.system", return_value="Darwin"), \
