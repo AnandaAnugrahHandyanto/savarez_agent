@@ -27,6 +27,7 @@ import logging
 import os
 import re
 import shutil
+import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Optional
@@ -288,3 +289,145 @@ def extract_session_id(events: list[dict[str, Any]]) -> Optional[str]:
             if isinstance(sid, str) and sid:
                 return sid
     return None
+
+
+@dataclass
+class ProbeConfig:
+    """Inputs for a probe run."""
+
+    min_version: tuple[int, int, int]
+    cache_path: Path
+    adapter_code_version: str
+    binary_path: Optional[str] = None
+    require_token: bool = True
+    strip_env: tuple[str, ...] = ()
+    cache_ttl_seconds: float = 86400.0
+    provider_config_hash: str = ""
+    settings_schema_version: str = "0.1.0"
+    mcp_config_hash: str = ""
+
+
+async def _get_version_from_binary(binary: str) -> tuple[int, int, int]:
+    """Spawn `claude --version` and parse the result."""
+    proc = await asyncio.create_subprocess_exec(
+        binary, "--version",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout_data, stderr_data = await asyncio.wait_for(proc.communicate(), timeout=10)
+    if proc.returncode != 0:
+        raise errors.ClaudeCliIncompatible(
+            f"`{binary} --version` exited {proc.returncode}; "
+            f"stderr: {stderr_data.decode()[:200]}"
+        )
+    return parse_version_string(stdout_data.decode())
+
+
+async def run_probe(config: ProbeConfig) -> ProbeResult:
+    """Run the full compatibility probe and return a persistable result.
+
+    Steps (in order):
+      1. discover_binary
+      2. compute_binary_hash
+      3. check_env_hygiene
+      4. compute cache_key from CacheKeyInputs
+      5. if cache_path is fresh AND matches cache_key, return cached result
+      6. otherwise: get version, check_version, run runtime assertions
+      7. persist result to cache_path
+
+    Returns a ProbeResult with ok=True on success or ok=False with .error set.
+    Does NOT raise; the caller (adapter init) inspects .ok and decides.
+    """
+    try:
+        binary = discover_binary(config.binary_path)
+        binary_hash = compute_binary_hash(binary)
+        env = check_env_hygiene(
+            dict(os.environ),
+            require_token=config.require_token,
+            strip_env=list(config.strip_env),
+        )
+        env_hygiene_state = "stripped:" + ",".join(
+            sorted(set(_DEFAULT_STRIP_ENV) | set(config.strip_env))
+        )
+        # Attempt cache hit before running any expensive assertions.
+        cached = load_cache(config.cache_path)
+        if cached is not None:
+            age = time.time() - cached.timestamp
+            if age < config.cache_ttl_seconds:
+                # Cache key matches if binary_hash matches and adapter_code_version matches.
+                # The version is captured in cached.version; we recompute the key.
+                key_inputs = CacheKeyInputs(
+                    binary_hash=binary_hash,
+                    version=cached.version,
+                    provider_config_hash=config.provider_config_hash,
+                    settings_schema_version=config.settings_schema_version,
+                    mcp_config_hash=config.mcp_config_hash,
+                    env_hygiene_state=env_hygiene_state,
+                    adapter_code_version=config.adapter_code_version,
+                )
+                if cache_key(key_inputs) == cached.cache_key:
+                    logger.debug("probe cache hit (age=%.0fs)", age)
+                    return cached
+        version = await _get_version_from_binary(binary)
+        check_version(version, min_version=config.min_version)
+        assertions = await _run_basic_invocation_assertion(binary, env)
+        key_inputs = CacheKeyInputs(
+            binary_hash=binary_hash,
+            version=version,
+            provider_config_hash=config.provider_config_hash,
+            settings_schema_version=config.settings_schema_version,
+            mcp_config_hash=config.mcp_config_hash,
+            env_hygiene_state=env_hygiene_state,
+            adapter_code_version=config.adapter_code_version,
+        )
+        result = ProbeResult(
+            cache_key=cache_key(key_inputs),
+            binary_path=binary,
+            version=version,
+            timestamp=time.time(),
+            ok=True,
+            assertions=assertions,
+            error=None,
+        )
+        save_cache(result, config.cache_path)
+        return result
+    except errors.ClaudeCliError as exc:
+        return ProbeResult(
+            cache_key="",
+            binary_path=config.binary_path or "",
+            version=(0, 0, 0),
+            timestamp=time.time(),
+            ok=False,
+            assertions={},
+            error=f"{type(exc).__name__}: {exc}",
+        )
+
+
+def _main() -> int:
+    """CLI entry point: run the probe and print the result as JSON."""
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Run the Claude Code CLI compatibility probe")
+    parser.add_argument("--cache-path", default=str(Path.home() / ".hermes/cache/claude_cli_probe.json"))
+    parser.add_argument("--min-version", default="2.1.143")
+    parser.add_argument("--binary-path", default=None)
+    parser.add_argument("--no-cache", action="store_true")
+    args = parser.parse_args()
+
+    min_ver = parse_version_string(args.min_version)
+    config = ProbeConfig(
+        min_version=min_ver,
+        cache_path=Path(args.cache_path),
+        adapter_code_version="0.1.0",
+        binary_path=args.binary_path,
+        cache_ttl_seconds=0 if args.no_cache else 86400.0,
+    )
+    result = asyncio.run(run_probe(config))
+    payload = asdict(result)
+    payload["version"] = list(result.version)
+    print(json.dumps(payload, indent=2))
+    return 0 if result.ok else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(_main())
