@@ -1305,6 +1305,7 @@ def init_agent(
             api_mode=agent.api_mode,
         )
     agent.compression_enabled = compression_enabled
+    agent._emergency_compression_count = 0
 
     # Reject models whose context window is below the minimum required
     # for reliable tool-calling workflows (64K tokens).
