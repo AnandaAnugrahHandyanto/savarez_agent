@@ -6,13 +6,13 @@
  * advanced users can still see what the current agent turn is doing.
  */
 
-import { Badge } from "@nous-research/ui/ui/components/badge";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { AlertCircle, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 
 import { ChatSessionNavigator } from "@/components/ChatSessionNavigator";
 import { ToolCall, type ToolEntry } from "@/components/ToolCall";
+import type { EventsState } from "@/components/chat-events-status";
 import { Card } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 
@@ -21,42 +21,29 @@ interface RpcEnvelope {
   params?: { type?: string; payload?: unknown };
 }
 
-type EventsState = "connecting" | "live" | "closed" | "error";
-
 const TOOL_LIMIT = 20;
-
-const EVENTS_LABEL: Record<EventsState, string> = {
-  connecting: "events",
-  live: "live",
-  closed: "closed",
-  error: "error",
-};
-
-const EVENTS_TONE: Record<
-  EventsState,
-  "secondary" | "warning" | "success" | "destructive"
-> = {
-  connecting: "warning",
-  live: "success",
-  closed: "secondary",
-  error: "destructive",
-};
 
 interface ChatSidebarProps {
   channel: string;
   activeSessionId?: string | null;
   className?: string;
+  onEventsStateChange?: (state: EventsState) => void;
 }
 
 export function ChatSidebar({
   channel,
   activeSessionId = null,
   className,
+  onEventsStateChange,
 }: ChatSidebarProps) {
   const [version, setVersion] = useState(0);
   const [eventsState, setEventsState] = useState<EventsState>("connecting");
   const [tools, setTools] = useState<ToolEntry[]>([]);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    onEventsStateChange?.(eventsState);
+  }, [eventsState, onEventsStateChange]);
 
   useEffect(() => {
     const token = window.__HERMES_SESSION_TOKEN__;
@@ -231,9 +218,6 @@ export function ChatSidebar({
           <div className="text-xs uppercase tracking-wider text-muted-foreground">
             tools
           </div>
-          <Badge tone={EVENTS_TONE[eventsState]}>
-            {EVENTS_LABEL[eventsState]}
-          </Badge>
         </div>
 
         <div className="flex min-h-0 flex-col gap-1.5">

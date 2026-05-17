@@ -22,16 +22,22 @@ import { WebLinksAddon } from "@xterm/addon-web-links";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
+import { Badge } from "@nous-research/ui/ui/components/badge";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Typography } from "@/components/NouiTypography";
 import { cn } from "@/lib/utils";
 import { Copy, FileUp, Loader2, PanelRight, SendHorizontal, X } from "lucide-react";
-import { type DragEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type DragEvent, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useSearchParams } from "react-router-dom";
 
 import { ChatModelControl } from "@/components/ChatModelControl";
 import { ChatSidebar } from "@/components/ChatSidebar";
+import {
+  EVENTS_LABEL,
+  EVENTS_TONE,
+  type EventsState,
+} from "@/components/chat-events-status";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { useI18n } from "@/i18n";
 import { api } from "@/lib/api";
@@ -219,7 +225,8 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   // tabs because the dep wouldn't change on tab switch.
   const [mobilePanelOpenRaw, setMobilePanelOpenRaw] = useState(false);
   const mobilePanelOpen = isActive && mobilePanelOpenRaw;
-  const { setEnd } = usePageHeader();
+  const [eventsState, setEventsState] = useState<EventsState>("connecting");
+  const { setAfterTitle, setEnd } = usePageHeader();
   const { t } = useI18n();
   const closeMobilePanel = useCallback(() => setMobilePanelOpenRaw(false), []);
   const modelToolsLabel = "Sessions and tools";
@@ -243,6 +250,24 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     () => `${generateChannelId()}-${resumeParam ? "resume" : "new"}`,
     [resumeParam],
   );
+
+  useLayoutEffect(() => {
+    if (!isActive) {
+      setAfterTitle(null);
+      return;
+    }
+
+    setAfterTitle(
+      <Badge
+        tone={EVENTS_TONE[eventsState]}
+        className="shrink-0 px-2 py-0.5 text-[10px] tracking-[0.12em]"
+      >
+        {EVENTS_LABEL[eventsState]}
+      </Badge>,
+    );
+
+    return () => setAfterTitle(null);
+  }, [eventsState, isActive, setAfterTitle]);
 
   useEffect(() => {
     if (!resumeParam) return;
@@ -1000,7 +1025,11 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
               "border-t border-current/10",
             )}
           >
-            <ChatSidebar channel={channel} activeSessionId={resumeParam} />
+            <ChatSidebar
+              channel={channel}
+              activeSessionId={resumeParam}
+              onEventsStateChange={setEventsState}
+            />
           </div>
         </div>
       </>,
@@ -1188,7 +1217,11 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
             className="flex min-h-0 shrink-0 flex-col overflow-hidden lg:h-full lg:w-72"
           >
             <div className="min-h-0 flex-1 overflow-hidden">
-              <ChatSidebar channel={channel} activeSessionId={resumeParam} />
+              <ChatSidebar
+                channel={channel}
+                activeSessionId={resumeParam}
+                onEventsStateChange={setEventsState}
+              />
             </div>
           </div>
         )}
