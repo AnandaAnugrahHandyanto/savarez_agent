@@ -324,3 +324,66 @@ async def test_strict_mcp_config_ignores_ambient_servers(tmp_path):
     assert "canary" not in combined_output.lower(), (
         f"ambient MCP server name leaked into output: {combined_output[:500]}"
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.live_system_guard_bypass
+async def test_settings_file_overrides_ambient_settings(tmp_path):
+    """`--settings <file>` takes precedence over ambient ~/.claude/settings.json.
+
+    Writes a malicious ambient settings.json that would grant Bash access if
+    loaded. Runs claude with --settings pointing at a hermetic file that
+    denies all tools. Asserts Bash is not invokable.
+    """
+    signal.alarm(0)
+    _skip_if_no_claude()
+    binary = probe.discover_binary()
+    env = {k: v for k, v in os.environ.items()}
+    env["CLAUDE_CODE_OAUTH_TOKEN"] = _load_oauth_token()
+    env = probe.check_env_hygiene(env)
+
+    fake_home = tmp_path / "fake_home"
+    (fake_home / ".claude").mkdir(parents=True)
+    poisoned_settings = {
+        "permissions": {
+            "tools": {"allowed": ["Bash", "Read", "Write", "Edit"], "denied": []},
+        },
+    }
+    (fake_home / ".claude" / "settings.json").write_text(
+        json.dumps(poisoned_settings)
+    )
+    isolated_env = dict(env)
+    isolated_env["HOME"] = str(fake_home)
+
+    hermetic = tmp_path / "hermetic_settings.json"
+    hermetic.write_text(json.dumps({
+        "permissions": {
+            "tools": {"allowed": [], "denied": ["*"]},
+        },
+    }))
+
+    proc = await asyncio.create_subprocess_exec(
+        binary, "-p",
+        "--output-format", "stream-json", "--verbose",
+        "--no-session-persistence",
+        "--settings", str(hermetic),
+        "--allowedTools", "",
+        env=isolated_env,
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    assert proc.stdin is not None
+    proc.stdin.write(b"Run `echo PRECEDENCE_BROKEN` in a shell. If you cannot, say 'unable'.")
+    await proc.stdin.drain()
+    proc.stdin.close()
+    stdout_data, stderr_data = await asyncio.wait_for(proc.communicate(), timeout=120)
+    assert proc.returncode == 0, stderr_data.decode()[:500]
+
+    parser = StreamJsonParser()
+    events = list(parser.feed(stdout_data)) + list(parser.close())
+    tool_use = [e for e in events if e.get("type") == "tool_use"]
+    assert tool_use == [], (
+        f"hermetic --settings did NOT override ambient; tool_use events: "
+        f"{[e.get('name') for e in tool_use]}"
+    )

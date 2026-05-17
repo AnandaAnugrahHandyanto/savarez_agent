@@ -65,3 +65,14 @@ Conclusion: `session_id` is a reliable top-level field on all stream-json events
 - Sample stderr (first 200 bytes if anything notable): b'' (empty on both runs — no warnings, banners, or debug logs)
 
 Conclusion: Both v1 default-deny posture canaries hold on claude 2.1.143; `--allowedTools ""` fully blocks built-in tool use and `--strict-mcp-config` + empty `--mcp-config` provides hermetic MCP server isolation when HOME is controlled.
+
+## Task 11: hermetic settings precedence
+
+- Test: `tests/e2e/test_claude_cli_probe.py::test_settings_file_overrides_ambient_settings`
+- Result: PASS
+- `--settings <file>` overrides ambient ~/.claude/settings.json: yes — zero `tool_use` events emitted even though the poisoned ambient settings.json declared `{"allowed": ["Bash","Read","Write","Edit"], "denied": []}`. The hermetic file (`{"allowed": [], "denied": ["*"]}`) took precedence; the model responded with "unable" text rather than attempting a Bash tool call.
+- Permissions schema used in the hermetic file: `{"permissions": {"tools": {"allowed": [], "denied": ["*"]}}}`
+- Notes on `--setting-sources` (if you tested it): not tested in this task
+- Wall time: ~7.9 seconds
+
+Conclusion: `--settings <file>` reliably overrides ambient `~/.claude/settings.json` on claude 2.1.143; the v1 hermetic-config posture is validated.
