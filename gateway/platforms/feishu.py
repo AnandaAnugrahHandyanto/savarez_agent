@@ -163,6 +163,11 @@ _MENTION_RE = re.compile(r"@_user_\d+")
 _MARKDOWN_IMAGE_RE = re.compile(r"!\[([^\]]*)\]\(([^)\s]+)\)")
 _MULTISPACE_RE = re.compile(r"[ \t]{2,}")
 _POST_CONTENT_INVALID_RE = re.compile(r"content format of the post type is incorrect", re.IGNORECASE)
+# Interactive card hints: JSON objects with "elements" or "config" keys
+_CARD_JSON_HINT_RE = re.compile(r'^\s*\{\s*"(?:config|elements|header)"')
+# Card image placeholder — "img_url" signals that the image should be
+# downloaded, uploaded to Feishu, and replaced with a real "img_key".
+_CARD_IMAGE_URL_RE = re.compile(r'"img_url"\s*:\s*"(https?://[^"]+)"')
 # ---------------------------------------------------------------------------
 # Media type sets and upload constants
 # ---------------------------------------------------------------------------
@@ -4333,13 +4338,79 @@ class FeishuAdapter(BasePlatformAdapter):
             ensure_ascii=False,
         )
 
+    async def _process_card_images(self, card_json: str) -> str:
+        """Download and upload images referenced by ``img_url`` in card JSON.
+
+        Replaces each ``{"tag": "image", "img_url": "<url>", ...}`` with
+        ``{"tag": "image", "img_key": "<uploaded_key>", ...}``.  Falls
+        back to removing the ``img_url`` key and keeping the ``alt`` text
+        when upload fails — the card still renders without the image.
+        """
+        matches = list(_CARD_IMAGE_URL_RE.finditer(card_json))
+        if not matches:
+            return card_json
+
+        result = []
+        last_end = 0
+
+        for m in matches:
+            result.append(card_json[last_end : m.start()])
+            url = m.group(1)
+
+            image_key = None
+            try:
+                image_path = await self._download_remote_image(url)
+                if image_path:
+                    import io as _io
+                    with open(image_path, "rb") as f:
+                        image_bytes = f.read()
+                    image_file = _io.BytesIO(image_bytes)
+                    image_file.name = os.path.basename(image_path)
+                    body = self._build_image_upload_body(
+                        image_type=_FEISHU_IMAGE_UPLOAD_TYPE,
+                        image=image_file,
+                    )
+                    request = self._build_image_upload_request(body)
+                    upload_response = await asyncio.to_thread(
+                        self._client.im.v1.image.create, request,
+                    )
+                    image_key = self._extract_response_field(
+                        upload_response, "image_key")
+            except Exception:
+                logger.warning(
+                    "[Feishu] Card image upload failed for %s", url,
+                    exc_info=True,
+                )
+
+            if image_key:
+                # Replace "img_url":"<url>" with "img_key":"<key>"
+                result.append(f'"img_key":"{image_key}"')
+            else:
+                # Drop img_url entirely; card renders without image
+                pass
+
+            last_end = m.end()
+
+        result.append(card_json[last_end:])
+        return "".join(result)
+
     async def _build_outbound_payload(self, content: str) -> tuple[str, str]:
         """Build the outbound message payload.
 
-        For post-type messages this method now downloads and uploads
-        markdown images (``![](url)``) so they render as native Feishu
-        images instead of being silently discarded by the post ``md`` tag.
+        Supports three message types:
+
+        * **interactive** — JSON card objects (detected by ``_CARD_JSON_HINT_RE``).
+          Card images with ``img_url`` are downloaded, uploaded to Feishu,
+          and replaced with ``img_key`` before sending.
+        * **post** — rich content with markdown images/formatting.
+          ``![](url)`` images are converted to native ``img`` tags.
+        * **text** — plain text (tables also route here because Feishu
+          ``md`` tags do not render tables).
         """
+        # Interactive card JSON detection (before markdown hints)
+        if _CARD_JSON_HINT_RE.search(content):
+            processed = await self._process_card_images(content)
+            return "interactive", processed
         if _MARKDOWN_TABLE_RE.search(content):
             text_payload = {"text": content}
             return "text", json.dumps(text_payload, ensure_ascii=False)
