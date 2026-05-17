@@ -154,7 +154,10 @@ class TestResolveChildPython(unittest.TestCase):
         import tempfile
         with tempfile.TemporaryDirectory() as td:
             # No bin/python inside — broken venv
-            with patch.dict(os.environ, {"VIRTUAL_ENV": td}):
+            env = dict(os.environ)
+            env["VIRTUAL_ENV"] = td
+            env.pop("CONDA_PREFIX", None)
+            with patch.dict(os.environ, env, clear=True):
                 _is_usable_python.cache_clear()
                 self.assertEqual(_resolve_child_python("project"), sys.executable)
 

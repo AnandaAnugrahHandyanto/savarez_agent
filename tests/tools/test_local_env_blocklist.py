@@ -26,7 +26,9 @@ def _make_fake_popen(captured: dict):
         proc = MagicMock()
         proc.poll.return_value = 0
         proc.returncode = 0
-        proc.stdout = MagicMock(__iter__=lambda s: iter([]), __next__=lambda s: (_ for _ in ()).throw(StopIteration))
+        read_fd, write_fd = os.pipe()
+        os.close(write_fd)
+        proc.stdout = os.fdopen(read_fd, "rb", closefd=True)
         proc.stdin = MagicMock()
         return proc
     return fake_popen
