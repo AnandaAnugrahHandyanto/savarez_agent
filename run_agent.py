@@ -4608,9 +4608,101 @@ class AIAgent:
         """
         self._drop_trailing_empty_response_scaffolding(messages)
         self._apply_persist_user_message_override(messages)
+        inserted = self._sanitize_unanswered_tool_calls(messages)
+        if inserted:
+            logger.warning(
+                "Backfilled %d unanswered tool call(s) before session persistence "
+                "(session=%s)",
+                inserted,
+                self.session_id or "-",
+            )
         self._session_messages = messages
         self._save_session_log(messages)
         self._flush_messages_to_session_db(messages, conversation_history)
+
+    def _sanitize_unanswered_tool_calls(
+        self,
+        messages: List[Dict[str, Any]],
+        *,
+        content: Optional[str] = None,
+    ) -> int:
+        """Insert synthetic tool results for assistant tool calls missing answers.
+
+        Providers require every assistant ``tool_call_id`` to be followed by a
+        matching ``role="tool"`` response before any later user/assistant turn.
+        Interrupts and error exits can leave the canonical transcript with a
+        partially answered tool-call group. Repair that persistence-time shape
+        by adding honest cancellation results next to the owning assistant
+        message, without dropping or reordering existing transcript entries.
+
+        Returns the number of synthetic tool messages inserted.
+        """
+        if not isinstance(messages, list) or not messages:
+            return 0
+
+        synthetic_content = (
+            content
+            if content is not None
+            else "[Tool execution interrupted before Hermes recorded a result for this call.]"
+        )
+        inserted = 0
+        idx = 0
+
+        while idx < len(messages):
+            msg = messages[idx]
+            if not isinstance(msg, dict) or msg.get("role") != "assistant":
+                idx += 1
+                continue
+
+            tool_calls = msg.get("tool_calls")
+            if not isinstance(tool_calls, list) or not tool_calls:
+                idx += 1
+                continue
+
+            expected: List[tuple[str, str]] = []
+            seen_expected: set[str] = set()
+            for tc in tool_calls:
+                call_id = AIAgent._get_tool_call_id_static(tc)
+                if not call_id or call_id in seen_expected:
+                    continue
+                seen_expected.add(call_id)
+                expected.append((call_id, AIAgent._get_tool_call_name_static(tc)))
+
+            if not expected:
+                idx += 1
+                continue
+
+            insert_at = idx + 1
+            answered_ids: set[str] = set()
+            while (
+                insert_at < len(messages)
+                and isinstance(messages[insert_at], dict)
+                and messages[insert_at].get("role") == "tool"
+            ):
+                answered_id = messages[insert_at].get("tool_call_id")
+                if answered_id:
+                    answered_ids.add(answered_id)
+                insert_at += 1
+
+            missing = [
+                {
+                    "role": "tool",
+                    "name": name,
+                    "tool_call_id": call_id,
+                    "content": synthetic_content,
+                }
+                for call_id, name in expected
+                if call_id not in answered_ids
+            ]
+
+            if missing:
+                messages[insert_at:insert_at] = missing
+                inserted += len(missing)
+                insert_at += len(missing)
+
+            idx = insert_at
+
+        return inserted
 
     def _drop_trailing_empty_response_scaffolding(self, messages: List[Dict]) -> None:
         """Remove private empty-response retry/failure scaffolding from transcript tails.
@@ -15737,29 +15829,10 @@ class AIAgent:
                 # If an assistant message with tool_calls was already appended,
                 # the API expects a role="tool" result for every tool_call_id.
                 # Fill in error results for any that weren't answered yet.
-                for idx in range(len(messages) - 1, -1, -1):
-                    msg = messages[idx]
-                    if not isinstance(msg, dict):
-                        break
-                    if msg.get("role") == "tool":
-                        continue
-                    if msg.get("role") == "assistant" and msg.get("tool_calls"):
-                        answered_ids = {
-                            m["tool_call_id"]
-                            for m in messages[idx + 1:]
-                            if isinstance(m, dict) and m.get("role") == "tool"
-                        }
-                        for tc in msg["tool_calls"]:
-                            if not tc or not isinstance(tc, dict): continue
-                            if tc["id"] not in answered_ids:
-                                err_msg = {
-                                    "role": "tool",
-                                    "name": AIAgent._get_tool_call_name_static(tc),
-                                    "tool_call_id": tc["id"],
-                                    "content": f"Error executing tool: {error_msg}",
-                                }
-                                messages.append(err_msg)
-                    break
+                self._sanitize_unanswered_tool_calls(
+                    messages,
+                    content=f"Error executing tool: {error_msg}",
+                )
                 
                 # Non-tool errors don't need a synthetic message injected.
                 # The error is already printed to the user (line above), and
