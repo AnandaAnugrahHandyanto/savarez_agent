@@ -3010,6 +3010,8 @@ async def get_usage_analytics(days: int = 30):
             },
             "top_skills": [],
         })
+        from agent.tool_billing import get_supported_provider_monthly_usage
+        provider_monthly_usage = get_supported_provider_monthly_usage(now=time.time())
 
         return {
             "daily": daily,
@@ -3017,6 +3019,7 @@ async def get_usage_analytics(days: int = 30):
             "totals": totals,
             "period_days": days,
             "skills": skills,
+            "provider_monthly_usage": provider_monthly_usage,
         }
     finally:
         db.close()
