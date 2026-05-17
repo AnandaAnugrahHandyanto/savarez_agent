@@ -74,3 +74,47 @@ def test_crlf_line_endings_tolerated():
     parser = StreamJsonParser()
     events = list(parser.feed(b'{"type": "assistant"}\r\n{"type": "result"}\r\n'))
     assert events == [{"type": "assistant"}, {"type": "result"}]
+
+
+def test_malformed_json_raises_protocol_error():
+    """A complete line with invalid JSON: first occurrence is tolerated as banner."""
+    parser = StreamJsonParser(non_json_tolerated=3)
+    events = list(parser.feed(b'not json at all\n'))
+    assert events == []
+    events = list(parser.feed(b'{"type": "assistant"}\n'))
+    assert events == [{"type": "assistant"}]
+
+
+def test_persistent_malformed_json_raises_protocol_error():
+    """Exceeding non_json_tolerated raises ProtocolError; parser then refuses input."""
+    parser = StreamJsonParser(non_json_tolerated=2)
+    list(parser.feed(b'banner line 1\n'))
+    list(parser.feed(b'banner line 2\n'))
+    with pytest.raises(ProtocolError, match="persistent non-JSON"):
+        list(parser.feed(b'banner line 3\n'))
+    # Parser is now poisoned.
+    with pytest.raises(ProtocolError, match="failed state"):
+        list(parser.feed(b'{"type": "assistant"}\n'))
+
+
+def test_oversize_line_raises_protocol_error():
+    """A line longer than max_line_bytes raises ProtocolError before the newline."""
+    parser = StreamJsonParser(max_line_bytes=100)
+    with pytest.raises(ProtocolError, match="exceeded 100 bytes"):
+        list(parser.feed(b"x" * 101))
+
+
+def test_max_events_raises_protocol_error():
+    """Yielding more than max_events raises ProtocolError on the offending event."""
+    parser = StreamJsonParser(max_events=2)
+    list(parser.feed(b'{"type": "a"}\n'))
+    list(parser.feed(b'{"type": "b"}\n'))
+    with pytest.raises(ProtocolError, match="event count exceeded 2"):
+        list(parser.feed(b'{"type": "c"}\n'))
+
+
+def test_non_object_json_raises_protocol_error():
+    """A complete line containing a JSON array/string/number raises ProtocolError."""
+    parser = StreamJsonParser()
+    with pytest.raises(ProtocolError, match="not a JSON object"):
+        list(parser.feed(b'["not", "an", "object"]\n'))
