@@ -225,6 +225,32 @@ def _check_gateway_service_linger(issues: list[str]) -> None:
 _APIKEY_PROVIDERS_CACHE: list | None = None
 
 
+def _probe_gemini_native_models(api_key: str, base_url: str, default_url: str | None, timeout: float = 10.0):
+    """Probe Google AI Studio's native models endpoint.
+
+    Gemini native REST auth does not use OpenAI-style ``Authorization:
+    Bearer`` headers. It accepts API keys as query params or the
+    ``x-goog-api-key`` header; using the latter keeps the URL free of
+    secret material in logs and tracebacks.
+    """
+    import httpx
+
+    native_base = (base_url or default_url or "https://generativelanguage.googleapis.com/v1beta").rstrip("/")
+    if native_base.endswith("/models"):
+        native_base = native_base[: -len("/models")]
+    if native_base.endswith("/openai"):
+        native_base = native_base[: -len("/openai")]
+
+    return httpx.get(
+        f"{native_base}/models",
+        headers={
+            "x-goog-api-key": api_key,
+            "User-Agent": _HERMES_USER_AGENT,
+        },
+        timeout=timeout,
+    )
+
+
 def _build_apikey_providers_list() -> list:
     """Build the API-key provider health-check list once and cache it.
 
@@ -1455,6 +1481,32 @@ def run_doctor(args):
         try:
             import httpx
             base = os.getenv(base_env, "") if base_env else ""
+            is_gemini_native = (
+                "GEMINI_API_KEY" in env_vars
+                or "GOOGLE_API_KEY" in env_vars
+                or base_url_host_matches(base or default_url or "", "generativelanguage.googleapis.com")
+            )
+            if is_gemini_native:
+                r = _probe_gemini_native_models(key, base, default_url)
+                if r.status_code == 200:
+                    return _ConnectivityResult(
+                        pname,
+                        [(color("\u2713", Colors.GREEN), label, "")],
+                        [],
+                    )
+                if r.status_code in {400, 401, 403}:
+                    return _ConnectivityResult(
+                        pname,
+                        [(color("\u2717", Colors.RED), label,
+                          color("(invalid API key)", Colors.DIM))],
+                        [f"Check {env_vars[0]} in .env"],
+                    )
+                return _ConnectivityResult(
+                    pname,
+                    [(color("\u26a0", Colors.YELLOW), label,
+                      color(f"(HTTP {r.status_code})", Colors.DIM))],
+                    [],
+                )
             # Auto-detect Kimi Code keys (sk-kimi-) → api.kimi.com/coding/v1
             # (OpenAI-compat surface, which exposes /models for health check).
             if not base and key.startswith("sk-kimi-"):
