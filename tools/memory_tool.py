@@ -113,11 +113,15 @@ class MemoryStore:
         Tool responses always reflect this live state.
     """
 
-    def __init__(self, memory_char_limit: int = 2200, user_char_limit: int = 1375):
+    def __init__(self, memory_char_limit: int = 2200, user_char_limit: int = 1375, user_id: Optional[str] = None):
         self.memory_entries: List[str] = []
         self.user_entries: List[str] = []
         self.memory_char_limit = memory_char_limit
         self.user_char_limit = user_char_limit
+        # Platform user identifier (e.g. Slack user_id). When set, USER.md is
+        # isolated per user under memories/users/<user_id>/USER.md so each
+        # platform user gets their own preference store.
+        self._user_id = user_id
         # Frozen snapshot for system prompt -- set once at load_from_disk()
         self._system_prompt_snapshot: Dict[str, str] = {"memory": "", "user": ""}
 
@@ -126,8 +130,12 @@ class MemoryStore:
         mem_dir = get_memory_dir()
         mem_dir.mkdir(parents=True, exist_ok=True)
 
-        self.memory_entries = self._read_file(mem_dir / "MEMORY.md")
-        self.user_entries = self._read_file(mem_dir / "USER.md")
+        # Ensure the per-user USER.md directory exists when isolation is active
+        user_path = self._path_for("user")
+        user_path.parent.mkdir(parents=True, exist_ok=True)
+
+        self.memory_entries = self._read_file(self._path_for("memory"))
+        self.user_entries = self._read_file(user_path)
 
         # Deduplicate entries (preserves order, keeps first occurrence)
         self.memory_entries = list(dict.fromkeys(self.memory_entries))
@@ -176,10 +184,15 @@ class MemoryStore:
                     pass
             fd.close()
 
-    @staticmethod
-    def _path_for(target: str) -> Path:
+    def _path_for(self, target: str) -> Path:
         mem_dir = get_memory_dir()
         if target == "user":
+            # Per-user isolation when a platform user_id is present.
+            # Falls back to the global USER.md for TUI / no-user contexts
+            # so direct local invocations (Captain TUI, hermes -z, etc.) keep
+            # working without a sender identity.
+            if self._user_id:
+                return mem_dir / "users" / self._user_id / "USER.md"
             return mem_dir / "USER.md"
         return mem_dir / "MEMORY.md"
 
