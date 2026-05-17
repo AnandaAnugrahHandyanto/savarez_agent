@@ -11,6 +11,7 @@ import logging
 import os
 import re
 import ssl
+import tempfile
 import time
 from email.utils import formatdate
 from pathlib import Path
@@ -48,6 +49,9 @@ _VOICE_EXTS = {".ogg", ".opus"}
 # formats either route through sendVoice (Opus/OGG) or fall back to
 # document delivery.
 _TELEGRAM_SEND_AUDIO_EXTS = {".mp3", ".m4a"}
+_MATRIX_MEDIA_MAX_BYTES = 50 * 1024 * 1024
+_SENSITIVE_MEDIA_DIR_NAMES = frozenset({".ssh", ".aws", ".gnupg", ".kube", ".docker", ".azure"})
+_SENSITIVE_MEDIA_FILE_NAMES = frozenset({".env", ".netrc", ".pgpass", ".npmrc", ".pypirc", "id_rsa", "id_ed25519"})
 _URL_SECRET_QUERY_RE = re.compile(
     r"([?&](?:access_token|api[_-]?key|auth[_-]?token|token|signature|sig)=)([^&#\s]+)",
     re.IGNORECASE,
@@ -1565,6 +1569,12 @@ async def _send_matrix_via_adapter(pconfig, chat_id, message, media_files=None, 
         return {"error": "Matrix dependencies not installed. Run: pip install 'mautrix[encryption]'"}
 
     media_files = media_files or []
+    validated_media = []
+    for media_path, is_voice in media_files:
+        safe_path, error = _validate_matrix_media_path(media_path)
+        if error:
+            return _error(error)
+        validated_media.append((str(safe_path), is_voice))
 
     try:
         adapter = MatrixAdapter(pconfig)
@@ -1580,10 +1590,7 @@ async def _send_matrix_via_adapter(pconfig, chat_id, message, media_files=None, 
             if not last_result.success:
                 return _error(f"Matrix send failed: {last_result.error}")
 
-        for media_path, is_voice in media_files:
-            if not os.path.exists(media_path):
-                return _error(f"Media file not found: {media_path}")
-
+        for media_path, is_voice in validated_media:
             ext = os.path.splitext(media_path)[1].lower()
             if ext in _IMAGE_EXTS:
                 last_result = await adapter.send_image_file(chat_id, media_path, metadata=metadata)
