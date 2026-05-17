@@ -126,7 +126,12 @@ evidence_contract:
 completion_gate_docs_allowlist:
   S006:
     paths:
+      - .gitea/workflows/validate.yml
+      - app/services/autoresearch_provider_guarantee_service.py
+      - app/services/observability_service.py
       - docs/contracts/daemon-trust-contract.md
+      - _codex_discovery/phase6t_design_bridge_authorization_gates/research_worker_integration_report.md
+      - _codex_discovery/phase6u_design_bridge_adoption_readiness/research_worker_integration_report.md
     patterns: []
 remote_lifecycle_contract:
   contract_path: /Users/preston/.hermes/hermes-agent/docs/autonomy/crypto_bot_remote_lifecycle_contract.md

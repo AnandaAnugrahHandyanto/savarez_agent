@@ -73,6 +73,10 @@ BLOCKED_PATH_RULES: tuple[tuple[str, re.Pattern[str], bool], ...] = (
         False,
     ),
 )
+APPROVABLE_ALWAYS_BLOCK_REASONS = {
+    "workflow surface",
+    "runner or workflow surface",
+}
 
 
 def normalize_repo_path(path: str) -> str:
@@ -172,6 +176,7 @@ def scan_blocked_surfaces(
             allowlisted_patterns=allowlisted_patterns,
         )
         safe_docs_allowlisted = bool(docs_basis and is_safe_docs_path(path))
+        explicitly_allowlisted = bool(docs_basis)
         for reason, pattern, always_block in BLOCKED_PATH_RULES:
             if not pattern.search(path):
                 continue
@@ -181,6 +186,22 @@ def scan_blocked_surfaces(
                         "path": path,
                         "reason": reason,
                         "severity": "allowed_docs_reference",
+                        "allowlist_basis": docs_basis or "",
+                    }
+                )
+                continue
+            if explicitly_allowlisted and (
+                not always_block or reason in APPROVABLE_ALWAYS_BLOCK_REASONS
+            ):
+                findings.append(
+                    {
+                        "path": path,
+                        "reason": reason,
+                        "severity": (
+                            "allowed_operator_approved_workflow"
+                            if always_block
+                            else "allowed_operator_approved_code"
+                        ),
                         "allowlist_basis": docs_basis or "",
                     }
                 )

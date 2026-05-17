@@ -12,8 +12,10 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 
 import crypto_bot_autonomy_readiness as readiness  # noqa: E402
+import crypto_bot_completion_gate as completion_gate  # noqa: E402
 import crypto_bot_gitea_runner_recovery as runner_recovery  # noqa: E402
 import crypto_bot_kanban_import_audit as kanban_import_audit  # noqa: E402
+import crypto_bot_policy_scanner as policy_scanner  # noqa: E402
 import crypto_bot_pr_ci_audit as pr_ci_audit  # noqa: E402
 
 PLAN = Path(
@@ -339,6 +341,57 @@ def test_pr_ci_audit_remote_lifecycle_reports_stale_head_mismatch() -> None:
             ready_for_merge=False,
         )
         == "pr_created_ci_stale_head_mismatch"
+    )
+
+
+def test_policy_scanner_allows_explicit_non_always_block_code_but_not_workflows() -> None:
+    findings = policy_scanner.scan_blocked_surfaces(
+        [
+            "app/services/autoresearch_provider_guarantee_service.py",
+            ".gitea/workflows/validate.yml",
+        ],
+        allowlisted_paths=["app/services/autoresearch_provider_guarantee_service.py"],
+    )
+
+    assert any(
+        finding["path"] == "app/services/autoresearch_provider_guarantee_service.py"
+        and finding["severity"] == "allowed_operator_approved_code"
+        for finding in findings
+    )
+    assert any(
+        finding["path"] == ".gitea/workflows/validate.yml"
+        and finding["severity"] == "block"
+        for finding in findings
+    )
+
+    approved_workflow_findings = policy_scanner.scan_blocked_surfaces(
+        [".gitea/workflows/validate.yml"],
+        allowlisted_paths=[".gitea/workflows/validate.yml"],
+    )
+    assert any(
+        finding["path"] == ".gitea/workflows/validate.yml"
+        and finding["severity"] == "allowed_operator_approved_workflow"
+        for finding in approved_workflow_findings
+    )
+
+    broker_findings = policy_scanner.scan_blocked_surfaces(
+        ["app/broker/live_order_service.py"],
+        allowlisted_paths=["app/broker/live_order_service.py"],
+    )
+    assert any(finding["severity"] == "block" for finding in broker_findings)
+
+
+def test_sidecar_changed_file_parser_preserves_dotfile_paths() -> None:
+    result_text = """
+## Machine Evidence
+- Changed files:
+  - `.gitea/workflows/validate.yml`
+  - `app/services/observability_service.py`
+- Worktree status: clean
+"""
+
+    assert ".gitea/workflows/validate.yml" in (
+        completion_gate.extract_changed_files_from_result(result_text)
     )
 
 

@@ -147,7 +147,8 @@ Hermes may proceed without per-task Operator approval when the task:
 - Does not inspect secrets or touch broker/trading/financial/runtime/deploy
   surfaces.
 - Does not edit `.gitea/workflows`, start runners/workflows, mutate Gitea, push,
-  or promote protected branches.
+  or promote protected branches unless a current Operator directive and the managed-project descriptor explicitly allow the exact code-related surface for documented plan advancement.
+- Even under broad code-work approval, preserves hard forbids for secrets, broker/trading/financial APIs, live runtime/deploy, and protected-branch merge unless separately and exactly authorized.
 - Runs required validators and `git diff --check`.
 - Uses `ruff check` where appropriate and never uses `ruff format`.
 - Runs Codex sidecar final post-commit audit on a clean worktree,
@@ -346,7 +347,12 @@ be collapsed to latest-per-context state, or when live PR HEAD differs from stal
 completion/PR-evidence packets; it records the evidence-first repair, validator
 rerun, commit/push, branch-target fallback PR discovery, `ls-remote` before stale
 tracking refs, explicit stale-head lifecycle classification, current-head
-mismatch triage, and final status-reporting loop.
+mismatch triage, and final status-reporting loop. See
+`references/s006-approved-code-scope-evidence-repair.md` when the Operator gives
+broad code-related approval and S006 still has stale completion/PR evidence for
+a live PR head; it captures the allowlist/policy-scanner repair pattern, ruff
+fix loop, fresh sidecar/gate/PR-evidence sequence, and hard safety boundaries
+that remain in force.
 
 Evidence issue statuses are `active`, `repair_attempted`, `repaired`,
 `invalidated`, and `superseded`. A dev13-005-style completion failure stays

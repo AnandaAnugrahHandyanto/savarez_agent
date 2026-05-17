@@ -91,19 +91,26 @@ git diff --check {canonical_range}
 ```
 
 Also perform a read-only blocked-surface path scan over the changed files from
-`git diff --name-only {canonical_range}`.
+`git diff --name-only {canonical_range}`. This scan is not an all-files
+allowlist check: unlisted docs, JSON evidence, discovery artifacts, and
+validation scripts are not blocked merely because they are absent from the
+allowlist. The allowlist below is used only to decide whether otherwise
+sensitive workflow/service/docs paths are approved for this task.
 
-Task docs allowlist for daemon/service wording only:
+Task allowlist from the strategic plan and managed-project descriptor:
 {allowlist_lines}
 
-Treat these as BLOCKED regardless of docs wording or allowlists: `.gitea/workflows`,
-secret-like paths (`.env`, token, key, private-key, cookie, credential), runtime
-DBs, logs, broker/trading/financial/live-market/order/account/position/wallet
-paths, deployment/GitOps paths, workflow/runner paths, and executable
-service-start/runtime scripts or code paths. A safe docs path under
-`docs/contracts/*.md`, `docs/development/*.md`, or `docs/architecture/*.md` may
-mention daemon/service concepts only when it is listed above and no executable,
-config, runtime, workflow, deploy, secret, trading, or broker path changed.
+Treat these as BLOCKED regardless of docs wording or allowlists: secret-like
+paths (`.env`, token, key, private-key, cookie, credential), runtime DBs, logs,
+broker/trading/financial/live-market/order/account/position/wallet paths,
+deployment/GitOps paths, runner-control paths, and executable service-start or
+live-runtime launch paths. A changed `.gitea/workflows` path or non-launch
+service code path is PASS-compatible only when that exact path is listed above
+and the audit observes no workflow execution, runner start, Gitea mutation,
+deploy, secret, broker, trading, financial, or live-runtime action. A safe docs
+path under `docs/contracts/*.md`, `docs/development/*.md`, or
+`docs/architecture/*.md` may mention daemon/service concepts only when it is
+listed above.
 
 Report only this markdown structure. Do not leave any machine-evidence field
 blank, and do not use prose-only substitutes for the machine evidence:

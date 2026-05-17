@@ -205,10 +205,6 @@ def merge_allowlists(*allowlists: dict[str, list[str]]) -> dict[str, Any]:
     for allowlist in allowlists:
         for key in ("paths", "patterns"):
             for value in allowlist.get(key, []):
-                if key == "paths" and not policy_scanner.is_safe_docs_path(value):
-                    continue
-                if key == "patterns" and not policy_scanner.is_safe_docs_pattern(value):
-                    continue
                 if value not in merged[key]:
                     merged[key].append(value)
         if merged["paths"] or merged["patterns"]:
@@ -321,7 +317,7 @@ def normalize_result_value(value: str) -> str:
     while previous != normalized:
         previous = normalized
         normalized = normalized.strip()
-        normalized = normalized.strip(" \t\r\n.,;")
+        normalized = normalized.strip(" \t\r\n,;")
         if (
             len(normalized) >= 2
             and normalized[0] == normalized[-1]
