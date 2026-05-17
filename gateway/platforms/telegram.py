@@ -2270,16 +2270,21 @@ class TelegramAdapter(BasePlatformAdapter):
             }
 
             if choices:
+                # Append full option text to the message body so it remains
+                # readable even when Telegram mobile truncates button labels.
+                # Buttons use short "1" / "2" / … labels to avoid truncation.
+                choices_text = "\n".join(
+                    f"{i + 1}. {_html.escape(str(c))}"
+                    for i, c in enumerate(choices)
+                )
+                text += f"\n\n{choices_text}"
                 # Telegram caps callback_data at 64 bytes; keep "cl:<id>:<idx>"
                 # short.  Button label is also capped (~64 chars in practice).
                 rows = []
                 for idx, choice in enumerate(choices):
-                    label = str(choice)
-                    if len(label) > 60:
-                        label = label[:57] + "..."
                     rows.append([
                         InlineKeyboardButton(
-                            f"{idx + 1}. {label}",
+                            f"{idx + 1}",
                             callback_data=f"cl:{clarify_id}:{idx}",
                         )
                     ])
