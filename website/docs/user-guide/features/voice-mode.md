@@ -352,6 +352,40 @@ When the bot joins a voice channel, it:
 4. **Processes** through the full agent pipeline (session, tools, memory)
 5. **Speaks** the reply back in the voice channel via TTS
 
+### Realtime-2 Mode
+
+Discord voice channels can optionally use OpenAI Realtime instead of the classic STT → agent → TTS loop. In Realtime mode, Hermes streams decoded Discord PCM to `gpt-realtime-2`, lets the model call normal Hermes tools, and plays the generated PCM response back into the voice channel.
+
+```yaml
+voice:
+  realtime:
+    enabled: true
+    model: gpt-realtime-2
+    voice: marin
+    auth_mode: managed    # Hermes OpenAI Codex/GPT OAuth; use direct for API-key auth
+    instructions: ""      # Empty uses the Discord voice default
+    manual_turn_timeout_ms: 700
+```
+
+Use `auth_mode: managed` when you want Hermes to reuse its OpenAI Codex/GPT OAuth credentials from `hermes auth add openai-codex`. Use `auth_mode: auto` to prefer direct OpenAI credentials when present and fall back to OpenAI Codex/GPT OAuth. Leaving `instructions` empty uses a built-in Discord voice prompt that tells the model to answer naturally and call Hermes tools when needed.
+
+`/voice status` reports whether Realtime-2 is active, configured but not joined, or blocked on missing managed/direct credentials.
+
+To validate a live Discord Realtime session, restart the gateway, run `/voice join` from a text channel while you are in a VC, speak a short prompt, then ask for a tool-backed action such as "run date". A healthy run writes these log markers to `~/.hermes/logs/gateway.log`:
+
+- `Starting Discord Realtime voice`
+- `OpenAI Realtime voice connected`
+- `OpenAI Realtime voice session updated`
+- `Discord Realtime voice session attached`
+- `VoiceReceiver streaming PCM chunk`
+- `OpenAI Realtime voice input chunk`
+- `OpenAI Realtime voice finalizing input turn` or `OpenAI Realtime voice VAD event: input_audio_buffer.speech_stopped`
+- `OpenAI Realtime voice output audio chunk`
+- `Discord Realtime voice queueing PCM response`
+- `Discord Realtime voice playing PCM stream`
+- `Discord Realtime voice fed PCM stream`
+- `OpenAI Realtime voice executing Hermes tool`
+
 ### Text Channel Integration
 
 When the bot is in a voice channel:
@@ -362,7 +396,7 @@ When the bot is in a voice channel:
 
 ### Echo Prevention
 
-The bot automatically pauses its audio listener while playing TTS replies, preventing it from hearing and re-processing its own output.
+In classic voice mode, the bot pauses its audio listener while playing TTS replies, preventing it from hearing and re-processing its own output. In Realtime-2 mode, Hermes keeps the receiver active so follow-up turns can stream while generated audio is playing.
 
 ### Access Control
 
@@ -388,6 +422,21 @@ voice:
   beep_enabled: true               # Play record start/stop beeps
   silence_threshold: 200           # RMS level (0-32767) below which counts as silence
   silence_duration: 3.0            # Seconds of silence before auto-stop
+  realtime:
+    enabled: false                 # Optional Discord VC Realtime mode
+    model: "gpt-realtime-2"
+    voice: "marin"
+    auth_mode: "auto"              # "auto" | "direct" | "managed"
+    instructions: ""
+    reasoning_effort: "low"
+    input_sample_rate: 24000
+    output_sample_rate: 24000
+    vad_threshold: 0.55
+    vad_prefix_padding_ms: 250
+    vad_silence_duration_ms: 350
+    manual_turn_timeout_ms: 700
+    input_silence_threshold: 120
+    discord: {}                    # Optional Discord-specific overrides
 
 # Speech-to-Text
 stt:
@@ -436,6 +485,9 @@ ELEVENLABS_API_KEY=***             # ElevenLabs (premium quality)
 # Discord voice channel
 DISCORD_BOT_TOKEN=...
 DISCORD_ALLOWED_USERS=...
+
+# OpenAI Realtime direct auth (OpenAI Codex/GPT OAuth does not need this)
+VOICE_TOOLS_OPENAI_KEY=...
 ```
 
 ### STT Provider Comparison

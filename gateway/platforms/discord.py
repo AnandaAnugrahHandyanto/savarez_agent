@@ -14,6 +14,7 @@ import hashlib
 import json
 import logging
 import os
+import queue
 import struct
 import subprocess
 import tempfile
@@ -42,6 +43,130 @@ except ImportError:
     DiscordMessage = Any
     Intents = Any
     commands = None
+
+
+_DiscordAudioSourceBase = getattr(discord, "AudioSource", object) if DISCORD_AVAILABLE else object
+if not isinstance(_DiscordAudioSourceBase, type):
+    _DiscordAudioSourceBase = object
+
+
+class _RealtimePCMAudioSource(_DiscordAudioSourceBase):
+    """Discord AudioSource for OpenAI Realtime s16le PCM chunks."""
+
+    _DISCORD_SAMPLE_RATE = 48000
+    _DISCORD_CHANNELS = 2
+    _FRAME_BYTES = 3840  # 20ms of 48kHz stereo s16le
+
+    def __init__(self, pcm: bytes, *, sample_rate: int = 24000, channels: int = 1):
+        self._pcm = self._to_discord_pcm(pcm, sample_rate=sample_rate, channels=channels)
+        self._offset = 0
+
+    @classmethod
+    def _to_discord_pcm(cls, pcm: bytes, *, sample_rate: int, channels: int) -> bytes:
+        channels = max(1, int(channels or 1))
+        sample_rate = max(1, int(sample_rate or cls._DISCORD_SAMPLE_RATE))
+        frame_width = 2 * channels
+        usable = len(pcm) - (len(pcm) % frame_width)
+        if usable <= 0:
+            return b""
+
+        if sample_rate == cls._DISCORD_SAMPLE_RATE:
+            repeat = 1
+        elif cls._DISCORD_SAMPLE_RATE % sample_rate == 0:
+            repeat = max(1, cls._DISCORD_SAMPLE_RATE // sample_rate)
+        else:
+            repeat = 1
+
+        out = bytearray()
+        for offset in range(0, usable, frame_width):
+            if channels >= 2:
+                left = int.from_bytes(pcm[offset:offset + 2], "little", signed=True)
+                right = int.from_bytes(pcm[offset + 2:offset + 4], "little", signed=True)
+            else:
+                left = right = int.from_bytes(pcm[offset:offset + 2], "little", signed=True)
+            left_b = left.to_bytes(2, "little", signed=True)
+            right_b = right.to_bytes(2, "little", signed=True)
+            for _ in range(repeat):
+                out.extend(left_b)
+                out.extend(right_b)
+        return bytes(out)
+
+    def read(self) -> bytes:
+        if self._offset >= len(self._pcm):
+            return b""
+        chunk = self._pcm[self._offset:self._offset + self._FRAME_BYTES]
+        self._offset += len(chunk)
+        if len(chunk) < self._FRAME_BYTES:
+            chunk += b"\x00" * (self._FRAME_BYTES - len(chunk))
+        return chunk
+
+    def is_opus(self) -> bool:
+        return False
+
+
+class _RealtimePCMQueueAudioSource(_DiscordAudioSourceBase):
+    """Continuous Discord AudioSource fed by Realtime PCM chunks."""
+
+    _IDLE_TIMEOUT_SECONDS = 0.6
+
+    def __init__(self, pcm: bytes, *, sample_rate: int = 24000, channels: int = 1):
+        self._frames: "queue.Queue[bytes]" = queue.Queue()
+        self._pending = bytearray()
+        self._closed = False
+        self._last_feed_at = time.monotonic()
+        self.feed(pcm, sample_rate=sample_rate, channels=channels)
+
+    @property
+    def closed(self) -> bool:
+        return self._closed
+
+    def feed(self, pcm: bytes, *, sample_rate: int = 24000, channels: int = 1) -> None:
+        if self._closed or not pcm:
+            return
+        converted = _RealtimePCMAudioSource._to_discord_pcm(
+            pcm,
+            sample_rate=sample_rate,
+            channels=channels,
+        )
+        if not converted:
+            return
+        self._last_feed_at = time.monotonic()
+        self._pending.extend(converted)
+        frame_size = _RealtimePCMAudioSource._FRAME_BYTES
+        while len(self._pending) >= frame_size:
+            self._frames.put(bytes(self._pending[:frame_size]))
+            del self._pending[:frame_size]
+
+    def close(self) -> None:
+        self._closed = True
+        while True:
+            try:
+                self._frames.get_nowait()
+            except queue.Empty:
+                break
+
+    def read(self) -> bytes:
+        if self._closed:
+            return b""
+        try:
+            return self._frames.get_nowait()
+        except queue.Empty:
+            pass
+
+        idle_for = time.monotonic() - self._last_feed_at
+        frame_size = _RealtimePCMAudioSource._FRAME_BYTES
+        if self._pending and idle_for >= self._IDLE_TIMEOUT_SECONDS:
+            chunk = bytes(self._pending)
+            self._pending.clear()
+            self._closed = True
+            return chunk + (b"\x00" * (frame_size - len(chunk)))
+        if idle_for < self._IDLE_TIMEOUT_SECONDS:
+            return b"\x00" * frame_size
+        self._closed = True
+        return b""
+
+    def is_opus(self) -> bool:
+        return False
 
 import sys
 from pathlib import Path as _Path
@@ -186,9 +311,11 @@ class VoiceReceiver:
 
         # Pause flag: don't capture while bot is playing TTS
         self._paused = False
+        self._stream_callback: Optional[Callable[[int, bytes], None]] = None
 
         # Debug logging counter (instance-level to avoid cross-instance races)
         self._packet_debug_count = 0
+        self._stream_debug_count = 0
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -225,6 +352,10 @@ class VoiceReceiver:
 
     def resume(self):
         self._paused = False
+
+    def set_stream_callback(self, callback: Optional[Callable[[int, bytes], None]]) -> None:
+        """Stream decoded PCM chunks to a realtime voice session."""
+        self._stream_callback = callback
 
     # ------------------------------------------------------------------
     # SSRC -> user_id mapping via SPEAKING opcode hook
@@ -398,12 +529,32 @@ class VoiceReceiver:
             if ssrc not in self._decoders:
                 self._decoders[ssrc] = discord.opus.Decoder()
             pcm = self._decoders[ssrc].decode(decrypted)
+            stream_callback = self._stream_callback
             with self._lock:
-                self._buffers[ssrc].extend(pcm)
+                if stream_callback is None:
+                    self._buffers[ssrc].extend(pcm)
                 self._last_packet_time[ssrc] = time.monotonic()
+                user_id = self._ssrc_to_user.get(ssrc, 0)
         except Exception as e:
             logger.debug("Opus decode error for SSRC %s: %s", ssrc, e)
             return
+
+        if stream_callback is not None:
+            if not user_id:
+                user_id = self._infer_user_for_ssrc(ssrc)
+            if user_id and (not self._allowed_user_ids or str(user_id) in self._allowed_user_ids):
+                try:
+                    self._stream_debug_count += 1
+                    if self._stream_debug_count <= 3 or self._stream_debug_count in {10, 25, 50, 100}:
+                        logger.info(
+                            "VoiceReceiver streaming PCM chunk #%d: user=%s bytes=%d",
+                            self._stream_debug_count,
+                            user_id,
+                            len(pcm),
+                        )
+                    stream_callback(user_id, pcm)
+                except Exception as e:
+                    logger.debug("Voice stream callback failed for user %s: %s", user_id, e)
 
     # ------------------------------------------------------------------
     # Silence detection
@@ -554,6 +705,7 @@ class DiscordAdapter(BasePlatformAdapter):
         super().__init__(config, Platform.DISCORD)
         self._client: Optional[commands.Bot] = None
         self._ready_event = asyncio.Event()
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._allowed_user_ids: set = set()  # For button approval authorization
         self._allowed_role_ids: set = set()  # For DISCORD_ALLOWED_ROLES filtering
         self.gateway_runner = None  # Set by gateway/run.py for cross-platform delivery
@@ -573,6 +725,10 @@ class DiscordAdapter(BasePlatformAdapter):
         self._voice_listen_tasks: Dict[int, asyncio.Task] = {}  # guild_id -> listen loop
         self._voice_input_callback: Optional[Callable] = None  # set by run.py
         self._on_voice_disconnect: Optional[Callable] = None  # set by run.py
+        self._voice_realtime_sessions: Dict[int, Any] = {}  # guild_id -> realtime voice session
+        self._voice_realtime_playback_queues: Dict[int, asyncio.Queue] = {}
+        self._voice_realtime_playback_tasks: Dict[int, asyncio.Task] = {}
+        self._voice_realtime_playback_sources: Dict[int, _RealtimePCMQueueAudioSource] = {}
         # Track threads where the bot has participated so follow-up messages
         # in those threads don't require @mention.  Persisted to disk so the
         # set survives gateway restarts.
@@ -599,6 +755,7 @@ class DiscordAdapter(BasePlatformAdapter):
         if not DISCORD_AVAILABLE:
             logger.error("[%s] discord.py not installed. Run: pip install discord.py", self.name)
             return False
+        self._loop = asyncio.get_running_loop()
 
         # Load opus codec for voice channel support
         if not discord.opus.is_loaded():
@@ -1913,6 +2070,16 @@ class DiscordAdapter(BasePlatformAdapter):
             try:
                 receiver = VoiceReceiver(vc, allowed_user_ids=self._allowed_user_ids)
                 receiver.start()
+                realtime_session = getattr(self, "_voice_realtime_sessions", {}).get(guild_id)
+                if realtime_session is not None and getattr(realtime_session, "active", False):
+                    receiver.set_stream_callback(
+                        lambda user_id, pcm, session=realtime_session: self._send_realtime_voice_pcm(
+                            guild_id,
+                            user_id,
+                            pcm,
+                            session,
+                        )
+                    )
                 self._voice_receivers[guild_id] = receiver
                 self._voice_listen_tasks[guild_id] = asyncio.ensure_future(
                     self._voice_listen_loop(guild_id)
@@ -1925,6 +2092,7 @@ class DiscordAdapter(BasePlatformAdapter):
     async def leave_voice_channel(self, guild_id: int) -> None:
         """Disconnect from the voice channel in a guild."""
         async with self._voice_locks.setdefault(guild_id, asyncio.Lock()):
+            self.clear_voice_realtime_session(guild_id)
             # Stop voice receiver first
             receiver = self._voice_receivers.pop(guild_id, None)
             if receiver:
@@ -1941,6 +2109,261 @@ class DiscordAdapter(BasePlatformAdapter):
                 task.cancel()
             self._voice_text_channels.pop(guild_id, None)
             self._voice_sources.pop(guild_id, None)
+
+    def set_voice_realtime_session(self, guild_id: int, session: Any) -> None:
+        """Attach a Realtime voice session to an active Discord VC."""
+        sessions = getattr(self, "_voice_realtime_sessions", None)
+        if not isinstance(sessions, dict):
+            sessions = {}
+            self._voice_realtime_sessions = sessions
+        previous = sessions.get(guild_id)
+        if previous is not None and previous is not session:
+            try:
+                previous.close()
+            except Exception:
+                pass
+        sessions[guild_id] = session
+        logger.info("Discord Realtime voice session attached: guild=%s active=%s", guild_id, getattr(session, "active", False))
+        receiver = self._voice_receivers.get(guild_id)
+        if receiver:
+            receiver.set_stream_callback(
+                lambda user_id, pcm, realtime_session=session: self._send_realtime_voice_pcm(
+                    guild_id,
+                    user_id,
+                    pcm,
+                    realtime_session,
+                )
+            )
+
+    def _send_realtime_voice_pcm(self, guild_id: int, user_id: int, pcm: bytes, session: Any) -> None:
+        guild = self._client.get_guild(guild_id) if self._client is not None else None
+        if not self._is_allowed_user(str(user_id), guild=guild, is_dm=False):
+            return
+        session.send_discord_pcm(pcm)
+
+    def clear_voice_realtime_session(self, guild_id: int) -> None:
+        """Detach and close any Realtime voice session for a guild."""
+        receiver = self._voice_receivers.get(guild_id)
+        if receiver:
+            receiver.set_stream_callback(None)
+        playback_tasks = getattr(self, "_voice_realtime_playback_tasks", None)
+        if isinstance(playback_tasks, dict):
+            playback_task = playback_tasks.pop(guild_id, None)
+            if playback_task:
+                playback_task.cancel()
+        playback_queues = getattr(self, "_voice_realtime_playback_queues", None)
+        if isinstance(playback_queues, dict):
+            playback_queues.pop(guild_id, None)
+        playback_sources = getattr(self, "_voice_realtime_playback_sources", None)
+        if isinstance(playback_sources, dict):
+            playback_source = playback_sources.pop(guild_id, None)
+            if playback_source:
+                playback_source.close()
+        sessions = getattr(self, "_voice_realtime_sessions", None)
+        if not isinstance(sessions, dict):
+            return
+        session = sessions.pop(guild_id, None)
+        if session is not None:
+            try:
+                session.close()
+                logger.info("Discord Realtime voice session closed: guild=%s", guild_id)
+            except Exception:
+                pass
+
+    def is_voice_realtime_enabled(self, guild_id: int) -> bool:
+        sessions = getattr(self, "_voice_realtime_sessions", None)
+        if not isinstance(sessions, dict):
+            return False
+        session = sessions.get(guild_id)
+        return bool(session is not None and getattr(session, "active", False))
+
+    def queue_realtime_pcm_response(
+        self,
+        guild_id: int,
+        pcm: bytes,
+        *,
+        sample_rate: int = 24000,
+        channels: int = 1,
+    ) -> None:
+        """Schedule Realtime PCM playback on the Discord event loop."""
+        if not pcm:
+            return
+        logger.info("Discord Realtime voice queueing PCM response: guild=%s bytes=%d rate=%d channels=%d", guild_id, len(pcm), sample_rate, channels)
+        loop = self._loop
+        if loop is None or loop.is_closed():
+            logger.warning("Cannot play Realtime voice response: Discord event loop unavailable")
+            return
+        fut = asyncio.run_coroutine_threadsafe(
+            self._enqueue_realtime_pcm_response(
+                guild_id,
+                pcm,
+                sample_rate=sample_rate,
+                channels=channels,
+            ),
+            loop,
+        )
+        fut.add_done_callback(self._log_realtime_playback_done)
+
+    def interrupt_realtime_playback(self, guild_id: int) -> None:
+        """Stop queued/current Realtime playback when the user starts talking."""
+        loop = self._loop
+        if loop is None or loop.is_closed():
+            return
+        fut = asyncio.run_coroutine_threadsafe(
+            self._interrupt_realtime_playback(guild_id),
+            loop,
+        )
+        fut.add_done_callback(self._log_realtime_playback_done)
+
+    async def _interrupt_realtime_playback(self, guild_id: int) -> None:
+        queue = self._voice_realtime_playback_queues.get(guild_id)
+        drained = 0
+        if queue is not None:
+            while True:
+                try:
+                    queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+                else:
+                    drained += 1
+                    queue.task_done()
+
+        vc = self._voice_clients.get(guild_id)
+        stopped = False
+        playback_sources = getattr(self, "_voice_realtime_playback_sources", None)
+        if isinstance(playback_sources, dict):
+            playback_source = playback_sources.pop(guild_id, None)
+            if playback_source:
+                playback_source.close()
+        if vc and vc.is_connected() and vc.is_playing():
+            vc.stop()
+            stopped = True
+
+        if drained or stopped:
+            logger.info(
+                "Discord Realtime voice interrupted playback: guild=%s drained=%d stopped=%s",
+                guild_id,
+                drained,
+                stopped,
+            )
+
+    @staticmethod
+    def _log_realtime_playback_done(future) -> None:
+        if future.cancelled():
+            return
+        try:
+            exc = future.exception()
+        except Exception as e:
+            exc = e
+        if exc:
+            logger.warning("Realtime voice playback failed: %s", exc)
+
+    async def _enqueue_realtime_pcm_response(
+        self,
+        guild_id: int,
+        pcm: bytes,
+        *,
+        sample_rate: int = 24000,
+        channels: int = 1,
+    ) -> None:
+        queue = self._voice_realtime_playback_queues.get(guild_id)
+        if queue is None:
+            queue = asyncio.Queue()
+            self._voice_realtime_playback_queues[guild_id] = queue
+        await queue.put((pcm, sample_rate, channels))
+        task = self._voice_realtime_playback_tasks.get(guild_id)
+        if task is None or task.done():
+            task = asyncio.create_task(self._realtime_playback_worker(guild_id))
+            task.add_done_callback(self._log_realtime_playback_done)
+            self._voice_realtime_playback_tasks[guild_id] = task
+
+    async def _realtime_playback_worker(self, guild_id: int) -> None:
+        queue = self._voice_realtime_playback_queues.get(guild_id)
+        if queue is None:
+            return
+        while True:
+            pcm, sample_rate, channels = await queue.get()
+            try:
+                ok = await self._play_realtime_pcm_response(
+                    guild_id,
+                    pcm,
+                    sample_rate=sample_rate,
+                    channels=channels,
+                )
+                if not ok:
+                    logger.warning("Realtime voice playback skipped: guild=%s not connected", guild_id)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning("Realtime voice playback failed: %s", exc)
+            finally:
+                queue.task_done()
+
+    async def _play_realtime_pcm_response(
+        self,
+        guild_id: int,
+        pcm: bytes,
+        *,
+        sample_rate: int = 24000,
+        channels: int = 1,
+    ) -> bool:
+        vc = self._voice_clients.get(guild_id)
+        if not vc or not vc.is_connected():
+            return False
+
+        playback_sources = getattr(self, "_voice_realtime_playback_sources", None)
+        if not isinstance(playback_sources, dict):
+            playback_sources = {}
+            self._voice_realtime_playback_sources = playback_sources
+
+        existing_source = playback_sources.get(guild_id)
+        if existing_source is not None and not existing_source.closed and vc.is_playing():
+            existing_source.feed(pcm, sample_rate=sample_rate, channels=channels)
+            logger.info(
+                "Discord Realtime voice fed PCM stream: guild=%s bytes=%d rate=%d channels=%d",
+                guild_id,
+                len(pcm),
+                sample_rate,
+                channels,
+            )
+            self._reset_voice_timeout(guild_id)
+            return True
+
+        wait_start = time.monotonic()
+        while vc.is_playing():
+            if time.monotonic() - wait_start > self.PLAYBACK_TIMEOUT:
+                logger.warning("Timed out waiting for previous Realtime playback to finish")
+                vc.stop()
+                break
+            await asyncio.sleep(0.02)
+
+        done = asyncio.Event()
+        loop = asyncio.get_running_loop()
+
+        def _after(error):
+            if error:
+                logger.error("Realtime voice playback error: %s", error)
+            current_source = playback_sources.get(guild_id)
+            if current_source is source:
+                playback_sources.pop(guild_id, None)
+            loop.call_soon_threadsafe(done.set)
+
+        source = _RealtimePCMQueueAudioSource(pcm, sample_rate=sample_rate, channels=channels)
+        playback_sources[guild_id] = source
+        logger.info(
+            "Discord Realtime voice playing PCM stream: guild=%s bytes=%d rate=%d channels=%d",
+            guild_id,
+            len(pcm),
+            sample_rate,
+            channels,
+        )
+        try:
+            vc.play(source, after=_after)
+        except asyncio.TimeoutError:
+            logger.warning("Realtime voice playback timed out after %ds", self.PLAYBACK_TIMEOUT)
+            vc.stop()
+        self._reset_voice_timeout(guild_id)
+        return True
 
     # Maximum seconds to wait for voice playback before giving up
     PLAYBACK_TIMEOUT = 120
@@ -2133,6 +2556,9 @@ class DiscordAdapter(BasePlatformAdapter):
                             vc._connection.send_packet(b'\xf8\xff\xfe')
                     except Exception:
                         pass
+
+                if self.is_voice_realtime_enabled(guild_id):
+                    continue
 
                 completed = receiver.check_silence()
                 # Voice inputs always originate from a specific guild

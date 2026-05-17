@@ -1130,6 +1130,22 @@ DEFAULT_CONFIG = {
         "beep_enabled": True,         # Play record start/stop beeps in CLI voice mode
         "silence_threshold": 200,     # RMS below this = silence (0-32767)
         "silence_duration": 3.0,      # Seconds of silence before auto-stop
+        "realtime": {
+            "enabled": False,
+            "model": "gpt-realtime-2",
+            "voice": "marin",
+            "instructions": "",
+            "reasoning_effort": "low",
+            "auth_mode": "auto",      # "auto" | "direct" | "managed"
+            "input_sample_rate": 24000,
+            "output_sample_rate": 24000,
+            "vad_threshold": 0.55,
+            "vad_prefix_padding_ms": 250,
+            "vad_silence_duration_ms": 350,
+            "manual_turn_timeout_ms": 700,
+            "input_silence_threshold": 120,
+            "discord": {},            # Optional Discord-specific overrides
+        },
     },
     
     "human_delay": {

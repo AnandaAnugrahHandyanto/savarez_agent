@@ -1,5 +1,6 @@
 """Tests for the /voice command and auto voice reply in the gateway."""
 
+import asyncio
 import importlib.util
 import json
 import os
@@ -818,6 +819,89 @@ class TestVoiceChannelCommands:
         assert mock_adapter._voice_sources[111]["chat_type"] == "group"
 
     @pytest.mark.asyncio
+    async def test_join_success_starts_realtime_when_enabled(self, runner, monkeypatch):
+        """Discord VC join attaches Realtime-2 session when config enables it."""
+        from gateway.config import Platform
+        import gateway.openai_realtime_voice as rt
+        import model_tools
+        import hermes_cli.tools_config as tools_config
+
+        started = []
+
+        class FakeRealtimeSession:
+            active = True
+
+            def __init__(self, **kwargs):
+                self.kwargs = kwargs
+
+            def start(self):
+                started.append(self)
+
+            def close(self):
+                pass
+
+        monkeypatch.setattr(
+            "gateway.run._load_gateway_config",
+            lambda: {
+                "voice": {"realtime": {"enabled": True, "auth_mode": "managed"}},
+                "agent": {},
+            },
+        )
+        monkeypatch.setattr(rt, "OpenAIRealtimeVoiceSession", FakeRealtimeSession)
+        monkeypatch.setattr(
+            rt,
+            "resolve_realtime_auth",
+            lambda _config: rt.RealtimeAuthConfig(
+                api_key="oauth-token",
+                websocket_url=rt.DIRECT_REALTIME_WS_URL,
+                mode="managed",
+            ),
+        )
+        monkeypatch.setattr(tools_config, "_get_platform_tools", lambda _config, _platform: {"core"})
+        terminal_schema = {
+            "type": "function",
+            "function": {
+                "name": "terminal",
+                "description": "Run a command",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }
+        monkeypatch.setattr(model_tools, "get_tool_definitions", lambda **_kw: [terminal_schema])
+
+        mock_channel = MagicMock()
+        mock_channel.name = "General"
+        mock_adapter = AsyncMock()
+        mock_adapter.join_voice_channel = AsyncMock(return_value=True)
+        mock_adapter.get_user_voice_channel = AsyncMock(return_value=mock_channel)
+        mock_adapter.set_voice_realtime_session = MagicMock()
+        mock_adapter.queue_realtime_pcm_response = MagicMock()
+        mock_adapter.interrupt_realtime_playback = MagicMock()
+        mock_adapter._voice_text_channels = {}
+        mock_adapter._voice_sources = {}
+        mock_adapter._voice_input_callback = None
+        mock_adapter._on_voice_disconnect = None
+        event = self._make_discord_event()
+        event.source.platform = Platform.DISCORD
+        runner.adapters[Platform.DISCORD] = mock_adapter
+
+        result = await runner._handle_voice_channel_join(event)
+
+        assert "Realtime-2 voice is active using managed auth" in result
+        assert started
+        assert started[0].kwargs["config"].model == "gpt-realtime-2"
+        assert started[0].kwargs["tool_schemas"] == [terminal_schema]
+        assert mock_adapter.set_voice_realtime_session.call_args.args[0] == 111
+        started[0].kwargs["on_audio_response"](b"pcm")
+        mock_adapter.queue_realtime_pcm_response.assert_called_once_with(
+            111,
+            b"pcm",
+            sample_rate=24000,
+            channels=1,
+        )
+        started[0].kwargs["on_user_audio_start"]()
+        mock_adapter.interrupt_realtime_playback.assert_called_once_with(111)
+
+    @pytest.mark.asyncio
     async def test_join_failure(self, runner):
         """Failed join returns permissions error."""
         mock_channel = MagicMock()
@@ -860,6 +944,64 @@ class TestVoiceChannelCommands:
 
         assert "voice dependencies are missing" in result.lower()
         assert "PyNaCl" in result
+
+    @pytest.mark.asyncio
+    async def test_status_reports_active_realtime(self, runner, monkeypatch):
+        """Discord /voice status shows active Realtime-2 state."""
+        from gateway.config import Platform
+
+        monkeypatch.setattr(
+            "gateway.run._load_gateway_config",
+            lambda: {"voice": {"realtime": {"enabled": True, "auth_mode": "managed"}}},
+        )
+
+        mock_adapter = MagicMock()
+        mock_adapter.get_voice_channel_info.return_value = {
+            "channel_name": "General",
+            "member_count": 0,
+            "members": [],
+        }
+        mock_adapter.is_voice_realtime_enabled.return_value = True
+
+        event = self._make_discord_event("/voice status")
+        event.source.platform = Platform.DISCORD
+        runner.adapters[Platform.DISCORD] = mock_adapter
+
+        result = await runner._handle_voice_command(event)
+
+        assert "Realtime-2: active" in result
+
+    @pytest.mark.asyncio
+    async def test_status_reports_realtime_auth_ready_not_active(self, runner, monkeypatch):
+        """Discord /voice status shows configured-but-not-active Realtime auth readiness."""
+        from gateway.config import Platform
+        import gateway.openai_realtime_voice as rt
+
+        monkeypatch.setattr(
+            "gateway.run._load_gateway_config",
+            lambda: {"voice": {"realtime": {"enabled": True, "auth_mode": "managed"}}},
+        )
+        monkeypatch.setattr(
+            rt,
+            "resolve_realtime_auth",
+            lambda _config: rt.RealtimeAuthConfig(
+                api_key="token",
+                websocket_url=rt.DIRECT_REALTIME_WS_URL,
+                mode="managed",
+            ),
+        )
+
+        mock_adapter = MagicMock()
+        mock_adapter.get_voice_channel_info.return_value = None
+        mock_adapter.is_voice_realtime_enabled.return_value = False
+
+        event = self._make_discord_event("/voice status")
+        event.source.platform = Platform.DISCORD
+        runner.adapters[Platform.DISCORD] = mock_adapter
+
+        result = await runner._handle_voice_command(event)
+
+        assert "Realtime-2: configured, auth ready via managed, not active" in result
 
     # -- _handle_voice_channel_leave --
 
@@ -1081,6 +1223,11 @@ class TestDiscordVoiceChannelMethods:
         adapter._voice_input_callback = None
         adapter._allowed_user_ids = set()
         adapter._running = True
+        adapter._loop = None
+        adapter._voice_realtime_sessions = {}
+        adapter._voice_realtime_playback_queues = {}
+        adapter._voice_realtime_playback_tasks = {}
+        adapter._voice_realtime_playback_sources = {}
         return adapter
 
     def test_is_in_voice_channel_true(self):
@@ -1189,6 +1336,206 @@ class TestDiscordVoiceChannelMethods:
         adapter = self._make_adapter()
         adapter._allowed_user_ids = {"42", "99"}
         assert adapter._is_allowed_user("42") is True
+
+    def test_realtime_voice_pcm_respects_auth_gate(self):
+        adapter = self._make_adapter()
+        adapter._client.get_guild = MagicMock(return_value=MagicMock())
+        adapter._is_allowed_user = MagicMock(return_value=False)
+        session = MagicMock()
+
+        adapter._send_realtime_voice_pcm(111, 42, b"pcm", session)
+
+        adapter._is_allowed_user.assert_called_once()
+        session.send_discord_pcm.assert_not_called()
+
+    def test_set_realtime_session_streams_receiver_pcm_to_session(self):
+        adapter = self._make_adapter()
+        adapter._client.get_guild = MagicMock(return_value=MagicMock())
+        adapter._is_allowed_user = MagicMock(return_value=True)
+        receiver = MagicMock()
+        adapter._voice_receivers[111] = receiver
+        session = MagicMock(active=True)
+
+        adapter.set_voice_realtime_session(111, session)
+
+        callback = receiver.set_stream_callback.call_args.args[0]
+        callback(42, b"pcm")
+
+        session.send_discord_pcm.assert_called_once_with(b"pcm")
+
+    @pytest.mark.asyncio
+    async def test_realtime_playback_worker_stays_alive_for_followup_chunks(self):
+        adapter = self._make_adapter()
+        played = []
+
+        async def fake_play(guild_id, pcm, *, sample_rate=24000, channels=1):
+            played.append((guild_id, pcm, sample_rate, channels))
+            return True
+
+        adapter._play_realtime_pcm_response = fake_play
+
+        await adapter._enqueue_realtime_pcm_response(111, b"first", sample_rate=24000, channels=1)
+        await asyncio.wait_for(adapter._voice_realtime_playback_queues[111].join(), timeout=1)
+        first_task = adapter._voice_realtime_playback_tasks[111]
+        assert not first_task.done()
+
+        await adapter._enqueue_realtime_pcm_response(111, b"second", sample_rate=24000, channels=1)
+        await asyncio.wait_for(adapter._voice_realtime_playback_queues[111].join(), timeout=1)
+
+        assert [item[1] for item in played] == [b"first", b"second"]
+        assert adapter._voice_realtime_playback_tasks[111] is first_task
+
+        adapter.clear_voice_realtime_session(111)
+        await asyncio.sleep(0)
+        assert first_task.cancelled()
+
+    @pytest.mark.asyncio
+    async def test_queue_realtime_pcm_response_enqueues_on_adapter_loop(self):
+        adapter = self._make_adapter()
+        adapter._loop = asyncio.get_running_loop()
+        played = []
+
+        async def fake_play(guild_id, pcm, *, sample_rate=24000, channels=1):
+            played.append((guild_id, pcm, sample_rate, channels))
+            return True
+
+        adapter._play_realtime_pcm_response = fake_play
+
+        adapter.queue_realtime_pcm_response(111, b"pcm", sample_rate=24000, channels=1)
+
+        deadline = time.monotonic() + 1
+        while time.monotonic() < deadline and not played:
+            await asyncio.sleep(0.01)
+
+        assert played == [(111, b"pcm", 24000, 1)]
+        task = adapter._voice_realtime_playback_tasks[111]
+        adapter.clear_voice_realtime_session(111)
+        await asyncio.sleep(0)
+        assert task.cancelled()
+
+    @pytest.mark.asyncio
+    async def test_interrupt_realtime_playback_drains_queue_and_stops_current_audio(self):
+        adapter = self._make_adapter()
+        queue = asyncio.Queue()
+        await queue.put((b"old-1", 24000, 1))
+        await queue.put((b"old-2", 24000, 1))
+        adapter._voice_realtime_playback_queues[111] = queue
+
+        mock_vc = MagicMock()
+        mock_vc.is_connected.return_value = True
+        mock_vc.is_playing.return_value = True
+        adapter._voice_clients[111] = mock_vc
+
+        await adapter._interrupt_realtime_playback(111)
+
+        assert queue.empty()
+        await asyncio.wait_for(queue.join(), timeout=1)
+        mock_vc.stop.assert_called_once()
+
+    def test_realtime_pcm_audio_source_converts_to_discord_frame(self):
+        from gateway.platforms.discord import _RealtimePCMAudioSource
+
+        pcm_20ms_24khz_mono = (100).to_bytes(2, "little", signed=True) * 480
+        source = _RealtimePCMAudioSource(pcm_20ms_24khz_mono, sample_rate=24000, channels=1)
+
+        frame = source.read()
+
+        assert len(frame) == _RealtimePCMAudioSource._FRAME_BYTES
+        assert frame[:8] == (
+            (100).to_bytes(2, "little", signed=True)
+            + (100).to_bytes(2, "little", signed=True)
+        ) * 2
+
+    def test_realtime_voice_pcm_sends_authorized_audio(self):
+        adapter = self._make_adapter()
+        adapter._client.get_guild = MagicMock(return_value=MagicMock())
+        adapter._is_allowed_user = MagicMock(return_value=True)
+        session = MagicMock()
+
+        adapter._send_realtime_voice_pcm(111, 42, b"pcm", session)
+
+        session.send_discord_pcm.assert_called_once_with(b"pcm")
+
+    def test_realtime_pcm_audio_source_converts_to_discord_frames(self):
+        from gateway.platforms.discord import _RealtimePCMAudioSource
+
+        # 10ms of 24kHz mono s16le should upsample to one padded 20ms Discord frame.
+        source = _RealtimePCMAudioSource(b"\x01\x00" * 240, sample_rate=24000, channels=1)
+
+        frame = source.read()
+
+        assert source.is_opus() is False
+        assert len(frame) == 3840
+        assert frame[:8] == b"\x01\x00\x01\x00\x01\x00\x01\x00"
+        assert source.read() == b""
+
+    def test_realtime_pcm_queue_audio_source_bridges_partial_chunks(self):
+        from gateway.platforms.discord import _RealtimePCMQueueAudioSource
+
+        # Two 10ms 24kHz mono chunks should become one continuous 20ms Discord frame
+        # without padding between chunk boundaries.
+        source = _RealtimePCMQueueAudioSource(b"\x01\x00" * 240, sample_rate=24000, channels=1)
+        source.feed(b"\x02\x00" * 240, sample_rate=24000, channels=1)
+
+        frame = source.read()
+
+        assert source.is_opus() is False
+        assert len(frame) == 3840
+        assert frame[:8] == b"\x01\x00\x01\x00\x01\x00\x01\x00"
+        assert frame[-8:] == b"\x02\x00\x02\x00\x02\x00\x02\x00"
+
+    @pytest.mark.asyncio
+    async def test_realtime_pcm_playback_keeps_receiver_active(self):
+        adapter = self._make_adapter()
+        mock_vc = MagicMock()
+        mock_vc.is_connected.return_value = True
+        mock_vc.is_playing.return_value = False
+        captured = {}
+
+        def play(source, after=None):
+            captured["source"] = source
+            if after:
+                after(None)
+
+        mock_vc.play.side_effect = play
+        receiver = MagicMock()
+        adapter._voice_clients[111] = mock_vc
+        adapter._voice_receivers[111] = receiver
+
+        result = await adapter._play_realtime_pcm_response(
+            111,
+            b"\x00\x00" * 240,
+            sample_rate=24000,
+            channels=1,
+        )
+
+        assert result is True
+        assert captured["source"].is_opus() is False
+        receiver.pause.assert_not_called()
+        receiver.resume.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_realtime_pcm_playback_feeds_existing_stream(self):
+        adapter = self._make_adapter()
+        mock_vc = MagicMock()
+        mock_vc.is_connected.return_value = True
+        mock_vc.is_playing.return_value = True
+        adapter._voice_clients[111] = mock_vc
+
+        source = MagicMock()
+        source.closed = False
+        adapter._voice_realtime_playback_sources[111] = source
+
+        result = await adapter._play_realtime_pcm_response(
+            111,
+            b"\x00\x00" * 240,
+            sample_rate=24000,
+            channels=1,
+        )
+
+        assert result is True
+        source.feed.assert_called_once_with(b"\x00\x00" * 240, sample_rate=24000, channels=1)
+        mock_vc.play.assert_not_called()
 
     def test_is_allowed_user_not_in_list(self):
         adapter = self._make_adapter()

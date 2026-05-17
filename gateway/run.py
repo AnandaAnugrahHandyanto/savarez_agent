@@ -10156,8 +10156,11 @@ class GatewayRunner:
                     for m in info["members"]:
                         status = t("gateway.voice.speaking") if m.get("is_speaking") else ""
                         lines.append(t("gateway.voice.status_member", name=m['display_name'], status=status))
+                    lines.extend(self._discord_realtime_voice_status_lines(event, adapter, guild_id))
                     return "\n".join(lines)
-            return t("gateway.voice.status_mode", label=labels.get(mode, mode))
+            lines = [t("gateway.voice.status_mode", label=labels.get(mode, mode))]
+            lines.extend(self._discord_realtime_voice_status_lines(event, adapter, guild_id))
+            return "\n".join(lines)
         else:
             # Toggle: off → on, on/all → off
             current = self._voice_mode.get(voice_key, "off")
@@ -10173,6 +10176,44 @@ class GatewayRunner:
                 if adapter:
                     self._set_adapter_auto_tts_disabled(adapter, chat_id, disabled=True)
                 return t("gateway.voice.disabled_short")
+
+    def _discord_realtime_voice_status_lines(
+        self,
+        event: MessageEvent,
+        adapter: Any,
+        guild_id: Optional[int],
+    ) -> List[str]:
+        if _platform_config_key(event.source.platform) != "discord":
+            return []
+        try:
+            from gateway.openai_realtime_voice import (
+                load_realtime_voice_config,
+                resolve_realtime_auth,
+            )
+
+            realtime_config = load_realtime_voice_config(_load_gateway_config())
+            if not realtime_config.enabled:
+                return []
+
+            active = bool(
+                guild_id
+                and hasattr(adapter, "is_voice_realtime_enabled")
+                and adapter.is_voice_realtime_enabled(guild_id)
+            )
+            if active:
+                return [
+                    f"Realtime-2: active ({realtime_config.auth_mode} auth requested)."
+                ]
+
+            try:
+                auth = resolve_realtime_auth(realtime_config)
+            except Exception as e:
+                return [f"Realtime-2: configured but auth is not ready ({e})."]
+
+            return [f"Realtime-2: configured, auth ready via {auth.mode}, not active."]
+        except Exception as e:
+            logger.debug("Failed to build Discord Realtime voice status: %s", e)
+            return []
 
     async def _handle_voice_channel_join(self, event: MessageEvent) -> str:
         """Join the user's current Discord voice channel."""
@@ -10217,13 +10258,109 @@ class GatewayRunner:
             self._voice_mode[self._voice_key(event.source.platform, event.source.chat_id)] = "all"
             self._save_voice_modes()
             self._set_adapter_auto_tts_enabled(adapter, event.source.chat_id, enabled=True)
+            realtime_status = await self._maybe_enable_discord_realtime_voice(
+                event=event,
+                adapter=adapter,
+                guild_id=guild_id,
+            )
+            extra = f"\n{realtime_status}" if realtime_status else ""
             return (
                 f"Joined voice channel **{voice_channel.name}**.\n"
                 f"I'll speak my replies and listen to you. Use /voice leave to disconnect."
+                f"{extra}"
             )
         # Join failed — clear callback
         adapter._voice_input_callback = None
         return "Failed to join voice channel. Check bot permissions (Connect + Speak)."
+
+    async def _maybe_enable_discord_realtime_voice(
+        self,
+        *,
+        event: MessageEvent,
+        adapter: Any,
+        guild_id: int,
+    ) -> Optional[str]:
+        """Start OpenAI Realtime voice for Discord VC when configured."""
+        try:
+            from gateway.openai_realtime_voice import (
+                OpenAIRealtimeVoiceSession,
+                load_realtime_voice_config,
+                resolve_realtime_auth,
+            )
+
+            user_config = _load_gateway_config()
+            realtime_config = load_realtime_voice_config(user_config)
+            if not realtime_config.enabled:
+                return None
+
+            if not hasattr(adapter, "set_voice_realtime_session"):
+                return "Realtime voice is configured, but this Discord adapter cannot attach sessions."
+            if not hasattr(adapter, "queue_realtime_pcm_response"):
+                return "Realtime voice is configured, but this Discord adapter cannot play PCM responses."
+
+            auth = resolve_realtime_auth(realtime_config)
+            logger.info(
+                "Starting Discord Realtime voice: guild=%s model=%s voice=%s auth_mode=%s resolved_auth=%s",
+                guild_id,
+                realtime_config.model,
+                realtime_config.voice,
+                realtime_config.auth_mode,
+                auth.mode,
+            )
+
+            from hermes_cli.tools_config import _get_platform_tools
+            from model_tools import get_tool_definitions
+
+            platform_key = _platform_config_key(event.source.platform)
+            enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
+            agent_cfg = user_config.get("agent") or {}
+            disabled_toolsets = agent_cfg.get("disabled_toolsets") or None
+            tool_schemas = get_tool_definitions(
+                enabled_toolsets=enabled_toolsets,
+                disabled_toolsets=disabled_toolsets,
+                quiet_mode=True,
+            )
+            session_key = self._session_key_for_source(event.source)
+
+            session = OpenAIRealtimeVoiceSession(
+                config=realtime_config,
+                auth=auth,
+                tool_schemas=tool_schemas,
+                on_audio_response=lambda pcm: adapter.queue_realtime_pcm_response(
+                    guild_id,
+                    pcm,
+                    sample_rate=realtime_config.output_sample_rate,
+                    channels=1,
+                ),
+                on_user_audio_start=(
+                    (lambda: adapter.interrupt_realtime_playback(guild_id))
+                    if hasattr(adapter, "interrupt_realtime_playback")
+                    else None
+                ),
+                task_id=f"discord-vc-{guild_id}",
+                session_id=session_key,
+            )
+            await asyncio.to_thread(session.start)
+            adapter.set_voice_realtime_session(guild_id, session)
+            logger.info(
+                "Discord Realtime voice active: guild=%s model=%s tools=%d auth=%s",
+                guild_id,
+                realtime_config.model,
+                len(tool_schemas or []),
+                auth.mode,
+            )
+            return (
+                f"Realtime-2 voice is active using {auth.mode} auth "
+                "with Hermes tool calls enabled."
+            )
+        except Exception as e:
+            logger.warning("Failed to start Discord Realtime voice: %s", e, exc_info=True)
+            if hasattr(adapter, "clear_voice_realtime_session"):
+                try:
+                    adapter.clear_voice_realtime_session(guild_id)
+                except Exception:
+                    pass
+            return f"Realtime voice failed to start ({e}); falling back to classic STT/TTS."
 
     async def _handle_voice_channel_leave(self, event: MessageEvent) -> str:
         """Leave the Discord voice channel."""
