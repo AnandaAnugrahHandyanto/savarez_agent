@@ -500,13 +500,13 @@ def _write_embedded_profile_env(profile_env, content: str) -> None:
 def _materialize_embedded_profile_env(config: dict[str, Any], *, llm_api_key: str | None = None):
     """Write the profile-scoped env file that standalone hindsight-embed uses."""
     profile_env = _embedded_profile_env_path(config)
+    profile_env.parent.mkdir(parents=True, exist_ok=True)
     env_values = _build_embedded_profile_env(config, llm_api_key=llm_api_key)
-    _write_embedded_profile_env(
-        profile_env,
+    profile_env.write_text(
         "".join(f"{key}={value}\n" for key, value in env_values.items()),
+        encoding="utf-8",
     )
     return profile_env
-
 
 def _sanitize_bank_segment(value: str) -> str:
     """Sanitize a bank_id_template placeholder value.
@@ -1281,7 +1281,6 @@ class HindsightMemoryProvider(MemoryProvider):
                     profile_env = _embedded_profile_env_path(self._config)
                     expected_env = _build_embedded_profile_env(self._config)
                     saved = _load_simple_env(profile_env)
-                    _harden_embedded_profile_env_path(profile_env)
                     config_changed = saved != expected_env
 
                     if config_changed:
