@@ -183,7 +183,7 @@ PRs, mutate Gitea, or merge unless a future policy explicitly enables that
 specific authority. No Gitea, PR, workflow, check/status, or merge mutation is
 allowed by native Kanban status alone. No merge-to-main is allowed without explicit future policy, current CI/check evidence, and a separate merge readiness gate.
 
-A successful remote branch push does not prove PR creation. A failed PR creation leaves the pilot in a partial paused state until read-only Gitea PR discovery proves that a PR exists or the Operator gives fresh exact approval for a retry. An adapter runtime failure before any API call is a Hermes tool/runtime bug, not a crypto_bot product failure; Hermes must not retry PR creation until the adapter `--self-check`, dry-run, and `--create-pr-only --preflight-only` pass with the same command shape and the same Python runtime Hermes used. If any adapter failure occurs, do not retry PR creation again until those three checks pass immediately before execution. If the remote branch already exists at the exact approved SHA, the retry must not push again; it may request at most one PR creation from that existing branch/head to `main` through the Hermes-owned adapter. During the pilot, PR updates, comments, status/check mutation, workflow/runner starts, and merge remain blocked.
+A successful remote branch push does not prove PR creation. A failed PR creation leaves the pilot in a partial paused state until read-only Gitea PR discovery proves that a PR exists or the Operator gives fresh exact approval for a retry. An adapter runtime failure before any API call is a Hermes tool/runtime bug, not a crypto_bot product failure; Hermes must not retry PR creation until the adapter `--self-check`, dry-run, and `--create-pr-only --preflight-only` pass with the same command shape and the same Python runtime Hermes used. If any adapter failure occurs, do not retry PR creation again until those three checks pass immediately before execution. If the remote branch already exists at the exact approved SHA, the retry must not push again; it may request at most one PR creation from that existing branch/head to `main` through the Hermes-owned adapter. If an open PR already exists but its remote source branch points to an older SHA than the locally validated completion-gate HEAD, do not request PR creation again and do not dispatch the next product task. Classify the state as stale PR branch / head mismatch, generate fresh local-head completion and PR-evidence packets if needed, run read-only `ls-remote` and PR/CI audit evidence, then request only a narrowly scoped controlled remote branch update for the existing PR branch; PR metadata/comments/statuses/checks, workflow/runner starts, merge, deploy, runtime, secrets, and broker/trading actions remain separately forbidden. During the pilot, PR updates, comments, status/check mutation, workflow/runner starts, and merge remain blocked.
 
 Gitea assigns pull request numbers sequentially. Never assume a strategic-plan
 item such as `S006` maps to PR `#42` or any other fixed number. Read the actual
@@ -319,7 +319,7 @@ tools pass on the live state. Do not accept readiness alone when audit tools
 disagree. Do not propose runner start, registration, or local action mirrors
 while the audit tools report `IMPORT_FAILED_OR_PARTIAL` or are missing.
 
-If the Kanban import audit reports S006 remote state as `pr_absent` while the
+When the Kanban import audit reports S006 remote state as `pr_absent` while the
 PR/CI audit discovers the matching Gitea PR, repair Hermes control-plane tooling
 before any product task or runner/CI proposal. The durable repair pattern is to
 hydrate Kanban remote lifecycle status from the same live read-only PR/CI audit
@@ -328,11 +328,14 @@ then classify the result as a valid remote lifecycle block such as
 `IMPORT_VALID_REMOTE_LIFECYCLE_BLOCKED` when PR exists but CI evidence remains
 pending. See `references/control-plane-lifecycle-consistency.md` for the
 session-derived repair recipe, validator quartet, and reporting pattern. See
+`references/stale-pr-branch-head-mismatch.md` when local completion evidence is
+newer than the existing Gitea PR source branch; it records the read-only probes,
+classification, and controlled remote-branch-update request pattern. See
 `references/planning-readiness-arbitration.md` for the planning-review rule:
 when `plan.json`, strategic summaries, native Kanban, and readiness disagree,
 close live control-plane/readiness blockers before selecting S007A, S017A, or
 any other next product task. See `references/runner-recovery-ci-evidence.md` for the gated runner-recovery
-inspection-first pattern and runner-label mismatch triage. See
+
 `references/dedicated-ci-runner-image.md` for the dedicated job image,
 act_runner job-container network requirement, rerun evidence sequence, and
 temporary-token hygiene. See `references/runner-networking-ci-recovery.md` for
