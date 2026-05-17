@@ -10940,6 +10940,15 @@ class AIAgent:
             parent_agent=self,
         )
 
+    @staticmethod
+    def _memory_tool_result_succeeded(result: str) -> bool:
+        """Return True only when the built-in memory tool reports success."""
+        try:
+            parsed = json.loads(result)
+        except Exception:
+            return False
+        return isinstance(parsed, dict) and parsed.get("success") is True
+
     def _invoke_tool(self, function_name: str, function_args: dict, effective_task_id: str,
                      tool_call_id: Optional[str] = None, messages: list = None,
                      pre_tool_block_checked: bool = False) -> str:
@@ -10992,8 +11001,14 @@ class AIAgent:
                 old_text=function_args.get("old_text"),
                 store=self._memory_store,
             )
-            # Bridge: notify external memory provider of built-in memory writes
-            if self._memory_manager and function_args.get("action") in {"add", "replace"}:
+            # Bridge: notify external memory providers only after successful
+            # built-in memory writes. Failed/rejected memory-tool attempts must
+            # not become a backdoor durable provider write.
+            if (
+                self._memory_manager
+                and function_args.get("action") in {"add", "replace"}
+                and self._memory_tool_result_succeeded(result)
+            ):
                 try:
                     self._memory_manager.on_memory_write(
                         function_args.get("action", ""),
@@ -11627,8 +11642,14 @@ class AIAgent:
                     old_text=function_args.get("old_text"),
                     store=self._memory_store,
                 )
-                # Bridge: notify external memory provider of built-in memory writes
-                if self._memory_manager and function_args.get("action") in {"add", "replace"}:
+                # Bridge: notify external memory providers only after successful
+                # built-in memory writes. Failed/rejected memory-tool attempts must
+                # not become a backdoor durable provider write.
+                if (
+                    self._memory_manager
+                    and function_args.get("action") in {"add", "replace"}
+                    and self._memory_tool_result_succeeded(function_result)
+                ):
                     try:
                         self._memory_manager.on_memory_write(
                             function_args.get("action", ""),

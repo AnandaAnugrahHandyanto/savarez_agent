@@ -1,6 +1,8 @@
 """Tests for the memory provider interface, manager, and builtin provider."""
 
 import json
+from types import SimpleNamespace
+
 import pytest
 from unittest.mock import MagicMock, patch
 
@@ -853,12 +855,54 @@ class TestCommitMemorySessionRouting:
 
 
 class TestOnMemoryWriteBridge:
-    """Verify that MemoryManager.on_memory_write is called when built-in
-    memory writes happen.  This is a regression test for #10174 where the
-    sequential tool execution path (_execute_tool_calls_sequential) was
-    missing the bridge call, so single memory tool calls never notified
-    external memory providers.
+    """Verify that MemoryManager.on_memory_write bridges only real writes.
+
+    Regression coverage includes #10174, where the sequential tool execution
+    path (_execute_tool_calls_sequential) was missing the bridge call, and the
+    success gate that prevents rejected built-in memory attempts from becoming
+    external provider writes.
     """
+
+    @staticmethod
+    def _agent_with_memory_manager(manager):
+        from run_agent import AIAgent
+
+        agent = AIAgent.__new__(AIAgent)
+        agent._memory_store = object()
+        agent._memory_manager = manager
+        agent.session_id = "sess-1"
+        agent._parent_session_id = ""
+        agent.platform = "test"
+        agent._memory_write_origin = "assistant_tool"
+        agent._memory_write_context = "foreground"
+        return agent
+
+    @staticmethod
+    def _agent_for_sequential(manager):
+        agent = TestOnMemoryWriteBridge._agent_with_memory_manager(manager)
+        agent._interrupt_requested = False
+        agent.quiet_mode = True
+        agent.verbose_logging = False
+        agent.tool_progress_callback = None
+        agent.tool_start_callback = None
+        agent.tool_complete_callback = None
+        agent.tool_delay = 0
+        agent._context_engine_tool_names = set()
+        agent.valid_tool_names = set()
+        agent._current_tool = None
+        agent._checkpoint_mgr = SimpleNamespace(enabled=False)
+        agent._subdirectory_hints = SimpleNamespace(check_tool_call=lambda *_args, **_kwargs: "")
+        agent._should_emit_quiet_tool_messages = lambda: False
+        agent._should_start_quiet_spinner = lambda: False
+        agent._vprint = lambda *_args, **_kwargs: None
+        agent._touch_activity = lambda *_args, **_kwargs: None
+        agent._apply_pending_steer_to_tool_results = lambda *_args, **_kwargs: None
+        agent._tool_guardrails = SimpleNamespace(
+            before_call=lambda *_args, **_kwargs: SimpleNamespace(allows_execution=True),
+            after_call=lambda *_args, **_kwargs: SimpleNamespace(action="allow", should_halt=False),
+        )
+        agent._tool_guardrail_halt_decision = None
+        return agent
 
     def test_on_memory_write_add(self):
         """on_memory_write fires for 'add' actions."""
@@ -913,6 +957,78 @@ class TestOnMemoryWriteBridge:
         )
 
         assert p.memory_writes == [("add", "user", "legacy provider fact")]
+
+    def test_invoke_tool_bridges_successful_memory_write(self):
+        """Concurrent/helper path mirrors only successful built-in writes."""
+        from run_agent import AIAgent
+
+        mgr = MemoryManager()
+        p = FakeMemoryProvider("ext")
+        mgr.add_provider(p)
+        agent = self._agent_with_memory_manager(mgr)
+        result = json.dumps({"success": True, "message": "saved"})
+
+        with patch("tools.memory_tool.memory_tool", return_value=result):
+            returned = AIAgent._invoke_tool(
+                agent,
+                "memory",
+                {"action": "add", "target": "user", "content": "User prefers concise replies"},
+                "task-1",
+                tool_call_id="tool-1",
+            )
+
+        assert returned == result
+        assert p.memory_writes == [("add", "user", "User prefers concise replies")]
+
+    def test_invoke_tool_does_not_bridge_failed_memory_write(self):
+        """Concurrent/helper path does not mirror rejected built-in writes."""
+        from run_agent import AIAgent
+
+        mgr = MemoryManager()
+        p = FakeMemoryProvider("ext")
+        mgr.add_provider(p)
+        agent = self._agent_with_memory_manager(mgr)
+        result = json.dumps({"success": False, "error": "belongs in session_search"})
+
+        with patch("tools.memory_tool.memory_tool", return_value=result):
+            returned = AIAgent._invoke_tool(
+                agent,
+                "memory",
+                {"action": "add", "target": "user", "content": "Completed task: fixed X"},
+                "task-1",
+                tool_call_id="tool-1",
+            )
+
+        assert returned == result
+        assert p.memory_writes == []
+
+    def test_sequential_does_not_bridge_failed_memory_write(self):
+        """Sequential path also respects memory-tool failure before mirroring."""
+        from run_agent import AIAgent
+
+        mgr = MemoryManager()
+        p = FakeMemoryProvider("ext")
+        mgr.add_provider(p)
+        agent = self._agent_for_sequential(mgr)
+        result = json.dumps({"success": False, "error": "belongs in session_search"})
+        tool_call = SimpleNamespace(
+            id="tool-1",
+            function=SimpleNamespace(
+                name="memory",
+                arguments=json.dumps(
+                    {"action": "add", "target": "user", "content": "Completed task: fixed X"}
+                ),
+            ),
+        )
+        assistant_message = SimpleNamespace(tool_calls=[tool_call])
+        messages = []
+
+        with patch("tools.memory_tool.memory_tool", return_value=result):
+            AIAgent._execute_tool_calls_sequential(agent, assistant_message, messages, "task-1")
+
+        assert p.memory_writes == []
+        assert len(messages) == 1
+        assert json.loads(messages[0]["content"])["success"] is False
 
     def test_on_memory_write_replace(self):
         """on_memory_write fires for 'replace' actions."""
