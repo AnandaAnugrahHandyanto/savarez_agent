@@ -55,6 +55,19 @@ model:
   #
   # context_length: 131072
   #
+  # Per-model overrides: `models.<id>.context_length` wins over the flat
+  # `context_length` above when `model.model` resolves to <id>. Useful when
+  # one model needs a non-default context window (e.g. a provider that only
+  # serves the model with a smaller window than the model's native size) and
+  # you don't want to remember to flip the flat value every time you switch
+  # models.
+  #
+  # models:
+  #   moonshotai/kimi-k2.6:
+  #     context_length: 256000
+  #   anthropic/claude-opus-4.6:
+  #     context_length: 200000
+  #
   # max_tokens: OUTPUT cap — maximum tokens the model may generate per response.
   #   Unrelated to how long your conversation history can be.
   #   The OpenAI-standard name "max_tokens" is a misnomer; Anthropic's native
@@ -120,6 +133,19 @@ model:
 #
 #   # Data policy: "allow" (default) or "deny" to exclude providers that may store data
 #   # data_collection: "deny"
+#
+#   # Per-model overrides: `models.<id>.<key>` wins over the flat keys above
+#   # when the active model is <id>. Unspecified per-model keys fall through
+#   # to the flat defaults. Useful when one specific model needs provider
+#   # pinning (e.g. some OpenRouter providers serve a model with a smaller
+#   # context window than the model's native size — pin to providers that
+#   # serve the full window) without affecting routing for other models.
+#   #
+#   # models:
+#   #   moonshotai/kimi-k2.6:
+#   #     only: ["together", "groq"]
+#   #   anthropic/claude-opus-4.6:
+#   #     order: ["anthropic", "google"]
 
 # =============================================================================
 # OpenRouter Response Caching (only applies when using OpenRouter)

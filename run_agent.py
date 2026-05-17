@@ -2237,28 +2237,62 @@ class AIAgent:
                     )
         self._session_init_model_config["max_tokens"] = self.max_tokens
 
-        # Read explicit context_length override from model config
-        if isinstance(_model_cfg, dict):
-            _config_context_length = _model_cfg.get("context_length")
-        else:
-            _config_context_length = None
-        if _config_context_length is not None:
-            try:
-                _config_context_length = int(_config_context_length)
-            except (TypeError, ValueError):
-                logger.warning(
-                    "Invalid model.context_length in config.yaml: %r — "
-                    "must be a plain integer (e.g. 256000, not '256K'). "
-                    "Falling back to auto-detection.",
-                    _config_context_length,
-                )
-                print(
-                    f"\n⚠ Invalid model.context_length in config.yaml: {_config_context_length!r}\n"
-                    f"  Must be a plain integer (e.g. 256000, not '256K').\n"
-                    f"  Falling back to auto-detected context window.\n",
-                    file=sys.stderr,
-                )
-                _config_context_length = None
+        # Read explicit context_length override from model config.
+        # Resolution priority (highest first):
+        #   1. model.models.<active_model>.context_length — per-model override
+        #      (lets a single profile hold one model's settings without
+        #      cross-contaminating others, when used with --model overrides)
+        #   2. model.context_length — flat default
+        #   3. model.custom_providers.<name>.models.<id>.context_length —
+        #      per-(custom_provider, model) override (handled in the
+        #      custom_providers branch further below)
+        if not isinstance(_model_cfg, dict):
+            _model_cfg = {}
+        _config_context_length = None
+
+        # (1) Per-model override
+        _models_overlay = _model_cfg.get("models", {})
+        if isinstance(_models_overlay, dict):
+            _per_model_cfg = _models_overlay.get(self.model, {})
+            if isinstance(_per_model_cfg, dict):
+                _per_model_ctx = _per_model_cfg.get("context_length")
+                if _per_model_ctx is not None:
+                    try:
+                        _config_context_length = int(_per_model_ctx)
+                    except (TypeError, ValueError):
+                        logger.warning(
+                            "Invalid model.models.%r.context_length in config.yaml: %r — "
+                            "must be a plain integer (e.g. 256000, not '256K'). "
+                            "Falling back to flat model.context_length.",
+                            self.model, _per_model_ctx,
+                        )
+                        print(
+                            f"\n⚠ Invalid model.models.{self.model!r}.context_length in config.yaml: {_per_model_ctx!r}\n"
+                            f"  Must be a plain integer (e.g. 256000, not '256K').\n"
+                            f"  Falling back to flat model.context_length.\n",
+                            file=sys.stderr,
+                        )
+
+        # (2) Flat default — only if per-model didn't resolve
+        if _config_context_length is None:
+            _flat_ctx = _model_cfg.get("context_length")
+            if _flat_ctx is not None:
+                try:
+                    _config_context_length = int(_flat_ctx)
+                except (TypeError, ValueError):
+                    logger.warning(
+                        "Invalid model.context_length in config.yaml: %r — "
+                        "must be a plain integer (e.g. 256000, not '256K'). "
+                        "Falling back to auto-detection.",
+                        _flat_ctx,
+                    )
+                    print(
+                        f"\n⚠ Invalid model.context_length in config.yaml: {_flat_ctx!r}\n"
+                        f"  Must be a plain integer (e.g. 256000, not '256K').\n"
+                        f"  Falling back to auto-detected context window.\n",
+                        file=sys.stderr,
+                    )
+                    _config_context_length = None
 
         # Resolve custom_providers list once for reuse below (startup
         # context-length override and plugin context-engine init).

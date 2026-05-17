@@ -696,3 +696,82 @@ def test_save_custom_provider_uses_provided_name(monkeypatch, tmp_path):
     entries = saved.get("custom_providers", [])
     assert len(entries) == 1
     assert entries[0]["name"] == "Ollama"
+
+
+# ---------------------------------------------------------------------------
+# Per-model provider_routing overlay (provider_routing.models.<id>.*).
+# Lets a single config declare different provider routing per model without
+# the user having to remember to swap the flat keys when they switch models.
+# ---------------------------------------------------------------------------
+
+def test_per_model_provider_routing_overrides_flat(monkeypatch):
+    cli = _import_cli()
+    config_copy = dict(cli.CLI_CONFIG)
+    config_copy["provider_routing"] = {
+        "sort": "throughput",
+        "only": ["openai", "anthropic"],  # flat default
+        "models": {
+            "moonshotai/kimi-k2.6": {
+                "only": ["together", "groq"],
+            },
+        },
+    }
+    monkeypatch.setattr(cli, "CLI_CONFIG", config_copy)
+
+    shell = cli.HermesCLI(model="moonshotai/kimi-k2.6", compact=True, max_turns=1)
+
+    assert shell._providers_only == ["together", "groq"]
+    # Unspecified per-model keys still fall through to the flat default.
+    assert shell._provider_sort == "throughput"
+
+
+def test_per_model_provider_routing_does_not_leak_to_other_models(monkeypatch):
+    """Other models keep the flat routing."""
+    cli = _import_cli()
+    config_copy = dict(cli.CLI_CONFIG)
+    config_copy["provider_routing"] = {
+        "only": ["openai", "anthropic"],
+        "models": {
+            "moonshotai/kimi-k2.6": {"only": ["together"]},
+        },
+    }
+    monkeypatch.setattr(cli, "CLI_CONFIG", config_copy)
+
+    shell = cli.HermesCLI(model="anthropic/claude-opus-4.6", compact=True, max_turns=1)
+
+    assert shell._providers_only == ["openai", "anthropic"]
+
+
+def test_per_model_provider_routing_empty_list_overrides_flat(monkeypatch):
+    """An explicit empty list at the per-model level is honored (not ignored
+    as 'unspecified'). Important so users can clear a flat default for one
+    specific model."""
+    cli = _import_cli()
+    config_copy = dict(cli.CLI_CONFIG)
+    config_copy["provider_routing"] = {
+        "only": ["openai"],
+        "models": {
+            "moonshotai/kimi-k2.6": {"only": []},
+        },
+    }
+    monkeypatch.setattr(cli, "CLI_CONFIG", config_copy)
+
+    shell = cli.HermesCLI(model="moonshotai/kimi-k2.6", compact=True, max_turns=1)
+
+    assert shell._providers_only == []
+
+
+def test_no_per_model_overlay_preserves_flat_routing(monkeypatch):
+    """Config without `models:` overlay behaves identically to old config."""
+    cli = _import_cli()
+    config_copy = dict(cli.CLI_CONFIG)
+    config_copy["provider_routing"] = {
+        "sort": "latency",
+        "only": ["openai"],
+    }
+    monkeypatch.setattr(cli, "CLI_CONFIG", config_copy)
+
+    shell = cli.HermesCLI(model="moonshotai/kimi-k2.6", compact=True, max_turns=1)
+
+    assert shell._provider_sort == "latency"
+    assert shell._providers_only == ["openai"]

@@ -2728,14 +2728,27 @@ class HermesCLI:
             CLI_CONFIG["agent"].get("service_tier", "")
         )
         
-        # OpenRouter provider routing preferences
+        # OpenRouter provider routing preferences.
+        # Per-model overlay: provider_routing.models.<active_model> overrides
+        # flat keys when the active model has its own entry. Unspecified
+        # per-model keys fall through to the flat defaults — useful when a
+        # specific model needs e.g. `only: [...]` provider pinning but the
+        # rest of the config still applies.
         pr = CLI_CONFIG.get("provider_routing", {}) or {}
-        self._provider_sort = pr.get("sort")
-        self._providers_only = pr.get("only")
-        self._providers_ignore = pr.get("ignore")
-        self._providers_order = pr.get("order")
-        self._provider_require_params = pr.get("require_parameters", False)
-        self._provider_data_collection = pr.get("data_collection")
+        if not isinstance(pr, dict):
+            pr = {}
+        _pr_models = pr.get("models") if isinstance(pr.get("models"), dict) else {}
+        _pr_per_model = _pr_models.get(self.model) if isinstance(_pr_models.get(self.model), dict) else {}
+        def _pr(key, default=None):
+            if key in _pr_per_model:
+                return _pr_per_model[key]
+            return pr.get(key, default)
+        self._provider_sort = _pr("sort")
+        self._providers_only = _pr("only")
+        self._providers_ignore = _pr("ignore")
+        self._providers_order = _pr("order")
+        self._provider_require_params = _pr("require_parameters", False)
+        self._provider_data_collection = _pr("data_collection")
 
         # OpenRouter Pareto Code router knob — coding-score floor (0.0-1.0).
         # Only applied when model.model == "openrouter/pareto-code".
