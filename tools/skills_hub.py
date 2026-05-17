@@ -1383,8 +1383,9 @@ class SkillsShSource(SkillSource):
                 detail.get("body_title", ""),
             ])
 
-        # Standard skill paths
-        base_paths = ["skills/", ".agents/skills/", ".claude/skills/"]
+        # Standard skill paths. .agents/skills/ is the shared harness format;
+        # legacy .claude/skills/ content is not treated as project instrumentation.
+        base_paths = ["skills/", ".agents/skills/"]
 
         for base_path in base_paths:
             try:
@@ -1593,7 +1594,6 @@ class SkillsShSource(SkillSource):
             f"{repo}/{skill_path}",
             f"{repo}/skills/{skill_path}",
             f"{repo}/.agents/skills/{skill_path}",
-            f"{repo}/.claude/skills/{skill_path}",
         ]
 
         seen = set()

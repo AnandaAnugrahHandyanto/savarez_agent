@@ -799,7 +799,7 @@ Per-job fields include `skills` (load specific skills), `model` /
 stdout is injected into the prompt; `no_agent=True` turns the script
 into the entire job), `context_from` (chain job A's last output into
 job B's prompt), `workdir` (run in a specific directory with its
-`AGENTS.md`/`CLAUDE.md` loaded), and multi-platform delivery.
+standardized `AGENTS.md` loaded), and multi-platform delivery.
 
 Hardening invariants:
 - **3-minute hard interrupt** on cron sessions — runaway agent loops

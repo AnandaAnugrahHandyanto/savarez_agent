@@ -528,7 +528,7 @@ def create_job(
                           token overhead. When omitted, all default tools are loaded.
                           Ignored when ``no_agent=True``.
         workdir: Optional absolute path.  When set, the job runs as if launched
-                from that directory: AGENTS.md / CLAUDE.md / .cursorrules from
+                from that directory: AGENTS.md / .cursorrules from
                 that directory are injected into the system prompt, and the
                 terminal/file/code_exec tools use it as their working directory
                 (via TERMINAL_CWD).  When unset, the old behaviour is preserved

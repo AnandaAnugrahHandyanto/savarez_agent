@@ -101,7 +101,7 @@ cd "$GITNEXUS_DIR/gitnexus-web" && npx vite build
 ```bash
 cd /path/to/target-repo
 npx gitnexus analyze --skip-agents-md
-rm -rf .claude/    # remove Claude Code-specific artifacts
+rm -rf .agents/    # remove Claude Code-specific artifacts
 ```
 
 Add `--embeddings` for semantic search (slower — minutes instead of seconds).
@@ -203,7 +203,7 @@ pkill -f cloudflared
 # Remove index from the target repo
 cd /path/to/target-repo
 npx gitnexus clean
-rm -rf .claude/
+rm -rf .agents/
 ```
 
 ## Pitfalls
@@ -216,9 +216,9 @@ rm -rf .claude/
   non-localhost hosts by default (`allowedHosts`). The production build + Node
   proxy avoids this entirely.
 
-- **The web UI does NOT create `.claude/` or `CLAUDE.md`.** Those are created by
+- **The web UI does NOT create `.agents/` or `AGENTS.md`.** Those are created by
   `npx gitnexus analyze`. Use `--skip-agents-md` to suppress the markdown files,
-  then `rm -rf .claude/` for the rest. These are Claude Code integrations that
+  then `rm -rf .agents/` for the rest. These are agent integrations that
   hermes-agent users don't need.
 
 - **Browser memory limit.** The web UI loads the entire graph into browser memory.

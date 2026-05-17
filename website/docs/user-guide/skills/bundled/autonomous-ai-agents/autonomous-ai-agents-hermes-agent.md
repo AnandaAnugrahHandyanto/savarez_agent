@@ -662,7 +662,7 @@ the `cronjob` tool, the `hermes cron` CLI (`list`, `add`, `edit`,
 - **Per-job knobs:** `skills`, `model`/`provider` override, `script`
   (pre-run data collection; `no_agent=True` makes the script the whole
   job), `context_from` (chain job A's output into job B), `workdir`
-  (run in a specific dir with its `AGENTS.md` / `CLAUDE.md` loaded),
+  (run in a specific dir with its `AGENTS.md` loaded),
   multi-platform delivery.
 - **Invariants:** 3-minute hard interrupt per run, `.tick.lock` file
   prevents duplicate ticks across processes, cron sessions pass

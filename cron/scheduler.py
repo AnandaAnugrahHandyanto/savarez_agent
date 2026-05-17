@@ -1254,7 +1254,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
 
     # Per-job working directory.  When set (and validated at create/update
     # time), we point TERMINAL_CWD at it so:
-    #   - build_context_files_prompt() picks up AGENTS.md / CLAUDE.md /
+    #   - build_context_files_prompt() picks up AGENTS.md /
     #     .cursorrules from the job's project dir, AND
     #   - the terminal, file, and code-exec tools run commands from there.
     #
@@ -1457,7 +1457,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             quiet_mode=True,
             # Cron jobs should always inherit the user's SOUL.md identity from
             # HERMES_HOME. When a workdir is configured, also inject project
-            # context files (AGENTS.md / CLAUDE.md / .cursorrules) from there.
+            # context files (AGENTS.md / .cursorrules) from there.
             # Without a workdir, keep cwd context discovery disabled.
             skip_context_files=not bool(_job_workdir),
             load_soul_identity=True,
