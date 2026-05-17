@@ -462,7 +462,7 @@ def get_anthropic_key() -> str:
     environment (``os.getenv``).  The fallback order mirrors the
     ``PROVIDER_REGISTRY["anthropic"].api_key_env_vars`` tuple:
 
-        ANTHROPIC_API_KEY -> ANTHROPIC_TOKEN -> CLAUDE_CODE_OAUTH_TOKEN
+        ANTHROPIC_API_KEY -> ANTHROPIC_TOKEN
     """
     from hermes_cli.config import get_env_value
 
