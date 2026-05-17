@@ -6566,6 +6566,9 @@ class AIAgent:
            TodoTool -> Todo -> todo). Applied twice so double-tacked
            suffixes like ``TodoTool_tool`` reduce all the way.
         5. Fuzzy match (difflib, cutoff=0.7).
+        6. Gemma-normalize: heuristic substring + alias-token matching for
+           namespace-prefixed hallucinations like "google:tool:shell:index:0"
+           or "tool:execute_terminal" (Gemma 4 via Ollama, see PR #7449).
 
         See #14784 for the original reports (TodoTool_tool, Patch_tool,
         BrowserClick_tool were all returning "Unknown tool" before).
@@ -6620,6 +6623,18 @@ class AIAgent:
         matches = get_close_matches(lowered, self.valid_tool_names, n=1, cutoff=0.7)
         if matches:
             return matches[0]
+
+        # 6. Gemma-normalize: heuristic substring + alias-token matching.
+        # Handles namespace-prefixed hallucinations emitted by Gemma 4 via Ollama,
+        # e.g. "google:tool:shell:index:0" -> "terminal", "tool:execute_terminal" -> "terminal".
+        try:
+            from environments.tool_call_parsers.tool_name_normalizer import normalize_tool_name
+            normalized_guess = normalize_tool_name(tool_name, self.valid_tool_names)
+            if normalized_guess:
+                logging.warning(f"[gemma-normalize] {tool_name} -> {normalized_guess}")
+                return normalized_guess
+        except ImportError:
+            pass
 
         return None
 
