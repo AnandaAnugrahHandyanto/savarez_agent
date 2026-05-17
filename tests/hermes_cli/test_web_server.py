@@ -2060,6 +2060,179 @@ class TestDashboardPluginManifestExtensions:
 # monkeypatch that hook.
 # ---------------------------------------------------------------------------
 
+class TestDashboardChatAutoResume:
+    def test_prefers_latest_nonempty_tui_session_over_recent_empty(self):
+        import hermes_cli.web_server as ws
+
+        sessions = [
+            {
+                "id": "recent-empty",
+                "source": "tui",
+                "message_count": 0,
+                "started_at": 990.0,
+                "last_active": 990.0,
+            },
+            {
+                "id": "older-nonempty",
+                "source": "tui",
+                "message_count": 8,
+                "started_at": 900.0,
+                "last_active": 950.0,
+            },
+        ]
+
+        assert (
+            ws._select_dashboard_chat_auto_resume_session_id(sessions, now=1000.0)
+            == "older-nonempty"
+        )
+
+    def test_reuses_recent_empty_tui_session_when_no_nonempty_exists(self):
+        import hermes_cli.web_server as ws
+
+        sessions = [
+            {
+                "id": "recent-empty",
+                "source": "tui",
+                "message_count": 0,
+                "started_at": 990.0,
+                "last_active": 990.0,
+            },
+            {
+                "id": "older-empty",
+                "source": "tui",
+                "message_count": 0,
+                "started_at": 900.0,
+                "last_active": 900.0,
+            },
+        ]
+
+        assert (
+            ws._select_dashboard_chat_auto_resume_session_id(sessions, now=1000.0)
+            == "recent-empty"
+        )
+
+    def test_selects_latest_nonempty_by_activity_not_input_order(self):
+        import hermes_cli.web_server as ws
+
+        sessions = [
+            {
+                "id": "old-compression-root",
+                "source": "tui",
+                "message_count": 170,
+                "started_at": 100.0,
+                "last_active": 200.0,
+            },
+            {
+                "id": "latest-continuation",
+                "source": "tui",
+                "message_count": 184,
+                "started_at": 300.0,
+                "last_active": 400.0,
+            },
+            {
+                "id": "newer-empty-continuation",
+                "source": "tui",
+                "message_count": 0,
+                "started_at": 500.0,
+                "last_active": 500.0,
+            },
+        ]
+
+        assert (
+            ws._select_dashboard_chat_auto_resume_session_id(sessions, now=1000.0)
+            == "latest-continuation"
+        )
+
+    def test_skips_stale_empty_tui_session_for_latest_nonempty(self):
+        import hermes_cli.web_server as ws
+
+        sessions = [
+            {
+                "id": "stale-empty",
+                "source": "tui",
+                "message_count": 0,
+                "started_at": 100.0,
+                "last_active": 100.0,
+            },
+            {
+                "id": "latest-nonempty",
+                "source": "tui",
+                "message_count": 4,
+                "started_at": 90.0,
+                "last_active": 120.0,
+            },
+        ]
+
+        assert (
+            ws._select_dashboard_chat_auto_resume_session_id(
+                sessions,
+                now=10_000.0,
+                reusable_empty_max_age_seconds=3600,
+            )
+            == "latest-nonempty"
+        )
+
+    def test_ignores_non_tui_sessions(self):
+        import hermes_cli.web_server as ws
+
+        sessions = [
+            {
+                "id": "cli-session",
+                "source": "cli",
+                "message_count": 99,
+                "started_at": 950.0,
+                "last_active": 950.0,
+            },
+            {
+                "id": "tui-session",
+                "source": "tui",
+                "message_count": 1,
+                "started_at": 900.0,
+                "last_active": 900.0,
+            },
+        ]
+
+        assert (
+            ws._select_dashboard_chat_auto_resume_session_id(sessions, now=1000.0)
+            == "tui-session"
+        )
+
+    def test_auto_resume_reads_raw_tui_sessions_including_compression_children(
+        self, monkeypatch
+    ):
+        import hermes_cli.web_server as ws
+        import hermes_state
+
+        calls: dict = {}
+
+        class FakeSessionDB:
+            def list_sessions_rich(self, **kwargs):
+                calls.update(kwargs)
+                return [
+                    {
+                        "id": "compression-root",
+                        "source": "tui",
+                        "message_count": 120,
+                        "started_at": 100.0,
+                        "last_active": 150.0,
+                    },
+                    {
+                        "id": "compression-child",
+                        "source": "tui",
+                        "message_count": 12,
+                        "started_at": 200.0,
+                        "last_active": 300.0,
+                    },
+                ]
+
+        monkeypatch.setattr(hermes_state, "SessionDB", FakeSessionDB)
+
+        assert ws._dashboard_chat_auto_resume_session_id() == "compression-child"
+        assert calls["source"] == "tui"
+        assert calls["include_children"] is True
+        assert calls["project_compression_tips"] is False
+
+
 import sys
 
 
@@ -2251,6 +2424,89 @@ class TestPtyWebSocket:
             except Exception:
                 pass
         assert captured.get("resume") == "sess-42"
+
+    def test_auto_resume_recent_session_is_forwarded_when_config_enabled(
+        self, monkeypatch
+    ):
+        captured: dict = {}
+
+        def fake_resolve(resume=None, sidecar_url=None):
+            captured["resume"] = resume
+            return (["/bin/sh", "-c", "printf auto-resume-ok"], None, None)
+
+        monkeypatch.setattr(
+            self.ws_module, "_dashboard_chat_auto_resume_enabled", lambda: True
+        )
+        monkeypatch.setattr(
+            self.ws_module,
+            "_dashboard_chat_auto_resume_session_id",
+            lambda: "auto-session",
+        )
+        monkeypatch.setattr(self.ws_module, "_resolve_chat_argv", fake_resolve)
+
+        with self.client.websocket_connect(self._url()) as conn:
+            try:
+                conn.receive_bytes()
+            except Exception:
+                pass
+
+        assert captured.get("resume") == "auto-session"
+
+    def test_explicit_resume_overrides_auto_resume(self, monkeypatch):
+        captured: dict = {}
+
+        def fake_resolve(resume=None, sidecar_url=None):
+            captured["resume"] = resume
+            return (["/bin/sh", "-c", "printf explicit-resume-ok"], None, None)
+
+        def should_not_auto_resume():
+            raise AssertionError("auto resume should not run for explicit resume")
+
+        monkeypatch.setattr(
+            self.ws_module, "_dashboard_chat_auto_resume_enabled", lambda: True
+        )
+        monkeypatch.setattr(
+            self.ws_module,
+            "_dashboard_chat_auto_resume_session_id",
+            should_not_auto_resume,
+        )
+        monkeypatch.setattr(self.ws_module, "_resolve_chat_argv", fake_resolve)
+
+        with self.client.websocket_connect(self._url(resume="explicit-session")) as conn:
+            try:
+                conn.receive_bytes()
+            except Exception:
+                pass
+
+        assert captured.get("resume") == "explicit-session"
+
+    def test_new_param_disables_auto_resume(self, monkeypatch):
+        captured: dict = {}
+
+        def fake_resolve(resume=None, sidecar_url=None):
+            captured["resume"] = resume
+            return (["/bin/sh", "-c", "printf new-chat-ok"], None, None)
+
+        def should_not_auto_resume():
+            raise AssertionError("auto resume should not run when new=1")
+
+        monkeypatch.setattr(
+            self.ws_module, "_dashboard_chat_auto_resume_enabled", lambda: True
+        )
+        monkeypatch.setattr(
+            self.ws_module,
+            "_dashboard_chat_auto_resume_session_id",
+            should_not_auto_resume,
+        )
+        monkeypatch.setattr(self.ws_module, "_resolve_chat_argv", fake_resolve)
+
+        with self.client.websocket_connect(self._url(new="1")) as conn:
+            try:
+                conn.receive_bytes()
+            except Exception:
+                pass
+
+        assert captured.get("resume") is None
 
     def test_channel_param_propagates_sidecar_url(self, monkeypatch):
         """When /api/pty is opened with ?channel=, the PTY child gets a

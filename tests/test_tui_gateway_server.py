@@ -3012,6 +3012,68 @@ def test_mirror_slash_compress_does_not_prelock_history(monkeypatch):
     assert ("session.info", "sid", {"model": "x"}) in emitted
 
 
+def test_session_create_with_persist_false_skips_session_db(monkeypatch):
+    """Dashboard sidecars need a runtime sid without creating blank history rows."""
+    created_sessions: list[tuple[tuple, dict]] = []
+    make_agent_calls: list[dict] = []
+
+    class _FakeWorker:
+        def __init__(self, key, model):
+            self.key = key
+
+        def close(self):
+            return None
+
+    class _FakeAgent:
+        def __init__(self):
+            self.model = "x"
+            self.provider = "openrouter"
+            self.base_url = ""
+            self.api_key = ""
+
+    def _make_agent(sid, key, *, persist_to_db=True):
+        make_agent_calls.append({"sid": sid, "key": key, "persist_to_db": persist_to_db})
+        return _FakeAgent()
+
+    monkeypatch.setattr(server, "_make_agent", _make_agent)
+    monkeypatch.setattr(server, "_SlashWorker", _FakeWorker)
+    monkeypatch.setattr(
+        server,
+        "_get_db",
+        lambda: types.SimpleNamespace(
+            create_session=lambda *a, **kw: created_sessions.append((a, kw))
+        ),
+    )
+    monkeypatch.setattr(server, "_session_info", lambda _a: {"model": "x"})
+    monkeypatch.setattr(server, "_probe_credentials", lambda _a: None)
+    monkeypatch.setattr(server, "_wire_callbacks", lambda _sid: None)
+    monkeypatch.setattr(server, "_emit", lambda *a, **kw: None)
+
+    import tools.approval as _approval
+
+    monkeypatch.setattr(_approval, "register_gateway_notify", lambda key, cb: None)
+    monkeypatch.setattr(_approval, "unregister_gateway_notify", lambda key: None)
+    monkeypatch.setattr(_approval, "load_permanent_allowlist", lambda: None)
+
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "session.create",
+            "params": {"cols": 80, "persist": False},
+        }
+    )
+    sid = resp["result"]["session_id"]
+    session = server._sessions[sid]
+    session["agent_ready"].wait(timeout=2.0)
+
+    assert make_agent_calls == [
+        {"sid": sid, "key": session["session_key"], "persist_to_db": False}
+    ]
+    assert created_sessions == []
+
+    server._sessions.pop(sid, None)
+
+
 # ---------------------------------------------------------------------------
 # session.create / session.close race: fast /new churn must not orphan the
 # slash_worker subprocess or the global approval-notify registration.

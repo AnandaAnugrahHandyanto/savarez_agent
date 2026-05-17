@@ -3179,6 +3179,114 @@ def _ws_client_is_allowed(ws: "WebSocket") -> bool:
 # drops AND the publisher has disconnected.
 _event_channels: dict[str, set] = {}
 _event_lock = asyncio.Lock()
+_DASHBOARD_CHAT_REUSABLE_EMPTY_MAX_AGE_SECONDS = 3600
+
+
+def _dashboard_chat_auto_resume_enabled() -> bool:
+    """Whether bare Dashboard /chat should resume a recent TUI session.
+
+    Kept behind ``display.tui_auto_resume_recent`` so existing installations
+    retain the historical "bare /chat creates a new session" behavior unless
+    the user opts in.
+    """
+    try:
+        cfg = load_config()
+    except Exception:
+        _log.exception("Failed to load config for dashboard chat auto-resume")
+        return False
+
+    display = cfg.get("display") if isinstance(cfg, dict) else None
+    return bool((display or {}).get("tui_auto_resume_recent", False))
+
+
+def _session_message_count(session: Dict[str, Any]) -> int:
+    try:
+        return int(session.get("message_count") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _session_last_activity(session: Dict[str, Any]) -> float:
+    value = session.get("last_active", session.get("started_at", 0))
+    try:
+        return float(value or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _select_dashboard_chat_auto_resume_session_id(
+    sessions: List[Dict[str, Any]],
+    *,
+    now: Optional[float] = None,
+    reusable_empty_max_age_seconds: int = _DASHBOARD_CHAT_REUSABLE_EMPTY_MAX_AGE_SECONDS,
+) -> Optional[str]:
+    """Pick the TUI session a bare Dashboard /chat should resume.
+
+    The policy is intentionally conversation-preserving: prefer the most
+    recently active non-empty TUI session, including raw compression
+    continuation children.  Only when there is no non-empty TUI conversation
+    at all do we reuse a recent empty TUI session to prevent blank refresh
+    loops from creating many empty rows.  Non-TUI sessions are ignored so
+    dashboard Chat does not jump into cron, gateway, or plain CLI
+    conversations.
+    """
+    tui_sessions = [
+        s
+        for s in sessions
+        if s.get("source") == "tui" and str(s.get("id") or "").strip()
+    ]
+    if not tui_sessions:
+        return None
+
+    def sort_key(session: Dict[str, Any]) -> tuple[float, float]:
+        try:
+            started = float(session.get("started_at") or 0)
+        except (TypeError, ValueError):
+            started = 0.0
+        return (_session_last_activity(session), started)
+
+    ordered = sorted(tui_sessions, key=sort_key, reverse=True)
+
+    for session in ordered:
+        if _session_message_count(session) > 0:
+            return str(session["id"])
+
+    current_time = time.time() if now is None else now
+    for session in ordered:
+        age = current_time - _session_last_activity(session)
+        if 0 <= age <= reusable_empty_max_age_seconds:
+            return str(session["id"])
+
+    return str(ordered[0]["id"])
+
+
+def _dashboard_chat_auto_resume_session_id() -> Optional[str]:
+    """Return the recent TUI session id to resume, or None to start fresh."""
+    try:
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            sessions = db.list_sessions_rich(
+                source="tui",
+                limit=100,
+                include_children=True,
+                project_compression_tips=False,
+                order_by_last_active=True,
+            )
+        finally:
+            close = getattr(db, "close", None)
+            if callable(close):
+                close()
+    except Exception:
+        _log.exception("Failed to select dashboard chat auto-resume session")
+        return None
+
+    return _select_dashboard_chat_auto_resume_session_id(sessions)
+
+
+def _truthy_query_param(value: Optional[str]) -> bool:
+    return (value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _resolve_chat_argv(
@@ -3293,6 +3401,13 @@ async def pty_ws(ws: WebSocket) -> None:
 
     # --- spawn PTY ------------------------------------------------------
     resume = ws.query_params.get("resume") or None
+    if (
+        resume is None
+        and not _truthy_query_param(ws.query_params.get("new"))
+        and _dashboard_chat_auto_resume_enabled()
+    ):
+        resume = _dashboard_chat_auto_resume_session_id()
+
     channel = _channel_or_close_code(ws)
     sidecar_url = _build_sidecar_url(channel) if channel else None
 

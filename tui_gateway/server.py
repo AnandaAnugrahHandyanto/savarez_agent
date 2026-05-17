@@ -553,7 +553,10 @@ def _start_agent_build(sid: str, session: dict) -> None:
         try:
             tokens = _set_session_context(key)
             try:
-                agent = _make_agent(sid, key)
+                if current.get("persist_to_db", True):
+                    agent = _make_agent(sid, key)
+                else:
+                    agent = _make_agent(sid, key, persist_to_db=False)
             finally:
                 _clear_session_context(tokens)
 
@@ -1858,7 +1861,13 @@ def _reset_session_agent(sid: str, session: dict) -> dict:
     return info
 
 
-def _make_agent(sid: str, key: str, session_id: str | None = None):
+def _make_agent(
+    sid: str,
+    key: str,
+    session_id: str | None = None,
+    *,
+    persist_to_db: bool = True,
+):
     from run_agent import AIAgent
     from hermes_cli.runtime_provider import resolve_runtime_provider
 
@@ -1901,7 +1910,7 @@ def _make_agent(sid: str, key: str, session_id: str | None = None):
         enabled_toolsets=_load_enabled_toolsets(),
         platform="tui",
         session_id=session_id or key,
-        session_db=_get_db(),
+        session_db=_get_db() if persist_to_db else None,
         ephemeral_system_prompt=system_prompt or None,
         checkpoints_enabled=is_truthy_value(os.environ.get("HERMES_TUI_CHECKPOINTS")),
         pass_session_id=is_truthy_value(os.environ.get("HERMES_TUI_PASS_SESSION_ID")),
@@ -2097,6 +2106,7 @@ def _(rid, params: dict) -> dict:
     sid = uuid.uuid4().hex[:8]
     key = _new_session_key()
     cols = int(params.get("cols", 80))
+    persist_to_db = params.get("persist", True) is not False
     _enable_gateway_prompts()
 
     ready = threading.Event()
@@ -2113,6 +2123,7 @@ def _(rid, params: dict) -> dict:
         "history_version": 0,
         "image_counter": 0,
         "pending_title": None,
+        "persist_to_db": persist_to_db,
         "running": False,
         "session_key": key,
         "show_reasoning": _load_show_reasoning(),
