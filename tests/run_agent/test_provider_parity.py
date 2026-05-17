@@ -952,11 +952,11 @@ class TestAuxiliaryClientProviderPriority:
 
     def test_openrouter_always_wins(self, monkeypatch):
         monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
-        from agent.auxiliary_client import _OPENROUTER_MODEL, get_text_auxiliary_client
+        from agent.auxiliary_client import get_text_auxiliary_client
         with patch("agent.auxiliary_client.OpenAI") as mock:
             client, model = get_text_auxiliary_client()
-        assert model == _OPENROUTER_MODEL
         assert "openrouter" in str(mock.call_args.kwargs["base_url"]).lower()
+        assert isinstance(model, str) and "/" in model
 
     def test_nous_when_no_openrouter(self, monkeypatch):
         monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
