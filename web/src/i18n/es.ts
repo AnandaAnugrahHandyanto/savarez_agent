@@ -72,6 +72,7 @@ export const es: Translations = {
       config: "Configuración",
       cron: "Cron",
       documentation: "Documentación",
+      explorer: "Explorador",
       keys: "Claves",
       logs: "Registros",
       models: "Modelos",
@@ -532,6 +533,10 @@ export const es: Translations = {
       tweet_text: "Just unlocked {tier_part}\"{name}\" in Hermes Agent ☤",
     },
   },
+  explorer: {
+    title: "Explorador de código",
+  },
+
   kanban: {
     loading: "Cargando tablero Kanban…",
     loadFailed: "Error al cargar el tablero Kanban: ",

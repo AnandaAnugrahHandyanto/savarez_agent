@@ -72,6 +72,7 @@ export const ja: Translations = {
       config: "設定",
       cron: "Cron",
       documentation: "ドキュメント",
+      explorer: "エクスプローラー",
       keys: "キー",
       logs: "ログ",
       models: "モデル",
@@ -533,6 +534,10 @@ export const ja: Translations = {
       tweet_text: "Just unlocked {tier_part}\"{name}\" in Hermes Agent ☤",
     },
   },
+  explorer: {
+    title: "コードエクスプローラー",
+  },
+
   kanban: {
     loading: "Kanban ボードを読み込んでいます…",
     loadFailed: "Kanban ボードの読み込みに失敗しました: ",

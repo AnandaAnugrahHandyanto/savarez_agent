@@ -88,6 +88,7 @@ export interface Translations {
       config: string;
       cron: string;
       documentation: string;
+      explorer: string;
       keys: string;
       logs: string;
       models: string;
@@ -697,5 +698,10 @@ export interface Translations {
     workspacePathOptional: string;
     logTruncated: string;
     logAt: string;
+  };
+
+  // ── Explorer page ──
+  explorer: {
+    title: string;
   };
 }

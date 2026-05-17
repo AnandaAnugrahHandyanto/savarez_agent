@@ -72,6 +72,7 @@ export const zhHant: Translations = {
       config: "設定",
       cron: "排程任務",
       documentation: "文件",
+      explorer: "程式碼探索",
       keys: "金鑰",
       logs: "日誌",
       models: "模型",
@@ -533,6 +534,10 @@ export const zhHant: Translations = {
       tweet_text: "Just unlocked {tier_part}\"{name}\" in Hermes Agent ☤",
     },
   },
+  explorer: {
+    title: "程式碼探索器",
+  },
+
   kanban: {
     loading: "正在載入看板…",
     loadFailed: "載入看板失敗：",
