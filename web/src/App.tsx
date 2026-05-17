@@ -25,8 +25,10 @@ import {
   Download,
   Eye,
   FileText,
+  GitCompare,
   Globe,
   Heart,
+  Home,
   KeyRound,
   Menu,
   MessageSquare,
@@ -67,6 +69,9 @@ import ProfilesPage from "@/pages/ProfilesPage";
 import SkillsPage from "@/pages/SkillsPage";
 import PluginsPage from "@/pages/PluginsPage";
 import ChatPage from "@/pages/ChatPage";
+import ComparePage from "@/pages/ComparePage";
+import LandingPage from "@/pages/LandingPage";
+import ReplayPage from "@/pages/ReplayPage";
 import { LanguageSwitcher } from "@/components/LanguageSwitcher";
 import { ThemeSwitcher } from "@/components/ThemeSwitcher";
 import { useI18n } from "@/i18n";
@@ -78,7 +83,7 @@ import { isDashboardEmbeddedChatEnabled } from "@/lib/dashboard-flags";
 import { api } from "@/lib/api";
 
 function RootRedirect() {
-  return <Navigate to="/sessions" replace />;
+  return <LandingPage />;
 }
 
 function UnknownRouteFallback({ pluginsLoading }: { pluginsLoading: boolean }) {
@@ -108,6 +113,8 @@ const CHAT_NAV_ITEM: NavItem = {
 const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/": RootRedirect,
   "/sessions": SessionsPage,
+  "/replay/:id": ReplayPage,
+  "/compare": ComparePage,
   "/analytics": AnalyticsPage,
   "/models": ModelsPage,
   "/logs": LogsPage,
@@ -130,10 +137,20 @@ function ChatRouteSink() {
 
 const BUILTIN_NAV_REST: NavItem[] = [
   {
+    path: "/",
+    label: "Product",
+    icon: Home,
+  },
+  {
     path: "/sessions",
     labelKey: "sessions",
-    label: "Sessions",
+    label: "Dashboard",
     icon: MessageSquare,
+  },
+  {
+    path: "/compare",
+    label: "Compare",
+    icon: GitCompare,
   },
   {
     path: "/analytics",
@@ -168,6 +185,7 @@ const ICON_MAP: Record<string, ComponentType<{ className?: string }>> = {
   Clock,
   Cpu,
   FileText,
+  GitCompare,
   KeyRound,
   MessageSquare,
   Package,
@@ -176,6 +194,7 @@ const ICON_MAP: Record<string, ComponentType<{ className?: string }>> = {
   Sparkles,
   Terminal,
   Globe,
+  Home,
   Database,
   Shield,
   Users,
@@ -663,7 +682,7 @@ function SidebarNavLink({ closeMobile, item, t }: SidebarNavLinkProps) {
     <li>
       <NavLink
         to={path}
-        end={path === "/sessions"}
+        end={path === "/sessions" || path === "/"}
         onClick={closeMobile}
         className={({ isActive }) =>
           cn(
