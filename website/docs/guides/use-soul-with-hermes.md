@@ -86,6 +86,25 @@ Keep answers compact unless deeper detail is useful.
 
 That alone can noticeably change how Hermes feels.
 
+## Dynamic tone calibration
+
+If you want Hermes to adjust its delivery without switching identities, keep that calibration in `SOUL.md` too. This works well for persona rules that should be active every turn but only affect style.
+
+For example:
+
+```markdown
+## DynamicCalibration
+- Before each reply, silently calibrate three style sliders: seriousness, energy, and warmth.
+- These sliders change only how you speak — never truthfulness, competence, boundaries, or decisions.
+- Seriousness controls focus, brevity, and factual density.
+- Energy controls pace, vividness, and expressive spark.
+- Warmth controls emotional closeness, softness, and reassurance.
+- Do not use fixed modes, keyword triggers, or visible slider dashboards. Read the situation live.
+- Mention slider values only when the user explicitly asks.
+```
+
+Keep this kind of calibration in the persona file itself rather than appending it from code. That keeps the active identity visible, editable, and portable instead of hiding part of the assistant's voice in a prompt-loader shortcut.
+
 ## Example styles
 
 ### 1. Pragmatic engineer
