@@ -2833,6 +2833,7 @@ class HermesCLI:
         self._clarify_state = None
         self._clarify_freetext = False
         self._clarify_deadline = 0
+        self._clarify_multi_base = None
         self._sudo_state = None
         self._sudo_deadline = 0
         self._modal_input_snapshot = None
@@ -10295,7 +10296,7 @@ class HermesCLI:
         for line in reqs["details"].split("\n"):
             _cprint(f"    {line}")
 
-    def _clarify_callback(self, question, choices):
+    def _clarify_callback(self, question, choices, multi_select=False):
         """
         Platform callback for the clarify tool. Called from the agent thread.
 
@@ -10303,22 +10304,31 @@ class HermesCLI:
         questions), then blocks until the user responds via the prompt_toolkit
         key bindings.  If no response arrives within the configured timeout the
         question is dismissed and the agent is told to decide on its own.
+
+        When ``multi_select`` is True, shows checkboxes and the user can
+        select multiple options with Space, confirming with Enter.
         """
         import time as _time
 
         timeout = CLI_CONFIG.get("clarify", {}).get("timeout", 120)
         response_queue = queue.Queue()
         is_open_ended = not choices
+        # multi-select support: only active when multi_select is True and choices exist
+        effective_multi = multi_select and not is_open_ended
 
         self._clarify_state = {
             "question": question,
             "choices": choices if not is_open_ended else [],
             "selected": 0,
+            # multi-select support
+            "multi_select": effective_multi,
+            "selected_indices": set() if effective_multi else None,
             "response_queue": response_queue,
         }
         self._clarify_deadline = _time.monotonic() + timeout
         # Open-ended questions skip straight to freetext input
         self._clarify_freetext = is_open_ended
+        self._clarify_multi_base = None
 
         # Trigger prompt_toolkit repaint from this (non-main) thread
         self._invalidate()
@@ -10355,6 +10365,7 @@ class HermesCLI:
         self._clarify_state = None
         self._clarify_freetext = False
         self._clarify_deadline = 0
+        self._clarify_multi_base = None
         self._invalidate()
         _cprint(f"\n{_DIM}(clarify timed out after {timeout}s — agent will decide){_RST}")
         return (
@@ -11876,6 +11887,11 @@ class HermesCLI:
             if self._clarify_freetext and self._clarify_state:
                 text = event.app.current_buffer.text.strip()
                 if text:
+                    # multi-select: prepend previously checked real choices
+                    base = getattr(self, '_clarify_multi_base', None)
+                    if base:
+                        text = ", ".join(base) + ", " + text
+                        self._clarify_multi_base = None
                     self._clarify_state["response_queue"].put(text)
                     self._clarify_state = None
                     self._clarify_freetext = False
@@ -11888,6 +11904,35 @@ class HermesCLI:
                 state = self._clarify_state
                 selected = state["selected"]
                 choices = state.get("choices") or []
+                # multi-select support: submit comma-joined list of checked choices
+                if state.get("multi_select"):
+                    indices = state.get("selected_indices")
+                    if not indices:
+                        # Nothing checked → submit empty string (parses to [])
+                        state["response_queue"].put("")
+                        self._clarify_state = None
+                        event.app.invalidate()
+                        return
+                    sorted_idx = sorted(indices)
+                    selected_choices = [choices[i] for i in sorted_idx if i < len(choices)]
+                    other_checked = len(choices) in sorted_idx
+                    if other_checked and selected_choices:
+                        # "Other" + real choices: store base choices, switch to freetext
+                        # so the user can type a custom answer that gets appended
+                        self._clarify_multi_base = selected_choices
+                        self._clarify_freetext = True
+                        event.app.invalidate()
+                        return
+                    if selected_choices:
+                        state["response_queue"].put(", ".join(selected_choices))
+                        self._clarify_state = None
+                        event.app.invalidate()
+                        return
+                    # Only "Other" was checked → switch to freetext
+                    self._clarify_freetext = True
+                    event.app.invalidate()
+                    return
+                # Original single-select behavior: submit the highlighted choice
                 if selected < len(choices):
                     state["response_queue"].put(choices[selected])
                     self._clarify_state = None
@@ -12083,11 +12128,42 @@ class HermesCLI:
                 self._clarify_state["selected"] = min(max_idx, self._clarify_state["selected"] + 1)
                 event.app.invalidate()
 
+        # multi-select support: Space toggles the checkbox at the current cursor position
+        @kb.add('space', filter=Condition(lambda: bool(self._clarify_state) and not self._clarify_freetext and self._clarify_state.get("multi_select")))
+        def clarify_toggle(event):
+            if self._clarify_state:
+                selected = self._clarify_state["selected"]
+                indices = self._clarify_state.get("selected_indices", set())
+                if selected in indices:
+                    indices.discard(selected)
+                else:
+                    indices.add(selected)
+                event.app.invalidate()
+
         # Number keys for quick clarify selection (1-9, 0 for 10th item)
         def _make_clarify_number_handler(idx):
             def handler(event):
                 if self._clarify_state and not self._clarify_freetext:
                     choices = self._clarify_state.get("choices") or []
+                    # multi-select support: number keys toggle checkboxes instead of submitting
+                    if self._clarify_state.get("multi_select"):
+                        if idx < len(choices):
+                            indices = self._clarify_state.get("selected_indices", set())
+                            if idx in indices:
+                                indices.discard(idx)
+                            else:
+                                indices.add(idx)
+                            event.app.invalidate()
+                        elif idx == len(choices):
+                            # Toggle "Other" in multi-select mode
+                            indices = self._clarify_state.get("selected_indices", set())
+                            if idx in indices:
+                                indices.discard(idx)
+                            else:
+                                indices.add(idx)
+                            event.app.invalidate()
+                        return
+                    # Original single-select: number keys submit directly
                     # Map index to choice (treating "Other" as the last option)
                     if idx < len(choices):
                         # Select a numbered choice
@@ -12291,6 +12367,7 @@ class HermesCLI:
                 )
                 self._clarify_state = None
                 self._clarify_freetext = False
+                self._clarify_multi_base = None
                 event.app.current_buffer.reset()
                 event.app.invalidate()
                 return
@@ -12391,6 +12468,7 @@ class HermesCLI:
                 )
                 self._clarify_state = None
                 self._clarify_freetext = False
+                self._clarify_multi_base = None
                 event.app.current_buffer.reset()
                 event.app.invalidate()
                 return
@@ -12956,6 +13034,9 @@ class HermesCLI:
             question = state["question"]
             choices = state.get("choices") or []
             selected = state.get("selected", 0)
+            # multi-select support
+            multi_select = state.get("multi_select", False)
+            selected_indices = state.get("selected_indices", set()) if multi_select else set()
             preview_lines = _wrap_panel_text(question, 60)
             for i, choice in enumerate(choices):
                 # Show number prefix for quick selection (1-9 for items 1-9, 0 for 10th item)
@@ -12965,7 +13046,13 @@ class HermesCLI:
                     num_prefix = '0'
                 else:
                     num_prefix = ' '
-                if i == selected and not cli_ref._clarify_freetext:
+                if multi_select:
+                    cb = "[x]" if i in selected_indices else "[ ]"
+                    if i == selected and not cli_ref._clarify_freetext:
+                        prefix = f"❯ {cb} {num_prefix}. "
+                    else:
+                        prefix = f"  {cb} {num_prefix}. "
+                elif i == selected and not cli_ref._clarify_freetext:
                     prefix = f"❯ {num_prefix}. "
                 else:
                     prefix = f"  {num_prefix}. "
@@ -12978,11 +13065,20 @@ class HermesCLI:
                 other_num_prefix = '0'
             else:
                 other_num_prefix = ' '
-            other_label = (
-                f"❯ {other_num_prefix}. Other (type below)" if cli_ref._clarify_freetext
-                else f"❯ {other_num_prefix}. Other (type your answer)" if selected == len(choices)
-                else f"  {other_num_prefix}. Other (type your answer)"
-            )
+            other_idx_val = len(choices)
+            if multi_select:
+                cb = "[x]" if other_idx_val in selected_indices else "[ ]"
+                other_label = (
+                    f"❯ {cb} {other_num_prefix}. Other (type below)" if cli_ref._clarify_freetext
+                    else f"❯ {cb} {other_num_prefix}. Other (type your answer)" if selected == other_idx_val
+                    else f"  {cb} {other_num_prefix}. Other (type your answer)"
+                )
+            else:
+                other_label = (
+                    f"❯ {other_num_prefix}. Other (type below)" if cli_ref._clarify_freetext
+                    else f"❯ {other_num_prefix}. Other (type your answer)" if selected == len(choices)
+                    else f"  {other_num_prefix}. Other (type your answer)"
+                )
             preview_lines.extend(_wrap_panel_text(other_label, 60, subsequent_indent="    "))
             box_width = _panel_box_width("Hermes needs your input", preview_lines)
             inner_text_width = max(8, box_width - 2)
@@ -12998,7 +13094,14 @@ class HermesCLI:
                         num_prefix = '0'
                     else:
                         num_prefix = ' '
-                    if i == selected and not cli_ref._clarify_freetext:
+                    # multi-select support: add checkbox after cursor indicator
+                    if multi_select:
+                        cb = "[x]" if i in selected_indices else "[ ]"
+                        if i == selected and not cli_ref._clarify_freetext:
+                            prefix = f'❯ {cb} {num_prefix}. '
+                        else:
+                            prefix = f'  {cb} {num_prefix}. '
+                    elif i == selected and not cli_ref._clarify_freetext:
                         prefix = f'❯ {num_prefix}. '
                     else:
                         prefix = f'  {num_prefix}. '
@@ -13013,12 +13116,22 @@ class HermesCLI:
                     other_num_prefix = '0'
                 else:
                     other_num_prefix = ' '
-                if selected == other_idx and not cli_ref._clarify_freetext:
-                    other_label_mand = f'❯ {other_num_prefix}. Other (type your answer)'
-                elif cli_ref._clarify_freetext:
-                    other_label_mand = f'❯ {other_num_prefix}. Other (type below)'
+                # multi-select support: add checkbox to Other option
+                if multi_select:
+                    cb = "[x]" if other_idx in selected_indices else "[ ]"
+                    if selected == other_idx and not cli_ref._clarify_freetext:
+                        other_label_mand = f'❯ {cb} {other_num_prefix}. Other (type your answer)'
+                    elif cli_ref._clarify_freetext:
+                        other_label_mand = f'❯ {cb} {other_num_prefix}. Other (type below)'
+                    else:
+                        other_label_mand = f'  {cb} {other_num_prefix}. Other (type your answer)'
                 else:
-                    other_label_mand = f'  {other_num_prefix}. Other (type your answer)'
+                    if selected == other_idx and not cli_ref._clarify_freetext:
+                        other_label_mand = f'❯ {other_num_prefix}. Other (type your answer)'
+                    elif cli_ref._clarify_freetext:
+                        other_label_mand = f'❯ {other_num_prefix}. Other (type below)'
+                    else:
+                        other_label_mand = f'  {other_num_prefix}. Other (type your answer)'
                 other_wrapped = _wrap_panel_text(other_label_mand, inner_text_width, subsequent_indent="    ")
             elif cli_ref._clarify_freetext:
                 # Freetext-only mode: the guidance line takes the place of choices.
