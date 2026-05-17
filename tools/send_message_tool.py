@@ -620,8 +620,15 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             last_result = result
         return last_result
 
-    # --- Matrix: use the native adapter helper when media is present ---
-    if platform == Platform.MATRIX and media_files:
+    # --- Matrix: use the native adapter helper for media and E2EE rooms ---
+    matrix_extra = getattr(pconfig, "extra", {}) or {}
+    matrix_encryption = False
+    if platform == Platform.MATRIX:
+        matrix_encryption = bool(
+            matrix_extra.get("encryption")
+            or os.getenv("MATRIX_ENCRYPTION", "").lower() in ("true", "1", "yes")
+        )
+    if platform == Platform.MATRIX and (media_files or matrix_encryption):
         last_result = None
         for i, chunk in enumerate(chunks):
             is_last = (i == len(chunks) - 1)
@@ -1516,18 +1523,32 @@ async def _send_matrix(token, extra, chat_id, message):
 
 async def _send_matrix_via_adapter(pconfig, chat_id, message, media_files=None, thread_id=None):
     """Send via the Matrix adapter so native Matrix media uploads are preserved."""
-    try:
-        from gateway.platforms.matrix import MatrixAdapter
-    except ImportError:
-        return {"error": "Matrix dependencies not installed. Run: pip install 'mautrix[encryption]'"}
-
     media_files = media_files or []
+    adapter = None
+    owns_adapter = False
 
     try:
-        adapter = MatrixAdapter(pconfig)
-        connected = await adapter.connect()
-        if not connected:
-            return _error("Matrix connect failed")
+        try:
+            from gateway.config import Platform
+            from gateway.run import _gateway_runner_ref
+
+            runner = _gateway_runner_ref()
+            if runner is not None:
+                adapter = runner.adapters.get(Platform.MATRIX)
+        except Exception:
+            adapter = None
+
+        if adapter is None:
+            try:
+                from gateway.platforms.matrix import MatrixAdapter
+            except ImportError:
+                return {"error": "Matrix dependencies not installed. Run: pip install 'mautrix[encryption]'"}
+
+            adapter = MatrixAdapter(pconfig)
+            connected = await adapter.connect()
+            if not connected:
+                return _error("Matrix connect failed")
+            owns_adapter = True
 
         metadata = {"thread_id": thread_id} if thread_id else None
         last_result = None
@@ -1568,10 +1589,11 @@ async def _send_matrix_via_adapter(pconfig, chat_id, message, media_files=None, 
     except Exception as e:
         return _error(f"Matrix send failed: {e}")
     finally:
-        try:
-            await adapter.disconnect()
-        except Exception:
-            pass
+        if owns_adapter and adapter is not None:
+            try:
+                await adapter.disconnect()
+            except Exception:
+                pass
 
 
 async def _send_homeassistant(token, extra, chat_id, message):
