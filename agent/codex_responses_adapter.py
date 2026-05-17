@@ -937,7 +937,6 @@ def _normalize_codex_response(response: Any) -> tuple[Any, str]:
                     saw_final_answer_phase = True
             message_text = _extract_responses_message_text(item)
             if message_text:
-                content_parts.append(message_text)
                 raw_message_item: Dict[str, Any] = {
                     "type": "message",
                     "role": "assistant",
@@ -950,6 +949,14 @@ def _normalize_codex_response(response: Any) -> tuple[Any, str]:
                 if normalized_phase:
                     raw_message_item["phase"] = normalized_phase
                 message_items_raw.append(raw_message_item)
+
+                # Codex Responses phases are semantic, not cosmetic.
+                # `commentary` / `analysis` output_text can contain private
+                # execution planning. Preserve it for Responses replay via
+                # `codex_message_items`, but never expose it as user-visible
+                # assistant content.
+                if normalized_phase not in {"commentary", "analysis"}:
+                    content_parts.append(message_text)
         elif item_type == "reasoning":
             reasoning_text = _extract_responses_reasoning_text(item)
             if reasoning_text:
