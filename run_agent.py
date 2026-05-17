@@ -258,8 +258,20 @@ def _get_proxy_from_env() -> Optional[str]:
 
 
 def _get_proxy_for_base_url(base_url: Optional[str]) -> Optional[str]:
-    """Return an env-configured proxy unless NO_PROXY excludes this base URL."""
+    """Return a configured proxy unless NO_PROXY excludes this base URL."""
     proxy = _get_proxy_from_env()
+    if not proxy and base_url:
+        try:
+            from hermes_cli.config import read_raw_config
+
+            cfg = read_raw_config()
+            provider = cfg_get(cfg, "model", "provider", default="")
+            if str(provider or "").strip().lower() == "openai-codex":
+                proxy = cfg_get(cfg, "providers", "openai-codex", "proxy_url", default=None)
+        except Exception:
+            proxy = None
+        if proxy:
+            proxy = normalize_proxy_url(str(proxy))
     if not proxy or not base_url:
         return proxy
 
