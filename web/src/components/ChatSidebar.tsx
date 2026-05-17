@@ -159,28 +159,25 @@ export function ChatSidebar({ channel, className }: ChatSidebarProps) {
 
     const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
     const qs = new URLSearchParams({ token, channel });
-    const ws = new WebSocket(
-      `${proto}//${window.location.host}/api/events?${qs.toString()}`,
-    );
+    const url = `${proto}//${window.location.host}/api/events?${qs.toString()}`;
 
-    // `unmounting` suppresses the banner during cleanup — `ws.close()`
+    // `stopped` suppresses the banner/reconnect during cleanup — `ws.close()`
     // from the effect's return fires a close event with code 1005 that
     // would otherwise look like an unexpected drop.
     const DISCONNECTED = "events feed disconnected — tool calls may not appear";
-    let unmounting = false;
-    const surface = (msg: string) => !unmounting && setError(msg);
+    const RECONNECT_DELAY_MS = 1000;
+    let stopped = false;
+    let eventWs: WebSocket | null = null;
+    let retryTimer: number | undefined;
 
-    ws.addEventListener("error", () => surface(DISCONNECTED));
+    const surface = (msg: string) => !stopped && setError(msg);
+    const clearEventsError = () => {
+      setError((current) => (current === DISCONNECTED ? null : current));
+    };
 
-    ws.addEventListener("close", (ev) => {
-      if (ev.code === 4401 || ev.code === 4403) {
-        surface(`events feed rejected (${ev.code}) — reload the page`);
-      } else if (ev.code !== 1000) {
-        surface(DISCONNECTED);
-      }
-    });
+    const handleMessage = (ev: MessageEvent) => {
+      clearEventsError();
 
-    ws.addEventListener("message", (ev) => {
       let frame: RpcEnvelope;
 
       try {
@@ -264,11 +261,62 @@ export function ChatSidebar({ channel, className }: ChatSidebarProps) {
           ),
         );
       }
-    });
+    };
+
+    const scheduleReconnect = () => {
+      if (stopped || retryTimer !== undefined) {
+        return;
+      }
+
+      retryTimer = window.setTimeout(() => {
+        retryTimer = undefined;
+        connect();
+      }, RECONNECT_DELAY_MS);
+    };
+
+    function connect() {
+      if (stopped) {
+        return;
+      }
+
+      const ws = new WebSocket(url);
+      eventWs = ws;
+
+      ws.addEventListener("open", clearEventsError);
+      ws.addEventListener("error", () => surface(DISCONNECTED));
+
+      ws.addEventListener("close", (ev) => {
+        if (eventWs === ws) {
+          eventWs = null;
+        }
+
+        if (stopped) {
+          return;
+        }
+
+        if (ev.code === 4401 || ev.code === 4403) {
+          surface(`events feed rejected (${ev.code}) — reload the page`);
+          return;
+        }
+
+        if (ev.code !== 1000) {
+          surface(DISCONNECTED);
+        }
+
+        scheduleReconnect();
+      });
+
+      ws.addEventListener("message", handleMessage);
+    }
+
+    connect();
 
     return () => {
-      unmounting = true;
-      ws.close();
+      stopped = true;
+      if (retryTimer !== undefined) {
+        window.clearTimeout(retryTimer);
+      }
+      eventWs?.close();
     };
   }, [channel, version]);
 

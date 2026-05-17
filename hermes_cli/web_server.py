@@ -22,6 +22,7 @@ import threading
 import time
 import urllib.parse
 import urllib.request
+from collections import deque
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -3173,12 +3174,34 @@ def _ws_client_is_allowed(ws: "WebSocket") -> bool:
         return True
     return client_host in _LOOPBACK_HOSTS
 
-# Per-channel subscriber registry used by /api/pub (PTY-side gateway → dashboard)
+# Per-channel event state used by /api/pub (PTY-side gateway → dashboard)
 # and /api/events (dashboard → browser sidebar).  Keyed by an opaque channel id
-# the chat tab generates on mount; entries auto-evict when the last subscriber
-# drops AND the publisher has disconnected.
+# the chat tab generates on mount.  While the PTY-side publisher is alive, keep
+# a small replay buffer so a transient browser-side /api/events disconnect does
+# not permanently lose the final tool/status frames that arrive during the gap.
+# State auto-evicts when the last subscriber drops AND the publisher has
+# disconnected.
+_EVENT_REPLAY_LIMIT = 128
 _event_channels: dict[str, set] = {}
+_event_replay_buffers: dict[str, deque[tuple[int, str]]] = {}
+_event_sequences: dict[str, int] = {}
+_event_replay_after: dict[str, int] = {}
+_event_publishers: dict[str, int] = {}
 _event_lock = asyncio.Lock()
+
+
+def _evict_event_channel_if_idle_locked(channel: str) -> None:
+    """Drop replay state once no publisher or subscriber can use it."""
+    if _event_channels.get(channel):
+        return
+    if _event_publishers.get(channel, 0) > 0:
+        return
+
+    _event_channels.pop(channel, None)
+    _event_replay_buffers.pop(channel, None)
+    _event_sequences.pop(channel, None)
+    _event_replay_after.pop(channel, None)
+    _event_publishers.pop(channel, None)
 
 
 def _resolve_chat_argv(
@@ -3240,17 +3263,40 @@ def _build_sidecar_url(channel: str) -> Optional[str]:
 
 
 async def _broadcast_event(channel: str, payload: str) -> None:
-    """Fan out one publisher frame to every subscriber on `channel`."""
+    """Record and fan out one publisher frame to every subscriber."""
     async with _event_lock:
+        seq = _event_sequences.get(channel, 0) + 1
+        _event_sequences[channel] = seq
+        _event_replay_buffers.setdefault(
+            channel,
+            deque(maxlen=_EVENT_REPLAY_LIMIT),
+        ).append((seq, payload))
         subs = list(_event_channels.get(channel, ()))
 
+    failed_subs = []
     for sub in subs:
         try:
             await sub.send_text(payload)
         except Exception:
-            # Subscriber went away mid-send; the /api/events finally clause
-            # will remove it from the registry on its next iteration.
-            pass
+            failed_subs.append(sub)
+
+    if not failed_subs:
+        return
+
+    async with _event_lock:
+        current_subs = _event_channels.get(channel)
+        if current_subs is None:
+            return
+
+        for sub in failed_subs:
+            current_subs.discard(sub)
+
+        if not current_subs:
+            _event_channels.pop(channel, None)
+            # send_text raised before this frame could be considered
+            # delivered, so replay should resume from the previous sequence.
+            _event_replay_after[channel] = seq - 1
+            _evict_event_channel_if_idle_locked(channel)
 
 
 def _channel_or_close_code(ws: WebSocket) -> Optional[str]:
@@ -3435,11 +3481,22 @@ async def pub_ws(ws: WebSocket) -> None:
 
     await ws.accept()
 
+    async with _event_lock:
+        _event_publishers[channel] = _event_publishers.get(channel, 0) + 1
+
     try:
         while True:
             await _broadcast_event(channel, await ws.receive_text())
     except WebSocketDisconnect:
         pass
+    finally:
+        async with _event_lock:
+            publishers = _event_publishers.get(channel, 0) - 1
+            if publishers > 0:
+                _event_publishers[channel] = publishers
+            else:
+                _event_publishers.pop(channel, None)
+            _evict_event_channel_if_idle_locked(channel)
 
 
 @app.websocket("/api/events")
@@ -3464,7 +3521,23 @@ async def events_ws(ws: WebSocket) -> None:
 
     await ws.accept()
 
+    # Replay is sent while holding the event lock so any concurrent publisher
+    # frame waits until this subscriber has received the backlog and joined the
+    # live fan-out set.  The backlog is deliberately tiny and in-memory only,
+    # scoped to a live PTY-side publisher, so this preserves ordering without
+    # turning the channel into durable session storage.
     async with _event_lock:
+        replay_after = _event_replay_after.get(channel, 0)
+        replay = [
+            payload
+            for seq, payload in _event_replay_buffers.get(channel, ())
+            if seq > replay_after
+        ]
+        for payload in replay:
+            try:
+                await ws.send_text(payload)
+            except Exception:
+                return
         _event_channels.setdefault(channel, set()).add(ws)
 
     try:
@@ -3484,6 +3557,12 @@ async def events_ws(ws: WebSocket) -> None:
 
                 if not subs:
                     _event_channels.pop(channel, None)
+                    _event_replay_after[channel] = _event_sequences.get(
+                        channel,
+                        _event_replay_after.get(channel, 0),
+                    )
+
+            _evict_event_channel_if_idle_locked(channel)
 
 
 def _normalise_prefix(raw: Optional[str]) -> str:
