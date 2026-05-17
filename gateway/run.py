@@ -1260,6 +1260,9 @@ class GatewayRunner:
         # cannot grow unbounded over a long-running gateway lifetime.
         self._session_sources: "OrderedDict[str, SessionSource]" = OrderedDict()
         self._session_sources_max = 512
+        self._profile_router_sessions = None
+        self._profile_router_sessions_path = _hermes_home / "gateway" / "profile-router-sessions.json"
+        self._profile_router_lock = asyncio.Lock()
 
         # Cache AIAgent instances per session to preserve prompt caching.
         # Without this, a new AIAgent is created per message, rebuilding the
@@ -3375,6 +3378,16 @@ class GatewayRunner:
             write_runtime_status(gateway_state="starting", exit_reason=None)
         except Exception:
             pass
+
+        try:
+            from gateway.profile_router import load_profile_routes, validate_profile_routes
+            _profile_routes = load_profile_routes(_load_gateway_config(), platform="telegram")
+            if _profile_routes:
+                logger.info("Telegram profile ingress router: %d route(s) configured", len(_profile_routes))
+                for _warning in validate_profile_routes(_profile_routes):
+                    logger.warning("Telegram profile ingress router config: %s", _warning)
+        except Exception as _e:
+            logger.warning("Telegram profile ingress router config validation failed: %s", _e)
 
         # Log any active supply-chain security advisories. Operators see this
         # in gateway.log and `hermes status` surfaces it; we do NOT block
@@ -5774,6 +5787,136 @@ class GatewayRunner:
 
         await adapter.send(source.chat_id, content, metadata=metadata)
 
+    async def _maybe_route_telegram_profile_message(
+        self,
+        event: MessageEvent,
+        *,
+        is_internal: bool,
+    ) -> Optional[str]:
+        """Optionally route an authorized Telegram message to another profile.
+
+        Returns a response string when a route handled the message, otherwise
+        ``None`` so the default gateway pipeline can continue.
+        """
+        source = event.source
+        if is_internal or source.platform != Platform.TELEGRAM:
+            return None
+
+        try:
+            from hermes_cli.commands import resolve_command as _resolve_gateway_command
+            from gateway.profile_router import (
+                dispatch_to_profile as _dispatch_to_profile,
+                load_profile_route_sessions as _load_profile_route_sessions,
+                load_profile_routes as _load_profile_routes,
+                match_profile_route as _match_profile_route,
+                parse_profile_scoped_command as _parse_profile_scoped_command,
+                save_profile_route_sessions as _save_profile_route_sessions,
+            )
+
+            _profile_routes = _load_profile_routes(_load_gateway_config(), platform="telegram")
+            _profile_route = _match_profile_route(event, _profile_routes)
+            if _profile_route is None:
+                return None
+
+            _cmd = event.get_command()
+            _is_local_gateway_command = False
+            if _cmd and not _profile_route.command and not _profile_route.text_prefix:
+                try:
+                    _is_local_gateway_command = _resolve_gateway_command(_cmd) is not None
+                except Exception:
+                    _is_local_gateway_command = False
+            if _is_local_gateway_command:
+                return None
+
+            _router_lock = getattr(self, "_profile_router_lock", None)
+            if _router_lock is None:
+                _router_lock = asyncio.Lock()
+                self._profile_router_lock = _router_lock
+
+            async with _router_lock:
+                _router_sessions = getattr(self, "_profile_router_sessions", None)
+                _router_sessions_path = getattr(
+                    self,
+                    "_profile_router_sessions_path",
+                    _hermes_home / "gateway" / "profile-router-sessions.json",
+                )
+                if _router_sessions is None:
+                    _router_sessions = _load_profile_route_sessions(path=_router_sessions_path)
+                    self._profile_router_sessions = _router_sessions
+                _route_key = (
+                    _profile_route.profile,
+                    _profile_route.name,
+                    self._session_key_for_source(source),
+                )
+                _scoped_command = _parse_profile_scoped_command(event, _profile_route)
+                if _scoped_command is not None:
+                    _scoped_name, _scoped_args = _scoped_command
+                    if _scoped_name in {"new", "reset"}:
+                        _had_session = _route_key in _router_sessions
+                        _router_sessions.pop(_route_key, None)
+                        try:
+                            _save_profile_route_sessions(_router_sessions, path=_router_sessions_path)
+                        except Exception as _persist_exc:
+                            logger.warning(
+                                "Failed to persist Telegram profile router session map after scoped /%s: %s",
+                                _scoped_name,
+                                _persist_exc,
+                            )
+                        if _had_session:
+                            return (
+                                f"✓ Started a new session for profile `{_profile_route.profile}` "
+                                f"(route `{_profile_route.name}`)."
+                            )
+                        return (
+                            f"✓ Profile `{_profile_route.profile}` route `{_profile_route.name}` "
+                            "is already on a fresh session."
+                        )
+                    if _scoped_name == "status":
+                        _child_session = _router_sessions.get(_route_key)
+                        _status_lines = [
+                            f"Profile route: {_profile_route.name}",
+                            f"Profile: {_profile_route.profile}",
+                            f"Gateway lane: {_route_key[2]}",
+                            f"Child session: {_child_session or '(none yet)'}",
+                        ]
+                        return "\n".join(_status_lines)
+                    if _scoped_name in {"help", "commands"}:
+                        _prefix = _profile_route.text_prefix or f"/{_profile_route.name}"
+                        return (
+                            f"Profile-scoped commands for `{_profile_route.profile}` "
+                            f"(route `{_profile_route.name}`):\n"
+                            f"- `{_prefix}/status` or `{_prefix}_status` — show routed child session\n"
+                            f"- `{_prefix}/new` or `{_prefix}_new` — start a fresh child session\n"
+                            f"- `{_prefix}/help` or `{_prefix}_help` — show this help"
+                        )
+                _resume_session = _router_sessions.get(_route_key)
+                _response, _session_id = await _dispatch_to_profile(
+                    event,
+                    _profile_route,
+                    resume_session_id=_resume_session,
+                )
+                if _session_id:
+                    _router_sessions[_route_key] = _session_id
+                    try:
+                        _save_profile_route_sessions(_router_sessions, path=_router_sessions_path)
+                    except Exception as _persist_exc:
+                        logger.warning(
+                            "Failed to persist Telegram profile router session map: %s",
+                            _persist_exc,
+                        )
+                logger.info(
+                    "Telegram ingress routed chat=%s thread=%s user=%s to profile=%s route=%s",
+                    source.chat_id,
+                    source.thread_id,
+                    source.user_id,
+                    _profile_route.profile,
+                    _profile_route.name,
+                )
+                return _response or None
+        except Exception as exc:
+            logger.error("Telegram profile ingress routing failed: %s", exc, exc_info=True)
+            return "❌ Profile routing failed. Check the gateway logs for details."
+
     async def _handle_message(self, event: MessageEvent) -> Optional[str]:
         """
         Handle an incoming message from any platform.
@@ -5877,6 +6020,18 @@ class GatewayRunner:
                     # Record rate limit so subsequent messages are silently ignored
                     self.pairing_store._record_rate_limit(platform_name, source.user_id)
             return None
+
+        # Optional Telegram ingress router: a single Telegram-facing gateway can
+        # forward selected chats/topics/users/prefixes into another Hermes
+        # profile's isolated HERMES_HOME via subprocess.  Run this after the
+        # owning gateway has authorized the sender, but before default-profile
+        # session/update/clarify handling.
+        _profile_route_response = await self._maybe_route_telegram_profile_message(
+            event,
+            is_internal=is_internal,
+        )
+        if _profile_route_response is not None:
+            return _profile_route_response
         
         # Intercept messages that are responses to a pending /update prompt.
         # The update process (detached) wrote .update_prompt.json; the watcher

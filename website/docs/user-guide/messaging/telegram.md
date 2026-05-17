@@ -256,6 +256,96 @@ TELEGRAM_HOME_CHANNEL_NAME="My Notes"
 Group chat IDs are negative numbers (e.g., `-1001234567890`). Your personal DM chat ID is the same as your user ID.
 :::
 
+## Profile Ingress Routing
+
+A single Telegram bot can act as the front door for multiple Hermes profiles. The
+main gateway still owns Telegram authorization and polling, then selected
+messages are forwarded to target profiles in isolated subprocesses with their
+own `HERMES_HOME`.
+
+This is useful for OpenClaw-style lanes such as:
+
+- one forum topic routed to a research profile
+- `/coder ...` messages routed to a coding profile
+- a specific DM routed to a specialized assistant profile
+
+Add routes to the Telegram section of `~/.hermes/config.yaml`:
+
+```yaml
+telegram:
+  profile_routes:
+    - name: research-topic
+      profile: research-agent
+      chat_id: "-1001234567890"
+      thread_id: "2"
+
+    - name: coder-prefix
+      profile: coder
+      text_prefix: "/coder"
+      strip_prefix: true
+      pass_media: true  # optional: forward Telegram media paths/first image
+
+    - name: sasha-dm
+      profile: sasha
+      chat_id: "123456789"
+```
+
+Supported selectors:
+
+| Selector | Meaning |
+|---|---|
+| `chat_id` | Telegram chat or supergroup ID. Supergroups usually use the `-100...` form. |
+| `thread_id` | Telegram forum topic/thread ID. |
+| `user_id` | Numeric Telegram sender ID. |
+| `username` | Telegram username, with or without `@`. |
+| `chat_type` | Match DMs vs groups if the source exposes it. |
+| `text_prefix` | Match messages beginning with a prefix such as `/coder`. |
+| `command` | Match a specific slash command. Bot suffixes like `/cmd@MyBot` are normalized. |
+| `pass_media` | Opt-in media forwarding for matched Telegram messages. The first image is attached to the child CLI query; all cached media paths are included as text notes. Defaults to `false`. |
+
+Route behavior:
+
+- The gateway checks normal Telegram authorization first; the router is not a
+  second auth system.
+- Plain gateway commands such as `/help`, `/status`, `/restart`, and `/new` stay
+  local unless the route explicitly matches a `command` or `text_prefix`.
+- Target profiles run via subprocess with `HERMES_HOME` set to
+  `~/.hermes/profiles/<profile>`, so profile config, sessions, memory, and
+  skills stay isolated from the main gateway profile. Profile names must be
+  plain directory names (letters, numbers, `_`, `-`, `.`); path-like names are
+  ignored.
+- The child subprocess gets a sanitized environment. It does not inherit the
+  ingress gateway's Telegram token or provider API keys; the target profile
+  should supply its own credentials via its own profile config / `.env`.
+- The gateway persists the child profile `session_id` for each route lane in
+  `$HERMES_HOME/gateway/profile-router-sessions.json` and passes `--resume` on
+  later routed messages, including after gateway restarts.
+- Prefix routes also get profile-scoped router commands. For a route with
+  `text_prefix: "/coder"`, use `/coder/status` or `/coder_status` to inspect the
+  child session, `/coder/new` or `/coder_new` to start a fresh child session, and
+  `/coder/help` or `/coder_help` for a short command list. `/coder /status` also
+  works. Plain prompts such as `/coder new feature branch` are still sent to the
+  profile as normal text, not treated as commands.
+- Media forwarding is opt-in per route with `pass_media: true`. When enabled,
+  the router includes cached Telegram media paths in the child prompt and passes
+  the first image through the CLI's `--image` attachment path. Additional images,
+  voice/audio, video, and documents are preserved as local path notes for the
+  routed profile to inspect with its normal tools.
+
+Operational notes:
+
+- Only the ingress profile should poll Telegram with a given bot token. Routed
+  profiles should not run their own Telegram gateway using the same token, or
+  Telegram will return polling conflicts.
+- Restart the gateway after changing `profile_routes`.
+- On startup, the gateway logs warnings for missing target profile directories,
+  duplicate route names, and target profiles that appear to have Telegram bot
+  tokens configured.
+- `pass_media` is deliberately off by default. Enable it only for routes whose
+  target profile should see local cached media paths from the ingress gateway.
+  The first image is attached natively; other media are forwarded as path notes,
+  not re-uploaded or copied into the target profile home.
+
 ## Voice Messages
 
 ### Incoming Voice (Speech-to-Text)
