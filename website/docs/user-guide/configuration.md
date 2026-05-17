@@ -343,11 +343,12 @@ If you use a messaging gateway and want the agent to send generated files via
 `MEDIA:/...`, prefer a dedicated host-visible export mount such as
 `/home/user/.hermes/cache/documents:/output`.
 
-- Write files inside Docker to `/output/...`
-- Emit the **host path** in `MEDIA:`, for example:
-  `MEDIA:/home/user/.hermes/cache/documents/report.txt`
-- Do **not** emit `/workspace/...` or `/output/...` unless that exact path also
-  exists for the gateway process on the host
+- Write files inside Docker to `/output/...` or `/outputs/...`
+- Emit either the host path or the mounted container path, for example
+  `MEDIA:/output/report.txt`
+- The gateway maps mounted `/output` or `/outputs` container paths back through
+  `docker_volumes`
+- Do **not** emit unmapped container-only paths like `/workspace/...`
 
 :::warning
 YAML duplicate keys silently override earlier ones. If you already have a

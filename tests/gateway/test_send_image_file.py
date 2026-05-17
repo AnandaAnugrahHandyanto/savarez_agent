@@ -7,6 +7,7 @@ Covers: local image file sending, file-not-found handling, fallback on error,
 """
 
 import asyncio
+import json
 import os
 import sys
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -56,6 +57,152 @@ class TestExtractMediaImages:
         paths = [m[0] for m in media]
         assert "/audio.ogg" in paths
         assert "/screenshot.png" in paths
+
+    def test_docker_container_media_path_translates_to_host_volume(self, monkeypatch, tmp_path):
+        """Docker MEDIA paths should be translated before the host gateway sends them."""
+        host_output = tmp_path / "gateway-output"
+        expected = host_output / "reports" / "daily.pdf"
+        expected.parent.mkdir(parents=True)
+        expected.write_bytes(b"pdf")
+
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        monkeypatch.setenv(
+            "TERMINAL_DOCKER_VOLUMES",
+            json.dumps([f"{host_output}:/output:rw"]),
+        )
+
+        media, cleaned = BasePlatformAdapter.extract_media("Done\nMEDIA:/output/reports/daily.pdf")
+
+        assert media == [(str(expected), False)]
+        assert "MEDIA:" not in cleaned
+        assert "Done" in cleaned
+
+    def test_docker_media_path_prefers_export_mount_over_host_output_path(
+        self,
+        monkeypatch,
+        tmp_path,
+    ):
+        """In Docker, /output should mean the configured export mount first."""
+        host_output = tmp_path / "gateway-output"
+        expected = host_output / "report.pdf"
+        expected.parent.mkdir(parents=True)
+        expected.write_bytes(b"pdf")
+
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        monkeypatch.setenv(
+            "TERMINAL_DOCKER_VOLUMES",
+            json.dumps([f"{host_output}:/output:rw"]),
+        )
+
+        with patch("gateway.media_paths.os.path.exists", return_value=True):
+            media, _ = BasePlatformAdapter.extract_media("MEDIA:/output/report.pdf")
+
+        assert media == [(str(expected), False)]
+
+    @pytest.mark.parametrize("options", ["cached", "delegated", "rw,z", "ro,Z"])
+    def test_docker_container_media_path_translates_common_volume_options(
+        self, monkeypatch, tmp_path, options
+    ):
+        """Common Docker option suffixes should not prevent MEDIA path mapping."""
+        host_output = tmp_path / "gateway-output"
+        expected = host_output / "report.pdf"
+        expected.parent.mkdir(parents=True)
+        expected.write_bytes(b"pdf")
+
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        monkeypatch.setenv(
+            "TERMINAL_DOCKER_VOLUMES",
+            json.dumps([f"{host_output}:/output:{options}"]),
+        )
+
+        media, _ = BasePlatformAdapter.extract_media("MEDIA:/output/report.pdf")
+
+        assert media == [(str(expected), False)]
+
+    def test_docker_media_path_translation_requires_path_boundary(self, monkeypatch, tmp_path):
+        """A /output mount must not rewrite unrelated /output-other paths."""
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        monkeypatch.setenv(
+            "TERMINAL_DOCKER_VOLUMES",
+            json.dumps([f"{tmp_path}:/output"]),
+        )
+
+        media, _ = BasePlatformAdapter.extract_media("MEDIA:/output-other/report.pdf")
+
+        assert media == [("/output-other/report.pdf", False)]
+
+    def test_docker_media_path_translates_output_submount(self, monkeypatch, tmp_path):
+        """Explicit export submounts under /output should also be eligible."""
+        host_output = tmp_path / "reports"
+        expected = host_output / "daily.pdf"
+        expected.parent.mkdir(parents=True)
+        expected.write_bytes(b"pdf")
+
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        monkeypatch.setenv(
+            "TERMINAL_DOCKER_VOLUMES",
+            json.dumps([f"{host_output}:/output/reports:rw"]),
+        )
+
+        media, _ = BasePlatformAdapter.extract_media("MEDIA:/output/reports/daily.pdf")
+
+        assert media == [(str(expected), False)]
+
+    def test_docker_media_path_ignores_non_export_mount(self, monkeypatch, tmp_path):
+        """Only explicit /output or /outputs export mounts should be auto-mapped."""
+        workspace_report = tmp_path / "workspace" / "report.pdf"
+        workspace_report.parent.mkdir(parents=True)
+        workspace_report.write_bytes(b"pdf")
+
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        monkeypatch.setenv(
+            "TERMINAL_DOCKER_VOLUMES",
+            json.dumps([f"{workspace_report.parent}:/workspace"]),
+        )
+
+        media, _ = BasePlatformAdapter.extract_media("MEDIA:/workspace/report.pdf")
+
+        assert media == [("/workspace/report.pdf", False)]
+
+    def test_docker_media_path_ignores_root_mount(self, monkeypatch, tmp_path):
+        """A root bind mount should not make every container path media-sendable."""
+        root_report = tmp_path / "output" / "report.pdf"
+        root_report.parent.mkdir(parents=True)
+        root_report.write_bytes(b"pdf")
+
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        monkeypatch.setenv(
+            "TERMINAL_DOCKER_VOLUMES",
+            json.dumps([f"{tmp_path}:/"]),
+        )
+
+        media, _ = BasePlatformAdapter.extract_media("MEDIA:/output/report.pdf")
+
+        assert media == [("/output/report.pdf", False)]
+
+    def test_docker_media_path_keeps_existing_host_file(self, monkeypatch, tmp_path):
+        """Already host-visible paths should not be rewritten by Docker volume rules."""
+        host_file = tmp_path / "already-visible.pdf"
+        host_file.write_bytes(b"pdf")
+
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        monkeypatch.setenv(
+            "TERMINAL_DOCKER_VOLUMES",
+            json.dumps([f"{tmp_path / 'exports'}:/output"]),
+        )
+
+        media, _ = BasePlatformAdapter.extract_media(f"MEDIA:{host_file}")
+
+        assert media == [(str(host_file), False)]
+
+    def test_docker_media_path_invalid_volume_env_falls_back(self, monkeypatch):
+        """Malformed volume env should not prevent MEDIA extraction or sending fallback."""
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        monkeypatch.setenv("TERMINAL_DOCKER_VOLUMES", "not-json")
+
+        media, _ = BasePlatformAdapter.extract_media("MEDIA:/output/report.pdf")
+
+        assert media == [("/output/report.pdf", False)]
 
 
 # ---------------------------------------------------------------------------

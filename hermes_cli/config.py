@@ -612,8 +612,8 @@ DEFAULT_CONFIG = {
         # Example:
         # ["/home/user/projects:/workspace/projects",
         #  "/home/user/.hermes/cache/documents:/output"]
-        # For gateway MEDIA delivery, write inside Docker to /output/... and emit
-        # the host-visible path in MEDIA:, not the container path.
+        # Gateway MEDIA delivery accepts host paths or mounted export paths
+        # under /output or /outputs, such as MEDIA:/output/report.txt.
         "docker_volumes": [],
         # Explicit opt-in: mount the host cwd into /workspace for Docker sessions.
         # Default off because passing host directories into a sandbox weakens isolation.

@@ -407,3 +407,32 @@ def test_runner_warns_when_docker_gateway_lacks_explicit_output_mount(monkeypatc
         "host-visible output mount" in record.message
         for record in caplog.records
     )
+
+
+@pytest.mark.parametrize("container_path", ["/output", "/outputs", "/output/reports"])
+def test_runner_accepts_explicit_docker_media_export_mount(
+    monkeypatch,
+    tmp_path,
+    caplog,
+    container_path,
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("TERMINAL_ENV", "docker")
+    monkeypatch.setenv(
+        "TERMINAL_DOCKER_VOLUMES",
+        f'["{tmp_path}/exports:{container_path}:rw"]',
+    )
+    config = GatewayConfig(
+        platforms={
+            Platform.TELEGRAM: PlatformConfig(enabled=True, token="***")
+        },
+        sessions_dir=tmp_path / "sessions",
+    )
+
+    with caplog.at_level("WARNING"):
+        GatewayRunner(config)
+
+    assert not any(
+        "host-visible output mount" in record.message
+        for record in caplog.records
+    )

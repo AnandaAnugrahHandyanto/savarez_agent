@@ -2955,8 +2955,8 @@ class TelegramAdapter(BasePlatformAdapter):
         if path.startswith(("/workspace/", "/output/", "/outputs/")):
             error += (
                 " (path may only exist inside the Docker sandbox. "
-                "Bind-mount a host directory and emit the host-visible "
-                "path in MEDIA: for gateway file delivery.)"
+                "Bind-mount a host directory for that container path or "
+                "emit a host-visible path in MEDIA: for gateway file delivery.)"
             )
         return error
 

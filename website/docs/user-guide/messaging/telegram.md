@@ -137,9 +137,11 @@ terminal:
 
 Then:
 
-- write files inside Docker to `/output/...`
-- emit the **host-visible** path in `MEDIA:`, for example:
-  `MEDIA:/home/user/.hermes/cache/documents/report.txt`
+- write files inside Docker to `/output/...` or `/outputs/...`
+- emit either the host path or the mounted container path, for example
+  `MEDIA:/output/report.txt`
+- the gateway maps mounted `/output` or `/outputs` container paths back through
+  `docker_volumes`
 
 If you already have a `docker_volumes:` section, add the new mount to the same
 list. YAML duplicate keys silently override earlier ones.
