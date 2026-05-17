@@ -55,8 +55,9 @@ hermes              # 开始对话！
 hermes              # 交互式 CLI — 开始对话
 hermes model        # 选择 LLM 提供商和模型
 hermes tools        # 配置启用的工具
-hermes config set   # 设置单个配置项
-hermes gateway      # 启动消息网关（Telegram、Discord 等）
+hermes config set   # 设置单个配置值
+hermes usage        # 显示当前令牌使用情况和账户限制
+hermes gateway      # 在前台运行网关（Telegram、Discord 等）
 hermes setup        # 运行完整设置向导（一次性配置所有内容）
 hermes claw migrate # 从 OpenClaw 迁移（如果来自 OpenClaw）
 hermes update       # 更新到最新版本

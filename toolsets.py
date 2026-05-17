@@ -47,7 +47,7 @@ _HERMES_CORE_TOOLS = [
     # Text-to-speech
     "text_to_speech",
     # Planning & memory
-    "todo", "memory",
+    "todo", "memory", "get_usage",
     # Session history search
     "session_search",
     # Clarifying questions
@@ -229,6 +229,12 @@ TOOLSETS = {
         "tools": ["delegate_task"],
         "includes": []
     },
+    
+    "usage": {
+        "description": "Check current token usage and provider account limits",
+        "tools": ["get_usage"],
+        "includes": []
+    },
 
     # "honcho" toolset removed — Honcho is now a memory provider plugin.
     # Tools are injected via MemoryManager, not the toolset system.
@@ -340,7 +346,7 @@ TOOLSETS = {
             "browser_type", "browser_scroll", "browser_back",
             "browser_press", "browser_get_images",
             "browser_vision", "browser_console", "browser_cdp", "browser_dialog",
-            "todo", "memory",
+            "todo", "memory", "get_usage",
             "session_search",
             "execute_code", "delegate_task",
         ],
@@ -366,7 +372,7 @@ TOOLSETS = {
             "browser_press", "browser_get_images",
             "browser_vision", "browser_console", "browser_cdp", "browser_dialog",
             # Planning & memory
-            "todo", "memory",
+            "todo", "memory", "get_usage",
             # Session history search
             "session_search",
             # Code execution + delegation

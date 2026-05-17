@@ -70,6 +70,7 @@ hermes              # Interactive CLI — start a conversation
 hermes model        # Choose your LLM provider and model
 hermes tools        # Configure which tools are enabled
 hermes config set   # Set individual config values
+hermes usage        # Show current token usage and account limits
 hermes gateway      # Start the messaging gateway (Telegram, Discord, etc.)
 hermes setup        # Run the full setup wizard (configures everything at once)
 hermes claw migrate # Migrate from OpenClaw (if coming from OpenClaw)

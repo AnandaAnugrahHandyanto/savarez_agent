@@ -5484,6 +5484,13 @@ def cmd_auth(args):
     auth_command(args)
 
 
+def cmd_usage(args):
+    """Show token usage and account limits."""
+    from hermes_cli.usage_command import cmd_usage as run_usage
+
+    run_usage(args)
+
+
 def cmd_status(args):
     """Show status of all components."""
     from hermes_cli.status import show_status
@@ -10272,6 +10279,19 @@ def main():
         "--timeout", type=float, help="Callback/token exchange timeout in seconds"
     )
     auth_parser.set_defaults(func=cmd_auth)
+
+    # =========================================================================
+    # usage command
+    # =========================================================================
+    usage_parser = subparsers.add_parser(
+        "usage",
+        help="Show token usage and account limits",
+        description="Display token consumption for the current session and live account quotas from the provider.",
+    )
+    usage_parser.add_argument(
+        "--json", action="store_true", help="Output usage data in machine-readable JSON format"
+    )
+    usage_parser.set_defaults(func=cmd_usage)
 
     # =========================================================================
     # status command

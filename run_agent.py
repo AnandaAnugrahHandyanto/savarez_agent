@@ -11018,6 +11018,9 @@ class AIAgent:
             )
         elif function_name == "delegate_task":
             return self._dispatch_delegate_task(function_args)
+        elif function_name == "get_usage":
+            from tools.usage_tool import get_usage_tool as _get_usage_tool
+            return _get_usage_tool(agent=self)
         else:
             return handle_function_call(
                 function_name, function_args, effective_task_id,
