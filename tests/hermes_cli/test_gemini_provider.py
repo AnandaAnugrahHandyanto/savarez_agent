@@ -218,12 +218,12 @@ class TestGeminiAgentInit:
         assert mock_client.called
         mock_openai.assert_not_called()
 
-    def test_gemini_custom_base_url_keeps_openai_client(self, monkeypatch):
+    def test_gemini_custom_base_url_uses_native_client(self, monkeypatch):
         monkeypatch.setenv("GOOGLE_API_KEY", "AIzaSy_REAL_KEY")
         with patch("agent.gemini_native_adapter.GeminiNativeClient") as mock_client, \
              patch("run_agent.OpenAI") as mock_openai, \
              patch("run_agent.ContextCompressor") as mock_compressor:
-            mock_openai.return_value = MagicMock()
+            mock_client.return_value = MagicMock()
             mock_compressor.return_value = MagicMock(context_length=128000, threshold_tokens=64000)
             from run_agent import AIAgent
             AIAgent(
@@ -232,7 +232,21 @@ class TestGeminiAgentInit:
                 api_key="AIzaSy_REAL_KEY",
                 base_url="https://proxy.example.com/v1",
             )
-        mock_openai.assert_called_once()
+        # The primary client construction must use the custom base_url —
+        # that's the assertion that proves the patched code path took the
+        # native-Gemini branch instead of falling through to OpenAI.
+        # (Auxiliary clients may construct additional GeminiNativeClient
+        # instances with the default endpoint for title-generation etc.;
+        # we don't constrain that count here.)
+        primary_calls = [
+            c for c in mock_client.call_args_list
+            if c.kwargs.get("base_url") == "https://proxy.example.com/v1"
+        ]
+        assert len(primary_calls) == 1, (
+            f"expected exactly one GeminiNativeClient call with the custom "
+            f"base_url, got: {mock_client.call_args_list}"
+        )
+        mock_openai.assert_not_called()
 
     def test_gemini_openai_compat_base_url_keeps_openai_client(self, monkeypatch):
         monkeypatch.setenv("GOOGLE_API_KEY", "AIzaSy_REAL_KEY")

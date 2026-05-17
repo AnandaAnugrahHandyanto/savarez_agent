@@ -6773,10 +6773,13 @@ class AIAgent:
             )
             return client
         if self.provider == "gemini":
-            from agent.gemini_native_adapter import GeminiNativeClient, is_native_gemini_base_url
+            from agent.gemini_native_adapter import GeminiNativeClient
 
             base_url = str(client_kwargs.get("base_url", "") or "")
-            if is_native_gemini_base_url(base_url):
+            # URLs ending in /openai are OpenAI-compatible endpoints (e.g.
+            # generativelanguage.googleapis.com/v1beta/openai) — fall through
+            # to the OpenAI client for those.
+            if not base_url.rstrip("/").lower().endswith("/openai"):
                 safe_kwargs = {
                     k: v for k, v in client_kwargs.items()
                     if k in {"api_key", "base_url", "default_headers", "timeout", "http_client"}
