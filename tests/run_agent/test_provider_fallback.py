@@ -305,3 +305,55 @@ class TestFallbackChainDedup:
 
         assert ok is False
         mock_resolve.assert_not_called()
+
+
+# ── Regression: _pool_may_recover_from_rate_limit reachable via _ra() ──
+# The run_agent.py refactor moved the fallback error-handling into
+# agent/conversation_loop.py but initially forgot to import the helper.
+# See https://github.com/NousResearch/hermes-agent/issues/XXXX
+#
+# This test verifies the function is reachable from conversation_loop
+# without a NameError (the _ra() lazy-import pattern must resolve it).
+
+
+class TestPoolMayRecoverReachableFromConversationLoop:
+    """Regression: _pool_may_recover_from_rate_limit must be callable from
+    agent/conversation_loop.py via the ``_ra()`` lazy-import helper.
+
+    The refactored conversation loop calls ``_ra()._pool_may_recover_from_rate_limit``
+    instead of importing the function at module top-level (to avoid circular imports).
+    If the call site reverts to a bare ``_pool_may_recover_from_rate_limit(...)``
+    without an import, a NameError crashes the agent on every 429 rate-limit.
+    """
+
+    def test_ra_resolves_pool_may_recover(self):
+        """``_ra()`` in conversation_loop must resolve _pool_may_recover_from_rate_limit."""
+        from agent.conversation_loop import _ra
+
+        run_agent_mod = _ra()
+        assert hasattr(run_agent_mod, "_pool_may_recover_from_rate_limit"), (
+            "_pool_may_recover_from_rate_limit not found on run_agent module "
+            "via _ra() — the conversation_loop will NameError on 429"
+        )
+        # Also verify it is callable with the expected signature (positional pool
+        # + keyword-only provider/base_url).
+        assert callable(run_agent_mod._pool_may_recover_from_rate_limit)
+
+    def test_call_with_none_returns_false(self):
+        """End-to-end: calling through _ra() with None pool returns False."""
+        from agent.conversation_loop import _ra
+
+        result = _ra()._pool_may_recover_from_rate_limit(None)
+        assert result is False
+
+    def test_call_with_pool_passthrough(self):
+        """End-to-end: credential-pool arguments are forwarded correctly."""
+        from agent.conversation_loop import _ra
+
+        pool = _pool(2)
+        result = _ra()._pool_may_recover_from_rate_limit(
+            pool,
+            provider="test-provider",
+            base_url="https://example.com/v1",
+        )
+        assert result is True
