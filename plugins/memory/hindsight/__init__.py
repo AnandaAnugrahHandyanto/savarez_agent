@@ -382,6 +382,16 @@ def _tag_slug(value: str, *, max_len: int = 80) -> str:
     return "-".join(part for part in text.split("-") if part)[:max_len].strip("-")
 
 
+def _append_tag(tags: list[str], name: str, value: str) -> None:
+    """Append a normalized ``name:value`` tag when a metadata value is present."""
+    slug = _tag_slug(value)
+    if not slug:
+        return
+    tag = f"{name}:{slug}"
+    if tag not in tags:
+        tags.append(tag)
+
+
 def _utc_timestamp() -> str:
     """Return current UTC timestamp in ISO-8601 with milliseconds and Z suffix."""
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
@@ -1416,9 +1426,11 @@ class HindsightMemoryProvider(MemoryProvider):
         if retain_async is not None:
             kwargs["retain_async"] = retain_async
         merged_tags = _normalize_retain_tags(self._retain_tags)
-        topic_tag = _tag_slug(self._chat_topic)
-        if topic_tag and f"topic:{topic_tag}" not in merged_tags:
-            merged_tags.append(f"topic:{topic_tag}")
+        _append_tag(merged_tags, "session", self._session_id)
+        _append_tag(merged_tags, "platform", self._platform)
+        _append_tag(merged_tags, "chat", self._chat_id)
+        _append_tag(merged_tags, "thread", self._thread_id)
+        _append_tag(merged_tags, "topic", self._chat_topic)
         for tag in _normalize_retain_tags(tags):
             if tag not in merged_tags:
                 merged_tags.append(tag)
