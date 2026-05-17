@@ -478,10 +478,14 @@ class GatewayStreamConsumer:
 
                     # Existing message: edit it with the first chunk, then
                     # start a new message for the overflow remainder.
+                    # Streaming cards (Feishu CardKit) handle content updates as
+                    # full-text diffs server-side, so they don't need chunked
+                    # overflow splitting — the entire content is sent each time.
                     while (
                         _len_fn(self._accumulated) > _safe_limit
                         and self._message_id is not None
                         and self._edit_supported
+                        and not self._uses_streaming_card
                     ):
                         _cp_budget = _custom_unit_to_cp(
                             self._accumulated, _safe_limit, _len_fn,
@@ -499,10 +503,16 @@ class GatewayStreamConsumer:
                             # continuation without dropping content.
                             break
                         self._accumulated = self._accumulated[split_at:].lstrip("\n")
-                        # Stop the current streaming card before starting a new one
-                        await self._stop_streaming_card_if_active()
-                        self._message_id = None
-                        self._last_sent_text = ""
+                        # For streaming cards (Feishu CardKit), the content
+                        # update API takes the full accumulated text and diffs
+                        # it server-side, so overflow splitting is unnecessary
+                        # and counterproductive — it would kill the card and
+                        # create a new one for each chunk.  Skip the reset.
+                        if not self._uses_streaming_card:
+                            # Stop the current streaming card before starting a new one
+                            await self._stop_streaming_card_if_active()
+                            self._message_id = None
+                            self._last_sent_text = ""
 
                     display_text = self._accumulated
                     if not got_done and not got_segment_break and commentary_text is None and not self._uses_streaming_card:
