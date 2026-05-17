@@ -380,6 +380,7 @@ _DESTRUCTIVE_PATTERNS = re.compile(
 )
 # Output redirects that overwrite files (> but not >>)
 _REDIRECT_OVERWRITE = re.compile(r'[^>]>[^>]|^>[^>]')
+_CONCURRENT_TOOL_POLL_INTERVAL_S = 0.2
 
 
 def _is_destructive_command(cmd: str) -> bool:
@@ -450,6 +451,82 @@ def _should_parallelize_tool_batch(tool_calls) -> bool:
                 return False
 
     return True
+
+
+def _ensure_concurrent_batch_state(agent) -> None:
+    """Lazily initialize concurrent-tool batch state on *agent*."""
+    if getattr(agent, "_active_concurrent_batch_lock", None) is None:
+        agent._active_concurrent_batch_lock = threading.Lock()
+    if not hasattr(agent, "_active_concurrent_batch"):
+        agent._active_concurrent_batch = None
+    if not hasattr(agent, "_concurrent_batch_seq"):
+        agent._concurrent_batch_seq = 0
+
+
+def _begin_concurrent_tool_batch(agent) -> dict[str, Any]:
+    """Register a new live concurrent-tool batch on *agent*."""
+    _ensure_concurrent_batch_state(agent)
+    with agent._active_concurrent_batch_lock:
+        agent._concurrent_batch_seq += 1
+        batch = {
+            "id": agent._concurrent_batch_seq,
+            "detached": False,
+            "executor": None,
+        }
+        agent._active_concurrent_batch = batch
+    return batch
+
+
+def _attach_concurrent_batch_executor(agent, batch: dict[str, Any], executor) -> bool:
+    """Attach *executor* to *batch*. Return True when the batch is still live."""
+    _ensure_concurrent_batch_state(agent)
+    with agent._active_concurrent_batch_lock:
+        batch["executor"] = executor
+        return agent._active_concurrent_batch is batch and not batch.get("detached", False)
+
+
+def _concurrent_batch_accepts_late_delivery(agent, batch: Optional[dict[str, Any]]) -> bool:
+    """Return True while *batch* is still the live batch for *agent*."""
+    if batch is None:
+        return False
+    _ensure_concurrent_batch_state(agent)
+    with agent._active_concurrent_batch_lock:
+        return agent._active_concurrent_batch is batch and not batch.get("detached", False)
+
+
+def _detach_concurrent_tool_batch(agent, batch: Optional[dict[str, Any]] = None) -> bool:
+    """Detach a concurrent-tool batch so the current turn can move on."""
+    _ensure_concurrent_batch_state(agent)
+    executor = None
+    with agent._active_concurrent_batch_lock:
+        current = batch if batch is not None else agent._active_concurrent_batch
+        if current is None:
+            return False
+        if current.get("detached", False):
+            return True
+        current["detached"] = True
+        executor = current.get("executor")
+        current["executor"] = None
+        if agent._active_concurrent_batch is current:
+            agent._active_concurrent_batch = None
+    if executor is not None:
+        try:
+            executor.shutdown(wait=False, cancel_futures=True)
+        except Exception:
+            pass
+    return True
+
+
+def _finish_concurrent_tool_batch(agent, batch: Optional[dict[str, Any]]) -> None:
+    """Retire *batch* from *agent* after the concurrent executor path exits."""
+    if batch is None:
+        return
+    _ensure_concurrent_batch_state(agent)
+    with agent._active_concurrent_batch_lock:
+        batch["detached"] = True
+        batch["executor"] = None
+        if agent._active_concurrent_batch is batch:
+            agent._active_concurrent_batch = None
 
 
 def _extract_parallel_scope_path(tool_name: str, function_args: dict) -> Path | None:
@@ -1471,6 +1548,9 @@ class AIAgent:
         # their tids explicitly.
         self._tool_worker_threads: set[int] = set()
         self._tool_worker_threads_lock = threading.Lock()
+        self._active_concurrent_batch: Optional[dict[str, Any]] = None
+        self._active_concurrent_batch_lock = threading.Lock()
+        self._concurrent_batch_seq = 0
         
         # Subagent delegation state
         self._delegate_depth = 0        # 0 = top-level agent, incremented for children
@@ -5460,6 +5540,13 @@ class AIAgent:
                     _set_interrupt(True, _wtid)
                 except Exception:
                     pass
+        # Detach any in-flight concurrent tool batch so the current turn can
+        # return immediately instead of blocking on slow, non-interruptible
+        # worker threads inside ThreadPoolExecutor.__exit__().
+        try:
+            _detach_concurrent_tool_batch(self)
+        except Exception:
+            pass
         # Propagate interrupt to any running child agents (subagent delegation)
         with self._active_children_lock:
             children_copy = list(self._active_children)
@@ -11184,6 +11271,26 @@ class AIAgent:
         # deadlocks against prompt_toolkit's raw terminal mode (#13617).
         _parent_approval_cb = _get_approval_callback()
         _parent_sudo_cb = _get_sudo_password_callback()
+        _batch = None
+
+        def _batch_accepts_callbacks() -> bool:
+            return _concurrent_batch_accepts_late_delivery(self, _batch)
+
+        def _batch_touch_activity(desc: str) -> None:
+            if _batch_accepts_callbacks():
+                self._touch_activity(desc)
+
+        def _batch_approval_callback(command, description, *, allow_permanent=True):
+            if not _batch_accepts_callbacks():
+                return "deny"
+            return _parent_approval_cb(
+                command, description, allow_permanent=allow_permanent
+            )
+
+        def _batch_sudo_callback():
+            if not _batch_accepts_callbacks():
+                return ""
+            return _parent_sudo_cb() or ""
 
         def _run_tool(index, tool_call, function_name, function_args):
             """Worker function executed in a thread."""
@@ -11208,35 +11315,60 @@ class AIAgent:
             # is invisible to worker threads.
             try:
                 from tools.environments.base import set_activity_callback
-                set_activity_callback(self._touch_activity)
+                set_activity_callback(_batch_touch_activity)
             except Exception:
                 pass
             # Propagate approval/sudo callbacks to this worker thread.
             # Mirrors cli.py run_agent() pattern (GHSA-qg5c-hvr5-hjgr).
             if _parent_approval_cb is not None:
                 try:
-                    _set_approval_callback(_parent_approval_cb)
+                    _set_approval_callback(_batch_approval_callback)
                 except Exception:
                     pass
             if _parent_sudo_cb is not None:
                 try:
-                    _set_sudo_password_callback(_parent_sudo_cb)
+                    _set_sudo_password_callback(_batch_sudo_callback)
                 except Exception:
                     pass
             start = time.time()
             try:
-                result = self._invoke_tool(
-                    function_name,
-                    function_args,
-                    effective_task_id,
-                    tool_call.id,
-                    messages=messages,
-                    pre_tool_block_checked=True,
-                )
+                if not _batch_accepts_callbacks():
+                    result = (
+                        f"[Tool execution cancelled — {function_name} was skipped "
+                        "due to user interrupt]"
+                    )
+                else:
+                    result = self._invoke_tool(
+                        function_name,
+                        function_args,
+                        effective_task_id,
+                        tool_call.id,
+                        messages=messages,
+                        pre_tool_block_checked=True,
+                    )
             except Exception as tool_error:
                 result = f"Error executing tool '{function_name}': {tool_error}"
                 logger.error("_invoke_tool raised for %s: %s", function_name, tool_error, exc_info=True)
             duration = time.time() - start
+            if not _batch_accepts_callbacks():
+                logger.info(
+                    "discarding late tool completion from detached concurrent "
+                    "batch (tool=%s, %.2fs)",
+                    function_name,
+                    duration,
+                )
+                with self._tool_worker_threads_lock:
+                    self._tool_worker_threads.discard(_worker_tid)
+                try:
+                    _set_interrupt(False, _worker_tid)
+                except Exception:
+                    pass
+                try:
+                    _set_approval_callback(None)
+                    _set_sudo_password_callback(None)
+                except Exception:
+                    pass
+                return
             is_error, _ = _detect_tool_failure(function_name, result)
             if is_error:
                 logger.info("tool %s failed (%.2fs): %s", function_name, duration, result[:200])
@@ -11276,59 +11408,101 @@ class AIAgent:
             futures = []
             if runnable_calls:
                 max_workers = min(len(runnable_calls), _MAX_TOOL_WORKERS)
-                with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-                    for i, tc, name, args in runnable_calls:
-                        # Propagate ContextVars (e.g. _approval_session_key); mirrors asyncio.to_thread.
-                        ctx = contextvars.copy_context()
-                        f = executor.submit(ctx.run, _run_tool, i, tc, name, args)
-                        futures.append(f)
-
-                    # Wait for all to complete with periodic heartbeats so the
-                    # gateway's inactivity monitor doesn't kill us during long
-                    # concurrent tool batches. Also check for user interrupts
-                    # so we don't block indefinitely when the user sends /stop
-                    # or a new message during concurrent tool execution.
-                    _conc_start = time.time()
-                    _interrupt_logged = False
-                    while True:
-                        done, not_done = concurrent.futures.wait(
-                            futures, timeout=5.0,
-                        )
-                        if not not_done:
-                            break
-
-                        # Check for interrupt — the per-thread interrupt signal
-                        # already causes individual tools (terminal, execute_code)
-                        # to abort, but tools without interrupt checks (web_search,
-                        # read_file) will run to completion. Cancel any futures
-                        # that haven't started yet so we don't block on them.
-                        if self._interrupt_requested:
-                            if not _interrupt_logged:
-                                _interrupt_logged = True
-                                self._vprint(
-                                    f"{self.log_prefix}⚡ Interrupt: cancelling "
-                                    f"{len(not_done)} pending concurrent tool(s)",
-                                    force=True,
+                _batch = _begin_concurrent_tool_batch(self)
+                executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
+                try:
+                    if _attach_concurrent_batch_executor(self, _batch, executor):
+                        submitted_calls = []
+                        for i, tc, name, args in runnable_calls:
+                            if not _concurrent_batch_accepts_late_delivery(self, _batch):
+                                logger.info(
+                                    "concurrent batch detached during submission; "
+                                    "skipping remaining tool launches"
                                 )
-                            for f in not_done:
-                                f.cancel()
-                            # Give already-running tools a moment to notice the
-                            # per-thread interrupt signal and exit gracefully.
-                            concurrent.futures.wait(not_done, timeout=3.0)
-                            break
+                                break
+                            # Propagate ContextVars (e.g. _approval_session_key); mirrors asyncio.to_thread.
+                            ctx = contextvars.copy_context()
+                            try:
+                                f = executor.submit(ctx.run, _run_tool, i, tc, name, args)
+                            except RuntimeError:
+                                if not _concurrent_batch_accepts_late_delivery(self, _batch):
+                                    logger.info(
+                                        "executor shut down while detaching concurrent "
+                                        "batch; skipping remaining tool launches"
+                                    )
+                                    break
+                                raise
+                            futures.append(f)
+                            submitted_calls.append((i, tc, name, args))
 
-                        _conc_elapsed = int(time.time() - _conc_start)
-                        # Heartbeat every ~30s (6 × 5s poll intervals)
-                        if _conc_elapsed > 0 and _conc_elapsed % 30 < 6:
-                            _still_running = [
-                                parsed_calls[futures.index(f)][1]
-                                for f in not_done
-                                if f in futures
-                            ]
-                            self._touch_activity(
-                                f"concurrent tools running ({_conc_elapsed}s, "
-                                f"{len(not_done)} remaining: {', '.join(_still_running[:3])})"
+                        # Wait for all to complete with periodic heartbeats so the
+                        # gateway's inactivity monitor doesn't kill us during long
+                        # concurrent tool batches. Also check for user interrupts
+                        # so we don't block indefinitely when the user sends /stop
+                        # or a new message during concurrent tool execution.
+                        _conc_start = time.time()
+                        _interrupt_logged = False
+                        _last_heartbeat_second = -1
+                        _future_to_name = {
+                            future: name
+                            for future, (_i, _tc, name, _args) in zip(futures, submitted_calls)
+                        }
+                        while True:
+                            done, not_done = concurrent.futures.wait(
+                                futures, timeout=_CONCURRENT_TOOL_POLL_INTERVAL_S,
                             )
+                            if not not_done:
+                                break
+
+                            # Check for interrupt — the per-thread interrupt signal
+                            # already causes individual tools (terminal, execute_code)
+                            # to abort, but tools without interrupt checks (web_search,
+                            # read_file) will run to completion. Detach the batch so the
+                            # current turn can return immediately instead of waiting for
+                            # the executor to drain those threads.
+                            if self._interrupt_requested:
+                                if not _interrupt_logged:
+                                    _interrupt_logged = True
+                                    self._vprint(
+                                        f"{self.log_prefix}⚡ Interrupt: cancelling "
+                                        f"{len(not_done)} pending concurrent tool(s)",
+                                        force=True,
+                                    )
+                                for f in not_done:
+                                    f.cancel()
+                                _detach_concurrent_tool_batch(self, _batch)
+                                # Give already-running tools a brief chance to
+                                # notice the per-thread interrupt signal without
+                                # keeping the interrupted turn on the hook.
+                                concurrent.futures.wait(not_done, timeout=0.2)
+                                break
+
+                            _conc_elapsed = int(time.time() - _conc_start)
+                            # Heartbeat every ~30s while using a short poll
+                            # interval so interrupts can detach promptly.
+                            if (
+                                _conc_elapsed > 0
+                                and _conc_elapsed % 30 == 0
+                                and _conc_elapsed != _last_heartbeat_second
+                            ):
+                                _last_heartbeat_second = _conc_elapsed
+                                _still_running = [
+                                    _future_to_name.get(f, "?")
+                                    for f in not_done
+                                ]
+                                self._touch_activity(
+                                    f"concurrent tools running ({_conc_elapsed}s, "
+                                    f"{len(not_done)} remaining: {', '.join(_still_running[:3])})"
+                                )
+                finally:
+                    try:
+                        if _concurrent_batch_accepts_late_delivery(self, _batch):
+                            executor.shutdown(wait=True)
+                        else:
+                            executor.shutdown(wait=False, cancel_futures=True)
+                    except Exception:
+                        pass
+                    _finish_concurrent_tool_batch(self, _batch)
         finally:
             if spinner:
                 # Build a summary message for the spinner stop
