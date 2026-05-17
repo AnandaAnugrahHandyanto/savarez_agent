@@ -4442,7 +4442,8 @@ class HermesCLI:
                 )
             else:
                 ChatConsole().print(
-                    f"[bold {_accent_hex()}]Session {_escape(self.session_id)} found but has no messages. Starting fresh.[/]"
+                    f"[bold {_accent_hex()}]Session {_escape(self.session_id)} has no prior messages — resuming as an empty session.[/] "
+                    f"[dim](To remove it instead, run `hermes sessions delete {_escape(self.session_id)}`.)[/]"
                 )
             # Re-open the session (clear ended_at so it's active again)
             try:
@@ -4708,8 +4709,10 @@ class HermesCLI:
         else:
             accent_color = _accent_hex()
             self._console_print(
-                f"[{accent_color}]Session {self.session_id} found but has no "
-                f"messages. Starting fresh.[/]"
+                f"[{accent_color}]Session {self.session_id} has no prior "
+                f"messages — resuming as an empty session. "
+                f"[dim](To remove it instead, run "
+                f"`hermes sessions delete {self.session_id}`.)[/][/]"
             )
             return False
 

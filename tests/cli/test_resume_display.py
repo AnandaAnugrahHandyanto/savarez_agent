@@ -539,6 +539,8 @@ class TestPreloadResumedSession:
         mock_db = MagicMock()
         mock_db.get_session.return_value = {"id": "empty_session", "title": None}
         mock_db.get_messages_as_conversation.return_value = []
+        # No compression chain — resume_session_id resolves to itself.
+        mock_db.resolve_resume_session_id.return_value = "empty_session"
         cli._session_db = mock_db
 
         buf = StringIO()
@@ -547,7 +549,14 @@ class TestPreloadResumedSession:
 
         assert result is False
         output = buf.getvalue()
-        assert "no messages" in output
+        # Regression for #27168: the old "Starting fresh." wording was misleading
+        # because the empty session is reused, not replaced. The new wording must
+        # describe the actual behavior and surface the `sessions delete`
+        # remediation the user actually wants in this case.
+        assert "no prior messages" in output
+        assert "empty session" in output
+        assert "Starting fresh" not in output
+        assert "hermes sessions delete empty_session" in output
 
     def test_loads_session_successfully(self):
         cli = _make_cli(resume="good_session")
