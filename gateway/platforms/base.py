@@ -1749,6 +1749,24 @@ class BasePlatformAdapter(ABC):
         """
         return SendResult(success=False, error="Not supported")
 
+    async def send_project_intake_prompt(
+        self,
+        chat_id: str,
+        title: str,
+        state: Dict[str, Any],
+        session_key: str,
+        on_intake_selected,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send a fixed project-intake prompt when the platform supports it.
+
+        The default implementation deliberately does not expose arbitrary
+        button rendering. Platform adapters may override this for a narrow,
+        gateway-owned intake state machine and must route the final submit
+        through ``on_intake_selected(payload)``.
+        """
+        return SendResult(success=False, error="Not supported")
+
     async def send_clarify(
         self,
         chat_id: str,

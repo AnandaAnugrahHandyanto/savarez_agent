@@ -6580,6 +6580,9 @@ class GatewayRunner:
         if canonical == "kanban":
             return await self._handle_kanban_command(event)
 
+        if canonical == "project":
+            return await self._handle_project_command(event)
+
         if canonical == "retry":
             return await self._handle_retry_command(event)
         
@@ -8503,6 +8506,164 @@ class GatewayRunner:
             f"Slash commands you can run: {runnable_str}"
         )
 
+
+    _PROJECT_INTAKE_LABELS = {
+        "kind": {
+            "feature": "Feature / UX improvement",
+            "bug": "Bug / regression",
+            "research": "Research / investigation",
+            "ops": "Operations / workflow",
+        },
+        "board": {
+            "control": "Current Kanban control board",
+            "triage": "Ask operator / triage only",
+            "new": "Needs a new board later",
+        },
+        "scope": {
+            "spec": "Spec only",
+            "impl_after_spec": "Implementation after approved spec",
+            "triage_only": "Triage card only",
+        },
+        "risk": {
+            "safe": "No source/config/gateway changes without approval",
+            "normal": "Source changes allowed after clean preflight + tests",
+            "manual": "Human review before any dispatch",
+        },
+    }
+
+    @classmethod
+    def _project_intake_label(cls, key: str, value: str) -> str:
+        return cls._PROJECT_INTAKE_LABELS.get(key, {}).get(value, value.replace("_", " "))
+
+    @staticmethod
+    def _project_intake_title(raw_title: str) -> str:
+        title = " ".join(str(raw_title or "").split()).strip()
+        return title or "Project intake"
+
+    def _project_intake_board_slug(self) -> str:
+        from hermes_cli import kanban_db as kb
+
+        explicit = (
+            os.environ.get("HERMES_PROJECT_INTAKE_BOARD", "").strip()
+            or os.environ.get("HERMES_KANBAN_BOARD", "").strip()
+        )
+        return explicit or kb.get_current_board()
+
+    def _project_intake_card_body(self, payload: Dict[str, Any], *, board_slug: str) -> str:
+        title = self._project_intake_title(str(payload.get("title") or ""))
+        description = str(payload.get("description") or "").strip() or title
+        answers = dict(payload.get("answers") or {})
+        source = dict(payload.get("source") or {})
+        selections = [
+            ("Kind", "kind"),
+            ("Requested board", "board"),
+            ("Automation scope", "scope"),
+            ("Risk gate", "risk"),
+        ]
+        lines = [
+            f"# Project intake: {title}",
+            "",
+            "TRIAGE / INTAKE / NOT DISPATCHABLE",
+            "",
+            "Dispatch gate: do not assign or dispatch until a triager turns this into an approved ready spec.",
+            "",
+            "## Requested outcome",
+            description,
+            "",
+            "## Intake selections",
+        ]
+        for label, key in selections:
+            value = str(answers.get(key) or "unset")
+            lines.append(f"- {label}: {self._project_intake_label(key, value)}")
+        lines.extend([
+            "",
+            "## Source",
+            "- Channel: Telegram",
+            f"- Target board at creation: {board_slug}",
+        ])
+        if source.get("chat_id"):
+            lines.append(f"- Chat id: {source.get('chat_id')}")
+        if source.get("thread_id"):
+            lines.append(f"- Thread id: {source.get('thread_id')}")
+        lines.extend([
+            "",
+            "## Triage checklist before promotion",
+            "- Clarify acceptance criteria and success definition.",
+            "- Identify repo/workdir, required skills, and safe assignee profile.",
+            "- Decide whether this belongs on the current board or a new project board.",
+            "- Add evidence/artifacts/links and risk gates.",
+            "- Only then promote to ready/todo and dispatch deliberately.",
+            "",
+            "## Raw intake payload",
+            "```json",
+            json.dumps(payload, indent=2, sort_keys=True),
+            "```",
+        ])
+        return "\n".join(lines)
+
+    def _create_project_intake_card_sync(self, payload: Dict[str, Any]) -> tuple[str, str]:
+        from hermes_cli import kanban_db as kb
+
+        board_slug = self._project_intake_board_slug()
+        title = self._project_intake_title(str(payload.get("title") or ""))
+        body = self._project_intake_card_body(payload, board_slug=board_slug)
+        with kb.connect(board=board_slug) as conn:
+            task_id = kb.create_task(
+                conn,
+                title=f"Project intake: {title}",
+                body=body,
+                created_by="telegram-project-intake",
+                triage=True,
+            )
+        return task_id, board_slug
+
+    async def _create_project_intake_card(self, payload: Dict[str, Any]) -> str:
+        task_id, board_slug = await asyncio.to_thread(self._create_project_intake_card_sync, payload)
+        return (
+            f"✅ Project intake card created: `{task_id}`\n"
+            f"Board: `{board_slug}`\n"
+            "Status: triage\n"
+            "Dispatch gate: not dispatchable until triage/spec approval."
+        )
+
+    async def _handle_project_command(self, event: MessageEvent) -> Optional[str]:
+        """Handle /project — collect structured Telegram intake into Kanban triage."""
+        source = event.source
+        adapter = self.adapters.get(source.platform) if source is not None else None
+        prompt = getattr(adapter, "send_project_intake_prompt", None) if adapter else None
+
+        title = self._project_intake_title(event.get_command_args())
+        metadata = self._thread_metadata_for_source(
+            source,
+            self._reply_anchor_for_event(event),
+        ) if source is not None else None
+        session_key = self._session_key_for_source(source) if source is not None else ""
+
+        fallback = (
+            "Project intake buttons are unavailable on this platform. "
+            "Use Telegram /project <title or short description>, or create a triage card manually with /kanban create --triage."
+        )
+
+        if not callable(prompt) or source is None:
+            return fallback
+
+        try:
+            maybe_result = prompt(
+                chat_id=str(source.chat_id),
+                title=title,
+                state={"description": title},
+                session_key=session_key,
+                on_intake_selected=self._create_project_intake_card,
+                metadata=metadata,
+            )
+            result = await maybe_result if inspect.isawaitable(maybe_result) else maybe_result
+        except Exception as exc:
+            logger.debug("send_project_intake_prompt failed for /project: %s", exc)
+            return fallback
+
+        if result and getattr(result, "success", False):
+            return None
+        return fallback
 
     async def _handle_kanban_command(self, event: MessageEvent) -> str:
         """Handle /kanban — delegate to the shared kanban CLI.

@@ -175,6 +175,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                subcommands=("list", "ls", "show", "create", "assign", "link", "unlink",
                             "claim", "comment", "complete", "block", "unblock", "archive",
                             "tail", "dispatch", "context", "init", "gc")),
+    CommandDef("project", "Intake a project into Kanban triage from Telegram",
+               "Tools & Skills", gateway_only=True, args_hint="[title or short description]"),
     CommandDef("reload", "Reload .env variables into the running session", "Tools & Skills",
                cli_only=True),
     CommandDef("reload-mcp", "Reload MCP servers from config", "Tools & Skills",
