@@ -380,7 +380,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         payload = {
             "addresses": [address],
             "message": message,
-            "tempGuid": f"temp-{datetime.utcnow().timestamp()}",
+            "tempGuid": f"temp-{uuid.uuid4().hex[:16]}",
         }
         try:
             res = await self._api_post("/api/v1/chat/new", payload)
@@ -436,7 +436,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                 )
             payload: Dict[str, Any] = {
                 "chatGuid": guid,
-                "tempGuid": f"temp-{datetime.utcnow().timestamp()}",
+                "tempGuid": f"temp-{uuid.uuid4().hex[:16]}",
                 "message": chunk,
             }
             if reply_to and self._private_api_enabled and self._helper_connected:
