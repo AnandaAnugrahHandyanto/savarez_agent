@@ -193,3 +193,30 @@ def test_background_review_summary_is_attributed_to_self_improvement_loop(monkey
     assert captured_bg_callback[0].startswith("💾 Self-improvement review:"), (
         captured_bg_callback[0]
     )
+
+
+def test_memory_review_prompt_classifies_destination_before_writing():
+    prompt = AIAgent._MEMORY_REVIEW_PROMPT
+
+    assert "Classify the destination first" in prompt
+    assert "USER.md" in prompt
+    assert "MEMORY.md" in prompt
+    assert "session history" in prompt
+    assert "skills" in prompt
+    assert "skip" in prompt.lower()
+    assert "prefer replace or consolidation over add" in prompt
+    assert "persona, desires, preferences, or personal details" not in prompt
+
+
+def test_combined_review_prompt_keeps_skill_learning_but_routes_memory_narrowly():
+    prompt = AIAgent._COMBINED_REVIEW_PROMPT
+
+    assert "Classify the memory destination first" in prompt
+    assert "USER.md" in prompt
+    assert "MEMORY.md" in prompt
+    assert "session history" in prompt
+    assert "procedures belong in skills" in prompt
+    assert "**Skills**" in prompt
+    assert "update the relevant skill(s)" in prompt
+    assert "Review the conversation above and update two things" not in prompt
+    assert "persona, desires, preferences, personal details" not in prompt
