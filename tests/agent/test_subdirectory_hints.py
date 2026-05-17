@@ -23,10 +23,10 @@ def project(tmp_path):
     (backend / "src").mkdir()
     (backend / "src" / "main.py").write_text("print('hello')")
 
-    # frontend/ — has CLAUDE.md
+    # frontend/ — has standardized AGENTS.md
     frontend = tmp_path / "frontend"
     frontend.mkdir()
-    (frontend / "CLAUDE.md").write_text("Frontend rules:\n- Use TypeScript\n- No any types")
+    (frontend / "AGENTS.md").write_text("Frontend rules:\n- Use TypeScript\n- No any types")
 
     # docs/ — no hints
     (tmp_path / "docs").mkdir()
@@ -65,14 +65,27 @@ class TestSubdirectoryHintTracker:
         )
         assert result2 is None  # backend/ already loaded
 
-    def test_discovers_claude_md(self, project):
-        """Frontend CLAUDE.md should be discovered."""
+    def test_discovers_agents_md(self, project):
+        """Frontend AGENTS.md should be discovered."""
         tracker = SubdirectoryHintTracker(working_dir=str(project))
         result = tracker.check_tool_call(
             "read_file", {"path": str(project / "frontend" / "index.ts")}
         )
         assert result is not None
         assert "Frontend rules" in result
+
+    def test_ignores_legacy_claude_md(self, tmp_path):
+        """Legacy CLAUDE.md is not loaded; AGENTS.md is the standardized file."""
+        project = tmp_path / "repo"
+        project.mkdir()
+        legacy = project / "legacy"
+        legacy.mkdir()
+        (legacy / "CLAUDE.md").write_text("Legacy Claude-only rules")
+        tracker = SubdirectoryHintTracker(working_dir=str(project))
+        result = tracker.check_tool_call(
+            "read_file", {"path": str(legacy / "index.ts")}
+        )
+        assert result is None
 
     def test_no_duplicate_loading(self, project):
         """Same directory should not be loaded twice."""

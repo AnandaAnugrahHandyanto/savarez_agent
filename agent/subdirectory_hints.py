@@ -2,7 +2,7 @@
 
 As the agent navigates into subdirectories via tool calls (read_file, terminal,
 search_files, etc.), this module discovers and loads project context files
-(AGENTS.md, CLAUDE.md, .cursorrules) from those directories.  Discovered hints
+(AGENTS.md, .cursorrules) from those directories.  Discovered hints
 are appended to the tool result so the model gets relevant context at the moment
 it starts working in a new area of the codebase.
 
@@ -25,10 +25,10 @@ logger = logging.getLogger(__name__)
 
 # Context files to look for in subdirectories, in priority order.
 # Same filenames as prompt_builder.py but we load ALL found (not first-wins)
-# since different subdirectories may use different conventions.
+# since different subdirectories may use different conventions. AGENTS.md is
+# the standardized agent instruction file; legacy CLAUDE.md files are not read.
 _HINT_FILENAMES = [
     "AGENTS.md", "agents.md",
-    "CLAUDE.md", "claude.md",
     ".cursorrules",
 ]
 

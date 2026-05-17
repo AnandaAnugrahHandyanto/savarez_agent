@@ -623,7 +623,7 @@
     "date": "2026-03-24",
     "category": "dev-workflow",
     "headline": "Built my own stack, then converged on Hermes",
-    "quote": "If you're choosing an agent framework: hermes. I built my own stack independently and we converged on the same architecture — background self-improvement, persistent memory, CLAUDE.md project context, reusable skills. Hermes ships it all out of the box. 300 PRs in a week.",
+    "quote": "If you're choosing an agent framework: hermes. I built my own stack independently and we converged on the same architecture — background self-improvement, persistent memory, AGENTS.md project context, reusable skills. Hermes ships it all out of the box. 300 PRs in a week.",
     "size": "md"
   },
   {
@@ -898,7 +898,7 @@
     "date": "2026",
     "category": "personal-assistant",
     "headline": "Horse-racing Telegram community bot",
-    "quote": "I run two Telegram groups through one gateway: a project group and a horse-racing community. Every session gets the same personality, system prompt, CLAUDE.md, and working directory — I want per-group specialization.",
+    "quote": "I run two Telegram groups through one gateway: a project group and a horse-racing community. Every session gets the same personality, system prompt, AGENTS.md, and working directory — I want per-group specialization.",
     "size": "sm"
   },
   {

@@ -216,7 +216,7 @@ TIPS = [
     "Context auto-compresses when it reaches the threshold — memories are flushed and history summarized.",
     "The status bar turns yellow, then orange, then red as context fills up.",
     "SOUL.md at ~/.hermes/SOUL.md is the agent's primary identity — customize it to shape behavior.",
-    "Hermes loads project context from .hermes.md, AGENTS.md, CLAUDE.md, or .cursorrules (first match).",
+    "Hermes loads project context from .hermes.md, AGENTS.md, or .cursorrules (first match).",
     "Subdirectory AGENTS.md files are discovered progressively as the agent navigates into folders.",
     "Context files are capped at 20,000 characters with smart head/tail truncation.",
 

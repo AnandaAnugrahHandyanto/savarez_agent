@@ -1,7 +1,7 @@
 ---
 sidebar_position: 8
 title: "Context Files"
-description: "Project context files — .hermes.md, AGENTS.md, CLAUDE.md, global SOUL.md, and .cursorrules — automatically injected into every conversation"
+description: "Project context files — .hermes.md, AGENTS.md, global SOUL.md, and .cursorrules — automatically injected into every conversation"
 ---
 
 # Context Files
@@ -14,13 +14,12 @@ Hermes Agent automatically discovers and loads context files that shape how it b
 |------|---------|-----------| 
 | **.hermes.md** / **HERMES.md** | Project instructions (highest priority) | Walks to git root |
 | **AGENTS.md** | Project instructions, conventions, architecture | CWD at startup + subdirectories progressively |
-| **CLAUDE.md** | Claude Code context files (also detected) | CWD at startup + subdirectories progressively |
 | **SOUL.md** | Global personality and tone customization for this Hermes instance | `HERMES_HOME/SOUL.md` only |
 | **.cursorrules** | Cursor IDE coding conventions | CWD only |
 | **.cursor/rules/*.mdc** | Cursor IDE rule modules | CWD only |
 
 :::info Priority system
-Only **one** project context type is loaded per session (first match wins): `.hermes.md` → `AGENTS.md` → `CLAUDE.md` → `.cursorrules`. **SOUL.md** is always loaded independently as the agent identity (slot #1).
+Only **one** project context type is loaded per session (first match wins): `.hermes.md` → `AGENTS.md` → `.cursorrules`. **SOUL.md** is always loaded independently as the agent identity (slot #1).
 :::
 
 ## AGENTS.md
@@ -96,7 +95,7 @@ Important details:
 
 ## .cursorrules
 
-Hermes is compatible with Cursor IDE's `.cursorrules` file and `.cursor/rules/*.mdc` rule modules. If these files exist in your project root and no higher-priority context file (`.hermes.md`, `AGENTS.md`, or `CLAUDE.md`) is found, they're loaded as the project context.
+Hermes is compatible with Cursor IDE's `.cursorrules` file and `.cursor/rules/*.mdc` rule modules. If these files exist in your project root and no higher-priority context file (`.hermes.md` or `AGENTS.md`) is found, they're loaded as the project context.
 
 This means your existing Cursor conventions automatically apply when using Hermes.
 
@@ -106,7 +105,7 @@ This means your existing Cursor conventions automatically apply when using Herme
 
 Context files are loaded by `build_context_files_prompt()` in `agent/prompt_builder.py`:
 
-1. **Scan working directory** — checks for `.hermes.md` → `AGENTS.md` → `CLAUDE.md` → `.cursorrules` (first match wins)
+1. **Scan working directory** — checks for `.hermes.md` → `AGENTS.md` → `.cursorrules` (first match wins)
 2. **Content is read** — each file is read as UTF-8 text
 3. **Security scan** — content is checked for prompt injection patterns
 4. **Truncation** — files exceeding 20,000 characters are head/tail truncated (70% head, 20% tail, with a marker in the middle)
@@ -119,7 +118,7 @@ Context files are loaded by `build_context_files_prompt()` in `agent/prompt_buil
 
 1. **Path extraction** — after each tool call, file paths are extracted from arguments (`path`, `workdir`, shell commands)
 2. **Ancestor walk** — the directory and up to 5 parent directories are checked (stopping at already-visited directories)
-3. **Hint loading** — if an `AGENTS.md`, `CLAUDE.md`, or `.cursorrules` is found, it's loaded (first match per directory)
+3. **Hint loading** — if an `AGENTS.md` or `.cursorrules` is found, it's loaded (first match per directory)
 4. **Security scan** — same prompt injection scan as startup files
 5. **Truncation** — capped at 8,000 characters per file
 6. **Injection** — appended to the tool result, so the model sees it in context naturally

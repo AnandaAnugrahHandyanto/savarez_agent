@@ -10366,7 +10366,7 @@ def main():
     )
     cron_create.add_argument(
         "--workdir",
-        help="Absolute path for the job to run from. Injects AGENTS.md / CLAUDE.md / .cursorrules from that directory and uses it as the cwd for terminal/file/code_exec tools. Omit to preserve old behaviour (no project context files).",
+        help="Absolute path for the job to run from. Injects AGENTS.md / .cursorrules from that directory and uses it as the cwd for terminal/file/code_exec tools. Omit to preserve old behaviour (no project context files).",
     )
 
     # cron edit
