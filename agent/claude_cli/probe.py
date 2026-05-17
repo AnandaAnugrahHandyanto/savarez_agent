@@ -264,3 +264,27 @@ async def _run_basic_invocation_assertion(
         "basic_invocation": "ok",
         "stdin_prompt_transport": "ok",
     }
+
+
+def extract_session_id(events: list[dict[str, Any]]) -> Optional[str]:
+    """Extract the Claude Code session_id from stream-json events.
+
+    PR 1 contract: the session_id is expected on a 'system' or 'result' event
+    under the 'session_id' key. The exact location is determined empirically
+    by Task 9 of this plan and the result is documented in
+    tests/e2e/claude_cli_findings.md and the spec's CLI Contract subsection.
+
+    Returns None if no session_id can be located (probe failure case).
+    """
+    for event in events:
+        sid = event.get("session_id")
+        if isinstance(sid, str) and sid:
+            return sid
+    # Some Claude versions may nest it under "result.session_id" or similar.
+    for event in events:
+        result = event.get("result")
+        if isinstance(result, dict):
+            sid = result.get("session_id")
+            if isinstance(sid, str) and sid:
+                return sid
+    return None

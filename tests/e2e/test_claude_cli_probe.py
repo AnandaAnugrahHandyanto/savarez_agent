@@ -123,3 +123,92 @@ async def test_basic_stream_json_invocation():
     assert any(e.get("type") == "result" for e in events), (
         f"no result event seen; events: {[e.get('type') for e in events]}"
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.live_system_guard_bypass
+async def test_resume_continuity_and_session_id_extraction():
+    """`--resume <session_id>` continues a prior session.
+
+    Verifies:
+      * a session_id can be extracted from the first turn's stream output
+      * a second invocation with --resume <session_id> sees context from turn 1
+      * the schema location of session_id is documented in CLI contract
+    """
+    signal.alarm(0)  # cancel autouse 30s SIGALRM (interferes with asyncio)
+    _skip_if_no_claude()
+    binary = probe.discover_binary()
+    env = {k: v for k, v in os.environ.items()}
+    env["CLAUDE_CODE_OAUTH_TOKEN"] = _load_oauth_token()
+    env = probe.check_env_hygiene(env)
+
+    # Turn 1: capture session_id.
+    proc1 = await asyncio.create_subprocess_exec(
+        binary, "-p",
+        "--output-format", "stream-json", "--verbose",
+        "--allowedTools", "",
+        env=env,
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    assert proc1.stdin is not None
+    proc1.stdin.write(b"Remember the word: zephyr. Reply: ok")
+    await proc1.stdin.drain()
+    proc1.stdin.close()
+    stdout1, stderr1 = await asyncio.wait_for(proc1.communicate(), timeout=120)
+    assert proc1.returncode == 0, stderr1.decode()[:500]
+    parser1 = StreamJsonParser()
+    events1 = list(parser1.feed(stdout1)) + list(parser1.close())
+
+    session_id = probe.extract_session_id(events1)
+    assert session_id is not None, (
+        f"could not extract session_id from events: "
+        f"{[e for e in events1 if 'session' in str(e)][:3]}"
+    )
+
+    # Turn 2: --resume.
+    proc2 = await asyncio.create_subprocess_exec(
+        binary, "-p",
+        "--output-format", "stream-json", "--verbose",
+        "--resume", session_id,
+        "--allowedTools", "",
+        env=env,
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    assert proc2.stdin is not None
+    proc2.stdin.write(b"What word did I ask you to remember?")
+    await proc2.stdin.drain()
+    proc2.stdin.close()
+    stdout2, stderr2 = await asyncio.wait_for(proc2.communicate(), timeout=120)
+    assert proc2.returncode == 0, stderr2.decode()[:500]
+    parser2 = StreamJsonParser()
+    events2 = list(parser2.feed(stdout2)) + list(parser2.close())
+
+    # Find the assistant text from turn 2 across various possible schemas.
+    assistant_texts: list[str] = []
+    for e in events2:
+        if e.get("type") != "assistant":
+            continue
+        # Possible schemas: e["text"], e["content"] (str or list), e["message"]["content"][i]["text"]
+        if isinstance(e.get("text"), str):
+            assistant_texts.append(e["text"])
+        elif isinstance(e.get("content"), str):
+            assistant_texts.append(e["content"])
+        elif isinstance(e.get("content"), list):
+            for block in e["content"]:
+                if isinstance(block, dict) and isinstance(block.get("text"), str):
+                    assistant_texts.append(block["text"])
+        msg = e.get("message")
+        if isinstance(msg, dict):
+            for block in msg.get("content", []) or []:
+                if isinstance(block, dict) and isinstance(block.get("text"), str):
+                    assistant_texts.append(block["text"])
+
+    combined = " ".join(assistant_texts).lower()
+    assert "zephyr" in combined, (
+        f"--resume did not preserve context; turn 2 assistant text: {combined[:300]!r}; "
+        f"raw assistant events (truncated): {str([e for e in events2 if e.get('type') == 'assistant'])[:500]}"
+    )

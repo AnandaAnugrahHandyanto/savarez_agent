@@ -36,3 +36,23 @@ into the design spec in Task 15.
 
 Conclusion: stdin prompt transport via `-p` + `--output-format stream-json`
 works correctly on version 2.1.143; the adapter design assumption is valid.
+
+## Task 9: --resume continuity + session ID extraction
+
+- Test: `tests/e2e/test_claude_cli_probe.py::test_resume_continuity_and_session_id_extraction`
+- Result: PASS
+- session_id schema location: top-level `session_id` field on every stream-json event; first occurrence is on the first `system` event (index 0). `extract_session_id()` finds it on the first pass by scanning `event.get("session_id")` across all events.
+- Sample session_id (first 8 chars only, redacted): `0a8cb6d1...`
+- --resume preserves context: yes — turn 2 correctly recalled the word "zephyr" from turn 1
+- Wall time: ~11 seconds (both turns combined, xdist parallel run)
+
+### Notes
+
+- The `session_id` is a UUID4 string (e.g. `0a8cb6d1-8f79-4a92-967f-859d130a6736`).
+- Every event in the stream carries the same `session_id` at the top level — it is NOT nested inside a `result` sub-object. The secondary fallback in `extract_session_id()` (checking `event["result"]["session_id"]`) is not needed for 2.1.143 but kept for forward compatibility.
+- `--no-session-persistence` (used in Task 8's test) suppresses session persistence and would prevent `--resume` from working. The resume test intentionally omits that flag.
+- The third `system` event contains a rich metadata payload (cwd, tools, mcp_servers, model, permissionMode, claude_code_version, etc.) — useful for future adapter introspection.
+- `--allowedTools ""` works correctly with `--resume`; the resumed session inherits the original session's tool permissions.
+
+Conclusion: `session_id` is a reliable top-level field on all stream-json events on version 2.1.143;
+`--resume <session_id>` correctly restores conversational context across subprocess invocations.
