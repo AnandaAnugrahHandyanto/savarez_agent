@@ -2740,8 +2740,8 @@ class _FakeAiohttpSession:
 
 def _install_fake_aiohttp(monkeypatch, session):
     fake_aiohttp = types.SimpleNamespace(
-        ClientSession=lambda timeout=None: session,
-        ClientTimeout=lambda total=None: None,
+        ClientSession=lambda *args, **kwargs: session,
+        ClientTimeout=lambda *args, **kwargs: None,
     )
     monkeypatch.setitem(sys.modules, "aiohttp", fake_aiohttp)
 
