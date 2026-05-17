@@ -260,6 +260,69 @@ def _render_table_block_for_telegram(table_block: list[str]) -> str:
     return "\n\n".join(rendered_rows)
 
 
+def _clean_excessive_newlines(text: str) -> str:
+    """Remove excessive empty lines and compact bullet/numbered lists for clean Telegram rendering."""
+    if not text:
+        return text
+
+    # Split by fenced code blocks (``` ... ```) so we don't modify whitespace inside them
+    parts = re.split(r'(```[\s\S]*?```)', text)
+    cleaned_parts = []
+
+    for idx, part in enumerate(parts):
+        if idx % 2 == 1:
+            # Inside a fenced code block — preserve exactly as-is
+            cleaned_parts.append(part)
+            continue
+
+        # Outside code blocks — apply cleanup rules
+        # 1) Collapse 3 or more consecutive newlines (with optional whitespace) into exactly 2 newlines
+        part = re.sub(r'\n\s*\n\s*\n+', '\n\n', part)
+
+        # 2) Remove empty lines between adjacent list items
+        lines = part.split('\n')
+        cleaned_lines = []
+
+        def is_list_item(line_str: str) -> bool:
+            s = line_str.strip()
+            if not s:
+                return False
+            # Check for standard bullets
+            if s.startswith(('•', '-', '*', '+')):
+                return True
+            # Check for numbered list (e.g., "1.", "1)")
+            match = re.match(r'^\d+[\.\)]', s)
+            return match is not None
+
+        for i, line in enumerate(lines):
+            # If the current line is completely blank, check if it's sandwiched between list items
+            if not line.strip():
+                prev_item = None
+                next_item = None
+
+                # Find the previous non-empty line in this chunk
+                for p in range(len(cleaned_lines) - 1, -1, -1):
+                    if cleaned_lines[p].strip():
+                        prev_item = cleaned_lines[p]
+                        break
+
+                # Find the next non-empty line in this chunk
+                for n in range(i + 1, len(lines)):
+                    if lines[n].strip():
+                        next_item = lines[n]
+                        break
+
+                # If both previous and next lines are list items, omit this blank line
+                if prev_item and next_item and is_list_item(prev_item) and is_list_item(next_item):
+                    continue
+
+            cleaned_lines.append(line)
+
+        cleaned_parts.append('\n'.join(cleaned_lines))
+
+    return ''.join(cleaned_parts)
+
+
 def _wrap_markdown_tables(text: str) -> str:
     """Rewrite GFM-style pipe tables into Telegram-friendly bullet groups.
 
@@ -1502,6 +1565,8 @@ class TelegramAdapter(BasePlatformAdapter):
         # Skip whitespace-only text to prevent Telegram 400 empty-text errors.
         if not content or not content.strip():
             return SendResult(success=True, message_id=None)
+
+        content = _clean_excessive_newlines(content)
         
         try:
             # Format and split message if needed
@@ -1700,6 +1765,8 @@ class TelegramAdapter(BasePlatformAdapter):
         """
         if not self._bot:
             return SendResult(success=False, error="Not connected")
+
+        content = _clean_excessive_newlines(content)
 
         # Pre-flight: if content already exceeds the limit, split-and-deliver
         # without round-tripping a doomed edit.
@@ -1992,6 +2059,8 @@ class TelegramAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="not_connected")
         if not hasattr(self._bot, "send_message_draft"):
             return SendResult(success=False, error="api_unavailable")
+
+        content = _clean_excessive_newlines(content)
 
         # Trim to the same UTF-16 budget the platform enforces on regular
         # sends.  Drafts have the same length contract as messages.
