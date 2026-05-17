@@ -20,6 +20,7 @@ Public surface:
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -31,6 +32,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from agent.claude_cli import errors
+from agent.claude_cli.protocol import StreamJsonParser
 
 logger = logging.getLogger(__name__)
 
@@ -209,3 +211,56 @@ def load_cache(path: Path) -> Optional[ProbeResult]:
     except (FileNotFoundError, PermissionError, json.JSONDecodeError, KeyError, TypeError) as exc:
         logger.debug("probe cache at %s unreadable, ignoring: %s", path, exc)
         return None
+
+
+async def _run_basic_invocation_assertion(
+    binary: str,
+    env: dict[str, str],
+    *,
+    timeout: float = 120.0,
+) -> dict[str, str]:
+    """Run the basic stream-json invocation assertion against the real binary.
+
+    Returns an assertions dict on success. Raises ClaudeCliIncompatible on
+    failure with a message naming the specific failure.
+    """
+    proc = await asyncio.create_subprocess_exec(
+        binary,
+        "-p",
+        "--output-format", "stream-json",
+        "--verbose",
+        "--no-session-persistence",
+        "--allowedTools", "",
+        env=env,
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    assert proc.stdin is not None
+    proc.stdin.write(b"Reply with exactly one word: pong")
+    await proc.stdin.drain()
+    proc.stdin.close()
+    stdout_data, stderr_data = await asyncio.wait_for(
+        proc.communicate(), timeout=timeout
+    )
+    parser = StreamJsonParser()
+    events = list(parser.feed(stdout_data)) + list(parser.close())
+    if proc.returncode != 0:
+        raise errors.ClaudeCliIncompatible(
+            f"basic invocation exited {proc.returncode}; "
+            f"stderr: {stderr_data.decode(errors='replace')[:500]}"
+        )
+    saw_assistant = any(e.get("type") == "assistant" for e in events)
+    saw_result = any(e.get("type") == "result" for e in events)
+    if not saw_assistant:
+        raise errors.ClaudeCliIncompatible(
+            "no 'assistant' event in stream output"
+        )
+    if not saw_result:
+        raise errors.ClaudeCliIncompatible(
+            "no 'result' event in stream output"
+        )
+    return {
+        "basic_invocation": "ok",
+        "stdin_prompt_transport": "ok",
+    }
