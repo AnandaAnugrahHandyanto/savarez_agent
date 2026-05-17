@@ -547,6 +547,70 @@ class DiscordAdapter(BasePlatformAdapter):
     MAX_MESSAGE_LENGTH = 2000
     _SPLIT_THRESHOLD = 1900  # near the 2000-char split point
 
+    # Pattern for leading Discord user/role mentions at the start of a message.
+    # Matches one or more space-separated ``<@123>``, ``<@!123>``, or ``<@&123>``
+    # tokens. ``@everyone`` / ``@here`` are intentionally excluded — propagating
+    # those to every continuation chunk would spam the whole server.
+    _LEADING_MENTION_RE = re.compile(
+        r"^((?:<@!?\d+>|<@&\d+>)(?:\s+(?:<@!?\d+>|<@&\d+>))*)\s+"
+    )
+
+    @classmethod
+    def _extract_leading_mention_prefix(cls, text: str) -> str:
+        """Return the leading user/role mention prefix of *text*, or ``""``.
+
+        Used to propagate target mentions across continuation chunks produced
+        by :meth:`truncate_message`. Without this, a receiving mention-gated
+        Hermes bot (e.g. ``DISCORD_ALLOW_BOTS=mentions``) only ingests the
+        first chunk of a long bot-to-bot handoff and silently drops the rest.
+        See issue #27265.
+        """
+        if not text:
+            return ""
+        match = cls._LEADING_MENTION_RE.match(text)
+        return match.group(1) if match else ""
+
+    @classmethod
+    def _propagate_leading_mentions(
+        cls, chunks: List[str], max_length: int = MAX_MESSAGE_LENGTH
+    ) -> List[str]:
+        """Prepend the first chunk's leading mention prefix to each continuation chunk.
+
+        Discord's 2000-char split means a long bot-to-bot handoff like
+        ``<@target-bot> ...part 1... (1/4)``, ``...part 2... (2/4)`` only
+        mentions ``target-bot`` in the first chunk. A mention-gated receiver
+        therefore ingests part 1 and drops the rest. We replay the same
+        mention prefix at the start of every continuation chunk so
+        mention-gated bots see the full handoff.
+
+        If the resulting chunk would exceed *max_length*, the prefix is
+        skipped for that chunk to avoid breaking the platform limit.
+
+        See issue #27265.
+        """
+        if not chunks:
+            return chunks
+        prefix = cls._extract_leading_mention_prefix(chunks[0])
+        if not prefix:
+            return chunks
+        out = [chunks[0]]
+        prefix_with_sep = f"{prefix} "
+        for chunk in chunks[1:]:
+            # Idempotent — don't double-prepend if upstream already added it.
+            if chunk.startswith(prefix_with_sep) or chunk.startswith(prefix):
+                out.append(chunk)
+                continue
+            new_chunk = f"{prefix_with_sep}{chunk}"
+            if len(new_chunk) <= max_length:
+                out.append(new_chunk)
+            else:
+                # Prefer the original (correct length) over the prefixed
+                # variant that would be rejected by Discord. The receiver
+                # will still miss this chunk, but that's preferable to a
+                # send failure for the whole message.
+                out.append(chunk)
+        return out
+
     # Auto-disconnect from voice channel after this many seconds of inactivity
     VOICE_TIMEOUT = 300
 
@@ -1413,6 +1477,7 @@ class DiscordAdapter(BasePlatformAdapter):
             # Format and split message if needed
             formatted = self.format_message(content)
             chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+            chunks = self._propagate_leading_mentions(chunks)
 
             message_ids = []
             reference = None
@@ -1492,9 +1557,9 @@ class DiscordAdapter(BasePlatformAdapter):
 
         formatted = self.format_message(content)
         chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+        chunks = self._propagate_leading_mentions(chunks)
 
         thread_name = _derive_forum_thread_name(content)
-
         starter_content = chunks[0] if chunks else thread_name
 
         try:
