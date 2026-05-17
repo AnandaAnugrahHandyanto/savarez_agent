@@ -1712,7 +1712,7 @@ class AIAgent:
             try:
                 _mem_provider_name = mem_config.get("provider", "") if mem_config else ""
 
-                if _mem_provider_name:
+                if _mem_provider_name and _mem_provider_name.strip():
                     from agent.memory_manager import MemoryManager as _MemoryManager
                     from plugins.memory import load_memory_provider as _load_mem
                     self._memory_manager = _MemoryManager()
@@ -2567,11 +2567,20 @@ class AIAgent:
             except Exception:
                 _aux_cfg_provider = ""
             if client is None or not aux_model:
-                msg = (
-                    "⚠ No auxiliary LLM provider configured — context "
-                    "compression will drop middle turns without a summary. "
-                    "Run `hermes setup` or set OPENROUTER_API_KEY."
-                )
+                if _aux_cfg_provider and _aux_cfg_provider != "auto":
+                    msg = (
+                        "⚠ Configured auxiliary compression provider "
+                        f"'{_aux_cfg_provider}' is unavailable — context "
+                        "compression will drop middle turns without a summary. "
+                        "Check auxiliary.compression in config.yaml and "
+                        "reauthenticate that provider."
+                    )
+                else:
+                    msg = (
+                        "⚠ No auxiliary LLM provider configured — context "
+                        "compression will drop middle turns without a summary. "
+                        "Run `hermes setup` or set OPENROUTER_API_KEY."
+                    )
                 self._compression_warning = msg
                 self._emit_status(msg)
                 logger.warning(
@@ -3521,18 +3530,35 @@ class AIAgent:
                     # reconstruct auth from scratch -- producing the spurious
                     # "No LLM provider configured" warning at end of turn.
                     _parent_runtime = self._current_main_runtime()
+                    _parent_api_mode = _parent_runtime.get("api_mode") or None
+                    # The review fork needs to call agent-loop tools (memory,
+                    # skill_manage). Those tools require Hermes' own dispatch,
+                    # which the codex_app_server runtime bypasses entirely
+                    # (it runs the turn inside codex's subprocess). So when
+                    # the parent is on codex_app_server, downgrade the review
+                    # fork to codex_responses — same auth/credentials, but
+                    # talks to the OpenAI Responses API directly so Hermes
+                    # owns the loop and the agent-loop tools dispatch.
+                    if _parent_api_mode == "codex_app_server":
+                        _parent_api_mode = "codex_responses"
+                    # skip_memory=True keeps the review fork from touching
+                    # external memory plugins (honcho, mem0, supermemory,
+                    # etc.). Without it, the fork's __init__ rebuilds its own
+                    # _memory_manager from config, scoped to the parent's
+                    # session_id, and leaks review prompts into external memory.
                     review_agent = AIAgent(
                         model=self.model,
                         max_iterations=8,
                         quiet_mode=True,
                         platform=self.platform,
                         provider=self.provider,
-                        api_mode=_parent_runtime.get("api_mode") or None,
+                        api_mode=_parent_api_mode,
                         base_url=_parent_runtime.get("base_url") or None,
                         api_key=_parent_runtime.get("api_key") or None,
                         credential_pool=getattr(self, "_credential_pool", None),
                         parent_session_id=self.session_id,
                         enabled_toolsets=["memory", "skills"],
+                        skip_memory=True,
                     )
                     review_agent._memory_write_origin = "background_review"
                     review_agent._memory_write_context = "background_review"
@@ -7545,6 +7571,7 @@ class AIAgent:
                     self.model, base_url=self.base_url,
                     api_key=self.api_key, provider=self.provider,
                     config_context_length=getattr(self, "_config_context_length", None),
+                    custom_providers=getattr(self, "_custom_providers", None),
                 )
                 self.context_compressor.update_model(
                     model=self.model,
@@ -7580,6 +7607,14 @@ class AIAgent:
         ``gateway/run.py``), so this restoration IS needed there too.
         """
         if not self._fallback_activated:
+            # Reset the chain index even when no fallback was activated this
+            # turn.  Without this, a turn where _try_activate_fallback() was
+            # called but returned False (chain exhausted or provider not
+            # configured) leaves _fallback_index >= len(_fallback_chain) while
+            # _fallback_activated stays False.  The next turn skips this block
+            # entirely, stranding the index and silently blocking all future
+            # fallback attempts for the session.  Fixes #20465.
+            self._fallback_index = 0
             return False
 
         if getattr(self, "_rate_limited_until", 0) > time.monotonic():

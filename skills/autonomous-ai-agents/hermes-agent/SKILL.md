@@ -340,6 +340,10 @@ Edit with `hermes config edit` or `hermes config set section.key value`.
 
 Full config reference: https://hermes-agent.nousresearch.com/docs/user-guide/configuration
 
+### Gordon Railway gateway fix pull-ins
+
+When pulling Telegram/gateway, cron, provider-fallback, memory, or compression fixes into Gordon's Railway fork, use the conservative workflow and pitfalls in `references/railway-gateway-fix-pullin.md`.
+
 ### Providers
 
 20+ providers supported. Set via `hermes model` or `hermes setup`.
@@ -771,6 +775,8 @@ Types: `fix:`, `feat:`, `refactor:`, `docs:`, `chore:`
 ### Gordon fork upstream sync
 
 For Gordon's deployment fork (`rousegordon-ops/hermes-agent`), avoid wholesale upstream merges unless explicitly requested. Prefer a low-risk cherry-pick pass: map fork-sensitive paths, use `git merge-tree` for conflict prediction, pick narrow bug/security fixes, preserve Railway/source-watcher behavior, run targeted tests, and revert incidental `uv.lock` churn. Detailed workflow: `github-pr-workflow` → `references/low-risk-upstream-sync.md`. Fork overlay documentation workflow: `references/fork-change-documentation.md`.
+
+**Cherry-pick conflict pitfall:** Do not batch `git cherry-pick -n` many upstream fixes into Gordon's fork without a rollback plan. If a conflict occurs, `git cherry-pick --skip` can discard or confuse partially staged work from the in-progress pick, especially after manual conflict resolution. Safer workflow: apply one commit at a time, or inspect each upstream diff and manually patch only the needed hunks; after every conflict resolution run `git status`, search for conflict markers, and verify the target hunks actually remain in the working tree before continuing. Never claim integration is complete until tests and Railway gateway delivery are verified.
 
 ### Gateway Metrics & Cost Report
 
