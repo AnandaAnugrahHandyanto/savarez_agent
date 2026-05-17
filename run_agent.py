@@ -3657,11 +3657,19 @@ class AIAgent:
         # rewards them with real cache hits.  Without this branch
         # qwen3.6-plus on opencode-go reports 0% cached tokens and burns
         # through the subscription on every turn.
+        #
+        # DeepSeek on OpenCode (Zen/Go) routes through the same gateway,
+        # which implements cache_control at the gateway level (not per
+        # model). The model switcher reports `$0.01/M cache read` pricing
+        # for deepseek-v4-pro on opencode-go, confirming gateway-side
+        # cache support — but without markers Hermes serves 0% cache hits.
+        # Issue #24617.
         model_is_qwen = "qwen" in model_lower
+        model_is_deepseek = "deepseek" in model_lower
         provider_is_alibaba_family = provider_lower in {
             "opencode", "opencode-zen", "opencode-go", "alibaba",
         }
-        if provider_is_alibaba_family and model_is_qwen:
+        if provider_is_alibaba_family and (model_is_qwen or model_is_deepseek):
             # Envelope layout (native_anthropic=False): markers on inner
             # content parts, not top-level tool messages.  Matches
             # pi-mono's "alibaba" cacheControlFormat.
