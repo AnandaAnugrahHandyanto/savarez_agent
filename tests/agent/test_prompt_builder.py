@@ -19,6 +19,7 @@ from agent.prompt_builder import (
     build_nous_subscription_prompt,
     build_context_files_prompt,
     build_environment_hints,
+    load_soul_md,
     CONTEXT_FILE_MAX_CHARS,
     DEFAULT_AGENT_IDENTITY,
     TOOL_USE_ENFORCEMENT_GUIDANCE,
@@ -491,15 +492,9 @@ class TestBuildNousSubscriptionPrompt:
 
 
 class TestBuildContextFilesPrompt:
-    def test_empty_dir_loads_seeded_global_soul(self, tmp_path):
-        from unittest.mock import patch
-
-        fake_home = tmp_path / "fake_home"
-        fake_home.mkdir()
-        with patch("pathlib.Path.home", return_value=fake_home):
-            result = build_context_files_prompt(cwd=str(tmp_path))
-        assert "Project Context" in result
-        assert "Hermes Agent" in result
+    def test_empty_dir_returns_empty(self, tmp_path):
+        result = build_context_files_prompt(cwd=str(tmp_path))
+        assert result == ""
 
     def test_loads_agents_md(self, tmp_path):
         (tmp_path / "AGENTS.md").write_text("Use Ruff for linting.")
@@ -512,13 +507,22 @@ class TestBuildContextFilesPrompt:
         result = build_context_files_prompt(cwd=str(tmp_path))
         assert "type hints" in result
 
-    def test_loads_soul_md_from_hermes_home_only(self, tmp_path, monkeypatch):
+    def test_does_not_load_soul_md(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_home"))
         hermes_home = tmp_path / "hermes_home"
         hermes_home.mkdir()
         (hermes_home / "SOUL.md").write_text("Be concise and friendly.", encoding="utf-8")
         (tmp_path / "SOUL.md").write_text("cwd soul should be ignored", encoding="utf-8")
         result = build_context_files_prompt(cwd=str(tmp_path))
+        assert result == ""
+
+    def test_loads_soul_md_from_hermes_home_only(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_home"))
+        hermes_home = tmp_path / "hermes_home"
+        hermes_home.mkdir()
+        (hermes_home / "SOUL.md").write_text("Be concise and friendly.", encoding="utf-8")
+        (tmp_path / "SOUL.md").write_text("cwd soul should be ignored", encoding="utf-8")
+        result = load_soul_md()
         assert "Be concise and friendly." in result
         assert "cwd soul should be ignored" not in result
 
@@ -527,7 +531,7 @@ class TestBuildContextFilesPrompt:
         hermes_home = tmp_path / "hermes_home"
         hermes_home.mkdir()
         (hermes_home / "SOUL.md").write_text("Be concise and friendly.", encoding="utf-8")
-        result = build_context_files_prompt(cwd=str(tmp_path))
+        result = load_soul_md()
         assert "Be concise and friendly." in result
         assert "If SOUL.md is present" not in result
         assert "## SOUL.md" not in result
@@ -537,8 +541,8 @@ class TestBuildContextFilesPrompt:
         hermes_home = tmp_path / "hermes_home"
         hermes_home.mkdir()
         (hermes_home / "SOUL.md").write_text("\n\n", encoding="utf-8")
-        result = build_context_files_prompt(cwd=str(tmp_path))
-        assert result == ""
+        result = load_soul_md()
+        assert result is None
 
     def test_blocks_injection_in_agents_md(self, tmp_path):
         (tmp_path / "AGENTS.md").write_text(
@@ -1186,6 +1190,5 @@ class TestOpenAIModelExecutionGuidance:
 # =========================================================================
 # Budget warning history stripping
 # =========================================================================
-
 
 

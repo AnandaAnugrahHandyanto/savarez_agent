@@ -1,12 +1,12 @@
 ---
 sidebar_position: 8
 title: "Context Files"
-description: "Project context files — .hermes.md, AGENTS.md, CLAUDE.md, global SOUL.md, and .cursorrules — automatically injected into every conversation"
+description: "Project context files — .hermes.md, AGENTS.md, CLAUDE.md, and .cursorrules — automatically injected into every conversation"
 ---
 
 # Context Files
 
-Hermes Agent automatically discovers and loads context files that shape how it behaves. Some are project-local and discovered from your working directory. `SOUL.md` is now global to the Hermes instance and is loaded from `HERMES_HOME` only.
+Hermes Agent automatically discovers and loads context files that shape how it behaves. Project context files are discovered from your working directory. `SOUL.md` is global to the Hermes instance, loaded from `HERMES_HOME` only, and used as the primary identity.
 
 ## Supported Context Files
 
@@ -15,7 +15,6 @@ Hermes Agent automatically discovers and loads context files that shape how it b
 | **.hermes.md** / **HERMES.md** | Project instructions (highest priority) | Walks to git root |
 | **AGENTS.md** | Project instructions, conventions, architecture | CWD at startup + subdirectories progressively |
 | **CLAUDE.md** | Claude Code context files (also detected) | CWD at startup + subdirectories progressively |
-| **SOUL.md** | Global personality and tone customization for this Hermes instance | `HERMES_HOME/SOUL.md` only |
 | **.cursorrules** | Cursor IDE coding conventions | CWD only |
 | **.cursor/rules/*.mdc** | Cursor IDE rule modules | CWD only |
 
@@ -79,7 +78,7 @@ This is a Next.js 14 web application with a Python FastAPI backend.
 
 ## SOUL.md
 
-`SOUL.md` controls the agent's personality, tone, and communication style. See the [Personality](/docs/user-guide/features/personality) page for full details.
+`SOUL.md` controls the agent's personality, tone, and communication style. It is loaded separately as the first system prompt layer, not inside the `# Project Context` block. See the [Personality](/docs/user-guide/features/personality) page for full details.
 
 **Location:**
 
@@ -92,7 +91,7 @@ Important details:
 - Hermes loads `SOUL.md` only from `HERMES_HOME`
 - Hermes does not probe the working directory for `SOUL.md`
 - If the file is empty, nothing from `SOUL.md` is added to the prompt
-- If the file has content, the content is injected verbatim after scanning and truncation
+- If the file has content, the content is injected verbatim as the agent identity after scanning and truncation
 
 ## .cursorrules
 
@@ -134,15 +133,9 @@ The following project context files have been loaded and should be followed:
 ## AGENTS.md
 
 [Your AGENTS.md content here]
-
-## .cursorrules
-
-[Your .cursorrules content here]
-
-[Your SOUL.md content here]
 ```
 
-Notice that SOUL content is inserted directly, without extra wrapper text.
+`SOUL.md` appears earlier in the system prompt as the identity layer, so it is not repeated here.
 
 ## Security: Prompt Injection Protection
 

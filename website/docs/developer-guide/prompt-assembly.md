@@ -132,7 +132,7 @@ def load_soul_md() -> Optional[str]:
     return content
 ```
 
-When `load_soul_md()` returns content, it replaces the hardcoded `DEFAULT_AGENT_IDENTITY`. The `build_context_files_prompt()` function is then called with `skip_soul=True` to prevent SOUL.md from appearing twice (once as identity, once as a context file).
+When `load_soul_md()` returns content, it replaces the hardcoded `DEFAULT_AGENT_IDENTITY`. `SOUL.md` is not loaded by `build_context_files_prompt()`, so it appears only once in the assembled prompt.
 
 If `SOUL.md` doesn't exist, the system falls back to:
 
@@ -152,7 +152,7 @@ Be targeted and efficient in your exploration and investigations.
 
 ```python
 # From agent/prompt_builder.py (simplified)
-def build_context_files_prompt(cwd=None, skip_soul=False):
+def build_context_files_prompt(cwd=None):
     cwd_path = Path(cwd).resolve()
 
     # Priority: first match wins — only ONE project context loaded
@@ -166,12 +166,6 @@ def build_context_files_prompt(cwd=None, skip_soul=False):
     sections = []
     if project_context:
         sections.append(project_context)
-
-    # SOUL.md from HERMES_HOME (independent of project context)
-    if not skip_soul:
-        soul_content = load_soul_md()
-        if soul_content:
-            sections.append(soul_content)
 
     if not sections:
         return ""
@@ -222,7 +216,7 @@ Local memory and user profile data are injected as frozen snapshots at session s
 3. `CLAUDE.md` (CWD only)
 4. `.cursorrules` / `.cursor/rules/*.mdc` (CWD only)
 
-`SOUL.md` is loaded separately via `load_soul_md()` for the identity slot. When it loads successfully, `build_context_files_prompt(skip_soul=True)` prevents it from appearing twice.
+`SOUL.md` is loaded separately via `load_soul_md()` for the identity slot and is not part of the project context block.
 
 Long files are truncated before injection.
 
