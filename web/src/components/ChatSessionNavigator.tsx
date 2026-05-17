@@ -24,7 +24,7 @@ import type {
 import { cn, timeAgo } from "@/lib/utils";
 
 const GENERAL_PROJECT_ID = "__general__";
-const TREE_SESSION_LIMIT = 7;
+const TREE_SESSION_LIMIT = 12;
 
 const EMPTY_ORGANIZATION: SessionOrganizationResponse = {
   version: 1,
@@ -75,6 +75,7 @@ function SessionRow({
 }) {
   const title = sessionTitle(session);
   const model = (session.model ?? "unknown").split("/").pop() ?? "unknown";
+  const timestamp = timeAgo(session.last_active);
 
   return (
     <button
@@ -82,29 +83,35 @@ function SessionRow({
       onClick={onSelect}
       aria-current={active ? "page" : undefined}
       className={cn(
-        "group flex w-full min-w-0 flex-col gap-1 rounded-md px-2.5 py-2 text-left transition-colors",
+        "group flex w-full min-w-0 items-center gap-2 rounded-lg px-3 py-2.5 text-left normal-case transition-colors",
         active
-          ? "bg-secondary text-foreground"
-          : "text-muted-foreground hover:bg-secondary/40 hover:text-foreground",
+          ? "bg-secondary/80 text-foreground"
+          : "text-muted-foreground hover:bg-secondary/45 hover:text-foreground",
       )}
     >
-      <div className="flex min-w-0 items-center gap-2">
-        <span className="min-w-0 flex-1 truncate text-sm">{title}</span>
-        {session.is_active && (
-          <span
-            aria-label="live"
-            className="h-2 w-2 shrink-0 rounded-full bg-success"
-          />
-        )}
+      <div className="min-w-0 flex-1">
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="min-w-0 flex-1 truncate text-[0.95rem] leading-5">
+            {title}
+          </span>
+          {session.is_active && (
+            <span
+              aria-label="live"
+              className="h-2 w-2 shrink-0 rounded-full bg-success"
+            />
+          )}
+        </div>
+
+        <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-xs opacity-60">
+          <span className="truncate">{model}</span>
+          <span className="shrink-0">/</span>
+          <span className="shrink-0">{session.message_count} msg</span>
+        </div>
       </div>
 
-      <div className="flex min-w-0 items-center gap-1.5 text-[0.65rem] opacity-70">
-        <span className="truncate">{model}</span>
-        <span className="shrink-0">|</span>
-        <span className="shrink-0">{session.message_count} msg</span>
-        <span className="shrink-0">|</span>
-        <span className="shrink-0">{timeAgo(session.last_active)}</span>
-      </div>
+      <span className="ml-1 shrink-0 text-xs tabular-nums opacity-65">
+        {timestamp}
+      </span>
     </button>
   );
 }
@@ -137,41 +144,41 @@ function SessionGroup({
   );
 
   return (
-    <div className="py-0.5">
+    <div className="py-1">
       <div className="group flex min-w-0 items-center gap-1">
         <button
           type="button"
           onClick={onToggle}
           aria-expanded={expanded}
-          className="flex h-7 w-6 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-secondary/40 hover:text-foreground"
+          className="flex h-9 w-7 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-secondary/45 hover:text-foreground"
         >
           {expanded ? (
-            <ChevronDown className="h-3.5 w-3.5" />
+            <ChevronDown className="h-4 w-4" />
           ) : (
-            <ChevronRight className="h-3.5 w-3.5" />
+            <ChevronRight className="h-4 w-4" />
           )}
         </button>
 
         <button
           type="button"
           onClick={onOpenAll}
-          className="flex h-8 min-w-0 flex-1 items-center gap-2 rounded-md px-2 text-left text-muted-foreground transition-colors hover:bg-secondary/40 hover:text-foreground"
+          className="flex h-10 min-w-0 flex-1 items-center gap-2 rounded-lg px-2.5 text-left text-muted-foreground transition-colors hover:bg-secondary/45 hover:text-foreground"
         >
           <Folder className="h-4 w-4 shrink-0" />
-          <span className="min-w-0 flex-1 truncate text-sm">{name}</span>
+          <span className="min-w-0 flex-1 truncate text-[0.95rem]">{name}</span>
           {subLabel && (
-            <span className="hidden shrink-0 truncate text-xs opacity-55 xl:block">
+            <span className="shrink-0 truncate text-sm opacity-45">
               {subLabel}
             </span>
           )}
-          <span className="shrink-0 text-xs tabular-nums opacity-70">
+          <span className="shrink-0 text-sm tabular-nums opacity-60">
             {count}
           </span>
         </button>
       </div>
 
       {expanded && (
-        <div className="mt-0.5 flex flex-col gap-0.5 pl-7">
+        <div className="mt-1 flex flex-col gap-0.5 pl-8">
           {visibleSessions.length > 0 ? (
             <>
               {visibleSessions.map((session) => (
@@ -186,14 +193,14 @@ function SessionGroup({
                 <button
                   type="button"
                   onClick={onOpenAll}
-                  className="px-2.5 py-1 text-left text-xs text-muted-foreground/70 transition-colors hover:text-foreground"
+                  className="px-3 py-2 text-left text-sm text-muted-foreground/70 transition-colors hover:text-foreground"
                 >
                   View all sessions
                 </button>
               )}
             </>
           ) : (
-            <div className="px-2.5 py-2 text-xs text-muted-foreground/70">
+            <div className="px-3 py-2 text-sm text-muted-foreground/65">
               {query ? "No matching sessions" : "No sessions yet"}
             </div>
           )}
@@ -332,16 +339,16 @@ export function ChatSessionNavigator({
   return (
     <Card
       className={cn(
-        "flex min-h-[16rem] flex-col overflow-hidden px-2 py-2",
+        "flex min-h-0 flex-1 flex-col overflow-hidden px-0 py-0 font-sans",
         className,
       )}
     >
-      <div className="flex items-center gap-2 px-1 pb-2">
+      <div className="flex items-center gap-2 px-4 pb-3 pt-4">
         <div className="min-w-0 flex-1">
-          <div className="text-xs uppercase tracking-wider text-muted-foreground">
+          <div className="text-xs uppercase tracking-[0.14em] text-muted-foreground">
             sessions
           </div>
-          <div className="truncate text-sm font-medium">Conversation map</div>
+          <div className="truncate text-base font-medium">Conversation map</div>
         </div>
 
         {loading && <Spinner className="h-3.5 w-3.5" />}
@@ -352,9 +359,9 @@ export function ChatSessionNavigator({
           onClick={() => void refresh()}
           title="Refresh sessions"
           aria-label="Refresh sessions"
-          className="h-7 w-7 text-muted-foreground hover:text-foreground"
+          className="h-8 w-8 text-muted-foreground hover:text-foreground"
         >
-          <RefreshCw className="h-3.5 w-3.5" />
+          <RefreshCw className="h-4 w-4" />
         </Button>
 
         <Button
@@ -363,29 +370,43 @@ export function ChatSessionNavigator({
           onClick={startNewChat}
           title="New chat"
           aria-label="New chat"
-          className="h-7 w-7 text-muted-foreground hover:text-foreground"
+          className="h-8 w-8 text-muted-foreground hover:text-foreground"
         >
-          <MessageSquarePlus className="h-3.5 w-3.5" />
+          <MessageSquarePlus className="h-4 w-4" />
         </Button>
       </div>
 
-      <div className="relative mb-2 px-1">
-        <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground/70" />
-        <Input
-          value={query}
-          onChange={(event) => setQuery(event.target.value)}
-          placeholder="Search sessions"
-          className="h-8 pl-7 text-xs"
-        />
+      <div className="px-4 pb-3">
+        <Button
+          ghost
+          onClick={startNewChat}
+          className="mb-2 flex h-10 w-full justify-start gap-2 rounded-lg px-3 text-base normal-case text-muted-foreground hover:bg-secondary/45 hover:text-foreground"
+        >
+          <MessageSquarePlus className="h-4 w-4 shrink-0" />
+          New chat
+        </Button>
+
+        <div className="relative">
+          <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground/70" />
+          <Input
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="Search sessions"
+            className="h-10 rounded-lg pl-9 text-base"
+          />
+        </div>
       </div>
 
       {error && (
-        <div className="mx-1 mb-2 rounded border border-destructive/40 bg-destructive/5 px-2 py-1.5 text-xs text-destructive">
-          {error}
+        <div className="mx-4 mb-3 rounded-lg border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive">
+          <div className="font-medium">Session map unavailable</div>
+          <div className="mt-0.5 truncate text-xs opacity-75" title={error}>
+            {error}
+          </div>
         </div>
       )}
 
-      <div className="min-h-0 flex-1 overflow-y-auto pr-1">
+      <div className="min-h-0 flex-1 overflow-y-auto px-3 pb-2">
         {groups.map((group) => (
           <SessionGroup
             key={group.id}
@@ -403,21 +424,21 @@ export function ChatSessionNavigator({
         ))}
 
         {!loading && groups.length === 1 && (totalsByGroup[GENERAL_PROJECT_ID] ?? 0) === 0 && (
-          <div className="px-3 py-6 text-center text-xs text-muted-foreground/70">
+          <div className="px-4 py-8 text-center text-sm text-muted-foreground/65">
             No chats have been indexed yet.
           </div>
         )}
       </div>
 
-      <div className="mt-2 flex items-center justify-between gap-2 border-t border-border/50 px-1 pt-2">
-        <Badge tone="secondary" className="px-1.5 py-0 text-[9px]">
+      <div className="flex items-center justify-between gap-3 border-t border-border/50 px-4 py-3">
+        <Badge tone="secondary" className="shrink-0 px-2 py-1 text-xs">
           {organization.projects.length} projects
         </Badge>
         <Button
           ghost
           size="sm"
           onClick={openAllSessions}
-          className="h-6 px-1.5 py-0 text-xs normal-case text-muted-foreground hover:text-foreground"
+          className="h-8 px-2 py-0 text-sm normal-case text-muted-foreground hover:text-foreground"
         >
           Open sessions
         </Button>

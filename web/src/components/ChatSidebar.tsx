@@ -187,11 +187,14 @@ export function ChatSidebar({
   return (
     <aside
       className={cn(
-        "flex h-full w-full min-w-0 shrink-0 flex-col gap-3 overflow-y-auto overflow-x-hidden pr-1 normal-case lg:w-72",
+        "flex h-full w-full min-w-0 shrink-0 flex-col gap-3 overflow-y-auto overflow-x-hidden pr-1 normal-case lg:w-[23rem] xl:w-[25rem]",
         className,
       )}
     >
-      <ChatSessionNavigator activeSessionId={activeSessionId} />
+      <ChatSessionNavigator
+        activeSessionId={activeSessionId}
+        className="min-h-[28rem]"
+      />
 
       {error && (
         <Card className="flex items-start gap-2 border-destructive/40 bg-destructive/5 px-3 py-2 text-xs">
@@ -213,7 +216,7 @@ export function ChatSidebar({
         </Card>
       )}
 
-      <Card className="flex min-h-0 flex-none flex-col px-2 py-2">
+      <Card className="flex max-h-44 min-h-0 flex-none flex-col px-3 py-3">
         <div className="flex items-center justify-between gap-2 px-1 pb-2">
           <div className="text-xs uppercase tracking-wider text-muted-foreground">
             tools

@@ -982,7 +982,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           role="complementary"
           aria-label={modelToolsLabel}
           className={cn(
-            "font-mondwest fixed top-0 right-0 z-[60] flex h-dvh max-h-dvh w-64 min-w-0 flex-col antialiased",
+            "font-mondwest fixed top-0 right-0 z-[60] flex h-dvh max-h-dvh w-80 max-w-[88vw] min-w-0 flex-col antialiased",
             "border-l border-current/20 text-midground",
             "bg-background-base/95 backdrop-blur-sm",
             "transition-transform duration-200 ease-out",
@@ -1214,7 +1214,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
             id="chat-side-panel"
             role="complementary"
             aria-label={modelToolsLabel}
-            className="flex min-h-0 shrink-0 flex-col overflow-hidden lg:h-full lg:w-72"
+            className="flex min-h-0 shrink-0 flex-col overflow-hidden lg:h-full lg:w-[23rem] xl:w-[25rem]"
           >
             <div className="min-h-0 flex-1 overflow-hidden">
               <ChatSidebar
