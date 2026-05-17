@@ -66,11 +66,57 @@ class TestBuildAnthropicClient:
             assert "oauth-2025-04-20" in betas
             assert "claude-code-20250219" in betas
             assert "interleaved-thinking-2025-05-14" in betas
-            assert "fine-grained-tool-streaming-2025-05-14" in betas
+            # CC parity (#15080): real Claude Code does NOT send the
+            # fine-grained-tool-streaming beta header — see
+            # test_oauth_strips_fine_grained_tool_streaming_beta below.
+            assert "fine-grained-tool-streaming-2025-05-14" not in betas
             # Native Anthropic does not get context-1m by default; accounts
             # without that beta reject even short auxiliary requests.
             assert "context-1m-2025-08-07" not in betas
             assert "api_key" not in kwargs
+
+    def test_oauth_strips_fine_grained_tool_streaming_beta(self):
+        """OAuth requests must NOT carry ``fine-grained-tool-streaming-2025-05-14``.
+
+        Empirical evidence from the Claude Code 2.1.143 Windows binary:
+        running ``strings claude.exe | grep -E '^(fine-grained-tool-streaming|...)'``
+        shows every other beta CC uses (claude-code-20250219, oauth-2025-04-20,
+        interleaved-thinking-2025-05-14, context-1m-2025-08-07, fast-mode-2026-02-01,
+        files-api-2025-04-14, extended-cache-ttl-2025-04-11,
+        prompt-caching-scope-2026-01-05, message-batches-2024-09-24) as a plain
+        interned string — but the streaming beta only appears inside docstrings
+        of a bundled skill, which literally instructs:
+
+            "Remove the effort-2025-11-24 and
+             fine-grained-tool-streaming-2025-05-14 beta headers (GA on 4.6)"
+
+        CC opts in to fine-grained tool streaming at the per-tool level
+        (``eager_input_streaming: true``) gated on the
+        ``CLAUDE_CODE_ENABLE_FINE_GRAINED_TOOL_STREAMING`` env var and the
+        ``tengu_fgts`` feature flag — NOT via the global beta header.
+
+        Sending the beta on OAuth requests is a fingerprint divergence from
+        real CC and was flagged on the #15080 PR as a possible additional
+        trigger for Anthropic's plan-vs-extra-usage classifier. Even if it
+        is not an independent classifier trigger, matching CC's beta set
+        exactly is the whole point of the OAuth path.
+        """
+        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
+            build_anthropic_client("sk-ant-oat01-" + "x" * 60)
+            kwargs = mock_sdk.Anthropic.call_args[1]
+            betas = kwargs["default_headers"]["anthropic-beta"]
+            assert "fine-grained-tool-streaming-2025-05-14" not in betas
+
+    def test_api_key_still_sends_fine_grained_tool_streaming_beta(self):
+        """Non-OAuth (x-api-key) requests keep the beta — the strip is
+        scoped to OAuth only, since the fingerprint concern is OAuth-specific
+        and API-key callers may target older Claude (4.5/4.1) endpoints that
+        still benefit from the explicit opt-in header."""
+        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
+            build_anthropic_client("sk-ant-api03-" + "x" * 60)
+            kwargs = mock_sdk.Anthropic.call_args[1]
+            betas = kwargs["default_headers"]["anthropic-beta"]
+            assert "fine-grained-tool-streaming-2025-05-14" in betas
 
     def test_oauth_drop_context_1m_beta_strips_only_1m(self):
         """drop_context_1m_beta=True strips context-1m-2025-08-07 while
@@ -83,11 +129,13 @@ class TestBuildAnthropicClient:
             kwargs = mock_sdk.Anthropic.call_args[1]
             betas = kwargs["default_headers"]["anthropic-beta"]
             assert "context-1m-2025-08-07" not in betas
-            # Everything else must still be there.
+            # Everything else CC sends must still be there.
             assert "oauth-2025-04-20" in betas
             assert "claude-code-20250219" in betas
             assert "interleaved-thinking-2025-05-14" in betas
-            assert "fine-grained-tool-streaming-2025-05-14" in betas
+            # CC parity (#15080): fine-grained-tool-streaming must remain
+            # absent regardless of the context-1m drop.
+            assert "fine-grained-tool-streaming-2025-05-14" not in betas
 
     def test_api_key_uses_api_key(self):
         with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
@@ -1041,6 +1089,33 @@ class TestBuildAnthropicKwargs:
         )
         betas = kwargs["extra_headers"]["anthropic-beta"]
         assert "context-1m-2025-08-07" not in betas
+        assert "fast-mode-2026-02-01" in betas
+        assert "oauth-2025-04-20" in betas
+        assert "claude-code-20250219" in betas
+        assert "interleaved-thinking-2025-05-14" in betas
+        # CC parity (#15080): fast-mode extra_headers must also drop the
+        # fine-grained-tool-streaming beta on the OAuth path, otherwise the
+        # per-request override would silently re-introduce the beta that
+        # build_anthropic_client stripped at client level.
+        assert "fine-grained-tool-streaming-2025-05-14" not in betas
+
+    def test_fast_mode_oauth_strips_fine_grained_tool_streaming_beta(self):
+        """OAuth fast-mode requests must not regress on the CC fingerprint
+        parity asserted by test_oauth_strips_fine_grained_tool_streaming_beta.
+        The fast-mode code path builds its own extra_headers from
+        _common_betas_for_base_url; this guards the is_oauth thread-through."""
+        kwargs = build_anthropic_kwargs(
+            model="claude-opus-4-6",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=None,
+            max_tokens=4096,
+            reasoning_config=None,
+            is_oauth=True,
+            fast_mode=True,
+        )
+        betas = kwargs["extra_headers"]["anthropic-beta"]
+        assert "fine-grained-tool-streaming-2025-05-14" not in betas
+        # And the CC-parity betas the fast-mode path is supposed to set:
         assert "fast-mode-2026-02-01" in betas
         assert "oauth-2025-04-20" in betas
         assert "claude-code-20250219" in betas
