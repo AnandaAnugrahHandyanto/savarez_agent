@@ -118,7 +118,7 @@ DEFAULT_WS_PATH = "/phone/media/ws"
 CONTACT_CACHE_TTL_SECONDS = 300
 WEBHOOK_DEDUP_TTL_SECONDS = 300
 SMS_MAX_LENGTH = 1600  # Inkbox SMS hard cap
-SMS_TEXT_BATCH_DELAY_SECONDS = 8.0
+SMS_TEXT_BATCH_DELAY_SECONDS = 0.0
 SMS_TEXT_BATCH_MAX_MESSAGES = 8
 SMS_TEXT_BATCH_MAX_CHARS = 4000
 
@@ -130,6 +130,9 @@ SMS_CONTROL_WORDS = frozenset({
     "cancel",
     "end",
     "quit",
+    "yes",
+    "subscribe",
+    "info",
     "unsubscribe",
 })
 
@@ -1380,7 +1383,7 @@ class InkboxAdapter(BasePlatformAdapter):
                 or next_chars > self._sms_text_batch_max_chars
             ):
                 await self._flush_sms_text_batch_now(key)
-                batch = None
+                batch = self._pending_sms_text_batches.get(key)
 
         if batch is None:
             batch = {
@@ -1479,7 +1482,6 @@ class InkboxAdapter(BasePlatformAdapter):
         contact_name = contact["name"] if contact and contact.get("name") else None
         body = text_msg.get("text") or ""
         timestamp = _parse_inkbox_timestamp(text_msg.get("created_at"))
-        self._last_inbound_modality[str(chat_id)] = "sms"
 
         control_word = _normalized_sms_control_word(body)
         if control_word:
@@ -1489,6 +1491,8 @@ class InkboxAdapter(BasePlatformAdapter):
                 redact_phone(remote),
             )
             return web.Response(status=200, text="ok")
+
+        self._last_inbound_modality[str(chat_id)] = "sms"
 
         if body.lstrip().startswith("/"):
             event = self._build_sms_text_event(
