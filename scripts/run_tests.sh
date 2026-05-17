@@ -86,6 +86,9 @@ export TZ=UTC
 export LANG=C.UTF-8
 export LC_ALL=C.UTF-8
 export PYTHONHASHSEED=0
+# Worktrees may reuse a venv editable-installed from the main checkout. Put the
+# current repo root first so tests exercise the code under this worktree.
+export PYTHONPATH="$REPO_ROOT${PYTHONPATH:+:$PYTHONPATH}"
 
 # ── Live-gateway test guard (developer machines) ────────────────────────────
 # If a system-wide hermes pytest_live_guard plugin is installed at
