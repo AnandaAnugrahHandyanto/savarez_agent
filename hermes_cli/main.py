@@ -10236,6 +10236,15 @@ def main():
         action="store_true",
         help="Do not auto-open a browser for OAuth login",
     )
+    # === PATCH: xai-paste-code (hoyt-2026-05-17) === --paste-code CLI flag
+    auth_add.add_argument(
+        "--paste-code",
+        action="store_true",
+        help=(
+            "Allow pasting the OAuth code via stdin (WSL2/firewall workaround). "
+            "Auto-enabled with --no-browser. xAI Grok OAuth only."
+        ),
+    )
     auth_add.add_argument(
         "--timeout", type=float, help="OAuth/network timeout in seconds"
     )

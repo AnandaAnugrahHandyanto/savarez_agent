@@ -336,9 +336,15 @@ def auth_add_command(args) -> None:
         return
 
     if provider == "xai-oauth":
+        # === PATCH: xai-paste-code (hoyt-2026-05-17) === paste-fallback enabled
+        # by --paste-code OR auto-enabled when --no-browser (WSL2 firewall case).
+        _paste_fallback = bool(getattr(args, "paste_code", False)) or bool(
+            getattr(args, "no_browser", False)
+        )
         creds = auth_mod._xai_oauth_loopback_login(
             timeout_seconds=getattr(args, "timeout", None) or 20.0,
             open_browser=not getattr(args, "no_browser", False),
+            allow_stdin_paste=_paste_fallback,
         )
         label = (getattr(args, "label", None) or "").strip() or label_from_token(
             creds["tokens"]["access_token"],

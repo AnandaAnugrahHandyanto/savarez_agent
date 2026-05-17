@@ -2193,7 +2193,47 @@ def _xai_wait_for_callback(
     result: dict[str, Any],
     *,
     timeout_seconds: float = 180.0,
+    allow_stdin_paste: bool = False,
+    paste_port: int | None = None,
+    paste_state: str | None = None,
 ) -> dict[str, Any]:
+    # === PATCH: xai-paste-code (hoyt-2026-05-17) === wait-for-callback
+    # On WSL2 with Hyper-V Firewall default-block policy (Microsoft's current
+    # default with mirrored networking), xAI's redirect to the loopback URI is
+    # silently dropped before reaching the WSL VM. xAI then shows a "Could not
+    # establish connection" page with the auth code as text. When
+    # allow_stdin_paste is True, this function also reads stdin in parallel
+    # and feeds any pasted code into the same callback handler via internal
+    # HTTP — same code path as the listener would take from a real redirect.
+    import sys as _sys
+    import threading as _threading
+    import urllib.request as _urlreq
+
+    stdin_thread = None
+    if allow_stdin_paste and paste_port and paste_state and _sys.stdin and _sys.stdin.isatty():
+        print()
+        print("If your browser shows 'Could not establish connection' with a code,")
+        print("paste the code here and press Enter (or wait for browser callback):")
+        def _stdin_reader():
+            try:
+                line = _sys.stdin.readline().strip()
+                if not line:
+                    return
+                # Strip surrounding quotes / accidental spaces
+                line = line.strip().strip('"').strip("'")
+                if result.get("code") or result.get("error"):
+                    return  # listener already won
+                # Deliver to local listener via internal curl-equivalent
+                url = f"http://127.0.0.1:{paste_port}/callback?code={line}&state={paste_state}"
+                try:
+                    _urlreq.urlopen(url, timeout=5)
+                except Exception:
+                    pass
+            except Exception:
+                pass
+        stdin_thread = _threading.Thread(target=_stdin_reader, daemon=True)
+        stdin_thread.start()
+
     deadline = time.monotonic() + max(5.0, timeout_seconds)
     try:
         while time.monotonic() < deadline:
@@ -5316,7 +5356,9 @@ def _xai_oauth_loopback_login(
     *,
     timeout_seconds: float = 20.0,
     open_browser: bool = True,
+    allow_stdin_paste: bool = False,
 ) -> Dict[str, Any]:
+    # === PATCH: xai-paste-code (hoyt-2026-05-17) === login-signature
     discovery = _xai_oauth_discovery(timeout_seconds)
     authorization_endpoint = discovery["authorization_endpoint"]
     token_endpoint = discovery["token_endpoint"]
@@ -5353,11 +5395,21 @@ def _xai_oauth_loopback_login(
             else:
                 print("Could not open the browser automatically; use the URL above.")
 
+        # Extract port from redirect_uri ("http://127.0.0.1:PORT/callback")
+        _paste_port = None
+        try:
+            from urllib.parse import urlparse as _urlparse
+            _paste_port = _urlparse(redirect_uri).port
+        except Exception:
+            pass
         callback = _xai_wait_for_callback(
             server,
             thread,
             callback_result,
             timeout_seconds=max(30.0, timeout_seconds * 9),
+            allow_stdin_paste=allow_stdin_paste,
+            paste_port=_paste_port,
+            paste_state=state,
         )
     except Exception:
         try:
