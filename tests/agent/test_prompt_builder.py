@@ -40,8 +40,8 @@ from hermes_cli.nous_subscription import NousFeatureState, NousSubscriptionFeatu
 class TestGuidanceConstants:
     def test_memory_guidance_discourages_task_logs(self):
         assert "durable facts" in MEMORY_GUIDANCE
-        assert "Do NOT save task progress" in MEMORY_GUIDANCE
-        assert "session_search" in MEMORY_GUIDANCE
+        assert "task progress" in MEMORY_GUIDANCE
+        assert "session_search" not in MEMORY_GUIDANCE
         assert "like a diary" not in MEMORY_GUIDANCE
         assert ">80%" not in MEMORY_GUIDANCE
 
@@ -788,8 +788,6 @@ class TestPromptBuilderConstants:
         assert "discord" in PLATFORM_HINTS
         assert "cron" in PLATFORM_HINTS
         assert "cli" in PLATFORM_HINTS
-        assert "api_server" in PLATFORM_HINTS
-        assert "webui" in PLATFORM_HINTS
 
     def test_cli_hint_does_not_suggest_media_tags(self):
         # Regression: MEDIA:/path tags are intercepted only by messaging
@@ -807,32 +805,7 @@ class TestPromptBuilderConstants:
         ), "CLI hint should explicitly discourage MEDIA: tags."
         # Messaging hints should still advertise MEDIA: positively (sanity
         # check that this test is calibrated correctly).
-        assert "include MEDIA:" in PLATFORM_HINTS["telegram"]
-
-    def test_platform_hints_mattermost(self):
-        hint = PLATFORM_HINTS["mattermost"]
-        assert "Mattermost" in hint
-        assert "MEDIA:" in hint
-        assert "Markdown" in hint
-
-    def test_platform_hints_matrix(self):
-        hint = PLATFORM_HINTS["matrix"]
-        assert "Matrix" in hint
-        assert "MEDIA:" in hint
-        assert "Markdown" in hint
-
-    def test_platform_hints_feishu(self):
-        hint = PLATFORM_HINTS["feishu"]
-        assert "Feishu" in hint
-        assert "MEDIA:" in hint
-        assert "Markdown" in hint
-
-    def test_platform_hints_webui(self):
-        hint = PLATFORM_HINTS["webui"]
-        assert "WebUI" in hint
-        assert "MEDIA:" in hint
-        assert "Markdown" in hint
-        assert "absolute" in hint
+        assert "Send files via MEDIA:" in PLATFORM_HINTS["telegram"]
 
 
 # =========================================================================

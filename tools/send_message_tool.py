@@ -116,13 +116,13 @@ async def _send_telegram_message_with_retry(bot, *, attempts: int = 3, **kwargs)
 SEND_MESSAGE_SCHEMA = {
     "name": "send_message",
     "description": (
-        "Send a message to a connected messaging platform, or list available targets.\n\n"
-        "IMPORTANT: When the user asks to send to a specific channel or person "
-        "(not just a bare platform name), call send_message(action='list') FIRST to see "
-        "available targets, then send to the correct one.\n"
-        "If the user just says a platform name like 'send to telegram', send directly "
-        "to the home channel without listing first."
-    ),
+       "Send a message to a connected messaging platform, or list available targets.\n\n"
+       "IMPORTANT: When user asks to send to a specific channel/person "
+       "(not just a bare platform name), call send_message(action='list') FIRST to see "
+       "available targets, then send to the correct one.\n"
+       "If user just says a platform name like 'send to telegram', send directly "
+       "to the home channel."
+   ),
     "parameters": {
         "type": "object",
         "properties": {

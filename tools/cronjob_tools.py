@@ -544,23 +544,15 @@ def cronjob(
 
 CRONJOB_SCHEMA = {
     "name": "cronjob",
-    "description": """Manage scheduled cron jobs with a single compressed tool.
+           "description": """Manage scheduled cron jobs.
 
-Use action='create' to schedule a new job from a prompt or one or more skills.
-Use action='list' to inspect jobs.
-Use action='update', 'pause', 'resume', 'remove', or 'run' to manage an existing job.
+  Use action='create' to schedule a new job. action='list' to inspect. action='update', 'pause', 'resume', 'remove', 'run' to manage existing jobs.
 
-To stop a job the user no longer wants: first action='list' to find the job_id, then action='remove' with that job_id. Never guess job IDs — always list first.
+  To stop a job: list first to find job_id, then remove with that job_id. Never guess job IDs.
 
-Jobs run in a fresh session with no current-chat context, so prompts must be self-contained.
-If skills are provided on create, the future cron run loads those skills in order, then follows the prompt as the task instruction.
-On update, passing skills=[] clears attached skills.
+  Jobs run in a fresh session with no current-chat context — prompts must be self-contained. If skills are provided, the future cron run loads them in order, then follows the prompt as the task instruction.
 
-NOTE: The agent's final response is auto-delivered to the target. Put the primary
-user-facing content in the final response. Cron jobs run autonomously with no user
-present — they cannot ask questions or request clarification.
-
-Important safety rule: cron-run sessions should not recursively schedule more cron jobs.""",
+  NOTE: cron-run sessions should not recursively schedule more cron jobs.""",
     "parameters": {
         "type": "object",
         "properties": {
@@ -588,9 +580,9 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
                 "type": "integer",
                 "description": "Optional repeat count. Omit for defaults (once for one-shot, forever for recurring)."
             },
-            "deliver": {
-                "type": "string",
-                "description": "Omit this parameter to auto-deliver back to the current chat and topic (recommended). Auto-detection preserves thread/topic context. Only set explicitly when the user asks to deliver somewhere OTHER than the current conversation. Values: 'origin' (same as omitting), 'local' (no delivery, save only), 'all' (fan out to every connected home channel), or platform:chat_id:thread_id for a specific destination. Combine with comma: 'origin,all' delivers to the origin plus every other connected channel. Examples: 'telegram:-1001234567890:17585', 'discord:#engineering', 'sms:+15551234567', 'all'. WARNING: 'platform:chat_id' without :thread_id loses topic targeting. 'all' resolves at fire time, so a job created before a channel was wired up will pick it up automatically once connected."
+           "deliver": {
+                 "type": "string",
+                "description": "Delivery target: 'origin' (current chat, default), 'local' (save only), 'all' (all channels), or platform:chat_id:thread_id. Combine: 'origin,all'. See send_message target format."
             },
             "skills": {
                 "type": "array",
@@ -603,58 +595,44 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
                 "properties": {
                     "provider": {
                         "type": "string",
-                        "description": "Provider name (e.g. 'openrouter', 'anthropic', or 'custom:<name>' for a provider defined in custom_providers config — always include the ':<name>' suffix, never pass the bare 'custom'). Omit to use and pin the current provider."
+              "description": "Provider name (e.g. 'openrouter', 'anthropic', 'custom:<name>'). Omit to pin current.",
                     },
                     "model": {
                         "type": "string",
-                        "description": "Model name (e.g. 'anthropic/claude-sonnet-4', 'claude-sonnet-4')"
+                        "description": "Model name (e.g. 'anthropic/claude-sonnet-4')"
                     }
                 },
                 "required": ["model"]
             },
             "script": {
                 "type": "string",
-                "description": f"Optional path to a script that runs each tick. In the default mode its stdout is injected into the agent's prompt as context (data-collection / change-detection pattern). With no_agent=True, the script IS the job and its stdout is delivered verbatim (classic watchdog pattern). Relative paths resolve under {display_hermes_home()}/scripts/. ``.sh``/``.bash`` extensions run via bash, everything else via Python. On update, pass empty string to clear."
+                "description": f"Script runs each tick. Default mode: stdout injected as context. With no_agent=True: script IS the job. Relative paths under {display_hermes_home()}/scripts/. On update, empty string clears."
             },
             "no_agent": {
                 "type": "boolean",
                 "default": False,
                 "description": (
-                    "Default: False (LLM-driven job — the agent runs the prompt each tick). "
-                    "Set True to skip the LLM entirely: the scheduler just runs ``script`` on schedule and delivers its stdout verbatim. No tokens, no agent loop, no model override honoured. "
-                    "\n\n"
-                    "REQUIREMENTS when True: ``script`` MUST be set (``prompt`` and ``skills`` are ignored). "
-                    "\n\n"
-                    "DELIVERY SEMANTICS when True: "
-                    "(a) non-empty stdout is sent verbatim as the message; "
-                    "(b) EMPTY stdout means SILENT — nothing is sent to the user and they won't see anything happened, so design your script to stay quiet when there's nothing to report (the watchdog pattern); "
-                    "(c) non-zero exit / timeout sends an error alert so a broken watchdog can't fail silently. "
-                    "\n\n"
-                    "WHEN TO USE True: recurring script-only pings where the script itself produces the exact message text (memory/disk/GPU watchdogs, threshold alerts, heartbeats, CI notifications, API pollers with a fixed output shape). "
-                    "WHEN TO USE False (default): anything that needs reasoning — summarize a feed, draft a daily briefing, pick interesting items, rephrase data for a human, follow conditional logic based on content."
+                    "Default: False (LLM-driven). True = skip LLM, runs ``script`` on schedule, delivers stdout verbatim. No tokens, no agent. "
+                    "Requires ``script`` set. "
+                    "Delivery: stdout=message, empty=silent, exit!=0=error alert. "
+                    "Use for: script-only pings (watchdogs, heartbeats). False for: reasoning tasks."
                 ),
             },
             "context_from": {
                 "type": "array",
                 "items": {"type": "string"},
                 "description": (
-                    "Optional job ID or list of job IDs whose most recent completed output is "
-                    "injected into the prompt as context before each run. "
-                    "Use this to chain cron jobs: job A collects data, job B processes it. "
-                    "Each entry must be a valid job ID (from cronjob action='list'). "
-                    "Note: injects the most recent completed output — does not wait for "
-                    "upstream jobs running in the same tick. "
-                    "On update, pass an empty array to clear."
+                    "Optional job ID(s) whose most recent output is injected as context before each run. Chains cron jobs (A collects data, B processes it). On update, pass empty array to clear."
                 ),
             },
             "enabled_toolsets": {
                 "type": "array",
                 "items": {"type": "string"},
-                "description": "Optional list of toolset names to restrict the job's agent to (e.g. [\"web\", \"terminal\", \"file\", \"delegation\"]). When set, only tools from these toolsets are loaded, significantly reducing input token overhead. When omitted, all default tools are loaded. Infer from the job's prompt — e.g. use \"web\" if it calls web_search, \"terminal\" if it runs scripts, \"file\" if it reads files, \"delegation\" if it calls delegate_task. On update, pass an empty array to clear."
+                "description": "Optional toolset names to restrict the job's agent (e.g. [\"web\", \"terminal\", \"file\"]). Reduces input tokens. Infer from job's prompt. On update, pass empty array to clear."
             },
             "workdir": {
                 "type": "string",
-                "description": "Optional absolute path to run the job from. When set, AGENTS.md / CLAUDE.md / .cursorrules from that directory are injected into the system prompt, and the terminal/file/code_exec tools use it as their working directory — useful for running a job inside a specific project repo. Must be an absolute path that exists. When unset (default), preserves the original behaviour: no project context files, tools use the scheduler's cwd. On update, pass an empty string to clear. Jobs with workdir run sequentially (not parallel) to keep per-job directories isolated."
+                "description": "Absolute path to run the job from. Injects AGENTS.md / CLAUDE.md from that directory into system prompt. terminal/file/code_exec tools use it as cwd. On update, pass empty string to clear. Jobs with workdir run sequentially."
             },
         },
         "required": ["action"]
