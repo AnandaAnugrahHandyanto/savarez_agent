@@ -11,7 +11,7 @@ import type { Locale } from "@/i18n";
  * localStorage via the I18n context.
  *
  * Replaces the older two-state EN↔ZH toggle now that we ship 16 locales
- * (en, zh, zh-hant, ja, de, es, fr, tr, uk, af, ko, it, ga, pt, ru, hu).
+ * (en, zh, zh-hant, ja, de, es, fr, tr, uk, af, ko, it, ga, pt, ru, hu, id).
  */
 export function LanguageSwitcher() {
   const { locale, setLocale, t } = useI18n();

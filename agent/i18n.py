@@ -25,7 +25,7 @@ Language resolution order:
     3. ``display.language`` from config.yaml
     4. ``"en"`` (baseline)
 
-Supported languages: en, zh, ja, de, es, fr, tr, uk.  Unknown values fall back to en.
+Supported languages: en, zh, ja, de, es, fr, tr, uk, id.  Unknown values fall back to en.
 """
 
 from __future__ import annotations
@@ -42,6 +42,7 @@ logger = logging.getLogger(__name__)
 SUPPORTED_LANGUAGES: tuple[str, ...] = (
     "en", "zh", "zh-hant", "ja", "de", "es", "fr", "tr", "uk",
     "af", "ko", "it", "ga", "pt", "ru", "hu",
+    "id",
 )
 DEFAULT_LANGUAGE = "en"
 
@@ -78,6 +79,10 @@ _LANGUAGE_ALIASES: dict[str, str] = {
     "russian": "ru", "русский": "ru", "ru-ru": "ru",
     # Hungarian
     "hungarian": "hu", "magyar": "hu", "hu-hu": "hu",
+    # Indonesian (Bahasa Indonesia)
+    "indonesian": "id", "indonesia": "id", "bahasa": "id",
+    "bahasa indonesia": "id",
+    "bahasa-indonesia": "id", "bahasa_indonesia": "id", "id-id": "id",
 }
 
 _catalog_cache: dict[str, dict[str, str]] = {}
