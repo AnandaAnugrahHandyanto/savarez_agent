@@ -1615,6 +1615,37 @@ class TestBuildAssistantMessage:
         result = agent._build_assistant_message(msg, "tool_calls")
         assert "extra_content" not in result["tool_calls"][0]
 
+    def test_promotes_ollama_json_content_tool_call(self, agent):
+        msg = _mock_assistant_msg(
+            content=json.dumps(
+                {
+                    "name": "search",
+                    "arguments": {"q": "北京今天的天气"},
+                },
+                ensure_ascii=False,
+            ),
+            tool_calls=None,
+        )
+
+        assert agent._promote_content_json_tool_call(msg) is True
+
+        assert msg.content is None
+        assert len(msg.tool_calls) == 1
+        tool_call = msg.tool_calls[0]
+        assert tool_call.function.name == "web_search"
+        assert json.loads(tool_call.function.arguments) == {"q": "北京今天的天气"}
+
+    def test_does_not_promote_json_content_for_unknown_tool(self, agent):
+        msg = _mock_assistant_msg(
+            content=json.dumps({"name": "unknown_tool", "arguments": {}}),
+            tool_calls=None,
+        )
+
+        assert agent._promote_content_json_tool_call(msg) is False
+
+        assert msg.content == '{"name": "unknown_tool", "arguments": {}}'
+        assert msg.tool_calls is None
+
     def test_think_blocks_stripped_from_content(self, agent):
         """Inline <think> blocks are stripped from stored content (#8878, #9568).
 
