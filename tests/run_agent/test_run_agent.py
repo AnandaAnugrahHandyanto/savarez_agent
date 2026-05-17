@@ -2440,6 +2440,22 @@ class TestRunConversation:
         assert result["final_response"] == "Final answer"
         assert result["completed"] is True
 
+    def test_skip_memory_runtime_skips_pinecone_recall(self, agent):
+        self._setup_agent(agent)
+        resp = _mock_response(content="Final answer", finish_reason="stop")
+        agent.client.chat.completions.create.return_value = resp
+
+        with (
+            patch("run_agent.build_pinecone_recall") as mock_pinecone_recall,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hello")
+
+        assert result["final_response"] == "Final answer"
+        mock_pinecone_recall.assert_not_called()
+
     def test_tool_calls_then_stop(self, agent):
         self._setup_agent(agent)
         tc = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")
@@ -5187,3 +5203,10 @@ class TestMemoryProviderTurnStart:
         import inspect
         src = inspect.getsource(AIAgent.run_conversation)
         assert "on_turn_start(self._user_turn_count" in src
+
+    def test_skip_memory_guards_pinecone_recall(self):
+        """Source-level check: Pinecone recall is disabled in skip-memory contexts."""
+        import inspect
+        src = inspect.getsource(AIAgent.run_conversation)
+        assert 'if not self.skip_memory:' in src
+        assert src.index('if not self.skip_memory:') < src.index('build_pinecone_recall(')

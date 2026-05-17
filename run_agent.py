@@ -1045,6 +1045,7 @@ class AIAgent:
         self.background_review_callback = None  # Optional sync callback for gateway delivery
         self.skip_context_files = skip_context_files
         self.load_soul_identity = load_soul_identity
+        self.skip_memory = skip_memory
         self.pass_session_id = pass_session_id
         self._credential_pool = credential_pool
         self.log_prefix_chars = log_prefix_chars
@@ -11151,23 +11152,24 @@ class AIAgent:
                 pass
 
         _pinecone_recall_cache = ""
-        try:
-            _query = original_user_message if isinstance(original_user_message, str) else ""
-            _scope = None
+        if not self.skip_memory:
             try:
-                _scope_cwd = os.getenv("TERMINAL_CWD") or os.getcwd()
-                _cwd_name = os.path.basename(_scope_cwd).strip()
-                if _cwd_name:
-                    _scope = f"repo:{_cwd_name}"
-            except Exception:
+                _query = original_user_message if isinstance(original_user_message, str) else ""
                 _scope = None
-            _pinecone_recall_cache = build_pinecone_recall(
-                _query,
-                scope=_scope,
-                platform=(self.platform or "").strip() or None,
-            )
-        except Exception:
-            pass
+                try:
+                    _scope_cwd = os.getenv("TERMINAL_CWD") or os.getcwd()
+                    _cwd_name = os.path.basename(_scope_cwd).strip()
+                    if _cwd_name:
+                        _scope = f"repo:{_cwd_name}"
+                except Exception:
+                    _scope = None
+                _pinecone_recall_cache = build_pinecone_recall(
+                    _query,
+                    scope=_scope,
+                    platform=(self.platform or "").strip() or None,
+                )
+            except Exception:
+                pass
 
         while (api_call_count < self.max_iterations and self.iteration_budget.remaining > 0) or self._budget_grace_call:
             # Reset per-turn checkpoint dedup so each iteration can take one snapshot
