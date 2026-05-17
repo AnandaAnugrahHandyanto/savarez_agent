@@ -2422,3 +2422,383 @@ class TestCheckSendMessage:
              patch("gateway.status.is_gateway_running",
                    side_effect=ImportError("simulated")):
             assert _check_send_message() is False
+
+
+# ---------------------------------------------------------------------------
+# Feishu MEDIA attachment delivery
+# ---------------------------------------------------------------------------
+
+
+class TestSendFeishuMediaDelivery:
+    """Tests for ``_send_feishu`` — Feishu/Lark MEDIA attachment handling."""
+
+    def test_sends_text_only_no_media(self):
+        """Plain text message with no media is delivered via adapter.send()."""
+        send = AsyncMock(return_value=SimpleNamespace(success=True, message_id="m1"))
+        feishu_adapter_cls = self._mock_feishu_adapter(send_fn=send)
+
+        with patch.dict("sys.modules", {"gateway.platforms.feishu": feishu_adapter_cls}):
+            from tools.send_message_tool import _send_feishu
+            result = asyncio.run(_send_feishu(
+                SimpleNamespace(enabled=True, token="tok", extra={}),
+                "oc_test",
+                "Hello Feishu",
+            ))
+
+        assert result["success"] is True
+        assert result["message_id"] == "m1"
+        send.assert_awaited_once_with("oc_test", "Hello Feishu", metadata=None)
+
+    def test_sends_text_then_file_for_docx(self, tmp_path):
+        """MEDIA:.docx routes through send_document after the text chunk."""
+        docx_path = tmp_path / "report.docx"
+        docx_path.write_bytes(b"PK\x03\x04" + b"\x00" * 32)
+
+        calls = []
+        async def fake_send(cid, msg, metadata=None):
+            calls.append(("send", cid, msg))
+            return SimpleNamespace(success=True, message_id="m1")
+        async def fake_send_doc(cid, fp, caption=None, file_name=None, reply_to=None, metadata=None, **kw):
+            calls.append(("send_document", cid, str(fp)))
+            return SimpleNamespace(success=True, message_id="m2")
+
+        adapter = self._mock_feishu_adapter(send_fn=fake_send, send_document_fn=fake_send_doc)
+
+        with patch.dict("sys.modules", {"gateway.platforms.feishu": adapter}):
+            from tools.send_message_tool import _send_feishu
+            result = asyncio.run(_send_feishu(
+                SimpleNamespace(enabled=True, token="tok", extra={}),
+                "oc_test",
+                "Here is the report",
+                media_files=[(str(docx_path), False)],
+            ))
+
+        assert result["success"] is True
+        assert result["message_id"] == "m2"
+        assert calls == [
+            ("send", "oc_test", "Here is the report"),
+            ("send_document", "oc_test", str(docx_path)),
+        ]
+
+    def test_sends_image_via_send_image_file(self, tmp_path):
+        """MEDIA:.png routes through send_image_file."""
+        img_path = tmp_path / "photo.png"
+        img_path.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 32)
+
+        calls = []
+        async def fake_send_image(cid, fp, caption=None, reply_to=None, metadata=None, **kw):
+            calls.append(("send_image_file", cid, str(fp)))
+            return SimpleNamespace(success=True, message_id="m3")
+
+        adapter = self._mock_feishu_adapter(send_image_file_fn=fake_send_image)
+        with patch.dict("sys.modules", {"gateway.platforms.feishu": adapter}):
+            from tools.send_message_tool import _send_feishu
+            result = asyncio.run(_send_feishu(
+                SimpleNamespace(enabled=True, token="tok", extra={}),
+                "oc_test",
+                "",
+                media_files=[(str(img_path), False)],
+            ))
+
+        assert result["success"] is True
+        assert result["message_id"] == "m3"
+        assert calls == [("send_image_file", "oc_test", str(img_path))]
+
+    def test_sends_video_via_send_video(self, tmp_path):
+        """MEDIA:.mp4 routes through send_video."""
+        video_path = tmp_path / "clip.mp4"
+        video_path.write_bytes(b"\x00\x00\x00\x1cftypmp42" + b"\x00" * 32)
+
+        calls = []
+        async def fake_send_video(cid, fp, caption=None, reply_to=None, metadata=None, **kw):
+            calls.append(("send_video", cid, str(fp)))
+            return SimpleNamespace(success=True, message_id="m4")
+
+        adapter = self._mock_feishu_adapter(send_video_fn=fake_send_video)
+        with patch.dict("sys.modules", {"gateway.platforms.feishu": adapter}):
+            from tools.send_message_tool import _send_feishu
+            result = asyncio.run(_send_feishu(
+                SimpleNamespace(enabled=True, token="tok", extra={}),
+                "oc_test",
+                "",
+                media_files=[(str(video_path), False)],
+            ))
+
+        assert result["success"] is True
+        assert result["message_id"] == "m4"
+        assert calls == [("send_video", "oc_test", str(video_path))]
+
+    def test_sends_voice_for_ogg_with_voice_flag(self, tmp_path):
+        """Ogg/Opus with is_voice=True routes through send_voice."""
+        voice_path = tmp_path / "msg.ogg"
+        voice_path.write_bytes(b"OggS" + b"\x00" * 32)
+
+        calls = []
+        async def fake_send_voice(cid, fp, caption=None, reply_to=None, metadata=None, **kw):
+            calls.append(("send_voice", cid, str(fp)))
+            return SimpleNamespace(success=True, message_id="m5")
+
+        adapter = self._mock_feishu_adapter(send_voice_fn=fake_send_voice)
+        with patch.dict("sys.modules", {"gateway.platforms.feishu": adapter}):
+            from tools.send_message_tool import _send_feishu
+            result = asyncio.run(_send_feishu(
+                SimpleNamespace(enabled=True, token="tok", extra={}),
+                "oc_test",
+                "",
+                media_files=[(str(voice_path), True)],
+            ))
+
+        assert result["success"] is True
+        assert result["message_id"] == "m5"
+        assert calls == [("send_voice", "oc_test", str(voice_path))]
+
+    def test_audio_file_routes_to_send_voice(self, tmp_path):
+        """Audio .mp3 (not voice-flagged) still routes through send_voice on Feishu."""
+        audio_path = tmp_path / "track.mp3"
+        audio_path.write_bytes(b"ID3" + b"\x00" * 32)
+
+        calls = []
+        async def fake_send_voice(cid, fp, caption=None, reply_to=None, metadata=None, **kw):
+            calls.append(("send_voice", cid, str(fp)))
+            return SimpleNamespace(success=True, message_id="m6")
+
+        adapter = self._mock_feishu_adapter(send_voice_fn=fake_send_voice)
+        with patch.dict("sys.modules", {"gateway.platforms.feishu": adapter}):
+            from tools.send_message_tool import _send_feishu
+            result = asyncio.run(_send_feishu(
+                SimpleNamespace(enabled=True, token="tok", extra={}),
+                "oc_test",
+                "",
+                media_files=[(str(audio_path), False)],
+            ))
+
+        assert result["success"] is True
+        assert result["message_id"] == "m6"
+        assert calls == [("send_voice", "oc_test", str(audio_path))]
+
+    def test_pdf_file_routes_to_send_document(self, tmp_path):
+        """MEDIA:.pdf routes through send_document."""
+        pdf_path = tmp_path / "doc.pdf"
+        pdf_path.write_bytes(b"%PDF-1.4" + b"\x00" * 32)
+
+        calls = []
+        async def fake_send_doc(cid, fp, caption=None, file_name=None, reply_to=None, metadata=None, **kw):
+            calls.append(("send_document", cid, str(fp)))
+            return SimpleNamespace(success=True, message_id="m7")
+
+        adapter = self._mock_feishu_adapter(send_document_fn=fake_send_doc)
+        with patch.dict("sys.modules", {"gateway.platforms.feishu": adapter}):
+            from tools.send_message_tool import _send_feishu
+            result = asyncio.run(_send_feishu(
+                SimpleNamespace(enabled=True, token="tok", extra={}),
+                "oc_test",
+                "",
+                media_files=[(str(pdf_path), False)],
+            ))
+
+        assert result["success"] is True
+        assert result["message_id"] == "m7"
+        assert calls == [("send_document", "oc_test", str(pdf_path))]
+
+    def test_missing_media_file_returns_error(self):
+        """Non-existent media path returns an error."""
+        adapter = self._mock_feishu_adapter()
+        with patch.dict("sys.modules", {"gateway.platforms.feishu": adapter}):
+            from tools.send_message_tool import _send_feishu
+            result = asyncio.run(_send_feishu(
+                SimpleNamespace(enabled=True, token="tok", extra={}),
+                "oc_test",
+                "text",
+                media_files=[("/tmp/nonexistent.docx", False)],
+            ))
+
+        assert "error" in result
+        assert "Media file not found" in result["error"]
+
+    def test_media_send_failure_returns_error(self, tmp_path):
+        """If the adapter's send_document fails, the error is surfaced."""
+        docx_path = tmp_path / "fail.docx"
+        docx_path.write_bytes(b"PK\x03\x04" + b"\x00" * 32)
+
+        async def failing_send(cid, fp, **kw):
+            return SimpleNamespace(success=False, error="API rate limited")
+
+        adapter = self._mock_feishu_adapter(send_document_fn=failing_send)
+        with patch.dict("sys.modules", {"gateway.platforms.feishu": adapter}):
+            from tools.send_message_tool import _send_feishu
+            result = asyncio.run(_send_feishu(
+                SimpleNamespace(enabled=True, token="tok", extra={}),
+                "oc_test",
+                "text",
+                media_files=[(str(docx_path), False)],
+            ))
+
+        assert "error" in result
+        assert "Feishu media send failed" in result["error"]
+
+    def test_no_media_and_empty_text_returns_error(self):
+        """Empty text with no media files returns no-deliverable error."""
+        adapter = self._mock_feishu_adapter()
+        with patch.dict("sys.modules", {"gateway.platforms.feishu": adapter}):
+            from tools.send_message_tool import _send_feishu
+            result = asyncio.run(_send_feishu(
+                SimpleNamespace(enabled=True, token="tok", extra={}),
+                "oc_test",
+                "",
+            ))
+
+        assert "error" in result
+        assert "No deliverable text or media" in result["error"]
+
+    def test_media_only_no_text_still_succeeds(self, tmp_path):
+        """Media-only messages (no text) still succeed."""
+        pdf_path = tmp_path / "doc.pdf"
+        pdf_path.write_bytes(b"%PDF-1.4" + b"\x00" * 32)
+
+        calls = []
+        async def fake_send_doc(cid, fp, **kw):
+            calls.append(("send_document", cid, str(fp)))
+            return SimpleNamespace(success=True, message_id="m8")
+
+        adapter = self._mock_feishu_adapter(send_document_fn=fake_send_doc)
+        with patch.dict("sys.modules", {"gateway.platforms.feishu": adapter}):
+            from tools.send_message_tool import _send_feishu
+            result = asyncio.run(_send_feishu(
+                SimpleNamespace(enabled=True, token="tok", extra={}),
+                "oc_test",
+                "",
+                media_files=[(str(pdf_path), False)],
+            ))
+
+        assert result["success"] is True
+        assert result["message_id"] == "m8"
+        assert calls == [("send_document", "oc_test", str(pdf_path))]
+
+    def test_multiple_media_files_all_sent(self, tmp_path):
+        """Multiple MEDIA tags: all files are delivered in order."""
+        pdf_path = tmp_path / "a.pdf"
+        pdf_path.write_bytes(b"%PDF")
+        png_path = tmp_path / "b.png"
+        png_path.write_bytes(b"\x89PNG")
+
+        calls = []
+        async def fake_send(cid, msg, metadata=None):
+            calls.append(("send", cid, msg))
+            return SimpleNamespace(success=True, message_id="m0")
+        async def fake_send_doc(cid, fp, **kw):
+            calls.append(("send_document", cid, str(fp)))
+            return SimpleNamespace(success=True, message_id="ma")
+        async def fake_send_img(cid, fp, **kw):
+            calls.append(("send_image_file", cid, str(fp)))
+            return SimpleNamespace(success=True, message_id="mb")
+
+        adapter = self._mock_feishu_adapter(
+            send_fn=fake_send,
+            send_document_fn=fake_send_doc,
+            send_image_file_fn=fake_send_img,
+        )
+        with patch.dict("sys.modules", {"gateway.platforms.feishu": adapter}):
+            from tools.send_message_tool import _send_feishu
+            result = asyncio.run(_send_feishu(
+                SimpleNamespace(enabled=True, token="tok", extra={}),
+                "oc_test",
+                "Files attached",
+                media_files=[(str(pdf_path), False), (str(png_path), False)],
+            ))
+
+        assert result["success"] is True
+        assert calls == [
+            ("send", "oc_test", "Files attached"),
+            ("send_document", "oc_test", str(pdf_path)),
+            ("send_image_file", "oc_test", str(png_path)),
+        ]
+
+    def test_feishu_media_path_in_send_to_platform(self, tmp_path):
+        """``_send_to_platform`` with Feishu + media_files routes to ``_send_feishu``
+        and produces the correct result."""
+        docx_path = tmp_path / "report.docx"
+        docx_path.write_bytes(b"PK\x03\x04" + b"\x00" * 32)
+
+        send_feishu = AsyncMock(return_value={
+            "success": True,
+            "platform": "feishu",
+            "chat_id": "oc_test",
+            "message_id": "m42",
+        })
+
+        with patch("tools.send_message_tool._send_feishu", send_feishu):
+            result = asyncio.run(
+                _send_to_platform(
+                    Platform.FEISHU,
+                    SimpleNamespace(enabled=True, token="tok", extra={}),
+                    "oc_test",
+                    "Here is the file",
+                    media_files=[(str(docx_path), False)],
+                )
+            )
+
+        assert result["success"] is True
+        assert result["message_id"] == "m42"
+        send_feishu.assert_awaited_once()
+        call_kwargs = send_feishu.await_args.kwargs
+        assert call_kwargs["media_files"] == [(str(docx_path), False)]
+
+    # ------------------------------------------------------------------ #
+    #  Helper
+    # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def _mock_feishu_adapter(
+        send_fn=None,
+        send_image_file_fn=None,
+        send_document_fn=None,
+        send_video_fn=None,
+        send_voice_fn=None,
+    ):
+        """Build a fake ``gateway.platforms.feishu`` module with a mock
+        ``FeishuAdapter`` class whose methods return the given fakes.
+
+        The module also exports ``FEISHU_AVAILABLE = True``,
+        ``FEISHU_DOMAIN``, and ``LARK_DOMAIN`` so ``_send_feishu`` can
+        import them.
+        """
+        if send_fn is None:
+            send_fn = AsyncMock(return_value=SimpleNamespace(success=True, message_id="m0"))
+        if send_image_file_fn is None:
+            send_image_file_fn = AsyncMock(return_value=SimpleNamespace(success=True, message_id="m0"))
+        if send_document_fn is None:
+            send_document_fn = AsyncMock(return_value=SimpleNamespace(success=True, message_id="m0"))
+        if send_video_fn is None:
+            send_video_fn = AsyncMock(return_value=SimpleNamespace(success=True, message_id="m0"))
+        if send_voice_fn is None:
+            send_voice_fn = AsyncMock(return_value=SimpleNamespace(success=True, message_id="m0"))
+
+        class FakeFeishuAdapter:
+            def __init__(self, config):
+                self._domain_name = "feishu"
+                self._client = None
+
+            def _build_lark_client(self, domain):
+                return MagicMock()
+
+            async def send(self, chat_id, content, metadata=None):
+                return await send_fn(chat_id, content, metadata=metadata)
+
+            async def send_image_file(self, chat_id, file_path, caption=None, reply_to=None, metadata=None, **kwargs):
+                return await send_image_file_fn(chat_id, file_path, caption=caption, reply_to=reply_to, metadata=metadata, **kwargs)
+
+            async def send_document(self, chat_id, file_path, caption=None, file_name=None, reply_to=None, metadata=None, **kwargs):
+                return await send_document_fn(chat_id, file_path, caption=caption, file_name=file_name, reply_to=reply_to, metadata=metadata, **kwargs)
+
+            async def send_video(self, chat_id, video_path, caption=None, reply_to=None, metadata=None, **kwargs):
+                return await send_video_fn(chat_id, video_path, caption=caption, reply_to=reply_to, metadata=metadata, **kwargs)
+
+            async def send_voice(self, chat_id, file_path, caption=None, reply_to=None, metadata=None, **kwargs):
+                return await send_voice_fn(chat_id, file_path, caption=caption, reply_to=reply_to, metadata=metadata, **kwargs)
+
+        return SimpleNamespace(
+            FeishuAdapter=FakeFeishuAdapter,
+            FEISHU_AVAILABLE=True,
+            FEISHU_DOMAIN="https://open.feishu.cn",
+            LARK_DOMAIN="https://open.larksuite.com",
+        )
