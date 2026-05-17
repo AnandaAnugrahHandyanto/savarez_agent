@@ -120,7 +120,11 @@ control-plane preflight from `/Users/preston/.hermes/hermes-agent` using absolut
 If any command fails or reports source/runtime parity drift, stop and repair the
 Hermes control plane first. Do not continue to PR pilot, mirror, runner,
 dispatch, or product-work steps while self-check reports `native_control_plane_ready: false`
-or a runtime asset diverges from `/Users/preston/.hermes/hermes-agent`.
+or a runtime asset diverges from `/Users/preston/.hermes/hermes-agent`. When a
+skill/reference is updated in the source checkout during control-plane work,
+synchronize the installed skill copy as part of the same change before rerunning
+preflight; otherwise the self-check will correctly block runner/CI actions on
+source/runtime parity drift.
 
 ## Auto-Executable Branch-Local Work
 
@@ -318,7 +322,10 @@ then classify the result as a valid remote lifecycle block such as
 pending. See `references/control-plane-lifecycle-consistency.md` for the
 session-derived repair recipe, validator quartet, and reporting pattern. See
 `references/runner-recovery-ci-evidence.md` for the gated runner-recovery
-inspection-first pattern and runner-label mismatch triage.
+inspection-first pattern and runner-label mismatch triage. See
+`references/dedicated-ci-runner-image.md` for the dedicated job image,
+act_runner job-container network requirement, rerun evidence sequence, and
+temporary-token hygiene.
 
 Evidence issue statuses are `active`, `repair_attempted`, `repaired`,
 `invalidated`, and `superseded`. A dev13-005-style completion failure stays

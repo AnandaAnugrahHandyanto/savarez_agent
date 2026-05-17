@@ -268,6 +268,8 @@ def test_runner_recovery_labels_match_existing_gitea_workflow_runs_on() -> None:
         runner_recovery.APPROVAL_PHRASE
     )
     assert f"ci_image={runner_recovery.CI_JOB_IMAGE}" in runner_recovery.APPROVAL_PHRASE
+    assert f"job_container_network={runner_recovery.RUNNER_NETWORK}" in runner_recovery.APPROVAL_PHRASE
+    assert f"runner_config={runner_recovery.RUNNER_CONFIG_PATH}" in runner_recovery.APPROVAL_PHRASE
 
 
 def test_runner_recovery_dedicated_ci_image_dockerfile_contains_node_python_and_go() -> None:
@@ -277,6 +279,15 @@ def test_runner_recovery_dedicated_ci_image_dockerfile_contains_node_python_and_
     assert "FROM python:3.13-slim-bookworm" in dockerfile
     assert "/usr/local/bin/node" in dockerfile
     assert "golang-go" in dockerfile
+
+
+def test_runner_recovery_config_sets_job_container_network() -> None:
+    config = runner_recovery.render_runner_config()
+
+    assert f'network: "{runner_recovery.RUNNER_NETWORK}"' in config
+    assert f'- "ubuntu-latest:docker://{runner_recovery.CI_JOB_IMAGE}"' in config
+    assert "GITEA_RUNNER_REGISTRATION_TOKEN" not in config
+    assert "token" not in config.lower()
 
 
 def test_runner_recovery_resets_volume_to_reregister_labels() -> None:
@@ -294,6 +305,8 @@ def test_runner_recovery_resets_volume_to_reregister_labels() -> None:
             }
         if argv[:2] == ["docker", "ps"]:
             return {"exit_code": 0, "stdout": "", "stderr": ""}
+        if argv[:3] == ["docker", "exec", runner_recovery.RUNNER_NAME]:
+            return {"exit_code": 0, "stdout": runner_recovery.render_runner_config(), "stderr": ""}
         if argv[:2] == ["docker", "build"]:
             return {"exit_code": 0, "stdout": "image built", "stderr": ""}
         if "generate-runner-token" in argv:
@@ -318,6 +331,25 @@ def test_runner_recovery_resets_volume_to_reregister_labels() -> None:
         str(runner_recovery.CI_JOB_IMAGE_DOCKERFILE.parent),
     ] in commands
     assert ["docker", "volume", "rm", "-f", runner_recovery.RUNNER_VOLUME] in commands
+    assert any(
+        argv[:7]
+        == [
+            "docker",
+            "run",
+            "--rm",
+            "-v",
+            f"{runner_recovery.RUNNER_VOLUME}:/data",
+            "--entrypoint",
+            "/bin/sh",
+        ]
+        and runner_recovery.RUNNER_CONFIG_PATH in argv[-1]
+        and runner_recovery.RUNNER_NETWORK in argv[-1]
+        for argv in commands
+    )
+    start_commands = [argv for argv in commands if argv[:4] == ["docker", "run", "-d", "--name"]]
+    assert start_commands
+    assert "-e" in start_commands[-1]
+    assert f"CONFIG_FILE={runner_recovery.RUNNER_CONFIG_PATH}" in start_commands[-1]
 
 
 def test_runner_recovery_inspect_blocks_host_mode_ubuntu_latest_label() -> None:
@@ -364,6 +396,56 @@ def test_runner_recovery_inspect_rejects_prefixed_dedicated_image_label() -> Non
     assert report["conclusion"] == "FAIL"
     assert "runner_dedicated_ci_image_label_not_detected" in report["blockers"]
     assert report["runner_inspection"]["dedicated_ci_image_label_detected"] is False
+
+
+def test_runner_recovery_inspect_blocks_registered_runner_without_network_config() -> None:
+    def fake_runner(argv: list[str], timeout: int) -> dict[str, object]:
+        if argv[:2] == ["docker", "ps"]:
+            return {
+                "exit_code": 0,
+                "stdout": "crypto-bot-linux-runner\tUp\tgitea/act_runner:0.2.12",
+                "stderr": "",
+            }
+        if argv[:2] == ["docker", "logs"]:
+            return {
+                "exit_code": 0,
+                "stdout": f"Runner registered successfully\nlabels updated to: [linux:host crypto-bot-python-313:host ubuntu-latest:docker://{runner_recovery.CI_JOB_IMAGE}]\n",
+                "stderr": "",
+            }
+        if argv[:3] == ["docker", "exec", runner_recovery.RUNNER_NAME]:
+            return {"exit_code": 1, "stdout": "", "stderr": "cat: can't open '/data/config.yaml'"}
+        return {"exit_code": 0, "stdout": "ok", "stderr": ""}
+
+    report = runner_recovery.build_report(mode="inspect", runner=fake_runner)
+
+    assert report["conclusion"] == "FAIL"
+    assert "runner_job_container_network_not_configured" in report["blockers"]
+    assert report["runner_inspection"]["runner_config_network_detected"] is False
+
+
+def test_runner_recovery_inspect_ignores_commented_network_config() -> None:
+    def fake_runner(argv: list[str], timeout: int) -> dict[str, object]:
+        if argv[:2] == ["docker", "ps"]:
+            return {
+                "exit_code": 0,
+                "stdout": "crypto-bot-linux-runner\tUp\tgitea/act_runner:0.2.12",
+                "stderr": "",
+            }
+        if argv[:2] == ["docker", "logs"]:
+            return {
+                "exit_code": 0,
+                "stdout": f"Runner registered successfully\nlabels updated to: [linux:host crypto-bot-python-313:host ubuntu-latest:docker://{runner_recovery.CI_JOB_IMAGE}]\n",
+                "stderr": "",
+            }
+        if argv[:3] == ["docker", "exec", runner_recovery.RUNNER_NAME]:
+            return {"exit_code": 0, "stdout": f"# network: \"{runner_recovery.RUNNER_NETWORK}\"\n", "stderr": ""}
+        return {"exit_code": 0, "stdout": "ok", "stderr": ""}
+
+    report = runner_recovery.build_report(mode="inspect", runner=fake_runner)
+
+    assert report["conclusion"] == "FAIL"
+    assert "runner_job_container_network_not_configured" in report["blockers"]
+    assert report["runner_inspection"]["runner_config_network_detected"] is False
 
 
 def test_generated_configs_have_no_secret_like_values_after_tenacity_update() -> None:

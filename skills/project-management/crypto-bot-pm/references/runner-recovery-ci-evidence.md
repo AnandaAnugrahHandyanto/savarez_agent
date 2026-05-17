@@ -16,8 +16,10 @@ Use this reference for gated local Gitea runner recovery when S006 has an open P
 - PR/CI audit JSON path and `ci.statuses_count`.
 - Direct read-only Gitea combined status for the S006 head SHA when useful.
 
-## CI pending despite healthy runner
+## CI pending or failed despite runner recovery
 
 If runner recovery is healthy but CI remains pending, check workflow `runs-on` labels against the runner labels. A healthy runner with labels like `linux,crypto-bot-python-313,ubuntu-latest:docker://crypto-bot-ci-runner:python313-node20-go` is label-compatible with existing `ubuntu-latest` jobs while routing those jobs into the dedicated CI image that provides Node on PATH for JavaScript actions; if jobs still wait, investigate scheduler/run state read-only before mutating workflow, PR, checks, or merge state.
+
+If CI was already failed before runner recovery, a successful runner recovery does not itself create new CI evidence. Report the repaired runner and the still-failed CI evidence separately. Rerun only the failed PR CI jobs/workflow when a separate exact approval authorizes that rerun; runner recovery approval alone does not authorize workflow dispatch, status/check mutation, PR mutation, or merge.
 
 Do not solve label mismatch by editing workflow files, dispatching workflows, mutating PR/check/status state, or merging unless a separate exact approval authorizes that action.

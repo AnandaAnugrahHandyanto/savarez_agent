@@ -22,11 +22,17 @@ CI_JOB_IMAGE_LABEL = f"ubuntu-latest:docker://{CI_JOB_IMAGE}"
 RUNNER_NETWORK = "crypto-bot-gitea-net"
 RUNNER_VOLUME = "crypto-bot-linux-runner-data"
 RUNNER_STATE_FILE = "/data/.runner"
-RUNNER_DAEMON_COMMAND = "act_runner daemon"
+RUNNER_CONFIG_FILE = "config.yaml"
+RUNNER_CONFIG_PATH = f"/data/{RUNNER_CONFIG_FILE}"
+RUNNER_JOB_CONTAINER_NETWORK = RUNNER_NETWORK
+RUNNER_DAEMON_COMMAND = f"CONFIG_FILE={RUNNER_CONFIG_PATH} act_runner daemon --config {RUNNER_CONFIG_PATH}"
 INSTANCE_URL = "http://crypto-bot-gitea:3000"
 RUNNER_LABELS = f"linux,crypto-bot-python-313,{CI_JOB_IMAGE_LABEL}"
 REPO_SCOPE = "preston/crypto_bot"
 CI_JOB_IMAGE_LABEL_RE = re.compile(rf"(?<!\S){re.escape(CI_JOB_IMAGE_LABEL)}(?=\s|\])")
+RUNNER_CONFIG_NETWORK_RE = re.compile(
+    rf'(?m)^\s*network:\s*["\']?{re.escape(RUNNER_JOB_CONTAINER_NETWORK)}["\']?\s*$'
+)
 GITEA_CONFIG_PATH = "/data/gitea/conf/app.ini"
 GITEA_WORK_PATH = "/data/gitea"
 APPROVAL_PHRASE = (
@@ -35,6 +41,8 @@ APPROVAL_PHRASE = (
     "network=crypto-bot-gitea-net "
     f"labels=linux,crypto-bot-python-313,{CI_JOB_IMAGE_LABEL} "
     f"ci_image={CI_JOB_IMAGE} "
+    f"job_container_network={RUNNER_JOB_CONTAINER_NETWORK} "
+    f"runner_config={RUNNER_CONFIG_PATH} "
     "no_workflow_dispatch=true "
     "no_pr_mutation=true "
     "no_merge=true"
@@ -72,6 +80,73 @@ def command_summary(result: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def render_runner_config() -> str:
+    labels = "\n".join(f'    - "{label}"' for label in RUNNER_LABELS.split(","))
+    return f"""log:
+  level: info
+
+runner:
+  file: {RUNNER_STATE_FILE}
+  capacity: 1
+  envs: {{}}
+  env_file: ""
+  timeout: 3h
+  shutdown_timeout: 0s
+  insecure: false
+  fetch_timeout: 5s
+  fetch_interval: 2s
+  labels:
+{labels}
+
+cache:
+  enabled: true
+  dir: ""
+  host: ""
+  port: 0
+  external_server: ""
+
+container:
+  network: "{RUNNER_JOB_CONTAINER_NETWORK}"
+  privileged: false
+  options:
+  workdir_parent:
+  valid_volumes: []
+  docker_host: ""
+  force_pull: false
+  force_rebuild: false
+
+host:
+  workdir_parent:
+"""
+
+
+def install_runner_config(
+    *,
+    runner: CommandRunner = run_command,
+) -> dict[str, Any]:
+    config = render_runner_config()
+    result = runner(
+        [
+            "docker",
+            "run",
+            "--rm",
+            "-v",
+            f"{RUNNER_VOLUME}:/data",
+            "--entrypoint",
+            "/bin/sh",
+            RUNNER_IMAGE,
+            "-c",
+            f"cat > {RUNNER_CONFIG_PATH} <<'EOF'\n{config}EOF\n",
+        ],
+        30,
+    )
+    summary = command_summary(result)
+    summary["config_path"] = RUNNER_CONFIG_PATH
+    summary["job_container_network"] = RUNNER_JOB_CONTAINER_NETWORK
+    summary["stdout_tail"] = str(result.get("stdout") or "")[-500:]
+    return summary
+
+
 def docker_inspect_exists(
     name: str,
     *,
@@ -99,12 +174,16 @@ def inspect_runner(
         20,
     )
     logs = runner(["docker", "logs", "--tail", "80", runner_name], 20)
+    config = runner(["docker", "exec", runner_name, "sh", "-lc", f"cat {RUNNER_CONFIG_PATH}"], 20)
     log_text = str(logs.get("stdout") or "") + str(logs.get("stderr") or "")
+    config_text = str(config.get("stdout") or "")
     return {
         "container": runner_name,
         "docker_ps": str(ps.get("stdout") or "").strip(),
         "docker_ps_exit_code": ps.get("exit_code"),
         "docker_logs_exit_code": logs.get("exit_code"),
+        "docker_config_exit_code": config.get("exit_code"),
+        "runner_config_network_detected": bool(RUNNER_CONFIG_NETWORK_RE.search(config_text)),
         "token_empty_loop_detected": "token is empty" in log_text,
         "instance_empty_loop_detected": "instance address is empty" in log_text,
         "registered_successfully_detected": "Runner registered successfully" in log_text,
@@ -221,6 +300,12 @@ def execute_recovery(
         blockers.append("unable_to_create_runner_volume")
         return build_report(mode="execute", blockers=blockers, steps=steps, runner=runner)
 
+    config_step = install_runner_config(runner=runner)
+    steps.append({"step": "install_runner_config", **config_step})
+    if config_step["exit_code"] != 0:
+        blockers.append("unable_to_install_runner_config")
+        return build_report(mode="execute", blockers=blockers, steps=steps, runner=runner)
+
     run_args = [
         "docker",
         "run",
@@ -241,6 +326,8 @@ def execute_recovery(
         f"GITEA_RUNNER_NAME={RUNNER_NAME}",
         "-e",
         f"GITEA_RUNNER_LABELS={RUNNER_LABELS}",
+        "-e",
+        f"CONFIG_FILE={RUNNER_CONFIG_PATH}",
         RUNNER_IMAGE,
     ]
     result = runner(run_args, 60)
@@ -250,6 +337,7 @@ def execute_recovery(
         "GITEA_RUNNER_REGISTRATION_TOKEN",
         "GITEA_RUNNER_NAME",
         "GITEA_RUNNER_LABELS",
+        "CONFIG_FILE",
     ]
     steps.append({"step": "start_runner_container", **run_summary})
     if result["exit_code"] != 0:
@@ -290,6 +378,8 @@ def build_report(
         "runner_network": RUNNER_NETWORK,
         "runner_volume": RUNNER_VOLUME,
         "runner_state_file": RUNNER_STATE_FILE,
+        "runner_config_path": RUNNER_CONFIG_PATH,
+        "runner_job_container_network": RUNNER_JOB_CONTAINER_NETWORK,
         "runner_daemon_command": RUNNER_DAEMON_COMMAND,
         "runner_labels": RUNNER_LABELS,
         "repo_scope": REPO_SCOPE,
@@ -298,6 +388,7 @@ def build_report(
             "GITEA_RUNNER_REGISTRATION_TOKEN",
             "GITEA_RUNNER_NAME",
             "GITEA_RUNNER_LABELS",
+            "CONFIG_FILE",
         ],
         "forbidden_env_keys": ["GITEA_RUNNER_TOKEN"],
         "runner_inspection": inspect_runner(runner=runner),
@@ -321,6 +412,16 @@ def build_report(
         and not inspection["dedicated_ci_image_label_detected"]
     ):
         report["blockers"].append("runner_dedicated_ci_image_label_not_detected")
+        report["conclusion"] = "FAIL"
+    elif (
+        inspection["docker_ps_exit_code"] == 0
+        and inspection["registered_successfully_detected"]
+        and (
+            inspection["docker_config_exit_code"] != 0
+            or not inspection["runner_config_network_detected"]
+        )
+    ):
+        report["blockers"].append("runner_job_container_network_not_configured")
         report["conclusion"] = "FAIL"
     return report
 
