@@ -56,6 +56,23 @@ python3 "$INSTALL_DIR/tools/skills_sync.py" > /dev/null 2>&1 || echo "[run] Skil
 # Marker match simulation (match user log style)
 echo "[run] Install up to date (marker match)"
 
-# 6. Launch Gateway
+# 6. Optional Dashboard (background)
+case "${HERMES_DASHBOARD:-}" in
+    1|true|TRUE|True|yes|YES|Yes)
+        bashio::log.info "Starting Hermes Dashboard in background..."
+        # We start it on 0.0.0.0 so the host can reach it through the Ingress proxy.
+        # --no-open prevents it from trying to launch a browser in the container.
+        # --insecure is required for non-localhost binding.
+        (
+            stdbuf -oL -eL hermes dashboard --host 0.0.0.0 --port 9119 --no-open --insecure 2>&1 \
+                | sed -u 's/^/[dashboard] /'
+        ) &
+        ;;
+    *)
+        bashio::log.info "Hermes Dashboard is disabled"
+        ;;
+esac
+
+# 7. Launch Gateway (foreground)
 bashio::log.info "Launching Hermes Gateway..."
 exec hermes gateway
