@@ -1289,7 +1289,9 @@ DEFAULT_CONFIG = {
         "auto_thread": True,           # Auto-create threads on @mention in channels (like Slack)
         "thread_require_mention": False,  # If True, require @mention in threads too (multi-bot threads)
         "history_backfill": True,         # If True, prepend recent channel scrollback when bot is triggered (recovers messages missed while require_mention gated them out)
-        "history_backfill_limit": 50,     # Max number of recent messages to scan when assembling the backfill block
+        "history_backfill_limit": 50,     # Max number of recent messages to scan when assembling the channel backfill block
+        "dm_history_backfill": False,     # Opt-in: prepend recent DM scrollback before each DM turn (privacy-sensitive)
+        "dm_history_backfill_limit": 25,  # Max recent DM messages to scan (clamped to Discord's 100-message fetch cap)
         "reactions": True,             # Add 👀/✅/❌ reactions to messages during processing
         "channel_prompts": {},         # Per-channel ephemeral system prompts (forum parents apply to child threads)
         # Opt-in DM role-based auth (#12136). By default, DISCORD_ALLOWED_ROLES

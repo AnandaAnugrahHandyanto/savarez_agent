@@ -3652,6 +3652,15 @@ class DiscordAdapter(BasePlatformAdapter):
             return bool(configured)
         return os.getenv("DISCORD_HISTORY_BACKFILL", "true").lower() in {"true", "1", "yes"}
 
+    def _discord_dm_history_backfill(self) -> bool:
+        """Return whether opt-in DM history backfill is enabled."""
+        configured = self.config.extra.get("dm_history_backfill")
+        if configured is not None:
+            if isinstance(configured, str):
+                return configured.lower() not in {"false", "0", "no", "off"}
+            return bool(configured)
+        return os.getenv("DISCORD_DM_HISTORY_BACKFILL", "false").lower() in {"true", "1", "yes", "on"}
+
     def _discord_history_backfill_limit(self) -> int:
         """Return the max number of messages to scan backwards for context.
 
@@ -3672,10 +3681,34 @@ class DiscordAdapter(BasePlatformAdapter):
         except (ValueError, TypeError):
             return 50
 
+    def _discord_dm_history_backfill_limit(self) -> int:
+        """Return the DM history backfill scan cap.
+
+        DMs are private and Discord history fetches are capped at 100 messages,
+        so the opt-in DM path defaults lower than shared-channel backfill and
+        clamps user-provided values to the API's single-request maximum.
+        """
+        configured = self.config.extra.get("dm_history_backfill_limit")
+        if configured is not None:
+            try:
+                value = int(configured)
+            except (ValueError, TypeError):
+                value = 25
+        else:
+            raw = os.getenv("DISCORD_DM_HISTORY_BACKFILL_LIMIT", "25")
+            try:
+                value = int(raw)
+            except (ValueError, TypeError):
+                value = 25
+        return max(0, min(value, 100))
+
     async def _fetch_channel_context(
         self,
         channel: Any,
         before: "DiscordMessage",
+        *,
+        limit: Optional[int] = None,
+        header: str = "[Recent channel messages]",
     ) -> str:
         """Fetch recent channel messages for conversational context.
 
@@ -3691,7 +3724,8 @@ class DiscordAdapter(BasePlatformAdapter):
 
         Returns an empty string if no context is available.
         """
-        limit = self._discord_history_backfill_limit()
+        if limit is None:
+            limit = self._discord_history_backfill_limit()
         if limit <= 0:
             return ""
 
@@ -3762,7 +3796,7 @@ class DiscordAdapter(BasePlatformAdapter):
 
             # channel.history returns newest-first (oldest_first=False); reverse for chronological order
             collected.reverse()
-            return "[Recent channel messages]\n" + "\n".join(collected)
+            return f"{header}\n" + "\n".join(collected)
 
         except discord.Forbidden:
             logger.debug("[%s] Missing permissions to fetch channel history", self.name)
@@ -4722,9 +4756,9 @@ class DiscordAdapter(BasePlatformAdapter):
         # and stop at the first self-message encountered.
         #
         # Threads naturally scope to thread-only history (channel.history()
-        # on a thread returns only that thread's messages).  DMs are skipped
-        # because every DM message triggers the bot — there's no mention gap
-        # to fill; the session transcript already has everything.
+        # on a thread returns only that thread's messages).  DMs remain opt-in:
+        # they contain private history and every recent DM message is sent to
+        # the model when this is enabled.
         #
         # Per-user sessions also benefit: Alice's session is missing the
         # other-channel-participants' context, and her own messages from
@@ -4735,7 +4769,17 @@ class DiscordAdapter(BasePlatformAdapter):
         # to keep the partition rule clean.
         _channel_context = None
         _is_dm = isinstance(message.channel, discord.DMChannel)
-        if not _is_dm:
+        if _is_dm:
+            if self._discord_dm_history_backfill():
+                _backfill_text = await self._fetch_channel_context(
+                    message.channel,
+                    before=message,
+                    limit=self._discord_dm_history_backfill_limit(),
+                    header="[Recent DM messages]",
+                )
+                if _backfill_text:
+                    _channel_context = _backfill_text
+        else:
             _needed_mention = (
                 require_mention
                 and not is_free_channel

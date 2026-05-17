@@ -113,6 +113,8 @@ def adapter(monkeypatch):
         "DISCORD_IGNORED_CHANNELS",
         "DISCORD_HISTORY_BACKFILL",
         "DISCORD_HISTORY_BACKFILL_LIMIT",
+        "DISCORD_DM_HISTORY_BACKFILL",
+        "DISCORD_DM_HISTORY_BACKFILL_LIMIT",
         "DISCORD_ALLOW_BOTS",
     ):
         monkeypatch.delenv(_var, raising=False)
@@ -852,8 +854,8 @@ async def test_discord_per_user_channel_backfills_too(adapter, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_discord_dm_does_not_backfill(adapter, monkeypatch):
-    """DMs skip backfill — every DM triggers the bot, so there's no mention gap."""
+async def test_discord_dm_does_not_backfill_by_default(adapter, monkeypatch):
+    """DM history backfill is privacy-sensitive and stays opt-in."""
     monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
     adapter.config.extra["history_backfill"] = True
     adapter._fetch_channel_context = AsyncMock(return_value="[Recent channel messages]\n[Alice] context")
@@ -882,5 +884,58 @@ async def test_discord_dm_does_not_backfill(adapter, monkeypatch):
     if adapter.handle_message.await_args is not None:
         event = adapter.handle_message.await_args.args[0]
         assert event.channel_context is None
+
+
+@pytest.mark.asyncio
+async def test_discord_dm_backfill_prepends_context_when_enabled(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    adapter.config.extra["history_backfill"] = True
+    adapter.config.extra["dm_history_backfill"] = True
+    adapter._fetch_channel_context = AsyncMock(return_value="[Recent DM messages]\n[Jezza] earlier DM")
+
+    message = make_message(
+        channel=FakeDMChannel(channel_id=999),
+        content="hello in DM",
+        mentions=[],
+    )
+
+    await adapter._handle_message(message)
+
+    adapter._fetch_channel_context.assert_awaited_once()
+    _, kwargs = adapter._fetch_channel_context.await_args
+    assert kwargs["before"] is message
+    assert kwargs["limit"] == 25
+    assert kwargs["header"] == "[Recent DM messages]"
+    event = adapter.handle_message.await_args.args[0]
+    assert event.channel_context == "[Recent DM messages]\n[Jezza] earlier DM"
+
+
+@pytest.mark.asyncio
+async def test_fetch_channel_context_accepts_dm_limit_and_header(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_ALLOW_BOTS", "all")
+    human = SimpleNamespace(id=56, display_name="Alice", name="Alice", bot=False)
+
+    channel = FakeHistoryChannel(
+        [
+            make_history_message(author=human, content="older", msg_id=1),
+            make_history_message(author=human, content="latest", msg_id=2),
+        ],
+        channel_id=123,
+    )
+
+    result = await adapter._fetch_channel_context(
+        channel,
+        before=make_message(channel=channel, content="trigger"),
+        limit=1,
+        header="[Recent DM messages]",
+    )
+
+    assert result == "[Recent DM messages]\n[Alice] latest"
+
+
+def test_discord_dm_history_backfill_limit_caps_to_discord_fetch_max(adapter):
+    adapter.config.extra["dm_history_backfill_limit"] = 500
+
+    assert adapter._discord_dm_history_backfill_limit() == 100
 
 

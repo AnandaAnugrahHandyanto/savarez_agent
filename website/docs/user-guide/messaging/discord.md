@@ -286,8 +286,10 @@ Discord behavior is controlled through two files: **`~/.hermes/.env`** for crede
 | `DISCORD_IGNORED_CHANNELS` | No | — | Comma-separated channel IDs where the bot **never** responds, even when `@mentioned`. Takes priority over all other channel settings. |
 | `DISCORD_ALLOWED_CHANNELS` | No | — | Comma-separated channel IDs. When set, the bot **only** responds in these channels (plus DMs if allowed). Overrides `config.yaml` `discord.allowed_channels`. Combine with `DISCORD_IGNORED_CHANNELS` to express allow/deny rules. |
 | `DISCORD_NO_THREAD_CHANNELS` | No | — | Comma-separated channel IDs where the bot responds directly in the channel instead of creating a thread. Only relevant when `DISCORD_AUTO_THREAD` is `true`. |
-| `DISCORD_HISTORY_BACKFILL` | No | `true` | When `true`, prepend recent channel scrollback (since the bot's last response) to the user message when the bot is mentioned. Recovers context the bot would otherwise miss with `require_mention`. Skipped in DMs and free-response channels. Set to `false` to disable. |
+| `DISCORD_HISTORY_BACKFILL` | No | `true` | When `true`, prepend recent channel scrollback (since the bot's last response) to the user message when the bot is mentioned. Recovers context the bot would otherwise miss with `require_mention`. Skipped in DMs unless `DISCORD_DM_HISTORY_BACKFILL` is enabled, and skipped in free-response channels. Set to `false` to disable. |
 | `DISCORD_HISTORY_BACKFILL_LIMIT` | No | `50` | Maximum number of messages to scan backwards when assembling the backfill block. In practice the scan usually stops earlier — at the bot's own last message in the channel. |
+| `DISCORD_DM_HISTORY_BACKFILL` | No | `false` | Opt-in DM scrollback recovery. When `true`, prepend recent DM messages since the bot's last response before each DM turn. Privacy-sensitive: recent private DM text is sent to the model. |
+| `DISCORD_DM_HISTORY_BACKFILL_LIMIT` | No | `25` | Maximum number of recent DM messages to scan. Values are clamped to Discord's 100-message fetch cap. |
 | `DISCORD_REPLY_TO_MODE` | No | `"first"` | Controls reply-reference behavior: `"off"` — never reply to the original message, `"first"` — reply-reference on the first message chunk only (default), `"all"` — reply-reference on every chunk. |
 | `DISCORD_ALLOW_MENTION_EVERYONE` | No | `false` | When `false` (default), the bot cannot ping `@everyone` or `@here` even if its response contains those tokens. Set to `true` to opt back in. See [Mention Control](#mention-control) below. |
 | `DISCORD_ALLOW_MENTION_ROLES` | No | `false` | When `false` (default), the bot cannot ping `@role` mentions. Set to `true` to allow. |
@@ -315,6 +317,8 @@ discord:
   no_thread_channels: []          # Channel IDs where bot responds without threading
   history_backfill: true          # Prepend recent channel scrollback on mention (default: true)
   history_backfill_limit: 50      # Max messages to scan backwards (default: 50)
+  dm_history_backfill: false      # Opt-in recent DM scrollback (default: false)
+  dm_history_backfill_limit: 25   # Max DM messages to scan backwards (default: 25, max: 100)
   channel_prompts: {}             # Per-channel ephemeral system prompts
   allow_mentions:                 # What the bot is allowed to ping (safe defaults)
     everyone: false               # @everyone / @here pings (default: false)
@@ -453,7 +457,7 @@ Behavior by surface:
 
 - **Server channels** (with `require_mention: true`): backfill scans the channel since the bot's last response. Useful when other participants posted while the bot wasn't addressed.
 - **Threads**: backfill scans the thread only — Discord's `channel.history()` on a thread returns only that thread's messages, not the parent channel. This is the right scope because threads are usually self-contained conversations.
-- **DMs**: skipped. Every DM message triggers the bot, so the session transcript is already complete — there's no mention gap to fill.
+- **DMs**: skipped by default. Set `dm_history_backfill: true` for opt-in DM scrollback recovery after restarts or session resets. This is privacy-sensitive because recent private DM text is sent to the model.
 - **Free-response channels** and **bot's own auto-created threads**: skipped for the same reason — no mention gating means no gap.
 
 Per-user sessions (`group_sessions_per_user: true`, the default) also benefit: a user's session is missing the context posted by other channel participants and the user's own messages from before they tagged the bot. Backfill fills both gaps.
@@ -483,6 +487,26 @@ discord:
   history_backfill: true
   history_backfill_limit: 50
 ```
+
+#### `discord.dm_history_backfill`
+
+**Type:** boolean — **Default:** `false`
+
+When enabled, Hermes uses the same recent-history context path for DMs that channel backfill uses for server channels and threads. Before dispatching a DM turn, it scans recent DM history up to the bot's previous response and prepends the collected messages as context.
+
+This is intentionally opt-in because it sends recent private DM text to the model. Enable it only for trusted/authorized DM conversations where that behavior is expected.
+
+```yaml
+discord:
+  dm_history_backfill: true
+  dm_history_backfill_limit: 25
+```
+
+#### `discord.dm_history_backfill_limit`
+
+**Type:** integer — **Default:** `25` — **Maximum:** `100`
+
+Maximum number of recent DM messages to scan when `dm_history_backfill` is enabled. Values above `100` are clamped to Discord's single-request history fetch cap.
 
 #### `group_sessions_per_user`
 

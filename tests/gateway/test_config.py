@@ -429,6 +429,26 @@ class TestLoadGatewayConfig:
         assert os.getenv("DISCORD_HISTORY_BACKFILL") == "true"
         assert os.getenv("DISCORD_HISTORY_BACKFILL_LIMIT") == "17"
 
+    def test_bridges_discord_dm_history_backfill_settings_from_config_yaml(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "discord:\n"
+            "  dm_history_backfill: true\n"
+            "  dm_history_backfill_limit: 25\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("DISCORD_DM_HISTORY_BACKFILL", raising=False)
+        monkeypatch.delenv("DISCORD_DM_HISTORY_BACKFILL_LIMIT", raising=False)
+
+        load_gateway_config()
+
+        assert os.getenv("DISCORD_DM_HISTORY_BACKFILL") == "true"
+        assert os.getenv("DISCORD_DM_HISTORY_BACKFILL_LIMIT") == "25"
+
     def test_bridges_telegram_channel_prompts_from_config_yaml(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()

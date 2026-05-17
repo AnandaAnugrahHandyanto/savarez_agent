@@ -710,6 +710,10 @@ class TestDiscordChannelPromptsConfig:
     def test_default_config_includes_discord_channel_prompts(self):
         assert DEFAULT_CONFIG["discord"]["channel_prompts"] == {}
 
+    def test_default_config_keeps_discord_dm_history_backfill_opt_in(self):
+        assert DEFAULT_CONFIG["discord"]["dm_history_backfill"] is False
+        assert DEFAULT_CONFIG["discord"]["dm_history_backfill_limit"] == 25
+
     def test_migrate_adds_discord_channel_prompts_default(self, tmp_path):
         config_path = tmp_path / "config.yaml"
         config_path.write_text(
