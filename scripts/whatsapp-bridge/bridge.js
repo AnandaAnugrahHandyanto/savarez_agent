@@ -51,6 +51,9 @@ const AUDIO_CACHE_DIR = path.join(process.env.HOME || '~', '.hermes', 'audio_cac
 const PAIR_ONLY = args.includes('--pair-only');
 const WHATSAPP_MODE = getArg('mode', process.env.WHATSAPP_MODE || 'self-chat'); // "bot" or "self-chat"
 const ALLOWED_USERS = parseAllowedUsers(process.env.WHATSAPP_ALLOWED_USERS || '');
+const DM_ONLY = ['1', 'true', 'yes', 'on'].includes(
+  (process.env.WHATSAPP_DM_ONLY || '').toLowerCase()
+);
 const DEFAULT_REPLY_PREFIX = '⚕ *Hermes Agent*\n────────────\n';
 const REPLY_PREFIX = process.env.WHATSAPP_REPLY_PREFIX === undefined
   ? DEFAULT_REPLY_PREFIX
@@ -290,6 +293,22 @@ async function startSocket() {
       // Python gateway, otherwise a pairing-code reply fires in response
       // to arbitrary incoming messages (#8389).
       if (!msg.key.fromMe) {
+        // DM-only mode: silently drop group messages so the bot only
+        // responds in direct chats. Honors WHATSAPP_DM_ONLY=true.
+        if (DM_ONLY && isGroup) {
+          if (WHATSAPP_DEBUG) {
+            try {
+              console.log(JSON.stringify({
+                event: 'ignored',
+                reason: 'dm_only_mode',
+                chatId,
+                senderId,
+              }));
+            } catch {}
+          }
+          continue;
+        }
+
         if (WHATSAPP_MODE === 'self-chat') {
           try {
             console.log(JSON.stringify({
@@ -722,6 +741,9 @@ if (PAIR_ONLY) {
       console.log(`🔒 No WHATSAPP_ALLOWED_USERS set — incoming messages are rejected.`);
       console.log(`   Set WHATSAPP_ALLOWED_USERS=<phone> to authorize specific users,`);
       console.log(`   or WHATSAPP_ALLOWED_USERS=* for an explicit open bot.`);
+    }
+    if (DM_ONLY) {
+      console.log(`📧 DM-only mode (WHATSAPP_DM_ONLY=true) — group messages will be dropped.`);
     }
     console.log();
     startSocket();
