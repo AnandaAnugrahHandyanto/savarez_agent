@@ -71,40 +71,58 @@ class TestForceFullRedraw:
             "invalidate",
         ]
 
-    def test_resize_preserves_scrollback_and_resets_renderer(self, bare_cli, monkeypatch):
-        """Resize recovery must NOT erase screen or scrollback.
+    def test_resize_clears_visible_screen_replays_and_resets_renderer(self, bare_cli, monkeypatch):
+        """Resize recovery clears the visible screen and replays history.
 
-        The startup banner lives in normal terminal scrollback (printed
-        before prompt_toolkit owns the chrome).  Clearing scrollback on
-        SIGWINCH removes it and ``_replay_output_history`` cannot
-        reconstruct it.  The fix is to only reset the renderer cache and
-        let ``original_on_resize`` recalculate layout.
+        On column shrink, terminal emulators reflow already-rendered
+        full-width boxes/rules before prompt_toolkit can repaint.  Merely
+        resetting the renderer leaves those stale rows visible and the next
+        prompt redraw can look duplicated.  The fix is to clear the visible
+        screen, reset prompt_toolkit's cache, replay Hermes-owned history at
+        the current width, then let prompt_toolkit recalculate layout.
 
-        Additionally, ``_status_bar_suppressed_after_resize`` must be set
-        so the input rules and status bar hide until the next user input,
-        preventing duplicated-bar artifacts on column shrink (#19280).
+        Resize recovery must not clear the terminal emulator's real
+        scrollback: Hermes only records a bounded recent output history, so an
+        ESC[3J clear would discard older transcript that cannot be replayed.
         """
         app = MagicMock()
+        out = app.renderer.output
         events = []
+        out.reset_attributes.side_effect = lambda: events.append("reset_attrs")
+        out.erase_screen.side_effect = lambda: events.append("erase")
+        out.write_raw.side_effect = lambda value: events.append(f"write_raw:{value!r}")
+        out.cursor_goto.side_effect = lambda *_: events.append("home")
+        out.flush.side_effect = lambda: events.append("flush")
         app.renderer.reset.side_effect = lambda **_: events.append("renderer_reset")
         app.invalidate.side_effect = lambda: events.append("invalidate")
+        app.layout.focus.side_effect = lambda target: events.append(("focus", target))
         original_on_resize = lambda: events.append("original_resize")
+        monkeypatch.setattr(cli_mod, "_replay_output_history", lambda: events.append("replay"))
 
-        # bare_cli skips __init__, so seed the attribute the way __init__ would.
-        bare_cli._status_bar_suppressed_after_resize = False
+        # bare_cli skips __init__, so seed the attributes the way __init__/run would.
+        bare_cli._status_bar_suppressed_after_resize = True
+        bare_cli._tui_input_area = object()
         bare_cli._recover_after_resize(app, original_on_resize)
 
         assert events == [
+            "reset_attrs",
+            "erase",
+            "home",
+            "flush",
+            "renderer_reset",
+            "replay",
+            "original_resize",
+            ("focus", bare_cli._tui_input_area),
             "renderer_reset",
             "invalidate",
-            "original_resize",
         ]
-        # Must NOT clear the screen or scrollback — those destroy the banner.
-        app.renderer.output.erase_screen.assert_not_called()
-        app.renderer.output.write_raw.assert_not_called()
-        app.renderer.output.cursor_goto.assert_not_called()
-        # Status bar / input rules must be suppressed until the next prompt.
-        assert bare_cli._status_bar_suppressed_after_resize is True
+        out.erase_screen.assert_called_once()
+        out.cursor_goto.assert_called_once_with(0, 0)
+        out.write_raw.assert_not_called()
+        assert app.renderer.reset.call_count == 2
+        app.renderer.reset.assert_any_call(leave_alternate_screen=False)
+        # The prompt/input chrome must be visible immediately after resize.
+        assert bare_cli._status_bar_suppressed_after_resize is False
 
     def test_force_redraw_uses_full_screen_clear_without_scrollback_clear(self, bare_cli):
         app = MagicMock()

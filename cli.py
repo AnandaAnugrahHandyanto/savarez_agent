@@ -42,7 +42,7 @@ from urllib.parse import unquote, urlparse
 from contextlib import contextmanager
 from pathlib import Path
 from datetime import datetime
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, cast
 
 logger = logging.getLogger(__name__)
 
@@ -1814,19 +1814,33 @@ def _cprint(text: str):
 
     # Cross-thread emission: ask the app's event loop to schedule a
     # ``run_in_terminal`` that wraps ``_pt_print``.  This hides the
-    # prompt, prints, and redraws.  Fire-and-forget — if scheduling
-    # fails we fall back to a direct print so the line isn't lost.
+    # prompt, prints, and redraws.  Wait briefly for the scheduled
+    # terminal print to complete so the next prompt_toolkit redraw cannot
+    # expose an empty prompt before the Hermes scrollback box lands.
+    import threading as _threading
+    done = _threading.Event()
+
     def _schedule():
         try:
-            run_in_terminal(lambda: _pt_print(_PT_ANSI(text)))
+            future = run_in_terminal(lambda: _pt_print(_PT_ANSI(text)))
+            if hasattr(future, "add_done_callback"):
+                future.add_done_callback(lambda _f: done.set())
+            else:
+                done.set()
         except Exception:
             try:
                 _pt_print(_PT_ANSI(text))
             except Exception:
                 pass
+            finally:
+                done.set()
 
     try:
         loop.call_soon_threadsafe(_schedule)
+        # The callback itself is very small.  If the app loop is wedged,
+        # do not block the agent/tool thread indefinitely; the scheduled
+        # print may still run later, and direct fallback would duplicate it.
+        done.wait(timeout=1.0)
     except Exception:
         try:
             _pt_print(_PT_ANSI(text))
@@ -2941,27 +2955,43 @@ class HermesCLI:
     def _recover_after_resize(self, app, original_on_resize) -> None:
         """Recover a resized classic CLI without desynchronizing cursor state.
 
-        Unlike _force_full_redraw, we do NOT clear the physical screen or
-        scrollback here.  The startup banner and tool summary are printed
-        before prompt_toolkit owns the live chrome, so they live in normal
-        terminal scrollback.  Erasing the screen on SIGWINCH removes that
-        startup UI and ``_replay_output_history`` cannot reconstruct it
-        (the banner was never added to ``_OUTPUT_HISTORY``).
+        Column shrink is especially hostile in non-fullscreen
+        prompt_toolkit mode: the terminal emulator reflows already-printed
+        full-width boxes/rules before prompt_toolkit gets a chance to draw
+        the new prompt layout.  If we only reset prompt_toolkit's renderer,
+        those old-width rows remain visible and the next live redraw can look
+        like duplicated input/status/output boxes.
 
-        Instead we just reset prompt_toolkit's renderer cache so the next
-        incremental redraw starts from a clean slate, then let
-        ``original_on_resize`` recalculate layout for the new size.
+        Clear the visible screen, reset prompt_toolkit's cached screen/cursor
+        state, replay Hermes-owned recent output history, then let
+        prompt_toolkit recalculate/redraw the live prompt for the new size.
+        Do not clear the terminal emulator's real scrollback here: Hermes only
+        records a bounded recent history for replay, so ESC[3J would discard
+        older user-visible transcript that Hermes cannot restore.  Resume
+        panels are stored as width-aware history entries, so ``hermes -c`` can
+        re-render them at the current width instead of keeping the stale
+        startup width.
 
-        We also flag ``_status_bar_suppressed_after_resize`` so the dynamic
-        status bar and input separator rules stay hidden until the next user
-        input.  On column shrink the terminal reflows already-rendered status
-        bar rows into scrollback before prompt_toolkit can erase them; drawing
-        a fresh full-width bar immediately makes the old and new versions
-        look duplicated (#19280, #22976).  Clearing the suppression on the
-        next prompt restores the bar cleanly.
+        The visible-screen clear removes stale-width input chrome from the
+        active viewport, so the live prompt should be redrawn immediately at
+        the new width instead of being suppressed until the next keystroke.
         """
-        self._status_bar_suppressed_after_resize = True
+        self._status_bar_suppressed_after_resize = False
+        self._clear_prompt_toolkit_screen(app, rebuild_scrollback=False)
+        _replay_output_history()
+        original_on_resize()
         try:
+            input_area = getattr(self, "_tui_input_area", None)
+            if input_area is not None and getattr(app, "layout", None) is not None:
+                app.layout.focus(input_area)
+        except Exception:
+            pass
+        try:
+            # Re-drop prompt_toolkit's post-replay screen cache so the next
+            # invalidate paints the input prompt/status chrome from semantic
+            # layout state at the current terminal width.  Without this, a
+            # resize recovery can leave the transcript replay visible but the
+            # prompt row absent until another input event arrives.
             app.renderer.reset(leave_alternate_screen=False)
         except Exception:
             pass
@@ -2969,7 +2999,6 @@ class HermesCLI:
             app.invalidate()
         except Exception:
             pass
-        original_on_resize()
 
     def _schedule_resize_recovery(self, app, original_on_resize, delay: float = 0.12) -> None:
         """Debounce resize redraws so footer chrome is not stamped into scrollback."""
@@ -3216,17 +3245,14 @@ class HermesCLI:
 
     @staticmethod
     def _scrollback_box_width(width: Optional[int] = None) -> int:
-        """Return the full viewport width for printed scrollback box rules.
+        """Return the target width for scrollback boxes.
 
-        Previously this clamped to ``max(32, min(width, 56))`` as a defense
-        against terminal-emulator reflow on column-shrink (#25975, salvaging
-        #24403).  That clamp made response/reasoning borders look stubby on
-        any modern wide terminal.  We now trust the prompt_toolkit
-        ``_output_screen_diff`` monkey-patch landed in #26137 (salvaging
-        #25981) to keep chrome out of scrollback in the first place, and
-        accept that an aggressive column-shrink may visually reflow already
-        printed Panel borders — that's a cosmetic artifact of stamped
-        scrollback history, not a live-render bug.
+        Classic CLI scrollback is printed in prompt_toolkit's non-fullscreen
+        mode.  A box that occupies the exact terminal width can hit the last
+        column and trigger an emulator wrap before prompt_toolkit redraws the
+        live input chrome, making the right border look like it overflowed.
+        Keep a one-column safety margin while still using the viewport width
+        instead of the old 56-column cap.
 
         A small floor (32 cols) is kept so the box still renders on tiny
         terminals without negative ``'─' * (w - 2)`` math.
@@ -3236,7 +3262,41 @@ class HermesCLI:
                 width = shutil.get_terminal_size((80, 24)).columns
             except Exception:
                 width = 80
-        return max(32, int(width or 80))
+        return max(32, int(width or 80) - 1)
+
+    @staticmethod
+    def _truncate_display_width(text: str, max_width: int) -> str:
+        """Truncate *text* so its terminal display width is at most max_width."""
+        if max_width <= 0:
+            return ""
+        out = []
+        used = 0
+        for ch in str(text):
+            ch_width = HermesCLI._status_bar_display_width(ch)
+            if used + ch_width > max_width:
+                break
+            out.append(ch)
+            used += ch_width
+        return "".join(out)
+
+    @staticmethod
+    def _scrollback_title_border(label: str, *, width: Optional[int] = None, style: str = "rounded") -> str:
+        """Return a display-width-safe top border with an inline title."""
+        w = HermesCLI._scrollback_box_width(width)
+        left, right = ("┌", "┐") if style == "square" else ("╭", "╮")
+        # Border layout: left + "─" + label + fill + right.
+        label_budget = max(0, w - 4)
+        safe_label = HermesCLI._truncate_display_width(label, label_budget)
+        label_width = HermesCLI._status_bar_display_width(safe_label)
+        fill = max(0, w - 3 - label_width)
+        return f"{left}─{safe_label}{'─' * fill}{right}"
+
+    @staticmethod
+    def _scrollback_bottom_border(*, width: Optional[int] = None, style: str = "rounded") -> str:
+        """Return a display-width-safe bottom border."""
+        w = HermesCLI._scrollback_box_width(width)
+        left, right = ("└", "┘") if style == "square" else ("╰", "╯")
+        return f"{left}{'─' * max(w - 2, 0)}{right}"
 
     def _tui_input_rule_height(self, position: str, width: Optional[int] = None) -> int:
         """Return the visible height for the top/bottom input separator rules."""
@@ -3784,10 +3844,8 @@ class HermesCLI:
         # Open reasoning box on first reasoning token
         if not getattr(self, "_reasoning_box_opened", False):
             self._reasoning_box_opened = True
-            w = self._scrollback_box_width()
             r_label = " Reasoning "
-            r_fill = w - 2 - len(r_label)
-            _cprint(f"\n{_DIM}┌─{r_label}{'─' * max(r_fill - 1, 0)}┐{_RST}")
+            _cprint(f"\n{_DIM}{self._scrollback_title_border(r_label, style='square')}{_RST}")
 
         self._reasoning_buf = getattr(self, "_reasoning_buf", "") + text
 
@@ -3808,8 +3866,7 @@ class HermesCLI:
             if buf:
                 _cprint(f"{_DIM}{buf}{_RST}")
                 self._reasoning_buf = ""
-            w = self._scrollback_box_width()
-            _cprint(f"{_DIM}└{'─' * (w - 2)}┘{_RST}")
+            _cprint(f"{_DIM}{self._scrollback_bottom_border(style='square')}{_RST}")
             self._reasoning_box_opened = False
 
             # Flush any content that was deferred while reasoning was rendering.
@@ -3999,9 +4056,7 @@ class HermesCLI:
                 self._stream_text_ansi = ""
             if self.show_timestamps:
                 label = f"{label} {datetime.now().strftime('%H:%M')}"
-            w = self._scrollback_box_width()
-            fill = w - 2 - HermesCLI._status_bar_display_width(label)
-            _cprint(f"\n{_ACCENT}╭─{label}{'─' * max(fill - 1, 0)}╮{_RST}")
+            _cprint(f"\n{_ACCENT}{self._scrollback_title_border(label)}{_RST}")
 
         self._stream_buf += text
 
@@ -4100,8 +4155,7 @@ class HermesCLI:
 
         # Close the response box
         if self._stream_box_opened:
-            w = self._scrollback_box_width()
-            _cprint(f"{_ACCENT}╰{'─' * (w - 2)}╯{_RST}")
+            _cprint(f"{_ACCENT}{self._scrollback_bottom_border()}{_RST}")
 
     def _reset_stream_state(self) -> None:
         """Reset streaming state before each agent invocation."""
@@ -4570,38 +4624,73 @@ class HermesCLI:
             # logged at DEBUG by the advisory module.
             pass
 
-    def show_banner(self):
-        """Display the welcome banner in Claude Code style."""
-        self.console.clear()
+    def _get_startup_banner_context_length(self):
         ctx_len = None
         if hasattr(self, 'agent') and self.agent and hasattr(self.agent, 'context_compressor'):
             ctx_len = self.agent.context_compressor.context_length
-        
-        # Auto-compact for narrow terminals — the full banner with caduceus
-        # + tool list needs ~80 columns minimum to render without wrapping.
-        term_width = shutil.get_terminal_size().columns
-        use_compact = self.compact or term_width < 80
-        
-        if use_compact:
-            self._console_print(_build_compact_banner())
-            self._show_status()
+        return ctx_len
+
+    def _render_startup_banner_lines(self) -> list[str]:
+        """Render the startup banner at the current terminal width for replay."""
+        from io import StringIO
+
+        buf = StringIO()
+        width = shutil.get_terminal_size((80, 24)).columns
+        console = Console(
+            file=buf,
+            force_terminal=True,
+            color_system="truecolor",
+            highlight=False,
+            width=width,
+        )
+        if self.compact or width < 80:
+            console.print(_build_compact_banner())
         else:
-            # Get tools for display
-            tools = get_tool_definitions(enabled_toolsets=self.enabled_toolsets, quiet_mode=True)
-            
-            # Get terminal working directory (where commands will execute)
+            enabled_toolsets = cast(List[str], list(self.enabled_toolsets) if self.enabled_toolsets is not None else None)
+            tools = get_tool_definitions(enabled_toolsets=enabled_toolsets, quiet_mode=True)
             cwd = os.getenv("TERMINAL_CWD", os.getcwd())
-            
-            # Build and display the banner
             build_welcome_banner(
-                console=self.console,
+                console=console,
                 model=self.model,
                 cwd=cwd,
                 tools=tools,
-                enabled_toolsets=self.enabled_toolsets,
+                enabled_toolsets=enabled_toolsets,
                 session_id=self.session_id,
-                context_length=ctx_len,
+                context_length=self._get_startup_banner_context_length(),
             )
+        return buf.getvalue().rstrip("\n").splitlines()
+
+    def _record_startup_banner_for_resize(self) -> None:
+        _record_output_history_entry(lambda: self._render_startup_banner_lines())
+
+    def _print_startup_banner(self, console) -> None:
+        """Print the startup banner once without raw-line history duplication."""
+        width = shutil.get_terminal_size((80, 24)).columns
+        if self.compact or width < 80:
+            console.print(_build_compact_banner())
+        else:
+            enabled_toolsets = cast(List[str], list(self.enabled_toolsets) if self.enabled_toolsets is not None else None)
+            tools = get_tool_definitions(enabled_toolsets=enabled_toolsets, quiet_mode=True)
+            cwd = os.getenv("TERMINAL_CWD", os.getcwd())
+            build_welcome_banner(
+                console=console,
+                model=self.model,
+                cwd=cwd,
+                tools=tools,
+                enabled_toolsets=enabled_toolsets,
+                session_id=self.session_id,
+                context_length=self._get_startup_banner_context_length(),
+            )
+
+    def show_banner(self):
+        """Display the welcome banner in Claude Code style."""
+        self.console.clear()
+        self._record_startup_banner_for_resize()
+        with _suspend_output_history():
+            self._print_startup_banner(self.console)
+        if self.compact or shutil.get_terminal_size((80, 24)).columns < 80:
+            self._show_status()
+        ctx_len = self._get_startup_banner_context_length()
         
         # Show tool availability warnings if any tools are disabled
         self._show_tool_availability_warnings()
@@ -7755,24 +7844,9 @@ class HermesCLI:
             # and gets mangled by patch_stdout).
             if self._app:
                 cc = ChatConsole()
-                term_w = shutil.get_terminal_size().columns
-                if self.compact or term_w < 80:
-                    cc.print(_build_compact_banner())
-                else:
-                    tools = get_tool_definitions(enabled_toolsets=self.enabled_toolsets, quiet_mode=True)
-                    cwd = os.getenv("TERMINAL_CWD", os.getcwd())
-                    ctx_len = None
-                    if hasattr(self, 'agent') and self.agent and hasattr(self.agent, 'context_compressor'):
-                        ctx_len = self.agent.context_compressor.context_length
-                    build_welcome_banner(
-                        console=cc,
-                        model=self.model,
-                        cwd=cwd,
-                        tools=tools,
-                        enabled_toolsets=self.enabled_toolsets,
-                        session_id=self.session_id,
-                        context_length=ctx_len,
-                    )
+                self._record_startup_banner_for_resize()
+                with _suspend_output_history():
+                    self._print_startup_banner(cc)
                 _cprint("  ✨ (◕‿◕)✨ Fresh start! Screen cleared and conversation reset.\n")
                 # Show a random tip on new session
                 try:
@@ -10927,12 +11001,14 @@ class HermesCLI:
                     nonlocal _streaming_box_opened
                     if not _streaming_box_opened:
                         _streaming_box_opened = True
-                        w = self._scrollback_box_width(getattr(self.console, "width", 80))
                         label = " ⚕ Hermes "
                         if self.show_timestamps:
                             label = f"{label}{datetime.now().strftime('%H:%M')} "
-                        fill = w - 2 - HermesCLI._status_bar_display_width(label)
-                        _cprint(f"\n{_ACCENT}╭─{label}{'─' * max(fill - 1, 0)}╮{_RST}")
+                        _cprint(
+                            f"\n{_ACCENT}"
+                            f"{self._scrollback_title_border(label, width=getattr(self.console, 'width', 80))}"
+                            f"{_RST}"
+                        )
                     _cprint(f"{_STREAM_PAD}{sentence.rstrip()}")
 
                 tts_thread = threading.Thread(
@@ -11212,11 +11288,9 @@ class HermesCLI:
             if self.show_reasoning and result and not _reasoning_already_shown:
                 reasoning = result.get("last_reasoning")
                 if reasoning:
-                    w = self._scrollback_box_width()
                     r_label = " Reasoning "
-                    r_fill = w - 2 - len(r_label)
-                    r_top = f"{_DIM}┌─{r_label}{'─' * max(r_fill - 1, 0)}┐{_RST}"
-                    r_bot = f"{_DIM}└{'─' * (w - 2)}┘{_RST}"
+                    r_top = f"{_DIM}{self._scrollback_title_border(r_label, style='square')}{_RST}"
+                    r_bot = f"{_DIM}{self._scrollback_bottom_border(style='square')}{_RST}"
                     # Collapse long reasoning: show first 10 lines
                     lines = reasoning.strip().splitlines()
                     if len(lines) > 10:
@@ -11243,8 +11317,7 @@ class HermesCLI:
                 already_streamed = self._stream_started and self._stream_box_opened and not is_error_response
                 if use_streaming_tts and _streaming_box_opened and not is_error_response:
                     # Text was already printed sentence-by-sentence; just close the box
-                    w = self._scrollback_box_width()
-                    _cprint(f"\n{_ACCENT}╰{'─' * (w - 2)}╯{_RST}")
+                    _cprint(f"\n{_ACCENT}{self._scrollback_bottom_border()}{_RST}")
                 elif already_streamed:
                     # Response was already streamed token-by-token with box framing;
                     # _flush_stream() already closed the box. Skip Rich Panel.
@@ -12692,6 +12765,7 @@ class HermesCLI:
                 completer=_completer,
             ),
         )
+        self._tui_input_area = input_area
         # Keep prompt_toolkit on its simple tempfile path. Setting
         # buffer.tempfile = "prompt.md" triggers its complex-tempfile branch,
         # which tries to mkdir() the mkdtemp() directory again and raises

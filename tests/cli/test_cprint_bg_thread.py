@@ -12,6 +12,7 @@ These tests verify the routing logic without spinning up a real PT app.
 
 from __future__ import annotations
 
+import os
 import sys
 import types
 from types import SimpleNamespace
@@ -76,6 +77,7 @@ def test_cprint_bg_thread_schedules_on_app_loop(monkeypatch):
 
         def call_soon_threadsafe(self, cb, *args):
             scheduled.append(cb)
+            cb(*args)
 
     fake_loop = FakeLoop()
 
@@ -112,12 +114,50 @@ def test_cprint_bg_thread_schedules_on_app_loop(monkeypatch):
     # call_soon_threadsafe must have been called with a scheduling cb.
     assert len(scheduled) == 1
 
-    # Invoking the scheduled callback should hit run_in_terminal.
-    scheduled[0]()
     assert len(run_in_terminal_calls) == 1
 
     # And run_in_terminal's inner func should have emitted a pt_print.
     assert direct_prints == ["💾 Self-improvement review: Skill updated"]
+
+
+def test_cprint_bg_thread_waits_for_terminal_print(monkeypatch):
+    """Cross-thread _cprint waits for run_in_terminal to finish before returning."""
+    events = []
+    monkeypatch.setattr(cli, "_pt_print", lambda x: events.append(("pt_print", x)))
+    monkeypatch.setattr(cli, "_PT_ANSI", lambda t: t)
+
+    class FakeLoop:
+        def is_running(self):
+            return True
+
+        def call_soon_threadsafe(self, cb, *args):
+            events.append(("scheduled",))
+            cb(*args)
+
+    class FakeFuture:
+        def add_done_callback(self, cb):
+            events.append(("done_callback",))
+            cb(self)
+
+    fake_pt_app = types.ModuleType("prompt_toolkit.application")
+    fake_pt_app.get_app_or_none = lambda: SimpleNamespace(_is_running=True, loop=FakeLoop())
+
+    def _fake_run_in_terminal(func, **kw):
+        events.append(("run_in_terminal",))
+        func()
+        return FakeFuture()
+
+    fake_pt_app.run_in_terminal = _fake_run_in_terminal
+    monkeypatch.setitem(sys.modules, "prompt_toolkit.application", fake_pt_app)
+
+    cli._cprint("ordered")
+
+    assert events == [
+        ("scheduled",),
+        ("run_in_terminal",),
+        ("pt_print", "ordered"),
+        ("done_callback",),
+    ]
 
 
 def test_cprint_same_thread_as_app_loop_direct_print(monkeypatch):
@@ -306,3 +346,33 @@ def test_clear_output_history_removes_replayable_lines():
     cli._clear_output_history()
 
     assert list(cli._OUTPUT_HISTORY) == []
+
+
+def test_startup_banner_history_entry_rerenders_at_current_width(monkeypatch):
+    cli._configure_output_history(True, 10)
+    cli_obj = object.__new__(cli.HermesCLI)
+    cli_obj.compact = True
+    cli_obj.enabled_toolsets = []
+    cli_obj.model = "test-model"
+    cli_obj.session_id = "test-session"
+    cli_obj.agent = None
+    widths = [50]
+    printed = []
+
+    monkeypatch.setattr(
+        cli.shutil,
+        "get_terminal_size",
+        lambda fallback=(80, 24): os.terminal_size((widths[-1], 24)),
+    )
+    monkeypatch.setattr(cli, "_build_compact_banner", lambda: f"banner-width-{widths[-1]}")
+    monkeypatch.setattr(cli, "_pt_print", lambda value: printed.append(value))
+    monkeypatch.setattr(cli, "_PT_ANSI", lambda text: text)
+
+    cli_obj._record_startup_banner_for_resize()
+    cli._replay_output_history()
+    widths.append(100)
+    cli._replay_output_history()
+
+    assert printed == ["banner-width-50", "banner-width-100"]
+    assert len(cli._OUTPUT_HISTORY) == 1
+    assert callable(cli._OUTPUT_HISTORY[0])
