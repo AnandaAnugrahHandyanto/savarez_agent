@@ -395,6 +395,13 @@ def test_sidecar_changed_file_parser_preserves_dotfile_paths() -> None:
     )
 
 
+def test_blocked_surface_scan_accepts_pass_with_punctuated_basis() -> None:
+    assert completion_gate.blocked_surface_scan_passed(
+        ["PASS, with basis: task-allowlisted workflow/service/docs paths"]
+    )
+    assert not completion_gate.blocked_surface_scan_passed(["passive wording only"])
+
+
 def test_runner_recovery_labels_match_existing_gitea_workflow_runs_on() -> None:
     labels = runner_recovery.RUNNER_LABELS.split(",")
 

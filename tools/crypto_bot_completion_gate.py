@@ -412,7 +412,7 @@ def blocked_surface_scan_passed(values: list[str]) -> bool:
         normalized = normalize_result_value(value).lower()
         if not normalized:
             continue
-        if normalized == "pass" or normalized.startswith("pass "):
+        if normalized == "pass" or re.match(r"^pass\b", normalized):
             return True
         if re.search(r"\b(exit\s*code|exit_code)\b\s*[:=]?\s*0\b", normalized):
             return True

@@ -94,6 +94,13 @@ non-product-repo state path.
   scan. If local gate validators fail, the sidecar result cannot override them.
 - The sidecar final conclusion must parse as exactly `PASS`; `FAIL`,
   `BLOCKED`, missing, or ambiguous conclusions block completion.
+- Machine fields must be parser-compatible, not merely semantically clear. In
+  particular, `Blocked-surface scan` should be emitted as `PASS with basis: ...`
+  or a standalone `PASS` with details elsewhere for maximum compatibility. If a
+  semantically valid `PASS, ...` or similar machine field is rejected, use TDD to
+  patch the completion-gate parser rather than rerunning broad audits. See
+  `references/blocked-surface-pass-format.md` for the S006 parser pitfall and
+  regression-test pattern.
 
 ## Required Final Audit Shape
 
