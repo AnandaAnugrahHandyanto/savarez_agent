@@ -5,10 +5,12 @@ tasks routed through a cheap provider-side default (Gemini Flash) while
 non-aggregator users got their main model.  This made behavior inconsistent
 and surprising — users picked Claude but got Gemini Flash summaries.
 
-The current policy: ``auto`` means "use my main chat model" for every user,
+The current policy: ``auto`` means "use my main chat model" for most tasks,
 regardless of provider type.  Explicit per-task overrides in ``config.yaml``
 (``auxiliary.<task>.provider``) still win.  The cheap fallback chain only
-runs when the main provider has no working client.
+runs when the main provider has no working client, except compression on a
+Codex main session, which tries the faster auxiliary chain before falling back
+to Codex to avoid slow Responses streams dropping context after timeout.
 """
 
 from __future__ import annotations
@@ -161,6 +163,81 @@ class TestResolveAutoMainFirst:
         # Runtime override wins
         assert mock_resolve.call_args.args[0] == "anthropic"
         assert mock_resolve.call_args.args[1] == "runtime-model"
+
+    def test_compression_on_codex_main_prefers_aux_chain(self):
+        """Compression should avoid Codex Responses when a faster aux backend exists."""
+        chain_client = MagicMock()
+        codex_client = MagicMock()
+
+        with patch(
+            "agent.auxiliary_client._read_main_provider", return_value="openai-codex",
+        ), patch(
+            "agent.auxiliary_client._read_main_model", return_value="gpt-5.5",
+        ), patch(
+            "agent.auxiliary_client._try_openrouter",
+            return_value=(chain_client, "google/gemini-3-flash-preview"),
+        ), patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(codex_client, "gpt-5.5"),
+        ) as mock_resolve:
+            from agent.auxiliary_client import _resolve_auto
+
+            client, model = _resolve_auto(task="compression")
+
+        assert client is chain_client
+        assert model == "google/gemini-3-flash-preview"
+        mock_resolve.assert_not_called()
+
+    def test_non_compression_on_codex_main_still_uses_main(self):
+        """Only compression gets the Codex avoidance; other aux tasks keep main-first."""
+        codex_client = MagicMock()
+
+        with patch(
+            "agent.auxiliary_client._read_main_provider", return_value="openai-codex",
+        ), patch(
+            "agent.auxiliary_client._read_main_model", return_value="gpt-5.5",
+        ), patch(
+            "agent.auxiliary_client._try_openrouter",
+        ) as mock_try_openrouter, patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(codex_client, "gpt-5.5"),
+        ) as mock_resolve:
+            from agent.auxiliary_client import _resolve_auto
+
+            client, model = _resolve_auto(task="session_search")
+
+        assert client is codex_client
+        assert model == "gpt-5.5"
+        mock_try_openrouter.assert_not_called()
+        mock_resolve.assert_called_once()
+
+    def test_compression_on_codex_main_falls_back_to_codex_when_no_aux_chain(self):
+        """Codex-only users should still have compression instead of no provider."""
+        codex_client = MagicMock()
+
+        with patch(
+            "agent.auxiliary_client._read_main_provider", return_value="openai-codex",
+        ), patch(
+            "agent.auxiliary_client._read_main_model", return_value="gpt-5.5",
+        ), patch(
+            "agent.auxiliary_client._try_openrouter", return_value=(None, None),
+        ), patch(
+            "agent.auxiliary_client._try_nous", return_value=(None, None),
+        ), patch(
+            "agent.auxiliary_client._try_custom_endpoint", return_value=(None, None),
+        ), patch(
+            "agent.auxiliary_client._resolve_api_key_provider", return_value=(None, None),
+        ), patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(codex_client, "gpt-5.5"),
+        ) as mock_resolve:
+            from agent.auxiliary_client import _resolve_auto
+
+            client, model = _resolve_auto(task="compression")
+
+        assert client is codex_client
+        assert model == "gpt-5.5"
+        mock_resolve.assert_called_once()
 
 
 # ── Vision — resolve_vision_provider_client ─────────────────────────────────

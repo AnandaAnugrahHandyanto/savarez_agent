@@ -43,6 +43,7 @@ Payment / credit exhaustion fallback:
 import json
 import logging
 import os
+import queue
 import threading
 import time
 from pathlib import Path  # noqa: F401 — used by test mocks
@@ -755,7 +756,7 @@ class _CodexCompletionsAdapter:
 
         def _check_cancelled() -> None:
             if deadline is not None and time.monotonic() >= deadline:
-                timed_out.set()
+                _close_client_on_timeout()
                 raise TimeoutError(_timeout_message())
             try:
                 from tools.interrupt import is_interrupted
@@ -779,9 +780,43 @@ class _CodexCompletionsAdapter:
                 timeout_timer = threading.Timer(float(total_timeout), _close_client_on_timeout)
                 timeout_timer.daemon = True
                 timeout_timer.start()
+            def _iter_stream_events(stream: Any):
+                if deadline is None:
+                    yield from stream
+                    return
+
+                event_queue: "queue.Queue[tuple[str, Any]]" = queue.Queue()
+
+                def _consume_stream() -> None:
+                    try:
+                        for event in stream:
+                            event_queue.put(("event", event))
+                        event_queue.put(("done", None))
+                    except BaseException as exc:  # pragma: no cover - defensive for SDK stream errors
+                        event_queue.put(("error", exc))
+
+                threading.Thread(target=_consume_stream, daemon=True).start()
+                while True:
+                    _check_cancelled()
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        _close_client_on_timeout()
+                        raise TimeoutError(_timeout_message())
+                    try:
+                        kind, payload = event_queue.get(timeout=remaining)
+                    except queue.Empty as exc:
+                        _close_client_on_timeout()
+                        raise TimeoutError(_timeout_message()) from exc
+                    if kind == "event":
+                        yield payload
+                    elif kind == "done":
+                        break
+                    else:
+                        raise payload
+
             _check_cancelled()
             with self._client.responses.stream(**resp_kwargs) as stream:
-                for _event in stream:
+                for _event in _iter_stream_events(stream):
                     _check_cancelled()
                     _etype = getattr(_event, "type", "")
                     if _etype == "response.output_item.done":
@@ -2405,6 +2440,7 @@ def _retry_same_provider_sync(
             api_key=resolved_api_key,
             api_mode=resolved_api_mode,
             main_runtime=main_runtime,
+            task=task,
         )
     if retry_client is None:
         raise RuntimeError(
@@ -2462,6 +2498,7 @@ async def _retry_same_provider_async(
             base_url=resolved_base_url,
             api_key=resolved_api_key,
             api_mode=resolved_api_mode,
+            task=task,
         )
     if retry_client is None:
         raise RuntimeError(
@@ -2579,19 +2616,29 @@ def _try_payment_fallback(
     return None, None, ""
 
 
-def _resolve_auto(main_runtime: Optional[Dict[str, Any]] = None) -> Tuple[Optional[OpenAI], Optional[str]]:
+def _resolve_auto(
+    main_runtime: Optional[Dict[str, Any]] = None,
+    *,
+    task: Optional[str] = None,
+) -> Tuple[Optional[OpenAI], Optional[str]]:
     """Full auto-detection chain.
 
     Priority:
       1. User's main provider + main model, regardless of provider type.
-         This means auxiliary tasks (compression, vision, web extraction,
-         session search, etc.) use the same model the user configured for
-         chat.  Users on OpenRouter/Nous get their chosen chat model; users
-         on DeepSeek/ZAI/Alibaba get theirs; etc.  Running aux tasks on the
-         user's picked model keeps behavior predictable — no surprise
-         switches to a cheap fallback model for side tasks.
-      2. OpenRouter → Nous → custom → Codex → API-key providers (fallback
-         chain, only used when the main provider has no working client).
+         This means auxiliary tasks (vision, web extraction, session search,
+         etc.) usually use the same model the user configured for chat. Users
+         on OpenRouter/Nous get their chosen chat model; users on DeepSeek/ZAI/
+         Alibaba get theirs; etc. Running aux tasks on the user's picked model
+         keeps behavior predictable — no surprise switches to a cheap fallback
+         model for side tasks.
+      2. Compression exception: when the main provider is OpenAI Codex, prefer
+         the normal auxiliary fallback chain first. Codex Responses streams are
+         comparatively slow and have caused 120s compression timeouts that drop
+         context, while OpenRouter/Nous/local aux models can summarize quickly.
+         If no other auxiliary backend exists, fall back to main Codex.
+      3. OpenRouter → Nous → custom → API-key providers (fallback chain, only
+         used when the main provider has no working client, or before Codex for
+         compression as described above).
     """
     global auxiliary_is_nous, _stale_base_url_warned
     auxiliary_is_nous = False  # Reset — _try_nous() will set True if it wins
@@ -2630,6 +2677,32 @@ def _resolve_auto(main_runtime: Optional[Dict[str, Any]] = None) -> Tuple[Option
     # config.yaml (auxiliary.<task>.provider) still win over this.
     main_provider = runtime_provider or _read_main_provider()
     main_model = runtime_model or _read_main_model()
+    prefer_fallback_chain = (
+        (task or "").strip().lower() == "compression"
+        and _normalize_aux_provider(main_provider) == "openai-codex"
+    )
+
+    if prefer_fallback_chain:
+        tried_preferred = []
+        for label, try_fn in _get_provider_chain():
+            client, model = try_fn()
+            if client is not None:
+                if tried_preferred:
+                    logger.info(
+                        "Auxiliary auto-detect: compression on Codex main using %s (%s) — skipped: %s",
+                        label, model or "default", ", ".join(tried_preferred),
+                    )
+                else:
+                    logger.info(
+                        "Auxiliary auto-detect: compression on Codex main using %s (%s)",
+                        label, model or "default",
+                    )
+                return client, model
+            tried_preferred.append(label)
+        logger.info(
+            "Auxiliary auto-detect: compression on Codex main found no faster auxiliary backend; falling back to Codex"
+        )
+
     if (main_provider and main_model
             and main_provider not in {"auto", ""}):
         resolved_provider = main_provider
@@ -2778,6 +2851,7 @@ def resolve_provider_client(
     api_mode: str = None,
     main_runtime: Optional[Dict[str, Any]] = None,
     is_vision: bool = False,
+    task: Optional[str] = None,
 ) -> Tuple[Optional[Any], Optional[str]]:
     """Central router: given a provider name and optional model, return a
     configured client with the correct auth, base URL, and API format.
@@ -2870,7 +2944,7 @@ def resolve_provider_client(
 
     # ── Auto: try all providers in priority order ────────────────────
     if provider == "auto":
-        client, resolved = _resolve_auto(main_runtime=main_runtime)
+        client, resolved = _resolve_auto(main_runtime=main_runtime, task=task)
         if client is None:
             return None, None
         # When auto-detection lands on a non-OpenRouter provider (e.g. a
@@ -3367,6 +3441,7 @@ def get_text_auxiliary_client(
         explicit_api_key=api_key,
         api_mode=api_mode,
         main_runtime=main_runtime,
+        task=task,
     )
 
 
@@ -3386,6 +3461,7 @@ def get_async_text_auxiliary_client(task: str = "", *, main_runtime: Optional[Di
         explicit_api_key=api_key,
         api_mode=api_mode,
         main_runtime=main_runtime,
+        task=task,
     )
 
 
@@ -3661,11 +3737,20 @@ def _client_cache_key(
     api_mode: Optional[str] = None,
     main_runtime: Optional[Dict[str, Any]] = None,
     is_vision: bool = False,
+    task: Optional[str] = None,
 ) -> tuple:
     runtime = _normalize_main_runtime(main_runtime)
     runtime_key = tuple(runtime.get(field, "") for field in _MAIN_RUNTIME_FIELDS) if provider == "auto" else ()
     pool_hint = _pool_cache_hint(provider, main_runtime=main_runtime)
-    return (provider, async_mode, base_url or "", api_key or "", api_mode or "", runtime_key, is_vision, pool_hint)
+    # Some auto-routing decisions are task-specific (notably compression on
+    # Codex main sessions), so keep separate cache entries only for auto
+    # clients that actually supply a task. Preserve the upstream key shape
+    # otherwise so tests/manual cache cleanup that use explicit providers keep
+    # working.
+    base_key = (provider, async_mode, base_url or "", api_key or "", api_mode or "", runtime_key, is_vision)
+    if pool_hint:
+        base_key = (*base_key, pool_hint)
+    return (*base_key, task) if provider == "auto" and task else base_key
 
 
 def _store_cached_client(cache_key: tuple, client: Any, default_model: Optional[str], *, bound_loop: Any = None) -> None:
@@ -3692,6 +3777,7 @@ def _refresh_nous_auxiliary_client(
     api_mode: Optional[str] = None,
     main_runtime: Optional[Dict[str, Any]] = None,
     is_vision: bool = False,
+    task: Optional[str] = None,
 ) -> Tuple[Optional[Any], Optional[str]]:
     """Refresh Nous runtime creds, rebuild the client, and replace the cache entry."""
     runtime = _resolve_nous_runtime_api(force_refresh=True)
@@ -3721,6 +3807,7 @@ def _refresh_nous_auxiliary_client(
         api_mode=api_mode,
         main_runtime=main_runtime,
         is_vision=is_vision,
+        task=task,
     )
     _store_cached_client(cache_key, client, final_model, bound_loop=current_loop)
     return client, final_model
@@ -3858,6 +3945,7 @@ def _get_cached_client(
     api_mode: str = None,
     main_runtime: Optional[Dict[str, Any]] = None,
     is_vision: bool = False,
+    task: Optional[str] = None,
 ) -> Tuple[Optional[Any], Optional[str]]:
     """Get or create a cached client for the given provider.
 
@@ -3895,6 +3983,7 @@ def _get_cached_client(
         api_mode=api_mode,
         main_runtime=main_runtime,
         is_vision=is_vision,
+        task=task,
     )
     with _client_cache_lock:
         if cache_key in _client_cache:
@@ -3927,6 +4016,7 @@ def _get_cached_client(
         api_mode=api_mode,
         main_runtime=runtime,
         is_vision=is_vision,
+        task=task,
     )
     if client is not None:
         # For async clients, remember which loop they were created on so we
@@ -4310,6 +4400,7 @@ def call_llm(
             api_key=resolved_api_key,
             api_mode=resolved_api_mode,
             main_runtime=main_runtime,
+            task=task,
         )
         if client is None:
             # When the user explicitly chose a non-OpenRouter provider but no
@@ -4330,7 +4421,7 @@ def call_llm(
             if not resolved_base_url:
                 logger.info("Auxiliary %s: provider %s unavailable, trying auto-detection chain",
                             task or "call", resolved_provider)
-                client, final_model = _get_cached_client("auto", main_runtime=main_runtime)
+                client, final_model = _get_cached_client("auto", main_runtime=main_runtime, task=task)
         if client is None:
             raise RuntimeError(
                 f"No LLM provider configured for task={task} provider={resolved_provider}. "
@@ -4682,6 +4773,7 @@ async def async_call_llm(
             base_url=resolved_base_url,
             api_key=resolved_api_key,
             api_mode=resolved_api_mode,
+            task=task,
         )
         if client is None:
             _explicit = (resolved_provider or "").strip().lower()
@@ -4694,7 +4786,7 @@ async def async_call_llm(
             if not resolved_base_url:
                 logger.info("Auxiliary %s: provider %s unavailable, trying auto-detection chain",
                             task or "call", resolved_provider)
-                client, final_model = _get_cached_client("auto", async_mode=True)
+                client, final_model = _get_cached_client("auto", async_mode=True, task=task)
         if client is None:
             raise RuntimeError(
                 f"No LLM provider configured for task={task} provider={resolved_provider}. "
