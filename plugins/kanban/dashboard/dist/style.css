@@ -366,6 +366,20 @@
   gap: 0.85rem;
 }
 
+.hermes-kanban-drawer-summary {
+  position: sticky;
+  top: -0.9rem;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+  margin: -0.9rem -0.9rem 0;
+  padding: 0.9rem 0.9rem 0.75rem;
+  background: var(--color-card);
+  border-bottom: 1px solid var(--color-border);
+  box-shadow: 0 6px 12px color-mix(in srgb, #000 12%, transparent);
+}
+
 .hermes-kanban-drawer-title {
   display: flex;
   align-items: center;
@@ -396,6 +410,13 @@
 .hermes-kanban-meta-value {
   color: var(--color-foreground);
   word-break: break-word;
+}
+
+.hermes-kanban-assignee-select {
+  flex: 1;
+  min-width: 0;
+  height: 1.75rem;
+  font-size: 0.75rem;
 }
 
 .hermes-kanban-actions {

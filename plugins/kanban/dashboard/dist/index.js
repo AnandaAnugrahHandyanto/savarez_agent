@@ -2514,42 +2514,44 @@
     const links = props.data.links || { parents: [], children: [] };
 
     return h("div", { className: "hermes-kanban-drawer-body" },
-      h("div", { className: "hermes-kanban-drawer-title" },
-        h("span", { className: cn("hermes-kanban-dot", COLUMN_DOT[t.status]) }),
-        props.editing
-          ? h(TitleEditor, {
-              initial: t.title || "",
-              onSave: function (newTitle) {
-                return props.onPatch({ title: newTitle }).then(function () { props.setEditing(false); });
-              },
-              onCancel: function () { props.setEditing(false); },
-            })
-          : h("span", {
-              className: "hermes-kanban-drawer-title-text",
-              title: tx(i18n, "clickToEdit", "Click to edit"),
-              onClick: function () { props.setEditing(true); },
-            }, t.title || tx(i18n, "untitled", "(untitled)")),
-      ),
-      h("div", { className: "hermes-kanban-drawer-meta" },
-        h(MetaRow, { label: tx(i18n, "status", "Status"), value: t.status }),
-        h(AssigneeEditor, { task: t, onPatch: props.onPatch }),
-        h(PriorityEditor, { task: t, onPatch: props.onPatch }),
-        t.tenant ? h(MetaRow, { label: tx(i18n, "tenant", "Tenant"), value: t.tenant }) : null,
-        h(MetaRow, {
-          label: tx(i18n, "workspace", "Workspace"),
-          value: `${t.workspace_kind}${t.workspace_path ? ": " + t.workspace_path : ""}`,
+      h("div", { className: "hermes-kanban-drawer-summary" },
+        h("div", { className: "hermes-kanban-drawer-title" },
+          h("span", { className: cn("hermes-kanban-dot", COLUMN_DOT[t.status]) }),
+          props.editing
+            ? h(TitleEditor, {
+                initial: t.title || "",
+                onSave: function (newTitle) {
+                  return props.onPatch({ title: newTitle }).then(function () { props.setEditing(false); });
+                },
+                onCancel: function () { props.setEditing(false); },
+              })
+            : h("span", {
+                className: "hermes-kanban-drawer-title-text",
+                title: tx(i18n, "clickToEdit", "Click to edit"),
+                onClick: function () { props.setEditing(true); },
+              }, t.title || tx(i18n, "untitled", "(untitled)")),
+        ),
+        h("div", { className: "hermes-kanban-drawer-meta" },
+          h(MetaRow, { label: tx(i18n, "status", "Status"), value: t.status }),
+          h(AssigneeEditor, { task: t, assignees: props.assignees, onPatch: props.onPatch }),
+          h(PriorityEditor, { task: t, onPatch: props.onPatch }),
+          t.tenant ? h(MetaRow, { label: tx(i18n, "tenant", "Tenant"), value: t.tenant }) : null,
+          h(MetaRow, {
+            label: tx(i18n, "workspace", "Workspace"),
+            value: `${t.workspace_kind}${t.workspace_path ? ": " + t.workspace_path : ""}`,
+          }),
+          (t.skills && t.skills.length > 0) ? h(MetaRow, {
+            label: tx(i18n, "skills", "Skills"),
+            value: t.skills.join(", "),
+          }) : null,
+          t.created_by ? h(MetaRow, { label: tx(i18n, "createdBy", "Created by"), value: t.created_by }) : null,
+        ),
+        h(StatusActions, {
+          task: t,
+          onPatch: props.onPatch,
+          onSpecify: props.onSpecify,
         }),
-        (t.skills && t.skills.length > 0) ? h(MetaRow, {
-          label: tx(i18n, "skills", "Skills"),
-          value: t.skills.join(", "),
-        }) : null,
-        t.created_by ? h(MetaRow, { label: tx(i18n, "createdBy", "Created by"), value: t.created_by }) : null,
       ),
-      h(StatusActions, {
-        task: t,
-        onPatch: props.onPatch,
-        onSpecify: props.onSpecify,
-      }),
       h(DiagnosticsSection, {
         task: t,
         boardSlug: props.boardSlug,
@@ -2818,25 +2820,30 @@
         }, props.task.assignee || tx(t, "unassigned", "unassigned")),
       );
     }
-    const save = function () {
-      props.onPatch({ assignee: v.trim() || "" }).then(function () { setEditing(false); });
+    const assignees = props.assignees || [];
+    const assigneeChoices = props.task.assignee && assignees.indexOf(props.task.assignee) === -1
+      ? [props.task.assignee].concat(assignees)
+      : assignees;
+    const save = function (nextValue) {
+      const profile = typeof nextValue === "string" ? nextValue : v;
+      props.onPatch({ assignee: profile.trim() || "" }).then(function () { setEditing(false); });
     };
     return h("div", { className: "hermes-kanban-meta-row" },
       h("span", { className: "hermes-kanban-meta-label" }, tx(t, "assignee", "Assignee")),
-      h(Input, {
+      h("select", {
         value: v, autoFocus: true,
-        onChange: function (e) { setV(e.target.value); },
+        onChange: function (e) { setV(e.target.value); save(e.target.value); },
         onKeyDown: function (e) {
-          if (e.key === "Enter") { e.preventDefault(); save(); }
           if (e.key === "Escape") setEditing(false);
         },
-        placeholder: tx(t, "emptyAssignee", "(empty = unassign)"),
-        className: "h-7 text-xs flex-1",
-        style: { textTransform: "none" },
-        autoCapitalize: "none",
-        autoCorrect: "off",
-        spellCheck: false,
-      }),
+        className: "hermes-kanban-recovery-select hermes-kanban-assignee-select",
+        title: tx(t, "pickAssignee", "Pick an assignee profile"),
+      },
+        h("option", { value: "" }, tx(t, "unassigned", "unassigned")),
+        assigneeChoices.map(function (a) {
+          return h("option", { key: a, value: a }, a);
+        }),
+      ),
     );
   }
 

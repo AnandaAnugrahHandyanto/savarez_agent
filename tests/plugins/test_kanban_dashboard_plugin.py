@@ -1794,3 +1794,28 @@ def test_dashboard_failed_card_highlight_class_exists():
     assert "hermes-kanban-card--failed" in js
     assert "hermes-kanban-card--failed" in css
     assert "failedIds" in js
+
+
+def test_dashboard_task_drawer_assignee_uses_profile_dropdown():
+    """The task drawer assignee editor should use the board profile list, not free text."""
+    repo_root = Path(__file__).resolve().parents[2]
+    js = (repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js").read_text()
+
+    assert "h(AssigneeEditor, { task: t, assignees: props.assignees" in js
+    assert "const assignees = props.assignees || []" in js
+    assert "const assigneeChoices = props.task.assignee" in js
+    assert 'h("select", {' in js
+    assert "hermes-kanban-assignee-select" in js
+    assert "assigneeChoices.map(function (a)" in js
+
+
+def test_dashboard_task_drawer_summary_is_sticky():
+    """The task title/meta/status actions should remain pinned while the drawer scrolls."""
+    repo_root = Path(__file__).resolve().parents[2]
+    js = (repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js").read_text()
+    css = (repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "style.css").read_text()
+
+    assert "hermes-kanban-drawer-summary" in js
+    assert ".hermes-kanban-drawer-summary" in css
+    assert "position: sticky;" in css
+    assert "top: -0.9rem;" in css
