@@ -30,6 +30,7 @@ from typing import Any, Dict, List, Optional
 from agent.anthropic_adapter import _is_oauth_token
 from agent.auxiliary_client import set_runtime_main
 from agent.codex_responses_adapter import _summarize_user_message_for_log
+from agent.context_retrieval import build_pinecone_recall
 from agent.display import KawaiiSpinner
 from agent.error_classifier import FailoverReason, classify_api_error
 from agent.iteration_budget import IterationBudget
@@ -515,6 +516,25 @@ def run_conversation(
         except Exception:
             pass
 
+    _pinecone_recall_cache = ""
+    try:
+        _query = original_user_message if isinstance(original_user_message, str) else ""
+        _scope = None
+        try:
+            _scope_cwd = os.getenv("TERMINAL_CWD") or os.getcwd()
+            _cwd_name = os.path.basename(_scope_cwd).strip()
+            if _cwd_name:
+                _scope = f"repo:{_cwd_name}"
+        except Exception:
+            _scope = None
+        _pinecone_recall_cache = build_pinecone_recall(
+            _query,
+            scope=_scope,
+            platform=(agent.platform or "").strip() or None,
+        )
+    except Exception:
+        pass
+
     # Optional opt-in runtime: if api_mode == codex_app_server, hand the
     # turn to the codex app-server subprocess (terminal/file ops/patching
     # all run inside Codex). Default Hermes path is bypassed entirely.
@@ -678,16 +698,18 @@ def run_conversation(
             api_msg = msg.copy()
 
             # Inject ephemeral context into the current turn's user message.
-            # Sources: memory manager prefetch + plugin pre_llm_call hooks
-            # with target="user_message" (the default).  Both are
-            # API-call-time only — the original message in `messages` is
-            # never mutated, so nothing leaks into session persistence.
+            # Sources: memory manager prefetch + Pinecone recall + plugin
+            # pre_llm_call hooks with target="user_message" (the default).
+            # All are API-call-time only — the original message in `messages`
+            # is never mutated, so nothing leaks into session persistence.
             if idx == current_turn_user_idx and msg.get("role") == "user":
                 _injections = []
                 if _ext_prefetch_cache:
                     _fenced = build_memory_context_block(_ext_prefetch_cache)
                     if _fenced:
                         _injections.append(_fenced)
+                if _pinecone_recall_cache:
+                    _injections.append(_pinecone_recall_cache)
                 if _plugin_user_context:
                     _injections.append(_plugin_user_context)
                 if _injections:
