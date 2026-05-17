@@ -150,18 +150,39 @@ class TestTelegramSendClarify:
         mock_msg.message_id = 102
         adapter._bot.send_message = AsyncMock(return_value=mock_msg)
 
-        long_choice = "x" * 200  # > 60 char cap
-        result = await adapter.send_clarify(
-            chat_id="12345",
-            question="?",
-            choices=[long_choice],
-            clarify_id="cid4",
-            session_key="sk4",
-        )
+        long_choices = [
+            "alpha " + ("x" * 100),
+            "beta "  + ("y" * 100),
+            "gamma " + ("z" * 100),
+            "delta " + ("w" * 100),
+        ]
+        with patch("gateway.platforms.telegram.InlineKeyboardButton") as btn:
+            result = await adapter.send_clarify(
+                chat_id="12345",
+                question="Pick one",
+                choices=long_choices,
+                clarify_id="cid4",
+                session_key="sk4",
+            )
         assert result.success is True
-        # The truncation logic replaces with "..." past 57 chars; we don't
-        # inspect the mock's button labels directly (auto-MagicMock), but
-        # we can verify the call didn't raise on absurdly long input.
+
+        # Full choice text should appear in the message body, one per line.
+        kwargs = adapter._bot.send_message.call_args[1]
+        text = kwargs["text"]
+        for idx, choice in enumerate(long_choices, start=1):
+            assert f"{idx}. {choice}" in text
+
+        # Non-Other button labels must be exactly the index string.
+        labels_by_callback = {}
+        for call in btn.call_args_list:
+            args, kw = call
+            label = args[0] if args else kw.get("text")
+            cb = kw.get("callback_data")
+            labels_by_callback[cb] = label
+        for idx in range(len(long_choices)):
+            assert labels_by_callback[f"cl:cid4:{idx}"] == str(idx + 1)
+        # The "Other" button is preserved unchanged.
+        assert labels_by_callback["cl:cid4:other"] == "✏️ Other (type answer)"
 
     @pytest.mark.asyncio
     async def test_html_escapes_question(self):

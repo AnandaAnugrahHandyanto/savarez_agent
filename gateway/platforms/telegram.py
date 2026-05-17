@@ -2270,16 +2270,19 @@ class TelegramAdapter(BasePlatformAdapter):
             }
 
             if choices:
-                # Telegram caps callback_data at 64 bytes; keep "cl:<id>:<idx>"
-                # short.  Button label is also capped (~64 chars in practice).
+                # Render full choices in body since Telegram mobile clips long
+                # inline button labels; buttons carry only the index number.
+                numbered = "\n".join(
+                    f"{idx + 1}. {_html.escape(str(choice))}"
+                    for idx, choice in enumerate(choices)
+                )
+                text = f"❓ {_html.escape(question)}\n\n{numbered}"
+                kwargs["text"] = text
                 rows = []
-                for idx, choice in enumerate(choices):
-                    label = str(choice)
-                    if len(label) > 60:
-                        label = label[:57] + "..."
+                for idx, _choice in enumerate(choices):
                     rows.append([
                         InlineKeyboardButton(
-                            f"{idx + 1}. {label}",
+                            f"{idx + 1}",
                             callback_data=f"cl:{clarify_id}:{idx}",
                         )
                     ])
