@@ -6677,6 +6677,14 @@ class AIAgent:
             keepalive_http = self._build_keepalive_http_client(client_kwargs.get("base_url", ""))
             if keepalive_http is not None:
                 client_kwargs["http_client"] = keepalive_http
+        # SSL CA guard: fail-fast before constructing the OpenAI client.
+        # When certifi/cacert.pem is missing (common after a large git pull
+        # without reinstalling the venv), the ssl.create_default_context()
+        # call inside the OpenAI SDK raises a cryptic RuntimeError.  We
+        # surface a user-actionable error instead.
+        from agent.ssl_guard import check_ssl_ca_bundle
+        check_ssl_ca_bundle()
+
         # Uses the module-level `OpenAI` name, resolved lazily on first
         # access via __getattr__ below. Tests patch via `run_agent.OpenAI`.
         client = OpenAI(**client_kwargs)

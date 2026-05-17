@@ -7974,6 +7974,19 @@ class GatewayRunner:
                     await _err_adapter.stop_typing(source.chat_id)
             except Exception:
                 pass
+            # SSL CA guard — if the pre-flight check failed, surface the
+            # user-actionable error instead of a generic traceback.
+            _ssl_err_cls = None
+            try:
+                from agent.errors import SSLConfigurationError as _ssl_err_cls
+            except Exception:
+                pass
+            if _ssl_err_cls is not None and isinstance(e, _ssl_err_cls):
+                logger.warning("SSL CA configuration issue: %s", e)
+                return (
+                    "⚠️ SSL certificate bundle issue detected. "
+                    "Run `pip install -e .` and restart."
+                )
             logger.exception("Agent error in session %s", session_key)
             error_type = type(e).__name__
             error_detail = str(e)[:300] if str(e) else "no details available"
