@@ -982,6 +982,21 @@ class MattermostAdapter(BasePlatformAdapter):
             channel_prompt=_channel_prompt,
         )
 
+        # Send instant "thinking..." acknowledgment before processing.
+        # This gives the user immediate feedback that their message was received
+        # while the agent processes the request in the background.
+        if msg_type != MessageType.COMMAND:
+            _think_root_id = (
+                thread_id
+                if self._reply_mode == "thread"
+                else (root_id or None)
+            )
+            await self._api_post("posts", {
+                "channel_id": channel_id,
+                "message": "thinking...",
+                **({"root_id": _think_root_id} if _think_root_id else {}),
+            })
+
         await self.handle_message(msg_event)
 
 
