@@ -2526,56 +2526,16 @@ def _build_top_level_description() -> str:
         )
 
     return (
-        "Spawn one or more subagents to work on tasks in isolated contexts. "
-        "Each subagent gets its own conversation, terminal session, and toolset. "
-        "Only the final summary is returned -- intermediate tool results "
-        "never enter your context window.\n\n"
-        "TWO MODES (one of 'goal' or 'tasks' is required):\n"
-        "1. Single task: provide 'goal' (+ optional context, toolsets)\n"
-        f"2. Batch (parallel): provide 'tasks' array with up to {max_children} "
-        f"items concurrently for this user (configured via "
-        f"delegation.max_concurrent_children in config.yaml). "
-        f"All run in parallel and results are returned together. {nesting_clause}\n\n"
-        "WHEN TO USE delegate_task:\n"
-        "- Reasoning-heavy subtasks (debugging, code review, research synthesis)\n"
-        "- Tasks that would flood your context with intermediate data\n"
-        "- Parallel independent workstreams (research A and B simultaneously)\n\n"
-        "WHEN NOT TO USE (use these instead):\n"
-        "- Mechanical multi-step work with no reasoning needed -> use execute_code\n"
-        "- Single tool call -> just call the tool directly\n"
-        "- Tasks needing user interaction -> subagents cannot use clarify\n"
-        "- Durable long-running work that must outlive the current turn -> "
-        "use cronjob (action='create') or terminal(background=True, "
-        "notify_on_complete=True) instead. delegate_task runs SYNCHRONOUSLY "
-        "inside the parent turn: if the parent is interrupted (user sends a "
-        "new message, /stop, /new) the child is cancelled with status="
-        "'interrupted' and its work is discarded. Children cannot continue "
-        "in the background.\n\n"
+        "Spawn subagents in isolated contexts (own conversation, terminal, toolset). "
+        "Only final summary returns to your context -- intermediate results are hidden.\n\n"
+        f"Modes: single task (provide 'goal'), or batch (provide 'tasks' array, up to {max_children} parallel tasks).\n\n"
+        f"{nesting_clause}\n\n"
+        "USE FOR: reasoning-heavy tasks (debug, review, research), parallel workstreams, tasks that flood context.\n"
+        "NOT FOR: mechanical multi-step work (use execute_code), single tool calls, tasks needing user interaction, long-running work (use cronjob).\n\n"
         "IMPORTANT:\n"
-        "- Subagents have NO memory of your conversation. Pass all relevant "
-        "info (file paths, error messages, constraints) via the 'context' field.\n"
-        "- If the user is writing in a non-English language, or asked for "
-        "output in a specific language / tone / style, say so in 'context' "
-        "(e.g. \"respond in Chinese\", \"return output in Japanese\"). "
-        "Otherwise subagents default to English and their summaries will "
-        "contaminate your final reply with the wrong language.\n"
-        "- Subagent summaries are SELF-REPORTS, not verified facts. A subagent "
-        "that claims \"uploaded successfully\" or \"file written\" may be wrong. "
-        "For operations with external side-effects (HTTP POST/PUT, remote "
-        "writes, file creation at shared paths, publishing), require the "
-        "subagent to return a verifiable handle (URL, ID, absolute path, HTTP "
-        "status) and verify it yourself — fetch the URL, stat the file, read "
-        "back the content — before telling the user the operation succeeded.\n"
-        "- Leaf subagents (role='leaf', the default) CANNOT call: "
-        "delegate_task, clarify, memory, send_message, execute_code.\n"
-        "- Orchestrator subagents (role='orchestrator') retain "
-        "delegate_task so they can spawn their own workers, but still "
-        "cannot use clarify, memory, send_message, or execute_code. "
-        f"Orchestrators are bounded by max_spawn_depth={max_depth} for this "
-        f"user and can be disabled globally via "
-        "delegation.orchestrator_enabled=false.\n"
-        "- Each subagent gets its own terminal session (separate working directory and state).\n"
-        "- Results are always returned as an array, one entry per task."
+        "- Subagents have NO memory. Pass all relevant info via 'context'.\n"
+        "- Leaf subagents can't call: delegate_task, clarify, memory, send_message, execute_code.\n"
+        "- Results returned as array, one entry per task."
     )
 
 
@@ -2586,10 +2546,9 @@ def _build_tasks_param_description() -> str:
     except Exception:
         max_children = _DEFAULT_MAX_CONCURRENT_CHILDREN
     return (
-        f"Batch mode: tasks to run in parallel (up to {max_children} for this "
-        f"user, set via delegation.max_concurrent_children). Each gets "
-        "its own subagent with isolated context and terminal session. "
-        "When provided, top-level goal/context/toolsets are ignored."
+        f"Batch mode: parallel tasks (up to {max_children} per user, set via delegation.max_concurrent_children). "
+        "Each gets its own subagent with isolated context and terminal. "
+        "When set, top-level goal/context/toolsets are ignored."
     )
 
 
@@ -2670,33 +2629,18 @@ DELEGATE_TASK_SCHEMA = {
     "parameters": {
         "type": "object",
         "properties": {
-            "goal": {
-                "type": "string",
-                "description": (
-                    "What the subagent should accomplish. Be specific and "
-                    "self-contained -- the subagent knows nothing about your "
-                    "conversation history."
-                ),
+           "goal": {
+                 "type": "string",
+                 "description": ("What to accomplish. Be specific and self-contained -- subagent has no conversation history."),
             },
-            "context": {
-                "type": "string",
-                "description": (
-                    "Background information the subagent needs: file paths, "
-                    "error messages, project structure, constraints. The more "
-                    "specific you are, the better the subagent performs."
-                ),
+     "context": {
+                 "type": "string",
+                 "description": "Background info needed: file paths, errors, constraints. Be specific for better results.",
             },
-            "toolsets": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": (
-                    "Toolsets to enable for this subagent. "
-                    "Default: inherits your enabled toolsets. "
-                    f"Available toolsets: {_TOOLSET_LIST_STR}. "
-                    "Common patterns: ['terminal', 'file'] for code work, "
-                    "['web'] for research, ['browser'] for web interaction, "
-                    "['terminal', 'file', 'web'] for full-stack tasks."
-                ),
+      "toolsets": {
+                 "type": "array",
+                 "items": {"type": "string"},
+                 "description": ("Toolsets for subagent. Default: inherits your enabled toolsets. Available: " + _TOOLSET_LIST_STR + ". Common: ['terminal','file'] for code, ['web'] for research, ['browser'] for web."),
             },
             "tasks": {
                 "type": "array",
@@ -2711,15 +2655,11 @@ DELEGATE_TASK_SCHEMA = {
                         "toolsets": {
                             "type": "array",
                             "items": {"type": "string"},
-                            "description": f"Toolsets for this specific task. Available: {_TOOLSET_LIST_STR}. Use 'web' for network access, 'terminal' for shell, 'browser' for web interaction.",
+                            "description": f"Toolsets for this task. Available: {_TOOLSET_LIST_STR}. Use 'web' for network, 'terminal' for shell, 'browser' for web.",
                         },
                         "acp_command": {
                             "type": "string",
-                            "description": (
-                                "Per-task ACP command override (e.g. 'copilot'). "
-                                "Overrides the top-level acp_command for this task only. "
-                                "Do NOT set unless the user explicitly told you an ACP CLI is installed."
-                            ),
+             "description": ("Per-task ACP command override (e.g. 'copilot'). Overrides top-level acp_command for this task. Do NOT set unless user explicitly mentioned ACP CLI installed."),
                         },
                         "acp_args": {
                             "type": "array",
