@@ -1007,6 +1007,9 @@ _PROVIDER_ALIASES = {
     "arceeai": "arcee",
     "gmi-cloud": "gmi",
     "gmicloud": "gmi",
+    "tt": "tenstorrent",
+    "tt-ai": "tenstorrent",
+    "tenstorrent-ai": "tenstorrent",
     "minimax-china": "minimax-cn",
     "minimax_cn": "minimax-cn",
     "minimax-portal": "minimax-oauth",
@@ -1064,16 +1067,6 @@ _PROVIDER_ALIASES = {
     "ollama": "custom",  # bare "ollama" = local; use "ollama-cloud" for cloud
     "ollama_cloud": "ollama-cloud",
 }
-
-# Extend with aliases declared in provider plugins so ``provider:model`` syntax
-# works for plugin-only providers without editing this file.
-try:
-    from providers import list_providers as _list_providers_for_aliases
-    for _pp in _list_providers_for_aliases():
-        for _alias in _pp.aliases:
-            _PROVIDER_ALIASES.setdefault(_alias, _pp.name)
-except Exception:
-    pass
 
 
 def get_default_model_for_provider(provider: str) -> str:
@@ -2306,7 +2299,7 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
             if not base_url:
                 base_url = _p.base_url
             if api_key:
-                live = _p.fetch_models(api_key=api_key, base_url=base_url)
+                live = _p.fetch_models(api_key=api_key)
                 if live:
                     return live
             # Use profile's fallback_models if defined

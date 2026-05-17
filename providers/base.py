@@ -133,7 +133,6 @@ class ProviderProfile:
         self,
         *,
         api_key: str | None = None,
-        base_url: str | None = None,
         timeout: float = 8.0,
     ) -> list[str] | None:
         """Fetch the live model list from the provider's models endpoint.
@@ -157,10 +156,9 @@ class ProviderProfile:
         """
         url = (self.models_url or "").strip()
         if not url:
-            resolved_base_url = (base_url or self.base_url or "").strip()
-            if not resolved_base_url:
+            if not self.base_url:
                 return None
-            url = resolved_base_url.rstrip("/") + "/models"
+            url = self.base_url.rstrip("/") + "/models"
 
         import json
         import urllib.request

@@ -52,23 +52,3 @@ def test_tenstorrent_static_model_fallbacks(monkeypatch):
         "Qwen/Qwen3-32B",
         "Qwen/Qwen3-VL-32B-Instruct",
     ]
-
-
-def test_tenstorrent_live_models_use_custom_base_url(monkeypatch):
-    monkeypatch.setenv("TENSTORRENT_API_KEY", "tt-key")
-    monkeypatch.setenv("TENSTORRENT_BASE_URL", "https://custom.tenstorrent.example/v1")
-    profile = get_provider_profile("tenstorrent")
-    seen = {}
-
-    def fake_fetch_models(*, api_key=None, base_url=None, timeout=8.0):
-        seen["api_key"] = api_key
-        seen["base_url"] = base_url
-        return ["custom/model"]
-
-    monkeypatch.setattr(profile, "fetch_models", fake_fetch_models)
-
-    assert provider_model_ids("tenstorrent") == ["custom/model"]
-    assert seen == {
-        "api_key": "tt-key",
-        "base_url": "https://custom.tenstorrent.example/v1",
-    }
