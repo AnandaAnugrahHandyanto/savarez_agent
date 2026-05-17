@@ -24,6 +24,17 @@ import { usePageHeader } from "@/contexts/usePageHeader";
 /** Select value for built-in memory (`config` uses empty string). Never use `""` — UI Select maps empty value to an empty label. */
 const MEMORY_PROVIDER_BUILTIN = "__hermes_memory_builtin__";
 
+/**
+ * Strip a trailing React Router glob/param segment from a tab path so it can be
+ * used as a navigation target. A manifest's `tab.path` like `/dashboard/*` or
+ * `/foo/:id` is a route PATTERN, not a navigable URL — clicking through to it
+ * literally triggers the plugin's index parser with name="*" and produces the
+ * "spec not found: *.md" 404. Plugin landing pages (SpecPicker, Registry, …)
+ * live at the unglobbed path, so trim the last `/*` or `/:param` segment.
+ */
+const tabLinkTarget = (p: string): string =>
+  p.replace(/\/[:*][^/]*$/, "").replace(/\/$/, "") || "/";
+
 export default function PluginsPage() {
   const [hub, setHub] = useState<PluginsHubResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -346,7 +357,7 @@ export default function PluginsPage() {
                   {!m.tab?.hidden ? (
 
 
-                    <Link className="ml-3 inline-flex items-center gap-1 underline" to={m.tab.path}>
+                    <Link className="ml-3 inline-flex items-center gap-1 underline" to={tabLinkTarget(m.tab.path)}>
 
 
                       <ExternalLink className="h-3 w-3 opacity-65" />
@@ -391,7 +402,7 @@ function PluginRowCard(props: PluginRowCardProps) {
 
   const dm = row.dashboard_manifest;
 
-  const tabPath = dm?.tab && !dm.tab.hidden ? dm.tab.override ?? dm.tab.path : null;
+  const tabPath = dm?.tab && !dm.tab.hidden ? tabLinkTarget(dm.tab.override ?? dm.tab.path) : null;
 
   const busy = rowBusy === row.name;
   const [confirmRemove, setConfirmRemove] = useState(false);
