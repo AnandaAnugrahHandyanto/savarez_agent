@@ -147,6 +147,7 @@ from agent.model_metadata import (
     query_ollama_num_ctx,
 )
 from agent.context_compressor import ContextCompressor
+from agent.context_retrieval import build_pinecone_recall
 from agent.subdirectory_hints import SubdirectoryHintTracker
 from agent.prompt_caching import apply_anthropic_cache_control
 from agent.prompt_builder import build_skills_system_prompt, build_context_files_prompt, build_environment_hints, load_soul_md, TOOL_USE_ENFORCEMENT_GUIDANCE, TOOL_USE_ENFORCEMENT_MODELS, GOOGLE_MODEL_OPERATIONAL_GUIDANCE, OPENAI_MODEL_EXECUTION_GUIDANCE
@@ -11149,6 +11150,25 @@ class AIAgent:
             except Exception:
                 pass
 
+        _pinecone_recall_cache = ""
+        try:
+            _query = original_user_message if isinstance(original_user_message, str) else ""
+            _scope = None
+            try:
+                _scope_cwd = os.getenv("TERMINAL_CWD") or os.getcwd()
+                _cwd_name = os.path.basename(_scope_cwd).strip()
+                if _cwd_name:
+                    _scope = f"repo:{_cwd_name}"
+            except Exception:
+                _scope = None
+            _pinecone_recall_cache = build_pinecone_recall(
+                _query,
+                scope=_scope,
+                platform=(self.platform or "").strip() or None,
+            )
+        except Exception:
+            pass
+
         while (api_call_count < self.max_iterations and self.iteration_budget.remaining > 0) or self._budget_grace_call:
             # Reset per-turn checkpoint dedup so each iteration can take one snapshot
             self._checkpoint_mgr.new_turn()
@@ -11308,6 +11328,8 @@ class AIAgent:
                         _fenced = build_memory_context_block(_ext_prefetch_cache)
                         if _fenced:
                             _injections.append(_fenced)
+                    if _pinecone_recall_cache:
+                        _injections.append(_pinecone_recall_cache)
                     if _plugin_user_context:
                         _injections.append(_plugin_user_context)
                     if _injections:

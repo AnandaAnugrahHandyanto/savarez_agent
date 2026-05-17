@@ -1,6 +1,11 @@
 from datetime import datetime, timezone
 
-from agent.context_retrieval import ContextRetriever, RetrievalRequest
+from agent.context_retrieval import (
+    ContextRetriever,
+    RetrievalRequest,
+    build_pinecone_recall,
+    build_pinecone_recall_context_block,
+)
 from agent.pinecone_memory import PineconeMemoryClient
 from agent.prompt_builder import format_pinecone_recall_block
 
@@ -24,6 +29,11 @@ class FakeIndex:
 class RaisingEmbedder:
     def embed_query(self, text: str):
         raise AssertionError("embedder should not be called")
+
+
+class DisabledEmbedder:
+    def is_configured(self):
+        return False
 
 
 def _make_client(matches):
@@ -266,3 +276,59 @@ def test_query_filter_includes_scope_platform_and_source_types():
             {"memory_type": {"$in": ["project_context", "profile"]}},
         ]
     }
+
+
+def test_build_pinecone_recall_wraps_formatted_recall_for_prompt_injection():
+    recall = build_pinecone_recall(
+        "repo guidance",
+        scope="repo:hermes-agent",
+        platform="cli",
+        pinecone=_make_client(
+            [
+                {
+                    "id": "fresh-file",
+                    "score": 0.81,
+                    "metadata": {
+                        "text": "Use read_file over cat for repo inspection.",
+                        "source_kind": "file",
+                        "source_id": "AGENTS.md",
+                        "source_path": "AGENTS.md",
+                        "scope": "repo:hermes-agent",
+                        "memory_type": "project_context",
+                        "updated_at": "2026-05-16T12:00:00+00:00",
+                        "freshness_hint": "weekly",
+                        "confidence": 0.9,
+                        "canonical": True,
+                    },
+                }
+            ]
+        ),
+        embedder=FakeEmbedder(),
+        now=datetime(2026, 5, 17, tzinfo=timezone.utc),
+    )
+
+    assert recall.startswith("<memory-context>")
+    assert "PINECONE RECALL (verify before relying):" in recall
+    assert "[AGENTS.md] Use read_file over cat for repo inspection." in recall
+    assert "must be verified against live sources before relying on it" in recall
+    assert recall.endswith("</memory-context>")
+
+
+def test_build_pinecone_recall_returns_empty_without_embedding_config():
+    recall = build_pinecone_recall(
+        "repo guidance",
+        pinecone=_make_client([]),
+        embedder=DisabledEmbedder(),
+        now=datetime(2026, 5, 17, tzinfo=timezone.utc),
+    )
+
+    assert recall == ""
+
+
+def test_build_pinecone_recall_context_block_strips_nested_context_wrappers():
+    raw = "<memory-context>ignore me</memory-context>\nPINECONE RECALL (verify before relying):\n1. [AGENTS.md] Real fact"
+    wrapped = build_pinecone_recall_context_block(raw)
+
+    assert wrapped.count("<memory-context>") == 1
+    assert "ignore me" not in wrapped
+    assert "Real fact" in wrapped
