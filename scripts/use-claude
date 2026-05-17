@@ -1,0 +1,176 @@
+#!/usr/bin/env bash
+# Switch Hermes from any provider (e.g. OpenRouter) to direct Anthropic with
+# a chosen Claude model.
+#
+# Usage:
+#   scripts/use-claude              # interactive picker (default: Haiku 4.5)
+#   scripts/use-claude haiku        # Haiku 4.5  (cheapest, fastest)
+#   scripts/use-claude sonnet       # Sonnet 4.6 (balanced)
+#   scripts/use-claude opus         # Opus 4.7   (premium)
+#   scripts/use-claude --list       # show what each alias resolves to
+#
+# Edits ~/.hermes/config.yaml in place: sets model.default to the chosen
+# Claude model, provider to "anthropic", and removes the OpenRouter base_url
+# and any max_tokens cap left over from credit-limit workarounds.
+#
+# Auth: requires an Anthropic credential in the Hermes credential pool.
+# If missing, the script prints how to set one up and exits non-zero.
+#
+# Targets bash 3.2 so it runs on macOS out of the box (no associative arrays).
+
+set -eo pipefail
+
+CONFIG="${HERMES_HOME:-$HOME/.hermes}/config.yaml"
+
+model_id_for() {
+  case "$1" in
+    haiku)  echo "claude-haiku-4-5-20251001" ;;
+    sonnet) echo "claude-sonnet-4-6" ;;
+    opus)   echo "claude-opus-4-7" ;;
+    *)      return 1 ;;
+  esac
+}
+
+label_for() {
+  case "$1" in
+    haiku)  echo "Haiku 4.5  — fastest, cheapest" ;;
+    sonnet) echo "Sonnet 4.6 — balanced cost/quality" ;;
+    opus)   echo "Opus 4.7   — strongest model" ;;
+    *)      return 1 ;;
+  esac
+}
+
+usage() {
+  sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'
+}
+
+list_models() {
+  printf "Available tiers:\n"
+  for tier in haiku sonnet opus; do
+    printf "  %-7s -> %-30s  (%s)\n" "$tier" "$(model_id_for "$tier")" "$(label_for "$tier")"
+  done
+}
+
+resolve_tier() {
+  case "$1" in
+    haiku|h)  echo haiku ;;
+    sonnet|s) echo sonnet ;;
+    opus|o)   echo opus ;;
+    *) echo "Unknown tier '$1'. Try: haiku | sonnet | opus" >&2; exit 2 ;;
+  esac
+}
+
+pick_interactive() {
+  echo "Pick a Claude model (Enter for default = haiku):" >&2
+  echo "  1) haiku   — $(label_for haiku)"  >&2
+  echo "  2) sonnet  — $(label_for sonnet)" >&2
+  echo "  3) opus    — $(label_for opus)"   >&2
+  read -r -p "> " choice
+  case "${choice:-1}" in
+    ""|1|h|haiku)  echo haiku ;;
+    2|s|sonnet)    echo sonnet ;;
+    3|o|opus)      echo opus ;;
+    *) echo "Unknown choice: $choice" >&2; exit 2 ;;
+  esac
+}
+
+check_anthropic_credential() {
+  if ! command -v hermes >/dev/null 2>&1; then
+    echo "ERROR: 'hermes' not found in PATH." >&2
+    exit 3
+  fi
+  if ! hermes auth list 2>&1 | grep -q "^anthropic "; then
+    cat <<'EOF' >&2
+
+ERROR: No Anthropic credential is registered with hermes.
+
+To fix:
+    hermes auth add anthropic --type oauth      # uses your Claude.ai login
+    # ... or, for an API key from console.anthropic.com:
+    hermes auth add anthropic --type api-key
+
+After that's done, re-run this script.
+EOF
+    exit 4
+  fi
+}
+
+# Use the same Python hermes itself runs under, so PyYAML is available without
+# forcing the user to install it in their system Python.
+find_python() {
+  if [ -x "$HOME/.hermes/hermes-agent/venv/bin/python" ]; then
+    echo "$HOME/.hermes/hermes-agent/venv/bin/python"
+  else
+    command -v python3 || command -v python
+  fi
+}
+
+apply_config() {
+  local model_id="$1"
+  local py
+  py="$(find_python)"
+  if [ -z "$py" ]; then
+    echo "ERROR: no python interpreter found." >&2
+    exit 5
+  fi
+  CONFIG_PATH="$CONFIG" MODEL_ID="$model_id" "$py" - <<'PY'
+import os, sys
+import yaml
+path = os.environ["CONFIG_PATH"]
+model_id = os.environ["MODEL_ID"]
+if not os.path.isfile(path):
+    sys.exit(f"config not found: {path}")
+with open(path) as f:
+    cfg = yaml.safe_load(f) or {}
+model = cfg.get("model") or {}
+if not isinstance(model, dict):
+    model = {"default": str(model)}
+model["default"] = model_id
+model["provider"] = "anthropic"
+model.pop("base_url", None)
+cfg["model"] = model
+cfg.pop("max_tokens", None)
+with open(path, "w") as f:
+    yaml.safe_dump(cfg, f, sort_keys=False, default_flow_style=False)
+print(f"  default: {model_id}")
+print(f"  provider: anthropic")
+PY
+}
+
+restart_hint() {
+  if lsof -nP -iTCP:9119 -sTCP:LISTEN >/dev/null 2>&1; then
+    cat <<'EOF'
+
+The dashboard is running at http://127.0.0.1:9119/.
+New chat sessions will use the new model automatically (each session
+builds its own AIAgent on first turn).  Existing in-process sessions
+still use the previous model until they idle out.  Click "New" in the
+Chat tab to start fresh, or restart the dashboard for a clean slate:
+
+    pkill -f 'hermes dashboard' && hermes dashboard --no-open &
+EOF
+  fi
+}
+
+# ---------- main ----------
+
+case "${1:-}" in
+  -h|--help) usage; exit 0 ;;
+  --list)    list_models; exit 0 ;;
+esac
+
+check_anthropic_credential
+
+if [ "$#" -ge 1 ]; then
+  tier="$(resolve_tier "$1")"
+else
+  tier="$(pick_interactive </dev/tty)"
+fi
+
+model_id="$(model_id_for "$tier")"
+echo "Switching Hermes to direct Anthropic — $(label_for "$tier")"
+echo "  config: $CONFIG"
+apply_config "$model_id"
+echo
+echo "Done.  Verify with:   hermes config show model"
+restart_hint
