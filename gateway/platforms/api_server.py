@@ -1,3 +1,4 @@
+import hashlib
 """
 OpenAI-compatible API server platform adapter.
 
