@@ -360,3 +360,63 @@ def test_nested_allof_preserved():
     nested = out[0]["function"]["parameters"]["properties"]["config"]
     assert "allOf" in nested
     assert nested["allOf"] == [{"required": ["mode"]}]
+
+
+def test_strip_responses_format_tools():
+    """strip_pattern_and_format should handle Responses-format tools (no function wrapper)."""
+    from tools.schema_sanitizer import strip_pattern_and_format
+
+    # Responses-format: {"name": "...", "parameters": {...}, "type": "function"}
+    tools = [
+        {
+            "name": "mcp_firecrawl_search",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string"},
+                    "includeDomains": {
+                        "type": "array",
+                        "items": {
+                            "type": "string",
+                            "pattern": "^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z0-9][a-z0-9-]{0,61}[a-z0-9]$"
+                        }
+                    }
+                }
+            },
+            "type": "function"
+        }
+    ]
+
+    result, stripped = strip_pattern_and_format(tools)
+    assert stripped == 1, f"Expected 1 pattern stripped, got {stripped}"
+    
+    # Verify pattern keyword was removed from includeDomains
+    domains = result[0]["parameters"]["properties"]["includeDomains"]["items"]
+    assert "pattern" not in domains, f"pattern should be stripped: {domains}"
+    assert domains["type"] == "string", "type should be preserved"
+
+
+def test_strip_responses_idempotent():
+    """Second call on already-stripped Responses-format tools should return 0."""
+    from tools.schema_sanitizer import strip_pattern_and_format
+
+    tools = [
+        {
+            "name": "search_files",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "pattern": {"type": "string"}  # This is a property named pattern, NOT schema keyword
+                }
+            }
+        }
+    ]
+
+    # Pass 1 - property named 'pattern' should NOT be stripped
+    result, first = strip_pattern_and_format(tools)
+    assert first == 0, f"Expected 0 stripped (property pattern preserved), got {first}"
+    assert "pattern" in result[0]["parameters"]["properties"], "property named pattern should survive"
+    
+    # Pass 2 - idempotent
+    _, second = strip_pattern_and_format(tools)
+    assert second == 0, f"Expected 0 on second pass, got {second}"

@@ -9925,6 +9925,16 @@ class AIAgent:
             )
             is_xai_responses = self.provider in {"xai", "xai-oauth"} or self._base_url_hostname == "api.x.ai"
             _msgs_for_codex = self._prepare_messages_for_non_vision_model(api_messages)
+
+            # xAI's /responses endpoint rejects pattern and format keywords
+            # in tool schemas. Strip them before building kwargs.
+            if is_xai_responses:
+                try:
+                    from tools.schema_sanitizer import strip_pattern_and_format
+                    tools_for_api, _ = strip_pattern_and_format(tools_for_api)
+                except Exception:
+                    pass
+
             return _ct.build_kwargs(
                 model=self.model,
                 messages=_msgs_for_codex,
