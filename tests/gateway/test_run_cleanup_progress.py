@@ -174,12 +174,21 @@ def _install_fakes(monkeypatch, agent_cls, *, cleanup_on: bool):
     # gateway actually reads (``_load_gateway_config`` returns user config).
     cfg = {
         "display": {
+            "auto_delete_tool_progress": bool(cleanup_on),
             "platforms": {
                 "telegram": {"cleanup_progress": True},
-            }
+            },
         }
-    } if cleanup_on else {}
+    } if cleanup_on else {"display": {"auto_delete_tool_progress": False}}
     monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: cfg)
+
+    # The progress consumer also reads display.auto_delete_tool_progress from
+    # hermes_cli.config.load_config(), a separate config source from
+    # _load_gateway_config(). Keep it aligned with cleanup_on so tests do not
+    # accidentally inherit the global default/state from another test.
+    import hermes_cli.config as _hermes_cli_config
+    _auto_delete_cfg = {"display": {"auto_delete_tool_progress": bool(cleanup_on)}}
+    monkeypatch.setattr(_hermes_cli_config, "load_config", lambda: _auto_delete_cfg)
     return gateway_run
 
 

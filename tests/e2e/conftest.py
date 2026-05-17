@@ -58,7 +58,11 @@ def _ensure_telegram_mock():
 # Ensure discord module is available (mock it if not installed)
 def _ensure_discord_mock():
     """Install mock discord modules so DiscordAdapter can be imported."""
-    if "discord" in sys.modules and hasattr(sys.modules["discord"], "__file__"):
+    if (
+        "discord" in sys.modules
+        and hasattr(sys.modules["discord"], "__file__")
+        and not isinstance(sys.modules["discord"], MagicMock)
+    ):
         return # Real library installed
 
     discord_mod = MagicMock()
@@ -70,6 +74,14 @@ def _ensure_discord_mock():
     discord_mod.MessageType = SimpleNamespace(default=0, reply=19)
     discord_mod.Object = lambda *, id: SimpleNamespace(id=id)
     discord_mod.Interaction = object
+    # Discord exception classes caught by the adapter must be real
+    # BaseException subclasses. MagicMock cannot appear in an except clause
+    # on Python 3.11+.
+    discord_mod.Forbidden = type("Forbidden", (Exception,), {})
+    discord_mod.HTTPException = type("HTTPException", (Exception,), {})
+    discord_mod.NotFound = type("NotFound", (discord_mod.HTTPException,), {})
+    discord_mod.DiscordException = type("DiscordException", (Exception,), {})
+    discord_mod.InvalidArgument = type("InvalidArgument", (Exception,), {})
     discord_mod.app_commands = SimpleNamespace(
         describe=lambda **kwargs: (lambda fn: fn),
         choices=lambda **kwargs: (lambda fn: fn),
@@ -82,10 +94,10 @@ def _ensure_discord_mock():
     commands_mod.Bot = MagicMock
     ext_mod.commands = commands_mod
 
-    sys.modules.setdefault("discord", discord_mod)
-    sys.modules.setdefault("discord.ext", ext_mod)
-    sys.modules.setdefault("discord.ext.commands", commands_mod)
-    sys.modules.setdefault("discord.opus", discord_mod.opus)
+    sys.modules["discord"] = discord_mod
+    sys.modules["discord.ext"] = ext_mod
+    sys.modules["discord.ext.commands"] = commands_mod
+    sys.modules["discord.opus"] = discord_mod.opus
 
 
 def _ensure_slack_mock():
