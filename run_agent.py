@@ -1495,6 +1495,7 @@ class AIAgent:
         self.reasoning_config = reasoning_config  # None = use default (medium for OpenRouter)
         self.service_tier = service_tier
         self.request_overrides = dict(request_overrides or {})
+        self._active_fallback_extra_body: Dict[str, Any] = {}
         self.prefill_messages = prefill_messages or []  # Prefilled conversation turns
         self._force_ascii_payload = False
         
@@ -2546,6 +2547,7 @@ class AIAgent:
             "api_mode": self.api_mode,
             "api_key": getattr(self, "api_key", ""),
             "client_kwargs": dict(self._client_kwargs),
+            "request_overrides": dict(self.request_overrides),
             "use_prompt_caching": self._use_prompt_caching,
             "use_native_cache_layout": self._use_native_cache_layout,
             # Context engine state that _try_activate_fallback() overwrites.
@@ -9014,7 +9016,8 @@ class AIAgent:
             # source of the 429 so the cooldown should not be reset/extended.
             fallback_already_active = bool(getattr(self, "_fallback_activated", False))
             current_provider = (getattr(self, "provider", "") or "").strip().lower()
-            primary_provider = ((self._primary_runtime or {}).get("provider") or "").strip().lower()
+            primary_runtime = getattr(self, "_primary_runtime", None) or {}
+            primary_provider = (primary_runtime.get("provider") or "").strip().lower()
             if (not fallback_already_active) or (primary_provider and current_provider == primary_provider):
                 self._rate_limited_until = time.monotonic() + 60
         if self._fallback_index >= len(self._fallback_chain):
@@ -9026,6 +9029,16 @@ class AIAgent:
         fb_model = (fb.get("model") or "").strip()
         if not fb_provider or not fb_model:
             return self._try_activate_fallback()  # skip invalid, try next
+        fb_extra_body = (
+            copy.deepcopy(fb.get("extra_body"))
+            if isinstance(fb.get("extra_body"), dict)
+            else {}
+        )
+        fb_request_overrides = (
+            copy.deepcopy(fb.get("request_overrides"))
+            if isinstance(fb.get("request_overrides"), dict)
+            else {}
+        )
 
         # Skip entries that resolve to the current (provider, model) — falling
         # back to the same backend that just failed loops the failure. Compare
@@ -9131,6 +9144,17 @@ class AIAgent:
             if hasattr(self, "_transport_cache"):
                 self._transport_cache.clear()
             self._fallback_activated = True
+            self._active_fallback_extra_body = fb_extra_body
+            primary_runtime = getattr(self, "_primary_runtime", None) or {}
+            base_request_overrides = dict(
+                primary_runtime.get(
+                    "request_overrides",
+                    getattr(self, "request_overrides", None),
+                )
+                or {}
+            )
+            base_request_overrides.update(fb_request_overrides)
+            self.request_overrides = base_request_overrides
 
             # Honor per-provider / per-model request_timeout_seconds for the
             # fallback target (same knob the primary client uses).  None = use
@@ -9264,6 +9288,8 @@ class AIAgent:
                 self._transport_cache.clear()
             self.api_key = rt["api_key"]
             self._client_kwargs = dict(rt["client_kwargs"])
+            self.request_overrides = dict(rt.get("request_overrides", {}))
+            self._active_fallback_extra_body = {}
             self._use_prompt_caching = rt["use_prompt_caching"]
             # Default to native layout when the restored snapshot predates the
             # native-vs-proxy split (older sessions saved before this PR).
@@ -10053,6 +10079,7 @@ class AIAgent:
                 anthropic_max_output=_ant_max,
                 supports_reasoning=self._supports_reasoning_extra_body(),
                 qwen_session_metadata=_qwen_meta,
+                extra_body_additions=self._active_fallback_extra_body or None,
             )
 
         # ── Legacy flag path ────────────────────────────────────────────
@@ -10100,6 +10127,7 @@ class AIAgent:
             lmstudio_reasoning_options=self._lmstudio_reasoning_options_cached() if _is_lmstudio else None,
             anthropic_max_output=_ant_max,
             provider_name=self.provider,
+            extra_body_additions=self._active_fallback_extra_body or None,
         )
 
     def _supports_reasoning_extra_body(self) -> bool:
