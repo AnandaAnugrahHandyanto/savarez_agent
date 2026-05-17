@@ -268,6 +268,163 @@ def _validate_content_size(content: str, label: str = "SKILL.md") -> Optional[st
     return None
 
 
+# ---------------------------------------------------------------------------
+# Write-hygiene checks — hard rejections applied before every skill write.
+# These enforce constraints that the review-prompt cannot reliably enforce
+# because completion bias causes models to write despite soft instructions.
+# ---------------------------------------------------------------------------
+
+# Matches the self-injected changelog-style date stamps the agent commonly
+# produces, e.g.:
+#   "Updated 2026-05-10", "NEW — Session 2026-05-10", "Added 2026-05",
+#   "# Added 2026-05", "<!-- Session 2026-05-10 -->"
+# Do NOT match arbitrary bare dates — skill content can legitimately include
+# ISO date examples, version pins, or API payload samples.
+_DATE_STAMP_RE = re.compile(
+    r'(?im)^[ \t>*#-]*(?:updated|added|new(?:[^\w\n]+session)?)\s*:?\s*'
+    r'\d{4}-\d{2}(?:-\d{2})?\s*$'
+    r'|<!--[^>]*(?:updated|added|session)[^>]*\d{4}-\d{2}(?:-\d{2})?[^>]*-->',
+    re.IGNORECASE,
+)
+
+
+def _check_date_stamps(content: str) -> Optional[str]:
+    """Return an error if *content* contains self-injected date stamps.
+
+    Date stamps like 'Updated 2026-05-10' or 'NEW — Session 2026-05-09'
+    accumulate across sessions and are meaningless to future readers.
+    Skills should be written as timeless guidelines.
+    """
+    matches = _DATE_STAMP_RE.findall(content)
+    if matches:
+        examples = ", ".join(repr(m.strip()) for m in matches[:3])
+        return (
+            "SKILL.md must not contain date stamps. Remove temporal markers "
+            f"such as: {examples}. Skills are timeless guidelines — dates "
+            "create noise that accumulates across sessions."
+        )
+    return None
+
+
+def _extract_headings(content: str) -> list:
+    """Return all markdown `##`+ heading texts from *content* (lowercased, stripped)."""
+    return [
+        re.sub(r'^#+\s*', '', line).lower().strip()
+        for line in content.splitlines()
+        if re.match(r'^#{2,}\s+\S', line)
+    ]
+
+
+def _check_duplicate_headings(
+    new_content: str,
+    existing_content: Optional[str] = None,
+    *,
+    introduced_only: bool = False,
+) -> Optional[str]:
+    """Return an error if *new_content* contains duplicate headings.
+
+    Only catches exact-text duplicates, not semantic near-duplicates.
+
+    When ``introduced_only`` is true, only block duplicates newly introduced by
+    the current write compared to ``existing_content``. This lets targeted
+    patches clean up or edit legacy files that already contain duplicate
+    headings, instead of freezing them in place.
+    """
+    new_counts: Dict[str, int] = {}
+    for heading in _extract_headings(new_content):
+        new_counts[heading] = new_counts.get(heading, 0) + 1
+
+    existing_counts: Dict[str, int] = {}
+    if introduced_only and existing_content is not None:
+        for heading in _extract_headings(existing_content):
+            existing_counts[heading] = existing_counts.get(heading, 0) + 1
+
+    for heading, new_count in new_counts.items():
+        if new_count <= 1:
+            continue
+        old_count = existing_counts.get(heading, 0)
+        if introduced_only and new_count <= old_count:
+            continue
+        if introduced_only and old_count == 0:
+            return (
+                f"Patch introduces duplicate heading '{heading}' more than once "
+                "in the resulting content. Merge the sections rather than "
+                "adding the same heading repeatedly."
+            )
+        if introduced_only:
+            return (
+                f"Patch introduces another '{heading}' heading even though that "
+                "heading already exists. Update the existing section instead of "
+                "creating a duplicate."
+            )
+        return (
+            f"Duplicate heading '{heading}' appears more than once in the "
+            "new content. Merge the two sections rather than creating a copy."
+        )
+    return None
+
+
+def _check_content_growth(new_content: str, existing_content: Optional[str]) -> Optional[str]:
+    """Return an error when a single edit more than doubles the file size.
+
+    A 2× growth in one write is almost always a sign of content duplication
+    via full-rewrite (action='edit') rather than a targeted patch.  The agent
+    should use action='patch' for targeted changes and only use 'edit' when
+    restructuring an entire section.
+
+    The threshold is intentionally generous (100% growth = doubles in size)
+    to avoid blocking legitimate reorganisations.
+    """
+    if existing_content is None:
+        return None  # new file — any size is fine
+    old_len = len(existing_content)
+    new_len = len(new_content)
+    if old_len > 0 and new_len > old_len * 2 and (new_len - old_len) > 500:
+        return (
+            f"This edit would grow SKILL.md from {old_len:,} to {new_len:,} "
+            f"characters (+{new_len - old_len:,}, "
+            f"{(new_len / old_len - 1) * 100:.0f}% growth). "
+            "Such large single-pass growth usually indicates content duplication. "
+            "Use action='patch' for targeted changes, or run skill_view first "
+            "and verify no duplicate sections are being added."
+        )
+    return None
+
+
+def _run_write_hygiene(
+    new_content: str,
+    existing_content: Optional[str] = None,
+    *,
+    check_date_stamps: bool = True,
+    check_duplicates: bool = True,
+    check_growth: bool = True,
+    introduced_duplicates_only: bool = False,
+) -> Optional[str]:
+    """Run all write-hygiene checks and return the first error found, or None.
+
+    Called by _edit_skill and _patch_skill before committing any content to
+    disk.  All checks are hard rejections — the write is blocked until the
+    agent fixes the content.
+    """
+    if check_date_stamps:
+        err = _check_date_stamps(new_content)
+        if err:
+            return err
+    if check_duplicates:
+        err = _check_duplicate_headings(
+            new_content,
+            existing_content,
+            introduced_only=introduced_duplicates_only,
+        )
+        if err:
+            return err
+    if check_growth:
+        err = _check_content_growth(new_content, existing_content)
+        if err:
+            return err
+    return None
+
+
 def _resolve_skill_dir(name: str, category: str = None) -> Path:
     """Build the directory path for a new skill, optionally under a category."""
     if category:
@@ -390,6 +547,10 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
     if err:
         return {"success": False, "error": err}
 
+    err = _run_write_hygiene(content)
+    if err:
+        return {"success": False, "error": err}
+
     # Check for name collisions across all directories
     existing = _find_skill(name)
     if existing:
@@ -444,6 +605,12 @@ def _edit_skill(name: str, content: str) -> Dict[str, Any]:
     skill_md = existing["path"] / "SKILL.md"
     # Back up original content for rollback
     original_content = skill_md.read_text(encoding="utf-8") if skill_md.exists() else None
+
+    # --- Write-hygiene hard checks (code-level, cannot be bypassed by prompt) ---
+    err = _run_write_hygiene(content, existing_content=original_content)
+    if err:
+        return {"success": False, "error": err}
+
     _atomic_write_text(skill_md, content)
 
     # Security scan — roll back on block
@@ -530,7 +697,8 @@ def _patch_skill(
     if err:
         return {"success": False, "error": err}
 
-    # If patching SKILL.md, validate frontmatter is still intact
+    # If patching SKILL.md, validate frontmatter is still intact and run
+    # write-hygiene checks (date stamps, duplicate headings, growth guard).
     if not file_path:
         err = _validate_frontmatter(new_content)
         if err:
@@ -538,6 +706,23 @@ def _patch_skill(
                 "success": False,
                 "error": f"Patch would break SKILL.md structure: {err}",
             }
+        # Only check date stamps in the newly inserted fragment, not the whole
+        # file, so legacy content does not freeze future maintenance. Duplicate
+        # heading detection on patches only blocks duplicates introduced by the
+        # current patch.
+        err = _check_date_stamps(new_string)
+        if err:
+            return {"success": False, "error": err}
+        err = _run_write_hygiene(
+            new_content,
+            existing_content=content,
+            check_date_stamps=False,
+            check_duplicates=True,
+            check_growth=False,   # patch is already targeted; growth guard is for full rewrites
+            introduced_duplicates_only=True,
+        )
+        if err:
+            return {"success": False, "error": err}
 
     original_content = content  # for rollback
     _atomic_write_text(target, new_content)
