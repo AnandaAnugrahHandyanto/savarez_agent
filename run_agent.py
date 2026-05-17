@@ -14586,14 +14586,75 @@ class AIAgent:
                         # messages to the new session, not skipping them.
                         conversation_history = None
 
-                        if len(messages) < original_len or new_ctx and new_ctx < old_ctx:
-                            if len(messages) < original_len:
+                        compressed_tokens = (
+                            getattr(self.context_compressor, "last_prompt_tokens", 0) or
+                            estimate_request_tokens_rough(
+                                messages,
+                                system_prompt=active_system_prompt or "",
+                                tools=self.tools or None,
+                            )
+                        )
+                        compression_reduced_history = len(messages) < original_len
+                        compression_reduced_tokens = (
+                            bool(approx_tokens) and compressed_tokens < approx_tokens
+                        )
+                        compression_stagnated = (
+                            not compression_reduced_history
+                            and bool(approx_tokens)
+                            and compressed_tokens >= approx_tokens
+                        )
+
+                        if (
+                            compression_reduced_history
+                            or compression_reduced_tokens
+                            or (
+                                new_ctx
+                                and new_ctx < old_ctx
+                                and not compression_stagnated
+                            )
+                        ):
+                            if compression_reduced_history:
                                 self._emit_status(f"🗜️ Compressed {original_len} → {len(messages)} messages, retrying...")
+                            elif compression_reduced_tokens:
+                                self._emit_status(
+                                    f"🗜️ Prompt estimate dropped ~{approx_tokens:,} → ~{compressed_tokens:,}, retrying..."
+                                )
                             time.sleep(2)  # Brief pause between compression retries
                             restart_with_compressed_messages = True
                             break
                         else:
                             # Can't compress further and already at minimum tier
+                            if compression_stagnated:
+                                self._vprint(
+                                    f"{self.log_prefix}❌ Compression did not reduce prompt pressure "
+                                    f"(~{approx_tokens:,} → ~{compressed_tokens:,}).",
+                                    force=True,
+                                )
+                                self._vprint(
+                                    f"{self.log_prefix}   💡 Start a fresh session with /new or switch "
+                                    f"back to a higher-context model before retrying.",
+                                    force=True,
+                                )
+                                logging.error(
+                                    "%sCompression regressed or made no progress: approx_tokens=%s compressed_tokens=%s",
+                                    self.log_prefix,
+                                    f"{approx_tokens:,}",
+                                    f"{compressed_tokens:,}",
+                                )
+                                self._persist_session(messages, conversation_history)
+                                return {
+                                    "messages": messages,
+                                    "completed": False,
+                                    "api_calls": api_call_count,
+                                    "error": (
+                                        "Context compression did not reduce prompt size "
+                                        f"(~{approx_tokens:,} -> ~{compressed_tokens:,}). "
+                                        "Start a fresh session with /new."
+                                    ),
+                                    "partial": True,
+                                    "failed": True,
+                                    "compression_exhausted": True,
+                                }
                             self._vprint(f"{self.log_prefix}❌ Context length exceeded and cannot compress further.", force=True)
                             self._vprint(f"{self.log_prefix}   💡 The conversation has accumulated too much content. Try /new to start fresh, or /compress to manually trigger compression.", force=True)
                             logging.error(f"{self.log_prefix}Context length exceeded: {approx_tokens:,} tokens. Cannot compress further.")

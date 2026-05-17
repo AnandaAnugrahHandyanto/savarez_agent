@@ -612,3 +612,44 @@ class TestToolResultPreflightCompression:
 
         mock_compress.assert_called_once()
         assert result["completed"] is True
+
+    def test_context_overflow_stops_when_compression_estimate_grows(self, agent):
+        """If compression returns the same history and the prompt estimate
+        grows, abort instead of looping on a stepped-down context tier."""
+        err_400 = Exception(
+            "Error code: 400 - {'error': {'message': "
+            "'Prompt too long: 65798 tokens exceeds max context window of 65536 tokens'}}"
+        )
+        err_400.status_code = 400
+        calls = {"count": 0}
+
+        def _raise_overflow(*_args, **_kwargs):
+            calls["count"] += 1
+            if calls["count"] > 1:
+                raise AssertionError("run_conversation retried despite regressive compression")
+            raise err_400
+
+        agent.client.chat.completions.create.side_effect = _raise_overflow
+        agent.context_compressor.context_length = 131_072
+
+        prefill = [
+            {"role": "user", "content": "previous question"},
+            {"role": "assistant", "content": "previous answer"},
+        ]
+
+        def _fake_compress(messages, system_message, approx_tokens=0, task_id=None):
+            agent.context_compressor.last_prompt_tokens = approx_tokens + 5_000
+            return list(messages), system_message
+
+        with (
+            patch.object(agent, "_compress_context", side_effect=_fake_compress),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hello", conversation_history=prefill)
+
+        assert calls["count"] == 1
+        assert result["failed"] is True
+        assert result["compression_exhausted"] is True
+        assert "did not reduce prompt size" in result["error"]
