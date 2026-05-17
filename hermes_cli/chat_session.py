@@ -178,6 +178,12 @@ class ChatSession:
         session_db = SessionDB()
         session_db.create_session(session_id=self.session_id, source="web")
 
+        # Optional per-provider max_tokens cap.  Useful when OpenRouter's
+        # preemptive credit check rejects the default 64k ceiling: setting
+        # max_tokens to e.g. 512 lets small chats run on tiny balances.
+        max_tokens_cfg = cfg.get("max_tokens")
+        max_tokens = int(max_tokens_cfg) if isinstance(max_tokens_cfg, (int, float)) else None
+
         self.agent = AIAgent(
             model=model,
             **runtime_kwargs,
@@ -187,6 +193,7 @@ class ChatSession:
             platform="web",
             session_db=session_db,
             clarify_callback=self._clarify_callback,
+            max_tokens=max_tokens,
         )
         return self.agent
 
@@ -235,12 +242,51 @@ class ChatSession:
 
             self.history = result.get("messages", self.history) or self.history
             final_text = result.get("final_response", "") or ""
-            self._emit("turn-end", {"call_id": call_id, "final_text": final_text})
+            # If the agent swallowed an API error and returned nothing, surface
+            # it as an error event so the user sees something concrete instead
+            # of an empty bubble.  Look in errors.log for the most recent line
+            # mentioning this session_id; failing that, fall back to a generic.
+            if not final_text.strip():
+                err_detail = self._tail_recent_error() or (
+                    "Agent returned no response. "
+                    "Check ~/.hermes/logs/agent.log for details."
+                )
+                self._emit("error", {"call_id": call_id, "detail": err_detail})
+            else:
+                self._emit("turn-end", {"call_id": call_id, "final_text": final_text})
         except Exception as e:  # noqa: BLE001
             logger.exception("ChatSession %s turn failed", self.session_id)
             self._emit("error", {"call_id": call_id, "detail": str(e)})
         finally:
             self.last_activity = time.time()
+
+    def _tail_recent_error(self) -> Optional[str]:
+        """Best-effort: return the most recent ERROR line that mentions our session.
+
+        Used only when the agent returns an empty response so we can show the
+        user *why*.  Reads ~/.hermes/logs/agent.log; silent on any failure.
+        """
+        try:
+            from hermes_constants import get_hermes_home
+            log_path = get_hermes_home() / "logs" / "agent.log"
+            if not log_path.is_file():
+                return None
+            # Tail roughly the last 8 KB — enough to find a recent error line
+            # without loading the whole log.
+            with open(log_path, "rb") as f:
+                f.seek(0, 2)
+                size = f.tell()
+                f.seek(max(0, size - 8192))
+                tail = f.read().decode("utf-8", errors="replace")
+            sid_short = self.session_id
+            for line in reversed(tail.splitlines()):
+                if "ERROR" in line and sid_short in line:
+                    # Strip the timestamp/level prefix for a tidier display.
+                    parts = line.split("] ", 1)
+                    return (parts[1] if len(parts) == 2 else line).strip()
+            return None
+        except Exception:
+            return None
 
     # ------------------------------------------------------------------ #
     # Per-turn agent callbacks                                            #
