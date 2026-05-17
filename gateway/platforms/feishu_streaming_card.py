@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-import asyncio
 import copy
 import json
 import logging
-import time
 from typing import Any, Awaitable, Callable, Dict, Optional
 
 from gateway.platforms.base import SendResult
@@ -23,11 +21,7 @@ from lark_oapi.api.cardkit.v1 import (
 logger = logging.getLogger("gateway.feishu.streaming_card")
 
 CARD_CONTENT_ELEMENT_ID = "content"
-STREAMING_UPDATE_THROTTLE_MS = 160
-STREAMING_SIGNIFICANT_DELTA_CHARS = 18
 MAX_CARD_TEXT_LENGTH = 30000
-
-_NATURAL_STREAMING_BOUNDARIES = "\n.!?;:。！？；："
 
 
 CARDKIT_ASSISTANT_PROFILE = "assistant"
@@ -107,20 +101,6 @@ def truncate_summary(text: str, max_chars: int = 50) -> str:
     if len(text) <= max_chars:
         return text
     return text[:max_chars]
-
-
-def has_natural_streaming_boundary(text: str) -> bool:
-    return bool(text) and text[-1] in _NATURAL_STREAMING_BOUNDARIES
-
-
-def should_push_streaming_update(previous_text: str, next_text: str) -> bool:
-    if not previous_text:
-        return True
-    delta_chars = max(0, len(next_text) - len(previous_text))
-    return (
-        has_natural_streaming_boundary(next_text)
-        or delta_chars >= STREAMING_SIGNIFICANT_DELTA_CHARS
-    )
 
 
 def merge_streaming_text(previous_text: Optional[str], next_text: Optional[str]) -> str:
@@ -286,10 +266,7 @@ class FeishuStreamingCardSession:
         self.message_id: Optional[str] = None
         self.sequence = 1
         self.current_text = ""
-        self.pending_text: Optional[str] = None
         self.closed = False
-        self.last_update_time = 0.0
-        self._pending_flush_task: Optional[asyncio.Task] = None
 
     async def start(
         self,
@@ -346,34 +323,25 @@ class FeishuStreamingCardSession:
             return SendResult(success=False, error="CardKit session is not active")
         # CardKit receives full visible markdown snapshots, not deltas.  The
         # merge step protects continuity across gateway cursor stripping,
-        # throttled updates, and providers that resend overlapping text.
+        # skipped updates, and providers that resend overlapping text.  The
+        # gateway owns streaming cadence; this session should not schedule its
+        # own delayed flushes because every CardKit operation consumes a
+        # sequence number.
         next_text = merge_streaming_text(
-            self.pending_text or self.current_text,
+            self.current_text,
             strip_streaming_cursor(text),
         )
         if not next_text or next_text == self.current_text:
-            return SendResult(success=True, message_id=self.message_id)
-        self.pending_text = next_text
-        if not should_push_streaming_update(
-            self.current_text,
-            next_text,
-        ):
-            self._schedule_pending_flush()
-            return SendResult(success=True, message_id=self.message_id)
-        now_ms = time.monotonic() * 1000
-        if now_ms - self.last_update_time < STREAMING_UPDATE_THROTTLE_MS:
-            self._schedule_pending_flush(now_ms=now_ms)
             return SendResult(success=True, message_id=self.message_id)
         await self._push_update(next_text, force=True)
         return SendResult(success=True, message_id=self.message_id)
 
     async def close(self, final_text: Optional[str] = None) -> SendResult:
-        self._cancel_pending_flush()
         if self.closed:
             return SendResult(success=True, message_id=self.message_id)
         if not self.card_id or not self.message_id:
             return SendResult(success=False, error="CardKit session is not active")
-        merged = merge_streaming_text(self.current_text, self.pending_text)
+        merged = self.current_text
         if final_text:
             merged = merge_streaming_text(merged, strip_streaming_cursor(final_text))
         if merged and merged != self.current_text:
@@ -407,48 +375,6 @@ class FeishuStreamingCardSession:
         self.closed = True
         return SendResult(success=True, message_id=self.message_id)
 
-    def _schedule_pending_flush(self, *, now_ms: Optional[float] = None) -> None:
-        if self.closed or not self.pending_text:
-            return
-        if self._pending_flush_task and not self._pending_flush_task.done():
-            return
-        if now_ms is None:
-            now_ms = time.monotonic() * 1000
-        elapsed_ms = now_ms - self.last_update_time
-        delay_ms = max(0.0, STREAMING_UPDATE_THROTTLE_MS - elapsed_ms)
-        self._pending_flush_task = asyncio.create_task(
-            self._flush_pending_after_delay(delay_ms / 1000)
-        )
-
-    def _cancel_pending_flush(self) -> None:
-        task = self._pending_flush_task
-        self._pending_flush_task = None
-        if task and not task.done():
-            task.cancel()
-
-    async def _flush_pending_after_delay(self, delay_seconds: float) -> None:
-        try:
-            if delay_seconds > 0:
-                await asyncio.sleep(delay_seconds)
-            if self.closed or not self.card_id or not self.message_id:
-                return
-            text = self.pending_text
-            if not text or text == self.current_text:
-                return
-            await self._push_update(text, force=True)
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            logger.warning(
-                "[Feishu] CardKit pending flush failed for %s: %s",
-                self.card_id,
-                exc,
-            )
-        finally:
-            task = asyncio.current_task()
-            if self._pending_flush_task is task:
-                self._pending_flush_task = None
-
     async def _push_update(self, text: str, *, force: bool) -> None:
         if not self.card_id:
             return
@@ -462,5 +388,3 @@ class FeishuStreamingCardSession:
             self.sequence,
         )
         self.current_text = text
-        self.pending_text = None
-        self.last_update_time = time.monotonic() * 1000

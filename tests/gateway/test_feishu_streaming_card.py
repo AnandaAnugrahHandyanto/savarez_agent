@@ -85,16 +85,6 @@ def test_merge_streaming_text_preserves_prefix_and_overlap():
     assert merge_streaming_text("abc", "xyz") == "abcxyz"
 
 
-def test_should_push_streaming_update_uses_internal_boundary_and_delta_rules():
-    from gateway.platforms.feishu_streaming_card import should_push_streaming_update
-
-    assert should_push_streaming_update("", "hi") is True
-    assert should_push_streaming_update("hello", "hello there") is False
-    assert should_push_streaming_update("hello", "hello there.") is True
-    assert should_push_streaming_update("你好", "你好！") is True
-    assert should_push_streaming_update("a", "a" + "b" * 18) is True
-
-
 def test_strip_streaming_cursor_removes_gateway_cursor_suffix():
     from gateway.platforms.feishu_streaming_card import strip_streaming_cursor
 
@@ -153,13 +143,12 @@ def test_session_update_sends_full_snapshot_and_increments_sequence():
         send_card_reference=fake_send_card_reference,
     )
     asyncio.run(session.start("hello", reply_to=None, metadata=None))
-    session.last_update_time = 0.0
     asyncio.run(session.update("hello world."))
 
     assert ("update", "card_123", "content", "hello world.", 3) in client.calls
 
 
-def test_session_update_coalesces_small_delta_until_close():
+def test_session_update_sends_small_delta_immediately():
     from gateway.platforms.feishu_streaming_card import FeishuStreamingCardSession
 
     client = FakeCardKitClient()
@@ -170,17 +159,12 @@ def test_session_update_coalesces_small_delta_until_close():
     )
     asyncio.run(session.start("hello", reply_to=None, metadata=None))
     asyncio.run(session.update("hello there"))
-    asyncio.run(session.close("hello there"))
 
     assert ("update", "card_123", "content", "hello there", 3) in client.calls
-    assert client.calls[-1] == ("close", "card_123", "hello there", 4)
 
 
-def test_session_update_flushes_pending_small_delta_after_throttle():
-    from gateway.platforms.feishu_streaming_card import (
-        STREAMING_UPDATE_THROTTLE_MS,
-        FeishuStreamingCardSession,
-    )
+def test_session_update_does_not_schedule_background_flush_for_small_delta():
+    from gateway.platforms.feishu_streaming_card import FeishuStreamingCardSession
 
     async def run_test():
         client = FakeCardKitClient()
@@ -192,11 +176,11 @@ def test_session_update_flushes_pending_small_delta_after_throttle():
         await session.start("hello", reply_to=None, metadata=None)
         await session.update("hello there")
 
-        assert ("update", "card_123", "content", "hello there", 3) not in client.calls
+        calls_after_update = list(client.calls)
+        assert ("update", "card_123", "content", "hello there", 3) in calls_after_update
 
-        await asyncio.sleep((STREAMING_UPDATE_THROTTLE_MS + 80) / 1000)
-
-        assert ("update", "card_123", "content", "hello there", 3) in client.calls
+        await asyncio.sleep(0.25)
+        assert client.calls == calls_after_update
 
     asyncio.run(run_test())
 
