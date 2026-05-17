@@ -38,6 +38,7 @@ import os
 import random
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 # Lazy import: BasePlatformAdapter and friends live in the main repo.
@@ -53,6 +54,7 @@ from gateway.platforms.base import (
     cache_audio_from_bytes,
     cache_document_from_bytes,
 )
+from hermes_constants import get_hermes_home
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +67,12 @@ WS_RETRY_DELAY_INITIAL = 2.0
 WS_RETRY_DELAY_MAX = 60.0
 HEALTH_CHECK_INTERVAL = 30.0
 HEALTH_CHECK_STALE_THRESHOLD = 120.0
+POLL_INTERVAL = 1.0
+# Polling is the reliability path when daemon push events are flaky. Keep its
+# command timeout short: a missed `/tail 50` should cost one beat, not turn into
+# the 50–60s "SimpleX feels dead" delay after a few consecutive stalls.
+POLL_COMMAND_TIMEOUT = 2.0
+POLL_CONNECT_TIMEOUT = 2.0
 
 # Correlation ID prefix for requests we send so we can ignore our own echoes.
 _CORR_PREFIX = "hermes-"
@@ -108,6 +116,11 @@ def _is_audio_ext(ext: str) -> bool:
     return ext.lower() in (".mp3", ".wav", ".ogg", ".m4a", ".aac")
 
 
+def _simplex_quote_name(name: str) -> str:
+    """Quote a simplex-chat display name for command targets."""
+    return str(name).replace("'", "\\'")
+
+
 # ---------------------------------------------------------------------------
 # SimpleX Adapter
 # ---------------------------------------------------------------------------
@@ -130,9 +143,13 @@ class SimplexAdapter(BasePlatformAdapter):
         self._ws = None  # websockets connection
         self._ws_task: Optional[asyncio.Task] = None
         self._health_task: Optional[asyncio.Task] = None
+        self._poll_task: Optional[asyncio.Task] = None
         self._typing_tasks: Dict[str, asyncio.Task] = {}
         self._running = False
         self._last_ws_activity = 0.0
+        self._seen_item_ids: set = set()
+        self._seen_items_path = get_hermes_home() / "simplex_seen_items.json"
+        self._connected_at = 0.0
 
         # Track sent correlation IDs to filter echoes
         self._pending_corr_ids: set = set()
@@ -170,8 +187,12 @@ class SimplexAdapter(BasePlatformAdapter):
 
         self._running = True
         self._last_ws_activity = time.time()
+        self._connected_at = time.time()
+        self._load_seen_items()
+        await self._seed_seen_items()
         self._ws_task = asyncio.create_task(self._ws_listener())
         self._health_task = asyncio.create_task(self._health_monitor())
+        self._poll_task = asyncio.create_task(self._poll_unread_items())
 
         logger.info("SimpleX: connected to %s", self.ws_url)
         return True
@@ -194,6 +215,13 @@ class SimplexAdapter(BasePlatformAdapter):
             except asyncio.CancelledError:
                 pass
 
+        if self._poll_task:
+            self._poll_task.cancel()
+            try:
+                await self._poll_task
+            except asyncio.CancelledError:
+                pass
+
         for task in self._typing_tasks.values():
             task.cancel()
         self._typing_tasks.clear()
@@ -206,6 +234,59 @@ class SimplexAdapter(BasePlatformAdapter):
             self._ws = None
 
         logger.info("SimpleX: disconnected")
+
+    def _item_key(self, wrapper: dict) -> Optional[str]:
+        """Return a stable per-chat key for a SimpleX chat item."""
+        chat_info = wrapper.get("chatInfo") or wrapper.get("chat") or {}
+        chat_item = wrapper.get("chatItem") or wrapper.get("item") or {}
+        meta = chat_item.get("meta") or {}
+        item_id = meta.get("itemId")
+        if item_id is None:
+            return None
+        chat_type = chat_info.get("type") or ""
+        if chat_type in ("group", "groupInfo"):
+            group_info = chat_info.get("groupInfo") or chat_info.get("group") or {}
+            chat_id = group_info.get("groupId") or group_info.get("id") or ""
+            prefix = "group"
+        else:
+            contact_info = chat_info.get("contact") or {}
+            chat_id = contact_info.get("contactId") or contact_info.get("id") or ""
+            prefix = "direct"
+        if not chat_id:
+            return None
+        return f"{prefix}:{chat_id}:{item_id}"
+
+    def _item_timestamp_epoch(self, wrapper: dict) -> Optional[float]:
+        chat_item = wrapper.get("chatItem") or wrapper.get("item") or {}
+        meta = chat_item.get("meta") or {}
+        ts_str = meta.get("itemTs") or meta.get("createdAt") or ""
+        if not ts_str:
+            return None
+        try:
+            return datetime.fromisoformat(str(ts_str).replace("Z", "+00:00")).timestamp()
+        except (ValueError, AttributeError):
+            return None
+
+    def _load_seen_items(self) -> None:
+        try:
+            data = json.loads(Path(self._seen_items_path).read_text(encoding="utf-8"))
+            if isinstance(data, list):
+                self._seen_item_ids.update(str(x) for x in data if x)
+        except FileNotFoundError:
+            pass
+        except Exception as e:
+            logger.debug("SimpleX poll: failed to load seen items: %s", e)
+
+    def _save_seen_items(self) -> None:
+        try:
+            items = list(self._seen_item_ids)[-1000:]
+            self._seen_item_ids = set(items)
+            Path(self._seen_items_path).write_text(
+                json.dumps(items, ensure_ascii=False),
+                encoding="utf-8",
+            )
+        except Exception as e:
+            logger.debug("SimpleX poll: failed to save seen items: %s", e)
 
     # ------------------------------------------------------------------
     # WebSocket listener
@@ -288,6 +369,157 @@ class SimplexAdapter(BasePlatformAdapter):
                         pass
 
     # ------------------------------------------------------------------
+    # Polling fallback
+    # ------------------------------------------------------------------
+
+    async def _command_once(
+        self,
+        cmd: str,
+        *,
+        timeout: float = 10.0,
+        open_timeout: float = 10.0,
+    ) -> Optional[dict]:
+        """Run one simplex-chat command over an ephemeral WebSocket.
+
+        The daemon does not reliably push ``newChatItem`` events to every
+        persistent WebSocket client in all versions/modes. A tiny polling
+        fallback makes inbound DM/group delivery deterministic while keeping
+        the persistent listener for installations where push events work.
+        """
+        import websockets as _wsclient
+
+        corr_id = self._make_corr_id()
+        payload = {"corrId": corr_id, "cmd": cmd}
+        try:
+            async with _wsclient.connect(self.ws_url, open_timeout=open_timeout, close_timeout=1) as ws:
+                await ws.send(json.dumps(payload))
+                deadline = time.time() + timeout
+                while time.time() < deadline:
+                    raw = await asyncio.wait_for(ws.recv(), timeout=max(0.1, deadline - time.time()))
+                    try:
+                        msg = json.loads(raw)
+                    except json.JSONDecodeError:
+                        continue
+                    if msg.get("corrId") == corr_id:
+                        self._pending_corr_ids.discard(corr_id)
+                        return msg
+        finally:
+            self._pending_corr_ids.discard(corr_id)
+        return None
+
+    async def _seed_seen_items(self) -> None:
+        """Remember current history so a gateway restart doesn't answer old mail."""
+        try:
+            resp = await self._command_once("/tail 50")
+            changed = False
+            for wrapper in (resp or {}).get("resp", {}).get("chatItems", []) or []:
+                item_key = self._item_key(wrapper)
+                if item_key is not None:
+                    self._seen_item_ids.add(item_key)
+                    changed = True
+            if changed:
+                self._save_seen_items()
+            logger.info("SimpleX poll: seeded %d seen chat items", len(self._seen_item_ids))
+        except Exception as e:
+            logger.debug("SimpleX poll: initial seed failed: %s", e)
+
+    async def _poll_unread_items(self) -> None:
+        """Poll recent chat history for unread inbound items missed by push WS."""
+        while self._running:
+            await asyncio.sleep(POLL_INTERVAL)
+            try:
+                start = time.time()
+                resp = await self._command_once(
+                    "/tail 50",
+                    timeout=POLL_COMMAND_TIMEOUT,
+                    open_timeout=POLL_CONNECT_TIMEOUT,
+                )
+                poll_elapsed = time.time() - start
+                wrappers = (resp or {}).get("resp", {}).get("chatItems", []) or []
+                if resp is None:
+                    logger.warning(
+                        "SimpleX poll: /tail 50 timed out after %.2fs",
+                        poll_elapsed,
+                    )
+                elif poll_elapsed > POLL_COMMAND_TIMEOUT:
+                    logger.warning(
+                        "SimpleX poll: /tail 50 slow response %.2fs",
+                        poll_elapsed,
+                    )
+                logger.debug(
+                    "SimpleX poll: got %d items in %.2fs (seen=%d)",
+                    len(wrappers), poll_elapsed, len(self._seen_item_ids)
+                )
+                for wrapper in wrappers:
+                    chat_item = wrapper.get("chatItem") or {}
+                    meta = chat_item.get("meta") or {}
+                    item_key = self._item_key(wrapper)
+                    if item_key is None:
+                        continue
+                    if item_key in self._seen_item_ids:
+                        continue
+                    item_ts = self._item_timestamp_epoch(wrapper)
+                    if item_ts is not None and self._connected_at and item_ts < self._connected_at - 5:
+                        self._seen_item_ids.add(item_key)
+                        self._save_seen_items()
+                        logger.info(
+                            "SimpleX poll: marking stale pre-connect item seen: %s",
+                            item_key,
+                        )
+                        continue
+                    self._seen_item_ids.add(item_key)
+                    if len(self._seen_item_ids) > 1000:
+                        self._save_seen_items()
+
+                    status = (meta.get("itemStatus") or {}).get("type", "")
+                    if status != "rcvNew":
+                        continue
+                    content = chat_item.get("content") or {}
+                    if content.get("type") != "rcvMsgContent":
+                        continue
+                    logger.info(
+                        "SimpleX poll: dispatching unread item %s",
+                        item_key,
+                    )
+                    self._save_seen_items()
+                    asyncio.create_task(self._handle_new_chat_item(wrapper))
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                logger.exception("SimpleX poll: failed to poll unread items")
+
+    async def _resolve_chat_target(self, chat_id: str) -> str:
+        """Resolve Hermes IDs to simplex-chat command targets.
+
+        The command parser accepts display names (for example ``@'Elkim'`` or
+        ``#'group'``), not internal numeric contact/group IDs. Hermes keeps the
+        stable IDs, so resolve them via ``/chats`` before sending.
+        """
+        resp = await self._command_once("/chats all")
+        chats = (resp or {}).get("resp", {}).get("chats", []) or []
+        if chat_id.startswith("group:"):
+            wanted = str(chat_id[6:])
+            for chat in chats:
+                group = ((chat.get("chatInfo") or {}).get("groupInfo") or {})
+                if str(group.get("groupId")) == wanted:
+                    name = group.get("localDisplayName") or (group.get("groupProfile") or {}).get("displayName")
+                    if name:
+                        return f"#'{_simplex_quote_name(name)}'"
+            if not wanted.isdigit():
+                return f"#[{wanted}]"
+        else:
+            wanted = str(chat_id)
+            for chat in chats:
+                contact = ((chat.get("chatInfo") or {}).get("contact") or {})
+                if str(contact.get("contactId")) == wanted:
+                    name = contact.get("localDisplayName") or (contact.get("profile") or {}).get("displayName")
+                    if name:
+                        return f"@'{_simplex_quote_name(name)}'"
+            if not wanted.isdigit():
+                return f"@[{wanted}]"
+        raise ValueError(f"SimpleX chat id not found: {chat_id}")
+
+    # ------------------------------------------------------------------
     # Inbound event handling
     # ------------------------------------------------------------------
 
@@ -302,10 +534,11 @@ class SimplexAdapter(BasePlatformAdapter):
             return
 
         if resp_type == "newChatItem":
-            await self._handle_new_chat_item(event)
-        elif resp_type == "newChatItems":
+            await self._handle_new_chat_item(event.get("resp") or event)
+        elif resp_type in ("newChatItems", "chatItems"):
             # Batch variant — process each item
-            items = event.get("chatItems") or []
+            payload = event.get("resp") or event
+            items = payload.get("chatItems") or []
             for item_wrapper in items:
                 await self._handle_new_chat_item(item_wrapper)
         # Ignore all other event types (delivery receipts, contact updates, etc.)
@@ -502,20 +735,14 @@ class SimplexAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Send a text message to a contact or group."""
-        corr_id = self._make_corr_id()
-
-        if chat_id.startswith("group:"):
-            group_id = chat_id[6:]
-            cmd_str = f"#[{group_id}] {content}"
-        else:
-            cmd_str = f"@[{chat_id}] {content}"
-
-        payload = {
-            "corrId": corr_id,
-            "cmd": cmd_str,
-        }
-
-        await self._send_ws(payload)
+        target = await self._resolve_chat_target(chat_id)
+        if target.startswith("@[") or target.startswith("#["):
+            await self._send_ws({"corrId": self._make_corr_id(), "cmd": f"{target} {content}"})
+            return SendResult(success=True)
+        resp = await self._command_once(f"{target} {content}")
+        resp_payload = (resp or {}).get("resp") or {}
+        if resp_payload.get("type") == "chatCmdError":
+            return SendResult(success=False, error=str(resp_payload.get("chatError")))
         return SendResult(success=True)
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
@@ -634,26 +861,67 @@ async def _standalone_send(
         return {"error": "websockets not installed. Run: pip install websockets"}
 
     extra = getattr(pconfig, "extra", {}) or {}
-    ws_url = os.getenv("SIMPLEX_WS_URL") or extra.get("ws_url", "ws://127.0.0.1:5225")
+    ws_url = os.getenv("SIMPLEX_WS_URL") or extra.get("ws_url", "")
     if not ws_url:
         return {"error": "SimpleX standalone send: SIMPLEX_WS_URL is required"}
 
     try:
-        if chat_id.startswith("group:"):
-            group_id = chat_id[6:]
-            cmd_str = f"#[{group_id}] {message}"
-        else:
-            cmd_str = f"@[{chat_id}] {message}"
-
-        payload = {
-            "corrId": f"hermes-snd-{int(time.time() * 1000)}",
-            "cmd": cmd_str,
-        }
-
         async with _wsclient.connect(ws_url, open_timeout=10, close_timeout=5) as ws:
+            # Resolve Hermes's stable numeric IDs to simplex-chat command names.
+            resolve_corr = f"hermes-resolve-{int(time.time() * 1000)}"
+            await ws.send(json.dumps({"corrId": resolve_corr, "cmd": "/chats all"}))
+            target = None
+            deadline = time.time() + 10
+            while time.time() < deadline:
+                raw = await asyncio.wait_for(ws.recv(), timeout=max(0.1, deadline - time.time()))
+                msg = json.loads(raw)
+                if msg.get("corrId") != resolve_corr:
+                    continue
+                chats = (msg.get("resp") or {}).get("chats", []) or []
+                if chat_id.startswith("group:"):
+                    wanted = str(chat_id[6:])
+                    for chat in chats:
+                        group = ((chat.get("chatInfo") or {}).get("groupInfo") or {})
+                        if str(group.get("groupId")) == wanted:
+                            name = group.get("localDisplayName") or (group.get("groupProfile") or {}).get("displayName")
+                            if name:
+                                target = f"#'{_simplex_quote_name(name)}'"
+                                break
+                else:
+                    wanted = str(chat_id)
+                    for chat in chats:
+                        contact = ((chat.get("chatInfo") or {}).get("contact") or {})
+                        if str(contact.get("contactId")) == wanted:
+                            name = contact.get("localDisplayName") or (contact.get("profile") or {}).get("displayName")
+                            if name:
+                                target = f"@'{_simplex_quote_name(name)}'"
+                                break
+                break
+            if not target:
+                if chat_id.startswith("group:"):
+                    wanted = str(chat_id[6:])
+                    if not wanted.isdigit():
+                        target = f"#[{wanted}]"
+                elif not str(chat_id).isdigit():
+                    target = f"@[{chat_id}]"
+            if not target:
+                return {"error": f"SimpleX chat id not found: {chat_id}"}
+
+            payload = {
+                "corrId": f"hermes-snd-{int(time.time() * 1000)}",
+                "cmd": f"{target} {message}",
+            }
             await ws.send(json.dumps(payload))
-            # Give the daemon a moment to process the command before closing.
-            await asyncio.sleep(0.5)
+            deadline = time.time() + 10
+            while time.time() < deadline:
+                raw = await asyncio.wait_for(ws.recv(), timeout=max(0.1, deadline - time.time()))
+                msg = json.loads(raw)
+                if msg.get("corrId") != payload["corrId"]:
+                    continue
+                resp = msg.get("resp") or {}
+                if resp.get("type") == "chatCmdError":
+                    return {"error": f"SimpleX send failed: {resp.get('chatError')}"}
+                break
 
         return {"success": True, "platform": "simplex", "chat_id": chat_id}
     except Exception as e:
