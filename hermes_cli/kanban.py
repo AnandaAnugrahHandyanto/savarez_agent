@@ -71,7 +71,19 @@ def _task_to_dict(t: kb.Task) -> dict[str, Any]:
         "result": t.result,
         "skills": list(t.skills) if t.skills else [],
         "max_retries": t.max_retries,
+        "metadata": t.metadata or {},
     }
+
+def _parse_json_object(value: Optional[str], *, label: str) -> Optional[dict[str, Any]]:
+    if value is None:
+        return None
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError as exc:
+        raise argparse.ArgumentTypeError(f"{label} must be valid JSON: {exc.msg}") from exc
+    if not isinstance(parsed, dict):
+        raise argparse.ArgumentTypeError(f"{label} must be a JSON object")
+    return parsed
 
 
 def _parse_workspace_flag(value: str) -> tuple[str, Optional[str]]:
@@ -285,6 +297,8 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                                "(repeatable). Appended to the built-in "
                                "kanban-worker skill. Example: "
                                "--skill translation --skill github-code-review")
+    p_create.add_argument("--metadata", default=None,
+                          help='JSON object of durable task metadata, e.g. \'{"app":"mooninv"}\'')
     p_create.add_argument("--max-retries", type=int, default=None,
                           metavar="N",
                           help="Per-task override for the consecutive-failure "
@@ -312,6 +326,18 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_show = sub.add_parser("show", help="Show a task with comments + events")
     p_show.add_argument("task_id")
     p_show.add_argument("--json", action="store_true")
+
+
+    # --- metadata ---
+    p_meta = sub.add_parser("metadata", aliases=["meta"], help="Set or merge durable task metadata")
+    p_meta.add_argument("task_id")
+    p_meta.add_argument("--set", required=True, dest="metadata_json",
+                        help="JSON object to merge into task metadata")
+    p_meta.add_argument("--replace", action="store_true",
+                        help="Replace metadata instead of merging")
+    p_meta.add_argument("--author", default=None,
+                        help="Author recorded on the metadata_updated event")
+    p_meta.add_argument("--json", action="store_true")
 
     # --- assign ---
     p_assign = sub.add_parser("assign", help="Assign or reassign a task")
@@ -749,6 +775,8 @@ def kanban_command(args: argparse.Namespace) -> int:
         "list":     _cmd_list,
         "ls":       _cmd_list,
         "show":     _cmd_show,
+        "metadata": _cmd_metadata,
+        "meta":     _cmd_metadata,
         "assign":   _cmd_assign,
         "reclaim":  _cmd_reclaim,
         "reassign": _cmd_reassign,
@@ -1098,6 +1126,11 @@ def _cmd_create(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 2
+    try:
+        metadata = _parse_json_object(getattr(args, "metadata", None), label="--metadata")
+    except argparse.ArgumentTypeError as exc:
+        print(f"kanban: {exc}", file=sys.stderr)
+        return 2
     with kb.connect() as conn:
         task_id = kb.create_task(
             conn,
@@ -1115,6 +1148,7 @@ def _cmd_create(args: argparse.Namespace) -> int:
             max_runtime_seconds=max_runtime,
             skills=getattr(args, "skills", None) or None,
             max_retries=max_retries,
+            metadata=metadata,
         )
         task = kb.get_task(conn, task_id)
     if getattr(args, "json", False):
@@ -1242,6 +1276,8 @@ def _cmd_show(args: argparse.Namespace) -> int:
           (f" @ {task.workspace_path}" if task.workspace_path else ""))
     if task.skills:
         print(f"  skills:    {', '.join(task.skills)}")
+    if task.metadata:
+        print(f"  metadata:  {json.dumps(task.metadata, ensure_ascii=False, sort_keys=True)}")
     # Effective retry threshold. Show the per-task override if set,
     # otherwise the dispatcher's resolved value from config (or the
     # default if config doesn't set it either). Helps operators see
@@ -1335,6 +1371,32 @@ def _cmd_show(args: argparse.Namespace) -> int:
                 print(f"        → {r.summary.splitlines()[0][:160]}")
             if r.error:
                 print(f"        ! {r.error.splitlines()[0][:160]}")
+    return 0
+
+
+def _cmd_metadata(args: argparse.Namespace) -> int:
+    try:
+        metadata = _parse_json_object(args.metadata_json, label="--set")
+    except argparse.ArgumentTypeError as exc:
+        print(f"kanban: {exc}", file=sys.stderr)
+        return 2
+    with kb.connect() as conn:
+        try:
+            merged = kb.update_task_metadata(
+                conn,
+                args.task_id,
+                metadata or {},
+                merge=not bool(getattr(args, "replace", False)),
+                author=args.author or _profile_author(),
+            )
+            task = kb.get_task(conn, args.task_id)
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
+    if getattr(args, "json", False):
+        print(json.dumps(_task_to_dict(task), indent=2, ensure_ascii=False))
+    else:
+        print(f"Updated metadata for {args.task_id}: {json.dumps(merged, ensure_ascii=False, sort_keys=True)}")
     return 0
 
 

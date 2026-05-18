@@ -575,6 +575,7 @@ class Task:
     claim_lock: Optional[str]
     claim_expires: Optional[int]
     tenant: Optional[str]
+    metadata: Optional[dict[str, Any]] = None
     result: Optional[str] = None
     idempotency_key: Optional[str] = None
     # Unified non-success counter. Incremented on any of:
@@ -611,6 +612,15 @@ class Task:
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
         keys = set(row.keys())
+        metadata_value: Optional[dict[str, Any]] = None
+        if "metadata" in keys and row["metadata"]:
+            try:
+                parsed_meta = json.loads(row["metadata"])
+                if isinstance(parsed_meta, dict):
+                    metadata_value = parsed_meta
+            except Exception:
+                metadata_value = None
+
         # Parse skills JSON blob if present
         skills_value: Optional[list] = None
         if "skills" in keys and row["skills"]:
@@ -636,6 +646,7 @@ class Task:
             claim_lock=row["claim_lock"],
             claim_expires=row["claim_expires"],
             tenant=row["tenant"] if "tenant" in keys else None,
+            metadata=metadata_value,
             result=row["result"] if "result" in keys else None,
             idempotency_key=row["idempotency_key"] if "idempotency_key" in keys else None,
             consecutive_failures=(
@@ -769,6 +780,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     claim_expires        INTEGER,
     tenant               TEXT,
     result               TEXT,
+    metadata             TEXT,
     idempotency_key      TEXT,
     -- Unified consecutive-failure counter. Incremented on spawn
     -- failure, timeout, or crash; reset only on successful completion.
@@ -997,6 +1009,8 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
         _add_column_if_missing(conn, "tasks", "tenant", "tenant TEXT")
     if "result" not in cols:
         _add_column_if_missing(conn, "tasks", "result", "result TEXT")
+    if "metadata" not in cols:
+        _add_column_if_missing(conn, "tasks", "metadata", "metadata TEXT")
     if "idempotency_key" not in cols:
         _add_column_if_missing(
             conn, "tasks", "idempotency_key", "idempotency_key TEXT"
@@ -1245,6 +1259,7 @@ def create_task(
     max_runtime_seconds: Optional[int] = None,
     skills: Optional[Iterable[str]] = None,
     max_retries: Optional[int] = None,
+    metadata: Optional[dict[str, Any]] = None,
 ) -> str:
     """Create a new task and optionally link it under parent tasks.
 
@@ -1279,6 +1294,8 @@ def create_task(
             f"got {workspace_kind!r}"
         )
     parents = tuple(p for p in parents if p)
+    if metadata is not None and not isinstance(metadata, dict):
+        raise ValueError("metadata must be a JSON object")
 
     # Normalise + validate skills: strip whitespace, drop empties, dedupe
     # (preserving order). Refuse commas inside a single name so we don't
@@ -1377,9 +1394,9 @@ def create_task(
                     INSERT INTO tasks (
                         id, title, body, assignee, status, priority,
                         created_by, created_at, workspace_kind, workspace_path,
-                        tenant, idempotency_key, max_runtime_seconds, skills,
+                        tenant, metadata, idempotency_key, max_runtime_seconds, skills,
                         max_retries
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id,
@@ -1393,6 +1410,7 @@ def create_task(
                         workspace_kind,
                         workspace_path,
                         tenant,
+                        json.dumps(metadata, ensure_ascii=False, sort_keys=True) if metadata is not None else None,
                         idempotency_key,
                         int(max_runtime_seconds) if max_runtime_seconds else None,
                         json.dumps(skills_list) if skills_list is not None else None,
@@ -1413,6 +1431,7 @@ def create_task(
                         "status": initial_status,
                         "parents": list(parents),
                         "tenant": tenant,
+                        "metadata": metadata,
                         "skills": list(skills_list) if skills_list else None,
                     },
                 )
@@ -1424,6 +1443,36 @@ def create_task(
             continue
     raise RuntimeError("unreachable")
 
+
+
+def update_task_metadata(
+    conn: sqlite3.Connection,
+    task_id: str,
+    metadata: dict[str, Any],
+    *,
+    merge: bool = True,
+    author: Optional[str] = None,
+) -> dict[str, Any]:
+    """Set or merge durable task metadata; return the resulting object."""
+    if not isinstance(metadata, dict):
+        raise ValueError("metadata must be a JSON object")
+    with write_txn(conn):
+        task = get_task(conn, task_id)
+        if not task:
+            raise ValueError(f"no such task: {task_id}")
+        current = task.metadata or {}
+        new_meta = {**current, **metadata} if merge else dict(metadata)
+        conn.execute(
+            "UPDATE tasks SET metadata = ? WHERE id = ?",
+            (json.dumps(new_meta, ensure_ascii=False, sort_keys=True), task_id),
+        )
+        _append_event(
+            conn,
+            task_id,
+            "metadata_updated",
+            {"author": author, "merge": merge, "metadata": new_meta},
+        )
+    return new_meta
 
 def _find_missing_parents(conn: sqlite3.Connection, parents: Iterable[str]) -> list[str]:
     parents = list(parents)
@@ -4327,6 +4376,11 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
     if task.body and task.body.strip():
         lines.append("## Body")
         lines.append(_cap(task.body, _CTX_MAX_BODY_BYTES))
+        lines.append("")
+
+    if task.metadata:
+        lines.append("## Metadata")
+        lines.append(_cap(json.dumps(task.metadata, ensure_ascii=False, sort_keys=True)))
         lines.append("")
 
     # Prior attempts — show closed runs so a retrying worker sees the

@@ -119,6 +119,37 @@ def test_run_slash_json_output(kanban_home):
     assert payload["status"] == "ready"
 
 
+
+
+def test_run_slash_create_with_metadata_json(kanban_home):
+    out = kc.run_slash('create "moon card" --metadata \'{"app":"mooninv","risk":"low"}\' --json')
+    payload = json.loads(out)
+    assert payload["metadata"] == {"app": "mooninv", "risk": "low"}
+
+
+def test_run_slash_metadata_update_merges_fields(kanban_home):
+    out = kc.run_slash('create "moon card" --metadata \'{"app":"mooninv","risk":"low"}\' --json')
+    tid = json.loads(out)["id"]
+
+    updated = json.loads(kc.run_slash(f'metadata {tid} --set \'{{"branch":"feat/x","risk":"medium"}}\' --json'))
+    assert updated["metadata"] == {
+        "app": "mooninv",
+        "risk": "medium",
+        "branch": "feat/x",
+    }
+
+    shown = json.loads(kc.run_slash(f"show {tid} --json"))
+    assert shown["task"]["metadata"]["branch"] == "feat/x"
+    plain = kc.run_slash(f"show {tid}")
+    assert "metadata:" in plain
+    assert "feat/x" in plain
+
+    with kb.connect() as conn:
+        ctx = kb.build_worker_context(conn, tid)
+    assert "## Metadata" in ctx
+    assert "feat/x" in ctx
+
+
 def test_run_slash_dispatch_dry_run_counts(kanban_home):
     kc.run_slash("create 'a' --assignee alice")
     kc.run_slash("create 'b' --assignee bob")
