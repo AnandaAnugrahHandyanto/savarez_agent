@@ -3613,6 +3613,14 @@ def mount_spa(application: FastAPI):
 
     @application.get("/{full_path:path}")
     async def serve_spa(full_path: str, request: Request):
+        # API routes must never fall through to the SPA shell. Any unmatched
+        # request under /api/* is a real 404 — masking it with the HTML index
+        # page hides typos and missing-route mounts (see kanban t_d26f5124).
+        if full_path.startswith("api/"):
+            return JSONResponse(
+                {"error": f"no such api route: /{full_path}"},
+                status_code=404,
+            )
         prefix = _normalise_prefix(request.headers.get("x-forwarded-prefix"))
         file_path = WEB_DIST / full_path
         # Prevent path traversal via url-encoded sequences (%2e%2e/)
