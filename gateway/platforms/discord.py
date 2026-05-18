@@ -86,8 +86,32 @@ def _clean_discord_id(entry: str) -> str:
 
 
 def check_discord_requirements() -> bool:
-    """Check if Discord dependencies are available."""
-    return DISCORD_AVAILABLE
+    """Check if Discord dependencies are available.
+
+    Lazy-installs discord.py via ``tools.lazy_deps.ensure("platform.discord")``
+    on first call if not present. After successful install, re-binds module
+    globals so ``DISCORD_AVAILABLE`` becomes True.
+    """
+    global DISCORD_AVAILABLE, discord, DiscordMessage, Intents, commands
+    if DISCORD_AVAILABLE:
+        return True
+    try:
+        from tools.lazy_deps import ensure as _lazy_ensure
+        _lazy_ensure("platform.discord", prompt=False)
+    except Exception:
+        return False
+    try:
+        import discord as _discord
+        from discord import Message as _DM, Intents as _Intents
+        from discord.ext import commands as _commands
+    except ImportError:
+        return False
+    discord = _discord
+    DiscordMessage = _DM
+    Intents = _Intents
+    commands = _commands
+    DISCORD_AVAILABLE = True
+    return True
 
 
 def _build_allowed_mentions():
@@ -115,7 +139,7 @@ def _build_allowed_mentions():
         raw = os.getenv(name, "").strip().lower()
         if not raw:
             return default
-        return raw in ("true", "1", "yes", "on")
+        return raw in {"true", "1", "yes", "on"}
 
     return discord.AllowedMentions(
         everyone=_b("DISCORD_ALLOW_MENTION_EVERYONE", False),
@@ -532,12 +556,6 @@ class DiscordAdapter(BasePlatformAdapter):
         self._ready_event = asyncio.Event()
         self._allowed_user_ids: set = set()  # For button approval authorization
         self._allowed_role_ids: set = set()  # For DISCORD_ALLOWED_ROLES filtering
-        # Busy-session view state: session_key → message_id of the
-        # message currently carrying the [Steer][Interrupt][Stop] view.
-        # Discord's BusySessionView holds session_key on the view
-        # instance directly, so callback_data length isn't a concern here.
-        self._busy_session_view_map: Dict[str, str] = {}
-        self._busy_control_bubble_ids: Dict[str, str] = {}
         self.gateway_runner = None  # Set by gateway/run.py for cross-platform delivery
         # Voice channel state (per-guild)
         self._voice_clients: Dict[int, Any] = {}  # guild_id -> VoiceClient
@@ -571,6 +589,10 @@ class DiscordAdapter(BasePlatformAdapter):
         # chunk only, default), "all" (reply-reference on every chunk).
         self._reply_to_mode: str = getattr(config, 'reply_to_mode', 'first') or 'first'
         self._slash_commands: bool = self.config.extra.get("slash_commands", True)
+        # In-memory cache of the bot's last message ID per channel, used by
+        # history backfill to skip the full scan on hot paths.  Falls back to
+        # scanning channel.history() on cache miss (cold start / restart).
+        self._last_self_message_id: Dict[str, str] = {}
 
     async def connect(self) -> bool:
         """Connect to Discord and start receiving events."""
@@ -714,7 +736,7 @@ class DiscordAdapter(BasePlatformAdapter):
 
                 # Ignore Discord system messages (thread renames, pins, member joins, etc.)
                 # Allow both default and reply types — replies have a distinct MessageType.
-                if message.type not in (discord.MessageType.default, discord.MessageType.reply):
+                if message.type not in {discord.MessageType.default, discord.MessageType.reply}:
                     return
 
                 # Bot message filtering (DISCORD_ALLOW_BOTS):
@@ -775,7 +797,7 @@ class DiscordAdapter(BasePlatformAdapter):
                     # answer regardless of who is mentioned.
                     _ignore_no_mention = os.getenv(
                         "DISCORD_IGNORE_NO_MENTION", "true"
-                    ).lower() in ("true", "1", "yes")
+                    ).lower() in {"true", "1", "yes"}
                     if _ignore_no_mention and not _self_mentioned and not _other_bots_mentioned:
                         _channel_id = str(message.channel.id)
                         _parent_id = None
@@ -1323,7 +1345,7 @@ class DiscordAdapter(BasePlatformAdapter):
 
     def _reactions_enabled(self) -> bool:
         """Check if message reactions are enabled via config/env."""
-        return os.getenv("DISCORD_REACTIONS", "true").lower() not in ("false", "0", "no")
+        return os.getenv("DISCORD_REACTIONS", "true").lower() not in {"false", "0", "no"}
 
     async def on_processing_start(self, event: MessageEvent) -> None:
         """Add an in-progress reaction for normal Discord message events."""
@@ -1440,6 +1462,12 @@ class DiscordAdapter(BasePlatformAdapter):
                     else:
                         raise
                 message_ids.append(str(msg.id))
+
+            # Track the last message we sent in this channel for history
+            # backfill — avoids a full channel.history() scan on hot paths.
+            if message_ids:
+                _target_id = thread_id or chat_id
+                self._last_self_message_id[_target_id] = message_ids[-1]
 
             return SendResult(
                 success=True,
@@ -2703,6 +2731,8 @@ class DiscordAdapter(BasePlatformAdapter):
                     await asyncio.sleep(8)
             except asyncio.CancelledError:
                 pass
+            finally:
+                self._typing_tasks.pop(chat_id, None)
 
         self._typing_tasks[chat_id] = asyncio.create_task(_typing_loop())
 
@@ -3141,9 +3171,9 @@ class DiscordAdapter(BasePlatformAdapter):
         # UX so users don't see commands they can't invoke. Off by default
         # to preserve the slash UX for deployments that intentionally allow
         # everyone in the guild.
-        if os.getenv("DISCORD_HIDE_SLASH_COMMANDS", "false").strip().lower() in (
+        if os.getenv("DISCORD_HIDE_SLASH_COMMANDS", "false").strip().lower() in {
             "true", "1", "yes", "on",
-        ):
+        }:
             self._apply_owner_only_visibility(tree)
 
     def _apply_owner_only_visibility(self, tree) -> None:
@@ -3530,9 +3560,46 @@ class DiscordAdapter(BasePlatformAdapter):
         configured = self.config.extra.get("require_mention")
         if configured is not None:
             if isinstance(configured, str):
-                return configured.lower() not in ("false", "0", "no", "off")
+                return configured.lower() not in {"false", "0", "no", "off"}
             return bool(configured)
-        return os.getenv("DISCORD_REQUIRE_MENTION", "true").lower() not in ("false", "0", "no", "off")
+        return os.getenv("DISCORD_REQUIRE_MENTION", "true").lower() not in {"false", "0", "no", "off"}
+
+    def _discord_allow_any_attachment(self) -> bool:
+        """Return whether Discord attachments bypass the SUPPORTED_DOCUMENT_TYPES allowlist.
+
+        When True, any uploaded file is cached to disk and surfaced to the
+        agent as a local path so it can be inspected via terminal / read_file
+        / ffprobe / etc. Default False preserves the historical behaviour of
+        dropping unsupported types with a warning log.
+        """
+        configured = self.config.extra.get("allow_any_attachment")
+        if configured is not None:
+            if isinstance(configured, str):
+                return configured.lower() not in {"false", "0", "no", "off", ""}
+            return bool(configured)
+        return os.getenv("DISCORD_ALLOW_ANY_ATTACHMENT", "false").lower() in {"true", "1", "yes", "on"}
+
+    def _discord_max_attachment_bytes(self) -> int:
+        """Return the per-attachment byte cap. 0 means unlimited.
+
+        The whole attachment is held in memory while being written to the
+        cache, so unlimited carries a real memory cost. Default 32 MiB
+        matches the historical hardcoded value.
+        """
+        configured = self.config.extra.get("max_attachment_bytes")
+        if configured is None:
+            configured = os.getenv("DISCORD_MAX_ATTACHMENT_BYTES")
+        if configured is None or configured == "":
+            return 32 * 1024 * 1024
+        try:
+            value = int(configured)
+        except (TypeError, ValueError):
+            logger.warning(
+                "[Discord] Invalid max_attachment_bytes value %r, falling back to 32 MiB",
+                configured,
+            )
+            return 32 * 1024 * 1024
+        return max(0, value)
 
     def _discord_free_response_channels(self) -> set:
         """Return Discord channel IDs where no bot mention is required.
@@ -3556,6 +3623,153 @@ class DiscordAdapter(BasePlatformAdapter):
         if s:
             return {part.strip() for part in s.split(",") if part.strip()}
         return set()
+
+    def _discord_thread_require_mention(self) -> bool:
+        """Return whether thread participation requires @mention to follow up.
+
+        When ``False`` (default), once the bot has participated in a thread it
+        keeps responding to every message in that thread without needing to be
+        mentioned again — useful for one-on-one conversations.
+
+        When ``True``, the @mention requirement is enforced inside threads as
+        well.  Set this when multiple bots share a thread and you want each
+        one to only fire on explicit @mention, avoiding bot-to-bot loops or
+        unwanted cross-replies.
+        """
+        configured = self.config.extra.get("thread_require_mention")
+        if configured is not None:
+            if isinstance(configured, str):
+                return configured.lower() not in {"false", "0", "no", "off"}
+            return bool(configured)
+        return os.getenv("DISCORD_THREAD_REQUIRE_MENTION", "false").lower() in {"true", "1", "yes", "on"}
+
+    def _discord_history_backfill(self) -> bool:
+        """Return whether history backfill is enabled for shared sessions."""
+        configured = self.config.extra.get("history_backfill")
+        if configured is not None:
+            if isinstance(configured, str):
+                return configured.lower() not in {"false", "0", "no", "off"}
+            return bool(configured)
+        return os.getenv("DISCORD_HISTORY_BACKFILL", "true").lower() in {"true", "1", "yes"}
+
+    def _discord_history_backfill_limit(self) -> int:
+        """Return the max number of messages to scan backwards for context.
+
+        In practice the scan usually stops much earlier — at the bot's own
+        last message in the channel (the natural partition point).  This
+        limit is a safety cap for cold starts and long gaps where no prior
+        bot message exists in recent history.
+        """
+        configured = self.config.extra.get("history_backfill_limit")
+        if configured is not None:
+            try:
+                return int(configured)
+            except (ValueError, TypeError):
+                pass
+        raw = os.getenv("DISCORD_HISTORY_BACKFILL_LIMIT", "50")
+        try:
+            return int(raw)
+        except (ValueError, TypeError):
+            return 50
+
+    async def _fetch_channel_context(
+        self,
+        channel: Any,
+        before: "DiscordMessage",
+    ) -> str:
+        """Fetch recent channel messages for conversational context.
+
+        Scans backwards from *before* and collects messages until it hits
+        a message sent by this bot (the natural partition point between
+        bot turns) or reaches ``history_backfill_limit``.
+
+        Returns a formatted block like::
+
+            [Recent channel messages]
+            [Alice] some message
+            [Bob [bot]] another message
+
+        Returns an empty string if no context is available.
+        """
+        limit = self._discord_history_backfill_limit()
+        if limit <= 0:
+            return ""
+
+        # Determine which bot messages to include in context
+        allow_bots_raw = os.getenv("DISCORD_ALLOW_BOTS", "none").lower().strip()
+        include_other_bots = allow_bots_raw != "none"
+
+        # Use the in-memory cache to narrow the fetch window on hot paths.
+        # If we know our last message ID in this channel, pass it as `after`
+        # to avoid scanning the full limit.  Falls back to scanning on cache
+        # miss (cold start / restart).
+        # Guard: only use the cache when it's chronologically before the
+        # trigger — Discord snowflake IDs are monotonically increasing, so
+        # a simple int comparison suffices.
+        channel_id = str(getattr(channel, "id", ""))
+        _cached_id = self._last_self_message_id.get(channel_id)
+        _after_obj = None
+        try:
+            if _cached_id and int(_cached_id) < int(before.id):
+                _after_obj = discord.Object(id=int(_cached_id))
+        except (ValueError, TypeError):
+            pass  # Malformed cache entry — fall back to cold-start scan
+
+        try:
+            collected = []
+            # IMPORTANT: pass oldest_first=False explicitly.  discord.py 2.x
+            # silently flips the default to True when `after=` is supplied,
+            # which would select the *earliest* N messages after our last
+            # response instead of the *latest* N before the trigger.  In
+            # high-traffic windows that returns stale tool traces and drops
+            # the actual final answer.  See the regression test
+            # `test_fetch_channel_context_cache_uses_latest_window_when_after_set`.
+            async for msg in channel.history(
+                limit=limit,
+                before=before,
+                after=_after_obj,
+                oldest_first=False,
+            ):
+                # Stop at our own message — this is the partition point.
+                # Everything before this is already in the session transcript.
+                # (Redundant when _after_obj is set, but needed for cold start.)
+                if msg.author == self._client.user:
+                    break
+
+                # Skip system messages (pins, joins, thread renames, etc.)
+                if msg.type not in {discord.MessageType.default, discord.MessageType.reply}:
+                    continue
+
+                # Respect DISCORD_ALLOW_BOTS for other bots.
+                # For history context, "mentions" is treated as "all" — we are
+                # deciding what context to show, not whether to respond.
+                if getattr(msg.author, "bot", False) and not include_other_bots:
+                    continue
+
+                content = getattr(msg, "clean_content", msg.content) or ""
+                if not content and msg.attachments:
+                    content = "(attachment)"
+                if not content:
+                    continue
+
+                name = msg.author.display_name
+                if getattr(msg.author, "bot", False):
+                    name = f"{name} [bot]"
+                collected.append(f"[{name}] {content}")
+
+            if not collected:
+                return ""
+
+            # channel.history returns newest-first (oldest_first=False); reverse for chronological order
+            collected.reverse()
+            return "[Recent channel messages]\n" + "\n".join(collected)
+
+        except discord.Forbidden:
+            logger.debug("[%s] Missing permissions to fetch channel history", self.name)
+            return ""
+        except Exception as e:
+            logger.warning("[%s] Failed to fetch channel history: %s", self.name, e)
+            return ""
 
     def _thread_parent_channel(self, channel: Any) -> Any:
         """Return the parent text channel when invoked from a thread."""
@@ -3695,6 +3909,84 @@ class DiscordAdapter(BasePlatformAdapter):
                 )
                 return None
 
+    async def create_handoff_thread(
+        self,
+        parent_chat_id: str,
+        name: str,
+    ) -> Optional[str]:
+        """Create a Discord thread under a text channel for a handoff.
+
+        Falls back to a seed-message + ``message.create_thread`` path if
+        ``parent.create_thread`` is rejected (some channel types or
+        permission setups). Returns the new thread id as a string, or
+        ``None`` on failure or when the parent isn't a text channel
+        (DMs, voice channels, threads themselves can't host threads).
+        """
+        if not self._client or not DISCORD_AVAILABLE:
+            return None
+
+        try:
+            parent_id = int(parent_chat_id)
+        except (TypeError, ValueError):
+            return None
+
+        try:
+            parent = self._client.get_channel(parent_id)
+            if parent is None:
+                parent = await self._client.fetch_channel(parent_id)
+        except Exception as exc:
+            logger.warning(
+                "[%s] Handoff thread: cannot resolve parent %s: %s",
+                self.name, parent_chat_id, exc,
+            )
+            return None
+
+        # DMs, voice channels, and existing threads can't host child threads.
+        if isinstance(parent, getattr(discord, "DMChannel", ())):
+            logger.info(
+                "[%s] Handoff thread: parent %s is a DM; threads not supported here",
+                self.name, parent_chat_id,
+            )
+            return None
+
+        thread_name = (name or "handoff").strip()[:80] or "handoff"
+        reason = "Hermes session handoff"
+
+        # First try: create a thread directly on the channel.
+        try:
+            create = getattr(parent, "create_thread", None)
+            if create is not None:
+                thread = await create(
+                    name=thread_name,
+                    auto_archive_duration=1440,
+                    reason=reason,
+                )
+                return str(thread.id)
+        except Exception as direct_error:
+            logger.debug(
+                "[%s] Handoff thread: direct create failed (%s); trying seed-message fallback",
+                self.name, direct_error,
+            )
+
+        # Fallback: post a seed message and create the thread from it.
+        try:
+            send = getattr(parent, "send", None)
+            if send is None:
+                return None
+            seed_msg = await send(f"\U0001f9f5 Hermes handoff: **{thread_name}**")
+            thread = await seed_msg.create_thread(
+                name=thread_name,
+                auto_archive_duration=1440,
+                reason=reason,
+            )
+            return str(thread.id)
+        except Exception as fallback_error:
+            logger.warning(
+                "[%s] Handoff thread: both create paths failed for parent %s: %s",
+                self.name, parent_chat_id, fallback_error,
+            )
+            return None
+
     async def send_exec_approval(
         self, chat_id: str, command: str, session_key: str,
         description: str = "dangerous command",
@@ -3777,6 +4069,84 @@ class DiscordAdapter(BasePlatformAdapter):
             msg = await channel.send(embed=embed, view=view)
             return SendResult(success=True, message_id=str(msg.id))
         except Exception as e:
+            return SendResult(success=False, error=str(e))
+
+    async def send_clarify(
+        self,
+        chat_id: str,
+        question: str,
+        choices: Optional[list],
+        clarify_id: str,
+        session_key: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Render a clarify prompt with one Discord button per choice.
+
+        Multi-choice mode (``choices`` non-empty): renders a button per option
+        plus a final "✏️ Other (type answer)" button. Picking "Other" flips
+        the clarify entry into text-capture mode so the next user message in
+        the session becomes the response. Numeric clicks resolve immediately
+        via ``resolve_gateway_clarify(clarify_id, choice_text)``.
+
+        Open-ended mode (``choices`` empty/None): renders the question as
+        plain embed text — no buttons. The gateway's text-intercept captures
+        the next message in this session and resolves the clarify.
+        """
+        if not self._client or not DISCORD_AVAILABLE:
+            return SendResult(success=False, error="Not connected")
+
+        try:
+            target_id = chat_id
+            if metadata and metadata.get("thread_id"):
+                target_id = metadata["thread_id"]
+
+            channel = self._client.get_channel(int(target_id))
+            if not channel:
+                channel = await self._client.fetch_channel(int(target_id))
+
+            # Discord embed description limit is 4096; trim conservatively.
+            max_desc = 4088
+            body = str(question or "").strip()
+            if len(body) > max_desc:
+                body = body[: max_desc - 3] + "..."
+
+            embed = discord.Embed(
+                title="❓ Hermes needs your input",
+                description=body,
+                color=discord.Color.orange(),
+            )
+
+            clean_choices = [
+                str(c).strip() for c in (choices or []) if c is not None and str(c).strip()
+            ]
+            # Discord allows up to 5 buttons per row, 5 rows per view = 25.
+            # We reserve one slot for the "Other" button, so cap at 24 choices.
+            clean_choices = clean_choices[:24]
+
+            if clean_choices:
+                embed.add_field(
+                    name="Choices",
+                    value="Pick one below, or click ✏️ Other to type a custom answer.",
+                    inline=False,
+                )
+                view = ClarifyChoiceView(
+                    choices=clean_choices,
+                    clarify_id=clarify_id,
+                    allowed_user_ids=self._allowed_user_ids,
+                    allowed_role_ids=self._allowed_role_ids,
+                )
+            else:
+                embed.add_field(
+                    name="Reply",
+                    value="Reply in this channel with your answer.",
+                    inline=False,
+                )
+                view = None
+
+            msg = await channel.send(embed=embed, view=view) if view else await channel.send(embed=embed)
+            return SendResult(success=True, message_id=str(msg.id))
+        except Exception as e:
+            logger.warning("[%s] send_clarify failed: %s", self.name, e)
             return SendResult(success=False, error=str(e))
 
     async def send_update_prompt(
@@ -4069,6 +4439,17 @@ class DiscordAdapter(BasePlatformAdapter):
         raw_content = message.content.strip()
         normalized_content = raw_content
         mention_prefix = False
+
+        snapshot_attachments = []
+        if hasattr(message, "message_snapshots") and message.message_snapshots:
+            snapshot_text_parts = []
+            for snap in message.message_snapshots:
+                if getattr(snap, "content", None):
+                    snapshot_text_parts.append(snap.content.strip())
+                snapshot_attachments.extend(getattr(snap, "attachments", []) or [])
+            if snapshot_text_parts and not raw_content:
+                raw_content = "\n".join(snapshot_text_parts)
+                normalized_content = raw_content
         if self._client.user and self._client.user in message.mentions:
             mention_prefix = True
             normalized_content = normalized_content.replace(f"<@{self._client.user.id}>", "").strip()
@@ -4111,8 +4492,15 @@ class DiscordAdapter(BasePlatformAdapter):
             )
 
             # Skip the mention check if the message is in a thread where
-            # the bot has previously participated (auto-created or replied in).
-            in_bot_thread = is_thread and thread_id in self._threads
+            # the bot has previously participated (auto-created or replied in)
+            # — UNLESS thread_require_mention is enabled, in which case threads
+            # are gated the same as channels.  Useful when multiple bots share
+            # a thread.
+            in_bot_thread = (
+                is_thread
+                and thread_id in self._threads
+                and not self._discord_thread_require_mention()
+            )
 
             if require_mention and not is_free_channel and not in_bot_thread:
                 if self._client.user not in message.mentions and not mention_prefix:
@@ -4125,8 +4513,8 @@ class DiscordAdapter(BasePlatformAdapter):
         if not is_thread and not isinstance(message.channel, discord.DMChannel):
             no_thread_channels_raw = os.getenv("DISCORD_NO_THREAD_CHANNELS", "")
             no_thread_channels = {ch.strip() for ch in no_thread_channels_raw.split(",") if ch.strip()}
-            skip_thread = bool(channel_ids & no_thread_channels)
-            auto_thread = os.getenv("DISCORD_AUTO_THREAD", "true").lower() in ("true", "1", "yes")
+            skip_thread = bool(channel_ids & no_thread_channels) or is_free_channel
+            auto_thread = os.getenv("DISCORD_AUTO_THREAD", "true").lower() in {"true", "1", "yes"}
             is_reply_message = getattr(message, "type", None) == discord.MessageType.reply
             if auto_thread and not skip_thread and not is_voice_linked_channel and not is_reply_message:
                 thread = await self._auto_create_thread(message)
@@ -4137,13 +4525,16 @@ class DiscordAdapter(BasePlatformAdapter):
                     auto_threaded_channel = thread
                     self._threads.mark(thread_id)
 
+        all_attachments = list(message.attachments) + snapshot_attachments
+
         # Determine message type
         msg_type = MessageType.TEXT
         if normalized_content.startswith("/"):
             msg_type = MessageType.COMMAND
-        elif message.attachments:
+        elif all_attachments:
+            _allow_any = self._discord_allow_any_attachment()
             # Check attachment types
-            for att in message.attachments:
+            for att in all_attachments:
                 if att.content_type:
                     if att.content_type.startswith("image/"):
                         msg_type = MessageType.PHOTO
@@ -4156,8 +4547,14 @@ class DiscordAdapter(BasePlatformAdapter):
                         if att.filename:
                             _, doc_ext = os.path.splitext(att.filename)
                             doc_ext = doc_ext.lower()
-                        if doc_ext in SUPPORTED_DOCUMENT_TYPES:
+                        if doc_ext in SUPPORTED_DOCUMENT_TYPES or _allow_any:
                             msg_type = MessageType.DOCUMENT
+                    break
+                elif _allow_any:
+                    # No content_type at all (rare — discord usually fills it
+                    # in). Treat as a document so downstream pipelines surface
+                    # the path to the agent.
+                    msg_type = MessageType.DOCUMENT
                     break
 
         # When auto-threading kicked in, route responses to the new thread
@@ -4202,13 +4599,13 @@ class DiscordAdapter(BasePlatformAdapter):
         media_urls = []
         media_types = []
         pending_text_injection: Optional[str] = None
-        for att in message.attachments:
+        for att in all_attachments:
             content_type = att.content_type or "unknown"
             if content_type.startswith("image/"):
                 try:
                     # Determine extension from content type (image/png -> .png)
                     ext = "." + content_type.split("/")[-1].split(";")[0]
-                    if ext not in (".jpg", ".jpeg", ".png", ".gif", ".webp"):
+                    if ext not in {".jpg", ".jpeg", ".png", ".gif", ".webp"}:
                         ext = ".jpg"
                     cached_path = await self._cache_discord_image(att, ext)
                     media_urls.append(cached_path)
@@ -4222,7 +4619,7 @@ class DiscordAdapter(BasePlatformAdapter):
             elif content_type.startswith("audio/"):
                 try:
                     ext = "." + content_type.split("/")[-1].split(";")[0]
-                    if ext not in (".ogg", ".mp3", ".wav", ".webm", ".m4a"):
+                    if ext not in {".ogg", ".mp3", ".wav", ".webm", ".m4a"}:
                         ext = ".ogg"
                     cached_path = await self._cache_discord_audio(att, ext)
                     media_urls.append(cached_path)
@@ -4241,31 +4638,48 @@ class DiscordAdapter(BasePlatformAdapter):
                 if not ext and content_type:
                     mime_to_ext = {v: k for k, v in SUPPORTED_DOCUMENT_TYPES.items()}
                     ext = mime_to_ext.get(content_type, "")
-                if ext not in SUPPORTED_DOCUMENT_TYPES:
+                allow_any_attachment = self._discord_allow_any_attachment()
+                in_allowlist = ext in SUPPORTED_DOCUMENT_TYPES
+                if not in_allowlist and not allow_any_attachment:
                     logger.warning(
                         "[Discord] Unsupported document type '%s' (%s), skipping",
                         ext or "unknown", content_type,
                     )
                 else:
-                    MAX_DOC_BYTES = 32 * 1024 * 1024
-                    if att.size and att.size > MAX_DOC_BYTES:
+                    max_doc_bytes = self._discord_max_attachment_bytes()
+                    if max_doc_bytes and att.size and att.size > max_doc_bytes:
                         logger.warning(
-                            "[Discord] Document too large (%s bytes), skipping: %s",
-                            att.size, att.filename,
+                            "[Discord] Document too large (%s bytes > cap %s), skipping: %s",
+                            att.size, max_doc_bytes, att.filename,
                         )
                     else:
                         try:
                             raw_bytes = await self._cache_discord_document(att, ext)
                             cached_path = cache_document_from_bytes(
-                                raw_bytes, att.filename or f"document{ext}"
+                                raw_bytes, att.filename or f"document{ext or '.bin'}"
                             )
-                            doc_mime = SUPPORTED_DOCUMENT_TYPES[ext]
+                            if in_allowlist:
+                                doc_mime = SUPPORTED_DOCUMENT_TYPES[ext]
+                            else:
+                                # allow_any_attachment path: untyped file. Use the
+                                # source content_type if discord gave us one,
+                                # otherwise fall back to octet-stream so the agent
+                                # knows it's binary and reaches for terminal tools.
+                                doc_mime = (
+                                    content_type
+                                    if content_type and content_type != "unknown"
+                                    else "application/octet-stream"
+                                )
                             media_urls.append(cached_path)
                             media_types.append(doc_mime)
-                            logger.info("[Discord] Cached user document: %s", cached_path)
+                            logger.info(
+                                "[Discord] Cached user %s: %s",
+                                "document" if in_allowlist else "attachment",
+                                cached_path,
+                            )
                             # Inject text content for plain-text documents (capped at 100 KB)
                             MAX_TEXT_INJECT_BYTES = 100 * 1024
-                            if ext in (".md", ".txt", ".log") and len(raw_bytes) <= MAX_TEXT_INJECT_BYTES:
+                            if in_allowlist and ext in {".md", ".txt", ".log"} and len(raw_bytes) <= MAX_TEXT_INJECT_BYTES:
                                 try:
                                     text_content = raw_bytes.decode("utf-8")
                                     display_name = att.filename or f"document{ext}"
@@ -4277,6 +4691,13 @@ class DiscordAdapter(BasePlatformAdapter):
                                         pending_text_injection = injection
                                 except UnicodeDecodeError:
                                     pass
+                            # NOTE: for the allow_any_attachment path we deliberately
+                            # do NOT inject a path string here. ``gateway/run.py``
+                            # already detects DOCUMENT-typed events with
+                            # ``application/octet-stream`` MIME and emits a context
+                            # note with the sandbox-translated cache path via
+                            # ``to_agent_visible_cache_path()`` (important for
+                            # Docker/Modal terminal backends).
                         except Exception as e:
                             logger.warning(
                                 "[Discord] Failed to cache document %s: %s",
@@ -4289,9 +4710,50 @@ class DiscordAdapter(BasePlatformAdapter):
         if pending_text_injection:
             event_text = f"{pending_text_injection}\n\n{event_text}" if event_text else pending_text_injection
 
+        # ── History backfill ─────────────────────────────────────────
+        # When require_mention is active, the bot only processes messages
+        # that @mention it.  Messages in the channel between bot turns are
+        # invisible to the session transcript.  To recover that context,
+        # fetch recent channel history and prepend it to the user message.
+        #
+        # The fetch window is: everything after the bot's last message in
+        # the channel up to (but not including) the current trigger.  On
+        # cold start (no prior bot message found), fetch the last N messages
+        # and stop at the first self-message encountered.
+        #
+        # Threads naturally scope to thread-only history (channel.history()
+        # on a thread returns only that thread's messages).  DMs are skipped
+        # because every DM message triggers the bot — there's no mention gap
+        # to fill; the session transcript already has everything.
+        #
+        # Per-user sessions also benefit: Alice's session is missing the
+        # other-channel-participants' context, and her own messages from
+        # before she mentioned the bot.  Backfill fills that gap.
+        #
+        # Messages that arrive while the bot is processing (between trigger
+        # and response) are not captured — this is an accepted simplification
+        # to keep the partition rule clean.
+        _channel_context = None
+        _is_dm = isinstance(message.channel, discord.DMChannel)
+        if not _is_dm:
+            _needed_mention = (
+                require_mention
+                and not is_free_channel
+                and not in_bot_thread
+            )
+            _backfill_enabled = self._discord_history_backfill()
+            if _needed_mention and _backfill_enabled:
+                _backfill_text = await self._fetch_channel_context(
+                    message.channel, before=message,
+                )
+                if _backfill_text:
+                    _channel_context = _backfill_text
+
         # Defense-in-depth: prevent empty user messages from entering session
-        # (can happen when user sends @mention-only with no other text)
-        if not event_text or not event_text.strip():
+        # (can happen when user sends @mention-only with no other text).
+        # When channel_context is present, a bare mention means "catch me up"
+        # — the context IS the message, so skip the placeholder.
+        if (not event_text or not event_text.strip()) and not _channel_context:
             event_text = "(The user sent a message with no text content)"
 
         _chan = message.channel
@@ -4320,6 +4782,7 @@ class DiscordAdapter(BasePlatformAdapter):
             timestamp=message.created_at,
             auto_skill=_skills,
             channel_prompt=_channel_prompt,
+            channel_context=_channel_context,
         )
 
         # Track thread participation so the bot won't require @mention for
@@ -5002,359 +5465,187 @@ if DISCORD_AVAILABLE:
             self.resolved = True
             self.clear_items()
 
-    # ── Busy-session view + adapter overrides ─────────────────────────
 
-    class BusySessionView(discord.ui.View):
-        """Three-button view for per-message busy-session control.
+    class ClarifyChoiceView(discord.ui.View):
+        """Interactive button view for the clarify tool's multiple-choice prompts.
 
-        Lets the user pick steer / interrupt / stop on a specific
-        follow-up message instead of changing the global
-        ``display.busy_input_mode``.  Auth mirrors the other component
-        views via :func:`_component_check_auth`.
+        Renders one button per choice (max 24) plus a final ``✏️ Other`` button.
+        Picking a numeric choice resolves the gateway clarify entry immediately;
+        picking ``Other`` flips the entry into text-capture mode so the next
+        user message in the session becomes the response (the gateway's
+        text-intercept handles the resolution).
+
+        Auth gating mirrors ``ExecApprovalView`` — only users/roles in the
+        Discord adapter's allowlist may answer. Single-use: after the first
+        valid click all buttons disable and the embed updates to show who
+        answered and what they chose.
         """
 
         def __init__(
             self,
-            session_key: str,
-            adapter_self: "DiscordAdapter",
+            choices: List[str],
+            clarify_id: str,
             allowed_user_ids: set,
             allowed_role_ids: Optional[set] = None,
         ):
-            # No timeout: a busy-session lives as long as the agent is
-            # busy, which is bounded by the agent's own iteration cap.
-            super().__init__(timeout=None)
-            self.session_key = session_key
-            self._adapter = adapter_self
+            super().__init__(timeout=300)  # 5-minute timeout
+            self.choices = list(choices)[:24]
+            self.clarify_id = clarify_id
             self.allowed_user_ids = allowed_user_ids
             self.allowed_role_ids = allowed_role_ids or set()
+            self.resolved = False
 
-        def _check_auth(self, interaction: discord.Interaction) -> bool:
+            for index, choice in enumerate(self.choices):
+                # Discord button labels are capped at 80 chars.
+                label_body = choice if len(choice) <= 75 else choice[:72] + "..."
+                button = discord.ui.Button(
+                    label=f"{index + 1}. {label_body}",
+                    style=discord.ButtonStyle.primary,
+                    custom_id=f"clarify:{clarify_id}:{index}",
+                )
+                button.callback = self._make_choice_callback(index, choice)
+                self.add_item(button)
+
+            other_btn = discord.ui.Button(
+                label="✏️ Other (type answer)",
+                style=discord.ButtonStyle.secondary,
+                custom_id=f"clarify:{clarify_id}:other",
+            )
+            other_btn.callback = self._on_other
+            self.add_item(other_btn)
+
+        def _check_auth(self, interaction: "discord.Interaction") -> bool:
             return _component_check_auth(
                 interaction, self.allowed_user_ids, self.allowed_role_ids,
             )
 
-        async def _dispatch(
+        def _make_choice_callback(self, index: int, choice: str):
+            async def _callback(interaction: "discord.Interaction"):
+                await self._resolve_choice(interaction, index, choice)
+            return _callback
+
+        async def _resolve_choice(
             self,
-            interaction: discord.Interaction,
-            primitive: str,
+            interaction: "discord.Interaction",
+            index: int,
+            choice: str,
         ) -> None:
-            if not self._check_auth(interaction):
+            """Resolve the clarify with a chosen option."""
+            if self.resolved:
                 await interaction.response.send_message(
-                    "You're not authorized to control this run~", ephemeral=True,
+                    "This prompt has already been answered~", ephemeral=True,
                 )
                 return
-            await interaction.response.defer(ephemeral=True)
-            applied = False
+            if not self._check_auth(interaction):
+                await interaction.response.send_message(
+                    "You're not authorized to answer this prompt~", ephemeral=True,
+                )
+                return
+
+            self.resolved = True
+            for child in self.children:
+                child.disabled = True
+
+            embed = interaction.message.embeds[0] if (
+                interaction.message and interaction.message.embeds
+            ) else None
+            if embed:
+                user = getattr(interaction, "user", None)
+                display_name = getattr(user, "display_name", "user")
+                embed.color = discord.Color.green()
+                embed.set_footer(text=f"Answered by {display_name}: {choice}")
+
             try:
-                toast = await self._adapter._handle_busy_session_view_tap(
-                    self.session_key, primitive, interaction,
-                )
-                # The runner returns toast strings starting with "⛔" or
-                # "Couldn't" / "Unknown" / "Busy-session" when it
-                # rejected/failed.  Treat anything else as a successful
-                # apply so we only freeze the row when the action
-                # actually fired.
-                applied = bool(toast) and not (
-                    toast.startswith("⛔")
-                    or toast.lower().startswith(("couldn't", "unknown", "busy-session"))
-                )
-            except Exception as exc:  # pragma: no cover - defensive
-                logger.error(
-                    "[%s] BusySessionView dispatch failed: %s",
-                    self._adapter.name, exc, exc_info=True,
-                )
-                toast = "Couldn't apply that — see logs."
-            try:
-                await interaction.followup.send(toast or "Done.", ephemeral=True)
+                await interaction.response.edit_message(embed=embed, view=self)
             except Exception:
-                pass
-            # Only disable the shared button row after a SUCCESSFUL apply.
-            # An ownership-rejection from a non-owner clicker must not
-            # take the controls away from the legitimate session owner.
-            if applied:
-                for child in self.children:
-                    child.disabled = True
+                logger.debug(
+                    "Discord clarify edit_message failed for %s",
+                    self.clarify_id,
+                    exc_info=True,
+                )
                 try:
-                    await interaction.message.edit(view=self)
+                    await interaction.response.defer()
                 except Exception:
                     pass
 
-        @discord.ui.button(label="Steer", style=discord.ButtonStyle.green)
-        async def steer(
-            self, interaction: discord.Interaction, button: discord.ui.Button
-        ):
-            from gateway.busy_session_buttons import PRIMITIVE_STEER
-            await self._dispatch(interaction, PRIMITIVE_STEER)
-
-        @discord.ui.button(label="Interrupt", style=discord.ButtonStyle.blurple)
-        async def interrupt(
-            self, interaction: discord.Interaction, button: discord.ui.Button
-        ):
-            from gateway.busy_session_buttons import PRIMITIVE_INTERRUPT
-            await self._dispatch(interaction, PRIMITIVE_INTERRUPT)
-
-        @discord.ui.button(label="Stop", style=discord.ButtonStyle.red)
-        async def stop(
-            self, interaction: discord.Interaction, button: discord.ui.Button
-        ):
-            from gateway.busy_session_buttons import PRIMITIVE_STOP
-            await self._dispatch(interaction, PRIMITIVE_STOP)
-
-    # ── Adapter-level busy-session methods ───────────────────────────
-    #
-    # These functions are defined inside the ``if DISCORD_AVAILABLE:``
-    # block (so the BusySessionView reference resolves), then bound onto
-    # ``DiscordAdapter`` at the bottom of the block.  Without this
-    # binding step Discord instances would inherit the no-op base
-    # implementations and the buttons would never render.
-
-    @staticmethod
-    def _ds_busy_buttons_enabled() -> bool:
-        raw = os.getenv("HERMES_GATEWAY_BUSY_BUTTONS")
-        if raw is None:
-            return True
-        return raw.strip().lower() not in ("0", "false", "no", "off")
-
-    def _ds_chat_id_for_session(self, session_key: str) -> Optional[str]:
-        runner = getattr(getattr(self, "_message_handler", None), "__self__", None)
-        if runner is None:
-            return None
-        followups = getattr(runner, "_pending_followups", {}) or {}
-        for ev in reversed(followups.get(session_key) or []):
-            chat_id = getattr(getattr(ev, "source", None), "chat_id", None)
-            if chat_id:
-                return str(chat_id)
-        return None
-
-    async def _ds_attach_busy_session_buttons(
-        self,
-        session_key: str,
-        message_id: str,
-    ) -> bool:
-        if not self._busy_buttons_enabled() or not self._client:
-            return False
-        chat_id = self._chat_id_for_session(session_key)
-        if not chat_id:
-            return False
-        try:
-            channel = self._client.get_channel(int(chat_id))
-            if not channel:
-                channel = await self._client.fetch_channel(int(chat_id))
-            msg = await channel.fetch_message(int(message_id))
-            view = BusySessionView(
-                session_key=session_key,
-                adapter_self=self,
-                allowed_user_ids=self._allowed_user_ids,
-                allowed_role_ids=self._allowed_role_ids,
-            )
-            await msg.edit(view=view)
-            self._busy_session_view_map[session_key] = str(message_id)
-            return True
-        except Exception as exc:
-            logger.debug(
-                "[%s] attach_busy_session_buttons failed for %s on %s: %s",
-                self.name, session_key, message_id, exc,
-            )
-            return False
-
-    async def _ds_clear_busy_session_buttons(
-        self,
-        session_key: str,
-        message_id: str,
-    ) -> bool:
-        # Only forget the tracked anchor if the caller is clearing the
-        # one currently mapped — otherwise multiple anchors can't be
-        # cleared independently.
-        if self._busy_session_view_map.get(session_key) == str(message_id):
-            self._busy_session_view_map.pop(session_key, None)
-        if not self._client:
-            return False
-        chat_id = self._chat_id_for_session(session_key)
-        if not chat_id:
-            return False
-        try:
-            channel = self._client.get_channel(int(chat_id))
-            if not channel:
-                channel = await self._client.fetch_channel(int(chat_id))
-            msg = await channel.fetch_message(int(message_id))
-            await msg.edit(view=None)
-            return True
-        except Exception as exc:
-            logger.debug(
-                "[%s] clear_busy_session_buttons failed for %s on %s: %s",
-                self.name, session_key, message_id, exc,
-            )
-            return False
-
-    async def _ds_send_or_update_busy_control_bubble(
-        self,
-        session_key: str,
-        source: Any,
-        summary_text: str,
-    ) -> Optional[str]:
-        if not self._busy_buttons_enabled() or not self._client:
-            return None
-        chat_id_raw = getattr(source, "chat_id", None) if source else None
-        if not chat_id_raw:
-            return None
-        try:
-            channel = self._client.get_channel(int(chat_id_raw))
-            if not channel:
-                channel = await self._client.fetch_channel(int(chat_id_raw))
-        except Exception as exc:
-            logger.debug(
-                "[%s] control-bubble channel resolve failed for %s: %s",
-                self.name, session_key, exc,
-            )
-            return None
-        view = BusySessionView(
-            session_key=session_key,
-            adapter_self=self,
-            allowed_user_ids=self._allowed_user_ids,
-            allowed_role_ids=self._allowed_role_ids,
-        )
-        existing = self._busy_control_bubble_ids.get(session_key)
-        if existing:
+            # Resolve via the gateway clarify primitive — same mechanism as
+            # Telegram. Look up the canonical choice text from the entry so
+            # we round-trip the original value, not a button-label variant.
+            resolved_text: Optional[str] = None
             try:
-                msg = await channel.fetch_message(int(existing))
-                await msg.edit(content=summary_text, view=view)
-                self._busy_session_view_map[session_key] = existing
-                return existing
+                from tools.clarify_gateway import _entries as _clarify_entries  # type: ignore
+                entry = _clarify_entries.get(self.clarify_id)
+                if entry and entry.choices and 0 <= index < len(entry.choices):
+                    resolved_text = entry.choices[index]
             except Exception:
-                self._busy_control_bubble_ids.pop(session_key, None)
-        try:
-            sent = await channel.send(content=summary_text, view=view)
-        except Exception as exc:
-            logger.debug(
-                "[%s] control-bubble send failed for %s: %s",
-                self.name, session_key, exc,
-            )
-            return None
-        msg_id = str(getattr(sent, "id", "")) or None
-        if msg_id:
-            self._busy_control_bubble_ids[session_key] = msg_id
-            self._busy_session_view_map[session_key] = msg_id
-        return msg_id
+                resolved_text = None
+            if resolved_text is None:
+                resolved_text = choice
 
-    async def _ds_delete_busy_control_bubble(
-        self,
-        session_key: str,
-        message_id: str,
-    ) -> bool:
-        self._busy_control_bubble_ids.pop(session_key, None)
-        if not self._client:
-            return False
-        chat_id = self._chat_id_for_session(session_key)
-        if not chat_id:
-            return False
-        try:
-            channel = self._client.get_channel(int(chat_id))
-            if not channel:
-                channel = await self._client.fetch_channel(int(chat_id))
-            msg = await channel.fetch_message(int(message_id))
-            await msg.delete()
-            return True
-        except Exception as exc:
-            logger.debug(
-                "[%s] delete_busy_control_bubble failed for %s on %s: %s",
-                self.name, session_key, message_id, exc,
-            )
-            return False
-
-    async def _ds_set_busy_reaction(self, event: MessageEvent, emoji: str) -> bool:
-        msg = getattr(event, "raw_message", None)
-        if msg is None or not hasattr(msg, "add_reaction"):
-            return False
-        try:
-            await self._add_reaction(msg, emoji)
-            return True
-        except Exception:
-            return False
-
-    async def _ds_handle_busy_session_view_tap(
-        self,
-        session_key: str,
-        primitive: str,
-        interaction: Any,
-    ) -> str:
-        runner = getattr(getattr(self, "_message_handler", None), "__self__", None)
-        handler = getattr(runner, "_handle_busy_session_button_tap", None)
-        if not callable(handler):
-            return "Busy-session controls unavailable."
-        try:
-            from gateway.session import SessionSource
-            user = getattr(interaction, "user", None)
-            channel = getattr(interaction, "channel", None)
-            user_id = str(getattr(user, "id", "")) if user else ""
-            user_name = getattr(user, "display_name", None) if user else None
-            # Match how inbound messages build the source so the runner's
-            # ownership check (build_session_key) computes the same key.
-            # Discord thread runs use chat_id == thread_id and chat_type
-            # "thread"; channel runs use chat_id == channel.id and
-            # chat_type "group"; DMs use "dm".
-            ch_type = getattr(channel, "type", None)
-            is_thread = isinstance(channel, discord.Thread) if channel is not None else False
-            if ch_type == discord.ChannelType.private:
-                chat_type = "dm"
-                chat_id = str(getattr(channel, "id", "")) if channel else ""
-                thread_id = None
-            elif is_thread:
-                chat_type = "thread"
-                chat_id = str(getattr(channel, "id", "")) if channel else ""
-                thread_id = chat_id  # thread channels report their own id as the thread id
-            else:
-                chat_type = "group"
-                chat_id = str(getattr(channel, "id", "")) if channel else ""
-                thread_id = None
-            source = SessionSource(
-                platform=Platform.DISCORD,
-                chat_id=chat_id,
-                chat_type=chat_type,
-                user_id=user_id,
-                user_name=user_name,
-                thread_id=thread_id,
-            )
-        except Exception as exc:
-            logger.debug("[%s] could not build SessionSource for view tap: %s", self.name, exc)
-            return "Couldn't apply that — try again."
-        # Run the runner-side authorization check too — the BusySessionView
-        # already gates on _component_check_auth, but that allowlist is
-        # empty in deployments that authorize via GATEWAY_ALLOWED_USERS or
-        # pairing.  Without this second gate, any user who can see the
-        # buttons in a shared channel could steer/interrupt/stop another
-        # user's active session.  Mirrors the Slack handler's belt-and-
-        # suspenders gating.
-        auth_fn = getattr(runner, "_is_user_authorized", None)
-        if callable(auth_fn):
             try:
-                if not auth_fn(source):
-                    logger.warning(
-                        "[%s] Unauthorized busy-session view tap by %s (%s) — ignoring",
-                        self.name, user_name or "?", user_id,
-                    )
-                    return "⛔ You are not authorized to control this run."
-            except Exception:
-                logger.debug(
-                    "[%s] auth check raised — denying busy-action", self.name, exc_info=True,
+                from tools.clarify_gateway import resolve_gateway_clarify
+                resolved = resolve_gateway_clarify(self.clarify_id, resolved_text)
+                logger.info(
+                    "Discord clarify button resolved (id=%s, choice=%r, user=%s, ok=%s)",
+                    self.clarify_id, resolved_text,
+                    getattr(getattr(interaction, "user", None), "display_name", "?"),
+                    resolved,
                 )
-                return "Couldn't apply that — try again."
-        try:
-            return await handler(session_key, primitive, source)
-        except Exception as exc:
-            logger.error(
-                "[%s] busy-session view dispatch failed: %s",
-                self.name, exc, exc_info=True,
-            )
-            return "Couldn't apply that — see logs."
+            except Exception as exc:
+                logger.error(
+                    "Discord clarify resolve_gateway_clarify failed (id=%s): %s",
+                    self.clarify_id, exc,
+                )
 
-    # Bind the busy-session helpers onto DiscordAdapter so they OVERRIDE
-    # the base class no-ops.  Without this step they remain free
-    # functions and Discord falls back to BasePlatformAdapter.
-    DiscordAdapter._busy_buttons_enabled = staticmethod(_ds_busy_buttons_enabled)
-    DiscordAdapter._chat_id_for_session = _ds_chat_id_for_session
-    DiscordAdapter.attach_busy_session_buttons = _ds_attach_busy_session_buttons
-    DiscordAdapter.clear_busy_session_buttons = _ds_clear_busy_session_buttons
-    DiscordAdapter.send_or_update_busy_control_bubble = _ds_send_or_update_busy_control_bubble
-    DiscordAdapter.delete_busy_control_bubble = _ds_delete_busy_control_bubble
-    DiscordAdapter.set_busy_reaction = _ds_set_busy_reaction
-    DiscordAdapter._handle_busy_session_view_tap = _ds_handle_busy_session_view_tap
+        async def _on_other(self, interaction: "discord.Interaction") -> None:
+            """Flip the clarify entry into text-capture mode."""
+            if self.resolved:
+                await interaction.response.send_message(
+                    "This prompt has already been answered~", ephemeral=True,
+                )
+                return
+            if not self._check_auth(interaction):
+                await interaction.response.send_message(
+                    "You're not authorized to answer this prompt~", ephemeral=True,
+                )
+                return
+
+            # Don't pop the entry — the gateway's text-intercept needs it
+            # until the user actually types. Just mark it as awaiting text
+            # and disable the buttons so the user can't double-click.
+            try:
+                from tools.clarify_gateway import mark_awaiting_text
+                mark_awaiting_text(self.clarify_id)
+            except Exception as exc:
+                logger.warning(
+                    "Discord clarify mark_awaiting_text failed (id=%s): %s",
+                    self.clarify_id, exc,
+                )
+
+            self.resolved = True
+            for child in self.children:
+                child.disabled = True
+
+            embed = interaction.message.embeds[0] if (
+                interaction.message and interaction.message.embeds
+            ) else None
+            if embed:
+                user = getattr(interaction, "user", None)
+                display_name = getattr(user, "display_name", "user")
+                embed.color = discord.Color.blue()
+                embed.set_footer(
+                    text=f"Awaiting typed response from {display_name}…",
+                )
+
+            try:
+                await interaction.response.edit_message(embed=embed, view=self)
+            except Exception:
+                try:
+                    await interaction.response.defer()
+                except Exception:
+                    pass
+
+        async def on_timeout(self):
+            self.resolved = True
+            for child in self.children:
+                child.disabled = True
