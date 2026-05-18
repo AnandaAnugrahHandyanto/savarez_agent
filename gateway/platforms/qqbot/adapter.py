@@ -918,7 +918,7 @@ class QQAdapter(BasePlatformAdapter):
             return self.build_source(
                 chat_id=chat_id,
                 user_id=user_id,
-                chat_type="group",
+                chat_type="group" if event.channel_id else "dm",
                 guild_id=event.guild_id or None,
             )
         return None
