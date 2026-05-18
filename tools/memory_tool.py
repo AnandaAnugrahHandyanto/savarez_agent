@@ -115,11 +115,12 @@ class MemoryStore:
         Tool responses always reflect this live state.
     """
 
-    def __init__(self, memory_char_limit: int = 2200, user_char_limit: int = 1375):
+    def __init__(self, memory_char_limit: int = 2200, user_char_limit: int = 1375, tag_filter: str = ""):
         self.memory_entries: List[str] = []
         self.user_entries: List[str] = []
         self.memory_char_limit = memory_char_limit
         self.user_char_limit = user_char_limit
+        self.tag_filter = tag_filter.strip()
         # Frozen snapshot for system prompt -- set once at load_from_disk()
         self._system_prompt_snapshot: Dict[str, str] = {"memory": "", "user": ""}
 
@@ -134,6 +135,14 @@ class MemoryStore:
         # Deduplicate entries (preserves order, keeps first occurrence)
         self.memory_entries = list(dict.fromkeys(self.memory_entries))
         self.user_entries = list(dict.fromkeys(self.user_entries))
+
+        # Tag filtering: only keep tagged entries matching the filter + untagged entries
+        if self.tag_filter:
+            prefix = f"[{self.tag_filter}]"
+            self.memory_entries = [
+                e for e in self.memory_entries
+                if e.startswith(prefix) or not e.startswith("[")
+            ]
 
         # Capture frozen snapshot for system prompt injection
         self._system_prompt_snapshot = {
