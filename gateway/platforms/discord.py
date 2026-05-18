@@ -3624,6 +3624,34 @@ class DiscordAdapter(BasePlatformAdapter):
             return {part.strip() for part in s.split(",") if part.strip()}
         return set()
 
+    def _discord_wake_words(self) -> list[str]:
+        """Return wake words that can replace a Discord @mention.
+
+        Config accepts either a YAML list or a comma-separated string. Matching
+        is prefix-only and word-boundary checked, so ``dex`` wakes the bot in
+        ``dex help`` but not ``index help``. The wake word is stripped before
+        dispatch so the model sees the user request, not the routing token.
+        """
+        raw = self.config.extra.get("wake_words")
+        if raw is None:
+            raw = os.getenv("DISCORD_WAKE_WORDS", "")
+        if isinstance(raw, list):
+            parts = [str(part).strip() for part in raw]
+        else:
+            parts = [part.strip() for part in str(raw).split(",")]
+        return [part for part in parts if part]
+
+    def _discord_strip_wake_word(self, text: str) -> Optional[str]:
+        stripped = (text or "").lstrip()
+        if not stripped:
+            return None
+        for wake_word in self._discord_wake_words():
+            pattern = rf"^{re.escape(wake_word)}(?:$|[\s,.:;!?—-]+)(.*)$"
+            match = re.match(pattern, stripped, flags=re.IGNORECASE | re.DOTALL)
+            if match:
+                return match.group(1).lstrip()
+        return None
+
     def _discord_thread_require_mention(self) -> bool:
         """Return whether thread participation requires @mention to follow up.
 
@@ -4480,6 +4508,10 @@ class DiscordAdapter(BasePlatformAdapter):
                 channel_ids.add(parent_channel_id)
 
             require_mention = self._discord_require_mention()
+            wake_word_prefix = self._discord_strip_wake_word(normalized_content)
+            if wake_word_prefix is not None:
+                normalized_content = wake_word_prefix
+                message.content = normalized_content
             # Voice-linked text channels act as free-response while voice is active.
             # Only the exact bound channel gets the exemption, not sibling threads.
             voice_linked_ids = {str(ch_id) for ch_id in self._voice_text_channels.values()}
@@ -4502,7 +4534,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 and not self._discord_thread_require_mention()
             )
 
-            if require_mention and not is_free_channel and not in_bot_thread:
+            if require_mention and not is_free_channel and not in_bot_thread and wake_word_prefix is None:
                 if self._client.user not in message.mentions and not mention_prefix:
                     return
         # Auto-thread: when enabled, automatically create a thread for every
