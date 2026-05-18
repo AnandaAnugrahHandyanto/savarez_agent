@@ -776,11 +776,16 @@ def test_dispatch_refuses_to_spawn_when_task_row_vanishes_mid_tick(
     def claim_then_delete(conn, task_id, **kwargs):
         # Real claim flips status + writes task_runs row. Then we
         # simulate the foreign DELETE before the dispatch loop's
-        # re-check runs.
+        # re-check runs. PRAGMA foreign_keys=OFF mirrors the
+        # external-sqlite3-session path that motivated this card;
+        # with cascades enabled the DELETE would nuke task_runs too
+        # and the dispatcher would see no row to guard.
         task = real_claim(conn, task_id, **kwargs)
         if task is not None:
+            conn.execute("PRAGMA foreign_keys=OFF")
             conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
             conn.commit()
+            conn.execute("PRAGMA foreign_keys=ON")
         return task
 
     monkeypatch.setattr(kb, "claim_task", claim_then_delete)
@@ -824,20 +829,19 @@ def test_dispatch_refuses_to_spawn_when_task_row_vanishes_mid_tick(
             assert row["claim_expires"] is None
             assert row["worker_pid"] is None
 
-        # And a task_events 'reclaimed' row was written per task with
-        # the documented payload reason.
+        # task_events emit is best-effort: with the cascade FK on
+        # ``task_events.task_id`` (card t_4c0bbdae acceptance C), the
+        # INSERT raises IntegrityError when the parent ``tasks`` row
+        # is already gone — which is exactly the case this guard
+        # exists for. The dispatcher catches the IntegrityError and
+        # relies on the WARNING log line for operator triage. So we
+        # assert that NO orphan event row got persisted, and that the
+        # WARNING covers the audit trail instead.
         events = conn.execute(
             "SELECT task_id, kind, payload FROM task_events "
             "WHERE kind = 'reclaimed' ORDER BY id"
         ).fetchall()
-        assert len(events) == 2
-        seen_task_ids = set()
-        for ev in events:
-            payload = json.loads(ev["payload"])
-            assert payload["reason"] == "task-row-missing-at-spawn"
-            assert payload["run_id"] is not None
-            seen_task_ids.add(ev["task_id"])
-        assert seen_task_ids == {good, doomed}
+        assert len(events) == 0
 
 
 def test_dispatch_normal_path_does_not_trigger_orphan_guard(
@@ -892,8 +896,13 @@ def test_detect_orphan_runs_closes_run_when_task_row_missing(kanban_home):
 
         # Simulate the bug: someone hard-DELETEs the tasks row. The
         # task_runs row keeps its status='running' / ended_at=NULL.
+        # PRAGMA foreign_keys=OFF mirrors the external-sqlite3-session
+        # path that motivated this card; with FKs on, the cascade would
+        # nuke the run row too and there'd be no orphan to reap.
+        conn.execute("PRAGMA foreign_keys=OFF")
         conn.execute("DELETE FROM tasks WHERE id = ?", (t,))
         conn.commit()
+        conn.execute("PRAGMA foreign_keys=ON")
 
         killed: list[int] = []
         closed = kb.detect_orphan_runs(
@@ -930,8 +939,11 @@ def test_detect_orphan_runs_is_idempotent(kanban_home):
         host = _kb._claimer_id().split(":", 1)[0]
         kb.claim_task(conn, t, claimer=f"{host}:worker")
         kb._set_worker_pid(conn, t, 12345)
+        # Skip the cascade so the run row survives — see other orphan tests.
+        conn.execute("PRAGMA foreign_keys=OFF")
         conn.execute("DELETE FROM tasks WHERE id = ?", (t,))
         conn.commit()
+        conn.execute("PRAGMA foreign_keys=ON")
 
         first = kb.detect_orphan_runs(
             conn, signal_fn=lambda _p, _s: None,
@@ -974,8 +986,11 @@ def test_dispatch_once_reaps_orphan_runs(kanban_home, monkeypatch):
             "SELECT current_run_id FROM tasks WHERE id = ?", (t,),
         ).fetchone()["current_run_id"]
 
+        # Skip the cascade so the run row survives — see other orphan tests.
+        conn.execute("PRAGMA foreign_keys=OFF")
         conn.execute("DELETE FROM tasks WHERE id = ?", (t,))
         conn.commit()
+        conn.execute("PRAGMA foreign_keys=ON")
 
         res = kb.dispatch_once(
             conn,
@@ -1768,3 +1783,202 @@ def test_task_dict_survives_corrupt_created_at(tmp_path, monkeypatch):
         conn.close()
     age = kb.task_age(task)
     assert age["created_age_seconds"] is None
+
+
+# ---------------------------------------------------------------------------
+# Card t_4c0bbdae acceptance (C+D): cascade FK migration on legacy DBs
+# and WARNING logs on phantom-task reaping.
+#
+# Legacy DBs (pre-2026-05-18) created task_links / task_comments /
+# task_events / task_runs without FOREIGN KEY declarations. The migration
+# in ``_migrate_add_optional_columns`` brings them up to par by copy-
+# rename so a future ``DELETE FROM tasks`` cascades to the child rows
+# instead of stranding them as phantom-run debris.
+# ---------------------------------------------------------------------------
+
+def _drop_fks(conn):
+    """Recreate the four FK-bearing child tables WITHOUT their FKs to
+    simulate a legacy DB. Preserves row data + autoincrement state."""
+    import sqlite3 as _sq
+    conn.execute("PRAGMA foreign_keys=OFF")
+    # task_links
+    conn.executescript(
+        """
+        CREATE TABLE task_links__legacy (
+            parent_id  TEXT NOT NULL,
+            child_id   TEXT NOT NULL,
+            PRIMARY KEY (parent_id, child_id)
+        );
+        INSERT INTO task_links__legacy SELECT parent_id, child_id FROM task_links;
+        DROP TABLE task_links;
+        ALTER TABLE task_links__legacy RENAME TO task_links;
+
+        CREATE TABLE task_comments__legacy (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id TEXT NOT NULL, author TEXT NOT NULL,
+            body TEXT NOT NULL, created_at INTEGER NOT NULL
+        );
+        INSERT INTO task_comments__legacy(id,task_id,author,body,created_at)
+            SELECT id,task_id,author,body,created_at FROM task_comments;
+        DROP TABLE task_comments;
+        ALTER TABLE task_comments__legacy RENAME TO task_comments;
+
+        CREATE TABLE task_events__legacy (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id TEXT NOT NULL, run_id INTEGER,
+            kind TEXT NOT NULL, payload TEXT, created_at INTEGER NOT NULL
+        );
+        INSERT INTO task_events__legacy(id,task_id,run_id,kind,payload,created_at)
+            SELECT id,task_id,run_id,kind,payload,created_at FROM task_events;
+        DROP TABLE task_events;
+        ALTER TABLE task_events__legacy RENAME TO task_events;
+
+        CREATE TABLE task_runs__legacy (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id TEXT NOT NULL, profile TEXT, step_key TEXT,
+            status TEXT NOT NULL,
+            claim_lock TEXT, claim_expires INTEGER, worker_pid INTEGER,
+            max_runtime_seconds INTEGER, last_heartbeat_at INTEGER,
+            started_at INTEGER NOT NULL, ended_at INTEGER, outcome TEXT,
+            summary TEXT, metadata TEXT, error TEXT
+        );
+        INSERT INTO task_runs__legacy
+            SELECT id,task_id,profile,step_key,status,
+                   claim_lock,claim_expires,worker_pid,
+                   max_runtime_seconds,last_heartbeat_at,
+                   started_at,ended_at,outcome,summary,metadata,error
+              FROM task_runs;
+        DROP TABLE task_runs;
+        ALTER TABLE task_runs__legacy RENAME TO task_runs;
+        """
+    )
+    conn.execute("PRAGMA foreign_keys=ON")
+
+
+def test_tables_missing_task_fk_detects_legacy_schema(kanban_home):
+    with kb.connect() as conn:
+        assert kb._tables_missing_task_fk(conn) == set()  # fresh DB has FKs
+
+        _drop_fks(conn)
+        missing = kb._tables_missing_task_fk(conn)
+    assert missing == {"task_links", "task_comments", "task_events", "task_runs"}
+
+
+def test_migrate_add_task_fk_cascades_is_idempotent(kanban_home):
+    """Running the migration on a fresh DB is a no-op (FKs are
+    already declared in SCHEMA_SQL) and preserves all rows."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="alive", assignee="alice")
+        kb.add_comment(conn, t, "alex", "hello")
+        before_tasks = conn.execute("SELECT count(*) FROM tasks").fetchone()[0]
+        before_comments = conn.execute("SELECT count(*) FROM task_comments").fetchone()[0]
+        before_events = conn.execute("SELECT count(*) FROM task_events").fetchone()[0]
+
+        kb._migrate_add_task_fk_cascades(conn)  # should be no-op
+
+        after_tasks = conn.execute("SELECT count(*) FROM tasks").fetchone()[0]
+        after_comments = conn.execute("SELECT count(*) FROM task_comments").fetchone()[0]
+        after_events = conn.execute("SELECT count(*) FROM task_events").fetchone()[0]
+    assert (before_tasks, before_comments, before_events) == (
+        after_tasks, after_comments, after_events,
+    )
+
+
+def test_migrate_add_task_fk_cascades_upgrades_legacy_db(kanban_home):
+    """End-to-end: legacy DB without FKs gets the cascade, and a
+    subsequent DELETE FROM tasks then nukes child rows instead of
+    stranding them as phantom debris."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="will-be-deleted", assignee="alice")
+        kb.add_comment(conn, t, "alex", "comment 1")
+        kb.claim_task(conn, t)
+        # Snapshot pre-migration state
+        run_count_before = conn.execute(
+            "SELECT count(*) FROM task_runs WHERE task_id = ?", (t,)
+        ).fetchone()[0]
+        event_count_before = conn.execute(
+            "SELECT count(*) FROM task_events WHERE task_id = ?", (t,)
+        ).fetchone()[0]
+        comment_count_before = conn.execute(
+            "SELECT count(*) FROM task_comments WHERE task_id = ?", (t,)
+        ).fetchone()[0]
+        assert run_count_before >= 1
+        assert event_count_before >= 1
+        assert comment_count_before == 1
+
+        # Strip FKs to simulate a legacy DB.
+        _drop_fks(conn)
+        assert kb._tables_missing_task_fk(conn) == {
+            "task_links", "task_comments", "task_events", "task_runs",
+        }
+
+        # Run the migration.
+        kb._migrate_add_task_fk_cascades(conn)
+
+        # Post-migration: FKs are in place again, row counts preserved.
+        assert kb._tables_missing_task_fk(conn) == set()
+        assert conn.execute(
+            "SELECT count(*) FROM task_runs WHERE task_id = ?", (t,)
+        ).fetchone()[0] == run_count_before
+        assert conn.execute(
+            "SELECT count(*) FROM task_comments WHERE task_id = ?", (t,)
+        ).fetchone()[0] == comment_count_before
+
+        # Now DELETE FROM tasks: cascades should nuke child rows.
+        conn.execute("DELETE FROM tasks WHERE id = ?", (t,))
+        conn.commit()
+
+        assert conn.execute(
+            "SELECT count(*) FROM task_runs WHERE task_id = ?", (t,)
+        ).fetchone()[0] == 0
+        assert conn.execute(
+            "SELECT count(*) FROM task_comments WHERE task_id = ?", (t,)
+        ).fetchone()[0] == 0
+        assert conn.execute(
+            "SELECT count(*) FROM task_events WHERE task_id = ?", (t,)
+        ).fetchone()[0] == 0
+
+
+def test_migrate_runs_via_init_db_on_legacy_open(kanban_home, tmp_path):
+    """Opening a legacy DB via the public ``init_db`` entry point
+    transparently upgrades it — no operator action required."""
+    # Build a legacy DB at an explicit path.
+    db_path = tmp_path / "legacy.db"
+    with kb.connect(db_path=db_path) as conn:
+        kb.create_task(conn, title="x", assignee="alice")
+        _drop_fks(conn)
+        assert kb._tables_missing_task_fk(conn) == {
+            "task_links", "task_comments", "task_events", "task_runs",
+        }
+
+    # Force re-migration via init_db (which always re-runs the pass).
+    kb.init_db(db_path=db_path)
+
+    with kb.connect(db_path=db_path) as conn:
+        assert kb._tables_missing_task_fk(conn) == set()
+
+
+def test_detect_orphan_runs_emits_warning_log(kanban_home, caplog):
+    """Acceptance (D): WARNING log when the orphan reaper closes a
+    phantom run. Operator-facing source-detection signal."""
+    import hermes_cli.kanban_db as _kb
+    import logging as _logging
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="orphan-me", assignee="alice")
+        host = _kb._claimer_id().split(":", 1)[0]
+        kb.claim_task(conn, t, claimer=f"{host}:worker")
+        kb._set_worker_pid(conn, t, 99999)
+
+        # Skip the cascade so the run row survives — see other orphan tests.
+        conn.execute("PRAGMA foreign_keys=OFF")
+        conn.execute("DELETE FROM tasks WHERE id = ?", (t,))
+        conn.commit()
+        conn.execute("PRAGMA foreign_keys=ON")
+
+        caplog.set_level(_logging.WARNING, logger="hermes_cli.kanban_db")
+        kb.detect_orphan_runs(conn, signal_fn=lambda _p, _s: None)
+
+    msgs = [r.getMessage() for r in caplog.records if "phantom-task-reap" in r.getMessage()]
+    assert msgs, f"expected phantom-task-reap WARNING; got {[r.getMessage() for r in caplog.records]}"
+    assert t in msgs[0]
