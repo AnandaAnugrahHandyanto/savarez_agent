@@ -110,6 +110,44 @@ def test_codex_malformed_envelope_state_returns_structured_state_error(
     assert result.argv == ()
 
 
+def test_claude_non_object_envelope_state_returns_structured_state_error(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    path = envelope_state_path()
+    path.parent.mkdir(parents=True)
+    path.write_text("[]", encoding="utf-8")
+
+    result = prepare_claude_print_invocation(
+        "prompt",
+        binary_resolver=lambda name: "/bin/claude",
+    )
+
+    assert result.ok is False
+    assert result.status == "state_error"
+    assert result.details["path"] == str(path)
+    assert result.argv == ()
+
+
+def test_codex_non_object_envelope_state_returns_structured_state_error(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    path = envelope_state_path()
+    path.parent.mkdir(parents=True)
+    path.write_text("[]", encoding="utf-8")
+
+    result = prepare_codex_print_invocation(
+        "prompt",
+        binary_resolver=lambda name: "/bin/codex",
+    )
+
+    assert result.ok is False
+    assert result.status == "state_error"
+    assert result.details["path"] == str(path)
+    assert result.argv == ()
+
+
 def test_claude_budget_cap_blocks_non_priority(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     path = envelope_state_path()

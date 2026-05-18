@@ -1,5 +1,7 @@
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from agent.cmh_subprocess.envelope import (
     ENVELOPE_STATE_FILENAME,
     EnvelopeDecision,
@@ -70,6 +72,14 @@ def test_save_envelope_state_uses_atomic_temp_file_without_lingering_tmp(tmp_pat
 
     assert load_envelope_state(path=state_path) == state
     assert list(tmp_path.glob(f".{ENVELOPE_STATE_FILENAME}.*.tmp")) == []
+
+
+def test_load_non_object_envelope_state_raises_value_error(tmp_path):
+    state_path = tmp_path / ENVELOPE_STATE_FILENAME
+    state_path.write_text("[]", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="JSON object"):
+        load_envelope_state(path=state_path)
 
 
 def test_budget_blocks_non_priority_at_cap():

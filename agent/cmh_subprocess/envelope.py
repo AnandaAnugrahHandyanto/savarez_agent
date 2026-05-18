@@ -65,6 +65,8 @@ def load_envelope_state(path: Path | None = None) -> dict[str, dict[str, Any]]:
         return default_envelope_state()
     with state_path.open("r", encoding="utf-8") as handle:
         data = json.load(handle)
+    if not isinstance(data, dict):
+        raise ValueError(f"Envelope state must be a JSON object, got {type(data).__name__}")
     state = default_envelope_state()
     for key, defaults in state.items():
         if isinstance(data.get(key), dict):
