@@ -464,6 +464,17 @@ def _resolve_session_title(session: dict) -> str:
         return ""
 
 
+def _get_tty_name() -> str:
+    """Best-effort TTY name from /proc/self/stat."""
+    try:
+        tty_nr = int(open("/proc/self/stat").read().split()[6])
+        if tty_nr > 0 and os.major(tty_nr) == 136:
+            return f"pts/{os.minor(tty_nr)}"
+    except Exception:
+        pass
+    return ""
+
+
 def _write_session_status(event: str, sid: str, payload: dict | None = None):
     """Write a small JSON file to /tmp/hermes-status/<sid>.json."""
     try:
@@ -479,6 +490,7 @@ def _write_session_status(event: str, sid: str, payload: dict | None = None):
             "status": status,
             "event": event,
             "pid": os.getpid(),
+            "tty": _get_tty_name(),
             "timestamp": time.time(),
         }
         (_STATUS_DIR / f"{sid}.json").write_text(json.dumps(data))
