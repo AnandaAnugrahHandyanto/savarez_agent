@@ -616,18 +616,34 @@ class HonchoMemoryProvider(MemoryProvider):
             self._last_dialectic_turn = self._turn_count
 
         if self._last_dialectic_turn == -999 and query:
+            from plugins.memory.honcho.circuit_breaker import get_breaker
+            from plugins.memory.honcho.session import _is_backend_unreachable
+
             _first_turn_timeout = (
-                self._config.timeout if self._config and self._config.timeout else 8.0
+                self._config.timeout if self._config and self._config.timeout else 5.0
             )
             _fired_at = self._turn_count
+            _breaker = get_breaker()
 
             def _run_first_turn() -> None:
+                if not _breaker.allow():
+                    # Circuit open — skip the call entirely. The parent
+                    # thread's .join() will return immediately because the
+                    # function exits straight away.
+                    logger.debug(
+                        "Honcho first-turn dialectic skipped: circuit breaker open"
+                    )
+                    self._dialectic_empty_streak += 1
+                    return
                 try:
                     r = self._run_dialectic_depth(query)
                 except Exception as exc:
+                    if _is_backend_unreachable(exc):
+                        _breaker.record_failure(exc)
                     logger.debug("Honcho first-turn dialectic failed: %s", exc)
                     self._dialectic_empty_streak += 1
                     return
+                _breaker.record_success()
                 if r and r.strip():
                     with self._prefetch_lock:
                         self._prefetch_result = r
