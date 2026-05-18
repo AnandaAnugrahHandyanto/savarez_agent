@@ -126,6 +126,35 @@ class TestListSchemes:
         assert result["container"]["type"] == "workspace"
         assert result["project"]["schemes"] == ["App"]
 
+    def test_lists_schemes_from_workspace_json_key(self, tools_mod, tmp_path, monkeypatch):
+        repo = tmp_path / "WorkspaceJsonRepo"
+        workspace = repo / "App.xcworkspace"
+        workspace.mkdir(parents=True)
+
+        monkeypatch.setattr(
+            tools_mod,
+            "_run_xcodebuild",
+            lambda command, cwd, timeout_seconds: CompletedProcess(
+                command,
+                0,
+                stdout=json.dumps(
+                    {
+                        "workspace": {
+                            "name": "App",
+                            "schemes": ["App"],
+                            "targets": ["App"],
+                            "configurations": ["Debug", "Release"],
+                        }
+                    }
+                ),
+                stderr="",
+            ),
+        )
+
+        result = json.loads(tools_mod.handle_macos_list_schemes({"path": str(repo)}))
+        assert result["success"] is True
+        assert result["project"]["schemes"] == ["App"]
+
     def test_surfaces_xcodebuild_failure(self, tools_mod, tmp_path, monkeypatch):
         repo = tmp_path / "ProjectRepo"
         project = repo / "App.xcodeproj"
@@ -232,6 +261,29 @@ class TestBuildProject:
         result = json.loads(tools_mod.handle_macos_build_project({"path": str(repo)}))
         assert result["success"] is False
         assert result["error"] == "scheme is required"
+
+    def test_build_timeout_preserves_partial_output(self, tools_mod, tmp_path, monkeypatch):
+        repo = tmp_path / "BuildTimeoutRepo"
+        (repo / "App.xcodeproj").mkdir(parents=True)
+
+        def fake_run(command, cwd, timeout_seconds):
+            raise tools_mod.subprocess.TimeoutExpired(
+                command,
+                timeout_seconds,
+                output="CompileSwift normal arm64 Foo.swift\n",
+                stderr="Foo.swift:1: error: timed out\n",
+            )
+
+        monkeypatch.setattr(tools_mod, "_run_xcodebuild", fake_run)
+
+        result = json.loads(
+            tools_mod.handle_macos_build_project({"path": str(repo), "scheme": "App"})
+        )
+
+        assert result["success"] is False
+        assert result["error"] == "xcodebuild build timed out"
+        assert "CompileSwift normal arm64 Foo.swift" in result["stdout"]
+        assert "Foo.swift:1: error: timed out" in result["stderr"]
 
 
 class TestTestProject:
@@ -360,6 +412,29 @@ class TestRunApp:
         assert result["pids"] == [12345]
         assert launched["command"][:3] == ["open", "-n", "-g"]
         assert "--args" in launched["command"]
+
+    def test_launch_reports_partial_failure_when_no_pid_appears(self, tools_mod, tmp_path, monkeypatch):
+        repo = tmp_path / "LaunchNoPidRepo"
+        bundle = repo / "DerivedData" / "Build" / "Products" / "Debug" / "MyApp.app"
+        bundle.mkdir(parents=True)
+
+        monkeypatch.setattr(
+            tools_mod.subprocess,
+            "run",
+            lambda command, capture_output, text, check: CompletedProcess(
+                command, 0, stdout="", stderr=""
+            ),
+        )
+        monkeypatch.setattr(tools_mod, "_wait_for_app_state", lambda *args, **kwargs: [])
+
+        result = json.loads(
+            tools_mod.handle_macos_run_app({"path": str(repo), "app_name": "MyApp"})
+        )
+
+        assert result["success"] is False
+        assert result["error"] == "App launch did not produce a running process"
+        assert result["exit_code"] == 0
+        assert result["is_running"] is False
 
 
 class TestStopApp:

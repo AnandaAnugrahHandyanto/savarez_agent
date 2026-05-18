@@ -104,17 +104,14 @@ def _iter_candidates(root: Path, suffix: str) -> Iterable[Path]:
         return
 
     seen: set[Path] = set()
-    for current_root, dirs, files in os.walk(root):
+    for current_root, dirs, _files in os.walk(root):
         current = Path(current_root)
         rel_parts = current.relative_to(root).parts if current != root else ()
         if len(rel_parts) > _DISCOVERY_MAX_DEPTH:
             dirs[:] = []
             continue
 
-        if suffix == ".xcodeproj":
-            names = [name for name in dirs if name.endswith(suffix)]
-        else:
-            names = [name for name in dirs if name.endswith(suffix)]
+        names = [name for name in dirs if name.endswith(suffix)]
 
         for name in sorted(names):
             candidate = current / name
@@ -521,6 +518,14 @@ def _json_loads_or_error(raw: str) -> Dict[str, Any]:
     return data
 
 
+def _decode_timeout_output(raw: Any) -> str:
+    if raw is None:
+        return ""
+    if isinstance(raw, bytes):
+        return raw.decode(errors="replace").strip()
+    return str(raw).strip()
+
+
 def handle_macos_inspect_project(args: dict, **kw) -> str:
     try:
         path = _normalize_path(args.get("path"))
@@ -548,16 +553,23 @@ def handle_macos_list_schemes(args: dict, **kw) -> str:
             )
 
         payload = _json_loads_or_error(completed.stdout)
+        details = payload.get("project") or payload.get("workspace")
         return tool_result(
             {
                 "success": True,
                 "command": shlex.join(command),
                 "container": container,
-                "project": payload.get("project"),
+                "project": details,
             }
         )
-    except subprocess.TimeoutExpired:
-        return tool_error("xcodebuild -list timed out", success=False)
+    except subprocess.TimeoutExpired as exc:
+        return tool_error(
+            "xcodebuild -list timed out",
+            success=False,
+            stdout=_decode_timeout_output(exc.stdout),
+            stderr=_decode_timeout_output(exc.stderr),
+            timeout_seconds=exc.timeout,
+        )
     except Exception as exc:
         return tool_error(str(exc), success=False)
 
@@ -620,6 +632,8 @@ def handle_macos_build_project(args: dict, **kw) -> str:
         return tool_error(
             "xcodebuild build timed out",
             success=False,
+            stdout=_decode_timeout_output(exc.stdout),
+            stderr=_decode_timeout_output(exc.stderr),
             timeout_seconds=exc.timeout,
         )
     except Exception as exc:
@@ -703,6 +717,8 @@ def handle_macos_test_project(args: dict, **kw) -> str:
         return tool_error(
             "xcodebuild test timed out",
             success=False,
+            stdout=_decode_timeout_output(exc.stdout),
+            stderr=_decode_timeout_output(exc.stderr),
             timeout_seconds=exc.timeout,
         )
     except Exception as exc:
@@ -763,7 +779,7 @@ def handle_macos_run_app(args: dict, **kw) -> str:
             should_be_running=True,
             timeout_seconds=_coerce_small_timeout(args.get("wait_running_seconds"), default=5),
         )
-        success = completed.returncode == 0
+        success = completed.returncode == 0 and bool(pids)
         result = {
             "success": success,
             "command": shlex.join(command),
@@ -780,6 +796,8 @@ def handle_macos_run_app(args: dict, **kw) -> str:
         }
         if success:
             return tool_result(result)
+        if completed.returncode == 0:
+            return tool_error("App launch did not produce a running process", **result)
         return tool_error("Failed to launch app with open", **result)
     except Exception as exc:
         return tool_error(str(exc), success=False)
@@ -1054,6 +1072,12 @@ def handle_macos_show_build_settings(args: dict, **kw) -> str:
             }
         )
     except subprocess.TimeoutExpired as exc:
-        return tool_error("xcodebuild -showBuildSettings timed out", success=False, timeout_seconds=exc.timeout)
+        return tool_error(
+            "xcodebuild -showBuildSettings timed out",
+            success=False,
+            stdout=_decode_timeout_output(exc.stdout),
+            stderr=_decode_timeout_output(exc.stderr),
+            timeout_seconds=exc.timeout,
+        )
     except Exception as exc:
         return tool_error(str(exc), success=False)
