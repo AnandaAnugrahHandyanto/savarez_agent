@@ -545,6 +545,12 @@ class GatewayStreamConsumer:
                             self._final_response_sent = await self._send_or_edit(
                                 self._accumulated, finalize=True,
                             )
+                            # _send_or_edit may have exhausted flood-control
+                            # strikes and entered fallback mode just now.
+                            # Deliver the unseen tail before returning so the
+                            # user sees the complete response.
+                            if self._fallback_final_send:
+                                await self._send_fallback_final(self._accumulated)
                         elif not self._already_sent:
                             self._final_response_sent = await self._send_or_edit(self._accumulated)
                     return
