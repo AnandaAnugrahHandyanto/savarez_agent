@@ -284,3 +284,121 @@ class TestLargeImageHandling:
         assert len(parts) == 2
         assert parts[0]["type"] == "text"
         assert parts[1]["type"] == "image_url"
+
+
+# --- Format compatibility (transcode-to-PNG for non-universal formats) ------
+
+
+class TestFormatCompatibility:
+    """Some image formats Discord (and other chat platforms) accept aren't
+    accepted by every major vision provider. Anthropic for example returns
+    HTTP 400 'Could not process image' for AVIF/HEIC/BMP/TIFF/ICO/SVG.
+
+    We transcode anything outside the universal-safe set (PNG/JPEG/GIF/WEBP)
+    to PNG with Pillow before declaring media_type so the provider call
+    actually succeeds. Regression coverage for the user-reported Discord
+    'Could not process image' HTTP 400.
+    """
+
+    def test_avif_sniffed_correctly(self):
+        from agent.image_routing import _sniff_mime_from_bytes
+        # Minimal ftyp box with major brand 'avif'
+        avif_header = b"\x00\x00\x00\x20ftypavif\x00\x00\x00\x00"
+        assert _sniff_mime_from_bytes(avif_header) == "image/avif"
+
+    def test_tiff_sniffed_both_endians(self):
+        from agent.image_routing import _sniff_mime_from_bytes
+        assert _sniff_mime_from_bytes(b"II*\x00" + b"\x00" * 16) == "image/tiff"
+        assert _sniff_mime_from_bytes(b"MM\x00*" + b"\x00" * 16) == "image/tiff"
+
+    def test_ico_sniffed_correctly(self):
+        from agent.image_routing import _sniff_mime_from_bytes
+        assert _sniff_mime_from_bytes(b"\x00\x00\x01\x00" + b"\x00" * 16) == "image/x-icon"
+
+    def test_svg_sniffed_correctly(self):
+        from agent.image_routing import _sniff_mime_from_bytes
+        assert _sniff_mime_from_bytes(b'<svg xmlns="http://www.w3.org/2000/svg"/>') == "image/svg+xml"
+        assert _sniff_mime_from_bytes(b'<?xml version="1.0"?><svg/>') == "image/svg+xml"
+
+    def test_bmp_transcoded_to_png(self, tmp_path: Path):
+        """BMP file should land as image/png in the data URL, not image/bmp,
+        because not every provider (Anthropic in particular) accepts BMP.
+        """
+        Image = pytest.importorskip("PIL.Image", reason="Pillow not installed; transcode is best-effort")
+        from agent.image_routing import _file_to_data_url
+
+        img_path = tmp_path / "scan.bmp"
+        Image.new("RGB", (4, 4), (255, 0, 0)).save(img_path, format="BMP")
+        url = _file_to_data_url(img_path)
+        assert url is not None
+        assert url.startswith("data:image/png;base64,"), (
+            f"BMP must be transcoded to PNG for cross-provider compatibility, got: {url[:60]}"
+        )
+
+    def test_tiff_transcoded_to_png(self, tmp_path: Path):
+        Image = pytest.importorskip("PIL.Image", reason="Pillow not installed; transcode is best-effort")
+        from agent.image_routing import _file_to_data_url
+
+        img_path = tmp_path / "scan.tiff"
+        Image.new("RGB", (4, 4), (0, 255, 0)).save(img_path, format="TIFF")
+        url = _file_to_data_url(img_path)
+        assert url is not None
+        assert url.startswith("data:image/png;base64,")
+
+    def test_png_passes_through_no_transcode(self, tmp_path: Path):
+        """Universal-safe formats must NOT be re-encoded -- preserves bytes."""
+        from agent.image_routing import _file_to_data_url
+
+        img_path = tmp_path / "ok.png"
+        img_path.write_bytes(_png_bytes())
+        url = _file_to_data_url(img_path)
+        assert url is not None
+        assert url.startswith("data:image/png;base64,")
+        # The data segment should be exactly the b64 of the original bytes,
+        # i.e. transcoding was correctly skipped.
+        import base64
+        b64 = url.split(",", 1)[1]
+        assert base64.b64decode(b64) == _png_bytes()
+
+    def test_jpeg_passes_through_no_transcode(self, tmp_path: Path):
+        from agent.image_routing import _file_to_data_url
+
+        img_path = tmp_path / "ok.jpg"
+        # Tiny but real JPEG
+        img_path.write_bytes(b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00\xff\xd9")
+        url = _file_to_data_url(img_path)
+        assert url is not None
+        assert url.startswith("data:image/jpeg;base64,")
+
+    def test_transcode_failure_is_skipped_not_crashed(self, tmp_path: Path):
+        """If Pillow can't decode (corrupted bytes labeled as a rare format),
+        return None so the caller adds the path to ``skipped`` rather than
+        sending broken data to the provider.
+        """
+        from agent.image_routing import _file_to_data_url
+
+        # AVIF magic prefix but nonsense payload Pillow can't decode
+        img_path = tmp_path / "corrupt.avif"
+        img_path.write_bytes(b"\x00\x00\x00\x20ftypavif" + b"\x00" * 32)
+        url = _file_to_data_url(img_path)
+        assert url is None
+
+    def test_unsupported_format_skipped_in_native_parts(self, tmp_path: Path):
+        """End-to-end: a file whose format we can't decode at all should
+        show up in `skipped` from `build_native_content_parts`, not crash
+        and not silently send broken bytes.
+        """
+        from agent.image_routing import build_native_content_parts
+
+        # AVIF magic prefix but nonsense payload
+        bad = tmp_path / "broken.avif"
+        bad.write_bytes(b"\x00\x00\x00\x20ftypavif" + b"\x00" * 32)
+        # And one good PNG alongside
+        good = tmp_path / "good.png"
+        good.write_bytes(_png_bytes())
+
+        parts, skipped = build_native_content_parts("look", [str(bad), str(good)])
+        assert str(bad) in skipped
+        # Good image still attached; rest of turn proceeds.
+        image_parts = [p for p in parts if p.get("type") == "image_url"]
+        assert len(image_parts) == 1

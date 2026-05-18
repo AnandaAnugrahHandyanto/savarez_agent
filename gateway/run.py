@@ -7012,10 +7012,22 @@ class GatewayRunner:
             audio_paths = []
             for i, path in enumerate(event.media_urls):
                 mtype = event.media_types[i] if i < len(event.media_types) else ""
-                if mtype.startswith("image/") or event.message_type == MessageType.PHOTO:
+                # When a per-attachment MIME is known, trust it. Only fall
+                # back to the message-level type (PHOTO / VOICE / AUDIO)
+                # when the per-attachment slot is empty/unknown -- otherwise
+                # a document or other non-image attachment uploaded alongside
+                # an image gets mis-routed as an image (sent to the vision
+                # provider as bogus base64) and the whole turn 400s with
+                # "Could not process image".
+                if mtype.startswith("image/"):
                     image_paths.append(path)
-                if mtype.startswith("audio/") or event.message_type in {MessageType.VOICE, MessageType.AUDIO}:
+                elif mtype.startswith("audio/"):
                     audio_paths.append(path)
+                elif not mtype:
+                    if event.message_type == MessageType.PHOTO:
+                        image_paths.append(path)
+                    elif event.message_type in {MessageType.VOICE, MessageType.AUDIO}:
+                        audio_paths.append(path)
 
             if image_paths:
                 # Decide routing: native (attach pixels) vs text (vision_analyze
