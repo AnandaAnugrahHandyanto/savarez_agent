@@ -158,6 +158,10 @@ google = [
   "google-auth-oauthlib==1.3.1",
   "google-auth-httplib2==0.3.1",
 ]
+# NATS: natsagent is not yet published to PyPI. For now install the SDK from
+# source: `pip install -e ../nats-ai-pysdk`. Once published, `pip install
+# 'hermes-agent[nats]'` will resolve the PyPI package.
+nats = ["natsagent>=0.1.0,<1"]
 youtube = [
   # Required by skills/media/youtube-content and
   # optional-skills/productivity/memento-flashcards (youtube_quiz.py).
