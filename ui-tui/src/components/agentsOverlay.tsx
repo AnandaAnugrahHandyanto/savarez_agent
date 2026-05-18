@@ -10,7 +10,7 @@ import {
 } from '../app/delegationStore.js'
 import { patchOverlayState } from '../app/overlayStore.js'
 import { $spawnDiff, $spawnHistory, clearDiffPair, type SpawnSnapshot } from '../app/spawnHistoryStore.js'
-import { useTurnSelector } from '../app/turnStore.js'
+import { hydrateDelegationActiveSubagents, useTurnSelector } from '../app/turnStore.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import type { DelegationPauseResponse, DelegationStatusResponse, SubagentInterruptResponse } from '../gatewayTypes.js'
 import { asRpcResult } from '../lib/rpc.js'
@@ -779,7 +779,11 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
   useEffect(() => {
     // Warm caps + paused flag on open.
     gw.request<DelegationStatusResponse>('delegation.status', {})
-      .then(r => applyDelegationStatus(asRpcResult<DelegationStatusResponse>(r)))
+      .then(r => {
+        const status = asRpcResult<DelegationStatusResponse>(r)
+        applyDelegationStatus(status)
+        hydrateDelegationActiveSubagents(status?.active)
+      })
       .catch(() => {})
   }, [gw])
 

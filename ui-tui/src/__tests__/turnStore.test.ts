@@ -4,6 +4,7 @@ import {
   archiveDoneTodos,
   archiveTodosAtTurnEnd,
   getTurnState,
+  hydrateDelegationActiveSubagents,
   patchTurnState,
   resetTurnState,
   toggleTodoCollapsed
@@ -62,5 +63,91 @@ describe('turnStore live progress helpers', () => {
 
     toggleTodoCollapsed()
     expect(getTurnState().todoCollapsed).toBe(false)
+  })
+
+  it('hydrates active delegation rows into the live subagent list', () => {
+    hydrateDelegationActiveSubagents([
+      {
+        depth: 1,
+        goal: 'inspect delegate_task',
+        model: 'openai/gpt-5.4',
+        parent_id: 'root-agent',
+        started_at: 1715400000,
+        status: 'running',
+        subagent_id: 'sa-live-1',
+        tool_count: 3
+      }
+    ])
+
+    expect(getTurnState().subagents).toEqual([
+      {
+        depth: 1,
+        goal: 'inspect delegate_task',
+        id: 'sa-live-1',
+        index: 0,
+        model: 'openai/gpt-5.4',
+        notes: [],
+        parentId: 'root-agent',
+        startedAt: 1715400000 * 1000,
+        status: 'running',
+        taskCount: 1,
+        thinking: [],
+        toolCount: 3,
+        tools: []
+      }
+    ])
+  })
+
+  it('preserves richer local subagent details when delegation.status only refreshes activity metadata', () => {
+    patchTurnState({
+      subagents: [
+        {
+          depth: 1,
+          goal: 'inspect delegate_task',
+          id: 'sa-live-1',
+          index: 7,
+          model: 'openai/gpt-5.4',
+          notes: ['tool batch ready'],
+          parentId: 'root-agent',
+          startedAt: 1715400000 * 1000,
+          status: 'running',
+          summary: 'kept locally',
+          taskCount: 1,
+          thinking: ['reading source'],
+          toolCount: 1,
+          tools: ['read cli.py']
+        }
+      ]
+    })
+
+    hydrateDelegationActiveSubagents([
+      {
+        depth: 1,
+        goal: 'inspect delegate_task',
+        started_at: 1715400005,
+        status: 'running',
+        subagent_id: 'sa-live-1',
+        tool_count: 4
+      }
+    ])
+
+    expect(getTurnState().subagents).toEqual([
+      {
+        depth: 1,
+        goal: 'inspect delegate_task',
+        id: 'sa-live-1',
+        index: 7,
+        model: 'openai/gpt-5.4',
+        notes: ['tool batch ready'],
+        parentId: 'root-agent',
+        startedAt: 1715400005 * 1000,
+        status: 'running',
+        summary: 'kept locally',
+        taskCount: 1,
+        thinking: ['reading source'],
+        toolCount: 4,
+        tools: ['read cli.py']
+      }
+    ])
   })
 })
