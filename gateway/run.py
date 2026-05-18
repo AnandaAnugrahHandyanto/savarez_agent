@@ -7043,10 +7043,28 @@ class GatewayRunner:
                     )
 
             if audio_paths:
-                message_text = await self._enrich_message_with_transcription(
+                message_text, _transcripts = await self._enrich_message_with_transcription(
                     message_text,
                     audio_paths,
                 )
+                # Echo transcriptions back to user if enabled
+                if getattr(self.config, "echo_transcription", False) and _transcripts:
+                    _echo_adapter = self.adapters.get(source.platform)
+                    _echo_meta = {"thread_id": source.thread_id} if source.thread_id else None
+                    if _echo_adapter:
+                        try:
+                            _echo_lines = [f'🎤 "{t}"' for t in _transcripts]
+                            _echo_msg = "\n".join(_echo_lines)
+                            logger.info("Sending echo transcription: %s", _echo_msg)
+                            result = await _echo_adapter.send(
+                                source.chat_id,
+                                _echo_msg,
+                                reply_to=event.message_id,
+                                metadata=_echo_meta,
+                            )
+                            logger.info("Echo send result: success=%s error=%s", result.success, result.error)
+                        except Exception as e:
+                            logger.error("Failed to send echo transcription: %s", e, exc_info=True)
                 _stt_fail_markers = (
                     "No STT provider",
                     "STT is disabled",
@@ -13528,7 +13546,7 @@ class GatewayRunner:
         self,
         user_text: str,
         audio_paths: List[str],
-    ) -> str:
+    ) -> tuple[str, list[str]]:
         """
         Auto-transcribe user voice/audio messages using the configured STT provider
         and prepend the transcript to the message text.
@@ -13538,7 +13556,7 @@ class GatewayRunner:
             audio_paths: List of local file paths to cached audio files.
 
         Returns:
-            The enriched message string with transcriptions prepended.
+            Tuple of (enriched message string, list of successful transcripts).
         """
         if not getattr(self.config, "stt_enabled", True):
             disabled_note = "[The user sent voice message(s), but transcription is disabled in config."
@@ -13549,18 +13567,20 @@ class GatewayRunner:
                 )
             disabled_note += "]"
             if user_text:
-                return f"{disabled_note}\n\n{user_text}"
-            return disabled_note
+                return f"{disabled_note}\n\n{user_text}", []
+            return disabled_note, []
 
         from tools.transcription_tools import transcribe_audio
 
         enriched_parts = []
+        successful_transcripts = []
         for path in audio_paths:
             try:
                 logger.debug("Transcribing user voice: %s", path)
                 result = await asyncio.to_thread(transcribe_audio, path)
                 if result["success"]:
                     transcript = result["transcript"]
+                    successful_transcripts.append(transcript)
                     enriched_parts.append(
                         f'[The user sent a voice message~ '
                         f'Here\'s what they said: "{transcript}"]'
@@ -13603,11 +13623,11 @@ class GatewayRunner:
             # when we successfully transcribed the audio — it's redundant.
             _placeholder = "(The user sent a message with no text content)"
             if user_text and user_text.strip() == _placeholder:
-                return prefix
+                return prefix, successful_transcripts
             if user_text:
-                return f"{prefix}\n\n{user_text}"
-            return prefix
-        return user_text
+                return f"{prefix}\n\n{user_text}", successful_transcripts
+            return prefix, successful_transcripts
+        return user_text, successful_transcripts
 
     def _build_process_event_source(self, evt: dict):
         """Resolve the canonical source for a synthetic background-process event.
