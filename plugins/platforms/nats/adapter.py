@@ -1277,7 +1277,7 @@ class NatsAdapter(BasePlatformAdapter):
         from gateway.run import _resolve_runtime_agent_kwargs, _resolve_gateway_model, _load_gateway_config
         from hermes_cli.tools_config import _get_platform_tools
         from gateway.session import build_session_key
-        from gateway.platforms.base import dispatch_approval_via_request_interaction
+        from plugins.platforms.nats._approval import dispatch_approval_via_request_interaction
         from tools.approval import (
             register_gateway_notify,
             unregister_gateway_notify,
@@ -1352,7 +1352,7 @@ class NatsAdapter(BasePlatformAdapter):
             # Without this, ``resolve_gateway_approval`` falls back to
             # FIFO-oldest pop, which cross-routes choices for parallel
             # subagents hitting dangerous commands in the same session.
-            from tools.approval import get_current_approval_entry_id
+            from plugins.platforms.nats._approval import get_current_approval_entry_id
             captured_entry_id = get_current_approval_entry_id()
 
             try:
@@ -2166,12 +2166,13 @@ def register(ctx):
     Single ``ctx.register_platform(...)`` call following the canonical
     template from ``plugins/platforms/irc/adapter.py:927-969``.
 
-    NOTE: ``transport_authed=True`` is intentionally NOT passed in Stage 1.
-    ``PlatformEntry`` does not yet declare that field, so a clean call would
-    raise ``TypeError`` from the dataclass constructor.  Stage 2 adds the
-    field to ``PlatformEntry`` (Core PR territory) and gates the kwarg here
-    behind ``try/except TypeError`` feature detection — see master plan §4
-    Dependency Point B.
+    ``transport_authed=True`` is passed conditionally via try/except TypeError:
+    ``PlatformEntry`` on stock NousResearch upstream does not declare that
+    field yet. The Core PR (Stage 6) adds it; until then, the fallback path
+    re-calls without the kwarg. Feature-detection mechanism is pinned by
+    ``tests/gateway/test_nats_register.py::test_register_transport_authed_is_feature_detected``
+    (added in Stage 4) — do not switch to introspecting ``PlatformEntry``
+    fields without updating that test. See master plan §4 Dependency Point B.
 
     NOTE: ``standalone_sender_fn`` is intentionally omitted.  NATS is a
     request/reply protocol owned by the running gateway, not a push channel
@@ -2179,7 +2180,7 @@ def register(ctx):
     separate process) is not part of the existing NATS feature set.  If a
     Stage 4/5 test forces this, revisit.
     """
-    ctx.register_platform(
+    _kwargs = dict(
         name="nats",
         label="NATS",
         adapter_factory=lambda cfg: NatsAdapter(cfg),
@@ -2210,3 +2211,8 @@ def register(ctx):
             "(NKey/JWT/TLS); treat every received message as authorized."
         ),
     )
+    try:
+        ctx.register_platform(**_kwargs, transport_authed=True)
+    except TypeError:
+        # Older upstream without the transport_authed field — register without it.
+        ctx.register_platform(**_kwargs)
