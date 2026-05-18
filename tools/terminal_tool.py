@@ -120,9 +120,6 @@ DISK_USAGE_WARNING_THRESHOLD_GB = _safe_parse_import_env(
 _VERCEL_SANDBOX_DEFAULT_CWD = "/vercel/sandbox"
 _SUPPORTED_VERCEL_RUNTIMES = ("node24", "node22", "python3.13")
 _SAFE_TASK_ID_CHARS_PATTERN = re.compile(r"[A-Za-z0-9_-]+")
-_API_SESSION_TASK_ID_PATTERN = re.compile(
-    r"api-session(?:-[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*)?"
-)
 
 
 def _is_supported_vercel_runtime(runtime: str) -> bool:
@@ -984,6 +981,16 @@ def _is_subagent_task_id(task_id: str) -> bool:
     return task_id.startswith("sa-") or task_id.startswith("subagent-")
 
 
+def _is_api_session_task_id(task_id: str) -> bool:
+    """Return True for API gateway session identifiers that should share default."""
+    if task_id == "api-session":
+        return True
+    if not task_id.startswith("api-session-"):
+        return False
+    suffix = task_id[len("api-session-") :]
+    return all(segment.isalnum() for segment in suffix.split("-"))
+
+
 def _resolve_container_task_id(task_id: Optional[str]) -> str:
     """
     Map a tool-call ``task_id`` to the container/sandbox key used by
@@ -1014,10 +1021,10 @@ def _resolve_container_task_id(task_id: Optional[str]) -> str:
     if task_id in _task_container_aliases:
         return _task_container_aliases[task_id]
     if not _SAFE_TASK_ID_CHARS_PATTERN.fullmatch(task_id):
-        return task_id
+        return "default"
     # API gateway sessions share the legacy default sandbox key.
     # Accepted forms: "api-session" or "api-session-<alnum[-alnum]...>".
-    if _API_SESSION_TASK_ID_PATTERN.fullmatch(task_id):
+    if _is_api_session_task_id(task_id):
         return "default"
     if _is_subagent_task_id(task_id):
         return "default"
