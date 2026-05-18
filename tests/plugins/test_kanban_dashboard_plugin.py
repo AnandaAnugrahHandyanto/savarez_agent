@@ -21,6 +21,21 @@ from hermes_cli import kanban_db as kb
 
 
 # ---------------------------------------------------------------------------
+# Frontend bundle regression checks
+# ---------------------------------------------------------------------------
+
+
+def test_dashboard_bundle_does_not_reference_removed_column_label_constant():
+    """The Kanban tab must not crash on render because of stale bundle globals."""
+    repo_root = Path(__file__).resolve().parents[2]
+    bundle = repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
+    content = bundle.read_text(encoding="utf-8")
+
+    assert "FALLBACK_COLUMN_LABEL" in content
+    assert "COLUMN_LABEL[props.column.name]" not in content
+
+
+# ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
 
