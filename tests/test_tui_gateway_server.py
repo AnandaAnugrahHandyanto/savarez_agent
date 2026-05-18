@@ -79,6 +79,109 @@ def test_dispatch_rejects_non_object_params():
     }
 
 
+def test_session_create_exposes_durable_resume_id_for_dashboard_url_sync(monkeypatch):
+    """Dashboard /chat must learn the durable session key created by /new.
+
+    The short gateway sid is only useful for JSON-RPC routing. Browser resume
+    links need the durable ``session_key`` so a PTY-side ``/new`` can passively
+    update ``/chat?resume=<session_key>`` without rebuilding the live PTY.
+    """
+
+    emitted = []
+
+    class _NoopTimer:
+        daemon = False
+
+        def __init__(self, _interval, _target):
+            pass
+
+        def start(self):
+            return None
+
+    monkeypatch.setattr(server, "_new_session_key", lambda: "durable-session-key")
+    monkeypatch.setattr(server, "_resolve_model", lambda: "test/model")
+    monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: None)
+    monkeypatch.setattr(server, "_load_show_reasoning", lambda: False)
+    monkeypatch.setattr(server, "_load_tool_progress_mode", lambda: "all")
+    monkeypatch.setattr(server.threading, "Timer", _NoopTimer)
+    monkeypatch.setattr(server, "_emit", lambda *args: emitted.append(args))
+
+    try:
+        resp = server.handle_request(
+            {"id": "1", "method": "session.create", "params": {"cols": 100}}
+        )
+
+        result = resp["result"]
+        assert result["session_id"] != "durable-session-key"
+        assert result["session_key"] == "durable-session-key"
+        expected_lazy_info = {
+            "model": "test/model",
+            "tools": {},
+            "skills": {},
+            "cwd": os.getenv("TERMINAL_CWD", os.getcwd()),
+            "lazy": True,
+            "session_key": "durable-session-key",
+            "resume_session_id": "durable-session-key",
+        }
+        assert result["info"] == expected_lazy_info
+        assert emitted == [
+            (
+                "session.info",
+                result["session_id"],
+                expected_lazy_info,
+            )
+        ]
+    finally:
+        server._sessions.clear()
+
+
+def test_init_session_info_event_includes_durable_resume_id(monkeypatch):
+    emitted = []
+
+    class _FakeWorker:
+        def __init__(self, key, model):
+            self.key = key
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(server, "_SlashWorker", _FakeWorker)
+    monkeypatch.setattr(server, "_wire_callbacks", lambda _sid: None)
+    monkeypatch.setattr(server, "_notify_session_boundary", lambda *_args: None)
+    monkeypatch.setattr(server, "_load_show_reasoning", lambda: False)
+    monkeypatch.setattr(server, "_load_tool_progress_mode", lambda: "all")
+    monkeypatch.setattr(server, "_session_info", lambda _agent: {"model": "test/model"})
+    monkeypatch.setattr(server, "_emit", lambda *args: emitted.append(args))
+
+    import tools.approval as _approval
+
+    monkeypatch.setattr(_approval, "register_gateway_notify", lambda _key, _cb: None)
+    monkeypatch.setattr(_approval, "load_permanent_allowlist", lambda: None)
+
+    try:
+        server._init_session(
+            "gateway-sid",
+            "durable-session-key",
+            types.SimpleNamespace(model="test/model"),
+            history=[],
+            cols=80,
+        )
+
+        assert emitted == [
+            (
+                "session.info",
+                "gateway-sid",
+                {
+                    "model": "test/model",
+                    "session_key": "durable-session-key",
+                    "resume_session_id": "durable-session-key",
+                },
+            )
+        ]
+    finally:
+        server._sessions.pop("gateway-sid", None)
+
+
 def test_voice_toggle_returns_configured_record_key(monkeypatch):
     monkeypatch.setattr(
         server,
@@ -1895,7 +1998,11 @@ def test_config_set_personality_preserves_history_and_returns_info(monkeypatch):
     )
 
     assert resp["result"]["history_reset"] is False
-    assert resp["result"]["info"] == {"model": "?"}
+    assert resp["result"]["info"] == {
+        "model": "?",
+        "session_key": "session-key",
+        "resume_session_id": "session-key",
+    }
     # History is preserved with a pivot marker appended
     assert len(session["history"]) == 2
     assert session["history"][0] == {"role": "user", "text": "hi"}
@@ -1906,7 +2013,15 @@ def test_config_set_personality_preserves_history_and_returns_info(monkeypatch):
     # Agent's system prompt was updated in-place; cached prompt untouched
     assert agent.ephemeral_system_prompt == "You are helpful."
     assert agent._cached_system_prompt == "old"
-    assert ("session.info", "sid", {"model": "?"}) in emits
+    assert (
+        "session.info",
+        "sid",
+        {
+            "model": "?",
+            "session_key": "session-key",
+            "resume_session_id": "session-key",
+        },
+    ) in emits
 
 
 def test_session_compress_uses_compress_helper(monkeypatch):
@@ -1927,7 +2042,15 @@ def test_session_compress_uses_compress_helper(monkeypatch):
 
     assert resp["result"]["removed"] == 2
     assert resp["result"]["usage"]["total"] == 42
-    emit.assert_any_call("session.info", "sid", {"model": "x"})
+    emit.assert_any_call(
+        "session.info",
+        "sid",
+        {
+            "model": "x",
+            "session_key": "session-key",
+            "resume_session_id": "session-key",
+        },
+    )
     # Final status.update clears the pinned "compressing" indicator so the
     # status bar can revert to the neutral state when compaction finishes.
     emit.assert_any_call("status.update", "sid", {"kind": "status", "text": "ready"})
@@ -3009,7 +3132,15 @@ def test_mirror_slash_compress_does_not_prelock_history(monkeypatch):
     assert warning == ""
     assert seen["compress"]
     assert seen["sync"]
-    assert ("session.info", "sid", {"model": "x"}) in emitted
+    assert (
+        "session.info",
+        "sid",
+        {
+            "model": "x",
+            "session_key": "session-key",
+            "resume_session_id": "session-key",
+        },
+    ) in emitted
 
 
 # ---------------------------------------------------------------------------

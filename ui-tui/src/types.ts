@@ -150,7 +150,9 @@ export interface SessionInfo {
   model: string
   reasoning_effort?: string
   release_date?: string
+  resume_session_id?: string
   service_tier?: string
+  session_key?: string
   skills: Record<string, string[]>
   system_prompt?: string
   tools: Record<string, string[]>

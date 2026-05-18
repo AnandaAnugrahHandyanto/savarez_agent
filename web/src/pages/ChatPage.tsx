@@ -59,6 +59,46 @@ function generateChannelId(): string {
   return `chat-${Math.random().toString(36).slice(2)}-${Date.now().toString(36)}`;
 }
 
+interface RpcEnvelope {
+  method?: string;
+  params?: { payload?: unknown; type?: string };
+}
+
+function dashboardResumeIdFromPayload(payload: unknown): string | null {
+  if (!payload || typeof payload !== "object") {
+    return null;
+  }
+
+  const p = payload as { resume_session_id?: unknown; session_key?: unknown };
+  const candidate =
+    typeof p.resume_session_id === "string"
+      ? p.resume_session_id
+      : typeof p.session_key === "string"
+        ? p.session_key
+        : "";
+  const sessionId = candidate.trim();
+  return sessionId || null;
+}
+
+function replaceChatResumeParam(sessionId: string): void {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  const url = new URL(window.location.href);
+
+  if (!url.pathname.endsWith("/chat") || url.searchParams.get("resume") === sessionId) {
+    return;
+  }
+
+  url.searchParams.set("resume", sessionId);
+  window.history.replaceState(
+    window.history.state,
+    "",
+    `${url.pathname}${url.search}${url.hash}`,
+  );
+}
+
 // Colors for the terminal body.  Matches the dashboard's dark teal canvas
 // with cream foreground — we intentionally don't pick monokai or a loud
 // theme, because the TUI's skin engine already paints the content; the
@@ -182,6 +222,44 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       cancelled = true;
     };
   }, [resumeParam, searchParams, setSearchParams]);
+
+  useEffect(() => {
+    if (!isActive) return;
+
+    const token = window.__HERMES_SESSION_TOKEN__;
+
+    if (!token || !channel) {
+      return;
+    }
+
+    const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+    const qs = new URLSearchParams({ token, channel });
+    const ws = new WebSocket(
+      `${proto}//${window.location.host}/api/events?${qs.toString()}`,
+    );
+
+    ws.addEventListener("message", (ev) => {
+      let frame: RpcEnvelope;
+
+      try {
+        frame = JSON.parse(ev.data) as RpcEnvelope;
+      } catch {
+        return;
+      }
+
+      if (frame.method !== "event" || frame.params?.type !== "session.info") {
+        return;
+      }
+
+      const nextResume = dashboardResumeIdFromPayload(frame.params.payload);
+
+      if (nextResume) {
+        replaceChatResumeParam(nextResume);
+      }
+    });
+
+    return () => ws.close(1000);
+  }, [channel, isActive]);
 
   useEffect(() => {
     const mql = window.matchMedia("(max-width: 1023px)");

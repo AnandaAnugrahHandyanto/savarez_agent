@@ -96,6 +96,18 @@ function CollapseToggle({
 const SKILLS_MAX = 8
 const TOOLSETS_MAX = 8
 
+type SessionCatalog = Record<string, string[]>
+
+export function normalizeSessionPanelCatalogs(info: {
+  skills?: null | SessionCatalog
+  tools?: null | SessionCatalog
+}): { skills: SessionCatalog; tools: SessionCatalog } {
+  return {
+    skills: info.skills ?? {},
+    tools: info.tools ?? {}
+  }
+}
+
 export function SessionPanel({ info, sid, t }: SessionPanelProps) {
   const cols = useStdout().stdout?.columns ?? 100
   const heroLines = caduceus(t.color, t.bannerHero || undefined)
@@ -103,6 +115,7 @@ export function SessionPanel({ info, sid, t }: SessionPanelProps) {
   const wide = cols >= 90 && leftW + 40 < cols
   const w = Math.max(20, wide ? cols - leftW - 14 : cols - 12)
   const lineBudget = Math.max(12, w - 2)
+  const { skills, tools } = normalizeSessionPanelCatalogs(info)
   const strip = (s: string) => (s.endsWith('_tools') ? s.slice(0, -6) : s)
 
   // ── Local collapse state for each section ──
@@ -130,8 +143,8 @@ export function SessionPanel({ info, sid, t }: SessionPanelProps) {
   }
 
   // ── Collapsible skills section ──
-  const skillEntries = Object.entries(info.skills).sort()
-  const skillsTotal = flat(info.skills).length
+  const skillEntries = Object.entries(skills).sort()
+  const skillsTotal = flat(skills).length
   const skillsCatCount = skillEntries.length
 
   const skillsBody = () => {
@@ -158,8 +171,8 @@ export function SessionPanel({ info, sid, t }: SessionPanelProps) {
   }
 
   // ── Collapsible tools section ──
-  const toolEntries = Object.entries(info.tools).sort()
-  const toolsTotal = flat(info.tools).length
+  const toolEntries = Object.entries(tools).sort()
+  const toolsTotal = flat(tools).length
 
   const toolsBody = () => {
     const shown = toolEntries.slice(0, TOOLSETS_MAX)

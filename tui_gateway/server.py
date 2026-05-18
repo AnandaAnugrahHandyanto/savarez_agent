@@ -585,7 +585,7 @@ def _start_agent_build(sid: str, session: dict) -> None:
             _sessions[sid]["_notif_stop"] = _start_notification_poller(sid, _sessions[sid])
             _notify_session_boundary("on_session_reset", key)
 
-            info = _session_info(agent)
+            info = _with_resume_session_info(_session_info(agent), key)
             warn = _probe_credentials(agent)
             if warn:
                 info["credential_warning"] = warn
@@ -1125,7 +1125,11 @@ def _apply_model_switch(sid: str, session: dict, raw_input: str) -> dict:
             api_mode=result.api_mode,
         )
         _restart_slash_worker(session)
-        _emit("session.info", sid, _session_info(agent))
+        _emit(
+            "session.info",
+            sid,
+            _with_resume_session_info(_session_info(agent), session["session_key"]),
+        )
 
     os.environ["HERMES_MODEL"] = result.new_model
     os.environ["HERMES_INFERENCE_MODEL"] = result.new_model
@@ -1364,6 +1368,18 @@ def _probe_config_health(cfg: dict) -> str:
                 "personality overlay will be skipped."
             )
     return " ".join(warnings).strip()
+
+
+def _with_resume_session_info(info: dict | None, session_key: str) -> dict:
+    """Attach the durable session id used by Dashboard resume links.
+
+    ``session_id`` in gateway responses is the short JSON-RPC sid. Browser
+    ``/chat?resume=...`` links need the durable session database key instead.
+    """
+    enriched = dict(info or {})
+    enriched["session_key"] = session_key
+    enriched["resume_session_id"] = session_key
+    return enriched
 
 
 def _session_info(agent) -> dict:
@@ -1766,7 +1782,7 @@ def _apply_personality_to_session(
         with session["history_lock"]:
             session["history"].append({"role": "user", "content": marker})
             session["history_version"] = int(session.get("history_version", 0)) + 1
-        info = _session_info(agent)
+        info = _with_resume_session_info(_session_info(agent), session["session_key"])
         _emit("session.info", sid, info)
         return False, info
     return False, None
@@ -1852,7 +1868,7 @@ def _reset_session_agent(sid: str, session: dict) -> dict:
     with session["history_lock"]:
         session["history"] = []
         session["history_version"] = int(session.get("history_version", 0)) + 1
-    info = _session_info(new_agent)
+    info = _with_resume_session_info(_session_info(new_agent), session["session_key"])
     _emit("session.info", sid, info)
     _restart_slash_worker(session)
     return info
@@ -1961,7 +1977,7 @@ def _init_session(sid: str, key: str, agent, history: list, cols: int = 80):
     _wire_callbacks(sid)
     _sessions[sid]["_notif_stop"] = _start_notification_poller(sid, _sessions[sid])
     _notify_session_boundary("on_session_reset", key)
-    _emit("session.info", sid, _session_info(agent))
+    _emit("session.info", sid, _with_resume_session_info(_session_info(agent), key))
 
 
 def _new_session_key() -> str:
@@ -2135,17 +2151,25 @@ def _(rid, params: dict) -> dict:
     build_timer.daemon = True
     build_timer.start()
 
+    lazy_info = _with_resume_session_info(
+        {
+            "model": _resolve_model(),
+            "tools": {},
+            "skills": {},
+            "cwd": os.getenv("TERMINAL_CWD", os.getcwd()),
+            "lazy": True,
+        },
+        key,
+    )
+    _emit("session.info", sid, lazy_info)
+
     return _ok(
         rid,
         {
             "session_id": sid,
-            "info": {
-                "model": _resolve_model(),
-                "tools": {},
-                "skills": {},
-                "cwd": os.getenv("TERMINAL_CWD", os.getcwd()),
-                "lazy": True,
-            },
+            "session_key": key,
+            "resume_session_id": key,
+            "info": lazy_info,
         },
     )
 
@@ -2279,7 +2303,7 @@ def _(rid, params: dict) -> dict:
             "resumed": target,
             "message_count": len(messages),
             "messages": messages,
-            "info": _session_info(agent),
+            "info": _with_resume_session_info(_session_info(agent), target),
         },
     )
 
@@ -2582,7 +2606,7 @@ def _(rid, params: dict) -> dict:
             summary = summarize_manual_compression(
                 before_messages, messages, before_tokens, after_tokens
             )
-            info = _session_info(agent)
+            info = _with_resume_session_info(_session_info(agent), session["session_key"])
             _emit("session.info", sid, info)
             return _ok(
                 rid,
@@ -2711,7 +2735,16 @@ def _(rid, params: dict) -> dict:
         )
     except Exception as e:
         return _err(rid, 5000, f"agent init failed on branch: {e}")
-    return _ok(rid, {"session_id": new_sid, "title": title, "parent": old_key})
+    return _ok(
+        rid,
+        {
+            "session_id": new_sid,
+            "session_key": new_key,
+            "resume_session_id": new_key,
+            "title": title,
+            "parent": old_key,
+        },
+    )
 
 
 @method("session.interrupt")
@@ -4332,7 +4365,11 @@ def _(rid, params: dict) -> dict:
             agent = session["agent"]
             if hasattr(agent, "refresh_tools"):
                 agent.refresh_tools()
-            _emit("session.info", params.get("session_id", ""), _session_info(agent))
+            _emit(
+                "session.info",
+                params.get("session_id", ""),
+                _with_resume_session_info(_session_info(agent), session["session_key"]),
+            )
 
         # Honor `always=true` by persisting the opt-out to config.
         if bool(params.get("always", False)):
@@ -5490,14 +5527,22 @@ def _mirror_slash_side_effects(sid: str, session: dict, command: str) -> str:
         elif name == "compress" and agent:
             _compress_session_history(session, arg)
             _sync_session_key_after_compress(sid, session)
-            _emit("session.info", sid, _session_info(agent))
+            _emit(
+                "session.info",
+                sid,
+                _with_resume_session_info(_session_info(agent), session["session_key"]),
+            )
         elif name == "fast" and agent:
             mode = arg.lower()
             if mode in {"fast", "on"}:
                 agent.service_tier = "priority"
             elif mode in {"normal", "off"}:
                 agent.service_tier = None
-            _emit("session.info", sid, _session_info(agent))
+            _emit(
+                "session.info",
+                sid,
+                _with_resume_session_info(_session_info(agent), session["session_key"]),
+            )
         elif name == "reload-mcp" and agent and hasattr(agent, "reload_mcp_tools"):
             agent.reload_mcp_tools()
         elif name == "stop":
