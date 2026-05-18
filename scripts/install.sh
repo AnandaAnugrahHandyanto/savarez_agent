@@ -1995,9 +1995,9 @@ main() {
     run_setup_wizard
     maybe_start_gateway
 
-    echo "git" > "$HERMES_HOME/.install_method"
-
     print_success
+
+    echo "git" > "$HERMES_HOME/.install_method"
 }
 
 if [ -n "$ENSURE_DEPS" ]; then
