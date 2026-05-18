@@ -311,6 +311,15 @@ TOOL_CATEGORIES = {
                 ],
             },
             {
+                "name": "Local sxng-search wrapper",
+                "badge": "free · local · search only",
+                "tag": "Use an installed sxng-search command, including local SearXNG fallbacks, as a search-only backend",
+                "web_backend": "sxng",
+                "env_vars": [
+                    {"key": "SXNG_SEARCH_COMMAND", "prompt": "sxng-search command path (blank if sxng-search is on PATH)", "required": False},
+                ],
+            },
+            {
                 "name": "Brave Search (Free Tier)",
                 "badge": "free tier · search only",
                 "tag": "2,000 queries/mo free — search only (pair with any extract provider)",

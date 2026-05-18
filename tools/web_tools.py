@@ -17,6 +17,7 @@ Backend compatibility:
 - Firecrawl: https://docs.firecrawl.dev/introduction (search, extract, crawl; direct or derived firecrawl-gateway.<domain> for Nous Subscribers)
 - Parallel: https://docs.parallel.ai (search, extract)
 - Tavily: https://tavily.com (search, extract, crawl)
+- Sxng: local sxng-search command wrapper (search only)
 
 LLM Processing:
 - Uses OpenRouter API with Gemini 3 Flash Preview for intelligent content extraction
@@ -126,6 +127,23 @@ def _load_web_config() -> dict:
     except (ImportError, Exception):
         return {}
 
+def _canonical_backend(backend: str) -> str:
+    """Normalize backend aliases used by config/env/tests."""
+    value = (backend or "").lower().strip()
+    if value in {"searxng-wrapper", "sxng-search"}:
+        return "sxng"
+    return value
+
+
+def _sxng_search_command_available() -> bool:
+    """Return True when the local sxng-search command can be invoked."""
+    try:
+        from tools.web_providers.sxng import SxngSearchProvider
+        return SxngSearchProvider().is_configured()
+    except Exception:
+        return False
+
+
 def _get_backend() -> str:
     """Determine which web backend to use (shared fallback).
 
@@ -133,15 +151,16 @@ def _get_backend() -> str:
     Falls back to whichever API key is present for users who configured
     keys manually without running setup.
     """
-    configured = (_load_web_config().get("backend") or "").lower().strip()
-    if configured in {"parallel", "firecrawl", "tavily", "exa", "searxng", "brave-free", "ddgs"}:
+    configured = _canonical_backend(_load_web_config().get("backend") or "")
+    if configured in {"parallel", "firecrawl", "tavily", "exa", "searxng", "sxng", "brave-free", "ddgs"}:
         return configured
 
     # Fallback for manual / legacy config — pick the highest-priority
     # available backend. Firecrawl also counts as available when the managed
     # tool gateway is configured for Nous subscribers.
-    # Free-tier backends (searxng / brave-free / ddgs) trail the paid ones so
-    # existing paid setups are unaffected.
+    # Free-tier backends (searxng / brave-free / sxng / ddgs) trail the paid ones so
+    # existing paid setups are unaffected. Raw SearXNG and Brave env config win over
+    # sxng-search command auto-detect because they are explicit env configuration.
     backend_candidates = (
         ("firecrawl", _has_env("FIRECRAWL_API_KEY") or _has_env("FIRECRAWL_API_URL") or _is_tool_gateway_ready()),
         ("parallel", _has_env("PARALLEL_API_KEY")),
@@ -149,6 +168,7 @@ def _get_backend() -> str:
         ("exa", _has_env("EXA_API_KEY")),
         ("searxng", _has_env("SEARXNG_URL")),
         ("brave-free", _has_env("BRAVE_SEARCH_API_KEY")),
+        ("sxng", _sxng_search_command_available()),
         ("ddgs", _ddgs_package_importable()),
     )
     for backend, available in backend_candidates:
@@ -190,7 +210,7 @@ def _get_capability_backend(capability: str) -> str:
     uses it. Otherwise falls through to the shared ``_get_backend()``.
     """
     cfg = _load_web_config()
-    specific = (cfg.get(f"{capability}_backend") or "").lower().strip()
+    specific = _canonical_backend(cfg.get(f"{capability}_backend") or "")
     if specific and _is_backend_available(specific):
         return specific
     return _get_backend()
@@ -198,6 +218,7 @@ def _get_capability_backend(capability: str) -> str:
 
 def _is_backend_available(backend: str) -> bool:
     """Return True when the selected backend is currently usable."""
+    backend = _canonical_backend(backend)
     if backend == "exa":
         return _has_env("EXA_API_KEY")
     if backend == "parallel":
@@ -208,6 +229,8 @@ def _is_backend_available(backend: str) -> bool:
         return _has_env("TAVILY_API_KEY")
     if backend == "searxng":
         return _has_env("SEARXNG_URL")
+    if backend == "sxng":
+        return _sxng_search_command_available()
     if backend == "brave-free":
         return _has_env("BRAVE_SEARCH_API_KEY")
     if backend == "ddgs":
@@ -313,6 +336,9 @@ def _web_requires_env() -> list[str]:
         "TOOL_GATEWAY_DOMAIN",
         "TOOL_GATEWAY_SCHEME",
         "TOOL_GATEWAY_USER_TOKEN",
+        "SEARXNG_URL",
+        "SXNG_SEARCH_COMMAND",
+        "SXNG_SEARCH_TIMEOUT",
     ]
 
 
@@ -1177,8 +1203,8 @@ def web_search_tool(query: str, limit: int = 5) -> str:
     """
     Search the web for information using available search API backend.
 
-    This function provides a generic interface for web search that can work
-    with multiple backends (Parallel or Firecrawl).
+    This function provides a generic interface for web search across configured
+    backends (Parallel, Firecrawl, Tavily, Exa, SearXNG, sxng-search, Brave, or ddgs).
 
     Note: This function returns search result metadata only (URLs, titles, descriptions).
     Use web_extract_tool to get full content from specific URLs.
@@ -1252,6 +1278,16 @@ def web_search_tool(query: str, limit: int = 5) -> str:
         if backend == "searxng":
             from tools.web_providers.searxng import SearXNGSearchProvider
             response_data = SearXNGSearchProvider().search(query, limit)
+            debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
+            result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
+            debug_call_data["final_response_size"] = len(result_json)
+            _debug.log_call("web_search_tool", debug_call_data)
+            _debug.save()
+            return result_json
+
+        if backend == "sxng":
+            from tools.web_providers.sxng import SxngSearchProvider
+            response_data = SxngSearchProvider().search(query, limit)
             debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
             result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
             debug_call_data["final_response_size"] = len(result_json)
@@ -1429,9 +1465,9 @@ async def web_extract_tool(
                     "include_images": False,
                 })
                 results = _normalize_tavily_documents(raw, fallback_url=safe_urls[0] if safe_urls else "")
-            elif backend in {"searxng", "brave-free", "ddgs"}:
+            elif backend in {"searxng", "sxng", "brave-free", "ddgs"}:
                 # These backends are search-only — they cannot extract URL content
-                _label = {"searxng": "SearXNG", "brave-free": "Brave Search (free tier)", "ddgs": "DuckDuckGo (ddgs)"}[backend]
+                _label = {"searxng": "SearXNG", "sxng": "sxng-search", "brave-free": "Brave Search (free tier)", "ddgs": "DuckDuckGo (ddgs)"}[backend]
                 return json.dumps({
                     "success": False,
                     "error": f"{_label} is a search-only backend and cannot extract URL content. "
@@ -1812,9 +1848,9 @@ async def web_crawl_tool(
             _debug.save()
             return cleaned_result
 
-        # SearXNG / Brave Search (free tier) / DuckDuckGo (ddgs) are search-only — they cannot crawl
-        if backend in {"searxng", "brave-free", "ddgs"}:
-            _label = {"searxng": "SearXNG", "brave-free": "Brave Search (free tier)", "ddgs": "DuckDuckGo (ddgs)"}[backend]
+        # SearXNG / sxng-search / Brave Search (free tier) / DuckDuckGo (ddgs) are search-only — they cannot crawl
+        if backend in {"searxng", "sxng", "brave-free", "ddgs"}:
+            _label = {"searxng": "SearXNG", "sxng": "sxng-search", "brave-free": "Brave Search (free tier)", "ddgs": "DuckDuckGo (ddgs)"}[backend]
             return json.dumps({
                 "error": f"{_label} is a search-only backend and cannot crawl URLs. "
                          "Set FIRECRAWL_API_KEY for crawling, or use web_search instead.",
@@ -2115,12 +2151,12 @@ def check_firecrawl_api_key() -> bool:
 
 def check_web_api_key() -> bool:
     """Check whether the configured web backend is available."""
-    configured = _load_web_config().get("backend", "").lower().strip()
-    if configured in {"exa", "parallel", "firecrawl", "tavily", "searxng", "brave-free", "ddgs"}:
+    configured = _canonical_backend(_load_web_config().get("backend", ""))
+    if configured in {"exa", "parallel", "firecrawl", "tavily", "searxng", "sxng", "brave-free", "ddgs"}:
         return _is_backend_available(configured)
     return any(
         _is_backend_available(backend)
-        for backend in ("exa", "parallel", "firecrawl", "tavily", "searxng", "brave-free", "ddgs")
+        for backend in ("exa", "parallel", "firecrawl", "tavily", "searxng", "brave-free", "sxng", "ddgs")
     )
 
 
@@ -2158,6 +2194,9 @@ if __name__ == "__main__":
             print("   Using Tavily API (https://tavily.com)")
         elif backend == "searxng":
             print(f"   Using SearXNG (search only): {os.getenv('SEARXNG_URL', '').strip()}")
+        elif backend == "sxng":
+            from tools.web_providers.sxng import SxngSearchProvider
+            print(f"   Using local sxng-search wrapper (search only): {SxngSearchProvider().command}")
         elif backend == "brave-free":
             print("   Using Brave Search free tier (search only)")
         elif backend == "ddgs":

@@ -530,6 +530,17 @@ def test_local_browser_provider_is_saved_explicitly(monkeypatch):
     assert config["browser"]["cloud_provider"] == "local"
 
 
+def test_web_providers_include_local_sxng_search_wrapper():
+    sxng_provider = next(
+        provider
+        for provider in TOOL_CATEGORIES["web"]["providers"]
+        if provider.get("web_backend") == "sxng"
+    )
+
+    assert sxng_provider["name"] == "Local sxng-search wrapper"
+    assert sxng_provider["env_vars"][0]["key"] == "SXNG_SEARCH_COMMAND"
+
+
 def test_reconfigure_lists_enabled_web_without_existing_provider_config(monkeypatch):
     config = {"platform_toolsets": {"cli": ["web"]}}
     seen = {}

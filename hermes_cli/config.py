@@ -605,7 +605,7 @@ DEFAULT_CONFIG = {
 
     "web": {
         "backend": "",           # shared fallback — applies to both search and extract
-        "search_backend": "",    # per-capability override for web_search (e.g. "searxng")
+        "search_backend": "",    # per-capability override for web_search (e.g. "searxng" or "sxng")
         "extract_backend": "",   # per-capability override for web_extract (e.g. "native")
     },
 
@@ -2065,6 +2065,24 @@ OPTIONAL_ENV_VARS = {
         "tools": ["web_search"],
         "password": False,
         "category": "tool",
+    },
+    "SXNG_SEARCH_COMMAND": {
+        "description": "Optional local sxng-search command path for the sxng web search backend",
+        "prompt": "sxng-search command path (optional if sxng-search is on PATH)",
+        "url": None,
+        "tools": ["web_search"],
+        "password": False,
+        "category": "tool",
+        "advanced": True,
+    },
+    "SXNG_SEARCH_TIMEOUT": {
+        "description": "Timeout in seconds for the local sxng-search command (default 45)",
+        "prompt": "sxng-search timeout seconds",
+        "url": None,
+        "tools": ["web_search"],
+        "password": False,
+        "category": "tool",
+        "advanced": True,
     },
     "BRAVE_SEARCH_API_KEY": {
         "description": "Brave Search API subscription token (free tier: 2,000 queries/mo)",
