@@ -3993,6 +3993,15 @@ def _resolve_task_provider_model(
         if cfg_provider and cfg_provider != "auto":
             return cfg_provider, resolved_model, cfg_base_url, cfg_api_key, resolved_api_mode
 
+        # provider is "auto" (or unset) but config specified an explicit model
+        # (e.g. auxiliary.default.model = us.anthropic.claude-haiku-...).
+        # _resolve_auto ignores the model hint and always uses the main model,
+        # so we must resolve the provider explicitly here to honour cfg_model.
+        if resolved_model:
+            explicit_provider = _read_main_provider() or "auto"
+            if explicit_provider and explicit_provider != "auto":
+                return explicit_provider, resolved_model, None, None, resolved_api_mode
+
         return "auto", resolved_model, None, None, resolved_api_mode
 
     return "auto", resolved_model, None, None, resolved_api_mode
@@ -4002,7 +4011,11 @@ _DEFAULT_AUX_TIMEOUT = 30.0
 
 
 def _get_auxiliary_task_config(task: str) -> Dict[str, Any]:
-    """Return the config dict for auxiliary.<task>, or {} when unavailable."""
+    """Return the config dict for auxiliary.<task>, or {} when unavailable.
+
+    Falls back to auxiliary.default when no task-specific config exists.
+    Task-specific keys win over default keys ({**default_config, **task_config}).
+    """
     if not task:
         return {}
     try:
@@ -4011,8 +4024,13 @@ def _get_auxiliary_task_config(task: str) -> Dict[str, Any]:
     except ImportError:
         return {}
     aux = config.get("auxiliary", {}) if isinstance(config, dict) else {}
+    if not isinstance(aux, dict):
+        return {}
+    default_config = aux.get("default", {})
+    default_config = default_config if isinstance(default_config, dict) else {}
     task_config = aux.get(task, {}) if isinstance(aux, dict) else {}
-    return task_config if isinstance(task_config, dict) else {}
+    task_config = task_config if isinstance(task_config, dict) else {}
+    return {**default_config, **task_config}
 
 
 def _get_task_timeout(task: str, default: float = _DEFAULT_AUX_TIMEOUT) -> float:
