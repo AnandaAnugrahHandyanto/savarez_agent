@@ -127,6 +127,34 @@ class TestSafeCommand:
         assert desc is None
 
 
+class TestSensitiveLocalStateReadPatterns:
+    def test_cat_auth_json_requires_approval(self):
+        is_dangerous, key, desc = detect_dangerous_command("cat /opt/data/auth.json")
+        assert is_dangerous is True
+        assert key is not None
+        assert "sensitive" in desc.lower()
+
+    def test_tar_codex_dir_requires_approval(self):
+        is_dangerous, key, desc = detect_dangerous_command("tar -czf out.tgz ~/.codex")
+        assert is_dangerous is True
+        assert key is not None
+        assert "sensitive" in desc.lower()
+
+    def test_upload_hermes_data_requires_approval(self):
+        is_dangerous, key, desc = detect_dangerous_command(
+            "gh release upload v1 hermes-data/auth.json"
+        )
+        assert is_dangerous is True
+        assert key is not None
+        assert "upload" in desc.lower()
+
+    def test_ls_regular_tmp_is_safe(self):
+        is_dangerous, key, desc = detect_dangerous_command("ls -la /tmp")
+        assert is_dangerous is False
+        assert key is None
+        assert desc is None
+
+
 def _clear_session(key):
     """Replace for removed clear_session() — directly clear internal state."""
     approval_module._session_approved.pop(key, None)

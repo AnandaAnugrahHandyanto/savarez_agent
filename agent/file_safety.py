@@ -91,9 +91,50 @@ def is_write_denied(path: str) -> bool:
 
 
 def get_read_block_error(path: str) -> Optional[str]:
-    """Return an error message when a read targets internal Hermes cache files."""
+    """Return an error message when a read targets sensitive local state."""
     resolved = Path(path).expanduser().resolve()
     hermes_home = _hermes_home_path().resolve()
+
+    sensitive_exact = {
+        hermes_home / ".env",
+        hermes_home / "auth.json",
+        hermes_home / "config.yaml",
+        hermes_home / "state.db",
+        hermes_home / "state.db-shm",
+        hermes_home / "state.db-wal",
+    }
+    sensitive_names = {
+        ".env",
+        "auth.json",
+        "id_rsa",
+        "id_ed25519",
+        ".netrc",
+        ".npmrc",
+        ".pypirc",
+    }
+    if resolved in sensitive_exact or resolved.name in sensitive_names:
+        return (
+            f"Access denied: {path} may contain credentials, tokens, or "
+            "private Hermes state. Ask the user to inspect it manually instead."
+        )
+
+    sensitive_dirs = [
+        hermes_home / ".codex",
+        hermes_home / "sessions",
+        hermes_home / "cron",
+        hermes_home / "memories",
+        Path.home() / ".codex",
+    ]
+    for blocked in sensitive_dirs:
+        try:
+            resolved.relative_to(blocked.resolve())
+        except (ValueError, OSError):
+            continue
+        return (
+            f"Access denied: {path} is private agent/user state and cannot be "
+            "read directly by tools."
+        )
+
     blocked_dirs = [
         hermes_home / "skills" / ".hub" / "index-cache",
         hermes_home / "skills" / ".hub",
