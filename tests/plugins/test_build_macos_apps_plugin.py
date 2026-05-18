@@ -40,8 +40,11 @@ class TestBundledBuildMacosAppsDiscovery:
         assert loaded.enabled
         assert sorted(loaded.tools_registered) == [
             "macos_build_project",
+            "macos_find_app_bundle",
             "macos_inspect_project",
             "macos_list_schemes",
+            "macos_run_app",
+            "macos_stop_app",
             "macos_test_project",
         ]
 
@@ -66,7 +69,10 @@ class TestBundledBuildMacosAppsDiscovery:
         tool_names = sorted(item["function"]["name"] for item in defs)
         assert tool_names == [
             "macos_build_project",
+            "macos_find_app_bundle",
             "macos_inspect_project",
             "macos_list_schemes",
+            "macos_run_app",
+            "macos_stop_app",
             "macos_test_project",
         ]

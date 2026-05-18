@@ -154,3 +154,138 @@ MACOS_TEST_PROJECT_SCHEMA = {
         "required": ["path", "scheme"],
     },
 }
+
+MACOS_FIND_APP_BUNDLE_SCHEMA = {
+    "name": "macos_find_app_bundle",
+    "description": (
+        "Find built .app bundles for a local macOS project. Prioritizes "
+        "DerivedData and common build output locations to support local run loops."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "path": {
+                "type": "string",
+                "description": "Repository or project path to inspect.",
+            },
+            "app_name": {
+                "type": "string",
+                "description": "Optional app name to filter matches, with or without the .app suffix.",
+            },
+            "configuration": {
+                "type": "string",
+                "description": "Preferred build configuration for ranking app bundle matches.",
+                "default": "Debug",
+            },
+            "derived_data_path": {
+                "type": "string",
+                "description": "Optional explicit DerivedData path to search first.",
+            },
+        },
+        "required": ["path"],
+    },
+}
+
+MACOS_RUN_APP_SCHEMA = {
+    "name": "macos_run_app",
+    "description": (
+        "Launch a local macOS app bundle with open. Supports explicit bundle "
+        "paths or discovery via macos_find_app_bundle."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "path": {
+                "type": "string",
+                "description": "Repository or project path used for app discovery.",
+            },
+            "app_bundle_path": {
+                "type": "string",
+                "description": "Optional explicit .app bundle path to launch.",
+            },
+            "app_name": {
+                "type": "string",
+                "description": "Optional app name used when discovering the bundle.",
+            },
+            "configuration": {
+                "type": "string",
+                "description": "Preferred build configuration for app discovery.",
+                "default": "Debug",
+            },
+            "derived_data_path": {
+                "type": "string",
+                "description": "Optional explicit DerivedData path for bundle discovery.",
+            },
+            "args": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Optional arguments passed after --args.",
+            },
+            "new_instance": {
+                "type": "boolean",
+                "description": "Launch a fresh app instance with open -n.",
+                "default": False,
+            },
+            "activate": {
+                "type": "boolean",
+                "description": "Launch without foreground activation when false.",
+                "default": True,
+            },
+            "wait_running_seconds": {
+                "type": "integer",
+                "description": "Seconds to poll for a running process after launch.",
+                "default": 5,
+                "minimum": 0,
+                "maximum": 60,
+            },
+        },
+        "required": ["path"],
+    },
+}
+
+MACOS_STOP_APP_SCHEMA = {
+    "name": "macos_stop_app",
+    "description": (
+        "Stop a local macOS app run loop. Attempts a graceful AppleScript quit "
+        "first, then falls back to pkill when necessary."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "path": {
+                "type": "string",
+                "description": "Repository or project path used for app discovery.",
+            },
+            "app_bundle_path": {
+                "type": "string",
+                "description": "Optional explicit .app bundle path to stop.",
+            },
+            "app_name": {
+                "type": "string",
+                "description": "Optional app name used when discovering the bundle.",
+            },
+            "configuration": {
+                "type": "string",
+                "description": "Preferred build configuration for app discovery.",
+                "default": "Debug",
+            },
+            "derived_data_path": {
+                "type": "string",
+                "description": "Optional explicit DerivedData path for bundle discovery.",
+            },
+            "force": {
+                "type": "boolean",
+                "description": "Escalate to SIGKILL if the app still appears to be running.",
+                "default": False,
+            },
+            "timeout_seconds": {
+                "type": "integer",
+                "description": "Seconds to wait for the app to exit after a graceful quit.",
+                "default": 15,
+                "minimum": 0,
+                "maximum": 60,
+            },
+        },
+        "required": ["path"],
+    },
+}

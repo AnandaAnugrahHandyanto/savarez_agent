@@ -1,9 +1,12 @@
 name: build-macos-apps
 version: 0.1.0
-description: "Inspect local macOS Xcode projects, list schemes, run tests, and run unsigned xcodebuild builds."
+description: "Inspect local macOS Xcode projects, list schemes, build, test, and manage local app run loops."
 kind: standalone
 provides_tools:
   - macos_inspect_project
   - macos_list_schemes
   - macos_build_project
   - macos_test_project
+  - macos_find_app_bundle
+  - macos_run_app
+  - macos_stop_app

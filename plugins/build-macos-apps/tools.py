@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import platform
+import plistlib
 import re
 import shlex
 import shutil
@@ -52,6 +53,14 @@ def _coerce_timeout(raw: Any, default: int = 1800) -> int:
     return max(30, min(7200, timeout))
 
 
+def _coerce_small_timeout(raw: Any, default: int, minimum: int = 0, maximum: int = 60) -> int:
+    try:
+        timeout = int(raw)
+    except Exception:
+        timeout = default
+    return max(minimum, min(maximum, timeout))
+
+
 def _coerce_string_list(raw: Any) -> List[str]:
     if raw is None:
         return []
@@ -59,6 +68,19 @@ def _coerce_string_list(raw: Any) -> List[str]:
         return [str(item).strip() for item in raw if str(item).strip()]
     item = str(raw).strip()
     return [item] if item else []
+
+
+def _coerce_bool(raw: Any, default: bool = False) -> bool:
+    if isinstance(raw, bool):
+        return raw
+    if raw is None:
+        return default
+    cleaned = str(raw).strip().lower()
+    if cleaned in {"1", "true", "yes", "on"}:
+        return True
+    if cleaned in {"0", "false", "no", "off"}:
+        return False
+    return default
 
 
 def _iter_candidates(root: Path, suffix: str) -> Iterable[Path]:
@@ -176,6 +198,176 @@ def _resolve_optional_path(base_path: Path, raw_path: Any) -> str | None:
         base_dir = base_path if base_path.is_dir() else base_path.parent
         candidate = (base_dir / candidate).resolve()
     return str(_normalize_path(candidate))
+
+
+def _normalize_app_name(raw: Any) -> str | None:
+    if raw is None:
+        return None
+    cleaned = str(raw).strip()
+    if not cleaned:
+        return None
+    return cleaned[:-4] if cleaned.lower().endswith(".app") else cleaned
+
+
+def _find_app_bundles(
+    path: Path,
+    *,
+    app_name: str | None = None,
+    configuration: str = "Debug",
+    derived_data_path: str | None = None,
+) -> Dict[str, Any]:
+    if not path.exists():
+        raise FileNotFoundError(f"Path not found: {path}")
+
+    root = path if path.is_dir() else path.parent
+    normalized_app_name = _normalize_app_name(app_name)
+    preferred_config = (configuration or "Debug").strip() or "Debug"
+
+    search_roots: List[Path] = []
+    if derived_data_path:
+        search_roots.append(Path(derived_data_path))
+    search_roots.extend(
+        [
+            root / "DerivedData",
+            root / "build",
+            root / "Build",
+            root / "dist",
+            root,
+        ]
+    )
+
+    unique_roots: List[Path] = []
+    seen_roots: set[Path] = set()
+    for search_root in search_roots:
+        resolved = search_root.resolve() if search_root.exists() else search_root
+        if not search_root.exists() or resolved in seen_roots:
+            continue
+        seen_roots.add(resolved)
+        unique_roots.append(search_root)
+
+    matches: List[Dict[str, Any]] = []
+    seen_apps: set[Path] = set()
+    for search_root in unique_roots:
+        for app_path in search_root.rglob("*.app"):
+            if app_path in seen_apps:
+                continue
+            seen_apps.add(app_path)
+            if normalized_app_name and app_path.stem != normalized_app_name:
+                continue
+
+            score = 0
+            app_string = str(app_path)
+            if preferred_config.lower() in app_string.lower():
+                score += 20
+            if "Build/Products" in app_string:
+                score += 30
+            if derived_data_path and Path(derived_data_path) in app_path.parents:
+                score += 40
+            rel_parts = app_path.relative_to(search_root).parts if app_path.is_relative_to(search_root) else ()
+            score += max(0, 10 - len(rel_parts))
+
+            matches.append(
+                {
+                    "path": str(app_path),
+                    "name": app_path.stem,
+                    "search_root": str(search_root),
+                    "score": score,
+                }
+            )
+
+    matches.sort(key=lambda item: (-item["score"], item["path"]))
+    return {
+        "success": True,
+        "app_name_filter": normalized_app_name,
+        "configuration": preferred_config,
+        "derived_data_path": derived_data_path,
+        "matches": matches,
+        "recommended_app_bundle": matches[0]["path"] if matches else None,
+    }
+
+
+def _resolve_app_bundle(
+    path: Path,
+    *,
+    app_bundle_path: Any = None,
+    app_name: Any = None,
+    configuration: str = "Debug",
+    derived_data_path: str | None = None,
+) -> Dict[str, Any]:
+    explicit_bundle = _resolve_optional_path(path, app_bundle_path)
+    if explicit_bundle:
+        bundle_path = Path(explicit_bundle)
+        if bundle_path.suffix != ".app":
+            raise ValueError("app_bundle_path must point to a .app bundle")
+        if not bundle_path.exists():
+            raise FileNotFoundError(f"App bundle not found: {bundle_path}")
+        return {
+            "bundle_path": str(bundle_path),
+            "bundle_name": bundle_path.stem,
+            "discovered": False,
+            "candidates": [],
+        }
+
+    discovered = _find_app_bundles(
+        path,
+        app_name=app_name,
+        configuration=configuration,
+        derived_data_path=derived_data_path,
+    )
+    recommended = discovered.get("recommended_app_bundle")
+    if not recommended:
+        raise ValueError("No .app bundle found. Build the app first or pass app_bundle_path explicitly.")
+
+    bundle_path = Path(recommended)
+    return {
+        "bundle_path": str(bundle_path),
+        "bundle_name": bundle_path.stem,
+        "discovered": True,
+        "candidates": discovered.get("matches", []),
+    }
+
+
+def _read_bundle_identifier(app_bundle_path: Path) -> str | None:
+    info_plist = app_bundle_path / "Contents" / "Info.plist"
+    if not info_plist.exists():
+        return None
+    try:
+        with info_plist.open("rb") as fh:
+            payload = plistlib.load(fh)
+    except Exception:
+        return None
+    bundle_identifier = payload.get("CFBundleIdentifier")
+    return str(bundle_identifier).strip() if bundle_identifier else None
+
+
+def _pgrep_app(app_name: str) -> List[int]:
+    completed = subprocess.run(
+        ["pgrep", "-ix", app_name],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if completed.returncode not in {0, 1}:
+        return []
+    pids: List[int] = []
+    for line in completed.stdout.splitlines():
+        line = line.strip()
+        if line.isdigit():
+            pids.append(int(line))
+    return pids
+
+
+def _wait_for_app_state(app_name: str, *, should_be_running: bool, timeout_seconds: int) -> List[int]:
+    deadline = time.time() + timeout_seconds
+    while True:
+        pids = _pgrep_app(app_name)
+        if should_be_running and pids:
+            return pids
+        if not should_be_running and not pids:
+            return []
+        if time.time() >= deadline:
+            return pids
+        time.sleep(0.25)
 
 
 def _run_xcodebuild(
@@ -410,5 +602,176 @@ def handle_macos_test_project(args: dict, **kw) -> str:
             success=False,
             timeout_seconds=exc.timeout,
         )
+    except Exception as exc:
+        return tool_error(str(exc), success=False)
+
+
+def handle_macos_find_app_bundle(args: dict, **kw) -> str:
+    try:
+        path = _normalize_path(args.get("path"))
+        configuration = str(args.get("configuration") or "Debug").strip() or "Debug"
+        derived_data_path = _resolve_optional_path(path, args.get("derived_data_path"))
+        result = _find_app_bundles(
+            path,
+            app_name=args.get("app_name"),
+            configuration=configuration,
+            derived_data_path=derived_data_path,
+        )
+        return tool_result(result)
+    except Exception as exc:
+        return tool_error(str(exc), success=False)
+
+
+def handle_macos_run_app(args: dict, **kw) -> str:
+    try:
+        path = _normalize_path(args.get("path"))
+        configuration = str(args.get("configuration") or "Debug").strip() or "Debug"
+        derived_data_path = _resolve_optional_path(path, args.get("derived_data_path"))
+        resolved = _resolve_app_bundle(
+            path,
+            app_bundle_path=args.get("app_bundle_path"),
+            app_name=args.get("app_name"),
+            configuration=configuration,
+            derived_data_path=derived_data_path,
+        )
+        bundle_path = resolved["bundle_path"]
+        bundle_name = resolved["bundle_name"]
+
+        command = ["open"]
+        if _coerce_bool(args.get("new_instance"), default=False):
+            command.append("-n")
+        if not _coerce_bool(args.get("activate"), default=True):
+            command.append("-g")
+        command.append(bundle_path)
+
+        app_args = _coerce_string_list(args.get("args"))
+        if app_args:
+            command.append("--args")
+            command.extend(app_args)
+
+        completed = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        pids = _wait_for_app_state(
+            bundle_name,
+            should_be_running=True,
+            timeout_seconds=_coerce_small_timeout(args.get("wait_running_seconds"), default=5),
+        )
+        success = completed.returncode == 0
+        result = {
+            "success": success,
+            "command": shlex.join(command),
+            "app_bundle_path": bundle_path,
+            "app_name": bundle_name,
+            "discovered_bundle": resolved["discovered"],
+            "candidate_bundles": resolved["candidates"],
+            "args": app_args,
+            "is_running": bool(pids),
+            "pids": pids,
+            "stdout": completed.stdout.strip(),
+            "stderr": completed.stderr.strip(),
+            "exit_code": completed.returncode,
+        }
+        if success:
+            return tool_result(result)
+        return tool_error("Failed to launch app with open", **result)
+    except Exception as exc:
+        return tool_error(str(exc), success=False)
+
+
+def handle_macos_stop_app(args: dict, **kw) -> str:
+    try:
+        path = _normalize_path(args.get("path"))
+        configuration = str(args.get("configuration") or "Debug").strip() or "Debug"
+        derived_data_path = _resolve_optional_path(path, args.get("derived_data_path"))
+        resolved = _resolve_app_bundle(
+            path,
+            app_bundle_path=args.get("app_bundle_path"),
+            app_name=args.get("app_name"),
+            configuration=configuration,
+            derived_data_path=derived_data_path,
+        )
+        bundle_path = Path(resolved["bundle_path"])
+        bundle_name = resolved["bundle_name"]
+        bundle_identifier = _read_bundle_identifier(bundle_path)
+        force = _coerce_bool(args.get("force"), default=False)
+        timeout_seconds = _coerce_small_timeout(args.get("timeout_seconds"), default=15)
+
+        initial_pids = _pgrep_app(bundle_name)
+        if not initial_pids:
+            return tool_result(
+                {
+                    "success": True,
+                    "app_bundle_path": str(bundle_path),
+                    "app_name": bundle_name,
+                    "bundle_identifier": bundle_identifier,
+                    "was_running": False,
+                    "stopped": True,
+                    "force": force,
+                    "pids": [],
+                }
+            )
+
+        actions: List[str] = []
+        apple_stdout = ""
+        apple_stderr = ""
+        if bundle_identifier:
+            applescript = ["osascript", "-e", f'tell application id "{bundle_identifier}" to quit']
+            apple_completed = subprocess.run(
+                applescript,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            actions.append(shlex.join(applescript))
+            apple_stdout = apple_completed.stdout.strip()
+            apple_stderr = apple_completed.stderr.strip()
+
+        remaining_pids = _wait_for_app_state(
+            bundle_name,
+            should_be_running=False,
+            timeout_seconds=timeout_seconds,
+        )
+
+        kill_stdout = ""
+        kill_stderr = ""
+        if remaining_pids:
+            kill_command = ["pkill", "-KILL" if force else "-TERM", "-ix", bundle_name]
+            kill_completed = subprocess.run(
+                kill_command,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            actions.append(shlex.join(kill_command))
+            kill_stdout = kill_completed.stdout.strip()
+            kill_stderr = kill_completed.stderr.strip()
+            remaining_pids = _wait_for_app_state(
+                bundle_name,
+                should_be_running=False,
+                timeout_seconds=2,
+            )
+
+        stopped = not remaining_pids
+        result = {
+            "success": stopped,
+            "app_bundle_path": str(bundle_path),
+            "app_name": bundle_name,
+            "bundle_identifier": bundle_identifier,
+            "was_running": True,
+            "stopped": stopped,
+            "force": force,
+            "initial_pids": initial_pids,
+            "remaining_pids": remaining_pids,
+            "actions": actions,
+            "stdout": "\n".join(part for part in [apple_stdout, kill_stdout] if part),
+            "stderr": "\n".join(part for part in [apple_stderr, kill_stderr] if part),
+        }
+        if stopped:
+            return tool_result(result)
+        return tool_error("Failed to stop app cleanly", **result)
     except Exception as exc:
         return tool_error(str(exc), success=False)

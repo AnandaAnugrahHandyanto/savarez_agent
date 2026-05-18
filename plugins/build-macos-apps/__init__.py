@@ -2,15 +2,21 @@
 
 from .schemas import (
     MACOS_BUILD_PROJECT_SCHEMA,
+    MACOS_FIND_APP_BUNDLE_SCHEMA,
     MACOS_INSPECT_PROJECT_SCHEMA,
     MACOS_LIST_SCHEMES_SCHEMA,
+    MACOS_RUN_APP_SCHEMA,
+    MACOS_STOP_APP_SCHEMA,
     MACOS_TEST_PROJECT_SCHEMA,
 )
 from .tools import (
     check_macos_dev_requirements,
     handle_macos_build_project,
+    handle_macos_find_app_bundle,
     handle_macos_inspect_project,
     handle_macos_list_schemes,
+    handle_macos_run_app,
+    handle_macos_stop_app,
     handle_macos_test_project,
 )
 
@@ -53,4 +59,31 @@ def register(ctx):
         check_fn=check_macos_dev_requirements,
         description=MACOS_TEST_PROJECT_SCHEMA["description"],
         emoji="🧪",
+    )
+    ctx.register_tool(
+        name="macos_find_app_bundle",
+        toolset=TOOLSET,
+        schema=MACOS_FIND_APP_BUNDLE_SCHEMA,
+        handler=handle_macos_find_app_bundle,
+        check_fn=check_macos_dev_requirements,
+        description=MACOS_FIND_APP_BUNDLE_SCHEMA["description"],
+        emoji="📦",
+    )
+    ctx.register_tool(
+        name="macos_run_app",
+        toolset=TOOLSET,
+        schema=MACOS_RUN_APP_SCHEMA,
+        handler=handle_macos_run_app,
+        check_fn=check_macos_dev_requirements,
+        description=MACOS_RUN_APP_SCHEMA["description"],
+        emoji="▶️",
+    )
+    ctx.register_tool(
+        name="macos_stop_app",
+        toolset=TOOLSET,
+        schema=MACOS_STOP_APP_SCHEMA,
+        handler=handle_macos_stop_app,
+        check_fn=check_macos_dev_requirements,
+        description=MACOS_STOP_APP_SCHEMA["description"],
+        emoji="⏹️",
     )

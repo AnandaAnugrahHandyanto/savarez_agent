@@ -259,3 +259,102 @@ class TestTestProject:
         result = json.loads(tools_mod.handle_macos_test_project({"path": str(repo)}))
         assert result["success"] is False
         assert result["error"] == "scheme is required"
+
+
+class TestFindAppBundle:
+    def test_prefers_build_products_match(self, tools_mod, tmp_path):
+        repo = tmp_path / "RunRepo"
+        primary = repo / "DerivedData" / "Build" / "Products" / "Debug" / "MyApp.app"
+        fallback = repo / "dist" / "MyApp.app"
+        primary.mkdir(parents=True)
+        fallback.mkdir(parents=True)
+
+        result = json.loads(
+            tools_mod.handle_macos_find_app_bundle(
+                {"path": str(repo), "app_name": "MyApp", "configuration": "Debug"}
+            )
+        )
+
+        assert result["success"] is True
+        assert result["recommended_app_bundle"] == str(primary)
+        assert result["matches"][0]["path"] == str(primary)
+
+
+class TestRunApp:
+    def test_launches_discovered_bundle(self, tools_mod, tmp_path, monkeypatch):
+        repo = tmp_path / "LaunchRepo"
+        bundle = repo / "DerivedData" / "Build" / "Products" / "Debug" / "MyApp.app"
+        bundle.mkdir(parents=True)
+
+        launched = {}
+
+        monkeypatch.setattr(
+            tools_mod.subprocess,
+            "run",
+            lambda command, capture_output, text, check: (
+                launched.setdefault("command", command),
+                CompletedProcess(command, 0, stdout="", stderr=""),
+            )[1],
+        )
+        monkeypatch.setattr(tools_mod, "_wait_for_app_state", lambda *args, **kwargs: [12345])
+
+        result = json.loads(
+            tools_mod.handle_macos_run_app(
+                {
+                    "path": str(repo),
+                    "app_name": "MyApp",
+                    "args": ["--demo"],
+                    "new_instance": True,
+                    "activate": False,
+                }
+            )
+        )
+
+        assert result["success"] is True
+        assert result["is_running"] is True
+        assert result["pids"] == [12345]
+        assert launched["command"][:3] == ["open", "-n", "-g"]
+        assert "--args" in launched["command"]
+
+
+class TestStopApp:
+    def test_stops_running_app_with_applescript(self, tools_mod, tmp_path, monkeypatch):
+        repo = tmp_path / "StopRepo"
+        bundle = repo / "DerivedData" / "Build" / "Products" / "Debug" / "MyApp.app"
+        info_plist = bundle / "Contents" / "Info.plist"
+        info_plist.parent.mkdir(parents=True)
+        info_plist.write_bytes(
+            tools_mod.plistlib.dumps({"CFBundleIdentifier": "com.example.MyApp"})
+        )
+
+        calls = []
+
+        monkeypatch.setattr(tools_mod, "_pgrep_app", lambda app_name: [123] if not calls else [])
+
+        def fake_run(command, capture_output, text, check):
+            calls.append(command)
+            return CompletedProcess(command, 0, stdout="", stderr="")
+
+        monkeypatch.setattr(tools_mod.subprocess, "run", fake_run)
+        monkeypatch.setattr(tools_mod, "_wait_for_app_state", lambda *args, **kwargs: [])
+
+        result = json.loads(
+            tools_mod.handle_macos_stop_app({"path": str(repo), "app_name": "MyApp"})
+        )
+
+        assert result["success"] is True
+        assert result["stopped"] is True
+        assert calls[0][:2] == ["osascript", "-e"]
+
+    def test_returns_success_when_app_not_running(self, tools_mod, tmp_path, monkeypatch):
+        repo = tmp_path / "StopIdleRepo"
+        bundle = repo / "DerivedData" / "Build" / "Products" / "Debug" / "MyApp.app"
+        bundle.mkdir(parents=True)
+        monkeypatch.setattr(tools_mod, "_pgrep_app", lambda app_name: [])
+
+        result = json.loads(
+            tools_mod.handle_macos_stop_app({"path": str(repo), "app_name": "MyApp"})
+        )
+
+        assert result["success"] is True
+        assert result["was_running"] is False

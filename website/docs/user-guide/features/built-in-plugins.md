@@ -59,7 +59,7 @@ The repo ships these bundled plugins under `plugins/`. All are opt-in — enable
 | `observability/langfuse` | hooks | Trace turns / LLM calls / tools to [Langfuse](https://langfuse.com) |
 | `spotify` | backend (7 tools) | Native Spotify playback, queue, search, playlists, albums, library |
 | `google_meet` | standalone | Join Meet calls, live-caption transcription, optional realtime duplex audio |
-| `build-macos-apps` | standalone | Inspect local Xcode projects, list schemes, run tests, and run unsigned macOS builds |
+| `build-macos-apps` | standalone | Inspect local Xcode projects, build/test schemes, and manage local app run loops |
 | `image_gen/openai` | image backend | OpenAI `gpt-image-2` image generation backend (alternative to FAL) |
 | `image_gen/openai-codex` | image backend | OpenAI image generation via Codex OAuth |
 | `image_gen/xai` | image backend | xAI `grok-2-image` backend |
@@ -203,7 +203,7 @@ The agent kicks off the meeting join, streams the transcription back into its co
 
 ### build-macos-apps
 
-Bundled standalone plugin for local macOS app build workflows. Phase 2 adds xcodebuild test support on top of the existing inspection and build flow.
+Bundled standalone plugin for local macOS app build workflows. Phase 3 adds local app bundle discovery plus run/stop tools on top of the existing inspection, build, and test flow.
 
 **Included toolset:** `macos-dev`
 
@@ -213,21 +213,23 @@ Bundled standalone plugin for local macOS app build workflows. Phase 2 adds xcod
 - `macos_list_schemes` — run `xcodebuild -list -json` for a selected workspace or project
 - `macos_build_project` — run an unsigned `xcodebuild build` for a chosen scheme
 - `macos_test_project` — run `xcodebuild test` for a chosen scheme with optional test filtering
+- `macos_find_app_bundle` — find built `.app` bundles under DerivedData and common local build output roots
+- `macos_run_app` — launch a local `.app` bundle with `open`
+- `macos_stop_app` — stop a local app via AppleScript quit with `pkill` fallback
 
 **Availability gate:** only exposed when Hermes is running on macOS and `xcodebuild` is available in `PATH`.
 
 **Current exclusions:**
 
-- no app launch or stop flow
 - no logs or crash diagnostics
 - no signing or notarization
 - no GUI automation or computer-use
 
-**Build/test behavior:** `macos_build_project` and `macos_test_project` disable signing with `CODE_SIGNING_ALLOWED=NO`, `CODE_SIGNING_REQUIRED=NO`, and `CODE_SIGN_IDENTITY=` so the plugin stays focused on local unsigned workflows. `macos_test_project` also supports optional `test_plan`, `only_testing`, `skip_testing`, and `result_bundle_path` arguments.
+**Build/test/run behavior:** `macos_build_project` and `macos_test_project` disable signing with `CODE_SIGNING_ALLOWED=NO`, `CODE_SIGNING_REQUIRED=NO`, and `CODE_SIGN_IDENTITY=` so the plugin stays focused on local unsigned workflows. `macos_test_project` also supports optional `test_plan`, `only_testing`, `skip_testing`, and `result_bundle_path` arguments. `macos_run_app` launches via `open`, and `macos_stop_app` attempts a graceful AppleScript quit before falling back to process termination.
 
 **Enabling:** `hermes plugins enable build-macos-apps`
 
-**Recommended flow:** inspect the repo, list schemes, then build or test the target scheme.
+**Recommended flow:** inspect the repo, list schemes, then build/test the target scheme and use the run-loop tools against the produced `.app` bundle.
 
 ### hermes-achievements
 
