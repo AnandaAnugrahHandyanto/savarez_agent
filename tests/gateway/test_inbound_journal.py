@@ -53,7 +53,7 @@ def _event(text="hello from telegram", *, message_id="m-1", update_id=9876):
             chat_id="42",
             chat_type="dm",
             user_id="u-1",
-            user_name="Alan",
+            user_name="Example User",
             thread_id="topic-1",
         ),
         message_id=message_id,
