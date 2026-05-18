@@ -3514,17 +3514,21 @@ class TelegramAdapter(BasePlatformAdapter):
         if self._bot:
             try:
                 _typing_thread = self._metadata_thread_id(metadata)
-                message_thread_id = self._message_thread_id_for_typing(_typing_thread)
-                # No retry-without-thread fallback here: _message_thread_id_for_typing
-                # already maps the forum General topic to None, so any non-None value
-                # reaching this call is a user-created topic. If Telegram rejects it
-                # (e.g. topic deleted mid-session), we swallow the failure rather than
-                # showing a typing indicator in the wrong chat/All Messages.
-                await self._bot.send_chat_action(
-                    chat_id=int(chat_id),
-                    action="typing",
-                    message_thread_id=message_thread_id,
-                )
+                direct_topic_id = self._metadata_direct_messages_topic_id(metadata)
+
+                chat_action_kwargs: Dict[str, Any] = {
+                    "chat_id": int(chat_id),
+                    "action": "typing",
+                }
+
+                # True Telegram DM topics route via direct_messages_topic_id.
+                # For forum/private topic lanes, keep message_thread_id behavior.
+                if direct_topic_id is not None:
+                    chat_action_kwargs["direct_messages_topic_id"] = int(direct_topic_id)
+                else:
+                    chat_action_kwargs["message_thread_id"] = self._message_thread_id_for_typing(_typing_thread)
+
+                await self._bot.send_chat_action(**chat_action_kwargs)
             except Exception as e:
                 # Typing failures are non-fatal; log at debug level only.
                 logger.debug(

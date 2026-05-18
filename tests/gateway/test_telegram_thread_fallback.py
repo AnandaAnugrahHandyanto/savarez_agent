@@ -267,6 +267,35 @@ async def test_send_typing_attempts_api_call_for_dm_topic_reply_fallback():
 
 
 @pytest.mark.asyncio
+async def test_send_typing_private_dm_topic_uses_direct_messages_topic_id():
+    """Typing in true Telegram DM topics must use direct_messages_topic_id.
+
+    Regression guard: when metadata carries direct_messages_topic_id, typing
+    must follow that lane (not message_thread_id), otherwise Telegram clients
+    can hide the typing bubble in topic mode.
+    """
+    adapter = _make_adapter()
+    call_log = []
+
+    async def mock_send_chat_action(**kwargs):
+        call_log.append(dict(kwargs))
+
+    adapter._bot = SimpleNamespace(send_chat_action=mock_send_chat_action)
+
+    await adapter.send_typing(
+        "12345",
+        metadata={
+            "thread_id": "20197",
+            "direct_messages_topic_id": "20197",
+        },
+    )
+
+    assert call_log == [
+        {"chat_id": 12345, "action": "typing", "direct_messages_topic_id": 20197},
+    ]
+
+
+@pytest.mark.asyncio
 async def test_send_retries_without_thread_on_thread_not_found():
     """When message_thread_id causes 'thread not found', retry without it."""
     adapter = _make_adapter()
