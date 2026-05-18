@@ -1,1 +1,2 @@
 - 🧠 **Memory cap while saving xAI note** — `memory.add` failed at 2,182/2,200 chars; fixed by replacing the compact Hermes entry with `xAI OAuth+x_search verified`.
+- 🏷️ **WMS backfill worker stalled then exited 143** — First broad Codex worker (`proc_2e506c617bc5`) looped on repository-wide cost searches and produced no useful diff; kill it, write a failed summary, relaunch with a focused implementation-only/cleanup spec, then host-verify and commit the narrowed result.
