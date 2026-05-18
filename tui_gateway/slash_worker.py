@@ -9,10 +9,42 @@ import io
 import json
 import os
 import sys
+import threading
 
 import cli as cli_mod
 from cli import HermesCLI
 from rich.console import Console
+
+
+_DEFAULT_SHUTDOWN_GRACE_S = 1.0
+
+
+def _shutdown_grace_seconds() -> float:
+    raw = (os.environ.get("HERMES_SLASH_WORKER_SHUTDOWN_GRACE_S") or "").strip()
+    if not raw:
+        return _DEFAULT_SHUTDOWN_GRACE_S
+    try:
+        value = float(raw)
+    except ValueError:
+        return _DEFAULT_SHUTDOWN_GRACE_S
+    return value if value > 0 else _DEFAULT_SHUTDOWN_GRACE_S
+
+
+def _exit_after_stdin_eof() -> None:
+    """Exit even when HermesCLI left non-daemon helper threads running.
+
+    The TUI gateway owns this worker via stdin/stdout pipes. When the gateway
+    process or browser-backed PTY disappears, stdin reaches EOF and there is no
+    useful work left to do. A normal ``return``/``sys.exit`` can still hang if
+    CLI setup left non-daemon helper threads alive, producing orphaned
+    ``tui_gateway.slash_worker`` processes. Give ordinary cleanup a short
+    chance, then force-exit the worker.
+    """
+
+    timer = threading.Timer(_shutdown_grace_seconds(), lambda: os._exit(0))
+    timer.daemon = True
+    timer.start()
+    sys.exit(0)
 
 
 def _run(cli: HermesCLI, command: str) -> str:
@@ -70,6 +102,8 @@ def main():
         except Exception as e:
             sys.stdout.write(json.dumps({"id": rid, "ok": False, "error": str(e)}) + "\n")
             sys.stdout.flush()
+
+    _exit_after_stdin_eof()
 
 
 if __name__ == "__main__":
