@@ -242,8 +242,10 @@ class TestRunHermesOAuthLoginPure:
         ) if False else None  # webbrowser is imported inside the function
 
         # Patch the symbols that get imported INSIDE the function body.
+        # Pin oauth_state so the pasted "<code>#<state>" passes the CSRF check.
         with patch("webbrowser.open", return_value=True), \
              patch("builtins.input", return_value=pasted_code), \
+             patch("secrets.token_urlsafe", return_value="state-value"), \
              patch("urllib.request.Request", side_effect=_capture_request) as req_factory, \
              patch("urllib.request.urlopen", return_value=_fake_token_response(token_response)):
             result = run_hermes_oauth_login_pure()
