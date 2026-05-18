@@ -2317,6 +2317,53 @@ def refresh_systemd_unit_if_needed(system: bool = False) -> bool:
     return True
 
 
+def _quarantine_unsafe_systemd_dropins(system: bool = False) -> list[Path]:
+    """Disable known-bad gateway systemd drop-ins that prevent service start.
+
+    Some installs may carry a local drop-in that tries to clean stale gateway
+    processes with ``ExecStartPre=... pkill -f "... gateway run --replace"``.
+    That pattern also matches the shell/pkill command line while systemd is
+    executing the pre-start hook, so the hook kills itself and systemd reports
+    ``Control process exited, code=killed, status=15/TERM`` before the real
+    gateway process can start.
+
+    The gateway runner already supports ``--replace`` and handles stale process
+    replacement itself, so this drop-in is both redundant and harmful.
+    """
+    unit_path = get_systemd_unit_path(system=system)
+    dropin_dir = unit_path.with_name(f"{unit_path.name}.d")
+    if not dropin_dir.is_dir():
+        return []
+
+    quarantined: list[Path] = []
+    for path in sorted(dropin_dir.glob("*.conf")):
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        normalized = " ".join(text.split())
+        if (
+            "ExecStartPre=" not in text
+            or "pkill" not in normalized
+            or "-f" not in normalized
+            or "gateway run --replace" not in normalized
+        ):
+            continue
+
+        target = path.with_name(f"{path.name}.disabled-by-hermes")
+        counter = 1
+        while target.exists():
+            target = path.with_name(f"{path.name}.disabled-by-hermes.{counter}")
+            counter += 1
+        try:
+            path.rename(target)
+        except OSError:
+            continue
+        quarantined.append(target)
+
+    return quarantined
+
+
 
 def _print_linger_enable_warning(username: str, detail: str | None = None) -> None:
     print()
@@ -2461,9 +2508,19 @@ def systemd_install(force: bool = False, system: bool = False, run_as_user: str 
         if not systemd_unit_is_current(system=system):
             print(f"↻ Repairing outdated {_service_scope_label(system)} systemd service at: {unit_path}")
             refresh_systemd_unit_if_needed(system=system)
+            quarantined = _quarantine_unsafe_systemd_dropins(system=system)
+            if quarantined:
+                _run_systemctl(["daemon-reload"], system=system, check=True, timeout=30)
+                for path in quarantined:
+                    print_warning(f"Disabled unsafe gateway systemd drop-in: {path}")
             _run_systemctl(["enable", get_service_name()], system=system, check=True, timeout=30)
             print(f"✓ {_service_scope_label(system).capitalize()} service definition updated")
             return
+        quarantined = _quarantine_unsafe_systemd_dropins(system=system)
+        if quarantined:
+            _run_systemctl(["daemon-reload"], system=system, check=True, timeout=30)
+            for path in quarantined:
+                print_warning(f"Disabled unsafe gateway systemd drop-in: {path}")
         print(f"Service already installed at: {unit_path}")
         print("Use --force to reinstall")
         return
@@ -2471,6 +2528,7 @@ def systemd_install(force: bool = False, system: bool = False, run_as_user: str 
     unit_path.parent.mkdir(parents=True, exist_ok=True)
     print(f"Installing {_service_scope_label(system)} systemd service to: {unit_path}")
     unit_path.write_text(generate_systemd_unit(system=system, run_as_user=run_as_user), encoding="utf-8")
+    _quarantine_unsafe_systemd_dropins(system=system)
 
     _run_systemctl(["daemon-reload"], system=system, check=True, timeout=30)
     _run_systemctl(["enable", get_service_name()], system=system, check=True, timeout=30)
@@ -2531,7 +2589,12 @@ def systemd_start(system: bool = False):
         # Raises UserSystemdUnavailableError with a remediation message.
         _preflight_user_systemd()
     _require_service_installed("start", system=system)
-    refresh_systemd_unit_if_needed(system=system)
+    quarantined = _quarantine_unsafe_systemd_dropins(system=system)
+    unit_refreshed = refresh_systemd_unit_if_needed(system=system)
+    if quarantined and not unit_refreshed:
+        _run_systemctl(["daemon-reload"], system=system, check=True, timeout=30)
+    for path in quarantined:
+        print_warning(f"Disabled unsafe gateway systemd drop-in: {path}")
     _run_systemctl(["start", get_service_name()], system=system, check=True, timeout=30)
     print(f"✓ {_service_scope_label(system).capitalize()} service started")
 
@@ -2570,7 +2633,12 @@ def systemd_restart(system: bool = False):
     else:
         _preflight_user_systemd()
     _require_service_installed("restart", system=system)
-    refresh_systemd_unit_if_needed(system=system)
+    quarantined = _quarantine_unsafe_systemd_dropins(system=system)
+    unit_refreshed = refresh_systemd_unit_if_needed(system=system)
+    if quarantined and not unit_refreshed:
+        _run_systemctl(["daemon-reload"], system=system, check=True, timeout=30)
+    for path in quarantined:
+        print_warning(f"Disabled unsafe gateway systemd drop-in: {path}")
     _sync_hermes_home_from_systemd_unit(system=system)
     from gateway.status import get_running_pid
 

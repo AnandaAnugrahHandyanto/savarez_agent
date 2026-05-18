@@ -84,6 +84,60 @@ class TestSystemdServiceRefresh:
             ["systemctl", "--user", "start", gateway_cli.get_service_name()],
         ]
 
+    def test_systemd_start_quarantines_unsafe_pkill_dropin(self, tmp_path, monkeypatch):
+        unit_path = tmp_path / "hermes-gateway.service"
+        unit_path.write_text("current unit\n", encoding="utf-8")
+        dropin_dir = tmp_path / "hermes-gateway.service.d"
+        dropin_dir.mkdir()
+        dropin = dropin_dir / "20-kill-stale.conf"
+        dropin.write_text(
+            "[Service]\n"
+            "ExecStartPre=/bin/sh -c '/usr/bin/pkill -u \"$USER\" -f "
+            "\"/opt/hermes/venv/bin/python -m hermes_cli.main gateway run --replace\" || true'\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setattr(gateway_cli, "_select_systemd_scope", lambda system=False: False)
+        monkeypatch.setattr(gateway_cli, "_preflight_user_systemd", lambda: None)
+        monkeypatch.setattr(gateway_cli, "get_systemd_unit_path", lambda system=False: unit_path)
+        monkeypatch.setattr(
+            gateway_cli,
+            "generate_systemd_unit",
+            lambda system=False, run_as_user=None: "current unit\n",
+        )
+
+        calls = []
+
+        def fake_run_systemctl(args, **kwargs):
+            calls.append(args)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli, "_run_systemctl", fake_run_systemctl)
+
+        gateway_cli.systemd_start()
+
+        assert not dropin.exists()
+        assert (dropin_dir / "20-kill-stale.conf.disabled-by-hermes").exists()
+        assert calls[:2] == [
+            ["daemon-reload"],
+            ["start", gateway_cli.get_service_name()],
+        ]
+
+    def test_quarantine_unsafe_systemd_dropins_ignores_unrelated_dropins(self, tmp_path, monkeypatch):
+        unit_path = tmp_path / "hermes-gateway.service"
+        dropin_dir = tmp_path / "hermes-gateway.service.d"
+        dropin_dir.mkdir()
+        dropin = dropin_dir / "proxy.conf"
+        dropin.write_text(
+            "[Service]\nEnvironment=HTTPS_PROXY=http://127.0.0.1:10809\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setattr(gateway_cli, "get_systemd_unit_path", lambda system=False: unit_path)
+
+        assert gateway_cli._quarantine_unsafe_systemd_dropins() == []
+        assert dropin.exists()
+
     def test_systemd_restart_refreshes_outdated_unit(self, tmp_path, monkeypatch):
         unit_path = tmp_path / "hermes-gateway.service"
         unit_path.write_text("old unit\n", encoding="utf-8")
