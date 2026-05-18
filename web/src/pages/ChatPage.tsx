@@ -214,6 +214,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     status: "idle",
     message: null,
   });
+  const [chatReconnectVersion, setChatReconnectVersion] = useState(0);
   const copyResetRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Raw state for the mobile side-sheet + a derived value that force-
   // closes whenever the chat tab isn't active.  The *derived* value is
@@ -250,6 +251,11 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     () => `${generateChannelId()}-${resumeParam ? "resume" : "new"}`,
     [resumeParam],
   );
+
+  const requestChatReconnect = useCallback(() => {
+    setBanner("Chat disconnected. Reconnecting...");
+    setChatReconnectVersion((v) => v + 1);
+  }, []);
 
   useLayoutEffect(() => {
     if (!isActive) {
@@ -379,32 +385,43 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   const handleSendCurrentInput = useCallback(() => {
     const ws = wsRef.current;
     if (!ws || ws.readyState !== WebSocket.OPEN) {
+      requestChatReconnect();
       setFileUploadState({
         status: "error",
-        message: "Chat is not connected. Reload /chat and try again.",
+        message: "Chat is reconnecting. Try again in a moment.",
       });
       return;
     }
     ws.send("\r");
     termRef.current?.focus();
-  }, []);
+  }, [requestChatReconnect]);
 
-  const waitForOpenChatSocket = useCallback(async (timeoutMs = 10000) => {
-    const deadline = Date.now() + timeoutMs;
-    while (Date.now() < deadline) {
-      const ws = wsRef.current;
-      if (ws?.readyState === WebSocket.OPEN) return ws;
-      await new Promise<void>((resolve) => window.setTimeout(resolve, 100));
-    }
-    const ws = wsRef.current;
-    return ws?.readyState === WebSocket.OPEN ? ws : null;
-  }, []);
+  const waitForOpenChatSocket = useCallback(
+    async (timeoutMs = 10000) => {
+      const waitUntil = async (deadline: number) => {
+        while (Date.now() < deadline) {
+          const ws = wsRef.current;
+          if (ws?.readyState === WebSocket.OPEN) return ws;
+          await new Promise<void>((resolve) => window.setTimeout(resolve, 100));
+        }
+        const ws = wsRef.current;
+        return ws?.readyState === WebSocket.OPEN ? ws : null;
+      };
+
+      const openSocket = await waitUntil(Date.now() + timeoutMs);
+      if (openSocket) return openSocket;
+
+      requestChatReconnect();
+      return waitUntil(Date.now() + 5000);
+    },
+    [requestChatReconnect],
+  );
 
   const sendPromptToHermes = useCallback(
     async (
       prompt: string,
       disconnectedMessage =
-        "Chat is not connected. Reload /chat and try again.",
+        "Chat is reconnecting. Try again in a moment.",
     ) => {
       const ws = await waitForOpenChatSocket();
       if (!ws || ws.readyState !== WebSocket.OPEN) {
@@ -789,6 +806,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     });
 
     // WebSocket
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
     const url = buildWsUrl(token, resumeParam, channel);
     const ws = new WebSocket(url);
     ws.binaryType = "arraybuffer";
@@ -832,7 +850,13 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         // Server already wrote an ANSI error frame.
         return;
       }
+      setBanner("Chat disconnected. Reconnecting...");
       term.write("\r\n\x1b[90m[session ended]\x1b[0m\r\n");
+      reconnectTimer = window.setTimeout(() => {
+        if (!unmounting) {
+          setChatReconnectVersion((v) => v + 1);
+        }
+      }, 800);
     };
 
     // Keystrokes → PTY.
@@ -875,6 +899,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       onDataDisposable.dispose();
       onResizeDisposable.dispose();
       if (metricsDebounce) clearTimeout(metricsDebounce);
+      if (reconnectTimer) clearTimeout(reconnectTimer);
       window.removeEventListener("resize", scheduleSyncTerminalMetrics);
       window.visualViewport?.removeEventListener(
         "resize",
@@ -894,7 +919,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         copyResetRef.current = null;
       }
     };
-  }, [channel, resumeParam]);
+  }, [channel, chatReconnectVersion, resumeParam]);
 
   // When the user returns to the chat tab (isActive: false → true), the
   // terminal host just transitioned from display:none to display:flex.
