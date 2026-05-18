@@ -1495,7 +1495,7 @@ class TelegramAdapter(BasePlatformAdapter):
         else:  # "first" (default)
             return chunk_index == 0
 
-    async def send(
+    async def _send(
         self,
         chat_id: str,
         content: str,
