@@ -128,8 +128,6 @@ def worker_env(monkeypatch, tmp_path):
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setenv("HERMES_PROFILE", "test-worker")
-    monkeypatch.delenv("HERMES_KANBAN_CLAIM_LOCK", raising=False)
-    monkeypatch.delenv("HERMES_KANBAN_RUN_ID", raising=False)
     from pathlib import Path as _Path
     monkeypatch.setattr(_Path, "home", lambda: tmp_path)
 
@@ -171,13 +169,38 @@ def test_show_explicit_task_id(worker_env):
     assert d["task"]["id"] == other
 
 
+def test_show_includes_model_override(worker_env):
+    from hermes_cli import kanban_db as kb
+    conn = kb.connect()
+    try:
+        other = kb.create_task(
+            conn,
+            title="strong model task",
+            assignee="peer",
+            model="gpt-5.5",
+        )
+    finally:
+        conn.close()
+
+    from tools import kanban_tools as kt
+    out = kt._handle_show({"task_id": other})
+    d = json.loads(out)
+    assert d["task"]["model"] == "gpt-5.5"
+
+
 def test_list_filters_tasks(monkeypatch, worker_env):
     """kanban_list gives orchestrators filtered board discovery."""
     monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
     from hermes_cli import kanban_db as kb
     conn = kb.connect()
     try:
-        a = kb.create_task(conn, title="alpha", assignee="factory", priority=5)
+        a = kb.create_task(
+            conn,
+            title="alpha",
+            assignee="factory",
+            priority=5,
+            model="gpt-5.5",
+        )
         b = kb.create_task(conn, title="beta", assignee="reviewer")
         c = kb.create_task(conn, title="gamma", assignee="factory", tenant="other")
     finally:
@@ -190,6 +213,7 @@ def test_list_filters_tasks(monkeypatch, worker_env):
     assert ids == [a, c]
     assert d["count"] == 2
     assert d["tasks"][0]["title"] == "alpha"
+    assert d["tasks"][0]["model"] == "gpt-5.5"
     assert d["tasks"][0]["parent_count"] == 0
     assert b not in ids
 

@@ -1010,10 +1010,12 @@ def _(home, kb):
         "title": "📋 deploy 🚀 to 生产",
         "body": "日本語 body",
         "assignee": "deploy-bot",
+        "model": "gpt-5.5",
     })
     assert r.status_code == 200
     tid = r.json()["task"]["id"]
     assert r.json()["task"]["title"] == "📋 deploy 🚀 to 生产"
+    assert r.json()["task"]["model"] == "gpt-5.5"
 
     # Invalid JSON schema — unknown field, pydantic should either ignore or 422
     r = client.post("/api/plugins/kanban/tasks", json={
