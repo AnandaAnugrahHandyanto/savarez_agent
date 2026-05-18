@@ -44,6 +44,10 @@ What you'll see:
 | `/goal pause` | Stop the auto-continuation loop without clearing the goal. |
 | `/goal resume` | Resume the loop (resets the turn counter back to zero). |
 | `/goal clear` | Drop the goal entirely. |
+| `/subgoal` | List extra criteria attached to the active goal. |
+| `/subgoal <text>` | Append an extra criterion. The agent sees it on the next continuation prompt, and the judge must consider it before declaring the goal done. |
+| `/subgoal remove <n>` | Remove subgoal `n` using the 1-based index shown by `/subgoal`. |
+| `/subgoal clear` | Remove all subgoals from the active goal. |
 
 Works identically on the CLI and every gateway platform (Telegram, Discord, Slack, Matrix, Signal, WhatsApp, SMS, iMessage, Webhook, API server, and the web dashboard).
 
@@ -62,6 +66,18 @@ The judge is deliberately conservative: it marks a goal `done` only when the res
 ### Fail-open semantics
 
 If the judge errors (network blip, malformed response, unavailable aux client), Hermes treats the verdict as `continue` — a broken judge never wedges progress. The **turn budget** is the real backstop.
+
+### Subgoals
+
+Use `/subgoal` when the main goal is still right but you want to tighten the acceptance criteria mid-loop:
+
+```
+/subgoal also update the docs
+/subgoal remove 1
+/subgoal clear
+```
+
+Subgoals require an active goal. They do not restart or interrupt the current turn. Hermes includes them in the next continuation prompt and in the judge prompt, so a goal is only marked done when the latest answer satisfies the main goal **and** the listed subgoals.
 
 ### Turn budget
 
