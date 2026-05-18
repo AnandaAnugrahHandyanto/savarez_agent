@@ -70,6 +70,47 @@ MAX_SKILL_DESC_CHARS = 200
 _FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---", re.DOTALL)
 _DESC_RE = re.compile(r"^description:\s*(.+?)\s*$", re.MULTILINE)
 
+# Boilerplate phrases that signal the describer fell back to filler
+# instead of producing a concrete role description. Detected only when
+# ``--reject-boilerplate`` is set; the describer retries once with an
+# explicit rule against these phrases. Phrases were sourced from real
+# pre-improvement output ("highly versatile generalist", "powerhouse",
+# "multi-tool agent"). Match is case-insensitive substring against the
+# returned description.
+_BOILERPLATE_PHRASES = (
+    "versatile generalist",
+    "highly versatile",
+    "versatile multi-tool",
+    "versatile powerhouse",
+    "versatile creative and",
+    "versatile technical agent",
+    "versatile multi-modal",
+    "versatile developer",
+    "manages workflows across",
+    "manages complex workflows",
+    "handles everything from",
+    "handles complex workflows",
+    "capable of macos computer use",
+    "ai agent that helps users",
+    "hermes agent profile",
+)
+
+
+def _contains_boilerplate(text: str) -> Optional[str]:
+    """Return the matched boilerplate phrase, or ``None`` if clean.
+
+    Match is case-insensitive substring. We return the matched phrase
+    (not just a bool) so the retry prompt can call out exactly what the
+    first attempt produced.
+    """
+    if not text:
+        return None
+    lower = text.lower()
+    for phrase in _BOILERPLATE_PHRASES:
+        if phrase in lower:
+            return phrase
+    return None
+
 # Cap on SOUL.md content fed when --include-soul is passed. SOUL.md is
 # meant to be small per Hermes docs, but we cap to be safe.
 MAX_SOUL_CHARS = 4000
@@ -445,6 +486,7 @@ def describe_profile(
     include_soul: bool = False,
     include_agents: bool = False,
     with_skill_descriptions: bool = False,
+    reject_boilerplate: bool = False,
 ) -> DescribeOutcome:
     """Auto-generate a description for one profile.
 
@@ -480,6 +522,13 @@ def describe_profile(
     roughly 5-10x more characters per skill so the per-prompt skill cap
     is tightened to ``MAX_SKILLS_WITH_DESC`` when enabled. Helps the LLM
     reason about bespoke skills it's never seen before.
+
+    ``reject_boilerplate`` (default False) scans the LLM's first output
+    for filler phrases ("versatile generalist", "powerhouse", "manages
+    workflows across", etc.) and retries once with an explicit rule
+    against the matched phrase if found. Only one retry — the second
+    result is accepted unconditionally to bound cost. Off by default
+    so existing single-call behavior is unchanged.
     """
     canon = profiles_mod.normalize_profile_name(profile_name)
     if not profiles_mod.profile_exists(canon):
@@ -611,41 +660,83 @@ def describe_profile(
         agents_block=agents_block,
     )
 
-    try:
-        resp = client.chat.completions.create(
-            model=aux_model,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_msg},
-            ],
-            temperature=0.3,
-            max_tokens=400,
-            timeout=timeout or 60,
-            extra_body=get_auxiliary_extra_body() or None,
-        )
-    except Exception as exc:
-        logger.info("describe: API call failed for %s (%s)", canon, exc)
-        return DescribeOutcome(canon, False, f"LLM error: {type(exc).__name__}")
+    def _call(extra_system: str = "") -> Tuple[Optional[str], Optional[str]]:
+        """Run one describer LLM call. Returns (description, error_reason).
 
-    try:
-        raw = resp.choices[0].message.content or ""
-    except Exception:
-        raw = ""
+        Exactly one of the two is non-None. ``extra_system`` is appended
+        to the system prompt and is used by the retry path to add an
+        explicit prohibition against the boilerplate phrase that tripped
+        the first attempt.
+        """
+        sys_content = system_prompt + (extra_system or "")
+        try:
+            resp = client.chat.completions.create(
+                model=aux_model,
+                messages=[
+                    {"role": "system", "content": sys_content},
+                    {"role": "user", "content": user_msg},
+                ],
+                temperature=0.3,
+                max_tokens=400,
+                timeout=timeout or 60,
+                extra_body=get_auxiliary_extra_body() or None,
+            )
+        except Exception as call_exc:
+            logger.info(
+                "describe: API call failed for %s (%s)", canon, call_exc
+            )
+            return None, f"LLM error: {type(call_exc).__name__}"
 
-    parsed = _extract_json_blob(raw)
-    if parsed is None:
-        # Fall back: take the raw text trimmed to one paragraph.
-        text = raw.strip().split("\n\n", 1)[0]
-        if not text:
-            return DescribeOutcome(canon, False, "LLM returned an empty response")
-        description = text[:280]
-    else:
+        try:
+            raw = resp.choices[0].message.content or ""
+        except Exception:
+            raw = ""
+
+        parsed = _extract_json_blob(raw)
+        if parsed is None:
+            text = raw.strip().split("\n\n", 1)[0]
+            if not text:
+                return None, "LLM returned an empty response"
+            return text[:280], None
         val = parsed.get("description")
         if not isinstance(val, str) or not val.strip():
-            return DescribeOutcome(
-                canon, False, "LLM response missing 'description' field"
+            return None, "LLM response missing 'description' field"
+        return val.strip()[:280], None
+
+    description, err = _call()
+    if description is None:
+        return DescribeOutcome(canon, False, err or "LLM call failed")
+
+    if reject_boilerplate:
+        matched = _contains_boilerplate(description)
+        if matched is not None:
+            logger.info(
+                "describe: %s first attempt hit boilerplate phrase %r — retrying",
+                canon,
+                matched,
             )
-        description = val.strip()[:280]
+            extra_rule = (
+                f"\n\nIMPORTANT: A previous attempt produced a generic "
+                f"description containing the phrase '{matched}'. Do NOT use "
+                f"that phrase or any near variant. Avoid generic filler like "
+                f"'versatile', 'powerhouse', 'multi-tool', 'manages workflows "
+                f"across', 'handles everything from'. Lead with the profile's "
+                f"actual concrete role — name a specific lane, not a list of "
+                f"capabilities."
+            )
+            retry_desc, retry_err = _call(extra_rule)
+            if retry_desc is not None:
+                # Use the retry result even if it still contains boilerplate;
+                # at this point we've spent two calls and the second is
+                # almost certainly an improvement. The describer treats
+                # boilerplate as a soft signal, not a hard rejection.
+                description = retry_desc
+            elif retry_err:
+                logger.info(
+                    "describe: %s retry failed (%s) — keeping first attempt",
+                    canon,
+                    retry_err,
+                )
 
     try:
         profiles_mod.write_profile_meta(

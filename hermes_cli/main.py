@@ -9226,6 +9226,20 @@ def cmd_profile(args):
         include_agents_flag = bool(getattr(args, "include_agents", False))
         tag_skills_flag = bool(getattr(args, "tag_skills", False))
         skill_desc_flag = bool(getattr(args, "with_skill_descriptions", False))
+        # --reject-boilerplate defaults: ON when any role-aware knob is set
+        # (the user opted into quality mode and the input is grounded enough
+        # for a safe retry); OFF in vanilla mode for upstream parity.
+        # Explicit --reject-boilerplate / --no-reject-boilerplate overrides.
+        _rb = getattr(args, "reject_boilerplate", None)
+        if _rb is None:
+            reject_boilerplate_flag = (
+                tag_skills_flag
+                or include_soul_flag
+                or include_agents_flag
+                or skill_desc_flag
+            )
+        else:
+            reject_boilerplate_flag = bool(_rb)
 
         if all_flag:
             targets = _pd.list_describable_profiles(missing_only=True)
@@ -9245,6 +9259,7 @@ def cmd_profile(args):
                 include_agents=include_agents_flag,
                 tag_builtins=tag_skills_flag,
                 with_skill_descriptions=skill_desc_flag,
+                reject_boilerplate=reject_boilerplate_flag,
             )
             if outcome.ok:
                 ok_count += 1
@@ -12226,6 +12241,21 @@ Examples:
              "about bespoke skills it has never seen before. Costs more "
              "characters per skill so the per-prompt skill cap is tightened "
              "automatically. Off by default.",
+    )
+    profile_describe.add_argument(
+        "--reject-boilerplate",
+        dest="reject_boilerplate",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="With --auto, scan the LLM's first output for generic filler "
+             "phrases ('versatile generalist', 'powerhouse', 'manages "
+             "workflows across', etc.) and retry once with an explicit "
+             "rule against the matched phrase if found. Default: ON when "
+             "any role-aware knob (--tag-skills, --include-soul, "
+             "--include-agents, --with-skill-descriptions) is set — those "
+             "modes signal you want concrete output and the input data is "
+             "grounded enough to retry safely. OFF in vanilla mode for "
+             "upstream parity. Pass --no-reject-boilerplate to force off.",
     )
 
     profile_show = profile_subparsers.add_parser("show", help="Show profile details")

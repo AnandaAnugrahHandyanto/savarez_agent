@@ -197,6 +197,35 @@ def _capture_user_msg():
     )
 
 
+def _capture_with_responses(responses: list[str]):
+    """Like _capture_user_msg but returns a queued sequence of LLM responses.
+
+    Each entry in ``responses`` is the ``description`` value the fake LLM
+    will emit on the corresponding call. Used to simulate boilerplate
+    on the first attempt followed by a clean retry.
+    """
+    captured: list = []
+    client = MagicMock()
+    queue = list(responses)
+
+    def _fake_create(**kwargs):
+        captured.append(kwargs.get("messages", []))
+        if queue:
+            content = queue.pop(0)
+        else:
+            content = responses[-1] if responses else "ok"
+        return _fake_aux_response(jsonlib.dumps({"description": content}))
+
+    client.chat.completions.create = MagicMock(side_effect=_fake_create)
+    return (
+        patch(
+            "agent.auxiliary_client.get_text_auxiliary_client",
+            return_value=(client, "test-model"),
+        ),
+        captured,
+    )
+
+
 def test_describer_does_not_tag_skills_by_default(profile_env, monkeypatch):
     """Default behavior: no [user]/[built-in] labels appear in the prompt."""
     monkeypatch.setattr(profiles_mod, "profile_exists", lambda n: n == "myprof")
@@ -572,3 +601,96 @@ def test_describer_skill_descriptions_handles_missing_frontmatter(profile_env, m
     user_text = captured[0][1]["content"]
     # Skill ID still appears even without a description to attach.
     assert "research/no-frontmatter" in user_text
+
+
+# ---------------------------------------------------------------------------
+# Boilerplate detection + retry
+# ---------------------------------------------------------------------------
+
+
+def test_contains_boilerplate_detects_known_phrases():
+    """Sanity check: the matcher returns the matched phrase or None."""
+    assert describer._contains_boilerplate(
+        "Highly versatile generalist for development tasks."
+    ) == "versatile generalist"
+    assert describer._contains_boilerplate(
+        "A powerhouse agent that manages workflows across many domains."
+    ) == "manages workflows across"
+    # Case-insensitive
+    assert describer._contains_boilerplate(
+        "VERSATILE GENERALIST"
+    ) == "versatile generalist"
+    # Clean concrete role
+    assert describer._contains_boilerplate(
+        "Reads and modifies Python codebases — runs tests, opens PRs."
+    ) is None
+    # Empty / None
+    assert describer._contains_boilerplate("") is None
+    assert describer._contains_boilerplate(None) is None  # type: ignore[arg-type]
+
+
+def test_describer_does_not_retry_when_flag_off(profile_env, monkeypatch):
+    """Without reject_boilerplate, a boilerplate first attempt is accepted."""
+    monkeypatch.setattr(profiles_mod, "profile_exists", lambda n: n == "myprof")
+    monkeypatch.setattr(profiles_mod, "normalize_profile_name", lambda n: n)
+    monkeypatch.setattr(profiles_mod, "get_profile_dir", lambda n: profile_env)
+    monkeypatch.setattr(describer, "_builtin_skill_ids", lambda: set())
+
+    boilerplate = "Highly versatile generalist for development tasks."
+    clean = "Reads Python repos and ships PRs."
+    patch_ctx, captured = _capture_with_responses([boilerplate, clean])
+    with patch_ctx, patch(
+        "agent.auxiliary_client.get_auxiliary_extra_body", return_value={}
+    ):
+        outcome = describer.describe_profile("myprof")  # no flag
+    assert outcome.ok
+    assert outcome.description == boilerplate
+    # Only one LLM call should have been made.
+    assert len(captured) == 1
+
+
+def test_describer_retries_on_boilerplate_when_flag_on(profile_env, monkeypatch):
+    """With reject_boilerplate, boilerplate triggers exactly one retry."""
+    monkeypatch.setattr(profiles_mod, "profile_exists", lambda n: n == "myprof")
+    monkeypatch.setattr(profiles_mod, "normalize_profile_name", lambda n: n)
+    monkeypatch.setattr(profiles_mod, "get_profile_dir", lambda n: profile_env)
+    monkeypatch.setattr(describer, "_builtin_skill_ids", lambda: set())
+
+    boilerplate = "Highly versatile generalist that manages workflows across domains."
+    clean = "Reads Python repos and ships PRs against project codebases."
+    patch_ctx, captured = _capture_with_responses([boilerplate, clean])
+    with patch_ctx, patch(
+        "agent.auxiliary_client.get_auxiliary_extra_body", return_value={}
+    ):
+        outcome = describer.describe_profile(
+            "myprof", reject_boilerplate=True
+        )
+    assert outcome.ok
+    # Retry result should win.
+    assert outcome.description == clean
+    # Two LLM calls — first attempt + retry.
+    assert len(captured) == 2
+    # Second call's system prompt must contain the explicit phrase prohibition.
+    second_system = captured[1][0]["content"]
+    assert "Do NOT use" in second_system
+    assert "versatile generalist" in second_system
+
+
+def test_describer_no_retry_when_first_response_is_clean(profile_env, monkeypatch):
+    """Clean first response must not trigger a retry even with the flag on."""
+    monkeypatch.setattr(profiles_mod, "profile_exists", lambda n: n == "myprof")
+    monkeypatch.setattr(profiles_mod, "normalize_profile_name", lambda n: n)
+    monkeypatch.setattr(profiles_mod, "get_profile_dir", lambda n: profile_env)
+    monkeypatch.setattr(describer, "_builtin_skill_ids", lambda: set())
+
+    clean = "Reads Python repos and ships PRs against project codebases."
+    patch_ctx, captured = _capture_with_responses([clean])
+    with patch_ctx, patch(
+        "agent.auxiliary_client.get_auxiliary_extra_body", return_value={}
+    ):
+        outcome = describer.describe_profile(
+            "myprof", reject_boilerplate=True
+        )
+    assert outcome.ok
+    assert outcome.description == clean
+    assert len(captured) == 1
