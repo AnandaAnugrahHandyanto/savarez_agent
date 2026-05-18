@@ -6,7 +6,9 @@ turn counting, tags), and schema completeness.
 """
 
 import json
+import os
 import re
+import stat
 import sys
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
