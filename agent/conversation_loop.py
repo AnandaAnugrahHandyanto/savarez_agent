@@ -2251,6 +2251,7 @@ def run_conversation(
                     # still recover.  See _pool_may_recover_from_rate_limit
                     # for the single-credential-pool and CloudCode-quota
                     # exceptions.  Fixes #11314 and #13636.
+                    from run_agent import _pool_may_recover_from_rate_limit
                     pool_may_recover = _pool_may_recover_from_rate_limit(
                         agent._credential_pool,
                         provider=agent.provider,
