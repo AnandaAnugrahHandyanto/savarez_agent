@@ -199,21 +199,40 @@ def save_snapshot(data: Dict[str, Any]) -> None:
     path.write_text(json.dumps(_json_safe(data), indent=2, sort_keys=True))
 
 
+# Checkpoint schema version. Bump this every time ``analyze_messages``
+# changes the *meaning* of a stat that `scan_sessions` caches — otherwise
+# existing histories keep serving the old (pre-fix) numbers indefinitely
+# because ``session_fingerprint`` is only derived from session metadata
+# (started_at / last_active / model / title), not the analyzer output.
+#
+# v2 (#26927): ``memory_write_events`` no longer substring-matches
+#     ``"memory"`` against every tool name. Older caches over-count and
+#     must be discarded so the Memory Palace progress finally drops to
+#     the genuine write count instead of mirroring ``memory_events``.
+_CHECKPOINT_SCHEMA_VERSION = 2
+
+
 def load_checkpoint() -> Dict[str, Any]:
     path = checkpoint_path()
     if not path.exists():
-        return {"schema_version": 1, "generated_at": 0, "sessions": {}}
+        return {"schema_version": _CHECKPOINT_SCHEMA_VERSION, "generated_at": 0, "sessions": {}}
     try:
         data = json.loads(path.read_text())
         if isinstance(data, dict):
             data.setdefault("schema_version", 1)
             data.setdefault("generated_at", 0)
             data.setdefault("sessions", {})
+            # Drop the per-session cache when the analyzer semantics moved
+            # forward. The file itself is left in place — ``save_checkpoint``
+            # rewrites it with the new version on the next scan.
+            if int(data.get("schema_version") or 0) < _CHECKPOINT_SCHEMA_VERSION:
+                data["sessions"] = {}
+                data["schema_version"] = _CHECKPOINT_SCHEMA_VERSION
             if isinstance(data.get("sessions"), dict):
                 return data
     except Exception:
         pass
-    return {"schema_version": 1, "generated_at": 0, "sessions": {}}
+    return {"schema_version": _CHECKPOINT_SCHEMA_VERSION, "generated_at": 0, "sessions": {}}
 
 
 def save_checkpoint(data: Dict[str, Any]) -> None:
@@ -728,7 +747,7 @@ def scan_sessions(
                     pass
 
         save_checkpoint({
-            "schema_version": 1,
+            "schema_version": _CHECKPOINT_SCHEMA_VERSION,
             "generated_at": int(time.time()),
             "sessions": checkpoint_sessions,
         })

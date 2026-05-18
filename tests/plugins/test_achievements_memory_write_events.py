@@ -297,3 +297,59 @@ def test_analyze_messages_does_not_abort_on_corrupt_function_field(plugin_api):
     assert snap["memory_write_events"] == 2
 
 
+# ---------------------------------------------------------------------------
+# Checkpoint schema version: stale caches must be invalidated on load
+# ---------------------------------------------------------------------------
+
+
+def test_load_checkpoint_drops_sessions_when_schema_version_is_stale(plugin_api, tmp_path, monkeypatch):
+    """A pre-v2 checkpoint must hand back an empty ``sessions`` dict.
+
+    Without this, sessions cached before the #26927 fix would keep the
+    old over-counted ``memory_write_events`` indefinitely — the
+    fingerprint is per-session and unaware of analyzer semantics, so the
+    cache-reuse branch in ``scan_sessions`` would never re-analyze them.
+    """
+    monkeypatch.setattr(plugin_api, "checkpoint_path", lambda: tmp_path / "checkpoint.json")
+    (tmp_path / "checkpoint.json").write_text(
+        '{"schema_version": 1, "generated_at": 123, "sessions": '
+        '{"s1": {"fingerprint": {}, "stats": {"memory_write_events": 999}}}}'
+    )
+
+    data = plugin_api.load_checkpoint()
+    assert data["sessions"] == {}
+    assert data["schema_version"] == plugin_api._CHECKPOINT_SCHEMA_VERSION
+
+
+def test_load_checkpoint_keeps_sessions_when_schema_version_is_current(plugin_api, tmp_path, monkeypatch):
+    """Same-version caches survive load — only the analyzer-bump case wipes."""
+    monkeypatch.setattr(plugin_api, "checkpoint_path", lambda: tmp_path / "checkpoint.json")
+    current = plugin_api._CHECKPOINT_SCHEMA_VERSION
+    payload = (
+        '{"schema_version": ' + str(current) + ', "generated_at": 123, '
+        '"sessions": {"s1": {"fingerprint": {}, "stats": {"memory_write_events": 3}}}}'
+    )
+    (tmp_path / "checkpoint.json").write_text(payload)
+
+    data = plugin_api.load_checkpoint()
+    assert "s1" in data["sessions"]
+    assert data["sessions"]["s1"]["stats"]["memory_write_events"] == 3
+    assert data["schema_version"] == current
+
+
+def test_load_checkpoint_missing_version_is_treated_as_stale(plugin_api, tmp_path, monkeypatch):
+    """Pre-versioned files (which defaulted to v1) must be invalidated too."""
+    monkeypatch.setattr(plugin_api, "checkpoint_path", lambda: tmp_path / "checkpoint.json")
+    # Note: no ``schema_version`` key — older builds wrote files in this
+    # shape. ``load_checkpoint`` should default the missing field to 1
+    # and then trip the stale-cache branch.
+    (tmp_path / "checkpoint.json").write_text(
+        '{"generated_at": 123, "sessions": '
+        '{"s1": {"fingerprint": {}, "stats": {"memory_write_events": 999}}}}'
+    )
+
+    data = plugin_api.load_checkpoint()
+    assert data["sessions"] == {}
+    assert data["schema_version"] == plugin_api._CHECKPOINT_SCHEMA_VERSION
+
+
