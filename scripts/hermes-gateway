@@ -56,6 +56,18 @@ def get_launchd_plist_path() -> Path:
     """Get the path for the launchd plist file (macOS)."""
     return Path.home() / "Library" / "LaunchAgents" / f"ai.hermes.gateway.plist"
 
+def get_launchd_label() -> str:
+    """Get the launchd label for the legacy standalone helper."""
+    return "ai.hermes.gateway"
+
+def get_launchd_domain() -> str:
+    """Get the per-user launchd domain."""
+    return f"gui/{os.getuid()}"
+
+def get_launchd_target() -> str:
+    """Get the fully-qualified launchd service target."""
+    return f"{get_launchd_domain()}/{get_launchd_label()}"
+
 def get_python_path() -> str:
     """Get the path to the Python interpreter."""
     # Prefer the venv if it exists
@@ -196,10 +208,7 @@ def generate_launchd_plist() -> str:
     <true/>
     
     <key>KeepAlive</key>
-    <dict>
-        <key>SuccessfulExit</key>
-        <false/>
-    </dict>
+    <true/>
     
     <key>StandardOutPath</key>
     <string>{log_dir}/gateway.log</string>
@@ -228,8 +237,12 @@ def install_launchd():
     print(f"Installing launchd service to: {plist_path}")
     plist_path.write_text(generate_launchd_plist())
     
-    # Load the service
-    subprocess.run(["launchctl", "load", str(plist_path)], check=True)
+    # Load the service in the current user's launchd domain.  The helper's
+    # plist uses unconditional KeepAlive, so control paths must use
+    # bootstrap/bootout instead of deprecated load/unload or plain stop.
+    subprocess.run(["launchctl", "bootout", get_launchd_target()], check=False)
+    subprocess.run(["launchctl", "bootstrap", get_launchd_domain(), str(plist_path)], check=True)
+    subprocess.run(["launchctl", "kickstart", get_launchd_target()], check=True)
     
     print(f"✓ Service installed and loaded")
     print(f"")
@@ -244,8 +257,9 @@ def uninstall_launchd():
     """Uninstall the launchd service (macOS)."""
     plist_path = get_launchd_plist_path()
     
-    # Unload first
-    subprocess.run(["launchctl", "unload", str(plist_path)], check=False)
+    # Unload first.  bootout prevents KeepAlive from immediately respawning
+    # the service after an intentional uninstall.
+    subprocess.run(["launchctl", "bootout", get_launchd_target()], check=False)
     
     # Remove the plist file
     if plist_path.exists():
@@ -256,22 +270,30 @@ def uninstall_launchd():
 
 def launchd_status():
     """Show launchd service status."""
-    subprocess.run(["launchctl", "list", "ai.hermes.gateway"])
+    subprocess.run(["launchctl", "list", get_launchd_label()])
 
 def launchd_start():
     """Start the launchd service."""
-    subprocess.run(["launchctl", "start", "ai.hermes.gateway"], check=True)
+    plist_path = get_launchd_plist_path()
+    plist_path.parent.mkdir(parents=True, exist_ok=True)
+    plist_path.write_text(generate_launchd_plist())
+    # If the job is already loaded, bootstrap returns non-zero; kickstart is
+    # still the correct start action.  If it is not loaded, bootstrap loads the
+    # freshly generated plist first.
+    subprocess.run(["launchctl", "bootstrap", get_launchd_domain(), str(plist_path)], check=False)
+    subprocess.run(["launchctl", "kickstart", get_launchd_target()], check=True)
     print(f"✓ Service started")
 
 def launchd_stop():
     """Stop the launchd service."""
-    subprocess.run(["launchctl", "stop", "ai.hermes.gateway"], check=True)
+    # bootout unloads the job so unconditional KeepAlive cannot respawn it.
+    subprocess.run(["launchctl", "bootout", get_launchd_target()], check=True)
     print(f"✓ Service stopped")
 
 def launchd_restart():
     """Restart the launchd service."""
-    launchd_stop()
-    launchd_start()
+    subprocess.run(["launchctl", "kickstart", "-k", get_launchd_target()], check=True)
+    print(f"✓ Service restarted")
 
 
 # =============================================================================
