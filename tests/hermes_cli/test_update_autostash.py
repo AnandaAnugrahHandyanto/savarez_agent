@@ -8,6 +8,12 @@ from hermes_cli import config as hermes_config
 from hermes_cli import main as hermes_main
 
 
+def _normalize_git_cmd(cmd):
+    if cmd[:3] == ["git", "-c", "windows.appendAtomically=false"]:
+        return ["git"] + cmd[3:]
+    return cmd
+
+
 def test_stash_local_changes_if_needed_returns_none_when_tree_clean(monkeypatch, tmp_path):
     calls = []
 
@@ -341,6 +347,7 @@ def test_cmd_update_retries_optional_extras_individually_when_all_fails(monkeypa
     recorded = []
 
     def fake_run(cmd, **kwargs):
+        cmd = _normalize_git_cmd(cmd)
         recorded.append(cmd)
         if cmd == ["git", "fetch", "origin"]:
             return SimpleNamespace(stdout="", stderr="", returncode=0)
@@ -390,6 +397,7 @@ def test_cmd_update_succeeds_with_extras(monkeypatch, tmp_path):
     recorded = []
 
     def fake_run(cmd, **kwargs):
+        cmd = _normalize_git_cmd(cmd)
         recorded.append(cmd)
         if cmd == ["git", "fetch", "origin"]:
             return SimpleNamespace(stdout="", stderr="", returncode=0)
@@ -474,6 +482,7 @@ def _make_update_side_effect(
     recorded = []
 
     def side_effect(cmd, **kwargs):
+        cmd = _normalize_git_cmd(cmd)
         recorded.append(cmd)
         joined = " ".join(str(c) for c in cmd)
         if "fetch" in joined and "origin" in joined:

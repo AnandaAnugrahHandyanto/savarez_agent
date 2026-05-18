@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hermes-agent"
-version = "0.13.110"
+version = "0.13.111"
 description = "The self-improving AI agent — creates skills from experience, improves them during use, and runs anywhere"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -160,27 +160,6 @@ youtube = [
 # `hermes dashboard` (localhost SPA + API).  Not in core to keep the default install lean.
 web = ["fastapi==0.133.1", "uvicorn[standard]==0.41.0"]
 all = [
-  # Policy (2026-05-12): `[all]` includes only extras that genuinely
-  # CAN'T be lazy-installed via `tools/lazy_deps.py` — i.e. things every
-  # session can use, things needed before the agent loop is alive
-  # (terminal/CLI), and skill deps that packagers (Nix, AUR, Homebrew)
-  # need in the wheel. Anything an opt-in backend (provider, search,
-  # TTS, image, memory, messaging platform, terminal sandbox) needs
-  # MUST live exclusively in `LAZY_DEPS` and resolve at first use —
-  # otherwise one quarantined PyPI release breaks every fresh install.
-  #
-  # Removed from [all] on 2026-05-12 (covered by lazy-install):
-  #   anthropic, exa, firecrawl, parallel-web, fal, edge-tts,
-  #   modal, daytona, vercel, messaging (telegram/discord/slack),
-  #   matrix, slack, honcho, voice (faster-whisper),
-  #   dingtalk, feishu, bedrock, tts-premium (elevenlabs)
-  #
-  # Why: the matrix extra in particular pulls `mautrix[encryption]`
-  # which depends on `python-olm`. python-olm has Linux-only wheels and
-  # no native build path on Windows or modern macOS. With matrix in
-  # [all], `uv sync --locked` on Windows tried to build it from sdist
-  # and failed on `make`. Lazy-install routes that build to first use,
-  # where the user is expected to have a toolchain available.
   "hermes-agent[cron]",
   "hermes-agent[cli]",
   "hermes-agent[dev]",
@@ -190,6 +169,7 @@ all = [
   "hermes-agent[sms]",
   "hermes-agent[acp]",
   "hermes-agent[google]",
+  "hermes-agent[mistral]",
   "hermes-agent[web]",
   "hermes-agent[youtube]",
 ]
