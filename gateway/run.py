@@ -4353,15 +4353,15 @@ class GatewayRunner:
         """Pull a likely URL/path/artifact line out of checkpoint text."""
         if not text:
             return "Kanban card"
+        for line in text.splitlines():
+            if line.lower().strip().startswith(("review:", "artifact:", "preview:", "path:", "url:")):
+                return line.split(":", 1)[1].strip() or "Kanban card"
         url = re.search(r"https?://\S+", text)
         if url:
             return url.group(0).rstrip(".,)")
         path = re.search(r"(?:^|\s)(/[\w .~+@%/=-]+)", text)
         if path:
             return path.group(1).strip().rstrip(".,)")
-        for line in text.splitlines():
-            if line.lower().strip().startswith(("review:", "artifact:", "preview:", "path:", "url:")):
-                return line.split(":", 1)[1].strip() or "Kanban card"
         return "Kanban card"
 
     @staticmethod
@@ -4371,24 +4371,178 @@ class GatewayRunner:
                 return line.split(":", 1)[1].strip() or "not specified"
         return "not specified"
 
-    def _format_kanban_checkpoint_message(self, *, board: str, task: Any, event: Any) -> str:
+    @staticmethod
+    def _extract_labeled_value(text: str, labels: tuple[str, ...]) -> Optional[str]:
+        """Return the first non-empty ``Label: value`` match from text."""
+        wanted = tuple(label.rstrip(":").strip().lower() for label in labels)
+        for line in (text or "").splitlines():
+            raw = line.strip().lstrip("-*").strip()
+            if ":" not in raw:
+                continue
+            key, value = raw.split(":", 1)
+            if key.strip().lower() in wanted and value.strip():
+                return value.strip()
+        return None
+
+    @staticmethod
+    def _extract_review_checklist(text: str) -> str:
+        """Extract a short acceptance/checklist section when one is present."""
+        lines = (text or "").splitlines()
+        starts = (
+            "acceptance criteria", "review checklist", "checklist",
+            "criteria", "quality gate",
+        )
+        for idx, line in enumerate(lines):
+            if line.strip().rstrip(":").lower() in starts:
+                bullets: list[str] = []
+                for nxt in lines[idx + 1:]:
+                    stripped = nxt.strip()
+                    if not stripped:
+                        if bullets:
+                            break
+                        continue
+                    # Stop at the next obvious labelled section.
+                    if bullets and re.match(r"^[A-Z][A-Za-z /-]{2,40}:\s*", stripped):
+                        break
+                    bullets.append(stripped)
+                    if len(bullets) >= 6:
+                        break
+                if bullets:
+                    return " | ".join(bullets)[:600]
+        return "Review the artifact against the card body and block reason; approve only if it satisfies the stated acceptance criteria, otherwise reply with required changes."
+
+    @staticmethod
+    def _summarize_review_changes(
+        *,
+        reason: str,
+        body: str,
+        comments: Optional[list[Any]] = None,
+        runs: Optional[list[Any]] = None,
+    ) -> str:
+        """Summarize what changed from run metadata/comments/body."""
+        comments = comments or []
+        runs = runs or []
+        for run in reversed(runs):
+            summary = str(getattr(run, "summary", "") or "").strip()
+            meta = getattr(run, "metadata", None) or {}
+            if summary or meta:
+                bits: list[str] = []
+                if summary:
+                    bits.append(summary)
+                if isinstance(meta, dict):
+                    changed = meta.get("changed_files") or meta.get("artifacts") or meta.get("deliverables")
+                    if changed:
+                        if isinstance(changed, (list, tuple)):
+                            changed_text = ", ".join(str(x) for x in changed[:6])
+                        else:
+                            changed_text = str(changed)
+                        bits.append(f"Changed/artifacts: {changed_text}")
+                    tests = meta.get("tests_run") or meta.get("verification")
+                    if tests:
+                        bits.append(f"Verification: {tests}")
+                if bits:
+                    return "; ".join(bits)[:700]
+        for comment in reversed(comments):
+            text = str(getattr(comment, "body", "") or "").strip()
+            if not text:
+                continue
+            for label in ("What changed", "Summary", "review-required handoff"):
+                value = GatewayRunner._extract_labeled_value(text, (label,))
+                if value:
+                    return value[:700]
+            # Compact common JSON handoff comments enough to be useful in chat.
+            match = re.search(r"\{[\s\S]*\}", text)
+            if match:
+                try:
+                    parsed = json.loads(match.group(0))
+                    if isinstance(parsed, dict):
+                        bits = []
+                        if parsed.get("summary"):
+                            bits.append(str(parsed["summary"]))
+                        changed = parsed.get("changed_files") or parsed.get("artifacts")
+                        if changed:
+                            if isinstance(changed, (list, tuple)):
+                                changed_text = ", ".join(str(x) for x in changed[:6])
+                            else:
+                                changed_text = str(changed)
+                            bits.append("Changed/artifacts: " + changed_text)
+                        if parsed.get("tests_run"):
+                            bits.append(f"Tests: {parsed['tests_run']}")
+                        if bits:
+                            return "; ".join(bits)[:700]
+                except Exception:
+                    pass
+        for source in (reason, body):
+            for line in (source or "").splitlines():
+                stripped = line.strip().lstrip("-*").strip()
+                if not stripped or ":" in stripped[:32]:
+                    continue
+                return stripped[:500]
+        return "See the card body and recent handoff comments for the implementation/change summary."
+
+    @staticmethod
+    def _format_review_how_to_view(artifact: str, context: str) -> str:
+        explicit = GatewayRunner._extract_labeled_value(
+            context,
+            ("How to view", "How to run", "Run", "View", "Open", "Instructions"),
+        )
+        if explicit:
+            return explicit[:500]
+        if artifact.startswith("http://") or artifact.startswith("https://"):
+            return f"Open the URL above and review the current rendered artifact."
+        if artifact.startswith("/") or artifact.startswith("~"):
+            return f"Local-only artifact: on Atlas, run `xdg-open {artifact!r}` if it is a file, or `cd {artifact!r}` and follow the card/project README if it is a directory."
+        return "Use the artifact reference above plus the card body; if it is local-only, open it from the Atlas filesystem path shown."
+
+    def _format_kanban_checkpoint_message(
+        self,
+        *,
+        board: str,
+        task: Any,
+        event: Any,
+        comments: Optional[list[Any]] = None,
+        runs: Optional[list[Any]] = None,
+    ) -> str:
         """Format the standard human checkpoint packet for Discord/etc."""
         payload = getattr(event, "payload", None) or {}
         reason = str(payload.get("reason", "") if isinstance(payload, dict) else "").strip()
         title = (getattr(task, "title", None) or getattr(event, "task_id", "checkpoint"))[:160]
         body = getattr(task, "body", "") if task else ""
-        combined = "\n".join([title, reason, body or ""])
+        comment_text = "\n".join(str(getattr(c, "body", "") or "") for c in (comments or [])[-5:])
+        run_text = "\n".join(
+            "\n".join([
+                str(getattr(r, "summary", "") or ""),
+                json.dumps(getattr(r, "metadata", None), ensure_ascii=False) if getattr(r, "metadata", None) else "",
+            ])
+            for r in (runs or [])[-3:]
+        )
+        combined = "\n".join([title, reason, body or "", comment_text, run_text])
         decision = reason.splitlines()[0][:220] if reason else "Review this blocked checkpoint and reply with approve / needs changes."
         card = f"{board}/{getattr(event, 'task_id', '')}"
         assignee = getattr(task, "assignee", None) if task else None
-        assignee_line = f"\nAssignee: @{assignee}" if assignee else ""
+        artifact = self._extract_review_artifact(combined)
+        changed = self._summarize_review_changes(
+            reason=reason,
+            body=body or "",
+            comments=comments,
+            runs=runs,
+        )
+        checklist = self._extract_review_checklist(combined)
+        safety = self._extract_safety_line(combined)
+        how_to_view = self._format_review_how_to_view(artifact, combined)
+        assignee_line = f"@{assignee}" if assignee else "not specified"
         return (
             f"Gabriel review needed: {title}\n"
-            f"Review: {self._extract_review_artifact(combined)}\n"
+            f"Project/task: {title}\n"
+            f"What changed: {changed}\n"
+            f"Artifact: {artifact}\n"
+            f"How to view/run: {how_to_view}\n"
+            f"Acceptance/checklist: {checklist}\n"
             f"Card: {card}\n"
             f"Decision needed: {decision}\n"
-            f"Safety: {self._extract_safety_line(combined)}"
-            f"{assignee_line}"
+            f"Known risks/safety: {safety}\n"
+            f"Assignee: {assignee_line}\n"
+            "Reply options: `approve` / `needs changes: <what must change>`"
         )
 
     def _collect_kanban_notifier_deliveries(self, platform_enum, kb_module) -> dict:
@@ -4453,7 +4607,22 @@ class GatewayRunner:
                     matched = []
                     for ev, task in items:
                         if self._is_kanban_checkpoint_event(task, ev):
-                            matched.append({"event": ev, "task": task})
+                            comments = []
+                            runs = []
+                            try:
+                                comments = kb_module.list_comments(conn, ev.task_id)
+                            except Exception:
+                                comments = []
+                            try:
+                                runs = kb_module.list_runs(conn, ev.task_id, include_active=False)
+                            except Exception:
+                                runs = []
+                            matched.append({
+                                "event": ev,
+                                "task": task,
+                                "comments": comments,
+                                "runs": runs,
+                            })
                     checkpoint_deliveries.append({
                         "target": target,
                         "target_key": target_key,
@@ -4545,6 +4714,8 @@ class GatewayRunner:
                                 board=d.get("board") or _kb.DEFAULT_BOARD,
                                 task=item.get("task"),
                                 event=item.get("event"),
+                                comments=item.get("comments"),
+                                runs=item.get("runs"),
                             )
                             await adapter.send(target["chat_id"], msg, metadata=metadata)
                         await asyncio.to_thread(
