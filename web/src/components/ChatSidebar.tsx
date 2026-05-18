@@ -6,10 +6,9 @@
  *
  *   1. **JSON-RPC sidecar** (`GatewayClient` → /api/ws) — drives the
  *      sidebar's own slot of the dashboard's in-process gateway.  Owns
- *      the model badge / picker / connection state / error banner.
+ *      the model picker / connection state / reconnect affordance.
  *      Independent of the PTY pane's session by design — those are the
- *      pieces the sidebar needs to be able to drive directly (model
- *      switch via slash.exec, etc.).
+ *      pieces the sidebar needs to be able to drive directly.
  *
  *   2. **Event subscriber** (/api/events?channel=…) — passive, receives
  *      every dispatcher emit from the PTY-side `tui_gateway.entry` that
@@ -37,10 +36,14 @@ import { AlertCircle, ChevronDown, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 interface SessionInfo {
+  config_warning?: string;
   cwd?: string;
-  model?: string;
-  provider?: string;
   credential_warning?: string;
+  model?: string;
+  profile?: string;
+  provider?: string;
+  session_key?: string;
+  session_title?: string;
 }
 
 interface RpcEnvelope {
@@ -49,6 +52,20 @@ interface RpcEnvelope {
 }
 
 const TOOL_LIMIT = 20;
+
+function shortSessionKey(value?: string): string {
+  const key = (value ?? "").trim();
+
+  if (!key) {
+    return "pending…";
+  }
+
+  if (key.length <= 18) {
+    return key;
+  }
+
+  return `${key.slice(0, 12)}…${key.slice(-6)}`;
+}
 
 const STATE_LABEL: Record<ConnectionState, string> = {
   idle: "idle",
@@ -84,7 +101,7 @@ export function ChatSidebar({ channel, className }: ChatSidebarProps) {
   const gw = useMemo(() => new GatewayClient(), [version]);
 
   const [state, setState] = useState<ConnectionState>("idle");
-  const [sessionId, setSessionId] = useState<string | null>(null);
+  const [controlSessionId, setControlSessionId] = useState<string | null>(null);
   const [info, setInfo] = useState<SessionInfo>({});
   const [tools, setTools] = useState<ToolEntry[]>([]);
   const [modelOpen, setModelOpen] = useState(false);
@@ -93,16 +110,6 @@ export function ChatSidebar({ channel, className }: ChatSidebarProps) {
   useEffect(() => {
     let cancelled = false;
     const offState = gw.onState(setState);
-
-    const offSessionInfo = gw.on<SessionInfo>("session.info", (ev) => {
-      if (ev.session_id) {
-        setSessionId(ev.session_id);
-      }
-
-      if (ev.payload) {
-        setInfo((prev) => ({ ...prev, ...ev.payload }));
-      }
-    });
 
     const offError = gw.on<{ message?: string }>("error", (ev) => {
       const message = ev.payload?.message;
@@ -126,7 +133,7 @@ export function ChatSidebar({ channel, className }: ChatSidebarProps) {
         if (cancelled || !created?.session_id) {
           return;
         }
-        setSessionId(created.session_id);
+        setControlSessionId(created.session_id);
       })
       .catch((e: Error) => {
         if (!cancelled) {
@@ -137,7 +144,6 @@ export function ChatSidebar({ channel, className }: ChatSidebarProps) {
     return () => {
       cancelled = true;
       offState();
-      offSessionInfo();
       offError();
       gw.close();
     };
@@ -157,6 +163,9 @@ export function ChatSidebar({ channel, className }: ChatSidebarProps) {
     if (!token || !channel) {
       return;
     }
+
+    setInfo({});
+    setTools([]);
 
     const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
     const qs = new URLSearchParams({ token, channel });
@@ -196,7 +205,13 @@ export function ChatSidebar({ channel, className }: ChatSidebarProps) {
 
       const { type, payload } = frame.params;
 
-      if (type === "tool.start") {
+      if (type === "session.info") {
+        const p = payload as SessionInfo | undefined;
+
+        if (p) {
+          setInfo((prev) => ({ ...prev, ...p }));
+        }
+      } else if (type === "tool.start") {
         const p = payload as
           | { tool_id?: string; name?: string; context?: string }
           | undefined;
@@ -275,6 +290,7 @@ export function ChatSidebar({ channel, className }: ChatSidebarProps) {
 
   const reconnect = useCallback(() => {
     setError(null);
+    setInfo({});
     setTools([]);
     setVersion((v) => v + 1);
   }, []);
@@ -284,22 +300,26 @@ export function ChatSidebar({ channel, className }: ChatSidebarProps) {
   // via PTY, so the sidebar doesn't need to surface output of its own.
   const onModelSubmit = useCallback(
     (slashCommand: string) => {
-      if (!sessionId) {
+      if (!controlSessionId) {
         return;
       }
 
       void gw.request("slash.exec", {
-        session_id: sessionId,
+        session_id: controlSessionId,
         command: slashCommand,
       });
       setModelOpen(false);
     },
-    [gw, sessionId],
+    [controlSessionId, gw],
   );
 
-  const canPickModel = state === "open" && !!sessionId;
+  const canPickModel = state === "open" && !!controlSessionId;
   const modelLabel = (info.model ?? "—").split("/").slice(-1)[0] ?? "—";
-  const banner = error ?? info.credential_warning ?? null;
+  const providerLabel = (info.provider ?? "").trim() || "unknown";
+  const profileLabel = (info.profile ?? "").trim() || "default";
+  const sessionTitleLabel = (info.session_title ?? "").trim();
+  const sessionKeyLabel = shortSessionKey(info.session_key);
+  const banner = error ?? info.config_warning ?? info.credential_warning ?? null;
 
   return (
     <aside
@@ -309,9 +329,9 @@ export function ChatSidebar({ channel, className }: ChatSidebarProps) {
       )}
     >
       <Card className="flex items-center justify-between gap-2 px-3 py-2">
-        <div className="min-w-0">
+        <div className="min-w-0 flex-1">
           <div className="text-xs uppercase tracking-wider text-muted-foreground">
-            model
+            identity
           </div>
 
           <Button
@@ -329,6 +349,32 @@ export function ChatSidebar({ channel, className }: ChatSidebarProps) {
           >
             <span className="truncate">{modelLabel}</span>
           </Button>
+
+          <div className="mt-2 space-y-1 text-xs">
+            <div className="flex items-start gap-2">
+              <span className="w-14 shrink-0 text-muted-foreground">profile</span>
+              <span className="min-w-0 truncate font-mono">{profileLabel}</span>
+            </div>
+
+            <div className="flex items-start gap-2">
+              <span className="w-14 shrink-0 text-muted-foreground">provider</span>
+              <span className="min-w-0 truncate font-mono">{providerLabel}</span>
+            </div>
+
+            <div className="flex items-start gap-2">
+              <span className="w-14 shrink-0 text-muted-foreground">session</span>
+              <div className="min-w-0 flex-1">
+                <div className="truncate">
+                  {sessionTitleLabel || sessionKeyLabel}
+                </div>
+                {sessionTitleLabel && (
+                  <div className="truncate font-mono text-muted-foreground">
+                    {sessionKeyLabel}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
         </div>
 
         <Badge tone={STATE_TONE[state]}>{STATE_LABEL[state]}</Badge>
@@ -372,10 +418,10 @@ export function ChatSidebar({ channel, className }: ChatSidebarProps) {
         </div>
       </Card>
 
-      {modelOpen && canPickModel && sessionId && (
+      {modelOpen && canPickModel && controlSessionId && (
         <ModelPickerDialog
           gw={gw}
-          sessionId={sessionId}
+          sessionId={controlSessionId}
           onClose={() => setModelOpen(false)}
           onSubmit={onModelSubmit}
         />
