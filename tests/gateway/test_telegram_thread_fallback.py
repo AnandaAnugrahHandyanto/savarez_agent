@@ -559,6 +559,57 @@ async def test_send_dm_topic_fallback_without_anchor_does_not_crash():
 
 
 @pytest.mark.asyncio
+async def test_send_ignores_synthetic_afk_reply_id():
+    """Synthetic AFK ids are internal labels, not Telegram reply anchors."""
+    adapter = _make_adapter()
+    call_log = []
+
+    async def mock_send_message(**kwargs):
+        call_log.append(dict(kwargs))
+        return SimpleNamespace(message_id=782)
+
+    adapter._bot = SimpleNamespace(send_message=mock_send_message)
+
+    result = await adapter.send(
+        chat_id="123",
+        content="AFK follow-up",
+        reply_to="afk:15:1779126479",
+    )
+
+    assert result.success is True
+    assert call_log[0]["reply_to_message_id"] is None
+    assert call_log[0]["message_thread_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_send_dm_topic_fallback_ignores_synthetic_afk_metadata_anchor():
+    """Synthetic AFK metadata anchors must not crash or partially topic-route."""
+    adapter = _make_adapter()
+    call_log = []
+
+    async def mock_send_message(**kwargs):
+        call_log.append(dict(kwargs))
+        return SimpleNamespace(message_id=783)
+
+    adapter._bot = SimpleNamespace(send_message=mock_send_message)
+
+    result = await adapter.send(
+        chat_id="123",
+        content="AFK follow-up",
+        metadata={
+            "thread_id": "20197",
+            "telegram_dm_topic_reply_fallback": True,
+            "telegram_reply_to_message_id": "afk:15:1779126479",
+        },
+    )
+
+    assert result.success is True
+    assert call_log[0]["reply_to_message_id"] is None
+    assert "message_thread_id" not in call_log[0]
+    assert "direct_messages_topic_id" not in call_log[0]
+
+
+@pytest.mark.asyncio
 async def test_send_dm_topic_reply_not_found_retry_drops_thread_id():
     """If Telegram deletes the reply anchor, private-topic retry must drop thread id too."""
     adapter = _make_adapter()

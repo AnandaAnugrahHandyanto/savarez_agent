@@ -541,12 +541,28 @@ class TelegramAdapter(BasePlatformAdapter):
         topic_id = metadata.get("direct_messages_topic_id") or metadata.get("telegram_direct_messages_topic_id")
         return str(topic_id) if topic_id is not None else None
 
+    @staticmethod
+    def _telegram_message_id(value: object) -> Optional[int]:
+        """Return a Telegram message id, ignoring synthetic internal ids.
+
+        Gateway-internal events such as AFK follow-ups can carry labels like
+        ``afk:15:<timestamp>`` in ``reply_to``. Telegram only accepts integer
+        message ids; synthetic labels must be treated as no reply anchor rather
+        than crashing delivery with ``ValueError``.
+        """
+        if value is None:
+            return None
+        try:
+            return int(str(value))
+        except (TypeError, ValueError):
+            return None
+
     @classmethod
     def _metadata_reply_to_message_id(cls, metadata: Optional[Dict[str, Any]]) -> Optional[int]:
         if not metadata:
             return None
         reply_to = metadata.get("telegram_reply_to_message_id")
-        return int(reply_to) if reply_to is not None else None
+        return cls._telegram_message_id(reply_to)
 
     @classmethod
     def _reply_to_message_id_for_send(
@@ -554,8 +570,9 @@ class TelegramAdapter(BasePlatformAdapter):
         reply_to: Optional[str],
         metadata: Optional[Dict[str, Any]] = None,
     ) -> Optional[int]:
-        if reply_to:
-            return int(reply_to)
+        reply_to_message_id = cls._telegram_message_id(reply_to)
+        if reply_to_message_id is not None:
+            return reply_to_message_id
         if metadata and metadata.get("telegram_dm_topic_reply_fallback"):
             return cls._metadata_reply_to_message_id(metadata)
         return None
@@ -1562,15 +1579,13 @@ class TelegramAdapter(BasePlatformAdapter):
 
             for i, chunk in enumerate(chunks):
                 metadata_reply_to = self._metadata_reply_to_message_id(metadata)
-                reply_to_source = reply_to or (
-                    str(metadata_reply_to)
-                    if metadata and metadata.get("telegram_dm_topic_reply_fallback") and metadata_reply_to is not None else None
-                )
+                explicit_reply_to = self._telegram_message_id(reply_to)
                 if metadata and metadata.get("telegram_dm_topic_reply_fallback"):
-                    should_thread = reply_to_source is not None
+                    reply_to_id = explicit_reply_to if explicit_reply_to is not None else metadata_reply_to
+                elif self._should_thread_reply(str(explicit_reply_to) if explicit_reply_to is not None else None, i):
+                    reply_to_id = explicit_reply_to
                 else:
-                    should_thread = self._should_thread_reply(reply_to_source, i)
-                reply_to_id = int(reply_to_source) if should_thread and reply_to_source else None
+                    reply_to_id = None
                 thread_kwargs = self._thread_kwargs_for_send(
                     chat_id,
                     thread_id,
