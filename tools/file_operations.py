@@ -146,9 +146,13 @@ class PatchResult:
     # See :class:`WriteResult.lsp_diagnostics`.
     lsp_diagnostics: Optional[str] = None
     error: Optional[str] = None
-    
+    # Optional human-readable note (used e.g. for no-op success on
+    # ``patch_replace`` when ``old_string == new_string``).  Surfaced via
+    # ``to_dict`` so the caller can distinguish a no-op from a real edit.
+    message: Optional[str] = None
+
     def to_dict(self) -> dict:
-        result = {"success": self.success}
+        result: Dict[str, Any] = {"success": self.success}
         if self.diff:
             result["diff"] = self.diff
         if self.files_modified:
@@ -163,6 +167,8 @@ class PatchResult:
             result["lsp_diagnostics"] = self.lsp_diagnostics
         if self.error:
             result["error"] = self.error
+        if self.message:
+            result["message"] = self.message
         return result
 
 
@@ -1015,6 +1021,19 @@ class ShellFileOperations(FileOperations):
         """
         # Expand ~ and other shell paths
         path = self._expand_path(path)
+
+        # No-op fast path: if old_string == new_string, the caller asked for a
+        # no-change replacement.  This used to error ("could not find match"
+        # because we'd still attempt a match and the result was indistinguishable
+        # from a stale string) which broke retry-safe automation.  Treat it as
+        # a silent success — the file already contains what the caller wants.
+        if old_string == new_string:
+            return PatchResult(
+                success=True,
+                diff="",
+                files_modified=[],
+                message="no changes needed (old_string == new_string)",
+            )
 
         # Block writes to sensitive paths
         if _is_write_denied(path):

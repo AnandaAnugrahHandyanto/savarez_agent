@@ -125,6 +125,20 @@ class TestPatchResult:
         assert d["success"] is False
         assert d["error"] == "File not found"
 
+    def test_to_dict_message_field(self):
+        """Message field is surfaced when set (used for no-op success)."""
+        r = PatchResult(success=True, message="no changes needed (old_string == new_string)")
+        d = r.to_dict()
+        assert d["success"] is True
+        assert d["message"] == "no changes needed (old_string == new_string)"
+        assert "diff" not in d
+        assert "files_modified" not in d
+
+    def test_to_dict_no_message_when_none(self):
+        r = PatchResult(success=True, diff="--- a\n+++ b", files_modified=["a.py"])
+        d = r.to_dict()
+        assert "message" not in d
+
 
 class TestSearchResult:
     def test_to_dict_with_matches(self):
@@ -579,3 +593,35 @@ class TestPatchReplacePostWriteVerification:
         result = ops.patch_replace("/tmp/test/a.py", "hello", "hi")
         assert result.error is not None
         assert "could not re-read" in result.error.lower()
+
+
+class TestPatchReplaceNoOp:
+    """`patch_replace` must succeed silently when old_string == new_string.
+
+    Retry-safe automation (idempotent skill steps, cron-driven repairs) often
+    re-applies the same edit; previously this raised "could not find match"
+    because the matcher reported the new_string in place and the path looked
+    indistinguishable from a stale-string failure.  The fast path now returns
+    success with an explanatory ``message`` field and an empty diff so callers
+    can distinguish "no edit needed" from a real change.
+    """
+
+    def test_noop_returns_success_with_message(self, file_ops, mock_env):
+        # No I/O should happen: the noop check returns before any _exec call.
+        result = file_ops.patch_replace("/tmp/test/whatever.py", "same", "same")
+        assert result.success is True
+        assert result.error is None
+        assert result.diff == ""
+        assert result.files_modified == []
+        assert result.message is not None
+        assert "no changes needed" in result.message
+        # Confirm we short-circuited before any shell call.
+        mock_env.execute.assert_not_called()
+
+    def test_noop_to_dict_shape(self, file_ops):
+        """Downstream consumers see the no-op outcome via to_dict()."""
+        result = file_ops.patch_replace("/tmp/test/whatever.py", "x", "x")
+        d = result.to_dict()
+        assert d["success"] is True
+        assert d.get("message", "").startswith("no changes needed")
+        assert "error" not in d
