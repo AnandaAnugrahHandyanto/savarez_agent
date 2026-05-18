@@ -189,7 +189,16 @@ fallback_providers:
     def fake_resolve_runtime_provider(*, requested=None, explicit_base_url=None, explicit_api_key=None):
         if requested in {None, "", "openai-codex"}:
             from hermes_cli.auth import AuthError
-            raise AuthError("No Codex credentials stored. Run `hermes auth` to authenticate.")
+            # Realistic primary-failure shape: the pool's only credential is
+            # rate-limited. Triggers the gateway's structured-AuthError log
+            # path and the fallback chain.
+            raise AuthError(
+                "openai-codex rate-limited (usage_limit_reached, 429) - resets in 1h 12m",
+                provider="openai-codex",
+                code="pool_rate_limit",
+                kind="rate_limit",
+                reset_at=None,
+            )
         assert requested == "openrouter"
         return {
             "api_key": "sk-openrouter",
