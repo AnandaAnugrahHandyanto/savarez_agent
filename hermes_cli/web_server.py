@@ -3296,6 +3296,7 @@ async def _broadcast_event(channel: str, payload: str) -> None:
     with _event_lock:
         subs = list(_event_channels.get(channel, ()))
 
+    # Send outside the lock so websocket I/O never blocks registry access.
     for sub in subs:
         try:
             await sub.send_text(payload)
