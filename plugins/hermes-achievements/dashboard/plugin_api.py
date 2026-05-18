@@ -35,6 +35,10 @@ SNAPSHOT_TTL_SECONDS = 120
 _SCAN_LOCK = threading.Lock()
 _SNAPSHOT_CACHE: Optional[Dict[str, Any]] = None
 _SNAPSHOT_CACHE_AT = 0
+
+# Checkpoint schema version.  Bump this when the per-session stats format
+# changes so that stale cached data is discarded on the next scan.
+_CURRENT_CHECKPOINT_SCHEMA = 2
 _SCAN_STATUS: Dict[str, Any] = {
     "state": "idle",
     "started_at": None,
@@ -202,18 +206,22 @@ def save_snapshot(data: Dict[str, Any]) -> None:
 def load_checkpoint() -> Dict[str, Any]:
     path = checkpoint_path()
     if not path.exists():
-        return {"schema_version": 1, "generated_at": 0, "sessions": {}}
+        return {"schema_version": _CURRENT_CHECKPOINT_SCHEMA, "generated_at": 0, "sessions": {}}
     try:
         data = json.loads(path.read_text())
         if isinstance(data, dict):
-            data.setdefault("schema_version", 1)
+            # Discard checkpoints from an older schema so stale per-session
+            # stats (e.g. pre-fix memory_write_events) are not reused.
+            if data.get("schema_version", 1) < _CURRENT_CHECKPOINT_SCHEMA:
+                return {"schema_version": _CURRENT_CHECKPOINT_SCHEMA, "generated_at": 0, "sessions": {}}
+            data.setdefault("schema_version", _CURRENT_CHECKPOINT_SCHEMA)
             data.setdefault("generated_at", 0)
             data.setdefault("sessions", {})
             if isinstance(data.get("sessions"), dict):
                 return data
     except Exception:
         pass
-    return {"schema_version": 1, "generated_at": 0, "sessions": {}}
+    return {"schema_version": _CURRENT_CHECKPOINT_SCHEMA, "generated_at": 0, "sessions": {}}
 
 
 def save_checkpoint(data: Dict[str, Any]) -> None:
@@ -685,7 +693,7 @@ def scan_sessions(
                     pass
 
         save_checkpoint({
-            "schema_version": 1,
+            "schema_version": _CURRENT_CHECKPOINT_SCHEMA,
             "generated_at": int(time.time()),
             "sessions": checkpoint_sessions,
         })

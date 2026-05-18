@@ -1,13 +1,38 @@
 # Test for memory_write_events fix: ensure only write actions are counted
 from __future__ import annotations
 
+import importlib.util
 import json
+from pathlib import Path
 
-from plugin_api import analyze_messages
+import pytest
+
+PLUGIN_MODULE_PATH = (
+    Path(__file__).resolve().parents[3]
+    / "plugins"
+    / "hermes-achievements"
+    / "dashboard"
+    / "plugin_api.py"
+)
 
 
-def test_memory_write_events_counts_only_writes():
+@pytest.fixture()
+def plugin_api():
+    """Load plugin_api via importlib so pytest collection from the repo root works.
+
+    ``plugin_api.py`` lives under ``plugins/hermes-achievements/dashboard/``
+    which is not on ``sys.path``.  The existing achievements tests load the
+    module by file path for the same reason.
+    """
+    spec = importlib.util.spec_from_file_location("plugin_api", PLUGIN_MODULE_PATH)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    yield module
+
+
+def test_memory_write_events_counts_only_writes(plugin_api):
     """Verify memory_write_events counts only add/replace actions and mnemosyne_remember."""
+    analyze_messages = plugin_api.analyze_messages
     messages = []
 
     # memory add (write)
@@ -71,8 +96,9 @@ def test_memory_write_events_counts_only_writes():
     assert result["memory_events"] == 5, f"Expected 5 memory events, got {result['memory_events']}"
 
 
-def test_memory_write_events_dict_arguments():
+def test_memory_write_events_dict_arguments(plugin_api):
     """Verify memory tool calls with dict arguments (not JSON string) are handled."""
+    analyze_messages = plugin_api.analyze_messages
     messages = [{
         "role": "assistant",
         "content": "",
@@ -87,8 +113,9 @@ def test_memory_write_events_dict_arguments():
     assert result["memory_write_events"] == 1, f"Expected 1 write for dict args, got {result['memory_write_events']}"
 
 
-def test_memory_write_events_missing_action():
+def test_memory_write_events_missing_action(plugin_api):
     """Verify memory tool calls with missing action field are not counted as writes."""
+    analyze_messages = plugin_api.analyze_messages
     messages = [{
         "role": "assistant",
         "content": "",
@@ -103,8 +130,9 @@ def test_memory_write_events_missing_action():
     assert result["memory_write_events"] == 0, f"Expected 0 writes for missing action, got {result['memory_write_events']}"
 
 
-def test_memory_write_events_malformed_json():
+def test_memory_write_events_malformed_json(plugin_api):
     """Verify memory tool calls with malformed JSON arguments don't crash."""
+    analyze_messages = plugin_api.analyze_messages
     messages = [{
         "role": "assistant",
         "content": "",
@@ -119,8 +147,9 @@ def test_memory_write_events_malformed_json():
     assert result["memory_write_events"] == 0, f"Expected 0 writes for malformed JSON, got {result['memory_write_events']}"
 
 
-def test_memory_write_events_uppercase_action():
+def test_memory_write_events_uppercase_action(plugin_api):
     """Verify memory tool calls with uppercase action values are handled correctly."""
+    analyze_messages = plugin_api.analyze_messages
     messages = [{
         "role": "assistant",
         "content": "",
@@ -135,8 +164,9 @@ def test_memory_write_events_uppercase_action():
     assert result["memory_write_events"] == 1, f"Expected 1 write for uppercase ADD, got {result['memory_write_events']}"
 
 
-def test_memory_write_events_none_function():
+def test_memory_write_events_none_function(plugin_api):
     """Verify memory tool calls with None function field don't crash."""
+    analyze_messages = plugin_api.analyze_messages
     messages = [{
         "role": "assistant",
         "content": "",
@@ -154,8 +184,9 @@ def test_memory_write_events_none_function():
     assert result["memory_write_events"] == 1, f"Expected 1 write for None function, got {result['memory_write_events']}"
 
 
-def test_memory_write_events_non_string_action():
+def test_memory_write_events_non_string_action(plugin_api):
     """Verify memory tool calls with non-string action values (e.g. int) don't crash."""
+    analyze_messages = plugin_api.analyze_messages
     messages = [{
         "role": "assistant",
         "content": "",
@@ -170,8 +201,9 @@ def test_memory_write_events_non_string_action():
     assert result["memory_write_events"] == 0, f"Expected 0 writes for int action, got {result['memory_write_events']}"
 
 
-def test_memory_write_events_empty_arguments():
+def test_memory_write_events_empty_arguments(plugin_api):
     """Verify memory tool calls with empty string arguments don't crash."""
+    analyze_messages = plugin_api.analyze_messages
     messages = [{
         "role": "assistant",
         "content": "",
