@@ -971,6 +971,24 @@ def _load_gateway_config() -> dict:
     return {}
 
 
+def _resolve_personality_prompt(value: Any) -> str:
+    """Flatten a personality entry to its system-prompt string.
+
+    Keeps the same shape contract as `/personality`'s inline resolver
+    (gateway/run.py:_handle_personality_command) so a personality named
+    in config.yaml at startup yields the same text as one selected via
+    the slash command at runtime.
+    """
+    if isinstance(value, dict):
+        parts = [str(value.get("system_prompt", "") or "")]
+        if value.get("tone"):
+            parts.append(f'Tone: {value["tone"]}')
+        if value.get("style"):
+            parts.append(f'Style: {value["style"]}')
+        return "\n".join(p for p in parts if p)
+    return str(value or "")
+
+
 def _resolve_gateway_model(config: dict | None = None) -> str:
     """Read model from config.yaml — single source of truth.
 
@@ -2288,9 +2306,15 @@ class GatewayRunner:
     @staticmethod
     def _load_ephemeral_system_prompt() -> str:
         """Load ephemeral system prompt from config or env var.
-        
-        Checks HERMES_EPHEMERAL_SYSTEM_PROMPT env var first, then falls back to
-        agent.system_prompt in ~/.hermes/config.yaml.
+
+        Resolution order (first non-empty wins):
+          1. HERMES_EPHEMERAL_SYSTEM_PROMPT env var
+          2. agent.system_prompt in ~/.hermes/config.yaml
+          3. agent.personalities[agent.personality] in ~/.hermes/config.yaml
+
+        agent.system_prompt is preferred over agent.personality because an
+        explicit prompt is a stronger signal than a named reference; stacking
+        the two risks duplicated or contradictory identity.
         """
         prompt = os.getenv("HERMES_EPHEMERAL_SYSTEM_PROMPT", "")
         if prompt:
@@ -2301,7 +2325,13 @@ class GatewayRunner:
             if cfg_path.exists():
                 with open(cfg_path, encoding="utf-8") as _f:
                     cfg = _y.safe_load(_f) or {}
-                return (cfg_get(cfg, "agent", "system_prompt", default="") or "").strip()
+                explicit = (cfg_get(cfg, "agent", "system_prompt", default="") or "").strip()
+                if explicit:
+                    return explicit
+                name = (cfg_get(cfg, "agent", "personality", default="") or "").strip()
+                personalities = cfg_get(cfg, "agent", "personalities", default={}) or {}
+                if name and isinstance(personalities, dict) and name in personalities:
+                    return _resolve_personality_prompt(personalities[name]).strip()
         except Exception:
             pass
         return ""
@@ -13928,6 +13958,7 @@ class GatewayRunner:
         enabled_toolsets: list,
         ephemeral_prompt: str,
         cache_keys: dict | None = None,
+        load_soul_identity: bool = False,
     ) -> str:
         """Compute a stable string key from agent config values.
 
@@ -13965,6 +13996,7 @@ class GatewayRunner:
                 # cached agent and doesn't affect system prompt or tools.
                 ephemeral_prompt or "",
                 _cache_keys_sorted,
+                bool(load_soul_identity),
             ],
             sort_keys=True,
             default=str,
@@ -15367,6 +15399,7 @@ class GatewayRunner:
                 enabled_toolsets,
                 combined_ephemeral,
                 cache_keys=self._extract_cache_busting_config(user_config),
+                load_soul_identity=True,
             )
             agent = None
             _cache_lock = getattr(self, "_agent_cache_lock", None)
@@ -15398,6 +15431,7 @@ class GatewayRunner:
                     disabled_toolsets=disabled_toolsets,
                     ephemeral_system_prompt=combined_ephemeral or None,
                     prefill_messages=self._prefill_messages or None,
+                    load_soul_identity=True,
                     reasoning_config=reasoning_config,
                     service_tier=self._service_tier,
                     request_overrides=turn_route.get("request_overrides"),
