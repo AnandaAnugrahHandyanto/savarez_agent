@@ -1,5 +1,7 @@
 """Bundled-plugin discovery tests for build-macos-apps."""
 
+from subprocess import CompletedProcess
+
 import yaml
 
 
@@ -70,7 +72,13 @@ class TestBundledBuildMacosAppsDiscovery:
         import sys
 
         plugin_tools = sys.modules["hermes_plugins.build_macos_apps.tools"]
-        monkeypatch.setattr(plugin_tools, "check_macos_dev_requirements", lambda: True)
+        monkeypatch.setattr(plugin_tools.platform, "system", lambda: "Darwin")
+        monkeypatch.setattr(plugin_tools.shutil, "which", lambda name: "/usr/bin/xcodebuild")
+        monkeypatch.setattr(
+            plugin_tools.subprocess,
+            "run",
+            lambda *args, **kwargs: CompletedProcess(args[0], 0, stdout="Xcode 16.0\n", stderr=""),
+        )
 
         defs = get_tool_definitions(enabled_toolsets=["macos-dev"], quiet_mode=True)
         tool_names = sorted(item["function"]["name"] for item in defs)

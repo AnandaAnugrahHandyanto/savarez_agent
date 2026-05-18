@@ -50,10 +50,22 @@ def tools_mod():
 
 
 class TestCheckFn:
-    def test_requires_macos_and_xcodebuild(self, tools_mod, monkeypatch):
+    def test_requires_macos_and_usable_xcodebuild(self, tools_mod, monkeypatch):
         monkeypatch.setattr(tools_mod.platform, "system", lambda: "Darwin")
         monkeypatch.setattr(tools_mod.shutil, "which", lambda name: "/usr/bin/xcodebuild")
+        monkeypatch.setattr(
+            tools_mod.subprocess,
+            "run",
+            lambda *args, **kwargs: CompletedProcess(args[0], 0, stdout="Xcode 16.0\n", stderr=""),
+        )
         assert tools_mod.check_macos_dev_requirements() is True
+
+        monkeypatch.setattr(
+            tools_mod.subprocess,
+            "run",
+            lambda *args, **kwargs: CompletedProcess(args[0], 1, stdout="", stderr="xcode-select error"),
+        )
+        assert tools_mod.check_macos_dev_requirements() is False
 
         monkeypatch.setattr(tools_mod.platform, "system", lambda: "Linux")
         assert tools_mod.check_macos_dev_requirements() is False

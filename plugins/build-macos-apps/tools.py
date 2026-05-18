@@ -27,7 +27,21 @@ _SIGNING_DISABLED_FLAGS = [
 
 def check_macos_dev_requirements() -> bool:
     """Return True when Hermes can expose the macOS build toolset."""
-    return sys_platform_is_darwin() and bool(shutil.which(_XCODEBUILD_PATH))
+    if not sys_platform_is_darwin():
+        return False
+    if not shutil.which(_XCODEBUILD_PATH):
+        return False
+    try:
+        completed = subprocess.run(
+            [_XCODEBUILD_PATH, "-version"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return completed.returncode == 0
 
 
 def sys_platform_is_darwin() -> bool:

@@ -40,7 +40,7 @@ What this plugin does not do yet:
 
 Availability gate:
 
-- only exposed when Hermes is running on macOS and `xcodebuild` is available in `PATH`
+- only exposed when Hermes is running on macOS and a usable full-Xcode `xcodebuild` is available
 
 Build/test behavior:
 

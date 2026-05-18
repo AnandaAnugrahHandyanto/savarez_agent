@@ -220,7 +220,7 @@ Bundled standalone plugin for local macOS app build workflows. Phase 4 adds diag
 - `macos_collect_crash_reports` — collect recent crash and hang reports from `DiagnosticReports`
 - `macos_show_build_settings` — inspect `xcodebuild -showBuildSettings` output for a scheme
 
-**Availability gate:** only exposed when Hermes is running on macOS and `xcodebuild` is available in `PATH`.
+**Availability gate:** only exposed when Hermes is running on macOS and a usable full-Xcode `xcodebuild` is available.
 
 **Current exclusions:**
 
