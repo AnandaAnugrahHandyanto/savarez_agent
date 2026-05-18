@@ -7214,6 +7214,9 @@ class GatewayRunner:
         if canonical == "office":
             return await self._handle_office_project_command(event)
 
+        if canonical == "commute":
+            return await self._handle_commute_command(event)
+
         if canonical == "agents":
             return await self._handle_agents_command(event)
 
@@ -9484,6 +9487,15 @@ class GatewayRunner:
         except Exception as e:
             logger.debug("/office project routing failed: %s", e)
             return f"출근모드 전환 실패: {e}"
+
+    async def _handle_commute_command(self, event: MessageEvent) -> str:
+        """Show commute-mode usage help."""
+        try:
+            from gateway.project_sessions import commute_help_text
+            return commute_help_text()
+        except Exception as e:
+            logger.debug("/commute failed: %s", e)
+            return f"퇴근모드 도움말 조회 실패: {e}"
 
     async def _handle_status_command(self, event: MessageEvent) -> str:
         """Handle /status command."""

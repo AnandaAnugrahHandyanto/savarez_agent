@@ -7468,6 +7468,17 @@ class HermesCLI:
             return
         self._handle_project_mode_command("office", arg)
 
+    def _handle_commute_command(self):
+        """Print commute-mode usage help in CLI."""
+        try:
+            from gateway.project_sessions import commute_help_text
+            text = commute_help_text()
+        except Exception as exc:
+            _cprint(f"  {_ERR}퇴근모드 도움말 조회 실패: {exc}{_RST}")
+            return
+        for line in text.splitlines():
+            _cprint(f"  {line}")
+
     def _output_console(self):
         """Use prompt_toolkit-safe Rich rendering once the TUI is live."""
         if getattr(self, "_app", None):
@@ -8278,6 +8289,8 @@ class HermesCLI:
             self._handle_afterwork_command(cmd_original)
         elif canonical == "office":
             self._handle_office_command(cmd_original)
+        elif canonical == "commute":
+            self._handle_commute_command()
         elif canonical in self._WORKFLOW_SKILL_WRAPPER_COMMANDS:
             self._handle_workflow_skill_command(cmd_original, canonical)
         elif canonical == "background":

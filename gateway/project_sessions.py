@@ -192,6 +192,42 @@ def find_project(state: ProjectRoutingState, label_or_alias: str) -> ProjectSess
     return None
 
 
+def commute_help_text() -> str:
+    return """[퇴근모드/출근모드 도움말]
+
+개념:
+- 퇴근모드: tmux의 프로젝트 Hermes 세션은 계속 터미널에서 돌고, Telegram으로도 결과/막힘/결정 필요 사항을 받는 모드
+- 출근모드: Telegram relay를 끄고 다시 tmux 터미널 중심으로 보는 모드
+- 승인 요청은 별도입니다. 작업 지시는 [label] 형식, 승인은 /approve 또는 /deny를 사용하세요.
+
+기본 순서:
+1. /projects
+   - 감지된 프로젝트 label 확인
+2. /switch <번호|label>
+   - Telegram의 현재 대상 프로젝트 선택
+3. /current
+   - 현재 선택 확인
+4. /afterwork current
+   - 선택한 프로젝트만 퇴근모드
+   또는 /afterwork all
+   - 감지된 모든 프로젝트 퇴근모드
+5. [label] <지시>
+   - 퇴근모드 중 특정 프로젝트에 지시 전달
+   예: [llm-eval-pipeline] 다음 작업 진행해줘
+6. /office current 또는 /office all
+   - 출근모드로 복귀
+
+자연어 단축:
+- Telegram DM: 퇴근모드 → /afterwork all, 출근모드 → /office all
+- tmux CLI: 퇴근모드 → /afterwork all, 출근모드 → /office all
+
+주의:
+- /afterwork all은 work/personal을 포함해 감지된 모든 tmux 프로젝트에 /steer를 보낼 수 있습니다.
+- 처음에는 /afterwork current로 한 프로젝트만 테스트하는 것을 권장합니다.
+- 긴 로그 확인은 tmux/Termius가 적합하고, Telegram은 요약/결정/짧은 지시용입니다.
+""".strip()
+
+
 def format_projects(state: ProjectRoutingState, source: Any | None = None) -> str:
     if not state.projects:
         return "[프로젝트 세션]\n등록/감지된 tmux 프로젝트 세션이 없습니다. 프로젝트 디렉토리에서 Hermes를 실행한 뒤 다시 시도하세요."

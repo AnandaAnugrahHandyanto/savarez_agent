@@ -34,6 +34,15 @@ def test_parse_project_prefix():
     assert ps.parse_project_prefix("일반 메시지") is None
 
 
+def test_commute_help_text_includes_core_commands():
+    text = ps.commute_help_text()
+    assert "/projects" in text
+    assert "/afterwork current" in text
+    assert "/office current" in text
+    assert "[label]" in text
+    assert "/approve" in text
+
+
 def test_switch_and_current_project_with_alias(monkeypatch, tmp_path):
     monkeypatch.setattr(ps, "discover_tmux_projects", lambda: [])
     state = ps.ProjectRoutingState(

@@ -160,6 +160,18 @@ class TestAfterworkCommand(unittest.TestCase):
 
         self.assertEqual(calls, [("away", "all")])
 
+    def test_commute_command_prints_help(self):
+        cli_mod = _import_cli()
+        printed = []
+
+        with patch.object(cli_mod, "_cprint", lambda msg: printed.append(str(msg))):
+            cli_mod.HermesCLI._handle_commute_command(SimpleNamespace())
+
+        text = "\n".join(printed)
+        self.assertIn("/projects", text)
+        self.assertIn("/afterwork current", text)
+        self.assertIn("/office current", text)
+
     def test_afterwork_steers_running_agent_without_interrupt_queue(self):
         cli_mod = _import_cli()
 
