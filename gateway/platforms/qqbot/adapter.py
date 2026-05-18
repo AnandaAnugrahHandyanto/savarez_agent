@@ -935,12 +935,11 @@ class QQAdapter(BasePlatformAdapter):
 
         if source.chat_type == "dm" and not self._is_dm_allowed(source.user_id or ""):
             return False
-        if (
-            source.chat_type == "group"
-            and event.scene == "group"
-            and not self._is_group_allowed(source.chat_id, source.user_id or "")
-        ):
-            return False
+        if source.chat_type == "group":
+            # Use guild_id for ACL if available, matching _handle_guild_message
+            acl_id = getattr(source, "guild_id", None) or source.chat_id
+            if not self._is_group_allowed(acl_id, source.user_id or ""):
+                return False
 
         authorizer = self._interaction_authorizer
         if authorizer is None:
