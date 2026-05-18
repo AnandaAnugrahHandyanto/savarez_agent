@@ -8830,7 +8830,12 @@ class HermesCLI:
             print("  ⚠️  MCP reload timed out (30s). Some servers may not have reconnected.")
             return
 
-        self._config_mcp_servers = new_mcp
+@@ -8830,6 +8830,4 @@
+         if _reload_thread.is_alive():
+             print("  ⚠️  MCP reload timed out (30s). Some servers may not have reconnected.")
+             return
+-
+-        self._config_mcp_servers = new_mcp
 
     def _refresh_config_mcp_baseline(self) -> None:
         """Record the MCP config that was actually accepted for reload decisions."""
