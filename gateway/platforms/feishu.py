@@ -1754,7 +1754,7 @@ class FeishuAdapter(BasePlatformAdapter):
     # Outbound — send / edit / send_image / send_voice / …
     # =========================================================================
 
-    async def send(
+    async def _send(
         self,
         chat_id: str,
         content: str,

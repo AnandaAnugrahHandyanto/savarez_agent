@@ -3502,7 +3502,7 @@ class APIServerAdapter(BasePlatformAdapter):
         self._app = None
         logger.info("[%s] API server stopped", self.name)
 
-    async def send(
+    async def _send(
         self,
         chat_id: str,
         content: str,
