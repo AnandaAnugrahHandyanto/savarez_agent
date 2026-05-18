@@ -470,6 +470,7 @@ def _write_session_status(event: str, sid: str, payload: dict | None = None):
             "title": title,
             "status": status,
             "event": event,
+            "pid": os.getpid(),
             "timestamp": time.time(),
         }
         (_STATUS_DIR / f"{sid}.json").write_text(json.dumps(data))
