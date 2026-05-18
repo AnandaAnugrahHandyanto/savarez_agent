@@ -45,7 +45,7 @@ import time
 from dataclasses import asdict
 from typing import Any, Optional
 
-from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconnect, status as http_status
+from fastapi import APIRouter, HTTPException, Query, Request, WebSocket, WebSocketDisconnect, status as http_status
 from pydantic import BaseModel, Field
 
 from hermes_cli import kanban_db
@@ -1578,7 +1578,7 @@ def list_profile_roster():
 
 
 @router.patch("/profiles/{profile_name}")
-def update_profile_description(profile_name: str, payload: DescribeBody):
+def update_profile_description(profile_name: str, payload: DescribeBody, request: Request):
     """Set or clear the description of a profile.
 
     Empty string clears the description; non-empty stores it as a
@@ -1586,6 +1586,8 @@ def update_profile_description(profile_name: str, payload: DescribeBody):
     auto-describer won't overwrite it on a sweep without
     ``--overwrite``.
     """
+    from hermes_cli import web_server as _ws  # noqa: WPS433 (intentional)
+    _ws._require_token(request)
     try:
         from hermes_cli import profiles as profiles_mod
         canon = profiles_mod.normalize_profile_name(profile_name)
@@ -1611,7 +1613,7 @@ def update_profile_description(profile_name: str, payload: DescribeBody):
 
 
 @router.post("/profiles/{profile_name}/describe-auto")
-def auto_describe_profile(profile_name: str, payload: DescribeAutoBody):
+def auto_describe_profile(profile_name: str, payload: DescribeAutoBody, request: Request):
     """Generate a description for the named profile via the auxiliary
     LLM (``auxiliary.profile_describer``). Persists with
     ``description_auto: true`` so the dashboard can surface a "review"
@@ -1622,6 +1624,8 @@ def auto_describe_profile(profile_name: str, payload: DescribeAutoBody):
     (e.g. "no auxiliary client configured") so the operator can fix
     config and retry without a page reload.
     """
+    from hermes_cli import web_server as _ws  # noqa: WPS433 (intentional)
+    _ws._require_token(request)
     try:
         from hermes_cli import profile_describer  # noqa: WPS433 (intentional)
         outcome = profile_describer.describe_profile(
@@ -1650,6 +1654,7 @@ class DecomposeBody(BaseModel):
 def decompose_task_endpoint(
     task_id: str,
     payload: DecomposeBody,
+    request: Request,
     board: Optional[str] = Query(None),
 ):
     """Fan a triage-column task out into a graph of child tasks via the
@@ -1663,6 +1668,8 @@ def decompose_task_endpoint(
     Runs in FastAPI's threadpool (sync ``def``) because the LLM call
     can take minutes on reasoning models.
     """
+    from hermes_cli import web_server as _ws  # noqa: WPS433 (intentional)
+    _ws._require_token(request)
     board = _resolve_board(board)
     prev_env = os.environ.get("HERMES_KANBAN_BOARD")
     try:
@@ -1741,7 +1748,7 @@ def get_orchestration_settings():
 
 
 @router.put("/orchestration")
-def set_orchestration_settings(payload: OrchestrationSettingsBody):
+def set_orchestration_settings(payload: OrchestrationSettingsBody, request: Request):
     """Update the kanban orchestration knobs in ~/.hermes/config.yaml.
 
     Each field is optional — only fields explicitly passed are
@@ -1749,6 +1756,8 @@ def set_orchestration_settings(payload: OrchestrationSettingsBody):
     empty strings to clear the override and fall back to the default
     profile.
     """
+    from hermes_cli import web_server as _ws  # noqa: WPS433 (intentional)
+    _ws._require_token(request)
     try:
         from hermes_cli.config import load_config, save_config
         cfg = load_config() or {}
