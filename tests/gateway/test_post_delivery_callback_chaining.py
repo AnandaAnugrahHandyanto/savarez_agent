@@ -70,6 +70,40 @@ class TestPostDeliveryCallbackChaining:
         cb()
         assert fired == ["survived"]
 
+    @pytest.mark.asyncio
+    async def test_async_callbacks_chain_without_leaked_coroutines(self, adapter):
+        fired = []
+
+        async def first():
+            fired.append("A")
+
+        async def second():
+            fired.append("B")
+
+        adapter.register_post_delivery_callback("s", first)
+        adapter.register_post_delivery_callback("s", second)
+        cb = adapter.pop_post_delivery_callback("s")
+        result = cb()
+        assert hasattr(result, "__await__")
+        await result
+        assert fired == ["A", "B"]
+
+    @pytest.mark.asyncio
+    async def test_sync_then_async_callback_chain_preserves_order(self, adapter):
+        fired = []
+
+        async def second():
+            fired.append("B")
+
+        adapter.register_post_delivery_callback("s", lambda: fired.append("A"))
+        adapter.register_post_delivery_callback("s", second)
+        cb = adapter.pop_post_delivery_callback("s")
+        result = cb()
+        assert fired == ["A"]
+        assert hasattr(result, "__await__")
+        await result
+        assert fired == ["A", "B"]
+
     def test_same_generation_chains(self, adapter):
         fired = []
         adapter.register_post_delivery_callback(
