@@ -119,14 +119,22 @@ def test_voice_scan_flags_crystal_executor_third_person(monkeypatch):
     assert "voice-scan FAIL" in reason
 
 
-def test_voice_scan_passes_second_person_with_recipient_name(monkeypatch):
-    """Recipient name in legitimate second-person context — must NOT flag."""
+def test_voice_scan_passes_second_person_with_recipient_name(monkeypatch, tmp_path):
+    """Recipient name in legitimate second-person context — must NOT flag.
+    Also asserts a PASS line is appended to voice_scan.log so dev observation
+    can confirm the layer is wired in even when no violation fires."""
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     import urllib.request
     monkeypatch.setattr(urllib.request, "urlopen", _make_fake_urlopen("PASS"))
     clean, reason = _voice_scan_check(MAGGIE_SECOND_PERSON_REAL_QUESTION, job_id="maggie-test")
     assert clean is True
     assert reason == ""
+    log_path = tmp_path / "logs" / "voice_scan.log"
+    assert log_path.exists()
+    log_content = log_path.read_text()
+    assert "PASS" in log_content
+    assert "maggie-test" in log_content
 
 
 def test_voice_scan_passes_third_party_entities(monkeypatch):

@@ -420,6 +420,10 @@ def _voice_scan_check(text: str, job_id: str = "?") -> tuple[bool, str]:
         _voice_scan_log("HIT", job_id, reason)
         return False, reason
 
+    # Log every PASS so dev observation can confirm voice-scan is wired
+    # in even when no violation fires. One line per cron briefing — low
+    # volume (≤10/day at current user count).
+    _voice_scan_log("PASS", job_id, f"verdict=PASS model={model}")
     return True, ""
 
 
