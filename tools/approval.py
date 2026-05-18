@@ -574,6 +574,31 @@ def has_blocking_approval(session_key: str) -> bool:
         return bool(_gateway_queues.get(session_key))
 
 
+def list_gateway_pending(session_key: str) -> list[dict]:
+    """Return a read-only snapshot of pending approval data for *session_key*.
+
+    Used by the gateway to surface command summaries when a natural-language
+    approval phrase arrives and more than one approval is queued for the
+    session.  Does not mutate the queue — purely an inspection helper.
+    """
+    with _lock:
+        queue = _gateway_queues.get(session_key) or []
+        return [
+            {
+                "command": entry.data.get("command", ""),
+                "description": entry.data.get("description", ""),
+                "pattern_keys": list(entry.data.get("pattern_keys") or []),
+            }
+            for entry in queue
+        ]
+
+
+def gateway_pending_count(session_key: str) -> int:
+    """Return how many approvals are pending for *session_key*."""
+    with _lock:
+        return len(_gateway_queues.get(session_key) or [])
+
+
 def submit_pending(session_key: str, approval: dict):
     """Store a pending approval request for a session."""
     with _lock:

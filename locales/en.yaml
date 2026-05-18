@@ -76,6 +76,7 @@ gateway:
     session_plural:        "✅ Commands approved (pattern approved for this session) ({count} commands). The agent is resuming..."
     always_singular:       "✅ Command approved (pattern approved permanently). The agent is resuming..."
     always_plural:         "✅ Commands approved (pattern approved permanently) ({count} commands). The agent is resuming..."
+    disambiguate:          "⚠️ {count} pending approvals — please pick one explicitly:\n{items}\n\nReply `/approve all` to approve all, or `/approve` to approve the oldest."
 
   background:
     usage:                 "Usage: /background <prompt>\nExample: /background Summarize the top HN stories today\n\nRuns the prompt in a separate session. You can keep chatting — the result will appear here when done."
@@ -120,6 +121,7 @@ gateway:
     no_pending:            "No pending command to deny."
     denied_singular:       "❌ Command denied."
     denied_plural:         "❌ Commands denied ({count} commands)."
+    disambiguate:          "⚠️ {count} pending approvals — please pick one explicitly:\n{items}\n\nReply `/deny all` to deny all, or `/deny` to deny the oldest."
 
   fast:
     not_supported:         "⚡ /fast is only available for OpenAI models that support Priority Processing."

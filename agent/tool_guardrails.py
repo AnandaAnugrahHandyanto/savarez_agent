@@ -65,8 +65,8 @@ class ToolCallGuardrailConfig:
     """Thresholds for per-turn tool-call loop detection.
 
     Warnings are enabled by default and never prevent tool execution. Hard stops
-    are explicit opt-in so interactive CLI/TUI sessions get a gentle nudge unless
-    the user enables circuit-breaker behavior in config.yaml.
+    are explicit opt-in so interactive CLI/TUI/gateway sessions get a gentle
+    nudge unless the user enables circuit-breaker behavior in config.yaml.
     """
 
     warnings_enabled: bool = True

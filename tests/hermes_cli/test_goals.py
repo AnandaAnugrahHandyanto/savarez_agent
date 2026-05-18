@@ -156,6 +156,55 @@ class TestJudgeGoal:
         assert verdict == "done"
         assert reason == "achieved"
 
+
+    def test_action_goal_text_only_completion_claim_continues(self):
+        """Regression: /goal must not mark external work done from words alone."""
+        from hermes_cli import goals
+
+        fake_client = MagicMock()
+        fake_client.chat.completions.create.return_value = MagicMock(
+            choices=[
+                MagicMock(
+                    message=MagicMock(content='{"done": true, "reason": "claimed complete"}')
+                )
+            ]
+        )
+        with patch(
+            "agent.auxiliary_client.get_text_auxiliary_client",
+            return_value=(fake_client, "judge-model"),
+        ):
+            verdict, reason, parse_failed = goals.judge_goal(
+                "Send the files to me via email",
+                "Executing the sender now. Email sent. Goal complete.",
+            )
+        assert verdict == "continue"
+        assert "without concrete execution evidence" in reason
+        assert parse_failed is False
+        fake_client.chat.completions.create.assert_not_called()
+
+    def test_action_goal_with_execution_evidence_can_be_judged_done(self):
+        from hermes_cli import goals
+
+        fake_client = MagicMock()
+        fake_client.chat.completions.create.return_value = MagicMock(
+            choices=[
+                MagicMock(
+                    message=MagicMock(content='{"done": true, "reason": "tool evidence present"}')
+                )
+            ]
+        )
+        with patch(
+            "agent.auxiliary_client.get_text_auxiliary_client",
+            return_value=(fake_client, "judge-model"),
+        ):
+            verdict, reason, parse_failed = goals.judge_goal(
+                "Send the files to me via email",
+                "Terminal output: success=true; exit_code=0; Gmail message_id=abc123.",
+            )
+        assert verdict == "done"
+        assert reason == "tool evidence present"
+        assert parse_failed is False
+
     def test_judge_says_continue(self):
         from hermes_cli import goals
 

@@ -100,8 +100,30 @@ JUDGE_SYSTEM_PROMPT = (
     "A goal is DONE only when:\n"
     "- The response explicitly confirms the goal was completed, OR\n"
     "- The response clearly shows the final deliverable was produced, OR\n"
-    "- The response explains the goal is unachievable / blocked / needs "
-    "user input (treat this as DONE with reason describing the block).\n\n"
+    "- The response explains the goal is FUNDAMENTALLY IMPOSSIBLE on "
+    "this system (a required external service genuinely does not exist, "
+    "a fact in the goal is provably false, or the requested action is "
+    "categorically forbidden by policy). In this case mark DONE and "
+    "describe the impossibility in the reason field.\n\n"
+    "For action-shaped goals — send, email, execute, run, create, generate, "
+    "upload, download, verify, deliver, process, install, build, or fix — "
+    "do NOT accept bare claims like 'executing now', 'sending now', "
+    "'email sent', 'run complete', or 'goal complete'. Mark DONE only "
+    "when the response includes concrete execution evidence such as a tool "
+    "output line, exit code 0, generated file path, message id, API response, "
+    "inbox/search verification, or similarly specific artifact. If the "
+    "response is only a promise, status phrase, or unsupported completion "
+    "claim, return CONTINUE.\n\n"
+    "Crucial distinction (judge bias fix, 2026-05-17): the agent saying "
+    "it 'needs user input', 'cannot continue', 'requests a decision', "
+    "'asks for clarification', or 'hit a tool limit' is NOT the goal "
+    "being done — it is the agent yielding control prematurely. When "
+    "you see those phrases, return CONTINUE (done=false) so the next "
+    "turn fires and the agent gets another try. The agent has a "
+    "bounded turn budget (state.max_turns); if it truly cannot make "
+    "progress the budget will exhaust naturally and the goal will be "
+    "PAUSED — that is the right place to surface to the user, not the "
+    "judge.\n\n"
     "Otherwise the goal is NOT done — CONTINUE.\n\n"
     "Reply ONLY with a single JSON object on one line:\n"
     '{\"done\": <true|false>, \"reason\": \"<one-sentence rationale>\"}'
@@ -295,6 +317,45 @@ def _truncate(text: str, limit: int) -> str:
 _JSON_OBJECT_RE = re.compile(r"\{.*?\}", re.DOTALL)
 
 
+_ACTION_GOAL_RE = re.compile(
+    r"\b(send|email|execute|run|create|generate|upload|download|verify|deliver|process|install|build|fix)\b",
+    re.IGNORECASE,
+)
+_PROGRESS_ONLY_RE = re.compile(
+    r"\b(i am now|i'm now|i will now|i’ll now|starting|processing now|executing now|sending now|stand by|running now|initiating|preparing|ready-to-paste)\b",
+    re.IGNORECASE,
+)
+_BARE_COMPLETION_RE = re.compile(
+    r"\b(goal complete|task complete|email sent|sent successfully|executed until completion|run complete|done)\b",
+    re.IGNORECASE,
+)
+_EXECUTION_EVIDENCE_RE = re.compile(
+    r"(exit[_ -]?code\s*[:=]\s*0|returncode\s*[:=]\s*0|message[_ -]?id\s*[:=]|run[_ -]?id\s*[:=]|"
+    r"tool output|terminal output|api response|response id\s*[:=]|status\s*[:=]\s*(ok|success)|"
+    r"success\s*[:=]\s*true|created\s*:\s*/|/home/[^\s`]+|sha256:[0-9a-f]{16,}|"
+    r"verified (sent|delivered|received|created|written)|inbox search|gmail.*message)",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_unverified_action_claim(goal: str, last_response: str) -> bool:
+    """Return True when an action goal is answered with words but no evidence.
+
+    Telegram /goal loops are especially vulnerable to text-only completion claims
+    ("sending now", "email sent", "goal complete") because the judge only sees
+    the assistant response, not the message table's tool rows.  Require concrete
+    execution evidence for action-shaped goals so the loop keeps going instead of
+    marking hallucinated work as done.
+    """
+    goal_text = goal or ""
+    response = last_response or ""
+    if not _ACTION_GOAL_RE.search(goal_text):
+        return False
+    if _EXECUTION_EVIDENCE_RE.search(response):
+        return False
+    return bool(_PROGRESS_ONLY_RE.search(response) or _BARE_COMPLETION_RE.search(response))
+
+
 def _goal_judge_max_tokens() -> int:
     """Resolve auxiliary.goal_judge.max_tokens, falling back to the default.
 
@@ -400,6 +461,8 @@ def judge_goal(
     if not last_response.strip():
         # No substantive reply this turn — almost certainly not done yet.
         return "continue", "empty response (nothing to evaluate)", False
+    if _looks_like_unverified_action_claim(goal, last_response):
+        return "continue", "action goal answered without concrete execution evidence", False
 
     try:
         from agent.auxiliary_client import get_auxiliary_extra_body, get_text_auxiliary_client

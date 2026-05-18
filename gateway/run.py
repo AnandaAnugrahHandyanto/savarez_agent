@@ -66,6 +66,100 @@ _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT = 5.0
 _TELEGRAM_COMMAND_MENTION_RE = re.compile(r"(?<![\w:/])/([A-Za-z0-9][A-Za-z0-9_-]*)")
 
 
+_ACTION_STALL_MAX_RETRIES_DEFAULT = 2
+_ACTION_STALL_EVENT_PREFIX = "[System corrective continuation: tool execution required]"
+_ACTION_STALL_ATTEMPT_RE = re.compile(
+    r"^\[System corrective continuation: tool execution required\]\s*\nAttempt:\s*(\d+)\s*/\s*(\d+)",
+    re.IGNORECASE,
+)
+_ACTION_STALL_PROGRESS_RE = re.compile(
+    r"\b(?:i(?:'|’)ll\s+now|i\s+will\s+now|i\s+am\s+now|i(?:'|’)m\s+now|"
+    r"running\s+(?:the|it)|executing\s+(?:the|it|now)|sending\s+(?:now|the|it)|"
+    r"processing\s+(?:now|the|it)|updating\s+(?:the|it)|checking\s+(?:the|it)|"
+    r"verifying\s+(?:now|the|it)|stand\s+by|starting\s+(?:the|real|now)|"
+    r"initiating\s+(?:the|real)|using\s+the\s+.*\s+to\s+(?:check|send|run|execute|verify))\b",
+    re.IGNORECASE | re.DOTALL,
+)
+_ACTION_STALL_REQUEST_RE = re.compile(
+    r"\b(?:send|email|verify|check|run|execute|create|generate|update|install|fix|"
+    r"upload|download|process|start|open|search|find|look\s+up|use\s+the\s+.*api|"
+    r"view\s+your\s+skill|run\s+.*\s+now)\b",
+    re.IGNORECASE,
+)
+_ACTION_STALL_EVIDENCE_RE = re.compile(
+    r"\b(?:tool\s+(?:output|result)|exit\s+code\s*0|message[-_ ]?id|sent_id|"
+    r"api\s+response|status\s*(?:code)?\s*[:=]\s*2\d\d|created\s+file|"
+    r"wrote\s+(?:file|to)|saved\s+(?:file|to)|artifact\s*[:=]|path\s*[:=]|"
+    r"verified\s+(?:in|via)|found\s+in\s+(?:inbox|logs)|/home/|/tmp/)\b",
+    re.IGNORECASE,
+)
+
+
+def _action_stall_attempt(message_text: str) -> int:
+    """Return the current corrective-continuation attempt number, or 0."""
+    match = _ACTION_STALL_ATTEMPT_RE.search(message_text or "")
+    if not match:
+        return 0
+    try:
+        return int(match.group(1))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _messages_have_tool_activity(messages: list) -> bool:
+    """True when this turn actually emitted or consumed tool activity."""
+    for msg in messages or []:
+        if not isinstance(msg, dict):
+            continue
+        if msg.get("role") == "tool" or msg.get("tool_name"):
+            return True
+        if msg.get("tool_calls"):
+            return True
+    return False
+
+
+def _looks_like_action_stall(user_message: str, assistant_response: str, new_messages: list) -> bool:
+    """Detect a no-tool turn that only promises action/progress.
+
+    This is intentionally narrow: ordinary final answers are allowed, while
+    progress-only claims such as "sending now" or "I’ll now use the Gmail API"
+    must be backed by tool activity or concrete execution evidence.
+    """
+    response = (assistant_response or "").strip()
+    if not response or _messages_have_tool_activity(new_messages):
+        return False
+    if _ACTION_STALL_EVIDENCE_RE.search(response):
+        return False
+    if not _ACTION_STALL_PROGRESS_RE.search(response):
+        return False
+    return bool(
+        _ACTION_STALL_REQUEST_RE.search(user_message or "")
+        or _ACTION_STALL_REQUEST_RE.search(response)
+    )
+
+
+def _build_action_stall_continuation(
+    *,
+    user_message: str,
+    assistant_response: str,
+    attempt: int,
+    max_attempts: int,
+) -> str:
+    """Build the synthetic follow-up that forces action after a no-tool promise."""
+    return (
+        f"{_ACTION_STALL_EVENT_PREFIX}\n"
+        f"Attempt: {attempt}/{max_attempts}\n\n"
+        "Your previous response promised or described execution, but the turn "
+        "completed with zero tool calls/tool results. Do not answer with another "
+        "status update. Use the available tools now to perform the action. If no "
+        "tool can perform it, state the precise blocker and the evidence. Do not "
+        "claim sent/executed/verified/done without current tool/API/file evidence.\n\n"
+        "Original user message:\n"
+        f"{(user_message or '').strip()[:2000]}\n\n"
+        "Previous assistant response:\n"
+        f"{(assistant_response or '').strip()[:2000]}"
+    )
+
 def _telegramize_command_mentions(text: str, platform: Any) -> str:
     """Rewrite slash-command mentions to Telegram-valid command names.
 
@@ -6124,6 +6218,22 @@ class GatewayRunner:
             # clearly moved on.
             _slash_confirm_mod.clear_if_stale(_quick_key)
 
+        # Natural-language approval intercept.  When a dangerous-command
+        # approval is blocking the agent thread on tools/approval.py's
+        # threading.Event, accept free-form replies like "I approve" /
+        # "approved" / "yes" / "execute" as equivalents of /approve, and
+        # "deny" / "cancel" as equivalents of /deny.  Without this, plain-
+        # text replies get forwarded to the still-blocked agent, the
+        # message is queued until inactivity timeout, and the next turn
+        # starts with "I approve" as fresh conversational context — which
+        # the LLM interprets as a discussion request and downgrades to
+        # "I can prepare prompts" instead of executing the approved action.
+        _nl_approval = await self._try_natural_language_approval(
+            event, _quick_key,
+        )
+        if _nl_approval is not None:
+            return _nl_approval
+
         # PRIORITY handling when an agent is already running for this session.
         # Default behavior is to interrupt immediately so user text/stop messages
         # are handled with minimal latency.
@@ -7908,6 +8018,87 @@ class GatewayRunner:
                     else:
                         display_reasoning = last_reasoning.strip()
                     response = f"💭 **Reasoning:**\n```\n{display_reasoning}\n```\n\n{response}"
+
+            # Gateway action-stall guard: messaging turns must not end with
+            # "I am doing it now" prose when no tool call actually happened.
+            # The /goal judge catches this for standing goals; this path catches
+            # normal direct Telegram/Slack/etc. turns and queues a bounded
+            # corrective continuation through the same FIFO machinery used by
+            # /goal continuations.
+            _guard_new_messages = []
+            try:
+                _guard_history_len = agent_result.get("history_offset", len(history))
+                if len(agent_messages) > _guard_history_len:
+                    _guard_new_messages = agent_messages[_guard_history_len:]
+            except Exception:
+                _guard_new_messages = []
+            _action_stall_guarded = False
+            if (
+                not agent_result.get("failed")
+                and not agent_result.get("already_sent")
+                and _looks_like_action_stall(message_text, response, _guard_new_messages)
+            ):
+                _current_attempt = _action_stall_attempt(message_text)
+                try:
+                    _stall_cfg = _load_gateway_config() or {}
+                    _stall_agent_cfg = _stall_cfg.get("agent") if isinstance(_stall_cfg, dict) else {}
+                    _stall_max = int(
+                        (_stall_agent_cfg or {}).get(
+                            "action_stall_max_retries",
+                            _ACTION_STALL_MAX_RETRIES_DEFAULT,
+                        )
+                        or _ACTION_STALL_MAX_RETRIES_DEFAULT
+                    )
+                except Exception:
+                    _stall_max = _ACTION_STALL_MAX_RETRIES_DEFAULT
+                _stall_max = max(0, _stall_max)
+                if _current_attempt < _stall_max:
+                    _next_attempt = _current_attempt + 1
+                    try:
+                        _stall_adapter = self.adapters.get(source.platform) if source is not None else None
+                        if _stall_adapter and session_key:
+                            _stall_event = MessageEvent(
+                                text=_build_action_stall_continuation(
+                                    user_message=message_text,
+                                    assistant_response=response,
+                                    attempt=_next_attempt,
+                                    max_attempts=_stall_max,
+                                ),
+                                message_type=MessageType.TEXT,
+                                source=source,
+                                message_id=None,
+                                channel_prompt=event.channel_prompt,
+                            )
+                            self._enqueue_fifo(session_key, _stall_event, _stall_adapter)
+                            _action_stall_guarded = True
+                            logger.warning(
+                                "action-stall guard: queued corrective continuation "
+                                "attempt %s/%s for session=%s response=%r",
+                                _next_attempt,
+                                _stall_max,
+                                session_entry.session_id,
+                                (response or "")[:160],
+                            )
+                    except Exception as exc:
+                        logger.warning("action-stall guard: enqueue failed: %s", exc, exc_info=True)
+                if _action_stall_guarded:
+                    response = (
+                        "⚠️ Hermes caught an action promise with no tool execution. "
+                        "I queued a corrective continuation to execute with tools now. "
+                        "No sent/executed/verified claim is valid until tool/API/file evidence appears."
+                    )
+                elif _stall_max and _current_attempt >= _stall_max:
+                    logger.error(
+                        "action-stall guard: max corrective attempts exhausted for session=%s response=%r",
+                        session_entry.session_id,
+                        (response or "")[:160],
+                    )
+                    response = (
+                        "⚠️ Hermes still produced an action promise without any tool calls after "
+                        f"{_stall_max} corrective attempt(s). I am not treating it as done. "
+                        "Concrete blocker: the model/provider returned prose instead of a tool call. "
+                        "Switch model/provider or run the action through the VM-control/Codex lane."
+                    )
 
             # Runtime-metadata footer — only on the FINAL message of the turn.
             # Off by default (display.runtime_footer.enabled=false).  When
@@ -12665,6 +12856,105 @@ class GatewayRunner:
     # ------------------------------------------------------------------
 
     _APPROVAL_TIMEOUT_SECONDS = 300  # 5 minutes
+
+    async def _try_natural_language_approval(
+        self, event: "MessageEvent", session_key: str,
+    ) -> Optional[str]:
+        """Intercept plain-text approval phrases like "I approve" / "yes".
+
+        Returns a user-facing string when the message is intercepted (the
+        approval resolved, denied, or disambiguation prompted) and ``None``
+        to let normal dispatch continue.
+
+        Why this exists: messaging-platform users rarely remember to prefix
+        replies with ``/approve``.  Without this intercept, "I approve"
+        flows to the agent — which is blocked on a threading.Event in
+        tools/approval.py and can't see it — and the next turn treats the
+        text as conversation, producing the "prepare prompts" downgrade.
+
+        Routing rules (executed in order):
+          * Slash-prefixed text → ``None`` (let the normal command pipeline
+            handle it).  This includes the literal ``/approve``.
+          * Text that does not classify as an approve/deny phrase → ``None``
+            (conversational text is never reinterpreted).
+          * Approval intent + exactly one pending approval → resolve via the
+            same ``_handle_approve_command`` / ``_handle_deny_command`` path
+            that the slash commands use, so ledger hooks, agent unblock,
+            and typing-indicator resume all happen identically.
+          * Approval intent + multiple pending approvals → return a
+            disambiguation prompt listing the queued commands.  The user
+            must explicitly use ``/approve all`` / ``/approve`` (oldest)
+            / ``/deny all`` / ``/deny`` (oldest).
+          * Approval intent + zero pending approvals → ``None`` so "execute
+            this" / "do it" remains a normal task instruction instead of being
+            swallowed by a no-pending approval response.
+        """
+        from tools.approval_intent import classify
+        from tools.approval import list_gateway_pending
+
+        raw = (event.text or "").strip()
+        if not raw or raw.startswith("/"):
+            return None
+
+        intent = classify(raw)
+        if intent is None:
+            return None
+
+        pending = list_gateway_pending(session_key)
+        n_pending = len(pending)
+
+        if n_pending == 0:
+            return None
+
+        if n_pending == 1:
+            logger.info(
+                "Gateway intercepted natural-language %s intent "
+                "(session=%s, phrase=%r)",
+                intent, session_key, raw[:40],
+            )
+            if intent == "approve":
+                return await self._handle_approve_command(event)
+            return await self._handle_deny_command(event)
+
+        # Multiple pending → disambiguate.  Do NOT default to FIFO; the
+        # text was ambiguous about which approval the user meant.
+        logger.info(
+            "Natural-language %s intent on %d pending — disambiguating "
+            "(session=%s)",
+            intent, n_pending, session_key,
+        )
+        # Redact obvious secret patterns from the command preview before
+        # echoing into chat history.  The full command remains visible to
+        # the user through the original /approve prompt; this list is for
+        # disambiguation only, so it's safe to redact aggressively.
+        # Matches: `KEY=value` style env exports where KEY ends in
+        # _KEY / _SECRET / _TOKEN / _PASSWORD / PASSWORD (case-insensitive).
+        import re as _re
+        _SECRET_RE = _re.compile(
+            r"((?i:[A-Z0-9_]*(?:_KEY|_SECRET|_TOKEN|_PASSWORD|PASSWORD)\s*=))\S+",
+        )
+
+        item_lines = []
+        for idx, item in enumerate(pending, start=1):
+            preview = (item.get("command") or item.get("description") or "").strip()
+            if not preview:
+                preview = "(no command preview)"
+            preview = _SECRET_RE.sub(r"\1<redacted>", preview)
+            if len(preview) > 80:
+                preview = preview[:77] + "..."
+            item_lines.append(f"  {idx}. `{preview}`")
+        items_block = "\n".join(item_lines)
+        if intent == "approve":
+            return t(
+                "gateway.approve.disambiguate",
+                count=n_pending,
+                items=items_block,
+            )
+        return t(
+            "gateway.deny.disambiguate",
+            count=n_pending,
+            items=items_block,
+        )
 
     async def _handle_approve_command(self, event: MessageEvent) -> Optional[str]:
         """Handle /approve command — unblock waiting agent thread(s).
