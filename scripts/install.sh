@@ -1967,6 +1967,8 @@ ensure_browser() {
     else
         log_warn "agent-browser not found at $ab_bin"
     fi
+
+    return 0
 }
 
 ensure_mode() {

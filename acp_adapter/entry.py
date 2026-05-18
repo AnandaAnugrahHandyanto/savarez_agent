@@ -189,9 +189,9 @@ def _run_setup_browser(assume_yes: bool = False) -> int:
 
     Returns 0 on success, 1 on failure.
     """
-    try:
-        from hermes_cli.dep_ensure import ensure_dependency
+    from hermes_cli.dep_ensure import ensure_dependency
 
+    try:
         node_ok = ensure_dependency("node", interactive=not assume_yes)
         if not node_ok:
             print("Node.js installation failed — cannot proceed with browser tools.",
@@ -204,7 +204,7 @@ def _run_setup_browser(assume_yes: bool = False) -> int:
             return 1
 
         return 0
-    except Exception as exc:
+    except OSError as exc:
         print(f"Browser bootstrap failed: {exc}", file=sys.stderr)
         return 1
 
