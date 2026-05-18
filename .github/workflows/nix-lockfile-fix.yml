@@ -278,7 +278,6 @@ jobs:
           ref: ${{ steps.resolve.outputs.ref }}
           persist-credentials: false
           fetch-depth: 0
-
       - name: Apply lockfile hashes
         id: apply
         run: nix run .#fix-lockfiles

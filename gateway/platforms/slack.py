@@ -52,6 +52,28 @@ from gateway.platforms.base import (
 
 logger = logging.getLogger(__name__)
 
+
+def _slack_ssrf_redirect_guard(is_safe_url):
+    """Build an httpx response hook that blocks unsafe redirect targets."""
+
+    async def _guard(response):
+        if not response.is_redirect:
+            return
+
+        if response.next_request:
+            redirect_url = str(response.next_request.url)
+        else:
+            location = response.headers.get("location")
+            if not location:
+                return
+            redirect_url = str(response.request.url.join(location))
+
+        if not is_safe_url(redirect_url):
+            raise ValueError("Blocked redirect to private/internal address")
+
+    return _guard
+
+
 # ContextVar carrying the user_id of the slash-command invoker.
 # Set in _handle_slash_command, read in send() to match the correct
 # stashed response_url when multiple users issue commands on the same
@@ -436,16 +458,13 @@ class SlackAdapter(BasePlatformAdapter):
     def _pop_slash_context(
         self, chat_id: str,
     ) -> Optional[Dict[str, Any]]:
-        """Return and remove the slash-command context for *chat_id*, if fresh.
+        """Return and remove the current user's slash-command context.
 
         Contexts older than ``_SLASH_CTX_TTL`` seconds are silently discarded.
-
-        Uses the ``_slash_user_id`` ContextVar (set in ``_handle_slash_command``)
-        to match the exact ``(channel_id, user_id)`` key.  This prevents a
-        concurrent slash command from a different user on the same channel from
-        stealing another user's ephemeral context.  Falls back to a
-        channel-only scan when the ContextVar is unset (e.g. send() called
-        from a non-slash code path — should not match anything).
+        The remaining lookup must match the exact ``(channel_id, user_id)``
+        tuple, with ``user_id`` supplied by the slash-command ContextVar.
+        A normal channel send has no slash user context and must not consume a
+        pending ``response_url`` for an unrelated user.
         """
         now = time.monotonic()
         # Clean up stale entries on every lookup — dict is small.
@@ -456,21 +475,10 @@ class SlackAdapter(BasePlatformAdapter):
         for k in stale_keys:
             self._slash_command_contexts.pop(k, None)
 
-        # Precise match: (channel_id, user_id) from ContextVar.
         uid = _slash_user_id.get()
-        if uid:
-            return self._slash_command_contexts.pop((chat_id, uid), None)
-
-        # Fallback: channel-only scan (only reachable when ContextVar is
-        # unset, i.e. send() called outside a slash-command async context).
-        match_key = None
-        for key in list(self._slash_command_contexts):
-            if key[0] == chat_id:
-                match_key = key
-                break
-        if match_key is None:
+        if not uid:
             return None
-        return self._slash_command_contexts.pop(match_key)
+        return self._slash_command_contexts.pop((chat_id, uid), None)
 
     async def _send_slash_ephemeral(
         self,
@@ -1098,7 +1106,11 @@ class SlackAdapter(BasePlatformAdapter):
             file_uploads: List[Dict[str, Any]] = []
             initial_comment_parts: List[str] = []
             try:
-                async with _httpx.AsyncClient(timeout=30.0, follow_redirects=True) as http_client:
+                async with _httpx.AsyncClient(
+                    timeout=30.0,
+                    follow_redirects=True,
+                    event_hooks={"response": [_slack_ssrf_redirect_guard(_is_safe_url)]},
+                ) as http_client:
                     for image_url, alt_text in chunk:
                         if alt_text:
                             initial_comment_parts.append(alt_text)
@@ -1448,18 +1460,11 @@ class SlackAdapter(BasePlatformAdapter):
         try:
             import httpx
 
-            async def _ssrf_redirect_guard(response):
-                """Re-check redirect targets so public URLs cannot bounce into private IPs."""
-                if response.is_redirect and response.next_request:
-                    redirect_url = str(response.next_request.url)
-                    if not is_safe_url(redirect_url):
-                        raise ValueError("Blocked redirect to private/internal address")
-
             # Download the image first
             async with httpx.AsyncClient(
                 timeout=30.0,
                 follow_redirects=True,
-                event_hooks={"response": [_ssrf_redirect_guard]},
+                event_hooks={"response": [_slack_ssrf_redirect_guard(is_safe_url)]},
             ) as client:
                 response = await client.get(image_url)
                 response.raise_for_status()
