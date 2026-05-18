@@ -9,6 +9,7 @@ Built-in TTS providers:
 - MiniMax TTS: High-quality with voice cloning, needs MINIMAX_API_KEY
 - Mistral (Voxtral TTS): Multilingual, native Opus, needs MISTRAL_API_KEY
 - Google Gemini TTS: Controllable, 30 prebuilt voices, needs GEMINI_API_KEY
+- Inworld TTS: #1 on Artificial Analysis TTS Arena, 100+ languages, needs INWORLD_API_KEY
 - xAI TTS: Grok voices, uses xAI Grok OAuth credentials or XAI_API_KEY
 - NeuTTS (local, free, no API key): On-device TTS via neutts
 - KittenTTS (local, free, no API key): On-device 25MB model
@@ -175,6 +176,13 @@ DEFAULT_GEMINI_TTS_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
 GEMINI_TTS_SAMPLE_RATE = 24000
 GEMINI_TTS_CHANNELS = 1
 GEMINI_TTS_SAMPLE_WIDTH = 2  # 16-bit PCM (L16)
+DEFAULT_INWORLD_TTS_MODEL = "inworld-tts-2"
+DEFAULT_INWORLD_TTS_VOICE = "Sarah"
+DEFAULT_INWORLD_TTS_BASE_URL = "https://api.inworld.ai/tts/v1/voice"
+# PCM output specs for Inworld TTS LINEAR16 (fixed by request; mirrors Gemini)
+INWORLD_TTS_SAMPLE_RATE = 24000
+INWORLD_TTS_CHANNELS = 1
+INWORLD_TTS_SAMPLE_WIDTH = 2  # 16-bit PCM
 
 def _get_default_output_dir() -> str:
     from hermes_constants import get_hermes_dir
@@ -1307,6 +1315,165 @@ def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]
 
 
 # ===========================================================================
+# Inworld TTS (REST API; #1 on Artificial Analysis TTS Arena)
+# ===========================================================================
+
+def _generate_inworld_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
+    """Generate audio using Inworld AI TTS.
+
+    Inworld's ``/tts/v1/voice`` REST endpoint supports MP3, OGG_OPUS, and
+    LINEAR16 natively via ``audioConfig.audioEncoding``. We pick the encoding
+    from the requested output extension so common formats (.mp3, .ogg) are
+    written verbatim with no ffmpeg roundtrip -- only .wav needs the
+    LINEAR16 -> RIFF-header wrap (matching the ``_wrap_pcm_as_wav`` helper).
+    A defensive ffmpeg fallback handles exotic extensions.
+
+    Auth: the Inworld portal hands out a pre-encoded Base64 credential.
+    The header is literally ``Authorization: Basic <that key>`` -- do NOT
+    re-encode it. It is NOT a ``key:secret`` pair.
+
+    Args:
+        text: Text to convert. Supports inline steering tags such as
+              ``[excited]`` or ``[whispered]`` on ``inworld-tts-2``.
+        output_path: Where to save the audio file (.wav, .mp3, or .ogg).
+        tts_config: TTS config dict.
+
+    Returns:
+        Path to the saved audio file.
+    """
+    import requests
+
+    api_key = (get_env_value("INWORLD_API_KEY") or "").strip()
+    if not api_key:
+        raise ValueError(
+            "INWORLD_API_KEY not set. Get an API key at "
+            "https://platform.inworld.ai -> API Keys, copy the Basic (Base64) "
+            "value, and use it verbatim (do not re-encode)."
+        )
+
+    inworld_config = tts_config.get("inworld", {})
+    model = str(inworld_config.get("model", DEFAULT_INWORLD_TTS_MODEL)).strip() or DEFAULT_INWORLD_TTS_MODEL
+    voice = str(
+        inworld_config.get("voice_id")
+        or inworld_config.get("voice")
+        or DEFAULT_INWORLD_TTS_VOICE
+    ).strip() or DEFAULT_INWORLD_TTS_VOICE
+    base_url = str(
+        inworld_config.get("base_url")
+        or get_env_value("INWORLD_BASE_URL")
+        or DEFAULT_INWORLD_TTS_BASE_URL
+    ).strip()
+
+    # Match the audio encoding to the output extension. Inworld natively
+    # supports MP3 and OGG_OPUS, so for those formats we can skip ffmpeg
+    # entirely and write the API response bytes directly. LINEAR16 covers
+    # .wav (fast-pathed via _wrap_pcm_as_wav below) and serves as a
+    # defensive fallback for unknown extensions (handled via ffmpeg).
+    ext = os.path.splitext(output_path)[1].lower()
+    if ext == ".mp3":
+        audio_encoding = "MP3"
+    elif ext in (".ogg", ".opus"):
+        audio_encoding = "OGG_OPUS"
+    else:
+        audio_encoding = "LINEAR16"
+
+    payload: Dict[str, Any] = {
+        # API caps the request at 2000 chars; the streaming caller handles
+        # longer text via sentence-by-sentence chunking upstream.
+        "text": text[:2000],
+        "voiceId": voice,
+        "modelId": model,
+        "audioConfig": {
+            "audioEncoding": audio_encoding,
+            "sampleRateHertz": INWORLD_TTS_SAMPLE_RATE,
+        },
+    }
+
+    response = requests.post(
+        base_url,
+        headers={
+            "Authorization": f"Basic {api_key}",
+            "Content-Type": "application/json",
+        },
+        json=payload,
+        timeout=60,
+    )
+    if response.status_code != 200:
+        # Surface the API error message when present. Inworld returns
+        # ``{"code": 5, "message": "Unknown voice: X not found!"}`` on bad
+        # voice IDs; keep the message terse so it fits a log line.
+        try:
+            err = response.json()
+            detail = err.get("message") or err.get("error") or response.text[:300]
+        except Exception:
+            detail = response.text[:300]
+        raise RuntimeError(
+            f"Inworld TTS API error (HTTP {response.status_code}): {detail}"
+        )
+
+    try:
+        data = response.json()
+        audio_b64 = data["audioContent"]
+    except (KeyError, TypeError) as e:
+        raise RuntimeError(f"Inworld TTS response was malformed: {e}") from e
+
+    if not audio_b64:
+        raise RuntimeError("Inworld TTS returned empty audio data")
+
+    audio_bytes = base64.b64decode(audio_b64)
+
+    # Native MP3 / OGG_OPUS: API already returned a fully-encoded file, write
+    # the bytes verbatim. No PCM wrap, no ffmpeg dependency.
+    if audio_encoding in ("MP3", "OGG_OPUS"):
+        with open(output_path, "wb") as f:
+            f.write(audio_bytes)
+        return output_path
+
+    # LINEAR16 path: raw PCM needs a WAV RIFF header.
+    wav_bytes = _wrap_pcm_as_wav(
+        audio_bytes,
+        sample_rate=INWORLD_TTS_SAMPLE_RATE,
+        channels=INWORLD_TTS_CHANNELS,
+        sample_width=INWORLD_TTS_SAMPLE_WIDTH,
+    )
+
+    # Fast path: caller wants WAV directly, just write.
+    if output_path.lower().endswith(".wav"):
+        with open(output_path, "wb") as f:
+            f.write(wav_bytes)
+        return output_path
+
+    # Exotic extension (.flac, .m4a, etc.): write WAV to a temp file and
+    # ffmpeg-convert. Falls back to renaming when ffmpeg is missing -- the
+    # audio is still playable, just under a misleading extension.
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+        tmp.write(wav_bytes)
+        wav_path = tmp.name
+
+    try:
+        ffmpeg = shutil.which("ffmpeg")
+        if ffmpeg:
+            cmd = [ffmpeg, "-i", wav_path, "-y", "-loglevel", "error", output_path]
+            result = subprocess.run(cmd, capture_output=True, timeout=30)
+            if result.returncode != 0:
+                stderr = result.stderr.decode("utf-8", errors="ignore")[:300]
+                raise RuntimeError(f"ffmpeg conversion failed: {stderr}")
+        else:
+            logger.warning(
+                "ffmpeg not found; writing raw WAV to %s (extension may be misleading)",
+                output_path,
+            )
+            shutil.copyfile(wav_path, output_path)
+    finally:
+        try:
+            os.remove(wav_path)
+        except OSError:
+            pass
+
+    return output_path
+
+
+# ===========================================================================
 # NeuTTS (local, on-device TTS via neutts_cli)
 # ===========================================================================
 
@@ -1758,6 +1925,10 @@ def text_to_speech_tool(
             logger.info("Generating speech with Google Gemini TTS...")
             _generate_gemini_tts(text, file_str, tts_config)
 
+        elif provider == "inworld":
+            logger.info("Generating speech with Inworld TTS...")
+            _generate_inworld_tts(text, file_str, tts_config)
+
         elif provider == "neutts":
             if not _check_neutts_available():
                 return json.dumps({
@@ -1843,7 +2014,7 @@ def text_to_speech_tool(
                     if opus_path:
                         file_str = opus_path
                 voice_compatible = file_str.endswith(".ogg")
-        elif provider in {"edge", "neutts", "minimax", "xai", "kittentts", "piper"} and not file_str.endswith(".ogg"):
+        elif provider in {"edge", "neutts", "minimax", "xai", "kittentts", "piper", "inworld"} and not file_str.endswith(".ogg"):
             opus_path = _convert_to_opus(file_str)
             if opus_path:
                 file_str = opus_path
@@ -1928,6 +2099,8 @@ def check_tts_requirements() -> bool:
     except Exception:
         pass
     if get_env_value("GEMINI_API_KEY") or get_env_value("GOOGLE_API_KEY"):
+        return True
+    if get_env_value("INWORLD_API_KEY"):
         return True
     try:
         _import_mistral_client()
