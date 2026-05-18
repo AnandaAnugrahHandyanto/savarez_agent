@@ -42,12 +42,15 @@ def test_title_generation_present_in_default_config():
     assert tg["extra_body"] == {}
 
 
-def test_session_search_defaults_include_extra_body_and_concurrency():
-    ss = DEFAULT_CONFIG["auxiliary"]["session_search"]
-    assert ss["provider"] == "auto"
-    assert ss["model"] == ""
-    assert ss["extra_body"] == {}
-    assert ss["max_concurrency"] == 3
+def test_session_search_is_not_aux_model_configurable():
+    """Session search no longer uses an auxiliary LLM.
+
+    It should not appear in DEFAULT_CONFIG["auxiliary"] or in the auxiliary
+    model picker, because any saved ``auxiliary.session_search`` settings are
+    ignored by the single-shape DB-backed session_search tool.
+    """
+    assert "session_search" not in DEFAULT_CONFIG["auxiliary"]
+    assert all(task != "session_search" for task, _name, _desc in _AUX_TASKS)
 
 
 def test_aux_tasks_keys_all_exist_in_default_config():
