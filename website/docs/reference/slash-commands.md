@@ -119,12 +119,19 @@ quick_commands:
   deploy:
     type: exec
     command: scripts/deploy.sh
+  note:
+    type: exec
+    command: scripts/add-note.sh
+    pass_args: true
   inbox:
     type: alias
     target: /gmail unread
 ```
 
-Then type `/status`, `/deploy`, or `/inbox` in the CLI or a messaging platform. Quick commands are resolved at dispatch time and may not appear in every built-in autocomplete/help table.
+Then type `/status`, `/deploy`, `/note remember this`, or `/inbox` in the CLI or a messaging platform. Quick commands are resolved at dispatch time and may not appear in every built-in autocomplete/help table.
+
+For `exec` quick commands, set `pass_args: true` to append the user's trailing
+slash-command text as one shell-quoted argument.
 
 String-only prompt shortcuts are not supported as quick commands. Put longer reusable prompts in a skill, or use `type: alias` to point at an existing slash command.
 

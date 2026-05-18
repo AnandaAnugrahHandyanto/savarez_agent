@@ -6901,6 +6901,10 @@ class GatewayRunner:
                 if qcmd.get("type") == "exec":
                     exec_cmd = qcmd.get("command", "")
                     if exec_cmd:
+                        if qcmd.get("pass_args"):
+                            user_args = event.get_command_args().strip()
+                            if user_args:
+                                exec_cmd = f"{exec_cmd} {shlex.quote(user_args)}"
                         try:
                             # Sanitize env to prevent credential leakage —
                             # quick commands run in the gateway process which

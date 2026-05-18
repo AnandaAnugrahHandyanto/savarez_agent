@@ -1398,6 +1398,10 @@ quick_commands:
   disk:
     type: exec
     command: df -h /
+  note:
+    type: exec
+    command: scripts/add-note.sh
+    pass_args: true
   update:
     type: exec
     command: cd ~/.hermes/hermes-agent && git pull && pip install -e .
@@ -1409,12 +1413,13 @@ quick_commands:
     target: /gateway restart
 ```
 
-Usage: type `/status`, `/disk`, `/update`, `/gpu`, or `/restart` in the CLI or any messaging platform. `exec` commands run locally on the host and return the output directly — no LLM call, no tokens consumed. `alias` commands rewrite to the configured slash command target.
+Usage: type `/status`, `/disk`, `/note remember this`, `/update`, `/gpu`, or `/restart` in the CLI or any messaging platform. `exec` commands run locally on the host and return the output directly — no LLM call, no tokens consumed. `alias` commands rewrite to the configured slash command target.
 
 - **30-second timeout** — long-running commands are killed with an error message
 - **Priority** — quick commands are checked before skill commands, so you can override skill names
 - **Autocomplete** — quick commands are resolved at dispatch time and are not shown in the built-in slash-command autocomplete tables
 - **Type** — supported types are `exec` and `alias`; other types show an error
+- **Arguments** — `pass_args: true` appends the user's trailing slash-command text to an `exec` command as one shell-quoted argument
 - **Works everywhere** — CLI, Telegram, Discord, Slack, WhatsApp, Signal, Email, Home Assistant
 
 String-only prompt shortcuts are not valid quick commands. For reusable prompt workflows, create a skill or alias to an existing slash command.

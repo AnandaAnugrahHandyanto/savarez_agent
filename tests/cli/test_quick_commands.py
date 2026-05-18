@@ -161,6 +161,51 @@ class TestGatewayQuickCommands:
         assert result == "ok"
 
     @pytest.mark.asyncio
+    async def test_exec_command_pass_args_appends_quoted_user_text(self):
+        from gateway.run import GatewayRunner
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = {
+            "quick_commands": {
+                "echoargs": {
+                    "type": "exec",
+                    "command": "python3 -c 'import sys; print(sys.argv[1])'",
+                    "pass_args": True,
+                }
+            }
+        }
+        runner._running_agents = {}
+        runner._pending_messages = {}
+        runner._is_user_authorized = MagicMock(return_value=True)
+
+        event = self._make_event("echoargs", "call dentist; echo leaked")
+        result = await runner._handle_message(event)
+
+        assert result == "call dentist; echo leaked"
+
+    @pytest.mark.asyncio
+    async def test_exec_command_ignores_args_unless_pass_args_enabled(self):
+        from gateway.run import GatewayRunner
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = {
+            "quick_commands": {
+                "echoargs": {
+                    "type": "exec",
+                    "command": "python3 -c 'import sys; print(len(sys.argv))'",
+                }
+            }
+        }
+        runner._running_agents = {}
+        runner._pending_messages = {}
+        runner._is_user_authorized = MagicMock(return_value=True)
+
+        event = self._make_event("echoargs", "ignored")
+        result = await runner._handle_message(event)
+
+        assert result == "1"
+
+    @pytest.mark.asyncio
     async def test_exec_command_does_not_leak_credentials(self):
         """Quick command exec must sanitize env — API keys must not appear in output."""
         from gateway.run import GatewayRunner
