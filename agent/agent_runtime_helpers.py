@@ -695,7 +695,7 @@ def try_recover_primary_transport(
             agent._anthropic_client = build_anthropic_client(
                 rt["anthropic_api_key"], rt["anthropic_base_url"],
                 timeout=get_provider_request_timeout(agent.provider, agent.model),
-                default_headers=getattr(agent, "_default_headers", None),
+                default_headers=(agent._client_kwargs.get("default_headers") or getattr(agent, "_default_headers", None)),
             )
             agent._is_anthropic_oauth = rt["is_anthropic_oauth"]
             agent.client = None
@@ -860,7 +860,7 @@ def restore_primary_runtime(agent) -> bool:
             agent._anthropic_client = build_anthropic_client(
                 rt["anthropic_api_key"], rt["anthropic_base_url"],
                 timeout=get_provider_request_timeout(agent.provider, agent.model),
-                default_headers=getattr(agent, "_default_headers", None),
+                default_headers=(agent._client_kwargs.get("default_headers") or getattr(agent, "_default_headers", None)),
             )
             agent._is_anthropic_oauth = rt["is_anthropic_oauth"]
             agent.client = None

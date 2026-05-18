@@ -808,12 +808,23 @@ class AIAgent:
 
     def _current_main_runtime(self) -> Dict[str, str]:
         """Return the live main runtime for session-scoped auxiliary routing."""
+        headers = None
+        try:
+            from agent.client_headers import merge_default_headers
+
+            headers = merge_default_headers(
+                (getattr(self, "_client_kwargs", {}) or {}).get("default_headers"),
+                getattr(self, "_default_headers", None),
+            )
+        except Exception:
+            headers = getattr(self, "_default_headers", None)
         return {
             "model": getattr(self, "model", "") or "",
             "provider": getattr(self, "provider", "") or "",
             "base_url": getattr(self, "base_url", "") or "",
             "api_key": getattr(self, "api_key", "") or "",
             "api_mode": getattr(self, "api_mode", "") or "",
+            "default_headers": headers if isinstance(headers, dict) and headers else {},
         }
 
     def _check_compression_model_feasibility(self) -> None:
@@ -2823,6 +2834,7 @@ class AIAgent:
             self._anthropic_client = build_anthropic_client(
                 runtime_key, runtime_base,
                 timeout=get_provider_request_timeout(self.provider, self.model),
+                default_headers=getattr(self, "_default_headers", None),
             )
             self._is_anthropic_oauth = _is_oauth_token(runtime_key) if self.provider == "anthropic" else False
             self.api_key = runtime_key

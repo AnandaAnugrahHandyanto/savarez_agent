@@ -2509,6 +2509,42 @@ class TestVisionAutoSkipsKimiCoding:
         assert client is fake_kimi_client
         gcc_mock.assert_called_once()
 
+    def test_main_provider_vision_path_receives_runtime_headers(self, monkeypatch):
+        from agent.auxiliary_client import clear_runtime_main, set_runtime_main
+
+        fake_client = MagicMock(name="vision_client")
+        calls = []
+
+        monkeypatch.setattr(
+            "agent.auxiliary_client._read_main_provider", lambda: "custom",
+        )
+        monkeypatch.setattr(
+            "agent.auxiliary_client._read_main_model", lambda: "vision-model",
+        )
+
+        def fake_resolve_provider_client(provider, model=None, **kwargs):
+            calls.append((provider, model, kwargs))
+            return fake_client, model
+
+        monkeypatch.setattr(
+            "agent.auxiliary_client.resolve_provider_client", fake_resolve_provider_client,
+        )
+        monkeypatch.setattr(
+            "agent.auxiliary_client._resolve_strict_vision_backend",
+            lambda *_args, **_kwargs: (None, None),
+        )
+
+        try:
+            set_runtime_main("custom", "vision-model", {"X-Relay": "secret"})
+            provider, client, model = resolve_vision_provider_client()
+        finally:
+            clear_runtime_main()
+
+        assert provider == "custom"
+        assert client is fake_client
+        assert model == "vision-model"
+        assert calls[0][2]["main_runtime"]["default_headers"] == {"X-Relay": "secret"}
+
     def test_skip_set_covers_exactly_known_entries(self):
         """Guard against accidental widening of the skip list."""
         from agent.auxiliary_client import _PROVIDERS_WITHOUT_VISION

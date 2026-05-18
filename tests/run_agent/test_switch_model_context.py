@@ -99,3 +99,16 @@ def test_switch_model_preserves_provider_default_headers():
         )
 
     assert captured["default_headers"] == {"X-Relay-Key": "relay-secret"}
+
+
+def test_current_main_runtime_includes_effective_default_headers():
+    agent = _make_agent_with_compressor(config_context_length=None)
+    agent._client_kwargs = {"default_headers": {"X-Provider": "provider"}}
+    agent._default_headers = {"X-Relay": "secret"}
+
+    runtime = agent._current_main_runtime()
+
+    assert runtime["default_headers"] == {
+        "X-Provider": "provider",
+        "X-Relay": "secret",
+    }

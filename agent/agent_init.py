@@ -1485,6 +1485,7 @@ def init_agent(
         "compressor_provider": getattr(_cc, "provider", agent.provider),
         "compressor_context_length": _cc.context_length,
         "compressor_threshold_tokens": _cc.threshold_tokens,
+        "compressor_default_headers": getattr(_cc, "default_headers", None),
     }
     if agent.api_mode == "anthropic_messages":
         agent._primary_runtime.update({

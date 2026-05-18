@@ -1727,9 +1727,10 @@ def _read_main_provider() -> str:
 # per turn — no lock needed. Cleared by ``clear_runtime_main()``.
 _RUNTIME_MAIN_PROVIDER: str = ""
 _RUNTIME_MAIN_MODEL: str = ""
+_RUNTIME_MAIN_DEFAULT_HEADERS: Optional[Dict[str, str]] = None
 
 
-def set_runtime_main(provider: str, model: str) -> None:
+def set_runtime_main(provider: str, model: str, default_headers: Optional[Dict[str, str]] = None) -> None:
     """Record the live runtime provider/model for the current AIAgent.
 
     Called by ``run_agent.AIAgent._sync_runtime_main_for_aux_routing`` (or
@@ -1737,16 +1738,18 @@ def set_runtime_main(provider: str, model: str) -> None:
     ``_read_main_provider`` / ``_read_main_model`` reflect CLI/gateway
     overrides instead of the stale config.yaml default.
     """
-    global _RUNTIME_MAIN_PROVIDER, _RUNTIME_MAIN_MODEL
+    global _RUNTIME_MAIN_PROVIDER, _RUNTIME_MAIN_MODEL, _RUNTIME_MAIN_DEFAULT_HEADERS
     _RUNTIME_MAIN_PROVIDER = (provider or "").strip().lower()
     _RUNTIME_MAIN_MODEL = (model or "").strip()
+    _RUNTIME_MAIN_DEFAULT_HEADERS = default_headers if isinstance(default_headers, dict) and default_headers else None
 
 
 def clear_runtime_main() -> None:
     """Clear the runtime override (e.g. on session end)."""
-    global _RUNTIME_MAIN_PROVIDER, _RUNTIME_MAIN_MODEL
+    global _RUNTIME_MAIN_PROVIDER, _RUNTIME_MAIN_MODEL, _RUNTIME_MAIN_DEFAULT_HEADERS
     _RUNTIME_MAIN_PROVIDER = ""
     _RUNTIME_MAIN_MODEL = ""
+    _RUNTIME_MAIN_DEFAULT_HEADERS = None
 
 
 def _resolve_custom_runtime() -> Tuple[Optional[str], Optional[str], Optional[str]]:
@@ -3822,6 +3825,11 @@ def resolve_vision_provider_client(
         #   4. Stop
         main_provider = _read_main_provider()
         main_model = _read_main_model()
+        main_runtime = {
+            "provider": main_provider,
+            "model": main_model,
+            "default_headers": _RUNTIME_MAIN_DEFAULT_HEADERS or {},
+        }
         if main_provider and main_provider not in {"auto", ""}:
             vision_model = _PROVIDER_VISION_MODELS.get(main_provider, main_model)
             if main_provider == "nous":
@@ -3851,6 +3859,7 @@ def resolve_vision_provider_client(
                 rpc_client, rpc_model = resolve_provider_client(
                     main_provider, vision_model,
                     api_mode=resolved_api_mode,
+                    main_runtime=main_runtime,
                     is_vision=True)
                 if rpc_client is not None:
                     logger.info(
