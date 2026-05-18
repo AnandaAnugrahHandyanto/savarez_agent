@@ -2831,6 +2831,30 @@ class SessionDB:
                 return None
         return dict(row) if row else None
 
+    def update_telegram_topic_binding_managed_mode(
+        self,
+        *,
+        chat_id: str,
+        thread_id: str,
+        managed_mode: str,
+    ) -> bool:
+        """Update the ownership mode for an existing Telegram DM topic binding."""
+        def _do(conn):
+            try:
+                cursor = conn.execute(
+                    """
+                    UPDATE telegram_dm_topic_bindings
+                    SET managed_mode = ?, updated_at = ?
+                    WHERE chat_id = ? AND thread_id = ?
+                    """,
+                    (str(managed_mode), time.time(), str(chat_id), str(thread_id)),
+                )
+            except sqlite3.OperationalError:
+                return 0
+            return cursor.rowcount
+        rowcount = self._execute_write(_do)
+        return rowcount > 0
+
     def bind_telegram_topic(
         self,
         *,
