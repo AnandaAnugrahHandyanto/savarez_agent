@@ -1388,12 +1388,24 @@ def run_conversation(
                             re.IGNORECASE,
                         )
                     )
+                    _has_structured_reasoning = bool(
+                        _trunc_msg and (
+                            getattr(_trunc_msg, "reasoning", None)
+                            or getattr(_trunc_msg, "reasoning_content", None)
+                        )
+                    )
+                    _content_is_empty = not (
+                        _trunc_content and agent._has_content_after_think_block(_trunc_content)
+                    )
                     _thinking_exhausted = (
                         not _trunc_has_tool_calls
-                        and _has_think_tags
                         and (
-                            (_trunc_content is not None and not agent._has_content_after_think_block(_trunc_content))
-                            or _trunc_content is None
+                            (_has_think_tags
+                             and (
+                                 (_trunc_content is not None and not agent._has_content_after_think_block(_trunc_content))
+                                 or _trunc_content is None
+                             ))
+                            or (_has_structured_reasoning and _content_is_empty)
                         )
                     )
 
@@ -1419,6 +1431,18 @@ def run_conversation(
                             "→ Lower reasoning effort: `/thinkon low` or `/thinkon minimal`\n"
                             "→ Or switch to a larger/non-reasoning model with `/model`"
                         )
+                        _structured_reasoning = (
+                            getattr(_trunc_msg, "reasoning", None)
+                            or getattr(_trunc_msg, "reasoning_content", None)
+                        ) if _trunc_msg else None
+                        if _structured_reasoning and not _has_think_tags:
+                            _preview = _structured_reasoning[:600].strip()
+                            if len(_structured_reasoning) > 600:
+                                _preview += "…"
+                            _exhaust_response += (
+                                f"\n\n💭 **Reasoning captured before exhaustion:**\n> "
+                                + _preview.replace("\n", "\n> ")
+                            )
                         agent._cleanup_task_resources(effective_task_id)
                         agent._persist_session(messages, conversation_history)
                         return {
