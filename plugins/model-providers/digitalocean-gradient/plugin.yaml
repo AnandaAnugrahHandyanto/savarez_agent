@@ -1,0 +1,5 @@
+name: digitalocean-gradient-provider
+kind: model-provider
+version: 1.0.0
+description: DigitalOcean Gradient serverless inference (OpenAI-compatible)
+author: DigitalOcean

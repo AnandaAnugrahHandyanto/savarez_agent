@@ -464,6 +464,15 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "deepseek/deepseek-r1-0528",
         "qwen/qwen3-235b-a22b-fp8",
     ],
+    # DigitalOcean Inference serverless — curated defaults favor newer flagship tiers;
+    # live `/v1/models` remains authoritative when a key is configured.
+    "digitalocean-gradient": [
+        "anthropic-claude-4.6-sonnet",
+        "kimi-k2.6",
+        "deepseek-v4-pro",
+        "qwen3-coder-flash",
+        "alibaba-qwen3-32b",
+    ],
 }
 
 # Vercel AI Gateway: derive the bare-model-id catalog from the curated
@@ -1037,6 +1046,8 @@ _PROVIDER_ALIASES = {
     "huggingface-hub": "huggingface",
     "novita-ai": "novita",
     "novitaai": "novita",
+    "do-gradient": "digitalocean-gradient",
+    "digitalocean": "digitalocean-gradient",
     "mimo": "xiaomi",
     "xiaomi-mimo": "xiaomi",
     "tencent": "tencent-tokenhub",

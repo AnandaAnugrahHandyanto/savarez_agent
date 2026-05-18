@@ -155,6 +155,7 @@ Look at these bundled plugins for idioms:
 | `plugins/model-providers/nous/` | Attribution tags, "omit reasoning when disabled" |
 | `plugins/model-providers/custom/` | Ollama `num_ctx` + `think: false` quirks |
 | `plugins/model-providers/bedrock/` | `api_mode="bedrock_converse"`, `fetch_models` returns None (no REST endpoint) |
+| `plugins/model-providers/digitalocean-gradient/` | Declarative `api_key` + default `fetch_models` for `inference.do-ai.run` |
 
 ## User overrides — replace a built-in without editing the repo
 
