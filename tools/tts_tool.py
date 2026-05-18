@@ -1645,6 +1645,21 @@ def text_to_speech_tool(
     tts_config = _load_tts_config()
     provider = _get_provider(tts_config)
 
+    # ElevenLabs is often copied across migrations as a provider choice without
+    # the matching secret. If the configured premium provider is unusable but
+    # Edge TTS is installed, fall back before choosing output paths so Telegram
+    # voice conversion still uses the right file extension.
+    if provider == "elevenlabs" and not get_env_value("ELEVENLABS_API_KEY"):
+        try:
+            _import_edge_tts()
+        except ImportError:
+            pass
+        else:
+            logger.warning(
+                "ElevenLabs TTS selected but ELEVENLABS_API_KEY is not set; falling back to Edge TTS"
+            )
+            provider = "edge"
+
     # User-declared command provider (type: command under tts.providers.<name>)
     # resolves BEFORE the built-in dispatch. Built-in names short-circuit here
     # so a user's ``tts.providers.openai.command`` can't override the real
