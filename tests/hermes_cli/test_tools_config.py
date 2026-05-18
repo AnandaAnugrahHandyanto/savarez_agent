@@ -961,6 +961,7 @@ def test_discord_toolsets_in_configurable_toolsets():
 def test_discord_toolsets_in_default_off():
     assert "discord" in _DEFAULT_OFF_TOOLSETS
     assert "discord_admin" in _DEFAULT_OFF_TOOLSETS
+    assert "computer_use" in _DEFAULT_OFF_TOOLSETS
 
 
 def test_discord_toolsets_not_available_on_other_platforms():
