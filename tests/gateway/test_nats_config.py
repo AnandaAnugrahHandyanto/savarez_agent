@@ -20,17 +20,58 @@ from gateway.config import (
     PlatformConfig,
     _apply_env_overrides,
 )
-from gateway.platforms.nats import (
-    DEFAULT_ACK_KEEPALIVE_INTERVAL_S,
-    DEFAULT_AGENT,
-    DEFAULT_ATTACHMENTS_OK,
-    DEFAULT_HEARTBEAT_INTERVAL_S,
-    MAX_ACK_KEEPALIVE_INTERVAL_S,
-    NatsAdapter,
-    NatsAdapterSettings,
-    NatsConfigError,
-    check_nats_requirements,
-)
+from tests.gateway._nats_sdk_mock import _ensure_synadia_agents_mock  # noqa: F401
+from tests.gateway._plugin_adapter_loader import load_plugin_adapter
+
+_nats_mod = load_plugin_adapter("nats")
+DEFAULT_ACK_KEEPALIVE_INTERVAL_S = _nats_mod.DEFAULT_ACK_KEEPALIVE_INTERVAL_S
+DEFAULT_AGENT = _nats_mod.DEFAULT_AGENT
+DEFAULT_ATTACHMENTS_OK = _nats_mod.DEFAULT_ATTACHMENTS_OK
+DEFAULT_HEARTBEAT_INTERVAL_S = _nats_mod.DEFAULT_HEARTBEAT_INTERVAL_S
+MAX_ACK_KEEPALIVE_INTERVAL_S = _nats_mod.MAX_ACK_KEEPALIVE_INTERVAL_S
+NatsAdapter = _nats_mod.NatsAdapter
+NatsAdapterSettings = _nats_mod.NatsAdapterSettings
+NatsConfigError = _nats_mod.NatsConfigError
+check_nats_requirements = _nats_mod.check_nats_requirements
+
+# TestNatsConnectedGate exercises GatewayConfig.get_connected_platforms(),
+# which routes "nats" through gateway.platform_registry. Under xdist the
+# registry may be empty in a worker that hasn't yet touched any code that
+# triggers plugin discovery (e.g. _apply_env_overrides). Register the
+# plugin directly so these tests are order-independent across workers.
+from gateway.platform_registry import PlatformEntry, platform_registry  # noqa: E402
+
+if not platform_registry.is_registered("nats"):
+    class _RegistrationCtx:
+        def register_platform(self, **kwargs):
+            platform_registry.register(PlatformEntry(**kwargs))
+
+    _ctx = _RegistrationCtx()
+    try:
+        _nats_mod.register(_ctx)
+    except TypeError:
+        # Older upstream PlatformEntry rejects ``transport_authed=True`` —
+        # the plugin's register() already retries without it, but guard
+        # the outer call anyway.
+        pass
+
+
+@pytest.fixture(autouse=True)
+def _isolate_nats_env(monkeypatch):
+    """Blank NATS_* env vars per-test.
+
+    The plugin's ``validate_config`` / ``is_connected`` read NATS_URL,
+    NATS_CONTEXT, HERMES_NATS_OWNER, and HERMES_NATS_SESSION_NAME from
+    ``os.environ`` as a config fallback. Without this fixture, developer
+    machines with a populated NATS context (the common case for anyone
+    using ``hermes setup nats``) see XOR validation fail against the
+    test's in-extra ``servers`` configuration. tests/conftest.py's
+    ``_hermetic_environment`` blanks credential-shaped vars but not
+    NATS_*, and scripts/run_tests.sh's unset list also omits them.
+    """
+    for name in ("NATS_URL", "NATS_CONTEXT", "HERMES_NATS_AGENT",
+                 "HERMES_NATS_OWNER", "HERMES_NATS_SESSION_NAME"):
+        monkeypatch.delenv(name, raising=False)
 
 
 # ---------------------------------------------------------------------------
@@ -426,8 +467,8 @@ class TestNatsEnvOverrides:
         with patch.dict(os.environ, self._nats_env(NATS_URL="nats://127.0.0.1:4222"), clear=True):
             _apply_env_overrides(config)
 
-        assert Platform.NATS in config.platforms
-        platform_cfg = config.platforms[Platform.NATS]
+        assert Platform("nats") in config.platforms
+        platform_cfg = config.platforms[Platform("nats")]
         assert platform_cfg.enabled is True
         assert platform_cfg.extra["servers"] == ["nats://127.0.0.1:4222"]
 
@@ -436,7 +477,7 @@ class TestNatsEnvOverrides:
         with patch.dict(os.environ, self._nats_env(NATS_CONTEXT="local-nats"), clear=True):
             _apply_env_overrides(config)
 
-        platform_cfg = config.platforms[Platform.NATS]
+        platform_cfg = config.platforms[Platform("nats")]
         assert platform_cfg.enabled is True
         assert platform_cfg.extra["context"] == "local-nats"
         assert "servers" not in platform_cfg.extra
@@ -452,7 +493,7 @@ class TestNatsEnvOverrides:
         with patch.dict(os.environ, env, clear=True):
             _apply_env_overrides(config)
 
-        extra = config.platforms[Platform.NATS].extra
+        extra = config.platforms[Platform("nats")].extra
         assert extra["agent"] == "hermes"
         assert extra["owner"] == "rene"
         assert extra["session_name"] == "default"
@@ -465,14 +506,14 @@ class TestNatsEnvOverrides:
         with patch.dict(os.environ, self._nats_env(HERMES_NATS_OWNER="rene"), clear=True):
             _apply_env_overrides(config)
 
-        assert config.platforms[Platform.NATS].enabled is True
-        assert Platform.NATS not in config.get_connected_platforms()
+        assert config.platforms[Platform("nats")].enabled is True
+        assert Platform("nats") not in config.get_connected_platforms()
 
     def test_no_env_vars_leaves_platform_absent(self):
         config = GatewayConfig()
         with patch.dict(os.environ, {}, clear=True):
             _apply_env_overrides(config)
-        assert Platform.NATS not in config.platforms
+        assert Platform("nats") not in config.platforms
 
 
 # ---------------------------------------------------------------------------
@@ -484,46 +525,46 @@ class TestNatsConnectedGate:
     def test_enabled_with_servers_is_connected(self):
         config = GatewayConfig(
             platforms={
-                Platform.NATS: PlatformConfig(
+                Platform("nats"): PlatformConfig(
                     enabled=True,
                     extra={"servers": ["nats://x:4222"], "owner": "rene", "session_name": "default"},
                 )
             }
         )
-        assert Platform.NATS in config.get_connected_platforms()
+        assert Platform("nats") in config.get_connected_platforms()
 
     def test_enabled_with_context_is_connected(self):
         config = GatewayConfig(
             platforms={
-                Platform.NATS: PlatformConfig(
+                Platform("nats"): PlatformConfig(
                     enabled=True,
                     extra={"context": "local-nats", "owner": "rene", "session_name": "default"},
                 )
             }
         )
-        assert Platform.NATS in config.get_connected_platforms()
+        assert Platform("nats") in config.get_connected_platforms()
 
     def test_enabled_without_transport_is_not_connected(self):
         config = GatewayConfig(
             platforms={
-                Platform.NATS: PlatformConfig(
+                Platform("nats"): PlatformConfig(
                     enabled=True,
                     extra={"owner": "rene", "session_name": "default"},
                 )
             }
         )
-        assert Platform.NATS not in config.get_connected_platforms()
+        assert Platform("nats") not in config.get_connected_platforms()
 
     def test_disabled_with_servers_is_not_connected(self):
         config = GatewayConfig(
             platforms={
-                Platform.NATS: PlatformConfig(
+                Platform("nats"): PlatformConfig(
                     enabled=False,
                     extra={"servers": ["nats://x:4222"], "owner": "rene", "session_name": "default"},
                 )
             }
         )
-        assert Platform.NATS not in config.get_connected_platforms()
+        assert Platform("nats") not in config.get_connected_platforms()
 
 
 # ---------------------------------------------------------------------------

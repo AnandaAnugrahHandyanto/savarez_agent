@@ -30,15 +30,37 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from gateway.config import PlatformConfig
-from gateway.platforms import base as base_mod
-from gateway.platforms.base import (
-    BasePlatformAdapter,
-    _format_approval_prompt,
-    _parse_approval_reply,
-    adapter_supports_request_interaction,
-    dispatch_approval_via_request_interaction,
-)
-from gateway.platforms.nats import NatsAdapter
+from gateway.platforms.base import BasePlatformAdapter
+
+# Approval helpers live in the plugin's vendored ``_approval.py`` post-Stage-3
+# (the Core PR re-adds them to gateway/platforms/base in a later stage). Load
+# them by absolute path so the resilience-clone run works regardless of
+# whether ``plugins.platforms.nats`` is importable as a package on PYTHONPATH.
+import importlib.util
+from pathlib import Path
+
+from tests.gateway._nats_sdk_mock import _ensure_synadia_agents_mock  # noqa: F401
+from tests.gateway._plugin_adapter_loader import load_plugin_adapter
+
+_nats_adapter = load_plugin_adapter("nats")
+_helper_path = Path(_nats_adapter.__file__).parent / "_approval.py"
+_spec = importlib.util.spec_from_file_location("plugin_adapter_nats_approval", _helper_path)
+_approval = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_approval)
+
+_format_approval_prompt = _approval._format_approval_prompt
+_parse_approval_reply = _approval._parse_approval_reply
+adapter_supports_request_interaction = _approval.adapter_supports_request_interaction
+dispatch_approval_via_request_interaction = _approval.dispatch_approval_via_request_interaction
+
+NatsAdapter = _nats_adapter.NatsAdapter
+
+# Some tests below pin Core-PR-only behavior (per-entry ``entry_id`` routing
+# in tools.approval). Detect the Core-PR-present case by probing for the
+# ``_current_approval_entry_id`` ContextVar that the Core PR adds. Stage 4
+# runs on stock upstream where this symbol is absent — skip those tests.
+import tools.approval as _approval_mod
+_HAS_CORE_PR_ENTRY_ID = hasattr(_approval_mod, "_current_approval_entry_id")
 
 
 # ---------------------------------------------------------------------------
@@ -231,7 +253,7 @@ class TestRequestInteraction:
         # Register dict_stream under "alice" — but contextvar should win.
         adapter._active_streams[("alice", id(dict_stream))] = dict_stream
 
-        import gateway.platforms.nats as nats_mod
+        nats_mod = _nats_adapter
         token = nats_mod._current_stream.set(ctx_stream)
         try:
             reply = await adapter.request_interaction(
@@ -472,9 +494,7 @@ class TestGatewayApprovalIntegration:
         adapter = _build_adapter()
         # No stream registered → dispatch will still return True (adapter
         # supports the hook), but we simulate scheduling failure by
-        # monkeypatching run_coroutine_threadsafe in the base helper.
-        import gateway.platforms.base as base_mod
-
+        # monkeypatching run_coroutine_threadsafe in the vendored helper.
         def _raise_scheduling_error(coro, _loop):
             # Close the coroutine explicitly so the test doesn't leak an
             # un-awaited coroutine warning via the GC (the real
@@ -486,7 +506,7 @@ class TestGatewayApprovalIntegration:
             raise RuntimeError("loop is closed")
 
         monkeypatch.setattr(
-            base_mod.asyncio,
+            _approval.asyncio,
             "run_coroutine_threadsafe",
             _raise_scheduling_error,
         )
@@ -505,7 +525,7 @@ class TestGatewayApprovalIntegration:
 
         def _notify(approval_data):
             try:
-                dispatched = base_mod.dispatch_approval_via_request_interaction(
+                dispatched = dispatch_approval_via_request_interaction(
                     adapter, "alice", session_key, approval_data, loop,
                     timeout=5.0,
                 )
@@ -584,6 +604,10 @@ class TestParallelSubagentApprovalRouting:
     and threads it through the scheduled coroutine's closure.
     """
 
+    @pytest.mark.skipif(
+        not _HAS_CORE_PR_ENTRY_ID,
+        reason="Requires Core PR's tools.approval._current_approval_entry_id / _ApprovalEntry.id",
+    )
     @pytest.mark.asyncio
     async def test_out_of_order_replies_resolve_correct_entries(
         self, monkeypatch
@@ -618,7 +642,7 @@ class TestParallelSubagentApprovalRouting:
             # Manually arrange the stream the adapter will resolve. Since
             # _current_stream contextvar is what NatsAdapter.request_interaction
             # prefers, wire it to stream_a explicitly.
-            import gateway.platforms.nats as nats_mod
+            nats_mod = _nats_adapter
             ctx_token_a = nats_mod._current_stream.set(stream_a)
             try:
                 scheduled_a = dispatch_approval_via_request_interaction(
@@ -636,7 +660,7 @@ class TestParallelSubagentApprovalRouting:
         # Dispatch for entry B — reference streamB.
         token_b = _current_approval_entry_id.set(entry_b.id)
         try:
-            import gateway.platforms.nats as nats_mod
+            nats_mod = _nats_adapter
             ctx_token_b = nats_mod._current_stream.set(stream_b)
             try:
                 scheduled_b = dispatch_approval_via_request_interaction(
@@ -725,16 +749,11 @@ class TestParallelSubagentApprovalRouting:
 
 
 class TestModuleSurface:
-    def test_base_exports_helpers(self):
-        # Guards against a rename silently breaking run.py's import.
-        assert hasattr(base_mod, "dispatch_approval_via_request_interaction")
-        assert hasattr(base_mod, "adapter_supports_request_interaction")
-        assert hasattr(base_mod, "_parse_approval_reply")
-        assert hasattr(base_mod, "_format_approval_prompt")
-
-    def test_base_adapter_default_raises(self):
-        # Default must raise so the capability check's identity comparison
-        # accurately distinguishes overriders from non-overriders.
-        import inspect
-        src = inspect.getsource(BasePlatformAdapter.request_interaction)
-        assert "NotImplementedError" in src
+    def test_plugin_approval_exports_helpers(self):
+        # Guards against a rename silently breaking the plugin's vendored
+        # approval helpers (post-Stage-3 these live in the plugin's
+        # _approval.py rather than in gateway/platforms/base).
+        assert hasattr(_approval, "dispatch_approval_via_request_interaction")
+        assert hasattr(_approval, "adapter_supports_request_interaction")
+        assert hasattr(_approval, "_parse_approval_reply")
+        assert hasattr(_approval, "_format_approval_prompt")

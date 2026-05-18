@@ -32,7 +32,11 @@ from unittest.mock import AsyncMock, MagicMock, call
 import pytest
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.nats import NatsAdapter
+from tests.gateway._nats_sdk_mock import _ensure_synadia_agents_mock  # noqa: F401
+from tests.gateway._plugin_adapter_loader import load_plugin_adapter
+
+_nats_mod = load_plugin_adapter("nats")
+NatsAdapter = _nats_mod.NatsAdapter
 
 
 # ---------------------------------------------------------------------------
@@ -629,4 +633,35 @@ class TestDisconnect:
 class TestPlatformIdentity:
     def test_adapter_reports_nats_platform(self, mock_synadia_agents, lock_granted):
         adapter = _build_adapter()
-        assert adapter.platform is Platform.NATS
+        assert adapter.platform is Platform("nats")
+
+
+# ---------------------------------------------------------------------------
+# SDK-unavailable branch — pins the ``SYNADIA_AGENTS_AVAILABLE = False`` path.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_connect_short_circuits_when_sdk_unavailable(monkeypatch, lock_granted):
+    """connect() short-circuits cleanly when the SDK isn't importable.
+
+    Forces the ``SYNADIA_AGENTS_AVAILABLE = False`` branch (otherwise
+    dead under test since the conftest planter always installs a mock
+    SDK) and asserts the adapter records a non-retryable fatal error,
+    returns False, and never touches nats.connect.
+    """
+    adapter = _build_adapter()
+    # Flip the in-module flag + zero out the SDK handles. This mirrors the
+    # ImportError fallback at adapter.py top so the ``not SYNADIA_AGENTS_AVAILABLE``
+    # gate at adapter.py:517 fires.
+    monkeypatch.setattr(_nats_mod, "SYNADIA_AGENTS_AVAILABLE", False)
+    monkeypatch.setattr(_nats_mod, "sdk", None)
+    monkeypatch.setattr(_nats_mod, "sdk_svc", None)
+    monkeypatch.setattr(_nats_mod, "nats", None)
+
+    result = await adapter.connect()
+
+    assert result is False
+    assert adapter.has_fatal_error is True
+    assert adapter.fatal_error_retryable is False
+    assert adapter.is_connected is False

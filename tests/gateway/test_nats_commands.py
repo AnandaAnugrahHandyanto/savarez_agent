@@ -32,7 +32,11 @@ import pytest
 
 from gateway.config import PlatformConfig
 from gateway.platforms.base import MessageEvent, MessageType
-from gateway.platforms.nats import NatsAdapter
+from tests.gateway._nats_sdk_mock import _ensure_synadia_agents_mock  # noqa: F401
+from tests.gateway._plugin_adapter_loader import load_plugin_adapter
+
+_nats_mod = load_plugin_adapter("nats")
+NatsAdapter = _nats_mod.NatsAdapter
 from hermes_cli.commands import (
     COMMAND_REGISTRY,
     GATEWAY_KNOWN_COMMANDS,
@@ -162,7 +166,7 @@ async def _real_help_body() -> str:
         text="/help",
         message_type=MessageType.COMMAND,
         source=SessionSource(
-            platform=Platform.NATS,
+            platform=Platform("nats"),
             user_id="alice",
             chat_id="alice",
             user_name="alice",

@@ -35,10 +35,12 @@ import pytest
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import MessageEvent, MessageType, SendResult
-from gateway.platforms.nats import (
-    NatsAdapter,
-    _final_response_text,
-)
+from tests.gateway._nats_sdk_mock import _ensure_synadia_agents_mock  # noqa: F401
+from tests.gateway._plugin_adapter_loader import load_plugin_adapter
+
+_nats_mod = load_plugin_adapter("nats")
+NatsAdapter = _nats_mod.NatsAdapter
+_final_response_text = _nats_mod._final_response_text
 
 
 # ---------------------------------------------------------------------------
@@ -131,7 +133,7 @@ class TestUnpackEnvelope:
         # cache_image_from_bytes validates magic bytes — mock it out to
         # avoid dragging image-validation concerns into the inbound test.
         monkeypatch.setattr(
-            "gateway.platforms.nats.cache_image_from_bytes",
+            "plugin_adapter_nats.cache_image_from_bytes",
             lambda data, ext=".jpg": f"/cache/img{ext}",
         )
         envelope = MagicMock()
@@ -147,7 +149,7 @@ class TestUnpackEnvelope:
     def test_document_attachment_routes_to_document(self, monkeypatch):
         adapter = _build_adapter()
         monkeypatch.setattr(
-            "gateway.platforms.nats.cache_document_from_bytes",
+            "plugin_adapter_nats.cache_document_from_bytes",
             lambda data, filename: f"/cache/{filename}",
         )
         envelope = MagicMock()
@@ -162,7 +164,7 @@ class TestUnpackEnvelope:
     def test_audio_extension_routes_to_audio(self, monkeypatch):
         adapter = _build_adapter()
         monkeypatch.setattr(
-            "gateway.platforms.nats.cache_audio_from_bytes",
+            "plugin_adapter_nats.cache_audio_from_bytes",
             lambda data, ext=".ogg": f"/cache/audio{ext}",
         )
         envelope = MagicMock()
@@ -177,7 +179,7 @@ class TestUnpackEnvelope:
     def test_video_extension_routes_to_video(self, monkeypatch):
         adapter = _build_adapter()
         monkeypatch.setattr(
-            "gateway.platforms.nats.cache_video_from_bytes",
+            "plugin_adapter_nats.cache_video_from_bytes",
             lambda data, ext=".mp4": f"/cache/video{ext}",
         )
         envelope = MagicMock()
@@ -195,11 +197,11 @@ class TestUnpackEnvelope:
         # vs. document reader) hooks off of.
         adapter = _build_adapter()
         monkeypatch.setattr(
-            "gateway.platforms.nats.cache_image_from_bytes",
+            "plugin_adapter_nats.cache_image_from_bytes",
             lambda data, ext=".jpg": f"/cache/img{ext}",
         )
         monkeypatch.setattr(
-            "gateway.platforms.nats.cache_document_from_bytes",
+            "plugin_adapter_nats.cache_document_from_bytes",
             lambda data, filename: f"/cache/{filename}",
         )
         envelope = MagicMock()
@@ -236,7 +238,7 @@ class TestUnpackEnvelope:
         def _fake_cache(data, ext=".jpg"):
             raise ValueError("Refusing to cache non-image data")
         monkeypatch.setattr(
-            "gateway.platforms.nats.cache_image_from_bytes",
+            "plugin_adapter_nats.cache_image_from_bytes",
             _fake_cache,
         )
 
@@ -746,7 +748,7 @@ class TestOnPromptIntegration:
         assert isinstance(event, MessageEvent)
         assert event.text == "hello agent"
         assert event.source.chat_id == "alice"
-        assert event.source.platform is Platform.NATS
+        assert event.source.platform is Platform("nats")
         assert event.source.chat_type == "dm"
         assert passed_stream is stream
         assert chat_id == "alice"

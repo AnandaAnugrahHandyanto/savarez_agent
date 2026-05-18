@@ -100,11 +100,27 @@ def test_whatsapp_lid_user_matches_phone_allowlist_via_session_mapping(monkeypat
     assert runner._is_user_authorized(source) is True
 
 
+def _nats_transport_auth_bypass_present() -> bool:
+    """True iff gateway/run.py's ``_is_user_authorized`` recognises NATS as a
+    transport-authenticated platform. The Core PR adds this; Stage 3
+    reverted it. Detected by inspecting the function source for the
+    NATS / transport_authed wiring rather than calling the function
+    (which depends on test setup state)."""
+    import inspect
+    from gateway.run import GatewayRunner
+    src = inspect.getsource(GatewayRunner._is_user_authorized)
+    return 'Platform("nats")' in src or "Platform.NATS" in src or "transport_authed" in src
+
+
+@pytest.mark.skipif(
+    not _nats_transport_auth_bypass_present(),
+    reason="Requires Core PR hook in _is_user_authorized that recognises NATS as transport-authenticated (HomeAssistant/Webhook-style bypass). Stage 3 reverted this; re-enables when Core PR lands.",
+)
 def test_nats_is_authorized_without_user_allowlist(monkeypatch):
     """NATS authenticates at the server/account layer (NKey / JWT / TLS)
     — design doc §10.1. The gateway's user allowlist doesn't apply to the
     envelope ``session`` value we use as user_id, so ``_is_user_authorized``
-    must return True unconditionally for Platform.NATS, the same way it does
+    must return True unconditionally for Platform("nats"), the same way it does
     for HomeAssistant (HASS_TOKEN) and Webhook (HMAC). Without this, every
     ``/help`` over NATS replies with a pairing code instead of the help
     text because the caller's session string isn't in any allowlist.
@@ -112,12 +128,12 @@ def test_nats_is_authorized_without_user_allowlist(monkeypatch):
     _clear_auth_env(monkeypatch)
 
     runner, _adapter = _make_runner(
-        Platform.NATS,
-        GatewayConfig(platforms={Platform.NATS: PlatformConfig(enabled=True)}),
+        Platform("nats"),
+        GatewayConfig(platforms={Platform("nats"): PlatformConfig(enabled=True)}),
     )
 
     source = SessionSource(
-        platform=Platform.NATS,
+        platform=Platform("nats"),
         user_id="alice-session",
         chat_id="alice-session",
         user_name="alice-session",

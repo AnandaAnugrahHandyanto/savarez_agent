@@ -1,9 +1,21 @@
 """Tests for NATS profile-lock collision detection in the setup wizard."""
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
-from hermes_cli import setup as setup_mod
+# Post-Stage-3 ``hermes_cli.setup._find_nats_profile_collisions`` is gone —
+# the function moved into the NATS plugin. Load it via the same plugin-adapter
+# loader the other Stage-4 test rewrites use, and re-expose it under the
+# original ``setup_mod._find_nats_profile_collisions`` name so the 14 call
+# sites below stay byte-identical.
+from tests.gateway._nats_sdk_mock import _ensure_synadia_agents_mock  # noqa: F401
+from tests.gateway._plugin_adapter_loader import load_plugin_adapter
+
+_nats_mod = load_plugin_adapter("nats")
+setup_mod = SimpleNamespace(
+    _find_nats_profile_collisions=_nats_mod._find_nats_profile_collisions,
+)
 
 
 @pytest.fixture()

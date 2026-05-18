@@ -33,7 +33,12 @@ import pytest
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import SendResult
-from gateway.platforms.nats import NatsAdapter, _current_stream
+from tests.gateway._nats_sdk_mock import _ensure_synadia_agents_mock  # noqa: F401
+from tests.gateway._plugin_adapter_loader import load_plugin_adapter
+
+_nats_mod = load_plugin_adapter("nats")
+NatsAdapter = _nats_mod.NatsAdapter
+_current_stream = _nats_mod._current_stream
 
 
 # ---------------------------------------------------------------------------

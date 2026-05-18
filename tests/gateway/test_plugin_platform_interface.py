@@ -14,7 +14,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-PROJECT_ROOT = Path(__file__).parent.parent.resolve()
+PROJECT_ROOT = Path(__file__).parent.parent.parent.resolve()
 PLATFORMS_DIR = PROJECT_ROOT / "plugins" / "platforms"
 
 
