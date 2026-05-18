@@ -59,6 +59,6 @@ LABEL \
     io.hass.description="The self-improving AI agent by Nous Research" \
     io.hass.arch="${BUILD_ARCH}" \
     io.hass.type="app" \
-    io.hass.version="0.15.2"
+    io.hass.version="0.15.3"
 
 CMD [ "/run.sh" ]

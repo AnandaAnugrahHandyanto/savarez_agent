@@ -1,8 +1,8 @@
 name: "Hermes Agent"
-version: "0.15.2"
+version: "0.15.3"
 slug: "hermes"
 description: "The self-improving AI agent by Nous Research"
-url: "https://github.com/NousResearch/hermes-agent"
+url: "https://github.com/thcuba/HAOS-hermes-agent"
 arch:
   - aarch64
   - amd64

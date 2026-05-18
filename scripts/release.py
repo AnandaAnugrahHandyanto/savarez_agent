@@ -1268,6 +1268,14 @@ def update_version_files(semver: str, calver_date: str):
             content,
             flags=re.MULTILINE,
         )
+        # Update URL to match current origin
+        repo_url = get_repo_url()
+        content = re.sub(
+            r'^url\s*:\s*"[^"]+"',
+            f'url: "{repo_url}"',
+            content,
+            flags=re.MULTILINE,
+        )
         HASSIO_CONFIG.write_text(content)
 
     # Update HASSIO Dockerfile
@@ -1698,8 +1706,10 @@ def main():
                 add_files.append(str(HASSIO_DOCKERFILE))
             if HASSIO_BUILD_YAML.exists():
                 add_files.append(str(HASSIO_BUILD_YAML))
-            # Add all RELEASE_v*.md (should only be one now, and we want to stage the deletion of old ones)
-            add_result = git_result("add", *add_files, "RELEASE_v*.md")
+
+            # Expand RELEASE_v*.md glob for git add (needed when shell expansion isn't available)
+            release_notes_glob = [str(f) for f in REPO_ROOT.glob("RELEASE_v*.md")]
+            add_result = git_result("add", *add_files, *release_notes_glob)
             if add_result.returncode != 0:
                 print(f"  ✗ Failed to stage version files: {add_result.stderr.strip()}")
                 return
