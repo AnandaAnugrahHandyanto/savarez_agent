@@ -158,8 +158,8 @@ _INJECTION_PATTERNS: list = [
     "shutil.rmtree(",
     "os.environ['ld_preload",
     "os.environ['pythonpath",
-    " os.setuid(",
-    " os.setgid(",
+    "os.setuid(",
+    "os.setgid(",
 ]
 
 
