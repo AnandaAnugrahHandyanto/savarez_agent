@@ -384,9 +384,10 @@ class TestBackendSelection:
             assert _get_backend() == "firecrawl"
 
     def test_fallback_no_keys_defaults_to_firecrawl(self):
-        """No keys, no config → 'firecrawl' (will fail at client init)."""
+        """No keys, no config → 'firecrawl' when no optional free backend is installed."""
         from tools.web_tools import _get_backend
-        with patch("tools.web_tools._load_web_config", return_value={}):
+        with patch("tools.web_tools._load_web_config", return_value={}), \
+             patch("tools.web_tools._ddgs_package_importable", return_value=False):
             assert _get_backend() == "firecrawl"
 
     def test_invalid_config_falls_through_to_fallback(self):
@@ -508,6 +509,90 @@ class TestWebSearchSchema:
         assert result == {"success": True, "data": {"web": []}}
         fake_search.assert_called_once_with("docs", 100)
 
+    def test_get_search_fallback_backends_normalizes_list_and_dedupes(self):
+        import tools.web_tools
+
+        with patch("tools.web_tools._load_web_config", return_value={
+            "search_fallbacks": ["ddgs", "tavily", "ddgs", "bad-backend", "  brave-free  "]
+        }):
+            result = tools.web_tools._get_search_fallback_backends("ddgs")
+
+        assert result == ["tavily", "brave-free"]
+
+    def test_web_search_uses_configured_fallback_when_primary_returns_failure(self):
+        import tools.web_tools
+
+        primary_provider = MagicMock(name="DDGSWebSearchProvider")
+        primary_provider.name = "ddgs"
+        primary_provider.supports_search.return_value = True
+        primary_provider.search.return_value = {"success": False, "error": "rate limited"}
+
+        fallback_provider = MagicMock(name="TavilyWebSearchProvider")
+        fallback_provider.name = "tavily"
+        fallback_provider.supports_search.return_value = True
+        fallback_provider.search.return_value = {
+            "success": True,
+            "data": {"web": [{"title": "OpenAI", "url": "https://openai.com", "description": "", "position": 1}]},
+        }
+
+        providers = {"ddgs": primary_provider, "tavily": fallback_provider}
+
+        with patch("tools.web_tools._get_search_backend", return_value="ddgs"), \
+             patch("tools.web_tools._get_search_fallback_backends", return_value=["tavily"]), \
+             patch("agent.web_search_registry.get_provider", side_effect=lambda name: providers.get(name)), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch.object(tools.web_tools._debug, "log_call"), \
+             patch.object(tools.web_tools._debug, "save"):
+            result = json.loads(tools.web_tools.web_search_tool("docs", limit=5))
+
+        assert result["success"] is True
+        assert result["data"]["web"][0]["url"] == "https://openai.com"
+        primary_provider.search.assert_called_once_with("docs", 5)
+        fallback_provider.search.assert_called_once_with("docs", 5)
+
+    def test_web_search_uses_brave_free_as_explicit_fallback_after_ddgs_failure(self):
+        import tools.web_tools
+
+        primary_provider = MagicMock(name="DDGSWebSearchProvider")
+        primary_provider.name = "ddgs"
+        primary_provider.supports_search.return_value = True
+        primary_provider.search.return_value = {
+            "success": False,
+            "error": "forced ddgs failure for brave fallback",
+        }
+
+        fallback_provider = MagicMock(name="BraveFreeWebSearchProvider")
+        fallback_provider.name = "brave-free"
+        fallback_provider.supports_search.return_value = True
+        fallback_provider.search.return_value = {
+            "success": True,
+            "data": {
+                "web": [
+                    {
+                        "title": "OpenAI | Research & Deployment",
+                        "url": "https://openai.com/",
+                        "description": "",
+                        "position": 1,
+                    }
+                ]
+            },
+        }
+
+        providers = {"ddgs": primary_provider, "brave-free": fallback_provider}
+
+        with patch("tools.web_tools._get_search_backend", return_value="ddgs"), \
+             patch("tools.web_tools._get_search_fallback_backends", return_value=["brave-free", "tavily"]), \
+             patch("agent.web_search_registry.get_provider", side_effect=lambda name: providers.get(name)), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch.object(tools.web_tools._debug, "log_call"), \
+             patch.object(tools.web_tools._debug, "save"):
+            result = json.loads(tools.web_tools.web_search_tool("OpenAI official website", limit=3))
+
+        assert result["success"] is True
+        assert result["data"]["web"][0]["url"] == "https://openai.com/"
+        primary_provider.search.assert_called_once_with("OpenAI official website", 3)
+        fallback_provider.search.assert_called_once_with("OpenAI official website", 3)
+
 
 class TestWebSearchErrorHandling:
     """Test suite for web_search_tool() error responses."""
@@ -602,8 +687,9 @@ class TestCheckWebApiKey:
             assert check_web_api_key() is True
 
     def test_no_keys_returns_false(self):
-        from tools.web_tools import check_web_api_key
-        assert check_web_api_key() is False
+        with patch("tools.web_tools._ddgs_package_importable", return_value=False):
+            from tools.web_tools import check_web_api_key
+            assert check_web_api_key() is False
 
     def test_both_keys_returns_true(self):
         with patch.dict(os.environ, {
