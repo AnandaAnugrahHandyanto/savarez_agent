@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import hmac
+import os
 import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -137,6 +138,16 @@ def test_linear_uses_canonical_oauth_token_store_filename():
     adapter = _make_adapter()
 
     assert adapter._tokens_path.name == "linear_oauth_tokens.json"
+
+
+def test_linear_oauth_json_store_uses_owner_only_permissions():
+    adapter = _make_adapter()
+
+    adapter._save_json(adapter._tokens_path, {"app-user-1": {"access_token": "token"}})
+
+    if os.name == "posix":
+        assert adapter._tokens_path.stat().st_mode & 0o777 == 0o600
+        assert adapter._tokens_path.parent.stat().st_mode & 0o777 == 0o700
 
 
 @pytest.mark.asyncio
