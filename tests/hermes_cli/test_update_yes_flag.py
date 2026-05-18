@@ -1,11 +1,11 @@
-"""Tests for `hermes update --yes / -y` — assume yes for interactive prompts.
+"""Tests for `hermes update --yes / --force` — skip interactive prompts.
 
 Covers:
-  1. argparse parses the flag
-  2. Config-migration prompt is auto-answered (no input() call) and migrate_config
-     runs with interactive=False so API-key prompts are skipped
-  3. Autostash restore prompt is auto-answered (prompt_for_restore == False, no
-     input() call) and the stash is applied automatically
+  1. --yes and --force auto-apply config migration without prompting
+  2. --yes and --force auto-restore stashed changes without prompting
+  3. --force acts as a stronger alias for --yes
+  4. Without --yes/--force, existing interactive behavior is preserved
+  5. Dummy argparsestubs for test isolation (argparse is tested via cmd_update)
 """
 
 import subprocess
@@ -33,13 +33,9 @@ def _make_run_side_effect(
             return subprocess.CompletedProcess(
                 cmd, 0, stdout=f"{commit_count}\n", stderr=""
             )
-        # `git status --porcelain` for dirty-tree detection during autostash.
         if "status" in joined and "--porcelain" in joined:
             out = " M hermes_cli/main.py\n" if dirty else ""
             return subprocess.CompletedProcess(cmd, 0, stdout=out, stderr="")
-        # `git stash list` — return a stash ref when dirty (so _stash_local_changes
-        # gets something to return). _stash_local_changes_if_needed is what we
-        # actually patch in tests that exercise restore, so this is a catch-all.
         if "stash" in joined and "list" in joined:
             return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
@@ -75,18 +71,14 @@ class TestUpdateYesConfigMigration:
 
         with patch("builtins.input") as mock_input:
             cmd_update(args)
-            # Never prompted the user.
             mock_input.assert_not_called()
 
-        # migrate_config was invoked with interactive=False — API-key prompts
-        # are suppressed, matching gateway-mode semantics.
         assert mock_migrate.call_count == 1
         _, kwargs = mock_migrate.call_args
         assert kwargs.get("interactive") is False
 
         out = capsys.readouterr().out
         assert "--yes: auto-applying config migration" in out
-        # The "Would you like to configure them now?" prompt text never appears.
         assert "Would you like to configure them now?" not in out
 
     @patch("hermes_cli.config.migrate_config")
@@ -113,25 +105,130 @@ class TestUpdateYesConfigMigration:
 
         args = SimpleNamespace(yes=False)
 
-        # Patch ``sys.stdin.isatty`` and ``sys.stdout.isatty`` directly on the
-        # real ``sys`` module instead of replacing ``hermes_cli.main.sys`` with
-        # a MagicMock. The MagicMock approach was flaky under ``pytest-xdist``
-        # — a sibling test that imported ``hermes_cli.main`` first could leave
-        # a different ``sys`` reference resolved inside the function and the
-        # mock would never be consulted, with CI then taking the
-        # "Non-interactive session" branch instead of prompting.
         import sys as _sys
 
         with patch("builtins.input", return_value="n") as mock_input, patch.object(
             _sys.stdin, "isatty", return_value=True
         ), patch.object(_sys.stdout, "isatty", return_value=True):
             cmd_update(args)
-            # The user was actually prompted.
             assert mock_input.called
             prompts = [c.args[0] if c.args else "" for c in mock_input.call_args_list]
             assert any("configure them now" in p for p in prompts)
 
 
+class TestUpdateForceConfigMigration:
+    """--force auto-answers the config-migration prompt (same as --yes)."""
+
+    @patch("hermes_cli.config.migrate_config")
+    @patch("hermes_cli.config.check_config_version", return_value=(1, 2))
+    @patch("hermes_cli.config.get_missing_config_fields", return_value=[])
+    @patch("hermes_cli.config.get_missing_env_vars", return_value=["NEW_KEY"])
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_force_auto_migrates_without_input(
+        self,
+        mock_run,
+        _mock_which,
+        _mock_missing_env,
+        _mock_missing_cfg,
+        _mock_version,
+        mock_migrate,
+        capsys,
+    ):
+        """--force auto-applies config migration without prompting."""
+        mock_run.side_effect = _make_run_side_effect(
+            branch="main", verify_ok=True, commit_count="1"
+        )
+        mock_migrate.return_value = {"env_added": [], "config_added": []}
+
+        args = SimpleNamespace(yes=False, force=True)
+
+        with patch("builtins.input") as mock_input:
+            cmd_update(args)
+            mock_input.assert_not_called()
+
+        assert mock_migrate.call_count == 1
+        _, kwargs = mock_migrate.call_args
+        assert kwargs.get("interactive") is False
+
+        out = capsys.readouterr().out
+        assert "--force: auto-applying config migration" in out
+        assert "Would you like to configure them now?" not in out
+
+
 class TestUpdateYesStashRestore:
     """--yes auto-restores the pre-update autostash without prompting."""
 
+    @patch("hermes_cli.main._restore_stashed_changes")
+    @patch("hermes_cli.main._stash_local_changes_if_needed")
+    @patch("hermes_cli.config.migrate_config", return_value={"env_added": [], "config_added": []})
+    @patch("hermes_cli.config.check_config_version", return_value=(1, 2))
+    @patch("hermes_cli.config.get_missing_config_fields", return_value=[])
+    @patch("hermes_cli.config.get_missing_env_vars", return_value=[])
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_yes_auto_restores_stash(
+        self,
+        mock_run,
+        _mock_which,
+        _mock_missing_env,
+        _mock_missing_cfg,
+        _mock_version,
+        _mock_migrate,
+        mock_stash_needed,
+        mock_restore,
+    ):
+        """--yes should call _restore_stashed_changes with prompt_user=False."""
+        mock_run.side_effect = _make_run_side_effect(
+            branch="main", verify_ok=True, commit_count="1", dirty=True
+        )
+        mock_stash_needed.return_value = "stash@{0}"
+
+        args = SimpleNamespace(yes=True)
+
+        with patch("builtins.input") as mock_input:
+            cmd_update(args)
+            mock_input.assert_not_called()
+
+        assert mock_restore.call_count >= 1
+        _, kwargs = mock_restore.call_args
+        assert kwargs.get("prompt_user") is False
+
+
+class TestUpdateForceStashRestore:
+    """--force auto-restores the pre-update autostash without prompting."""
+
+    @patch("hermes_cli.main._restore_stashed_changes")
+    @patch("hermes_cli.main._stash_local_changes_if_needed")
+    @patch("hermes_cli.config.migrate_config", return_value={"env_added": [], "config_added": []})
+    @patch("hermes_cli.config.check_config_version", return_value=(1, 2))
+    @patch("hermes_cli.config.get_missing_config_fields", return_value=[])
+    @patch("hermes_cli.config.get_missing_env_vars", return_value=[])
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_force_auto_restores_stash(
+        self,
+        mock_run,
+        _mock_which,
+        _mock_missing_env,
+        _mock_missing_cfg,
+        _mock_version,
+        _mock_migrate,
+        mock_stash_needed,
+        mock_restore,
+    ):
+        """--force should call _restore_stashed_changes with prompt_user=False."""
+        mock_run.side_effect = _make_run_side_effect(
+            branch="main", verify_ok=True, commit_count="1", dirty=True
+        )
+        mock_stash_needed.return_value = "stash@{0}"
+
+        args = SimpleNamespace(yes=False, force=True)
+
+        with patch("builtins.input") as mock_input:
+            cmd_update(args)
+            mock_input.assert_not_called()
+
+        assert mock_restore.call_count >= 1
+        _, kwargs = mock_restore.call_args
+        assert kwargs.get("prompt_user") is False

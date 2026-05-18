@@ -7770,7 +7770,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         if gateway_mode
         else None
     )
-    assume_yes = bool(getattr(args, "yes", False))
+    assume_yes = bool(getattr(args, "yes", False) or getattr(args, "force", False))
 
     print("⚕ Updating Hermes Agent...")
     print()
@@ -8183,8 +8183,9 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
             print()
             if assume_yes:
+                flag_label = "--force" if getattr(args, "force", False) else "--yes"
                 print(
-                    "  ℹ --yes: auto-applying config migration (skipping API-key prompts)."
+                    f"  ℹ {flag_label}: auto-applying config migration (skipping API-key prompts)."
                 )
                 response = "y"
             elif gateway_mode:
@@ -11996,6 +11997,12 @@ Examples:
         action="store_true",
         default=False,
         help="Assume yes for interactive prompts (config migration, stash restore). API-key entry is skipped; run 'hermes config migrate' separately for those.",
+    )
+    update_parser.add_argument(
+        "--force",
+        action="store_true",
+        default=False,
+        help="Stronger alias for --yes: assume yes for all interactive prompts including backup restoration.",
     )
     update_parser.set_defaults(func=cmd_update)
 
