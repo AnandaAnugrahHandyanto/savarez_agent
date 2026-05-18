@@ -3297,14 +3297,19 @@ async def _broadcast_event(channel: str, payload: str) -> None:
     with _event_lock:
         subs = list(_event_channels.get(channel, ()))
 
-    # Send outside the lock so websocket I/O never blocks registry access.
-    for sub in subs:
+    # Send outside the lock over the snapshot copy so websocket I/O never
+    # blocks registry access. Delivery is best-effort: each send is scheduled
+    # independently so a slow subscriber can't stall the publisher.
+    async def _send(sub: WebSocket) -> None:
         try:
             await sub.send_text(payload)
         except Exception:
             # Subscriber went away mid-send; the /api/events finally clause
             # will remove it from the registry on its next iteration.
             pass
+
+    for sub in subs:
+        asyncio.create_task(_send(sub))
 
 
 def _channel_or_close_code(ws: WebSocket) -> Optional[str]:

@@ -2071,7 +2071,7 @@ skip_on_windows = pytest.mark.skipif(
 @skip_on_windows
 class TestPtyWebSocket:
     @pytest.fixture(autouse=True)
-    def _setup(self, monkeypatch, _isolate_hermes_home):
+    def _setup(self, monkeypatch, _isolate_hermes_home, request):
         from starlette.testclient import TestClient
 
         import hermes_cli.web_server as ws
@@ -2080,6 +2080,9 @@ class TestPtyWebSocket:
         # its own fake argv via ``ws._resolve_chat_argv``.
         self.ws_module = ws
         monkeypatch.setattr(ws, "_DASHBOARD_EMBEDDED_CHAT_ENABLED", True)
+        with ws._event_lock:
+            ws._event_channels.clear()
+        request.addfinalizer(lambda: ws._event_channels.clear())
         self.token = ws._SESSION_TOKEN
         self.client = TestClient(ws.app)
 
@@ -2310,6 +2313,7 @@ class TestPtyWebSocket:
 
             with self.client.websocket_connect(pub_path) as pub:
                 pub.send_text('{"type":"tool.start","payload":{"tool_id":"t1"}}')
+                time.sleep(0.1)
                 received = sub.receive_text()
 
         assert "tool.start" in received
