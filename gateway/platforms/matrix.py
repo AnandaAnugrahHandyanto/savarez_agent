@@ -380,6 +380,12 @@ class MatrixAdapter(BasePlatformAdapter):
         self._require_mention: bool = os.getenv(
             "MATRIX_REQUIRE_MENTION", "true"
         ).lower() not in {"false", "0", "no"}
+        self._thread_require_mention: bool = (
+            config.extra.get("thread_require_mention")
+            if isinstance(config.extra.get("thread_require_mention"), bool)
+            else os.getenv("MATRIX_THREAD_REQUIRE_MENTION", "false").lower()
+                 in {"true", "1", "yes"}
+        )
         free_rooms_raw = config.extra.get("free_response_rooms")
         if free_rooms_raw is None:
             free_rooms_raw = os.getenv("MATRIX_FREE_RESPONSE_ROOMS", "")
@@ -1698,6 +1704,20 @@ class MatrixAdapter(BasePlatformAdapter):
                         "(set MATRIX_REQUIRE_MENTION=false to disable)",
                         event_id,
                         room_id,
+                    )
+                    return None
+
+            # Thread-level @mention gating: even in a bot-participated thread,
+            # require @mention when thread_require_mention is enabled.
+            # Prevents infinite reply loops in multi-agent shared rooms
+            # where multiple bots all participate in the same thread.
+            elif self._thread_require_mention and in_bot_thread:
+                if not is_mentioned:
+                    logger.debug(
+                        "Matrix: ignoring message %s in thread %s — "
+                        "no @mention (thread_require_mention=true)",
+                        event_id,
+                        thread_id,
                     )
                     return None
 
