@@ -1302,7 +1302,16 @@ class HermesACPAgent(acp.Agent):
                     clear_session_vars,
                     set_session_vars,
                 )
-                session_tokens = set_session_vars(session_key=session_id)
+                # Extract platform/chat_id from session state for multi-user isolation
+                session_platform = getattr(state, "platform", "") or "cli"
+                session_chat_id = getattr(state, "chat_id", "") or ""
+                session_user_id = getattr(state, "user_id", "") or ""
+                session_tokens = set_session_vars(
+                    platform=session_platform,
+                    chat_id=session_chat_id,
+                    user_id=session_user_id,
+                    session_key=session_id,
+                )
             except Exception:
                 session_tokens = None
                 clear_session_vars = None  # type: ignore[assignment]
@@ -1771,12 +1780,27 @@ class HermesACPAgent(acp.Agent):
     async def set_config_option(
         self, config_id: str, session_id: str, value: str, **kwargs: Any
     ) -> SetSessionConfigOptionResponse | None:
-        """Accept ACP config option updates even when Hermes has no typed ACP config surface yet."""
+        """Accept ACP config option updates to set platform/chat_id for multi-user routing."""
         state = self.session_manager.get_session(session_id)
         if state is None:
             logger.warning("Session %s: config update requested for missing session", session_id)
             return None
 
+        # Handle multi-user isolation config options
+        if config_id in ("chat_id", "platform", "user_id"):
+            if config_id == "chat_id":
+                state.chat_id = str(value)
+                logger.info("Session %s: chat_id set to %s", session_id, value)
+            elif config_id == "platform":
+                state.platform = str(value)
+                logger.info("Session %s: platform set to %s", session_id, value)
+            elif config_id == "user_id":
+                state.user_id = str(value)
+                logger.info("Session %s: user_id set to %s", session_id, value)
+            self.session_manager.save_session(session_id)
+            return SetSessionConfigOptionResponse(config_options=[])
+
+        # Legacy: store arbitrary config options
         options = getattr(state, "config_options", None)
         if not isinstance(options, dict):
             options = {}

@@ -265,12 +265,23 @@ async def _summarize_session(
 _HIDDEN_SESSION_SOURCES = ("tool",)
 
 
+def _get_current_user_id() -> str:
+    """Get the current session's user_id from contextvars, or '' if unavailable."""
+    try:
+        from gateway.session_context import get_session_env
+        return get_session_env("HERMES_SESSION_USER_ID", "")
+    except Exception:
+        return ""
+
+
 def _list_recent_sessions(db, limit: int, current_session_id: str = None) -> str:
     """Return metadata for the most recent sessions (no LLM calls)."""
+    user_id = _get_current_user_id()
     try:
         sessions = db.list_sessions_rich(
             limit=limit + 5,
             exclude_sources=list(_HIDDEN_SESSION_SOURCES),
+            user_id=user_id or None,
             order_by_last_active=True,
         )  # fetch extra to skip current
 
@@ -370,10 +381,12 @@ def session_search(
             role_list = [r.strip() for r in role_filter.split(",") if r.strip()]
 
         # FTS5 search -- get matches ranked by relevance
+        user_id = _get_current_user_id()
         raw_results = db.search_messages(
             query=query,
             role_filter=role_list,
             exclude_sources=list(_HIDDEN_SESSION_SOURCES),
+            user_id=user_id or None,
             limit=50,  # Get more matches to find unique sessions
             offset=0,
         )

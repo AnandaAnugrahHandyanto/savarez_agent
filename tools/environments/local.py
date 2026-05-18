@@ -198,6 +198,24 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
     if _profile_home:
         sanitized["HOME"] = _profile_home
 
+    # Bypass cmux wrapper: use real claude binary, not the hook-injecting wrapper.
+    # cmux.app puts its bin first in PATH and injects SessionStart/Stop hooks
+    # that call back into cmux for UI updates. In non-cmux subprocesses (Hermes
+    # terminal backend, ACP delegate), the socket is either stale or unreachable,
+    # causing claude -p to hang waiting for hooks that can never complete.
+    # Fix: remove cmux bin from PATH, ensure homebrew claude is first.
+    import re as _re
+    _path = sanitized.get("PATH", "")
+    _path = _re.sub(r"/Applications/cmux\.app/Contents/Resources/bin:?", "", _path)
+    if "/opt/homebrew/bin" not in _path:
+        _path = "/opt/homebrew/bin:" + _path
+    sanitized["PATH"] = _path
+
+    # cmux wrapper checks these to decide "am I in a cmux terminal?"
+    # Unset so claude -p passes through to real binary without hook injection.
+    for _key in ("CMUX_SURFACE_ID", "CMUX_SOCKET_PATH", "CMUX_CLAUDE_HOOKS_DISABLED"):
+        sanitized.pop(_key, None)
+
     return sanitized
 
 

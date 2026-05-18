@@ -1825,6 +1825,9 @@ class GatewayRunner:
         If the session override already contains a complete provider bundle
         (provider/api_key/base_url/api_mode), prefer it directly instead of
         resolving fresh global runtime state first.
+
+        Also checks HERMES_OS_MODEL_TIER env var for HermesOS model routing
+        (minimax/blend/baosi -> corresponding provider config).
         """
         resolved_session_key = session_key
         if not resolved_session_key and source is not None:
@@ -1832,6 +1835,25 @@ class GatewayRunner:
                 resolved_session_key = self._session_key_for_source(source)
             except Exception:
                 resolved_session_key = None
+
+        # Check for HermesOS model_tier override (set by HermesOS gateway_hook)
+        model_tier = os.getenv("HERMES_OS_MODEL_TIER")
+        if model_tier:
+            tier_config = self._resolve_model_tier_config(model_tier)
+            if tier_config:
+                logger.info(
+                    "[HermesOS] Model tier override: %s -> model=%s provider=%s",
+                    model_tier, tier_config.get("model"), tier_config.get("provider"),
+                )
+                return tier_config.get("model", "claude-sonnet-4-6"), {
+                    "provider": tier_config.get("provider"),
+                    "api_key": tier_config.get("api_key"),
+                    "base_url": tier_config.get("base_url"),
+                    "api_mode": tier_config.get("api_mode"),
+                    "command": None,
+                    "args": [],
+                    "credential_pool": None,
+                }
 
         model = _resolve_gateway_model(user_config)
         override = self._session_model_overrides.get(resolved_session_key) if resolved_session_key else None
@@ -1894,6 +1916,65 @@ class GatewayRunner:
                 pass
 
         return model, runtime_kwargs
+
+    def _resolve_model_tier_config(self, model_tier: str) -> dict | None:
+        """Resolve provider config for a HermesOS model_tier (minimax/blend/baosi).
+
+        Reads from config.yaml providers section and fallback_providers.
+        Returns dict with model/provider/base_url/api_key/api_mode or None if not found.
+        """
+        try:
+            import yaml
+            cfg_path = _hermes_home / "config.yaml"
+            if not cfg_path.exists():
+                return None
+            with open(cfg_path, encoding="utf-8") as f:
+                cfg = yaml.safe_load(f) or {}
+
+            # First check providers section
+            providers = cfg.get("providers", {})
+            tier_to_key = {
+                # HermesOS Sovereign Logic Tiers → config.yaml provider key
+                "local": "local",       # Ollama qwen3.6:27b → localhost:11434
+                "kilo": "kilocode",      # Kilo free gateway → api.kilo.ai
+                "minimax": "minimax-cn", # MiniMax-M2.7 → api.minimaxi.com
+                "blend": "blend",        # blend → localhost:8000
+                "opus": "opus",          # Claude Opus → Baosi
+                "baosi": "baosi",        # Baosi claude-sonnet-4-6 → api.baosiapi.com
+            }
+            provider_key = tier_to_key.get(model_tier)
+            if provider_key and provider_key in providers:
+                p = providers[provider_key]
+                return {
+                    "model": p.get("model", ""),
+                    "provider": p.get("provider", "custom"),
+                    "base_url": p.get("base_url", ""),
+                    "api_key": p.get("api_key", ""),
+                    "api_mode": p.get("api_mode", "chat_completions"),
+                }
+
+            # Fallback: check fallback_providers for model_tier match
+            fb_list = cfg.get("fallback_providers") or []
+            if not isinstance(fb_list, list):
+                fb_list = [fb_list] if isinstance(fb_list, dict) else []
+            for entry in fb_list:
+                if not isinstance(entry, dict):
+                    continue
+                # Match by model name containing the tier
+                model_name = entry.get("model", "").lower()
+                if model_tier.lower() in model_name or model_tier.lower() in entry.get("provider", "").lower():
+                    return {
+                        "model": entry.get("model", ""),
+                        "provider": entry.get("provider", "custom"),
+                        "base_url": entry.get("base_url", ""),
+                        "api_key": entry.get("api_key", ""),
+                        "api_mode": entry.get("api_mode", "chat_completions"),
+                    }
+
+            return None
+        except Exception as e:
+            logger.debug("[HermesOS] Failed to resolve model tier %s: %s", model_tier, e)
+            return None
 
     def _resolve_turn_agent_config(self, user_message: str, model: str, runtime_kwargs: dict) -> dict:
         """Build the effective model/runtime config for a single turn.
@@ -16968,6 +17049,19 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         # Lower root logger level if needed so DEBUG records can reach the handler
         if _stderr_level < logging.getLogger().level:
             logging.getLogger().setLevel(_stderr_level)
+
+    # Apply Hermes OS gateway patch — injects per-user context into session prompts.
+    # Must happen before GatewayRunner() is instantiated so the hook system and
+    # session-scoped context store are wired up before any message is processed.
+    try:
+        import sys as _sys
+        _patch_src = str(Path.home() / "hermes-os" / "src")
+        if _patch_src not in _sys.path:
+            _sys.path.insert(0, _patch_src)
+        from hermes_os.gateway_patch import apply_patch as _apply_hermes_os_patch
+        _apply_hermes_os_patch()
+    except Exception as _e:
+        print(f"[hermes-os] gateway patch skipped (harmless if hermes-os not installed): {_e}", flush=True)
 
     runner = GatewayRunner(config)
     
