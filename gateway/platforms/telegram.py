@@ -1290,6 +1290,14 @@ class TelegramAdapter(BasePlatformAdapter):
                 filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.VOICE | filters.Document.ALL | filters.Sticker.ALL,
                 self._handle_media_message
             ))
+            # Handle forum topic lifecycle service messages (created/edited/closed)
+            self._app.add_handler(TelegramMessageHandler(
+                filters.StatusUpdate.FORUM_TOPIC_CREATED |
+                filters.StatusUpdate.FORUM_TOPIC_EDITED |
+                filters.StatusUpdate.FORUM_TOPIC_CLOSED |
+                filters.StatusUpdate.FORUM_TOPIC_REOPENED,
+                self._handle_forum_topic_event
+            ))
             # Handle inline keyboard button callbacks (update prompts)
             self._app.add_handler(CallbackQueryHandler(self._handle_callback_query))
             
@@ -3994,6 +4002,28 @@ class TelegramAdapter(BasePlatformAdapter):
         if not self._telegram_guest_mode() and self._message_mentions_bot(message):
             return True
         return self._message_matches_mention_patterns(message)
+
+    async def _handle_forum_topic_event(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Route forum topic lifecycle service messages through the dispatch pipeline.
+
+        The pre_gateway_dispatch plugin hook inspects raw_message.forum_topic_created /
+        .forum_topic_edited / .forum_topic_closed and handles board provisioning.
+        Returning {"action": "skip"} from the hook suppresses any agent response.
+        """
+        if not update.message:
+            return
+        msg = update.message
+        logger.debug(
+            "[telegram] forum_topic_event: update_id=%s created=%s closed=%s edited=%s thread_id=%s user=%s",
+            update.update_id,
+            getattr(msg, 'forum_topic_created', None),
+            getattr(msg, 'forum_topic_closed', None),
+            getattr(msg, 'forum_topic_edited', None),
+            getattr(msg, 'message_thread_id', None),
+            getattr(msg, 'from_user', None),
+        )
+        event = self._build_message_event(msg, MessageType.TEXT, update_id=update.update_id)
+        await self.handle_message(event)
 
     async def _handle_text_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming text messages.
