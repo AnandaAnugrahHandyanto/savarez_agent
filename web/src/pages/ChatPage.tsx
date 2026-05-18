@@ -67,11 +67,15 @@ function generateChannelId(): string {
 function getOrCreateChannelId(resume: string | null): string {
   if (typeof window === "undefined") return generateChannelId();
   const key = `hermes.chat.channel.${resume || "new"}`;
-  const existing = window.sessionStorage.getItem(key);
-  if (existing && /^[A-Za-z0-9._-]{1,128}$/.test(existing)) return existing;
-  const next = generateChannelId();
-  window.sessionStorage.setItem(key, next);
-  return next;
+  try {
+    const existing = window.sessionStorage.getItem(key);
+    if (existing && /^[A-Za-z0-9._-]{1,128}$/.test(existing)) return existing;
+    const next = generateChannelId();
+    window.sessionStorage.setItem(key, next);
+    return next;
+  } catch {
+    return generateChannelId();
+  }
 }
 
 // Colors for the terminal body.  Matches the dashboard's dark teal canvas
@@ -175,12 +179,20 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     const pending = consumeChatRecoveryAfterAuthReload();
     return !resumeParam && pending;
   });
-  const channel = useMemo(() => getOrCreateChannelId(resumeParam), [resumeParam]);
-
-  useEffect(() => {
-    if (!resumeParam) return;
-    rememberChatSessionId(resumeParam);
-  }, [resumeParam]);
+  const [resolvedResume, setResolvedResume] = useState<{
+    source: string | null;
+    target: string | null;
+  }>({ source: null, target: null });
+  const resumeResolutionPending = !!resumeParam && resolvedResume.source !== resumeParam;
+  const activeResumeParam = resumeParam
+    ? resumeResolutionPending
+      ? null
+      : (resolvedResume.target ?? resumeParam)
+    : null;
+  const channel = useMemo(
+    () => getOrCreateChannelId(activeResumeParam),
+    [activeResumeParam],
+  );
 
   useEffect(() => {
     if (!recoveryPending || resumeParam) return;
@@ -226,29 +238,41 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   }, [recoveryPending, resumeParam, searchParams, setSearchParams]);
 
   useEffect(() => {
-    if (!resumeParam) return;
+    if (!resumeParam) {
+      return;
+    }
+
+    if (resolvedResume.source === resumeParam) {
+      return;
+    }
 
     let cancelled = false;
 
     api
       .getSessionLatestDescendant(resumeParam)
       .then((res) => {
-        if (cancelled || !res.session_id || res.session_id === resumeParam) {
-          return;
-        }
+        if (cancelled) return;
+        const target = res.session_id || resumeParam;
+        rememberChatSessionId(target);
+        setResolvedResume({ source: resumeParam, target });
 
-        const next = new URLSearchParams(searchParams);
-        next.set("resume", res.session_id);
-        setSearchParams(next, { replace: true });
+        if (target !== resumeParam) {
+          const next = new URLSearchParams(searchParams);
+          next.set("resume", target);
+          setSearchParams(next, { replace: true });
+        }
       })
       .catch(() => {
+        if (cancelled) return;
         // Best-effort: old servers or missing sessions should not block chat.
+        rememberChatSessionId(resumeParam);
+        setResolvedResume({ source: resumeParam, target: resumeParam });
       });
 
     return () => {
       cancelled = true;
     };
-  }, [resumeParam, searchParams, setSearchParams]);
+  }, [resumeParam, resolvedResume.source, searchParams, setSearchParams]);
 
   useEffect(() => {
     const mql = window.matchMedia("(max-width: 1023px)");
@@ -341,7 +365,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     if (!token) {
       return;
     }
-    if (recoveryPending && !resumeParam) {
+    if ((recoveryPending && !resumeParam) || resumeResolutionPending) {
       return;
     }
 
@@ -622,7 +646,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
 
     const connectWebSocket = (attempt = 0) => {
       if (unmounting) return;
-      const url = buildWsUrl(token, resumeParam, channel);
+      const url = buildWsUrl(token, activeResumeParam, channel);
       const ws = new WebSocket(url);
       ws.binaryType = "arraybuffer";
       wsRef.current = ws;
@@ -646,7 +670,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         if (unmounting) return;
         if (ev.code === 4401) {
           const reloadQueued = scheduleDashboardAuthReload({
-            sessionId: resumeParam ?? getRememberedChatSessionId(),
+            sessionId: activeResumeParam ?? resumeParam ?? getRememberedChatSessionId(),
           });
           setBanner(
             reloadQueued
@@ -733,7 +757,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         copyResetRef.current = null;
       }
     };
-  }, [channel, recoveryPending, resumeParam]);
+  }, [channel, activeResumeParam, recoveryPending, resumeParam, resumeResolutionPending]);
 
   // When the user returns to the chat tab (isActive: false → true), the
   // terminal host just transitioned from display:none to display:flex.
@@ -800,7 +824,9 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   // descendants below those layers (see Toast.tsx).
   const statusBanner = banner ?? (recoveryPending && !resumeParam
     ? "Recovering previous chat session…"
-    : null);
+    : resumeResolutionPending
+      ? "Resolving chat session…"
+      : null);
 
   const mobileModelToolsPortal =
     isActive &&
