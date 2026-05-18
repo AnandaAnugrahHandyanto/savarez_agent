@@ -589,3 +589,122 @@ def test_strip_xai_enum_values_handles_empty_list():
     out, stripped = strip_xai_incompatible_enum_values([])
     assert out == []
     assert stripped == 0
+
+
+def test_strip_xai_enum_values_does_not_mutate_input_when_caller_copies():
+    """Caller-deepcopy contract: when the caller passes a deepcopy, the
+    original tool registry stays untouched. Mirrors what
+    `_preflight_codex_api_kwargs` does in the xAI branch."""
+    import copy
+
+    original = [_tool("t", {
+        "type": "object",
+        "properties": {
+            "accept": {"type": "string", "enum": ["application/json", "*/*"]},
+        },
+    })]
+    copied = copy.deepcopy(original)
+    strip_xai_incompatible_enum_values(copied)
+    # Original survives untouched.
+    assert original[0]["function"]["parameters"]["properties"]["accept"]["enum"] == [
+        "application/json", "*/*",
+    ]
+    # Copy is sanitized.
+    assert "enum" not in copied[0]["function"]["parameters"]["properties"]["accept"]
+
+
+def test_strip_xai_enum_values_returns_input_list_reference():
+    """Function mutates in place AND returns the same list reference
+    (per docstring contract; matches strip_pattern_and_format)."""
+    tools = [_tool("t", {"type": "object", "properties": {
+        "accept": {"type": "string", "enum": ["application/json"]},
+    }})]
+    out, _ = strip_xai_incompatible_enum_values(tools)
+    assert out is tools
+
+
+def test_strip_xai_enum_values_handles_array_items_with_enum():
+    """JSON Schema arrays-of-enum-strings (common in MCP header params)."""
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {
+            "accept_list": {
+                "type": "array",
+                "items": {"type": "string", "enum": ["application/json", "text/plain"]},
+            },
+        },
+    })]
+    out, stripped = strip_xai_incompatible_enum_values(tools)
+    assert stripped == 2
+    item_schema = out[0]["function"]["parameters"]["properties"]["accept_list"]["items"]
+    assert "enum" not in item_schema
+
+
+def test_strip_xai_enum_values_handles_anyof_union():
+    """Enums nested inside anyOf/oneOf branches are still walked."""
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {
+            "body": {
+                "anyOf": [
+                    {"type": "string", "enum": ["application/json"]},
+                    {"type": "object", "properties": {"raw": {"type": "string"}}},
+                ],
+            },
+        },
+    })]
+    out, stripped = strip_xai_incompatible_enum_values(tools)
+    assert stripped == 1
+    union = out[0]["function"]["parameters"]["properties"]["body"]["anyOf"]
+    assert "enum" not in union[0]
+
+
+def test_strip_xai_enum_values_preserves_non_string_enum_members():
+    """Numeric / boolean enum entries must survive — only strings with `/` go."""
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {
+            "mixed": {"enum": [1, 2, "a/b", True, None, "ok"]},
+        },
+    })]
+    out, stripped = strip_xai_incompatible_enum_values(tools)
+    assert stripped == 1
+    mixed = out[0]["function"]["parameters"]["properties"]["mixed"]
+    assert mixed["enum"] == [1, 2, True, None, "ok"]
+
+
+def test_strip_xai_enum_values_leaves_default_alone_when_all_enum_stripped():
+    """When every enum value is unsafe and the enum key is dropped, any
+    sibling ``default`` is left intact. xAI may still reject the default,
+    but that's a separate concern — at least we don't silently rewrite it."""
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {
+            "accept": {
+                "type": "string",
+                "enum": ["application/json", "*/*"],
+                "default": "application/json",
+            },
+        },
+    })]
+    out, stripped = strip_xai_incompatible_enum_values(tools)
+    assert stripped == 2
+    accept = out[0]["function"]["parameters"]["properties"]["accept"]
+    assert "enum" not in accept
+    assert accept["default"] == "application/json"
+
+
+def test_strip_xai_enum_values_silently_skips_malformed_enum():
+    """A non-list ``enum`` (string, dict) is malformed JSON Schema. The
+    sanitizer must not crash — it skips and logs at DEBUG level."""
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {
+            "bad1": {"type": "string", "enum": "application/json"},   # string, not list
+            "bad2": {"type": "string", "enum": {"a": 1}},               # dict, not list
+        },
+    })]
+    out, stripped = strip_xai_incompatible_enum_values(tools)
+    assert stripped == 0
+    # Malformed enums are left untouched — we don't try to "fix" them.
+    assert out[0]["function"]["parameters"]["properties"]["bad1"]["enum"] == "application/json"

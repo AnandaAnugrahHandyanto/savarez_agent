@@ -453,3 +453,72 @@ class TestCodexNormalizeResponse:
         tc = nr.tool_calls[0]
         assert tc.name == "terminal"
         assert '"command"' in tc.arguments
+
+
+class TestCodexPreflightXaiEnumStrip:
+    """Verify the ResponsesApiTransport wrapper forwards `is_xai_responses`
+    through to `_preflight_codex_api_kwargs` and the strip actually fires.
+
+    Bypassing the wrapper (calling _preflight_codex_api_kwargs directly) is
+    covered in tests/run_agent/test_run_agent_codex_responses.py — this
+    test pins the wrapper-level forwarding so a future refactor that drops
+    the kwarg can't silently re-introduce the bug.
+    """
+
+    def _slash_enum_tool(self):
+        return {
+            "type": "function",
+            "name": "brave_search_like_tool",
+            "description": "x",
+            "strict": False,
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "accept": {
+                        "type": "string",
+                        "enum": ["application/json", "*/*"],
+                    },
+                },
+            },
+        }
+
+    def _api_kwargs(self, tools):
+        return {
+            "model": "grok-4.3",
+            "instructions": "You are Hermes.",
+            "input": [{"role": "user", "content": "hi"}],
+            "tools": tools,
+            "store": False,
+        }
+
+    def test_preflight_strips_slash_enums_through_transport_when_xai(self, transport):
+        result = transport.preflight_kwargs(
+            self._api_kwargs([self._slash_enum_tool()]),
+            is_xai_responses=True,
+        )
+        accept = result["tools"][0]["parameters"]["properties"]["accept"]
+        assert "enum" not in accept
+
+    def test_preflight_keeps_slash_enums_through_transport_when_not_xai(self, transport):
+        result = transport.preflight_kwargs(
+            self._api_kwargs([self._slash_enum_tool()]),
+            is_xai_responses=False,
+        )
+        accept = result["tools"][0]["parameters"]["properties"]["accept"]
+        assert accept["enum"] == ["application/json", "*/*"]
+
+    def test_preflight_does_not_mutate_caller_tool_registry(self, transport):
+        """Even when the strip fires, the caller's original tools list and
+        the schema dicts inside it must not be mutated — `_preflight`
+        deep-copies before stripping."""
+        tool = self._slash_enum_tool()
+        original_enum = list(tool["parameters"]["properties"]["accept"]["enum"])
+
+        transport.preflight_kwargs(
+            self._api_kwargs([tool]),
+            is_xai_responses=True,
+        )
+
+        # The original tool dict (still owned by the caller / upstream
+        # registry) must be untouched.
+        assert tool["parameters"]["properties"]["accept"]["enum"] == original_enum

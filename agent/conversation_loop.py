@@ -987,14 +987,11 @@ def run_conversation(
                 if agent._force_ascii_payload:
                     _sanitize_structure_non_ascii(api_kwargs)
                 if agent.api_mode == "codex_responses":
-                    is_xai_responses = (
-                        agent.provider in {"xai", "xai-oauth"}
-                        or getattr(agent, "_base_url_hostname", None) == "api.x.ai"
-                    )
+                    from agent.codex_responses_adapter import agent_uses_xai_responses
                     api_kwargs = agent._get_transport().preflight_kwargs(
                         api_kwargs,
                         allow_stream=False,
-                        is_xai_responses=is_xai_responses,
+                        is_xai_responses=agent_uses_xai_responses(agent),
                     )
 
                 try:

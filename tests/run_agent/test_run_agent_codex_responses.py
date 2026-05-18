@@ -2025,3 +2025,50 @@ def test_preflight_codex_api_kwargs_keeps_slash_enums_when_not_xai(monkeypatch):
     result = _preflight_codex_api_kwargs(kwargs)
     accept = result["tools"][0]["parameters"]["properties"]["accept"]
     assert accept["enum"] == ["application/json", "*/*"]
+
+
+# =============================================================================
+# agent_uses_xai_responses helper — used by conversation_loop + codex_runtime
+# =============================================================================
+
+
+class _MiniAgent:
+    """Minimal stand-in: agent_uses_xai_responses only reads two attributes."""
+
+    def __init__(self, provider=None, hostname=None):
+        self.provider = provider
+        self._base_url_hostname = hostname
+
+
+def test_agent_uses_xai_responses_matches_xai_provider():
+    from agent.codex_responses_adapter import agent_uses_xai_responses
+    assert agent_uses_xai_responses(_MiniAgent(provider="xai"))
+    assert agent_uses_xai_responses(_MiniAgent(provider="xai-oauth"))
+
+
+def test_agent_uses_xai_responses_matches_xai_hostname_with_non_xai_provider():
+    """A user with a custom provider key but base_url pointing at api.x.ai
+    still needs the strip — that path is the second arm of the predicate."""
+    from agent.codex_responses_adapter import agent_uses_xai_responses
+    assert agent_uses_xai_responses(_MiniAgent(provider="custom", hostname="api.x.ai"))
+
+
+def test_agent_uses_xai_responses_rejects_other_providers():
+    from agent.codex_responses_adapter import agent_uses_xai_responses
+    assert not agent_uses_xai_responses(_MiniAgent(provider="openai-codex", hostname="chatgpt.com"))
+    assert not agent_uses_xai_responses(_MiniAgent(provider="openrouter", hostname="openrouter.ai"))
+    # No provider and no hostname → not xAI.
+    assert not agent_uses_xai_responses(_MiniAgent())
+
+
+def test_agent_uses_xai_responses_tolerates_missing_attrs():
+    """If an agent-like object is missing both attributes, the helper falls
+    back to False rather than raising AttributeError — the call sites use
+    this on the hot path and a stray AttributeError would mask the real
+    error a misconfigured agent would produce a few lines later."""
+    from agent.codex_responses_adapter import agent_uses_xai_responses
+
+    class Bare:
+        pass
+
+    assert not agent_uses_xai_responses(Bare())

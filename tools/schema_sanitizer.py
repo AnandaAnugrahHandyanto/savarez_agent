@@ -392,29 +392,30 @@ def strip_xai_incompatible_enum_values(tools: list[dict]) -> tuple[list[dict], i
 
     xAI's ``/v1/responses`` schema validator rejects any tool whose parameter
     schema contains a string enum value with a ``/`` character (e.g.
-    ``"application/json"``, ``"*/*"``, ``"text/plain"``). When the request is
-    submitted, the server returns HTTP 200 with a single SSE ``event: error``
-    frame whose ``message`` is the opaque ``"Invalid arguments passed to the
-    model."``, then closes the stream. This aborts every agent turn.
+    ``"application/json"``, ``"*/*"``, ``"text/plain"``). The server returns
+    HTTP 200 with a single SSE ``event: error`` frame (message observed as
+    ``"Invalid arguments passed to the model."`` in May 2026) and closes the
+    stream, aborting the agent turn.
 
-    The most common offender is the official Brave Search MCP server, which
-    advertises HTTP-header parameters such as
-    ``{"accept": {"type": "string", "enum": ["application/json", "*/*"]}}``
-    on its ``brave_llm_context`` and ``brave_place_search`` tools. Other
-    Responses-compatible backends (OpenAI Codex, Anthropic-via-OpenAI) accept
-    these enums, so the strip is gated by the caller on the xAI path only.
+    The known triggering case at the time of writing is MCP tools that expose
+    HTTP ``accept`` headers as a string enum of media types. Other Responses-
+    compatible backends (OpenAI Codex) accept these enums fine, so the strip
+    is gated by the caller on the xAI path only.
 
     These enums describe HTTP plumbing the model has no business emitting as
-    a function-call argument, so removing them is safe — but the property
+    a function-call argument, so removing them is safe — and the property
     keeps its ``"type": "string"`` typing so any free-form value the model
     does emit still validates.
 
     Args:
-        tools: OpenAI-format or Responses-format tool list, mutated in place.
+        tools: OpenAI-format or Responses-format tool list. The list and the
+            schema dicts inside it are **mutated in place** for efficiency
+            (matching ``strip_pattern_and_format``). Callers that need to
+            preserve the original should deep-copy first.
 
     Returns:
-        ``(tools, stripped_count)`` — same list reference plus a count of how
-        many slash-containing enum values were removed.
+        ``(tools, stripped_count)`` — the same list reference (already
+        mutated) plus a count of slash-containing enum values removed.
     """
     if not tools:
         return tools, 0
@@ -433,6 +434,14 @@ def strip_xai_incompatible_enum_values(tools: list[dict]) -> tuple[list[dict], i
                         node["enum"] = kept
                     else:
                         node.pop("enum", None)
+            elif enum_values is not None:
+                # JSON Schema requires ``enum`` to be a list. Anything else
+                # is a malformed schema; skip but log so upstream bugs in
+                # MCP tool schemas remain debuggable.
+                logger.debug(
+                    "schema_sanitizer: skipping non-list enum value (type=%s)",
+                    type(enum_values).__name__,
+                )
             for value in list(node.values()):
                 if isinstance(value, (dict, list)):
                     _walk(value)
@@ -458,7 +467,9 @@ def strip_xai_incompatible_enum_values(tools: list[dict]) -> tuple[list[dict], i
             _walk(params)
 
     if stripped:
-        logger.info(
+        # DEBUG (not INFO) because this fires every turn on affected setups
+        # — it's compatibility plumbing, not a notable event.
+        logger.debug(
             "schema_sanitizer: stripped %d slash-containing enum value(s) "
             "from tool schemas (xAI Responses compatibility)",
             stripped,
