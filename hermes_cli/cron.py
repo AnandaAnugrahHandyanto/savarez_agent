@@ -38,6 +38,62 @@ def _cron_api(**kwargs):
     return json.loads(cronjob_tool(**kwargs))
 
 
+def _cron_job_status(job: dict) -> str:
+    state = str(job.get("state") or "").strip()
+    if state:
+        return state
+    return "scheduled" if job.get("enabled", True) else "paused"
+
+
+def _cron_job_schedule(job: dict) -> str:
+    display = str(job.get("schedule_display") or "").strip()
+    if display:
+        return display
+    schedule = job.get("schedule")
+    if isinstance(schedule, dict):
+        for key in ("display", "value", "expr", "run_at"):
+            value = str(schedule.get(key) or "").strip()
+            if value:
+                return value
+    if schedule:
+        return str(schedule)
+    return "?"
+
+
+def format_cron_jobs_for_gateway(jobs: list[dict]) -> str:
+    """Format cron jobs for safe gateway slash-command output."""
+    if not jobs:
+        return "No scheduled jobs."
+
+    lines = ["Scheduled cron jobs:"]
+    for job in jobs:
+        job_id = job.get("id") or "?"
+        name = job.get("name") or "(unnamed)"
+        schedule = _cron_job_schedule(job)
+        status = _cron_job_status(job)
+        last_run = job.get("last_run_at") or "-"
+        next_run = job.get("next_run_at") or "-"
+        lines.extend(
+            [
+                f"- job_id: {job_id}",
+                f"  name: {name}",
+                f"  schedule: {schedule}",
+                f"  status: {status}",
+                f"  last_run: {last_run}",
+                f"  next_run: {next_run}",
+            ]
+        )
+
+    return "\n".join(lines)
+
+
+def cron_list_gateway_text(show_all: bool = True) -> str:
+    """Return cron job inventory without invoking any shell command."""
+    from cron.jobs import list_jobs
+
+    return format_cron_jobs_for_gateway(list_jobs(include_disabled=show_all))
+
+
 def cron_list(show_all: bool = False):
     """List all scheduled jobs."""
     from cron.jobs import list_jobs
@@ -58,7 +114,7 @@ def cron_list(show_all: bool = False):
     for job in jobs:
         job_id = job.get("id", "?")
         name = job.get("name", "(unnamed)")
-        schedule = job.get("schedule_display", job.get("schedule", {}).get("value", "?"))
+        schedule = _cron_job_schedule(job)
         state = job.get("state", "scheduled" if job.get("enabled", True) else "paused")
         next_run = job.get("next_run_at", "?")
 
@@ -101,13 +157,15 @@ def cron_list(show_all: bool = False):
 
         # Execution history
         last_status = job.get("last_status")
+        last_run = job.get("last_run_at") or "-"
         if last_status:
-            last_run = job.get("last_run_at", "?")
             if last_status == "ok":
                 status_display = color("ok", Colors.GREEN)
             else:
                 status_display = color(f"{last_status}: {job.get('last_error', '?')}", Colors.RED)
             print(f"    Last run:  {last_run}  {status_display}")
+        else:
+            print(f"    Last run:  {last_run}")
 
         delivery_err = job.get("last_delivery_error")
         if delivery_err:
