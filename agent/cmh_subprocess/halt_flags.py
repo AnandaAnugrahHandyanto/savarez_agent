@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from hermes_constants import get_hermes_home
 
@@ -81,18 +81,29 @@ def load_halt_flags(path: Path | None = None) -> HaltState:
 
     for key in _KNOWN_HALT_FLAGS:
         if key in loaded:
-            flags[key] = bool(loaded[key])
+            value = loaded[key]
+            if not isinstance(value, bool):
+                return HaltState(
+                    flags=default_halt_flags(),
+                    malformed=True,
+                    error=f"halt flag {key!r} must be a boolean",
+                    path=resolved_path,
+                )
+            flags[key] = value
 
     return HaltState(flags=flags, path=resolved_path)
 
 
-def save_halt_flags(flags: dict[str, bool], path: Path | None = None) -> None:
+def save_halt_flags(flags: Mapping[str, Any], path: Path | None = None) -> None:
     """Persist known halt flags as stable JSON."""
     resolved_path = path or halt_flags_path()
     merged = default_halt_flags()
     for key in _KNOWN_HALT_FLAGS:
         if key in flags:
-            merged[key] = bool(flags[key])
+            value = flags[key]
+            if not isinstance(value, bool):
+                raise ValueError(f"halt flag {key!r} must be a boolean")
+            merged[key] = value
 
     resolved_path.parent.mkdir(parents=True, exist_ok=True)
     resolved_path.write_text(
