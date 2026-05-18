@@ -242,6 +242,7 @@ export interface GatewayEventHandlerContext {
   }
   system: {
     bellOnComplete: boolean
+    notifyOnInteract: boolean
     stdout?: NodeJS.WriteStream
     sys: (text: string) => void
   }

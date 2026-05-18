@@ -269,6 +269,66 @@ describe('applyDisplay → busy_input_mode', () => {
   })
 })
 
+describe('applyDisplay → notify_on_interact', () => {
+  beforeEach(() => {
+    resetUiState()
+  })
+
+  it('threads display.notify_on_interact through the optional setter', () => {
+    const setBell = vi.fn()
+    const setNotify = vi.fn()
+
+    applyDisplay(
+      { config: { display: { notify_on_interact: true } } },
+      setBell,
+      undefined,
+      setNotify
+    )
+
+    expect(setNotify).toHaveBeenCalledWith(true)
+  })
+
+  it('falls back to false when the key is missing', () => {
+    const setBell = vi.fn()
+    const setNotify = vi.fn()
+
+    applyDisplay({ config: { display: {} } }, setBell, undefined, setNotify)
+
+    expect(setNotify).toHaveBeenCalledWith(false)
+  })
+
+  it('is a no-op when the setter is not passed (back-compat)', () => {
+    const setBell = vi.fn()
+
+    expect(() =>
+      applyDisplay({ config: { display: { notify_on_interact: true } } }, setBell)
+    ).not.toThrow()
+    // bell still applied
+    expect(setBell).toHaveBeenCalledWith(false)
+  })
+
+  it('coerces non-boolean values to booleans', () => {
+    const setBell = vi.fn()
+    const setNotify = vi.fn()
+
+    applyDisplay(
+      { config: { display: { notify_on_interact: 1 as unknown as boolean } } },
+      setBell,
+      undefined,
+      setNotify
+    )
+    expect(setNotify).toHaveBeenCalledWith(true)
+
+    applyDisplay(
+      { config: { display: { notify_on_interact: 0 as unknown as boolean } } },
+      setBell,
+      undefined,
+      setNotify
+    )
+    expect(setNotify).toHaveBeenLastCalledWith(false)
+  })
+})
+
 describe('applyDisplay → tui_status_indicator', () => {
   beforeEach(() => {
     resetUiState()

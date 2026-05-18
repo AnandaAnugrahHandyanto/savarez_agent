@@ -976,6 +976,12 @@ DEFAULT_CONFIG = {
         # users aren't surprised.  HERMES_TUI_RESUME=<id> always wins.
         "tui_auto_resume_recent": False,
         "bell_on_complete": False,
+        # Play a notification sound when the agent needs user input
+        # (clarify, approval, sudo, secret prompts).  Uses paplay on
+        # PulseAudio/PipeWire systems with an ASCII BEL fallback for
+        # other terminals; safe to enable on macOS / Wayland / X11.
+        # Default off so existing users aren't surprised.
+        "notify_on_interact": False,
         "show_reasoning": False,
         "streaming": False,
         "timestamps": False,      # Show [HH:MM] on user and assistant labels
@@ -4925,6 +4931,7 @@ def show_config():
     print(f"  Personality:  {display.get('personality', 'kawaii')}")
     print(f"  Reasoning:    {'on' if display.get('show_reasoning', False) else 'off'}")
     print(f"  Bell:         {'on' if display.get('bell_on_complete', False) else 'off'}")
+    print(f"  Interact bell:{'on' if display.get('notify_on_interact', False) else 'off'}")
     ump = display.get('user_message_preview', {}) if isinstance(display.get('user_message_preview', {}), dict) else {}
     ump_first = ump.get('first_lines', 2)
     ump_last = ump.get('last_lines', 2)

@@ -1203,7 +1203,8 @@ display:
   personality: "kawaii"  # Legacy cosmetic field still surfaced in some summaries
   compact: false          # Compact output mode (less whitespace)
   resume_display: full    # full (show previous messages on resume) | minimal (one-liner only)
-  bell_on_complete: false # Play terminal bell when agent finishes (great for long tasks)
+  bell_on_complete: false # Notification sound when agent finishes (paplay + ASCII BEL — works on Wayland)
+  notify_on_interact: false  # Notification sound on clarify/approval/sudo/secret prompts (same paplay + BEL pair)
   show_reasoning: false   # Show model reasoning/thinking above each response (toggle with /reasoning show|hide)
   streaming: false        # Stream tokens to terminal as they arrive (real-time output)
   show_cost: false        # Show estimated $ cost in the CLI status bar

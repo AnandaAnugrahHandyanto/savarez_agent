@@ -125,6 +125,57 @@ _REASONING_TAGS = (
 )
 
 
+# Default sound played by ``_ring_bell`` when paplay is available.
+# message-new-instant.oga ships with the freedesktop sound theme on
+# every desktop Linux distro using PulseAudio / PipeWire (the package
+# is `sound-theme-freedesktop` and is part of the default install on
+# Ubuntu / Fedora / Arch / openSUSE / Debian).
+_BELL_SOUND_PATH = "/usr/share/sounds/freedesktop/stereo/message-new-instant.oga"
+
+
+def _ring_bell() -> None:
+    """Play a notification sound for the user's terminal.
+
+    Two-pronged best-effort strategy so users get an audible cue on
+    every common Linux setup without breaking SSH / non-Linux paths:
+
+    1. Write the ASCII BEL (``\\a``) to stdout — works in legacy
+       terminals (xterm, gnome-terminal, Konsole, classic iTerm2)
+       that respect the bell sequence and propagates over SSH.
+    2. Fire ``paplay`` with the freedesktop "message-new-instant"
+       sound — covers Wayland-native terminals (Foot, Kitty,
+       ghostty) where ``\\a`` is silently swallowed or only
+       triggers a visual flash.
+
+    Both paths are wrapped in broad ``except`` handlers — a missing
+    binary, sandboxed audio device, headless CI, or closed stdout
+    must NEVER crash the agent loop. paplay is invoked detached so
+    the parent process doesn't block on the audio backend.
+    """
+    import subprocess
+
+    try:
+        sys.stdout.write("\a")
+        sys.stdout.flush()
+    except Exception:
+        pass
+
+    paplay = shutil.which("paplay")
+    if not paplay:
+        return
+
+    try:
+        subprocess.Popen(
+            [paplay, _BELL_SOUND_PATH],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except Exception:
+        pass
+
+
 def _strip_reasoning_tags(text: str) -> str:
     """Remove reasoning/thinking blocks from displayed text.
 
@@ -2550,6 +2601,12 @@ class HermesCLI:
         self.resume_display = CLI_CONFIG["display"].get("resume_display", "full")
         # bell_on_complete: play terminal bell (\a) when agent finishes a response
         self.bell_on_complete = CLI_CONFIG["display"].get("bell_on_complete", False)
+        # notify_on_interact: play a notification sound whenever the agent
+        # asks for user input (clarify, approval, sudo password, secret).
+        # Uses the same ``_ring_bell()`` two-pronged strategy as
+        # bell_on_complete (ASCII BEL + paplay) so Wayland users on Foot /
+        # Kitty / ghostty actually hear something.  Default off — opt-in.
+        self.notify_on_interact = CLI_CONFIG["display"].get("notify_on_interact", False)
         # show_reasoning: display model thinking/reasoning before the response
         self.show_reasoning = CLI_CONFIG["display"].get("show_reasoning", False)
         _configure_output_history(
@@ -8265,10 +8322,8 @@ class HermesCLI:
                 else:
                     _cprint("  (No response generated)")
 
-                # Play bell if enabled
                 if self.bell_on_complete:
-                    sys.stdout.write("\a")
-                    sys.stdout.flush()
+                    _ring_bell()
 
             except Exception as e:
                 # Same TUI refresh pattern as success path (#2718)
@@ -10327,6 +10382,12 @@ class HermesCLI:
         # Open-ended questions skip straight to freetext input
         self._clarify_freetext = is_open_ended
 
+        # Audible cue so users browsing other windows actually notice the
+        # prompt — gated behind ``display.notify_on_interact`` (off by
+        # default).  Same two-pronged strategy as ``bell_on_complete``.
+        if getattr(self, "notify_on_interact", False):
+            _ring_bell()
+
         # Trigger prompt_toolkit repaint from this (non-main) thread
         self._invalidate()
 
@@ -10388,6 +10449,9 @@ class HermesCLI:
         }
         self._sudo_deadline = _time.monotonic() + timeout
 
+        if getattr(self, "notify_on_interact", False):
+            _ring_bell()
+
         self._invalidate()
 
         while True:
@@ -10444,6 +10508,9 @@ class HermesCLI:
                 "response_queue": response_queue,
             }
             self._approval_deadline = _time.monotonic() + timeout
+
+            if getattr(self, "notify_on_interact", False):
+                _ring_bell()
 
             self._invalidate()
 
@@ -11263,11 +11330,12 @@ class HermesCLI:
                     ))
 
 
-            # Play terminal bell when agent finishes (if enabled).
-            # Works over SSH — the bell propagates to the user's terminal.
+            # Play notification sound when the agent finishes (if enabled).
+            # ``_ring_bell()`` writes ASCII BEL (works over SSH) and also
+            # tries paplay so Wayland terminals that swallow the bell get
+            # an audible cue.
             if self.bell_on_complete:
-                sys.stdout.write("\a")
-                sys.stdout.flush()
+                _ring_bell()
 
             # Notify when iteration budget was hit
             if result and not result.get("completed") and not result.get("interrupted"):
