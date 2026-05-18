@@ -151,6 +151,19 @@ VALID_HOOKS: Set[str] = {
     #   {"action": "allow"}  /  None             -> normal dispatch
     # Kwargs: event: MessageEvent, gateway: GatewayRunner, session_store.
     "pre_gateway_dispatch",
+    # Discord native custom slash command hook. Fired by the Discord adapter
+    # for commands declared in discord.custom_slash_commands. The adapter
+    # performs Hermes slash authorization first, then passes the raw Discord
+    # interaction plus normalized IDs/objects so plugins can implement
+    # platform-native behavior (rename/archive threads, add reactions, etc.)
+    # without routing through the LLM or generic slash-command text path.
+    "discord_custom_slash_command",
+    # Discord auto-thread creation hook. Fired by the Discord adapter after
+    # Hermes creates an auto-thread for an @mention. Plugins receive the raw
+    # Discord thread/message plus normalized IDs so they can deterministically
+    # rename the thread, persist metadata, or add reactions without routing
+    # through the LLM.
+    "discord_auto_thread_created",
     # Approval lifecycle hooks. Fired by tools/approval.py when a dangerous
     # command needs user approval -- fires BOTH for CLI-interactive prompts
     # and for gateway/ACP approvals (Telegram, Discord, Slack, TUI, etc.).

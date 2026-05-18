@@ -292,6 +292,228 @@ async def test_plugin_command_name_conflict_skipped(adapter):
     )
 
 
+
+
+@pytest.mark.asyncio
+async def test_config_custom_slash_command_emits_discord_hook(adapter):
+    """Config-declared slash commands should emit Discord-native plugin hooks, not agent text commands."""
+    adapter.config.extra["custom_slash_commands"] = [
+        {"name": "done", "description": "Mark current thread done"}
+    ]
+    adapter._run_simple_slash = AsyncMock()
+    adapter._register_slash_commands()
+
+    assert "done" in adapter._client.tree.commands
+
+    hook_calls = []
+
+    async def _listener(**kwargs):
+        hook_calls.append(kwargs)
+        # Prove the raw Discord object is usable by listeners for deterministic
+        # side effects like renaming the current thread.
+        await kwargs["channel"].edit(name="✅ Finished")
+
+    thread_cls = sys.modules["discord"].Thread
+    channel = thread_cls()
+    channel.id = 555
+    channel.name = "🟡 Planning"
+    channel.parent = SimpleNamespace(id=123, name="garage")
+    channel.edit = AsyncMock()
+    response = SimpleNamespace(send_message=AsyncMock(), is_done=lambda: False)
+    interaction = SimpleNamespace(
+        channel=channel,
+        channel_id=555,
+        guild=SimpleNamespace(id=999, name="Guild"),
+        user=SimpleNamespace(id=42, display_name="Sumanth"),
+        response=response,
+        edit_original_response=AsyncMock(),
+    )
+
+    with patch("hermes_cli.plugins.invoke_hook", return_value=[_listener(
+        command="done",
+        args="",
+        command_def={"name": "done", "description": "Mark current thread done", "args_hint": ""},
+        interaction=interaction,
+        adapter=adapter,
+        guild=interaction.guild,
+        guild_id="999",
+        channel=channel,
+        channel_id="555",
+        thread=channel,
+        thread_id="555",
+        parent_channel=channel.parent,
+        parent_channel_id="123",
+        user=interaction.user,
+        user_id="42",
+        user_name="Sumanth",
+    )]) as invoke_hook:
+        await adapter._client.tree.commands["done"].callback(interaction)
+
+    adapter._run_simple_slash.assert_not_awaited()
+    invoke_hook.assert_called_once()
+    _, hook_kwargs = invoke_hook.call_args
+    assert hook_kwargs["command"] == "done"
+    assert hook_kwargs["thread_id"] == "555"
+    assert hook_kwargs["parent_channel_id"] == "123"
+    assert hook_kwargs["user_id"] == "42"
+    assert hook_kwargs["interaction"] is interaction
+    channel.edit.assert_awaited_once_with(name="✅ Finished")
+    response.send_message.assert_not_awaited()
+    interaction.edit_original_response.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_config_custom_slash_command_defers_before_hook(adapter):
+    """Custom slash hooks may rename/archive Discord threads; defer first so Discord doesn't time out."""
+    adapter.config.extra["custom_slash_commands"] = ["open"]
+    adapter._register_slash_commands()
+
+    deferred = False
+
+    async def _defer(ephemeral=True):
+        nonlocal deferred
+        assert ephemeral is True
+        deferred = True
+
+    response = SimpleNamespace(defer=AsyncMock(side_effect=_defer), is_done=lambda: deferred)
+    interaction = SimpleNamespace(
+        channel=SimpleNamespace(id=555),
+        channel_id=555,
+        guild=None,
+        user=SimpleNamespace(id=42, display_name="Sumanth"),
+        response=response,
+        edit_original_response=AsyncMock(),
+    )
+
+    async def _listener(**kwargs):
+        assert deferred is True
+        await kwargs["interaction"].edit_original_response(content="Plugin handled /open")
+
+    with patch("hermes_cli.plugins.invoke_hook", side_effect=lambda *args, **kwargs: [_listener(**kwargs)]) as invoke_hook:
+        await adapter._client.tree.commands["open"].callback(interaction)
+
+    response.defer.assert_awaited_once_with(ephemeral=True)
+    invoke_hook.assert_called_once()
+    interaction.edit_original_response.assert_awaited_once_with(content="Plugin handled /open")
+
+
+@pytest.mark.asyncio
+async def test_config_custom_slash_command_no_listener_gets_fallback(adapter):
+    adapter.config.extra["custom_slash_commands"] = ["open"]
+    adapter._register_slash_commands()
+
+    deferred = False
+
+    async def _defer(ephemeral=True):
+        nonlocal deferred
+        deferred = True
+
+    interaction = SimpleNamespace(
+        channel=SimpleNamespace(id=555),
+        channel_id=555,
+        guild=None,
+        user=SimpleNamespace(id=42, display_name="Sumanth"),
+        response=SimpleNamespace(defer=AsyncMock(side_effect=_defer), is_done=lambda: deferred),
+        edit_original_response=AsyncMock(),
+    )
+
+    with patch("hermes_cli.plugins.invoke_hook", return_value=[]):
+        await adapter._client.tree.commands["open"].callback(interaction)
+
+    interaction.edit_original_response.assert_awaited_once_with(content="Handled /open")
+
+
+@pytest.mark.asyncio
+async def test_config_custom_slash_command_with_args(adapter):
+    adapter.config.extra["custom_slash_commands"] = [
+        {"name": "tag", "description": "Tag current context", "args_hint": "label"}
+    ]
+    adapter._register_slash_commands()
+
+    command = adapter._client.tree.commands["tag"]
+    interaction = SimpleNamespace(
+        channel=SimpleNamespace(id=555),
+        channel_id=555,
+        guild=None,
+        user=SimpleNamespace(id=42, display_name="Sumanth"),
+        response=SimpleNamespace(send_message=AsyncMock(), is_done=lambda: False),
+    )
+
+    with patch("hermes_cli.plugins.invoke_hook", return_value=[]) as invoke_hook:
+        await command.callback(interaction, args="important")
+
+    _, hook_kwargs = invoke_hook.call_args
+    assert hook_kwargs["command"] == "tag"
+    assert hook_kwargs["args"] == "important"
+
+
+@pytest.mark.asyncio
+async def test_config_custom_slash_command_auth_failure_does_not_emit_hook(adapter):
+    adapter.config.extra["custom_slash_commands"] = ["done"]
+    adapter._check_slash_authorization = AsyncMock(return_value=False)
+    adapter._register_slash_commands()
+
+    interaction = SimpleNamespace(channel=SimpleNamespace(id=555), channel_id=555)
+    with patch("hermes_cli.plugins.invoke_hook") as invoke_hook:
+        await adapter._client.tree.commands["done"].callback(interaction)
+
+    invoke_hook.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_auto_create_thread_emits_discord_thread_created_hook(adapter):
+    created_thread = SimpleNamespace(
+        id=555,
+        name="Hermes Discord thread labels",
+        parent=SimpleNamespace(id=123, name="garage"),
+        guild=SimpleNamespace(id=999, name="Guild"),
+    )
+    message = SimpleNamespace(
+        id=777,
+        content="<@99999> Title: Hermes Discord thread labels\nPlease fix this.",
+        author=SimpleNamespace(id=42, display_name="Sumanth"),
+        guild=created_thread.guild,
+        channel=SimpleNamespace(id=123, name="garage"),
+        create_thread=AsyncMock(return_value=created_thread),
+    )
+
+    async def _listener(**kwargs):
+        await kwargs["thread"].edit(name="🟡 Hermes Discord thread labels")
+
+    created_thread.edit = AsyncMock()
+    with patch("hermes_cli.plugins.invoke_hook", return_value=[_listener(
+        adapter=adapter,
+        message=message,
+        starter_message=message,
+        seed_message=None,
+        content=message.content,
+        initial_name="Title: Hermes Discord thread labels Please fix this.",
+        thread=created_thread,
+        channel=created_thread,
+        thread_id="555",
+        channel_id="555",
+        parent_channel=created_thread.parent,
+        parent_channel_id="123",
+        guild=created_thread.guild,
+        guild_id="999",
+        user=message.author,
+        user_id="42",
+        user_name="Sumanth",
+        starter_message_id="777",
+        seed_message_id="",
+    )]) as invoke_hook:
+        thread = await adapter._auto_create_thread(message)
+
+    assert thread is created_thread
+    invoke_hook.assert_called_once()
+    _, hook_kwargs = invoke_hook.call_args
+    assert hook_kwargs["thread_id"] == "555"
+    assert hook_kwargs["parent_channel_id"] == "123"
+    assert hook_kwargs["starter_message_id"] == "777"
+    assert hook_kwargs["content"] == message.content
+    created_thread.edit.assert_awaited_once_with(name="🟡 Hermes Discord thread labels")
+
+
 # ------------------------------------------------------------------
 # _handle_thread_create_slash — success, session dispatch, failure
 # ------------------------------------------------------------------
