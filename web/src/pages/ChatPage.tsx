@@ -540,10 +540,9 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       fontWeight: "400",
       fontWeightBold: "700",
       macOptionIsMeta: true,
-      // Single-scroll-system experiment:
-      // let the inner Hermes TUI own transcript history/scroll behavior.
-      // The outer browser xterm should act as a display/input bridge only.
-      scrollback: 0,
+      // The dashboard PTY runs the TUI in inline mode so xterm.js can provide
+      // browser-native mouse-wheel scrollback and click-drag text selection.
+      scrollback: 10000,
       theme: TERMINAL_THEME,
     });
     termRef.current = term;
@@ -646,23 +645,22 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     fitRef.current = fit;
     term.loadAddon(fit);
 
-    // Single-scroll-system experiment:
-    // keep browser xterm as a display/input bridge only, and let the inner
-    // Hermes TUI own transcript scrolling.
-    //
-    // In practice, the most reliable path here is NOT terminal mouse-wheel
+    // Plain wheel uses xterm.js's native scrollback so the chat feels like a
+    // browser page and keeps drag-to-select available. Modifier-held wheel is
+    // still routed to the inner TUI as an expert fallback for transcript scroll.
     // protocol emulation — that can vary by terminal mode and parser path.
-    // The inner TUI already handles keyboard-driven transcript scrolling
-    // correctly (`Shift+Up` / `Shift+Down`, `PageUp` / `PageDown`), so we
-    // translate browser wheel gestures into those known-good key sequences.
     term.attachCustomWheelEventHandler((ev) => {
+      if (!ev.altKey && !ev.ctrlKey && !ev.metaKey && !ev.shiftKey) {
+        return true;
+      }
+
       if (wsRef.current?.readyState !== WebSocket.OPEN) {
-        return false;
+        return true;
       }
 
       const delta = ev.deltaY;
       if (!delta) {
-        return false;
+        return true;
       }
 
       // Shift+Up / Shift+Down: the TUI maps these to line-by-line

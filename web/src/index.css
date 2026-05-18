@@ -202,6 +202,25 @@ code { font-size: 0.875rem; }
   font-family: var(--theme-font-mono);
 }
 
+/* Embedded /chat terminal: keep browser-like selection and scroll affordances. */
+.hermes-chat-xterm-host,
+.hermes-chat-xterm-host .xterm,
+.hermes-chat-xterm-host .xterm-viewport,
+.hermes-chat-xterm-host .xterm-screen,
+.hermes-chat-xterm-host .xterm-rows {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.hermes-chat-xterm-host .xterm-viewport,
+.hermes-chat-xterm-host .xterm-screen {
+  cursor: text;
+}
+
+.hermes-chat-xterm-host .xterm-viewport {
+  scrollbar-width: thin;
+}
+
 /* Subtle grain overlay for badges. */
 .grain {
   position: relative;

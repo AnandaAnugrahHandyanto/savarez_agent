@@ -4107,6 +4107,11 @@ def _resolve_chat_argv(
     # build unchanged for native CLI usage; only disable mouse tracking for
     # the dashboard PTY path.
     env.setdefault("HERMES_TUI_DISABLE_MOUSE", "1")
+    # The dashboard runs inside xterm.js, where users expect browser-like
+    # wheel scrolling and drag-to-select text. Inline mode keeps the TUI in
+    # the primary terminal buffer so xterm's native scrollback/selection can
+    # work; native terminal CLI sessions keep the fullscreen alternate buffer.
+    env.setdefault("HERMES_TUI_INLINE", "1")
 
     if resume:
         latest_resume, _latest_path = _session_latest_descendant(resume)
