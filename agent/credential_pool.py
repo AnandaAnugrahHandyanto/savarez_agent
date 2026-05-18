@@ -1325,6 +1325,15 @@ def _normalize_pool_priorities(provider: str, entries: List[PooledCredential]) -
     if provider != "anthropic":
         return False
 
+    # When the user has chosen round_robin, least_used, or random, they want
+    # the selection strategy to control ordering — not the source-based ranking
+    # below.  Normalising here would undo the priority rotation that
+    # round_robin persists after each select(), causing the same credential to
+    # be picked every time (the priority "snaps back" on the next load_pool).
+    strategy = get_pool_strategy(provider)
+    if strategy in (STRATEGY_ROUND_ROBIN, STRATEGY_LEAST_USED, STRATEGY_RANDOM):
+        return False
+
     source_rank = {
         "env:ANTHROPIC_TOKEN": 0,
         "env:CLAUDE_CODE_OAUTH_TOKEN": 1,
