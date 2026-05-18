@@ -275,6 +275,9 @@ Discord behavior is controlled through two files: **`~/.hermes/.env`** for crede
 | `DISCORD_ALLOWED_ROLES` | No | — | Comma-separated Discord role IDs. Any member with one of these roles is authorized — OR semantics with `DISCORD_ALLOWED_USERS`. Auto-enables the **Server Members Intent** on connect. Useful when moderation teams churn: new mods get access as soon as the role is granted, no config push needed. |
 | `DISCORD_HOME_CHANNEL` | No | — | Channel ID where the bot sends proactive messages (cron output, reminders, notifications). |
 | `DISCORD_HOME_CHANNEL_NAME` | No | `"Home"` | Display name for the home channel in logs and status output. |
+| `DISCORD_APPROVAL_CHANNEL` / `DISCORD_APPROVAL_CHANNEL_ID` | No | — | Channel ID where dangerous-command approvals and Kanban review-required approval threads are delivered. |
+| `DISCORD_APPROVAL_USER_IDS` | No | — | Comma-separated user IDs allowed to approve or decline Kanban review replies. If unset together with `DISCORD_APPROVAL_ROLE_IDS`, Discord channel/thread permissions are the approval boundary. |
+| `DISCORD_APPROVAL_ROLE_IDS` | No | — | Comma-separated role IDs allowed to approve or decline Kanban review replies. OR semantics with `DISCORD_APPROVAL_USER_IDS`. |
 | `DISCORD_COMMAND_SYNC_POLICY` | No | `"safe"` | Controls native slash-command startup sync. `"safe"` diffs existing global commands and only updates what changed, recreating commands when Discord metadata changes cannot be applied via patch. `"bulk"` preserves the old `tree.sync()` behavior. `"off"` skips startup sync entirely. |
 | `DISCORD_REQUIRE_MENTION` | No | `true` | When `true`, the bot only responds in server channels when `@mentioned`. Set to `false` to respond to all messages in every channel. |
 | `DISCORD_THREAD_REQUIRE_MENTION` | No | `false` | When `true`, the in-thread mention shortcut is disabled — threads are gated the same as channels, requiring `@mention` even after the bot has already participated. Use this when multiple bots share a thread and you want each to fire only on explicit `@mention`. |
@@ -750,6 +753,35 @@ Semantics:
 
 This is the preferred pattern when the moderation team churns — new moderators get access the moment the role is granted, with no `.env` edit or gateway restart.
 
+### Approval Replies For Kanban Reviews
+
+When a Kanban worker blocks with a reason starting `review-required:` or `approval-required:`, Discord notification threads accept plain-text review replies:
+
+- `approved` unblocks the task so the worker can resume.
+- `declined` records the reviewer response and leaves the task blocked.
+
+By default, Hermes treats the Discord thread itself as the trust boundary: anyone who can write in that approval thread can approve or decline. For shared servers, configure a stricter allowlist:
+
+```yaml
+# ~/.hermes/config.yaml
+discord:
+  approval_channel: "123456789012345678"
+  approval_user_ids:
+    - "284102345871466496"
+  approval_role_ids:
+    - "987654321098765432"
+```
+
+Or through `.env`:
+
+```bash
+DISCORD_APPROVAL_CHANNEL=123456789012345678
+DISCORD_APPROVAL_USER_IDS=284102345871466496
+DISCORD_APPROVAL_ROLE_IDS=987654321098765432
+```
+
+If either approval allowlist is set, Hermes fails closed: an `approved` or `declined` reply from anyone outside the configured users/roles is acknowledged as unauthorized and does not change the task.
+
 ### Mention Control
 
 By default, Hermes blocks the bot from pinging `@everyone`, `@here`, and role mentions, even if its reply contains those tokens. This prevents a poorly-worded prompt or echoed user content from spamming a whole server. Individual `@user` pings and reply-reference pings (the little "replying to…" chip) stay enabled so normal conversation still works.
@@ -779,5 +811,4 @@ Leave `everyone` and `roles` at `false` unless you know exactly why you need the
 :::
 
 For more information on securing your Hermes Agent deployment, see the [Security Guide](../security.md).
-
 

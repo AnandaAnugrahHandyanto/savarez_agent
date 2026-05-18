@@ -254,6 +254,9 @@ For cloud sandbox backends, persistence is filesystem-oriented. `TERMINAL_LIFETI
 | `DISCORD_PROXY` | Proxy URL for Discord connections — overrides `HTTPS_PROXY`. Supports `http://`, `https://`, `socks5://` |
 | `DISCORD_HOME_CHANNEL` | Default Discord channel for cron delivery |
 | `DISCORD_HOME_CHANNEL_NAME` | Display name for the Discord home channel |
+| `DISCORD_APPROVAL_CHANNEL` / `DISCORD_APPROVAL_CHANNEL_ID` | Optional Discord channel ID where dangerous-command approvals and Kanban review-required approval threads are delivered. |
+| `DISCORD_APPROVAL_USER_IDS` | Optional comma-separated Discord user IDs allowed to approve or decline Kanban `review-required:` / `approval-required:` replies. If unset together with `DISCORD_APPROVAL_ROLE_IDS`, Discord channel/thread permissions are the approval boundary. |
+| `DISCORD_APPROVAL_ROLE_IDS` | Optional comma-separated Discord role IDs allowed to approve or decline Kanban `review-required:` / `approval-required:` replies. OR semantics with `DISCORD_APPROVAL_USER_IDS`. |
 | `DISCORD_COMMAND_SYNC_POLICY` | Discord slash-command startup sync policy: `safe` (diff and reconcile), `bulk` (legacy `tree.sync()`), or `off` |
 | `DISCORD_REQUIRE_MENTION` | Require an @mention before responding in server channels |
 | `DISCORD_FREE_RESPONSE_CHANNELS` | Comma-separated channel IDs where mention is not required |

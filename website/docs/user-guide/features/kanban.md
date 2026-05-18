@@ -718,7 +718,7 @@ Workers receive `$HERMES_TENANT` and namespace their memory writes by prefix. Th
 
 ## Gateway notifications
 
-When you run `/kanban create …` from the gateway (Telegram, Discord, Slack, etc.), the originating chat is automatically subscribed to the new task. The gateway's background notifier polls `task_events` every few seconds and delivers one message per terminal event (`completed`, `blocked`, `gave_up`, `crashed`, `timed_out`) to that chat. Completed tasks also send the first line of the worker's `--result` so you see the outcome without having to `/kanban show`.
+When you run `/kanban create …` from the gateway (Telegram, Discord, Slack, etc.), the originating chat is automatically subscribed to the new task. The gateway's background notifier polls `task_events` every few seconds and delivers one message per terminal event (`completed`, `blocked`, `gave_up`, `crashed`, `timed_out`) to that chat. For `review-required:` blocks, Discord users can reply `approved` or `declined` in the task thread; `approved` unblocks the task so the worker can resume and finish, while `declined` leaves it blocked for follow-up. If `discord.approval_user_ids` or `discord.approval_role_ids` is configured, only those users or roles can approve/decline; otherwise Discord channel and thread permissions are the approval boundary. Completed tasks also send the first line of the worker's `--result` so you see the outcome without having to `/kanban show`.
 
 You can manage subscriptions explicitly from the CLI — useful when a script / cron job wants to notify a chat it didn't originate from:
 
