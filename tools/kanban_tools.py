@@ -461,6 +461,41 @@ def _handle_block(args: dict, **kw) -> str:
                     f"could not block {tid} (unknown id or not in "
                     f"running/ready)"
                 )
+            # Worker-block auto-subscribe (card t_0abf738d). When this
+            # tool is invoked from inside a dispatcher-spawned worker
+            # (HERMES_KANBAN_TASK pinned to the target tid + HERMES_PROFILE
+            # populated by the dispatcher), register a subscription so a
+            # subsequent non-self comment from the user/operator wakes the
+            # task without manual `hermes kanban unblock`. Skipped when:
+            #   - tool was called outside a worker (no HERMES_KANBAN_TASK
+            #     or it points at a different tid — operator-driven block);
+            #   - HERMES_PROFILE missing (can't loop-guard a worker we
+            #     can't identify);
+            #   - reason is prefixed "review-required" — those need an
+            #     explicit human sign-off, not any random comment, per
+            #     the card's pitfalls section.
+            env_tid = os.environ.get("HERMES_KANBAN_TASK")
+            worker_profile = os.environ.get("HERMES_PROFILE")
+            reason_str = str(reason).strip().lower()
+            review_required = reason_str.startswith("review-required")
+            if (
+                env_tid == tid
+                and worker_profile
+                and not review_required
+            ):
+                try:
+                    kb.add_auto_unblock_sub(
+                        conn, task_id=tid,
+                        notifier_profile=worker_profile,
+                    )
+                except Exception:
+                    # The block already succeeded; failing to insert the
+                    # auto-unblock sub must NOT fail the tool call (the
+                    # caller can still be woken by `hermes kanban unblock`).
+                    logger.exception(
+                        "kanban_block: add_auto_unblock_sub failed for %s",
+                        tid,
+                    )
             run = kb.latest_run(conn, tid)
             return _ok(task_id=tid, run_id=run.id if run else None)
         finally:

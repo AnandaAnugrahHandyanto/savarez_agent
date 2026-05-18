@@ -868,6 +868,21 @@ CREATE TABLE IF NOT EXISTS kanban_notify_subs (
     PRIMARY KEY (task_id, platform, chat_id, thread_id)
 );
 
+-- Worker-block auto-subscribe (card t_0abf738d). When a worker calls
+-- ``kanban_block`` from inside a dispatcher-spawned run, the tool layer
+-- writes one row here so the dispatcher tick knows to promote
+-- ``blocked -> ready`` as soon as a non-self ``commented`` event arrives.
+-- ``block_event_id`` is the baseline cursor: only comments with
+-- ``task_events.id > block_event_id`` count, which keeps pre-block context
+-- comments from causing a spurious wake. The row is removed atomically
+-- when the unblock fires so the next block-cycle starts fresh.
+CREATE TABLE IF NOT EXISTS kanban_auto_unblock_subs (
+    task_id           TEXT NOT NULL PRIMARY KEY,
+    notifier_profile  TEXT NOT NULL,
+    block_event_id    INTEGER NOT NULL,
+    created_at        INTEGER NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_tasks_assignee_status ON tasks(assignee, status);
 CREATE INDEX IF NOT EXISTS idx_tasks_status          ON tasks(status);
 CREATE INDEX IF NOT EXISTS idx_tasks_tenant          ON tasks(tenant);
@@ -3092,6 +3107,10 @@ class DispatchResult:
     """Task ids auto-blocked by the spawn-failure circuit breaker."""
     timed_out: list[str] = field(default_factory=list)
     """Task ids whose workers exceeded ``max_runtime_seconds``."""
+    auto_unblocked: list[str] = field(default_factory=list)
+    """Task ids promoted ``blocked -> ready/todo`` by the worker-block
+    auto-subscribe loop (card t_0abf738d). The corresponding
+    ``unblocked_by_comment`` task_event is the audit record."""
 
 
 # Bounded registry of recently-reaped worker child exits, populated by the
@@ -3920,6 +3939,12 @@ def dispatch_once(
     if _crash_auto_blocked:
         result.auto_blocked.extend(_crash_auto_blocked)
     result.timed_out = enforce_max_runtime(conn)
+    # Worker-block auto-subscribe (card t_0abf738d): promote any subscribed
+    # ``blocked`` task that has accumulated a non-self ``commented`` event
+    # since the block. Must run BEFORE ``recompute_ready`` so a promotion
+    # that lands in 'todo' (parent re-gating) still gets picked up in the
+    # same tick when its parent is done.
+    result.auto_unblocked = auto_unblock_on_comment(conn)
     result.promoted = recompute_ready(conn)
 
     # Count tasks already running so max_spawn enforces concurrency rather
@@ -4592,6 +4617,195 @@ def remove_notify_sub(
             (task_id, platform, chat_id, thread_id or ""),
         )
     return cur.rowcount > 0
+
+
+# ---------------------------------------------------------------------------
+# Worker-block auto-subscribe (card t_0abf738d)
+# ---------------------------------------------------------------------------
+#
+# These helpers back the "worker self-blocks → user comments → worker
+# auto-wakes" loop. The subscription is opt-in: only the ``kanban_block``
+# tool layer writes rows (when running under a dispatcher-spawned worker),
+# so operator-driven blocks via ``hermes kanban block`` keep their explicit
+# unblock semantics. ``auto_unblock_on_comment`` is invoked as part of
+# :func:`dispatch_once` so the next dispatcher tick after a comment lands
+# both promotes ``blocked -> ready`` and claims/spawns the worker.
+#
+# Loop guard: the subscription stores the worker's profile name; a
+# ``commented`` event whose payload.author equals that profile does NOT
+# auto-unblock — workers must not unblock themselves with their own notes.
+
+
+def add_auto_unblock_sub(
+    conn: sqlite3.Connection,
+    *,
+    task_id: str,
+    notifier_profile: str,
+) -> None:
+    """Subscribe a worker profile to comment-driven auto-unblock of a task.
+
+    Idempotent on ``task_id`` (PRIMARY KEY): a second call for the same
+    task is a no-op and the original ``block_event_id`` baseline is
+    preserved so the cursor doesn't slide forward across stale subscribe
+    attempts.
+
+    The ``block_event_id`` baseline is the highest ``blocked`` event id
+    on the task at subscribe time. Only ``commented`` events with
+    ``task_events.id > block_event_id`` count for the auto-unblock pass —
+    pre-block context comments are ignored.
+    """
+    if not task_id or not str(task_id).strip():
+        raise ValueError("task_id is required")
+    if not notifier_profile or not str(notifier_profile).strip():
+        raise ValueError("notifier_profile is required")
+    now = int(time.time())
+    with write_txn(conn):
+        baseline_row = conn.execute(
+            "SELECT id FROM task_events "
+            "WHERE task_id = ? AND kind = 'blocked' "
+            "ORDER BY id DESC LIMIT 1",
+            (task_id,),
+        ).fetchone()
+        baseline = int(baseline_row["id"]) if baseline_row else 0
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO kanban_auto_unblock_subs
+                (task_id, notifier_profile, block_event_id, created_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            (task_id, notifier_profile.strip(), baseline, now),
+        )
+
+
+def list_auto_unblock_subs(
+    conn: sqlite3.Connection,
+    task_id: Optional[str] = None,
+) -> list[dict]:
+    if task_id is not None:
+        rows = conn.execute(
+            "SELECT * FROM kanban_auto_unblock_subs WHERE task_id = ?",
+            (task_id,),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT * FROM kanban_auto_unblock_subs"
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def remove_auto_unblock_sub(
+    conn: sqlite3.Connection, task_id: str
+) -> bool:
+    with write_txn(conn):
+        cur = conn.execute(
+            "DELETE FROM kanban_auto_unblock_subs WHERE task_id = ?",
+            (task_id,),
+        )
+    return cur.rowcount > 0
+
+
+def auto_unblock_on_comment(conn: sqlite3.Connection) -> list[str]:
+    """Promote ``blocked -> ready`` for every subscribed task that has
+    accumulated a non-self ``commented`` event since the block.
+
+    Returns the list of task ids promoted (empty list when nothing fired).
+
+    Behaviour:
+      - Only tasks currently in ``status='blocked'`` are considered. If a
+        task was already moved out of blocked (operator unblock, archive),
+        the stale subscription is dropped without effect.
+      - Comments are filtered by ``task_events.id > block_event_id`` so
+        pre-block context never triggers a wake.
+      - Comments whose payload.author equals the subscription's
+        ``notifier_profile`` are ignored (loop guard — a worker's own
+        comment must not unblock its own task).
+      - Multiple matching comments coalesce to a single ``blocked -> ready``
+        transition and a single ``unblocked_by_comment`` event.
+      - The subscription row is removed atomically with the promotion so
+        the next block-cycle starts fresh.
+    """
+    promoted: list[str] = []
+    with write_txn(conn):
+        subs = conn.execute(
+            "SELECT task_id, notifier_profile, block_event_id "
+            "FROM kanban_auto_unblock_subs"
+        ).fetchall()
+        for sub in subs:
+            tid = sub["task_id"]
+            profile = sub["notifier_profile"]
+            baseline = int(sub["block_event_id"])
+
+            trow = conn.execute(
+                "SELECT status FROM tasks WHERE id = ?", (tid,),
+            ).fetchone()
+            if trow is None:
+                # Task gone (archived/purged); drop the orphan sub.
+                conn.execute(
+                    "DELETE FROM kanban_auto_unblock_subs WHERE task_id = ?",
+                    (tid,),
+                )
+                continue
+            if trow["status"] != "blocked":
+                # Operator already unblocked / archived it. Subscription is
+                # stale; drop it so the next block-cycle re-subscribes.
+                conn.execute(
+                    "DELETE FROM kanban_auto_unblock_subs WHERE task_id = ?",
+                    (tid,),
+                )
+                continue
+
+            # Find the first non-self commented event after the baseline.
+            rows = conn.execute(
+                "SELECT id, payload FROM task_events "
+                "WHERE task_id = ? AND kind = 'commented' AND id > ? "
+                "ORDER BY id ASC",
+                (tid, baseline),
+            ).fetchall()
+            triggered = False
+            for r in rows:
+                author = None
+                if r["payload"]:
+                    try:
+                        author = (json.loads(r["payload"]) or {}).get("author")
+                    except Exception:
+                        author = None
+                if author and author == profile:
+                    continue
+                triggered = True
+                break
+            if not triggered:
+                continue
+
+            # State transition + audit event + subscription cleanup.
+            # Mirror the invariant guard from unblock_task: re-gate on
+            # parent completion. If parents aren't done land in 'todo'.
+            undone = conn.execute(
+                "SELECT 1 FROM task_links l "
+                "JOIN tasks p ON p.id = l.parent_id "
+                "WHERE l.child_id = ? AND p.status NOT IN ('done', 'archived') "
+                "LIMIT 1",
+                (tid,),
+            ).fetchone()
+            new_status = "todo" if undone else "ready"
+            cur = conn.execute(
+                "UPDATE tasks SET status = ?, current_run_id = NULL "
+                "WHERE id = ? AND status = 'blocked'",
+                (new_status, tid),
+            )
+            if cur.rowcount != 1:
+                # Lost a race; leave the subscription in place for the
+                # next tick to retry.
+                continue
+            _append_event(
+                conn, tid, "unblocked_by_comment",
+                {"status": new_status, "notifier_profile": profile},
+            )
+            conn.execute(
+                "DELETE FROM kanban_auto_unblock_subs WHERE task_id = ?",
+                (tid,),
+            )
+            promoted.append(tid)
+    return promoted
 
 
 def unseen_events_for_sub(
