@@ -431,6 +431,9 @@ class TelegramAdapter(BasePlatformAdapter):
         self._model_picker_state: Dict[str, dict] = {}
         # Approval button state: message_id → session_key
         self._approval_state: Dict[int, str] = {}
+        # idx-to-value mapping for external (MCP elicitation) approvals,
+        # keyed by approval_id (uuid hex from agent.mcp_elicitation_bridge).
+        self._external_approval_choices: Dict[str, Dict[str, str]] = {}
         # Slash-confirm button state: confirm_id → session_key (for /reload-mcp
         # and any other slash-confirm prompts; see GatewayRunner._request_slash_confirm).
         self._slash_confirm_state: Dict[str, str] = {}
@@ -1272,6 +1275,25 @@ class TelegramAdapter(BasePlatformAdapter):
             builder = builder.request(request).get_updates_request(get_updates_request)
             self._app = builder.build()
             self._bot = self._app.bot
+
+            # Register with the MCP elicitation bridge so server-initiated
+            # `elicitation/create` requests get rendered as Telegram buttons
+            # via send_approval. We pass the running loop so the bridge can
+            # dispatch the send onto it via asyncio.run_coroutine_threadsafe
+            # (the elicitation handler runs on Hermes's MCP loop, not ours).
+            try:
+                import asyncio as _asyncio
+                from agent.mcp_elicitation_bridge import register_send_callback
+                register_send_callback(self.send_approval, loop=_asyncio.get_running_loop())
+                logger.info(
+                    "[%s] registered send_approval with mcp_elicitation_bridge",
+                    self.name,
+                )
+            except Exception as _exc:  # pragma: no cover
+                logger.debug(
+                    "[%s] mcp_elicitation_bridge registration skipped: %s",
+                    self.name, _exc,
+                )
             
             # Register handlers
             self._app.add_handler(TelegramMessageHandler(
@@ -2115,6 +2137,84 @@ class TelegramAdapter(BasePlatformAdapter):
             logger.warning("[%s] send_update_prompt failed: %s", self.name, e)
             return SendResult(success=False, error=str(e))
 
+    async def send_approval(
+        self,
+        *,
+        chat_id: str,
+        title: str,
+        body: str,
+        approval_id: str,
+        choices: List[Dict[str, str]],
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send an inline-keyboard approval prompt with caller-provided
+        title, body, and button choices.
+
+        Used by ``agent/mcp_elicitation_bridge.py`` to surface approvals
+        from MCP servers (per the MCP elicitation spec). Each button's
+        ``callback_data`` is ``extappr:<idx>:<approval_id>`` where
+        ``idx`` is the position in ``choices``.
+        ``_handle_callback_query`` parses that and calls
+        ``mcp_elicitation_bridge.resolve_elicitation`` to unblock the
+        bridge.
+
+        Layout: 2 buttons per row, wrapping for any choice count up to 8
+        (Telegram's inline-keyboard practical max).
+
+        IMPORTANT: this method must run on the bot's event loop because
+        ``self._bot.send_message`` and python-telegram-bot's internal
+        ``asyncio.Event`` primitives are bound to it. The elicitation
+        bridge dispatches us via ``asyncio.run_coroutine_threadsafe`` so
+        this constraint is honoured even when the calling MCP handler
+        runs on a different loop.
+        """
+        if not self._bot:
+            return SendResult(success=False, error="Not connected")
+        if not choices:
+            return SendResult(success=False, error="No choices provided")
+        if len(choices) > 8:
+            return SendResult(success=False, error="Too many choices (max 8)")
+
+        try:
+            self._external_approval_choices[approval_id] = {
+                str(i): c["value"] for i, c in enumerate(choices)
+            }
+
+            buttons = [
+                InlineKeyboardButton(
+                    c["label"],
+                    callback_data=f"extappr:{i}:{approval_id}",
+                )
+                for i, c in enumerate(choices)
+            ]
+            rows = [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
+            keyboard = InlineKeyboardMarkup(rows)
+
+            body_preview = body[:3500] + "…" if len(body) > 3500 else body
+            text_parts = [f"⚠️ <b>{_html.escape(title)}</b>"]
+            if body_preview:
+                text_parts.append(f"<pre>{_html.escape(body_preview)}</pre>")
+            text = "\n\n".join(text_parts)
+
+            thread_id = self._metadata_thread_id(metadata)
+            kwargs: Dict[str, Any] = {
+                "chat_id": int(chat_id),
+                "text": text,
+                "parse_mode": ParseMode.HTML,
+                "reply_markup": keyboard,
+                **self._link_preview_kwargs(),
+            }
+            message_thread_id = self._message_thread_id_for_send(thread_id)
+            if message_thread_id is not None:
+                kwargs["message_thread_id"] = message_thread_id
+
+            msg = await self._bot.send_message(**kwargs)
+            return SendResult(success=True, message_id=str(msg.message_id))
+        except Exception as e:
+            logger.warning("[%s] send_approval failed: %s", self.name, e)
+            self._external_approval_choices.pop(approval_id, None)
+            return SendResult(success=False, error=str(e))
+
     async def send_exec_approval(
         self, chat_id: str, command: str, session_key: str,
         description: str = "dangerous command",
@@ -2640,6 +2740,70 @@ class TelegramAdapter(BasePlatformAdapter):
             chat_id = str(query.message.chat_id) if query.message else None
             if chat_id:
                 await self._handle_model_picker_callback(query, data, chat_id)
+            return
+
+        # --- External (MCP elicitation) approval callbacks (extappr:idx:approval_id) ---
+        # Sent by send_approval() on behalf of agent.mcp_elicitation_bridge.
+        # idx → value mapping was stashed in self._external_approval_choices
+        # at send time; we look it up and call resolve_elicitation to
+        # unblock the waiting MCP elicitation handler coroutine.
+        if data.startswith("extappr:"):
+            parts = data.split(":", 2)
+            if len(parts) == 3:
+                idx_str = parts[1]
+                approval_id = parts[2]
+
+                caller_id = str(getattr(query.from_user, "id", ""))
+                if not self._is_callback_user_authorized(
+                    caller_id,
+                    chat_id=query_chat_id,
+                    chat_type=str(query_chat_type) if query_chat_type is not None else None,
+                    thread_id=str(query_thread_id) if query_thread_id is not None else None,
+                    user_name=query_user_name,
+                ):
+                    await query.answer(text="⛔ You are not authorized to approve this request.")
+                    return
+
+                idx_to_value = self._external_approval_choices.pop(approval_id, None)
+                if not idx_to_value:
+                    await query.answer(text="This approval has already been resolved or expired.")
+                    return
+
+                choice_value = idx_to_value.get(idx_str)
+                if not choice_value:
+                    await query.answer(text="Invalid approval choice.")
+                    return
+
+                user_display = getattr(query.from_user, "first_name", "User")
+                tapped_label = None
+                if query.message and query.message.reply_markup:
+                    for row in query.message.reply_markup.inline_keyboard:
+                        for btn in row:
+                            if btn.callback_data == data:
+                                tapped_label = btn.text
+                                break
+                        if tapped_label:
+                            break
+
+                await query.answer(text=tapped_label or choice_value)
+
+                try:
+                    await query.edit_message_text(
+                        text=f"{tapped_label or choice_value} (by {user_display})",
+                        parse_mode=ParseMode.HTML,
+                        reply_markup=None,
+                    )
+                except Exception:
+                    pass
+
+                try:
+                    from agent.mcp_elicitation_bridge import resolve_elicitation
+                    resolve_elicitation(approval_id, choice_value)
+                except Exception as exc:
+                    logger.error(
+                        "[%s] failed to resolve external approval %s: %s",
+                        self.name, approval_id, exc,
+                    )
             return
 
         # --- Exec approval callbacks (ea:choice:id) ---

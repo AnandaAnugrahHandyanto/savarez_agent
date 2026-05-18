@@ -1085,6 +1085,73 @@ class MCPServerTask:
         task.add_done_callback(self._pending_refresh_tasks.discard)
         return task
 
+    def _make_elicitation_handler(self):
+        """Build an ``elicitation_callback`` for ``ClientSession`` that
+        renders enum-typed MCP elicitation requests as platform inline
+        keyboard buttons (via ``agent.mcp_elicitation_bridge``).
+
+        Per MCP spec, an external server can call ``elicitation/create``
+        with a JSON-Schema form. We support the single-property
+        string-enum case (untitled ``"enum"`` or titled ``"oneOf"`` with
+        ``const`` + ``title``) — that's what rmcp's
+        ``EnumSchemaBuilder``/``ElicitationSchema::builder`` emits and is
+        what we support today.
+
+        Free-form / multi-field schemas are declined for now (we have no
+        platform UI for arbitrary input). Server authors should design
+        their approvals as enums.
+        """
+        try:
+            from agent import mcp_elicitation_bridge
+        except Exception as exc:
+            logger.debug("[%s] mcp_elicitation_bridge unavailable: %s", self.name, exc)
+            return None
+        try:
+            import mcp.types as types
+        except Exception:
+            return None
+
+        async def handle(context, params):
+            mode = getattr(params, "mode", None)
+            if mode is not None and mode != "form":
+                logger.info(
+                    "[%s] elicit: declined (unsupported mode=%s)", self.name, mode,
+                )
+                return types.ElicitResult(action="decline")
+
+            schema = getattr(params, "requestedSchema", None) or {}
+            choices = mcp_elicitation_bridge.extract_enum_choices(schema)
+            if not choices:
+                logger.info(
+                    "[%s] elicit: declined (no enum choices in schema)", self.name,
+                )
+                return types.ElicitResult(action="decline")
+
+            full_msg = getattr(params, "message", "") or ""
+            title, _, body = full_msg.partition("\n")
+            title = title.strip() or "Approval required"
+            body = body.strip()
+
+            chat_id = mcp_elicitation_bridge.resolve_chat_id()
+            if not chat_id:
+                logger.warning(
+                    "[%s] elicit: declined (no chat_id; set TELEGRAM_HOME_CHANNEL)",
+                    self.name,
+                )
+                return types.ElicitResult(action="decline")
+
+            chosen = await mcp_elicitation_bridge.request_elicitation(
+                chat_id=chat_id,
+                title=title,
+                body=body,
+                choices=choices,
+            )
+            if chosen is None:
+                return types.ElicitResult(action="cancel")
+            return types.ElicitResult(action="accept", content={"choice": chosen})
+
+        return handle
+
     def _make_message_handler(self):
         """Build a ``message_handler`` callback for ``ClientSession``.
 
@@ -1284,6 +1351,15 @@ class MCPServerTask:
         sampling_kwargs = self._sampling.session_kwargs() if self._sampling else {}
         if _MCP_NOTIFICATION_TYPES and _MCP_MESSAGE_HANDLER_SUPPORTED:
             sampling_kwargs["message_handler"] = self._make_message_handler()
+        # External MCP servers can prompt the user via
+        # `elicitation/create` (per MCP spec); we surface those
+        # prompts as platform inline-keyboard buttons. The handler
+        # is None when types aren't importable, in which case we
+        # just skip — the SDK will reject elicitations and the
+        # server will see CapabilityNotSupported.
+        _elicit_handler = self._make_elicitation_handler()
+        if _elicit_handler is not None:
+            sampling_kwargs["elicitation_callback"] = _elicit_handler
 
         # Snapshot child PIDs before spawning so we can track the new one.
         pids_before = _snapshot_child_pids()
@@ -1374,6 +1450,15 @@ class MCPServerTask:
         sampling_kwargs = self._sampling.session_kwargs() if self._sampling else {}
         if _MCP_NOTIFICATION_TYPES and _MCP_MESSAGE_HANDLER_SUPPORTED:
             sampling_kwargs["message_handler"] = self._make_message_handler()
+        # External MCP servers can prompt the user via
+        # `elicitation/create` (per MCP spec); we surface those
+        # prompts as platform inline-keyboard buttons. The handler
+        # is None when types aren't importable, in which case we
+        # just skip — the SDK will reject elicitations and the
+        # server will see CapabilityNotSupported.
+        _elicit_handler = self._make_elicitation_handler()
+        if _elicit_handler is not None:
+            sampling_kwargs["elicitation_callback"] = _elicit_handler
 
         # SSE transport (for MCP servers that implement the SSE transport protocol
         # rather than Streamable HTTP). Configure with ``transport: sse`` in the
