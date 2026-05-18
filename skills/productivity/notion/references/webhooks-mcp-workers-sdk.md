@@ -99,6 +99,14 @@ Delivery facts:
 - High-frequency events are aggregated by entity and delayed briefly.
 - Notion retries failed delivery up to 8 times with exponential backoff; final retry is about 24 hours after initial event.
 
+### Webhook API-version cliffs
+
+Connection webhook subscriptions carry an API version selected in the Developer Portal, separately from REST request `Notion-Version` headers.
+
+- Upgrade handlers deliberately. `2025-09-03` introduces data-source event/entity shapes and database/data-source parent changes. Source: `developers-notion-com-guides-get-started-upgrade-guide-2025-09-03-md.md#L665-L699`.
+- `2026-03-11` is available for webhooks and database-automation webhooks, but the docs say its webhook payloads are identical to `2025-09-03`. Source: `developers-notion-com-guides-get-started-upgrade-guide-2026-03-11-md.md#L263-L298`.
+- REST `archived` → `in_trash` does **not** apply to webhook payload fields; keep webhook payload parsers compatible with documented webhook shapes.
+
 Monitor gaps:
 
 - `llms.txt` and changelog list file-upload, view, and page-transcript webhook references not fully reflected in the focused delivery table.

@@ -240,6 +240,14 @@ View query notes:
 - You cannot add extra filters/sorts to a view query.
 - Use data-source query if you need ad-hoc filters/sorts.
 
+Create/update/dashboard caveats:
+
+- Views require API version `2025-09-03` or newer. Source: `developers-notion-com-guides-data-apis-working-with-views-md.md#L15-L17`.
+- `POST /v1/views` requires `data_source_id` and exactly one placement parent: `database_id`, dashboard `view_id`, or `create_database`. Database IDs and data-source IDs are different. Source: `working-with-views#L253-L256`.
+- Dashboard view `configuration.rows` is read-only; manage dashboard layout by creating/deleting widget views. Widgets can only be placed with `view_id`, and the docs cap widgets at four per row. Sources: `working-with-views#L1038-L1039`, `#L1446-L1448`.
+- `PATCH /v1/views/{view_id}` updates configuration by shallow merge and still needs required config fields. Source: `working-with-views#L1258-L1259`.
+- View-query access still depends on data-source/database access; `404 object_not_found` can mean the connection cannot access the underlying database. Source: `working-with-views#L1597-L1610`.
+
 ## Search
 
 Endpoint:

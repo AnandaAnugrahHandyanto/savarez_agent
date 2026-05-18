@@ -21,7 +21,7 @@ Use when reading, writing, integrating, or troubleshooting Notion through the RE
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `Notion`, `Productivity`, `Notes`, `Data Sources`, `API`, `CLI`, `Markdown`, `Files`, `Webhooks`, `MCP` |
-| Related skills | `web-apis`, `oauth-sota`, [`webhook-subscriptions`](/docs/user-guide/skills/bundled/devops/devops-webhook-subscriptions) |
+| Related skills | [`webhook-subscriptions`](/docs/user-guide/skills/bundled/devops/devops-webhook-subscriptions) |
 
 ## Reference: full SKILL.md
 
@@ -213,6 +213,15 @@ curl -sS -X POST "https://api.notion.com/v1/data_sources/${DATA_SOURCE_ID}/query
 
 For very large data sources, avoid blind full polling. Query pagination can cap around 10,000 results; use filters and webhooks.
 
+### Work with saved views
+
+Use views when the user's saved filter/sort/layout is the desired truth. Use data-source query when you need ad-hoc filters/sorts.
+
+- List views with `GET /v1/views?database_id=...` or `GET /v1/views?data_source_id=...`; retrieve full configuration with `GET /v1/views/{view_id}`.
+- Create views with `POST /v1/views` using `data_source_id` plus exactly one placement parent: `database_id`, dashboard `view_id`, or `create_database`.
+- View queries are cached result sets: create `/queries`, paginate, then delete/free them. They expire after about 15 minutes and cannot accept extra filters/sorts.
+- Dashboard view `configuration.rows` is read-only; change dashboard layout by creating/deleting widget views, respecting the documented widget-row limits.
+
 ### Create a page from markdown
 
 Under a normal page:
@@ -226,6 +235,14 @@ curl -sS -X POST "https://api.notion.com/v1/pages" \
 ```
 
 Under a data source, use `data_source_id` as parent and provide properties matching the schema.
+
+### Create or apply page templates
+
+- List data-source templates with `GET /v1/data_sources/{data_source_id}/templates`; templates are ordinary Notion pages surfaced for that data source.
+- For page create/update, `template` is `{ "type": "default" }` or `{ "type": "template_id", "template_id": "..." }`; include `timezone` when `@now` / `@today` should resolve predictably.
+- Template application is asynchronous: read the page after the request before depending on merged content or properties.
+- Do not combine `template` with `children`; avoid mixing template with markdown/content modes unless the current schema docs prove that exact combination.
+- Updating an existing page with `erase_content: true` is destructive replacement before template application.
 
 ### Update page markdown
 
@@ -281,6 +298,7 @@ Webhooks:
 - Validate event bodies with `X-Notion-Signature`: HMAC-SHA256 over the exact raw JSON body using the subscription verification token.
 - Events are signals. Fetch latest state by REST API; ordering is not guaranteed.
 - Notion retries failed deliveries up to 8 times with exponential backoff, with final retry around 24 hours after the first event.
+- Webhook subscriptions have their own Developer Portal API version. Upgrade handlers deliberately: `2025-09-03` changes database/data-source event shapes, while `2026-03-11` webhook payloads are documented as identical to `2025-09-03`; REST `archived` → `in_trash` does not apply to webhook payload fields.
 
 MCP:
 
@@ -343,7 +361,7 @@ Load these support files for deeper work:
 1. **Using stale `2025-09-03` examples for new code.** Use `2026-03-11` unless compatibility requires an older version.
 2. **Calling databases rows.** Databases are containers; data sources hold schema and rows.
 3. **Using `database_id` for new row parents/relations.** Use `data_source_id` after `2025-09-03`.
-4. **Using `archived`, `after`, or `transcription` in new payloads.** Use `in_trash`, `position`, and `meeting_notes`.
+4. **Using `archived`, `after`, or `transcription` in new REST payloads.** Use `in_trash`, `position`, and `meeting_notes`; treat meeting-notes blocks as read/query-only, not create/update payload targets.
 5. **Assuming 404 means absent.** It often means the page/data source is not shared with the token owner/connection.
 6. **Forgetting capabilities.** Token page access is not enough if the connection lacks read/insert/update/comment/user capability.
 7. **Using search as inventory.** Search is eventually consistent and not exhaustive. Prefer known IDs or data-source queries.
