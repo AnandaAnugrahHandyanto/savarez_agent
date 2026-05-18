@@ -1032,7 +1032,6 @@ def _resolve_container_task_id(task_id: Optional[str]) -> str:
     # API gateway sessions share the legacy default sandbox key.
     # Accepted forms: "api-session" or "api-session-<alnum[-alnum]...>".
     if _is_api_session_task_id(task_id):
-    if task_id.startswith("api-session-"):
         return "default"
     if _is_subagent_task_id(task_id):
         return "default"
