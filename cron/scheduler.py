@@ -11,12 +11,16 @@ runs at a time if multiple processes overlap.
 import asyncio
 import concurrent.futures
 import contextvars
+import hashlib
 import json
 import logging
 import os
 import shutil
 import subprocess
 import sys
+import threading
+import time
+from datetime import datetime, timezone
 
 # fcntl is Unix-only; on Windows use msvcrt for file locking
 try:
@@ -40,6 +44,84 @@ from hermes_cli.config import load_config, _expand_env_vars
 from hermes_time import now as _hermes_now
 
 logger = logging.getLogger(__name__)
+
+_CRON_RUNTIME_EVENT_LOCK = threading.Lock()
+
+
+def _cron_runtime_failure_kind(status: str, resolution: Optional[str]) -> str:
+    """Normalize cron runtime outcomes for the Phase 5.75 telemetry schema."""
+    if status in {"completed", "silent"}:
+        return "none"
+    normalized = str(resolution or "").strip().lower()
+    if normalized in {"timeout", "inactivity_timeout"}:
+        return "timeout"
+    if normalized in {"prompt_injection_blocked", "blocked"}:
+        return "safety_block"
+    if normalized in {"script_failed", "script_missing"}:
+        return "script_error"
+    return "error"
+
+
+def _write_cron_runtime_event(
+    *,
+    job: dict,
+    status: str,
+    resolution: str,
+    session_id: Optional[str] = None,
+    provider: Optional[str] = None,
+    model: Optional[str] = None,
+    latency_seconds: Optional[float] = None,
+    error: Optional[str] = None,
+    safety_trip: bool = False,
+) -> None:
+    """Append cron lifecycle metadata to the unified runtime telemetry log.
+
+    The event intentionally excludes prompts, script stdout, final responses,
+    delivery targets, raw commands, and provider payloads. Error text is stored
+    only as a short hash plus a coarse error type so operator dashboards can
+    count failures without leaking job contents.
+    """
+    try:
+        logs_dir = _get_hermes_home() / "logs"
+        logs_dir.mkdir(parents=True, exist_ok=True)
+        event = {
+            "ts": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
+            "event_type": "cron.runtime",
+            "platform": "cron",
+            "role": "cron",
+            "job_id": str(job.get("id") or "unknown"),
+            "job_name": str(job.get("name") or "(unnamed)")[:120],
+            "status": status,
+            "provider": provider or "unknown",
+            "model": model or "unknown",
+            "failure_kind": _cron_runtime_failure_kind(status, resolution),
+            "resolution": resolution,
+            "accepted": False,
+            "safety_trip": bool(safety_trip),
+        }
+        if session_id:
+            event["session_id"] = str(session_id)
+        if latency_seconds is not None:
+            event["latency_seconds"] = round(float(latency_seconds), 3)
+            event["duration_seconds"] = round(float(latency_seconds), 3)
+        if error:
+            error_text = str(error)
+            raw_type = error_text.split(":", 1)[0].strip()
+            if (
+                raw_type.replace("_", "").isalnum()
+                and " " not in raw_type
+                and len(raw_type) <= 80
+                and raw_type.endswith(("Error", "Exception", "Timeout"))
+            ):
+                event["error_type"] = raw_type
+            else:
+                event["error_type"] = "Error"
+            event["error_hash"] = hashlib.sha256(error_text.encode("utf-8", "ignore")).hexdigest()[:16]
+        with _CRON_RUNTIME_EVENT_LOCK:
+            with (logs_dir / "provider-failover-events.jsonl").open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(event, sort_keys=True) + "\n")
+    except Exception as exc:
+        logger.debug("cron runtime event log failed: %s", exc)
 
 
 class CronPromptInjectionBlocked(Exception):
@@ -1030,6 +1112,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     """
     job_id = job["id"]
     job_name = str(job.get("name") or job.get("prompt") or job_id or "cron job")
+    _job_started_at = time.monotonic()
 
     # ---------------------------------------------------------------
     # no_agent short-circuit — the script IS the job, no LLM involvement.
@@ -1054,6 +1137,13 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         if not script_path:
             err = "no_agent=True but no script is set for this job"
             logger.error("Job '%s': %s", job_id, err)
+            _write_cron_runtime_event(
+                job=job,
+                status="failed",
+                resolution="script_missing",
+                latency_seconds=time.monotonic() - _job_started_at,
+                error=err,
+            )
             return False, "", "", err
 
         # Apply workdir if configured — lets scripts use predictable relative
@@ -1096,6 +1186,13 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 f"**Status:** script failed\n\n"
                 f"{output}\n"
             )
+            _write_cron_runtime_event(
+                job=job,
+                status="failed",
+                resolution="script_failed",
+                latency_seconds=time.monotonic() - _job_started_at,
+                error=output,
+            )
             return False, doc, alert, output
 
         # Honour the wakeAgent gate as a silent signal — `wakeAgent: false`
@@ -1111,6 +1208,12 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 f"**Mode:** no_agent (script)\n"
                 f"**Status:** silent (wakeAgent=false)\n"
             )
+            _write_cron_runtime_event(
+                job=job,
+                status="silent",
+                resolution="wake_agent_false",
+                latency_seconds=time.monotonic() - _job_started_at,
+            )
             return True, silent_doc, SILENT_MARKER, None
 
         if not output.strip():
@@ -1122,6 +1225,12 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 f"**Mode:** no_agent (script)\n"
                 f"**Status:** silent (empty output)\n"
             )
+            _write_cron_runtime_event(
+                job=job,
+                status="silent",
+                resolution="empty_output",
+                latency_seconds=time.monotonic() - _job_started_at,
+            )
             return True, silent_doc, SILENT_MARKER, None
 
         doc = (
@@ -1131,6 +1240,12 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             f"**Mode:** no_agent (script)\n\n"
             f"---\n\n"
             f"{output}\n"
+        )
+        _write_cron_runtime_event(
+            job=job,
+            status="completed",
+            resolution="script_completed",
+            latency_seconds=time.monotonic() - _job_started_at,
         )
         return True, doc, output, None
 
@@ -1171,6 +1286,12 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 f"**Run Time:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
                 "Script gate returned `wakeAgent=false` — agent skipped.\n"
             )
+            _write_cron_runtime_event(
+                job=job,
+                status="silent",
+                resolution="wake_agent_false",
+                latency_seconds=time.monotonic() - _job_started_at,
+            )
             return True, silent_doc, SILENT_MARKER, None
 
     try:
@@ -1197,9 +1318,23 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             "and the match is a false positive, rephrase the content to avoid "
             "the threat pattern (`tools/cronjob_tools.py::_CRON_THREAT_PATTERNS`)."
         )
+        _write_cron_runtime_event(
+            job=job,
+            status="failed",
+            resolution="prompt_injection_blocked",
+            latency_seconds=time.monotonic() - _job_started_at,
+            error=str(block_exc),
+            safety_trip=True,
+        )
         return False, blocked_doc, "", str(block_exc)
     if prompt is None:
         logger.info("Job '%s': script produced no output, skipping AI call.", job_name)
+        _write_cron_runtime_event(
+            job=job,
+            status="silent",
+            resolution="script_empty_output",
+            latency_seconds=time.monotonic() - _job_started_at,
+        )
         return True, "", SILENT_MARKER, None
     origin = _resolve_origin(job)
     _cron_session_id = f"cron_{job_id}_{_hermes_now().strftime('%Y%m%d_%H%M%S')}"
@@ -1600,6 +1735,15 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
 """
         
         logger.info("Job '%s' completed successfully", job_name)
+        _write_cron_runtime_event(
+            job=job,
+            status="silent" if not final_response.strip() else "completed",
+            resolution="no_response" if not final_response.strip() else "agent_completed",
+            session_id=_cron_session_id,
+            provider=runtime.get("provider") if isinstance(runtime, dict) else None,
+            model=model,
+            latency_seconds=time.monotonic() - _job_started_at,
+        )
         return True, output, final_response, None
         
     except Exception as e:
@@ -1622,6 +1766,22 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
 {error_msg}
 ```
 """
+        _runtime_for_event = locals().get("runtime")
+        _model_for_event = locals().get("model")
+        _write_cron_runtime_event(
+            job=job,
+            status="failed",
+            resolution="inactivity_timeout" if isinstance(e, TimeoutError) else "agent_failed",
+            session_id=locals().get("_cron_session_id"),
+            provider=(
+                _runtime_for_event.get("provider")
+                if isinstance(_runtime_for_event, dict)
+                else None
+            ),
+            model=_model_for_event if isinstance(_model_for_event, str) else None,
+            latency_seconds=time.monotonic() - _job_started_at,
+            error=error_msg,
+        )
         return False, output, "", error_msg
 
     finally:

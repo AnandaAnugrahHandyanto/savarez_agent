@@ -18,6 +18,13 @@ from unittest.mock import patch
 import pytest
 
 
+def _read_runtime_events(hermes_home: Path) -> list[dict]:
+    path = hermes_home / "logs" / "provider-failover-events.jsonl"
+    if not path.exists():
+        return []
+    return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+
+
 @pytest.fixture
 def hermes_env(tmp_path, monkeypatch):
     """Isolate HERMES_HOME for each test so jobs/scripts don't leak."""
@@ -210,6 +217,19 @@ def test_run_job_no_agent_success_returns_script_stdout(hermes_env):
     assert "RAM 92% on host" in final_response
     assert "RAM 92% on host" in doc
 
+    events = _read_runtime_events(hermes_env)
+    assert len(events) == 1
+    event = events[0]
+    assert event["event_type"] == "cron.runtime"
+    assert event["platform"] == "cron"
+    assert event["role"] == "cron"
+    assert event["job_id"] == job["id"]
+    assert event["status"] == "completed"
+    assert event["resolution"] == "script_completed"
+    assert event["failure_kind"] == "none"
+    assert isinstance(event["latency_seconds"], float)
+    assert "RAM 92%" not in json.dumps(event)
+
 
 def test_run_job_no_agent_empty_output_is_silent(hermes_env):
     """Empty stdout → SILENT_MARKER, which suppresses delivery downstream."""
@@ -227,6 +247,11 @@ def test_run_job_no_agent_empty_output_is_silent(hermes_env):
     assert error is None
     assert final_response == SILENT_MARKER
 
+    events = _read_runtime_events(hermes_env)
+    assert events[-1]["status"] == "silent"
+    assert events[-1]["resolution"] == "empty_output"
+    assert events[-1]["failure_kind"] == "none"
+
 
 def test_run_job_no_agent_wake_gate_is_silent(hermes_env):
     """wakeAgent=false gate in stdout triggers a silent run."""
@@ -242,6 +267,12 @@ def test_run_job_no_agent_wake_gate_is_silent(hermes_env):
     success, doc, final_response, error = run_job(job)
     assert success is True
     assert final_response == SILENT_MARKER
+
+    events = _read_runtime_events(hermes_env)
+    assert events[-1]["status"] == "silent"
+    assert events[-1]["resolution"] == "wake_agent_false"
+    assert events[-1]["failure_kind"] == "none"
+    assert events[-1]["safety_trip"] is False
 
 
 def test_run_job_no_agent_script_failure_delivers_error(hermes_env):
@@ -261,6 +292,14 @@ def test_run_job_no_agent_script_failure_delivers_error(hermes_env):
     assert "oops" in final_response or "exited with code 3" in final_response
     assert "Cron watchdog" in final_response  # alert header
 
+    events = _read_runtime_events(hermes_env)
+    assert events[-1]["status"] == "failed"
+    assert events[-1]["resolution"] == "script_failed"
+    assert events[-1]["failure_kind"] == "script_error"
+    assert events[-1]["error_type"]
+    assert events[-1]["error_hash"]
+    assert "oops" not in json.dumps(events[-1])
+
 
 def test_run_job_no_agent_never_invokes_aiagent(hermes_env):
     """no_agent jobs must NOT import/construct the AIAgent."""
@@ -279,6 +318,33 @@ def test_run_job_no_agent_never_invokes_aiagent(hermes_env):
         run_job(job)
 
     ai_mock.assert_not_called()
+
+
+def test_run_job_prompt_injection_block_writes_safety_telemetry(hermes_env):
+    """LLM cron prompt-injection blocks should emit redacted safety telemetry."""
+    from cron.jobs import create_job
+    from cron.scheduler import CronPromptInjectionBlocked, run_job
+
+    job = create_job(prompt="run", schedule="every 5m", deliver="local")
+
+    with patch("cron.scheduler._build_job_prompt") as build_prompt:
+        build_prompt.side_effect = CronPromptInjectionBlocked("secret payload blocked")
+        success, doc, final_response, error = run_job(job)
+
+    assert success is False
+    assert final_response == ""
+    assert "BLOCKED" in doc
+    assert "secret payload blocked" in error
+
+    events = _read_runtime_events(hermes_env)
+    event = events[-1]
+    assert event["event_type"] == "cron.runtime"
+    assert event["status"] == "failed"
+    assert event["resolution"] == "prompt_injection_blocked"
+    assert event["failure_kind"] == "safety_block"
+    assert event["safety_trip"] is True
+    assert event["error_hash"]
+    assert "secret payload blocked" not in json.dumps(event)
 
 
 # ---------------------------------------------------------------------------
