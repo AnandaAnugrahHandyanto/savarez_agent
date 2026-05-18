@@ -1853,6 +1853,13 @@ def install_linux_gateway_from_setup(force: bool = False) -> tuple[str | None, b
             else:
                 print_info("  After setup, run: sudo hermes gateway install --system --run-as-user <your-user>")
             print_info("  Then start it with: sudo hermes gateway start --system")
+            # Offer user-level as a simpler alternative instead of leaving the
+            # user stranded — but only if no user-level unit already exists.
+            if not get_systemd_unit_path(system=False).exists():
+                print()
+                if prompt_yes_no("  Install as a user service instead? (No sudo required.)", True):
+                    systemd_install(force=force, system=False)
+                    return "user", True
             return scope, False
 
         if not run_as_user:
@@ -1865,6 +1872,14 @@ def install_linux_gateway_from_setup(force: bool = False) -> tuple[str | None, b
 
         systemd_install(force=force, system=True, run_as_user=run_as_user)
         return scope, True
+
+    # User-level install: warn if system-level already exists (#24261)
+    if scope == "user" and get_systemd_unit_path(system=True).exists():
+        print_warning("  A system-level gateway service is already installed.")
+        if not prompt_yes_no("  Install a user-level service alongside it? (This can cause conflicts.)", False):
+            print_info("  Skipped. Use the existing system service, or uninstall it first:")
+            print_info("    sudo hermes gateway uninstall --system")
+            return None, False
 
     systemd_install(force=force, system=False)
     return scope, True
@@ -2440,6 +2455,24 @@ def _get_restart_drain_timeout() -> float:
 def systemd_install(force: bool = False, system: bool = False, run_as_user: str | None = None):
     if system:
         _require_root_for_system_service("install")
+
+    # Prevent accidentally installing a user-level service when a system-level
+    # one already exists (and vice versa).  Having both causes confusing
+    # start/stop/status behaviour — see #24261.
+    _other_scope = not system
+    _other_unit = get_systemd_unit_path(system=_other_scope)
+    _this_unit = get_systemd_unit_path(system=system)
+    if _other_unit.exists() and not _this_unit.exists() and not force:
+        _other_label = _service_scope_label(_other_scope).capitalize()
+        _this_label = _service_scope_label(system).capitalize()
+        print_warning(f"A {_other_label} service is already installed at: {_other_unit}")
+        if not prompt_yes_no(
+            f"  Install a {_this_label} service alongside it? (This can cause conflicts.)",
+            False,
+        ):
+            print_info(f"  Skipped. Use the existing {_other_label} service, or uninstall it first:")
+            print_info(f"    {'sudo ' if _other_scope else ''}hermes gateway uninstall{' --system' if _other_scope else ''}")
+            return
 
     # Offer to remove legacy units (hermes.service from pre-rename installs)
     # before installing the new hermes-gateway.service. If both remain, they
