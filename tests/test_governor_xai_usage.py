@@ -146,6 +146,9 @@ def test_xai_reset_parsing_uses_named_relative_cutoff(monkeypatch):
     fixed_now = datetime(2026, 5, 18, 16, 0, tzinfo=timezone.utc)
     monkeypatch.setattr("agent.governor_state._utc_now", lambda: fixed_now)
 
+    assert _parse_reset("86400") == datetime.fromtimestamp(
+        fixed_now.timestamp() + 86_400, tz=timezone.utc
+    )
     assert _parse_reset("0") == fixed_now
     assert _parse_reset("-1") == datetime.fromtimestamp(-1, tz=timezone.utc)
     assert _parse_reset(str(30 * 86_400)) == datetime.fromtimestamp(
@@ -162,6 +165,12 @@ def test_xai_reset_parsing_uses_named_relative_cutoff(monkeypatch):
 class _MockXaiResponse:
     def __init__(self, headers):
         self.headers = headers
+
+
+class _MockHttpError(Exception):
+    def __init__(self, headers):
+        super().__init__("429 Too Many Requests")
+        self.response = _MockXaiResponse(headers)
 
 
 def test_conversation_loop_xai_header_hook_records_real_shaped_response(tmp_path, monkeypatch):
@@ -183,6 +192,29 @@ def test_conversation_loop_xai_header_hook_records_real_shaped_response(tmp_path
     with sqlite3.connect(db_path) as db:
         assert db.execute("SELECT used_pct FROM xai_buckets WHERE bucket_key='requests:observed'").fetchone()[0] == 90.0
         assert db.execute("SELECT source FROM provider_state WHERE provider='xai'").fetchone()[0] == "observed"
+
+
+def test_conversation_loop_xai_header_hook_records_429_error_response(tmp_path, monkeypatch):
+    db_path = tmp_path / "governor.db"
+    _build_g1_db(db_path)
+    fixed_now = datetime(2026, 5, 18, 16, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr("agent.governor_state._utc_now", lambda: fixed_now)
+
+    error = _MockHttpError(
+        {
+            "x-ratelimit-limit-requests": "1000",
+            "x-ratelimit-remaining-requests": "0",
+            "x-ratelimit-reset-requests": "86400",
+        }
+    )
+
+    assert _observe_xai_headers_best_effort("xai", "grok-4", error, db_path=db_path) is True
+
+    with sqlite3.connect(db_path) as db:
+        bucket = db.execute(
+            "SELECT used_pct, window_label FROM xai_buckets WHERE bucket_key='requests:day'"
+        ).fetchone()
+    assert bucket == (100.0, "day")
 
 
 def test_conversation_loop_xai_header_hook_short_circuits_non_xai_without_db_touch(tmp_path):

@@ -1709,6 +1709,8 @@ def run_conversation(
                 if agent.thinking_callback:
                     agent.thinking_callback("")
 
+                _observe_xai_headers_best_effort(agent.provider, agent.model, api_error)
+
                 # -----------------------------------------------------------
                 # UnicodeEncodeError recovery.  Two common causes:
                 #   1. Lone surrogates (U+D800..U+DFFF) from clipboard paste

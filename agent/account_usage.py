@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Optional
 
+import logging
 import sqlite3
 
 import httpx
@@ -17,6 +18,8 @@ from agent.governor_state import (
     get_xai_bucket_rows,
     record_xai_rate_limit_headers,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def _utc_now() -> datetime:
@@ -416,6 +419,7 @@ def fetch_account_usage(
             return _fetch_openrouter_account_usage(base_url, api_key)
         if normalized in {"xai", "xai-oauth", "grok", "x-ai", "x.ai"}:
             return _fetch_xai_account_usage(governor_db_path=governor_db_path)
-    except Exception:
+    except Exception as exc:
+        logger.debug("Account usage fetch suppressed for provider %s: %s", normalized, exc)
         return None
     return None
