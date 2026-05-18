@@ -255,21 +255,39 @@ def _handle_send(args):
 
     used_home_channel = False
     if not chat_id:
-        home = config.get_home_channel(platform)
-        if not home and platform_name == "weixin":
-            wx_home = os.getenv("WEIXIN_HOME_CHANNEL", "").strip()
-            if wx_home:
-                from gateway.config import HomeChannel
-                home = HomeChannel(platform=platform, chat_id=wx_home, name="Weixin Home")
-        if home:
-            chat_id = home.chat_id
-            used_home_channel = True
-        else:
+        # FIX: 优先使用当前session的chat_id（多用户隔离）
+        # 只有CLI/cron场景才fallback到home_channel
+        from gateway.session_context import get_session_env
+        session_platform = get_session_env("HERMES_SESSION_PLATFORM", "")
+        session_chat_id = get_session_env("HERMES_SESSION_CHAT_ID", "")
+        if session_chat_id:
+            chat_id = session_chat_id
+            # Note: 不设置used_home_channel=True，因为这是session用户，不是home channel
+        elif session_platform:
+            # 有活跃session但没有chat_id（比如刚建立连接还不知道chat_id）
+            # 不fallback到home channel，避免多用户消息串到home channel
             return json.dumps({
-                "error": f"No home channel set for {platform_name} to determine where to send the message. "
-                f"Either specify a channel directly with '{platform_name}:CHANNEL_NAME', "
-                f"or set a home channel via: hermes config set {platform_name.upper()}_HOME_CHANNEL <channel_id>"
+                "error": f"Cannot send to {platform_name}: current session has no associated chat_id. "
+                         f"The session platform is '{session_platform}' but no chat_id is available. "
+                         f"This may indicate the session was not properly initialized with a platform context."
             })
+        else:
+            # CLI/cron场景：使用home_channel
+            home = config.get_home_channel(platform)
+            if not home and platform_name == "weixin":
+                wx_home = os.getenv("WEIXIN_HOME_CHANNEL", "").strip()
+                if wx_home:
+                    from gateway.config import HomeChannel
+                    home = HomeChannel(platform=platform, chat_id=wx_home, name="Weixin Home")
+            if home:
+                chat_id = home.chat_id
+                used_home_channel = True
+            else:
+                return json.dumps({
+                    "error": f"No chat ID available for {platform_name}. "
+                             f"Specify a chat_id directly (e.g., '{platform_name}:<chat_id>'), "
+                             f"or set a home channel via: hermes config set {platform_name.upper()}_HOME_CHANNEL <channel_id>"
+                })
 
     duplicate_skip = _maybe_skip_cron_duplicate_send(platform_name, chat_id, thread_id)
     if duplicate_skip:

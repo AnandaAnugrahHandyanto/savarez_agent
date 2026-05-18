@@ -254,6 +254,7 @@ class TestRecentSessionListing:
         mock_db.list_sessions_rich.assert_called_once_with(
             limit=10,
             exclude_sources=["tool"],
+            user_id=None,
             order_by_last_active=True,
         )
 

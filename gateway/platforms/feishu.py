@@ -191,6 +191,18 @@ _MAX_TEXT_INJECT_BYTES = 100 * 1024
 _FEISHU_CONNECT_ATTEMPTS = 3
 _FEISHU_SEND_ATTEMPTS = 3
 _FEISHU_APP_LOCK_SCOPE = "feishu-app-id"
+# Disable lark-oapi's internal WS auto-reconnect so we can manage reconnection
+# ourselves with proper gateway-level observability.  The internal reconnect
+# runs in the same thread and is invisible to the gateway; if it fails the
+# whole thread dies silently.  By disabling it we get a clean error from the
+# WS client and can react through the done-callback below.
+# Whether lark-oapi's internal reconnect is disabled.
+# Default False: lark-oapi retries on its own; we only escalate when it gives up.
+# Set True only for debugging reconnect behaviour.
+_FEISHU_WS_DISABLE_INTERNAL_RECONNECT = False
+# Heartbeat: how many seconds without any WS message before we declare the connection dead.
+# Lark WS ping interval is 120s; use 90s so we fire ~30s before the server kills it.
+_FEISHU_WS_HEARTBEAT_INTERVAL = 90
 _DEFAULT_TEXT_BATCH_DELAY_SECONDS = 0.6
 _DEFAULT_TEXT_BATCH_MAX_MESSAGES = 8
 _DEFAULT_TEXT_BATCH_MAX_CHARS = 4000
@@ -388,6 +400,7 @@ class FeishuAdapterSettings:
     ws_reconnect_interval: int = 120
     ws_ping_interval: Optional[int] = None
     ws_ping_timeout: Optional[int] = None
+    ws_heartbeat_interval: int = 90
     admins: frozenset[str] = frozenset()
     default_group_policy: str = ""
     group_rules: Dict[str, FeishuGroupRule] = field(default_factory=dict)
@@ -1297,6 +1310,11 @@ def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
             setattr(ws_client, "_reconnect_interval", adapter._ws_reconnect_interval)
             if adapter._ws_ping_interval is not None:
                 setattr(ws_client, "_ping_interval", adapter._ws_ping_interval)
+            # Disable lark-oapi's internal reconnect so the gateway can manage
+            # reconnection with full observability.  Without this the internal
+            # reconnect thread silently dies and the gateway doesn't notice.
+            if _FEISHU_WS_DISABLE_INTERNAL_RECONNECT:
+                setattr(ws_client, "_auto_reconnect", False)
         except Exception:
             logger.debug("[Feishu] Failed to apply websocket runtime overrides", exc_info=True)
 
@@ -1314,14 +1332,27 @@ def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
         _apply_runtime_ws_overrides()
         return result
 
+    # lark-oapi manages its own reconnect internally.  We don't interfere with that.
+    # Instead, we rely on done_callback to detect genuine failures (SSL errors that
+    # lark-oapi can't recover from) and trigger a gateway-level reconnect.
     ws_client_module.websockets.connect = _connect_with_overrides
     if original_configure is not None:
         setattr(ws_client, "_configure", _configure_with_overrides)
     _apply_runtime_ws_overrides()
     try:
         ws_client.start()
-    except Exception:
-        pass
+    except BaseException:
+        # Exceptions propagate to the executor Future so done_callback can react.
+        # "Event loop is running" from loop.stop() is harmless — swallow it.
+        import sys as _sys_be
+        exc_info = _sys_be.exc_info()
+        if exc_info[0] is RuntimeError and exc_info[1] and "is running" in str(exc_info[1]).lower():
+            pass  # lark-oapi reconnect cleanup; not a real error
+        elif exc_info[0] in (KeyboardInterrupt, SystemExit):
+            raise
+        # All other BaseExceptions (SSL, network, real errors) are swallowed here.
+        # The lark-oapi logger already printed details.  We don't want to crash
+        # the executor thread; the done_callback handles real errors.
     finally:
         ws_client_module.websockets.connect = original_connect
         if original_configure is not None:
@@ -1560,6 +1591,7 @@ class FeishuAdapter(BasePlatformAdapter):
             ws_reconnect_interval=_coerce_required_int(extra.get("ws_reconnect_interval"), default=120, min_value=1),
             ws_ping_interval=_coerce_int(extra.get("ws_ping_interval"), default=None, min_value=1),
             ws_ping_timeout=_coerce_int(extra.get("ws_ping_timeout"), default=None, min_value=1),
+            ws_heartbeat_interval=_coerce_required_int(extra.get("ws_heartbeat_interval"), default=90, min_value=30),
             admins=admins,
             default_group_policy=default_group_policy,
             group_rules=group_rules,
@@ -1597,6 +1629,7 @@ class FeishuAdapter(BasePlatformAdapter):
         self._ws_reconnect_interval = settings.ws_reconnect_interval
         self._ws_ping_interval = settings.ws_ping_interval
         self._ws_ping_timeout = settings.ws_ping_timeout
+        self._ws_heartbeat_interval = settings.ws_heartbeat_interval
         self._allow_bots = settings.allow_bots
         self._require_mention = settings.require_mention
 
@@ -4434,6 +4467,26 @@ class FeishuAdapter(BasePlatformAdapter):
             self._ws_client,
             self,
         )
+        # Monitor the WS thread: if it dies with a real error (SSL fatal, auth failure,
+        # network unreachable after all retries) the gateway needs to know so it can
+        # trigger its own reconnect.  Note: lark-oapi's internal reconnect is enabled,
+        # so most transient errors are handled silently.  We only escalate genuine failures.
+        def _ws_thread_done(fut: asyncio.Future) -> None:
+            exc = fut.exception()
+            if exc is None:
+                # Normal exit — WS thread shut down cleanly (e.g. disconnect() called).
+                return
+            msg = f"[Feishu] WebSocket thread exited with error: {exc}"
+            logger.error("%s", msg)
+            if self._loop is None or self._loop.is_closed():
+                return
+            # Real error that lark-oapi couldn't recover from — trigger gateway reconnect.
+            asyncio.run_coroutine_threadsafe(
+                self._notify_fatal_error(),
+                self._loop,
+            )
+
+        self._ws_future.add_done_callback(_ws_thread_done)
 
     async def _connect_webhook(self) -> None:
         if not FEISHU_WEBHOOK_AVAILABLE:
