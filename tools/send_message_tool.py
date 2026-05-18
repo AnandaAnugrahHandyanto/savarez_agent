@@ -139,7 +139,7 @@ SEND_MESSAGE_SCHEMA = {
             },
             "message": {
                 "type": "string",
-                "description": "The message text to send. To send an image or file, include MEDIA:<local_path> (e.g. 'MEDIA:/tmp/hermes/cache/img_xxx.jpg') in the message — the platform will deliver it as a native media attachment."
+                "description": "The message text to send. To send an image or file, include MEDIA:<local_path> (e.g. 'MEDIA:/tmp/hermes/cache/img_xxx.jpg') in the message — the platform will deliver it as a native media attachment. Supported on: telegram, discord, matrix, weixin, signal, yuanbao, feishu, and slack (requires files:write scope)."
             }
         },
         "required": []
@@ -695,11 +695,36 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             last_result = result
         return last_result
 
+    # --- Slack: upload media files via files.getUploadURLExternal (requires files:write scope) ---
+    if platform == Platform.SLACK and media_files:
+        last_result = None
+        for i, chunk in enumerate(chunks):
+            is_last = (i == len(chunks) - 1)
+            # Send text chunks first; attach files only on the last chunk.
+            if chunk.strip():
+                result = await _send_slack(pconfig.token, chat_id, chunk, thread_id=thread_id)
+                if isinstance(result, dict) and result.get("error"):
+                    return result
+                last_result = result
+            if is_last:
+                for media_path, _is_voice in media_files:
+                    file_result = await _send_slack_file(
+                        pconfig.token,
+                        chat_id,
+                        media_path,
+                        initial_comment="",
+                        thread_id=thread_id,
+                    )
+                    if isinstance(file_result, dict) and file_result.get("error"):
+                        return file_result
+                    last_result = file_result
+        return last_result
+
     # --- Non-media platforms ---
     if media_files and not message.strip():
         return {
             "error": (
-                f"send_message MEDIA delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao and feishu; "
+                f"send_message MEDIA delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao, feishu and slack; "
                 f"target {platform.value} had only media attachments"
             )
         }
@@ -707,13 +732,13 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     if media_files:
         warning = (
             f"MEDIA attachments were omitted for {platform.value}; "
-            "native send_message media delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao and feishu"
+            "native send_message media delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao, feishu and slack"
         )
 
     last_result = None
     for chunk in chunks:
         if platform == Platform.SLACK:
-            result = await _send_slack(pconfig.token, chat_id, chunk)
+            result = await _send_slack(pconfig.token, chat_id, chunk, thread_id=thread_id)
         elif platform == Platform.WHATSAPP:
             result = await _send_whatsapp(pconfig.extra, chat_id, chunk)
         elif platform == Platform.SIGNAL:
@@ -1134,8 +1159,8 @@ async def _send_discord(token, chat_id, message, thread_id=None, media_files=Non
         return _error(f"Discord send failed: {e}")
 
 
-async def _send_slack(token, chat_id, message):
-    """Send via Slack Web API."""
+async def _send_slack(token, chat_id, message, thread_id=None):
+    """Send a text message via the Slack Web API (chat.postMessage)."""
     try:
         import aiohttp
     except ImportError:
@@ -1148,6 +1173,8 @@ async def _send_slack(token, chat_id, message):
         headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30), **_sess_kw) as session:
             payload = {"channel": chat_id, "text": message, "mrkdwn": True}
+            if thread_id:
+                payload["thread_ts"] = thread_id
             async with session.post(url, headers=headers, json=payload, **_req_kw) as resp:
                 data = await resp.json()
                 if data.get("ok"):
@@ -1155,6 +1182,144 @@ async def _send_slack(token, chat_id, message):
                 return _error(f"Slack API error: {data.get('error', 'unknown')}")
     except Exception as e:
         return _error(f"Slack send failed: {e}")
+
+
+async def _send_slack_file(token, chat_id, file_path, initial_comment="", thread_id=None):
+    """Upload a local file to a Slack channel via files.getUploadURLExternal + files.completeUploadExternal.
+
+    Uses the modern two-step upload API introduced in 2024 (files_upload_v2 semantics).
+    Falls back to the legacy files.upload endpoint when the modern one is unavailable.
+
+    Args:
+        token: Slack bot token with files:write scope.
+        chat_id: Channel ID to post the file into.
+        file_path: Absolute local path to the file to upload.
+        initial_comment: Optional caption posted alongside the file.
+        thread_id: Optional thread_ts to post the file as a thread reply.
+
+    Returns:
+        Standard send-result dict with ``success`` / ``error`` key.
+    """
+    try:
+        import aiohttp
+    except ImportError:
+        return {"error": "aiohttp not installed. Run: pip install aiohttp"}
+
+    if not os.path.exists(file_path):
+        return _error(f"Slack file upload failed: file not found: {file_path}")
+
+    filename = os.path.basename(file_path)
+    file_size = os.path.getsize(file_path)
+
+    # Guess MIME type so Slack renders it correctly (e.g. PDF inline viewer).
+    import mimetypes
+    mime_type = mimetypes.guess_type(file_path)[0] or "application/octet-stream"
+
+    try:
+        from gateway.platforms.base import resolve_proxy_url, proxy_kwargs_for_aiohttp
+        _proxy = resolve_proxy_url()
+        _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(_proxy)
+        auth_headers = {"Authorization": f"Bearer {token}"}
+
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=120), **_sess_kw) as session:
+            # --- Step 1: Get a pre-signed upload URL from Slack ---
+            params = {"filename": filename, "length": file_size, "alt_txt": initial_comment}
+            async with session.get(
+                "https://slack.com/api/files.getUploadURLExternal",
+                headers=auth_headers,
+                params=params,
+                **_req_kw,
+            ) as resp:
+                url_data = await resp.json()
+
+            if not url_data.get("ok"):
+                # Modern endpoint not available — fall back to legacy files.upload
+                return await _send_slack_file_legacy(token, chat_id, file_path, filename,
+                                                      mime_type, initial_comment, thread_id,
+                                                      session, auth_headers, _req_kw)
+
+            upload_url = url_data["upload_url"]
+            file_id = url_data["file_id"]
+
+            # --- Step 2: PUT the raw file bytes to the pre-signed URL ---
+            with open(file_path, "rb") as fh:
+                file_bytes = fh.read()
+
+            async with session.post(
+                upload_url,
+                data=file_bytes,
+                headers={**auth_headers, "Content-Type": mime_type},
+                **_req_kw,
+            ) as upload_resp:
+                if upload_resp.status not in (200, 201):
+                    body = await upload_resp.text()
+                    return _error(f"Slack upload PUT failed ({upload_resp.status}): {body}")
+
+            # --- Step 3: Complete the upload and share to the channel ---
+            complete_payload = {
+                "files": [{"id": file_id, "title": filename}],
+                "channel_id": chat_id,
+                "initial_comment": initial_comment,
+            }
+            if thread_id:
+                complete_payload["thread_ts"] = thread_id
+
+            async with session.post(
+                "https://slack.com/api/files.completeUploadExternal",
+                headers={**auth_headers, "Content-Type": "application/json"},
+                json=complete_payload,
+                **_req_kw,
+            ) as complete_resp:
+                complete_data = await complete_resp.json()
+
+            if complete_data.get("ok"):
+                files = complete_data.get("files", [])
+                file_info = files[0] if files else {}
+                return {
+                    "success": True,
+                    "platform": "slack",
+                    "chat_id": chat_id,
+                    "file_id": file_info.get("id", file_id),
+                    "filename": filename,
+                }
+            return _error(f"Slack file complete failed: {complete_data.get('error', 'unknown')}")
+
+    except Exception as e:
+        return _error(f"Slack file upload failed: {e}")
+
+
+async def _send_slack_file_legacy(token, chat_id, file_path, filename, mime_type,
+                                   initial_comment, thread_id, session, auth_headers, req_kw):
+    """Fallback: upload via the legacy Slack files.upload endpoint (multipart form)."""
+    try:
+        import aiohttp
+        form = aiohttp.FormData()
+        form.add_field("channels", chat_id)
+        if initial_comment:
+            form.add_field("initial_comment", initial_comment)
+        if thread_id:
+            form.add_field("thread_ts", thread_id)
+        with open(file_path, "rb") as fh:
+            form.add_field("file", fh.read(), filename=filename, content_type=mime_type)
+        async with session.post(
+            "https://slack.com/api/files.upload",
+            headers=auth_headers,
+            data=form,
+            **req_kw,
+        ) as resp:
+            data = await resp.json()
+        if data.get("ok"):
+            file_info = data.get("file", {})
+            return {
+                "success": True,
+                "platform": "slack",
+                "chat_id": chat_id,
+                "file_id": file_info.get("id"),
+                "filename": filename,
+            }
+        return _error(f"Slack legacy file upload failed: {data.get('error', 'unknown')}")
+    except Exception as e:
+        return _error(f"Slack legacy file upload failed: {e}")
 
 
 async def _send_whatsapp(extra, chat_id, message):
