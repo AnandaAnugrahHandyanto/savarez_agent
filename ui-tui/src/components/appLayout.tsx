@@ -6,7 +6,7 @@ import { useGateway } from '../app/gatewayContext.js'
 import type { AppLayoutProps } from '../app/interfaces.js'
 import { $isBlocked, $overlayState, patchOverlayState } from '../app/overlayStore.js'
 import { $uiState } from '../app/uiStore.js'
-import { INLINE_MODE, SHOW_FPS } from '../config/env.js'
+import { CLASSIC_SKIN, INLINE_MODE, SHOW_FPS } from '../config/env.js'
 import { FULL_RENDER_TAIL_ITEMS } from '../config/limits.js'
 import { PLACEHOLDER } from '../content/placeholders.js'
 import {
@@ -53,6 +53,8 @@ const PromptPrefix = memo(function PromptPrefix({
   )
 })
 
+const horizontalRule = (cols: number) => '─'.repeat(Math.max(12, cols - 2))
+
 const TranscriptPane = memo(function TranscriptPane({
   actions,
   composer,
@@ -77,7 +79,7 @@ const TranscriptPane = memo(function TranscriptPane({
   }, [transcript.historyItems])
 
   // Index of the first user-role message; every later user message gets a
-  // small dash above it so multi-turn transcripts visually segment by
+  // full-width rule above it so multi-turn transcripts visually segment by
   // turn. -1 when no user message has been sent yet → no separator ever
   // renders.
   const firstUserIdx = useMemo(
@@ -106,7 +108,7 @@ const TranscriptPane = memo(function TranscriptPane({
             <Box flexDirection="column" key={row.key} ref={transcript.virtualHistory.measureRef(row.key)}>
               {row.msg.role === 'user' && firstUserIdx >= 0 && row.index > firstUserIdx && (
                 <Box marginTop={1}>
-                  <Text color={ui.theme.color.border}>───</Text>
+                  <Text color={ui.theme.color.border}>{horizontalRule(composer.cols)}</Text>
                 </Box>
               )}
 
@@ -242,7 +244,7 @@ const ComposerPane = memo(function ComposerPane({
 
           {status.stickyPrompt}
         </Text>
-      ) : (
+      ) : CLASSIC_SKIN && ui.statusBar === 'top' ? null : (
         <Box height={1} onMouseDown={captureInputDrag} onMouseDrag={dragFromSpacer} onMouseUp={endInputDrag} />
       )}
 
@@ -276,7 +278,14 @@ const ComposerPane = memo(function ComposerPane({
               </Box>
             ))}
 
+            {CLASSIC_SKIN && ui.statusBar === 'top' && (
+              <Text color={ui.theme.color.border} wrap="truncate-end">
+                {horizontalRule(composer.cols)}
+              </Text>
+            )}
+
             <Box
+              height={CLASSIC_SKIN && composer.empty ? inputHeight + 1 : undefined}
               onMouseDown={captureInputDrag}
               onMouseDrag={dragFromPromptRow}
               onMouseUp={endInputDrag}
@@ -293,7 +302,13 @@ const ComposerPane = memo(function ComposerPane({
                 )}
               </Box>
 
-              <Box flexGrow={0} flexShrink={0} height={inputHeight} width={inputColumns}>
+              <Box
+                flexDirection="column"
+                flexGrow={0}
+                flexShrink={0}
+                height={CLASSIC_SKIN ? inputHeight + 1 : inputHeight}
+                width={inputColumns}
+              >
                 {/* Reserve the transcript scrollbar gutter too so typing never rewraps when the scrollbar column repaints. */}
                 <TextInput
                   columns={inputColumns}
@@ -301,10 +316,24 @@ const ComposerPane = memo(function ComposerPane({
                   onChange={composer.updateInput}
                   onPaste={composer.handleTextPaste}
                   onSubmit={composer.submit}
-                  placeholder={composer.empty ? PLACEHOLDER : ui.busy ? 'Ctrl+C to interrupt…' : ''}
+                  placeholder={
+                    CLASSIC_SKIN
+                      ? `\n${horizontalRule(inputColumns)}`
+                      : composer.empty
+                        ? PLACEHOLDER
+                        : ui.busy
+                          ? 'Ctrl+C to interrupt…'
+                          : ''
+                  }
                   value={composer.input}
                   voiceRecordKey={composer.voiceRecordKey}
                 />
+
+                {CLASSIC_SKIN && composer.input.length > 0 && (
+                  <Text color={ui.theme.color.border} wrap="truncate-end">
+                    {horizontalRule(inputColumns)}
+                  </Text>
+                )}
               </Box>
 
               <Box position="absolute" right={0}>
@@ -349,7 +378,7 @@ const StatusRulePane = memo(function StatusRulePane({
   }
 
   return (
-    <Box marginTop={at === 'top' ? 1 : 0}>
+    <Box marginTop={0}>
       <StatusRule
         bgCount={ui.bgTasks.size}
         busy={ui.busy}

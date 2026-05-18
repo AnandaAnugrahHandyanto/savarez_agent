@@ -99,6 +99,7 @@ export const sessionCommands: SlashCommand[] = [
       if (ctx.session.guardBusySessionSwitch('switch sessions')) {
         return
       }
+
       if (!arg.trim()) {
         return patchOverlayState({ picker: true })
       }
@@ -392,6 +393,10 @@ export const sessionCommands: SlashCommand[] = [
               return
             }
 
+            if (r.info) {
+              patchUiState({ info: r.info })
+            }
+
             if (r.value === 'hide') {
               patchUiState(state => ({
                 ...state,
@@ -440,16 +445,21 @@ export const sessionCommands: SlashCommand[] = [
           ctx.guarded<ConfigSetResponse>(r => {
             const next = r.value === 'fast' ? 'fast' : 'normal'
             ctx.transcript.sys(`fast mode: ${next}`)
-            patchUiState(state => ({
-              ...state,
-              info: state.info
-                ? {
-                    ...state.info,
-                    fast: next === 'fast',
-                    service_tier: next === 'fast' ? 'priority' : ''
-                  }
-                : state.info
-            }))
+
+            if (r.info) {
+              patchUiState({ info: r.info })
+            } else {
+              patchUiState(state => ({
+                ...state,
+                info: state.info
+                  ? {
+                      ...state.info,
+                      fast: next === 'fast',
+                      service_tier: next === 'fast' ? 'priority' : ''
+                    }
+                  : state.info
+              }))
+            }
           })
         )
         .catch(ctx.guardedErr)
