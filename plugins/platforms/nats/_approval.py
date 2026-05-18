@@ -134,14 +134,21 @@ def adapter_supports_request_interaction(adapter: "BasePlatformAdapter") -> bool
     AST-scan-friendly (no top-level import of base) but is harmless — base.py is
     always present in any Hermes checkout.
     """
+    # The adapter must at minimum have a ``request_interaction`` attribute
+    # on its concrete class; otherwise it can't be invoked regardless of
+    # what the base declares.
+    if not hasattr(type(adapter), "request_interaction"):
+        return False
     try:
         from gateway.platforms.base import BasePlatformAdapter  # noqa: PLC0415
-    except ImportError:
-        return False
-    return (
-        type(adapter).request_interaction
-        is not BasePlatformAdapter.request_interaction
-    )
+        base_method = BasePlatformAdapter.request_interaction
+    except (ImportError, AttributeError):
+        # Upstream base predates the ``request_interaction`` stub (Stage 3
+        # reverted that addition; the Core PR re-adds it). If the adapter
+        # has its own ``request_interaction``, there is no inherited default
+        # to mistake it for — treat any present method as an override.
+        return True
+    return type(adapter).request_interaction is not base_method
 
 
 def dispatch_approval_via_request_interaction(
@@ -213,7 +220,16 @@ def dispatch_approval_via_request_interaction(
         choice = _parse_approval_reply(reply)
         try:
             from tools.approval import resolve_gateway_approval  # noqa: PLC0415
-            resolve_gateway_approval(session_key, choice, entry_id=entry_id)
+            try:
+                resolve_gateway_approval(session_key, choice, entry_id=entry_id)
+            except TypeError:
+                # Upstream ``resolve_gateway_approval`` predates the
+                # ``entry_id`` kwarg (Core PR re-adds it). Fall back to
+                # the FIFO signature so the approval still resolves —
+                # parallel-subagent routing degrades to oldest-wins until
+                # the Core PR lands. Mirrors the transport_authed
+                # feature-detection pattern in adapter.py:register().
+                resolve_gateway_approval(session_key, choice)
         except Exception as exc:
             logger.error(
                 "Failed to resolve gateway approval for session %s: %s",

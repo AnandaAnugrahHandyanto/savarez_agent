@@ -417,7 +417,7 @@ class NatsAdapter(BasePlatformAdapter):
     SUPPORTS_MESSAGE_EDITING = False
 
     def __init__(self, config: PlatformConfig) -> None:
-        super().__init__(config, Platform.NATS)
+        super().__init__(config, Platform("nats"))
 
         # Compound-keyed handle registry: ``(chat_id, id(stream)) → stream``.
         # Populated by ``_on_prompt`` on receipt and consulted by
@@ -1288,7 +1288,7 @@ class NatsAdapter(BasePlatformAdapter):
         user_config = _load_gateway_config()
         runtime_kwargs = _resolve_runtime_agent_kwargs()
         model = _resolve_gateway_model(user_config)
-        enabled_toolsets = sorted(_get_platform_tools(user_config, Platform.NATS.value))
+        enabled_toolsets = sorted(_get_platform_tools(user_config, Platform("nats").value))
 
         max_iterations = int(os.getenv("HERMES_MAX_ITERATIONS", "90"))
 
@@ -1322,7 +1322,7 @@ class NatsAdapter(BasePlatformAdapter):
             verbose_logging=False,
             enabled_toolsets=enabled_toolsets,
             session_id=session_key,
-            platform=Platform.NATS.value,
+            platform=Platform("nats").value,
             user_id=event.source.user_id,
             gateway_session_key=session_key,
             stream_delta_callback=stream_delta_callback,
