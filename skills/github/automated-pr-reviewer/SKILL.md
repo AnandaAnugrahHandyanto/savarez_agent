@@ -60,7 +60,8 @@ gh api -X GET search/issues -f q="repo:$REPO is:pr is:open in:comments \"@jules\
 When you are asked to "check for PRs to review" or when this skill is run:
 
 1. Run the bash snippet above to identify the PR numbers.
-2. For each PR number output by the script, read the diff using `git diff`.
-3. Analyze the diff using your code review capabilities.
-4. Post the review as a PR comment or PR Review (as detailed in `github-code-review`).
-5. Ensure the label `reviewed` is added to prevent re-processing.
+2. For each PR number output:
+   a. Fetch and checkout the PR: `git fetch origin pull/$PR_NUMBER/head:pr-$PR_NUMBER -f && git checkout pr-$PR_NUMBER`.
+   b. Analyze the diff using your code review capabilities (refer to `github-code-review`).
+   c. Post the review and add the `reviewed` label: `gh pr edit $PR_NUMBER --add-label "reviewed"`.
+   d. Clean up: `git checkout - && git branch -D pr-$PR_NUMBER`.
