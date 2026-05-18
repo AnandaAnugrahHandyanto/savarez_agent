@@ -70,6 +70,27 @@ const statusColorOf = (status: string, t: { error: string; muted: string; ok: st
   return t.muted
 }
 
+export const CLIPBOARD_COPY_TOAST_LABEL = 'clipboard-copy'
+export const CLIPBOARD_COPY_TOAST_MSG = 'Copied to clipboard'
+
+/**
+ * Copy-on-select handler: copies the current selection to clipboard and shows
+ * a success toast only when text was actually copied. Returns the copied text.
+ * Extracted for unit-testability — the useEffect in useMainApp calls this.
+ */
+export async function handleSelectionCopy(
+  selection: { copySelectionNoClear: () => Promise<string> },
+  pushToast: (label: string, message: string, tone: 'success') => void,
+): Promise<string> {
+  const text = await selection.copySelectionNoClear()
+
+  if (text) {
+    pushToast(CLIPBOARD_COPY_TOAST_LABEL, CLIPBOARD_COPY_TOAST_MSG, 'success')
+  }
+
+  return text
+}
+
 export function useMainApp(gw: GatewayClient) {
   const { exit } = useApp()
   const { stdout } = useStdout()
@@ -182,9 +203,7 @@ export function useMainApp(gw: GatewayClient) {
       }
 
       lastCopiedVersionRef.current = version
-      void selection.copySelectionNoClear().then(() => {
-        turnController.pushToast('clipboard-copy', 'Copied to clipboard', 'success')
-      })
+      void handleSelectionCopy(selection, (label, message, tone) => turnController.pushToast(label, message, tone))
     })
   }, [selection, ui.selectioncopy])
 

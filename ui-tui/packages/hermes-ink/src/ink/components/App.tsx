@@ -645,6 +645,13 @@ export function handleMouseEvent(app: App, m: ParsedMouse): void {
       app.props.onSelectionChange()
     }
 
+    // Clear stale mouseCaptureTarget before dispatching — a prior press on an
+    // interactive component whose release was lost (released outside terminal)
+    // would leave mouseCaptureTarget set. Without clearing it, the next release
+    // would hit the mouseCaptureTarget early return, skip finishSelection, and
+    // leave isDragging=true forever, starving the copy-on-select subscriber.
+    app.mouseCaptureTarget = undefined
+
     const capture = app.props.onMouseDownAt(col, row, baseButton)
 
     if (capture) {
