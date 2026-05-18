@@ -411,6 +411,21 @@ class LocalEnvironment(BaseEnvironment):
         super().__init__(cwd=cwd or os.getcwd(), timeout=timeout, env=env)
         self.init_session()
 
+    def _snapshot_valid(self) -> bool:
+        """Override: stat the on-disk snapshot file.
+
+        For LocalEnvironment the snapshot path is on the host filesystem,
+        so we can directly check whether the bootstrap actually managed to
+        write content.  An empty/missing file means a write failed (most
+        commonly ENOSPC on a full ``/var/folders``/``$TMPDIR`` volume) —
+        return False so the caller logs a single warning and falls back
+        to ``bash -l`` per command for the lifetime of this environment.
+        """
+        try:
+            return os.path.getsize(self._snapshot_path) > 0
+        except OSError:
+            return False
+
     def get_temp_dir(self) -> str:
         """Return a shell-safe writable temp dir for local execution.
 

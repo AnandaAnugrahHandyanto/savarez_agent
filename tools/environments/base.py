@@ -344,6 +344,17 @@ class BaseEnvironment(ABC):
         """Release backend resources (container, instance, connection)."""
         ...
 
+    def _snapshot_valid(self) -> bool:
+        """Return True if the snapshot file is non-empty and readable.
+
+        Default returns True — for remote backends the snapshot file lives
+        inside the container/host and we can't stat it from Python.  The
+        ``LocalEnvironment`` overrides this to actually check the path,
+        because that's the backend where a full local TMPDIR produces the
+        silent-empty-snapshot failure mode we want to catch and warn about.
+        """
+        return True
+
     # ------------------------------------------------------------------
     # Session snapshot (init_session)
     # ------------------------------------------------------------------
@@ -369,27 +380,60 @@ class BaseEnvironment(ABC):
         # backends) into every terminal-tool response.
         _quoted_snap = shlex.quote(self._snapshot_path)
         _quoted_cwd_file = shlex.quote(self._cwd_file)
+        # Each write to the snapshot / cwd file is wrapped in a subshell
+        # ``( ... ) 2>/dev/null`` so that an ENOSPC (or EACCES) on the
+        # underlying temp volume does NOT spam stderr on every Hermes CLI
+        # invocation.  Note: a bare ``cmd > path 2>/dev/null`` does NOT
+        # silence the failure because bash emits its own ``cannot create``
+        # / ``No space left on device`` message from the parent shell's
+        # stderr BEFORE the inline redirect can take effect — only a
+        # subshell wrapper isolates the redirect-open failure.
+        # Without this, a full ``/var/folders`` (or whichever TMPDIR
+        # resolves to) produced two lines of ``No space left on device``
+        # noise per process invocation, which contaminated every
+        # tool-output tail and burned LLM context for cron-spawned
+        # workers (incident t_757db01d, 2026-05-18).  The Python side
+        # detects the resulting empty snapshot file and falls back to
+        # ``bash -l`` per command with a single logger.warning.
         bootstrap = (
-            f"export -p > {_quoted_snap}\n"
-            f"declare -f | grep -vE '^_[^_]' >> {_quoted_snap}\n"
-            f"alias -p >> {_quoted_snap}\n"
-            f"echo 'shopt -s expand_aliases' >> {_quoted_snap}\n"
-            f"echo 'set +e' >> {_quoted_snap}\n"
-            f"echo 'set +u' >> {_quoted_snap}\n"
+            f"( export -p > {_quoted_snap} ) 2>/dev/null || true\n"
+            f"( declare -f | grep -vE '^_[^_]' >> {_quoted_snap} ) 2>/dev/null || true\n"
+            f"( alias -p >> {_quoted_snap} ) 2>/dev/null || true\n"
+            f"( echo 'shopt -s expand_aliases' >> {_quoted_snap} ) 2>/dev/null || true\n"
+            f"( echo 'set +e' >> {_quoted_snap} ) 2>/dev/null || true\n"
+            f"( echo 'set +u' >> {_quoted_snap} ) 2>/dev/null || true\n"
             f"builtin cd {_quoted_cwd} 2>/dev/null || true\n"
-            f"pwd -P > {_quoted_cwd_file} 2>/dev/null || true\n"
+            f"( pwd -P > {_quoted_cwd_file} ) 2>/dev/null || true\n"
             f"printf '\\n{self._cwd_marker}%s{self._cwd_marker}\\n' \"$(pwd -P)\"\n"
         )
         try:
             proc = self._run_bash(bootstrap, login=True, timeout=self._snapshot_timeout)
             result = self._wait_for_process(proc, timeout=self._snapshot_timeout)
-            self._snapshot_ready = True
-            self._update_cwd(result)
-            logger.info(
-                "Session snapshot created (session=%s, cwd=%s)",
-                self._session_id,
-                self.cwd,
-            )
+            # Validate that the snapshot file was actually written.  On a
+            # full TMPDIR (ENOSPC) the bootstrap silently produces no file
+            # because every write now redirects stderr — without this check
+            # we'd flag _snapshot_ready=True and then every subsequent
+            # ``source <snap>`` in _wrap_command would fail (also silently)
+            # leaving commands running without the captured env / aliases.
+            if self._snapshot_valid():
+                self._snapshot_ready = True
+                self._update_cwd(result)
+                logger.info(
+                    "Session snapshot created (session=%s, cwd=%s)",
+                    self._session_id,
+                    self.cwd,
+                )
+            else:
+                self._snapshot_ready = False
+                self._update_cwd(result)
+                logger.warning(
+                    "Session snapshot empty/missing at %s (session=%s) — "
+                    "TMPDIR may be full or unwritable; falling back to "
+                    "bash -l per command. Set TMPDIR to a writable volume "
+                    "to restore snapshot caching.",
+                    self._snapshot_path,
+                    self._session_id,
+                )
         except Exception as exc:
             logger.warning(
                 "init_session failed (session=%s): %s — "
@@ -450,11 +494,15 @@ class BaseEnvironment(ABC):
         parts.append("__hermes_ec=$?")
 
         # Re-dump env vars to snapshot (last-writer-wins for concurrent calls)
+        # Subshell-wrap so a full TMPDIR (ENOSPC) doesn't spam stderr —
+        # see init_session docstring; bare ``cmd > path 2>/dev/null`` is
+        # NOT enough because bash emits the open-failure from its own
+        # parent-shell stderr before the inline redirect takes effect.
         if self._snapshot_ready:
-            parts.append(f"export -p > {_quoted_snap} 2>/dev/null || true")
+            parts.append(f"( export -p > {_quoted_snap} ) 2>/dev/null || true")
 
         # Write CWD to file (local reads this) and stdout marker (remote parses this)
-        parts.append(f"pwd -P > {_quoted_cwd_file} 2>/dev/null || true")
+        parts.append(f"( pwd -P > {_quoted_cwd_file} ) 2>/dev/null || true")
         # Use a distinct line for the marker. The leading \n ensures
         # the marker starts on its own line even if the command doesn't
         # end with a newline (e.g. printf 'exact'). We'll strip this
