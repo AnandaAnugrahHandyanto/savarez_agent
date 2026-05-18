@@ -622,3 +622,45 @@ def test_print_tui_exit_summary_prefers_actual_active_session_file(
     assert seen == ["actual_session"]
     assert "hermes --tui --resume actual_session" in out
     assert "startup_resume" not in out
+
+
+def test_launch_tui_exit_code_42_calls_relaunch_update(monkeypatch, main_mod):
+    """When the TUI subprocess exits with code 42 (the /update signal),
+    ``_launch_tui`` must call ``relaunch(["update"], preserve_inherited=False)``
+    before ``sys.exit``.
+
+    The Vitest in ``ui-tui/src/__tests__/createSlashHandler.test.ts`` covers
+    the TypeScript slash handler that *emits* code 42.  This test covers the
+    Python wrapper branch that *acts on* it — the branch that the Vitest
+    cannot reach.
+    """
+    monkeypatch.setattr(
+        main_mod,
+        "_make_tui_argv",
+        lambda tui_dir, tui_dev: (["node", "dist/entry.js"], Path(".")),
+    )
+    monkeypatch.setattr(main_mod.subprocess, "call", lambda *args, **kwargs: 42)
+    monkeypatch.setattr(main_mod, "_print_tui_exit_summary", lambda *_args, **_kwargs: None)
+
+    relaunch_calls: list[tuple] = []
+
+    import hermes_cli.relaunch as relaunch_mod
+
+    monkeypatch.setattr(
+        relaunch_mod,
+        "relaunch",
+        lambda args, preserve_inherited=True: relaunch_calls.append(
+            (args, preserve_inherited)
+        ),
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        main_mod._launch_tui()
+
+    assert relaunch_calls == [(["update"], False)], (
+        "_launch_tui did not call relaunch(['update'], preserve_inherited=False) "
+        "when TUI exited with code 42"
+    )
+    # sys.exit(42) is called after relaunch() returns (mocked — normally
+    # relaunch() replaces the process on POSIX or exits the process on Windows).
+    assert exc_info.value.code == 42
