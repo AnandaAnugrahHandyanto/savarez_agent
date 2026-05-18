@@ -21,6 +21,7 @@ import logging
 import os
 import random
 import re
+import sqlite3
 import ssl
 import threading
 import time
@@ -80,6 +81,21 @@ def _ra():
     """
     import run_agent
     return run_agent
+
+
+def _observe_xai_headers_best_effort(provider, model, response, *, db_path=None) -> bool:
+    """Best-effort xAI/Grok rate-limit observation for the post-response hook.
+
+    The agent loop must not fail merely because observed-header accounting is
+    unavailable, but expected integration failures should be visible in debug
+    logs rather than silently masking a broken internal contract.
+    """
+    try:
+        from agent.account_usage import maybe_observe_xai_rate_limit_headers as _maybe_observe_xai_headers
+        return _maybe_observe_xai_headers(provider, model, response, db_path=db_path)
+    except (ImportError, AttributeError, sqlite3.Error, OSError) as exc:
+        logger.debug("xAI/Grok rate-limit header observation skipped: %s", exc)
+        return False
 
 
 def _restore_or_build_system_prompt(agent, system_message, conversation_history):
@@ -1309,11 +1325,7 @@ def run_conversation(
                             )
                     continue  # Retry the API call
 
-                try:
-                    from agent.account_usage import maybe_observe_xai_rate_limit_headers as _maybe_observe_xai_headers
-                    _maybe_observe_xai_headers(agent.provider, agent.model, response)
-                except Exception:
-                    pass
+                _observe_xai_headers_best_effort(agent.provider, agent.model, response)
 
                 # Check finish_reason before proceeding
                 if agent.api_mode == "codex_responses":

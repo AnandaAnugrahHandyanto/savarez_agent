@@ -10,6 +10,7 @@ from typing import Any, Mapping, Optional
 from hermes_constants import get_hermes_home
 
 GOVERNOR_SCHEMA_VERSION = 2
+_RELATIVE_RESET_CUTOFF_SECONDS = 30 * 86_400
 
 
 def _utc_now() -> datetime:
@@ -45,10 +46,11 @@ def _parse_reset(value: Any) -> Optional[datetime]:
                 return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
             except ValueError:
                 return None
-    # x-ratelimit-reset values are normally epoch seconds. If a provider ever
-    # sends a small relative delta, interpreting it as epoch would point at 1970;
-    # treat small values as seconds from now instead.
-    if number < 10_000_000:
+    # x-ratelimit-reset values are normally epoch seconds. If xAI or a
+    # compatible gateway returns a small relative delta, interpreting it as an
+    # epoch would point at 1970. Keep the delta path deliberately narrow and
+    # named: anything above 30 days is treated as an epoch timestamp.
+    if 0 <= number <= _RELATIVE_RESET_CUTOFF_SECONDS:
         return datetime.fromtimestamp(_utc_now().timestamp() + number, tz=timezone.utc)
     return datetime.fromtimestamp(number, tz=timezone.utc)
 

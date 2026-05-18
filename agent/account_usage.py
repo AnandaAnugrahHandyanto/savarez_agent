@@ -5,6 +5,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Optional
 
+import sqlite3
+
 import httpx
 
 from agent.anthropic_adapter import _is_oauth_token, resolve_anthropic_token
@@ -391,7 +393,7 @@ def maybe_observe_xai_rate_limit_headers(
         return False
     try:
         return observe_xai_rate_limit_headers(headers, db_path=db_path)
-    except Exception:
+    except (AttributeError, sqlite3.Error, OSError, ValueError):
         return False
 
 

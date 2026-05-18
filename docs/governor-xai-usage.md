@@ -1,6 +1,6 @@
 # ADR-0010 G2: xAI header-derived governor usage
 
-This note documents the Hermes-side G2 implementation used by Special Circumstances Capital ADR-0010.
+This note documents the Hermes-side G2 implementation used by Special Circumstances Capital ADR-0010 (`special-circumstances-capital/special-circumstances-capital`, `architecture/decisions/2026-05-17-ADR-0010-rate-limit-governor.md`: https://github.com/special-circumstances-capital/special-circumstances-capital/blob/main/architecture/decisions/2026-05-17-ADR-0010-rate-limit-governor.md).
 
 ## Scope
 

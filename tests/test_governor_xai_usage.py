@@ -7,9 +7,12 @@ from pathlib import Path
 from agent.account_usage import (
     AccountUsageWindow,
     fetch_account_usage,
+    maybe_observe_xai_rate_limit_headers,
     observe_xai_rate_limit_headers,
 )
+from agent.conversation_loop import _observe_xai_headers_best_effort
 from agent.governor_state import (
+    _parse_reset,
     compute_governor_band,
     ensure_governor_schema,
     get_transition_rate,
@@ -137,6 +140,69 @@ def test_xai_fetch_honours_observed_source_and_missing_headers(tmp_path):
     assert snapshot.provider == "xai"
     assert snapshot.source == "observed_headers"
     assert snapshot.unavailable_reason == "No xAI rate-limit headers have been observed yet."
+
+
+def test_xai_reset_parsing_uses_named_relative_cutoff(monkeypatch):
+    fixed_now = datetime(2026, 5, 18, 16, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr("agent.governor_state._utc_now", lambda: fixed_now)
+
+    assert _parse_reset("0") == fixed_now
+    assert _parse_reset("-1") == datetime.fromtimestamp(-1, tz=timezone.utc)
+    assert _parse_reset(str(30 * 86_400)) == datetime.fromtimestamp(
+        fixed_now.timestamp() + 30 * 86_400, tz=timezone.utc
+    )
+    assert _parse_reset(str(30 * 86_400 + 1)) == datetime.fromtimestamp(
+        30 * 86_400 + 1, tz=timezone.utc
+    )
+    assert _parse_reset("10000000") == datetime.fromtimestamp(10_000_000, tz=timezone.utc)
+    assert _parse_reset("10000001") == datetime.fromtimestamp(10_000_001, tz=timezone.utc)
+    assert _parse_reset("1900000000") == datetime.fromtimestamp(1_900_000_000, tz=timezone.utc)
+
+
+class _MockXaiResponse:
+    def __init__(self, headers):
+        self.headers = headers
+
+
+def test_conversation_loop_xai_header_hook_records_real_shaped_response(tmp_path, monkeypatch):
+    db_path = tmp_path / "governor.db"
+    _build_g1_db(db_path)
+    fixed_now = datetime(2026, 5, 18, 16, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr("agent.governor_state._utc_now", lambda: fixed_now)
+
+    response = _MockXaiResponse(
+        {
+            "x-ratelimit-limit-requests": "1000",
+            "x-ratelimit-remaining-requests": "100",
+            "x-ratelimit-reset-requests": "1900000000",
+        }
+    )
+
+    assert _observe_xai_headers_best_effort("xai", "grok-4", response, db_path=db_path) is True
+
+    with sqlite3.connect(db_path) as db:
+        assert db.execute("SELECT used_pct FROM xai_buckets WHERE bucket_key='requests:observed'").fetchone()[0] == 90.0
+        assert db.execute("SELECT source FROM provider_state WHERE provider='xai'").fetchone()[0] == "observed"
+
+
+def test_conversation_loop_xai_header_hook_short_circuits_non_xai_without_db_touch(tmp_path):
+    missing_db_path = tmp_path / "missing-governor.db"
+    response = _MockXaiResponse(
+        {
+            "x-ratelimit-limit-requests": "1000",
+            "x-ratelimit-remaining-requests": "0",
+            "x-ratelimit-reset-requests": "1900000000",
+        }
+    )
+
+    assert (
+        maybe_observe_xai_rate_limit_headers(
+            "anthropic", "claude-sonnet", response, db_path=missing_db_path
+        )
+        is False
+    )
+    assert _observe_xai_headers_best_effort("anthropic", "claude-sonnet", response, db_path=missing_db_path) is False
+    assert not missing_db_path.exists()
 
 
 def test_band_derivation_uses_daily_or_weekly_thresholds():
