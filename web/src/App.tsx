@@ -2,6 +2,7 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ComponentType,
   type ReactNode,
@@ -30,6 +31,8 @@ import {
   KeyRound,
   Menu,
   MessageSquare,
+  PanelLeftClose,
+  PanelLeftOpen,
   Package,
   Puzzle,
   RotateCw,
@@ -75,17 +78,13 @@ import { PluginPage, PluginSlot, usePlugins } from "@/plugins";
 import type { PluginManifest } from "@/plugins";
 import { useTheme } from "@/themes";
 import { isDashboardEmbeddedChatEnabled } from "@/lib/dashboard-flags";
-import { api } from "@/lib/api";
 
 function RootRedirect() {
   return <Navigate to="/sessions" replace />;
 }
 
 function UnknownRouteFallback({ pluginsLoading }: { pluginsLoading: boolean }) {
-  if (pluginsLoading) {
-    // Render nothing during the plugin-load window — a spinner here would just flash.
-    return null;
-  }
+  if (pluginsLoading) return null;
   return <Navigate to="/sessions" replace />;
 }
 
@@ -96,15 +95,6 @@ const CHAT_NAV_ITEM: NavItem = {
   icon: Terminal,
 };
 
-/**
- * Built-in routes except /chat.  Chat is rendered persistently (outside
- * <Routes>) when embedded — see the persistent chat host block rendered
- * inline near the bottom of this file — so the PTY child, WebSocket,
- * and xterm instance survive when the user visits another tab and comes
- * back.  A `display:none` toggle hides the terminal without unmounting.
- * Routing still owns the URL so /chat deep-links, browser back/forward,
- * and nav highlight keep working.
- */
 const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/": RootRedirect,
   "/sessions": SessionsPage,
@@ -120,33 +110,12 @@ const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/docs": DocsPage,
 };
 
-// Route placeholder for /chat.  The persistent ChatPage host (rendered
-// outside <Routes> when embedded chat is on) paints on top; this empty
-// element just claims the path so the `*` catch-all redirect doesn't
-// fire when the user navigates to /chat.
-function ChatRouteSink() {
-  return null;
-}
+function ChatRouteSink() { return null; }
 
 const BUILTIN_NAV_REST: NavItem[] = [
-  {
-    path: "/sessions",
-    labelKey: "sessions",
-    label: "Sessions",
-    icon: MessageSquare,
-  },
-  {
-    path: "/analytics",
-    labelKey: "analytics",
-    label: "Analytics",
-    icon: BarChart3,
-  },
-  {
-    path: "/models",
-    labelKey: "models",
-    label: "Models",
-    icon: Cpu,
-  },
+  { path: "/sessions", labelKey: "sessions", label: "Sessions", icon: MessageSquare },
+  { path: "/analytics", labelKey: "analytics", label: "Analytics", icon: BarChart3 },
+  { path: "/models", labelKey: "models", label: "Models", icon: Cpu },
   { path: "/logs", labelKey: "logs", label: "Logs", icon: FileText },
   { path: "/cron", labelKey: "cron", label: "Cron", icon: Clock },
   { path: "/skills", labelKey: "skills", label: "Skills", icon: Package },
@@ -154,63 +123,33 @@ const BUILTIN_NAV_REST: NavItem[] = [
   { path: "/profiles", labelKey: "profiles", label: "Profiles", icon: Users },
   { path: "/config", labelKey: "config", label: "Config", icon: Settings },
   { path: "/env", labelKey: "keys", label: "Keys", icon: KeyRound },
-  {
-    path: "/docs",
-    labelKey: "documentation",
-    label: "Documentation",
-    icon: BookOpen,
-  },
+  { path: "/docs", labelKey: "documentation", label: "Documentation", icon: BookOpen },
 ];
 
 const ICON_MAP: Record<string, ComponentType<{ className?: string }>> = {
-  Activity,
-  BarChart3,
-  Clock,
-  Cpu,
-  FileText,
-  KeyRound,
-  MessageSquare,
-  Package,
-  Settings,
-  Puzzle,
-  Sparkles,
-  Terminal,
-  Globe,
-  Database,
-  Shield,
-  Users,
-  Wrench,
-  Zap,
-  Heart,
-  Star,
-  Code,
-  Eye,
+  Activity, BarChart3, Clock, Cpu, FileText, KeyRound,
+  MessageSquare, Package, Settings, Puzzle, Sparkles,
+  Terminal, Globe, Database, Shield, Users, Wrench, Zap,
+  Heart, Star, Code, Eye,
 };
 
 function resolveIcon(name: string): ComponentType<{ className?: string }> {
   return ICON_MAP[name] ?? Puzzle;
 }
 
-function buildNavItems(
-  builtIn: NavItem[],
-  manifests: PluginManifest[],
-): NavItem[] {
+function buildNavItems(builtIn: NavItem[], manifests: PluginManifest[]): NavItem[] {
   const items = [...builtIn];
-
   for (const manifest of manifests) {
     if (manifest.tab.override) continue;
     if (manifest.tab.hidden) continue;
-
     const pluginItem: NavItem = {
       path: manifest.tab.path,
       label: manifest.label,
       icon: resolveIcon(manifest.icon),
     };
-
     const pos = manifest.tab.position ?? "end";
-    if (pos === "end") {
-      items.push(pluginItem);
-    } else if (pos.startsWith("after:")) {
+    if (pos === "end") items.push(pluginItem);
+    else if (pos.startsWith("after:")) {
       const target = "/" + pos.slice(6);
       const idx = items.findIndex((i) => i.path === target);
       items.splice(idx >= 0 ? idx + 1 : items.length, 0, pluginItem);
@@ -218,19 +157,12 @@ function buildNavItems(
       const target = "/" + pos.slice(7);
       const idx = items.findIndex((i) => i.path === target);
       items.splice(idx >= 0 ? idx : items.length, 0, pluginItem);
-    } else {
-      items.push(pluginItem);
-    }
+    } else items.push(pluginItem);
   }
-
   return items;
 }
 
-/** Split merged nav into built-in sidebar entries vs plugin tabs, preserving plugin order hints. */
-function partitionSidebarNav(
-  builtIn: NavItem[],
-  manifests: PluginManifest[],
-): { coreItems: NavItem[]; pluginItems: NavItem[] } {
+function partitionSidebarNav(builtIn: NavItem[], manifests: PluginManifest[]) {
   const merged = buildNavItems(builtIn, manifests);
   const builtinPaths = new Set(builtIn.map((i) => i.path));
   const coreItems: NavItem[] = [];
@@ -242,68 +174,37 @@ function partitionSidebarNav(
   return { coreItems, pluginItems };
 }
 
-function buildRoutes(
-  builtinRoutes: Record<string, ComponentType>,
-  manifests: PluginManifest[],
-): Array<{
-  key: string;
-  path: string;
-  element: ReactNode;
-}> {
+function buildRoutes(builtinRoutes: Record<string, ComponentType>, manifests: PluginManifest[]) {
   const byOverride = new Map<string, PluginManifest>();
   const addons: PluginManifest[] = [];
-
   for (const m of manifests) {
-    if (m.tab.override) {
-      byOverride.set(m.tab.override, m);
-    } else {
-      addons.push(m);
-    }
+    if (m.tab.override) byOverride.set(m.tab.override, m);
+    else addons.push(m);
   }
-
-  const routes: Array<{
-    key: string;
-    path: string;
-    element: ReactNode;
-  }> = [];
-
+  const routes: Array<{ key: string; path: string; element: ReactNode }> = [];
   for (const [path, Component] of Object.entries(builtinRoutes)) {
     const om = byOverride.get(path);
-    if (om) {
-      routes.push({
-        key: `override:${om.name}`,
-        path,
-        element: <PluginPage name={om.name} />,
-      });
-    } else {
-      routes.push({ key: `builtin:${path}`, path, element: <Component /> });
-    }
+    if (om) routes.push({ key: `override:${om.name}`, path, element: <PluginPage name={om.name} /> });
+    else routes.push({ key: `builtin:${path}`, path, element: <Component /> });
   }
-
   for (const m of addons) {
     if (m.tab.hidden) continue;
     if (m.tab.path === "/plugins") continue;
     if (builtinRoutes[m.tab.path]) continue;
-    routes.push({
-      key: `plugin:${m.name}`,
-      path: m.tab.path,
-      element: <PluginPage name={m.name} />,
-    });
+    routes.push({ key: `plugin:${m.name}`, path: m.tab.path, element: <PluginPage name={m.name} /> });
   }
-
   for (const m of manifests) {
     if (!m.tab.hidden) continue;
     if (m.tab.path === "/plugins") continue;
     if (builtinRoutes[m.tab.path] || m.tab.override) continue;
-    routes.push({
-      key: `plugin:hidden:${m.name}`,
-      path: m.tab.path,
-      element: <PluginPage name={m.name} />,
-    });
+    routes.push({ key: `plugin:hidden:${m.name}`, path: m.tab.path, element: <PluginPage name={m.name} /> });
   }
-
   return routes;
 }
+
+const SW_MIN = 3;
+const SW_MAX = 30;
+const SW_DEFAULT = 16;
 
 export default function App() {
   const { t } = useI18n();
@@ -311,107 +212,95 @@ export default function App() {
   const { manifests, loading: pluginsLoading } = usePlugins();
   const { theme } = useTheme();
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [collapsed, setCollapsed] = useState(false);
+  const [sw, setSw] = useState(SW_DEFAULT);
+  const [hovering, setHovering] = useState(false);
+  const resizeRef = useRef<HTMLDivElement>(null);
+  const sidebarRef = useRef<HTMLDivElement>(null);
   const closeMobile = useCallback(() => setMobileOpen(false), []);
   const isDocsRoute = pathname === "/docs" || pathname === "/docs/";
   const normalizedPath = pathname.replace(/\/$/, "") || "/";
   const isChatRoute = normalizedPath === "/chat";
   const embeddedChat = isDashboardEmbeddedChatEnabled();
 
-  // `dashboard.show_token_analytics` gates the Analytics nav item.  The
-  // page itself remains reachable by URL (it renders an explanation when
-  // the flag is off — see AnalyticsPage), but hiding the nav entry avoids
-  // surfacing misleading token/cost numbers in the sidebar.  Default off.
-  const [showTokenAnalytics, setShowTokenAnalytics] = useState(false);
-  useEffect(() => {
-    api
-      .getConfig()
-      .then((cfg) => {
-        const dash = (cfg?.dashboard ?? {}) as { show_token_analytics?: unknown };
-        setShowTokenAnalytics(dash.show_token_analytics === true);
-      })
-      .catch(() => setShowTokenAnalytics(false));
-  }, []);
+  const swClamped = Math.max(SW_MIN, Math.min(SW_MAX, sw));
+  const sidebarVisible = !collapsed || hovering;
+  const sidebarTranslate = sidebarVisible ? 0 : -(swClamped + 1); // +1 for border
 
-  // A plugin can replace the built-in /chat page via `tab.override: "/chat"`
-  // in its manifest.  When one does, `buildRoutes` already swaps the route
-  // element for <PluginPage /> — but we also have to suppress the
-  // persistent ChatPage host below, or the plugin's page and the built-in
-  // terminal would paint on top of each other.  The override is niche
-  // (nothing ships overriding /chat today) but it's an advertised
-  // extension point, so preserve the pre-persistence contract: when a
-  // plugin owns /chat, the built-in chat UI is entirely absent.
-  //
-  // Waiting on `pluginsLoading` is load-bearing: manifests arrive
-  // asynchronously from /api/dashboard/plugins, so on initial render
-  // `chatOverriddenByPlugin` is always false.  Without the loading
-  // gate, the persistent host would mount, spawn a PTY, and THEN get
-  // yanked out from under the user when the plugin's manifest resolves
-  // — killing the session mid-paint.  Delaying host mount by the
-  // plugin-load window (typically <50ms, worst case 2s safety timeout)
-  // is the cheaper trade-off.
+  // Resize drag
+  useEffect(() => {
+    const el = resizeRef.current;
+    if (!el) return;
+    let sx = 0, sw0 = 0;
+    const onDown = (e: MouseEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      sx = e.clientX;
+      sw0 = swClamped;
+      const onMove = (ev: MouseEvent) => {
+        const d = ev.clientX - sx;
+        setSw(Math.max(SW_MIN, Math.min(SW_MAX, sw0 + d / 16)));
+      };
+      const onUp = () => {
+        document.removeEventListener("mousemove", onMove);
+        document.removeEventListener("mouseup", onUp);
+        document.body.style.cursor = "";
+        document.body.style.userSelect = "";
+      };
+      document.addEventListener("mousemove", onMove);
+      document.addEventListener("mouseup", onUp);
+      document.body.style.cursor = "col-resize";
+      document.body.style.userSelect = "none";
+    };
+    el.addEventListener("mousedown", onDown);
+    return () => el.removeEventListener("mousedown", onDown);
+  }, [swClamped]);
+
   const chatOverriddenByPlugin = useMemo(
     () => manifests.some((m) => m.tab.override === "/chat"),
     [manifests],
   );
-
   const builtinRoutes = useMemo(
-    () => ({
-      ...BUILTIN_ROUTES_CORE,
-      ...(embeddedChat ? { "/chat": ChatRouteSink } : {}),
-    }),
+    () => ({ ...BUILTIN_ROUTES_CORE, ...(embeddedChat ? { "/chat": ChatRouteSink } : {}) }),
     [embeddedChat],
   );
-
-  const builtinNav = useMemo(() => {
-    const base = embeddedChat
-      ? [CHAT_NAV_ITEM, ...BUILTIN_NAV_REST]
-      : BUILTIN_NAV_REST;
-    return showTokenAnalytics ? base : base.filter((n) => n.path !== "/analytics");
-  }, [embeddedChat, showTokenAnalytics]);
-
-  const sidebarNav = useMemo(
-    () => partitionSidebarNav(builtinNav, manifests),
-    [builtinNav, manifests],
+  const builtinNav = useMemo(
+    () => (embeddedChat ? [CHAT_NAV_ITEM, ...BUILTIN_NAV_REST] : BUILTIN_NAV_REST),
+    [embeddedChat],
   );
-  const routes = useMemo(
-    () => buildRoutes(builtinRoutes, manifests),
-    [builtinRoutes, manifests],
-  );
+  const sidebarNav = useMemo(() => partitionSidebarNav(builtinNav, manifests), [builtinNav, manifests]);
+  const routes = useMemo(() => buildRoutes(builtinRoutes, manifests), [builtinRoutes, manifests]);
   const pluginTabMeta = useMemo(
-    () =>
-      manifests
-        .filter((m) => !m.tab.hidden)
-        .map((m) => ({
-          path: m.tab.override ?? m.tab.path,
-          label: m.label,
-        })),
+    () => manifests.filter((m) => !m.tab.hidden).map((m) => ({ path: m.tab.override ?? m.tab.path, label: m.label })),
     [manifests],
   );
-
   const layoutVariant = theme.layoutVariant ?? "standard";
 
   useEffect(() => {
     if (!mobileOpen) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setMobileOpen(false);
-    };
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setMobileOpen(false); };
     document.addEventListener("keydown", onKey);
-    const prevOverflow = document.body.style.overflow;
+    const prev = document.body.style.overflow;
     document.body.style.overflow = "hidden";
-    return () => {
-      document.removeEventListener("keydown", onKey);
-      document.body.style.overflow = prevOverflow;
-    };
+    return () => { document.removeEventListener("keydown", onKey); document.body.style.overflow = prev; };
   }, [mobileOpen]);
 
   useEffect(() => {
     const mql = window.matchMedia("(min-width: 1024px)");
-    const onChange = (e: MediaQueryListEvent) => {
-      if (e.matches) setMobileOpen(false);
-    };
-    mql.addEventListener("change", onChange);
-    return () => mql.removeEventListener("change", onChange);
+    const h = (e: MediaQueryListEvent) => { if (e.matches) setMobileOpen(false); };
+    mql.addEventListener("change", h);
+    return () => mql.removeEventListener("change", h);
   }, []);
+
+  // Desktop: if sidebar was shown at width W then collapsed, restore W when re-expanding
+  const sidebarStyle: React.CSSProperties = {
+    width: `${swClamped}rem`,
+    minWidth: `${swClamped}rem`,
+    transform: `translateX(${sidebarTranslate}rem)`,
+    background: "var(--component-sidebar-background)",
+    clipPath: "var(--component-sidebar-clip-path)",
+    borderImage: "var(--component-sidebar-border-image)",
+  };
 
   return (
     <div
@@ -422,9 +311,51 @@ export default function App() {
       <Backdrop />
       <PluginSlot name="backdrop" />
 
+      {/* ====== DESKTOP HEADER (always visible, z-50) ====== */}
+      <header
+        className="hidden lg:flex fixed top-0 left-0 right-0 z-50 h-12 items-center gap-3 px-4 border-b border-current/20 bg-background-base/90 backdrop-blur-sm"
+        style={{
+          background: "var(--component-header-background)",
+          borderImage: "var(--component-header-border-image)",
+          clipPath: "var(--component-header-clip-path)",
+        }}
+      >
+        {/* Toggle sidebar button — always visible */}
+        <Button
+          ghost
+          size="icon"
+          onClick={() => setCollapsed((v) => !v)}
+          aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+          title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+          className="text-midground/70 hover:text-foreground shrink-0"
+        >
+          {collapsed && !hovering ? (
+            <PanelLeftOpen className="h-4 w-4" />
+          ) : (
+            <PanelLeftClose className="h-4 w-4" />
+          )}
+        </Button>
+
+        <Typography
+          className="font-bold text-[0.95rem] leading-[0.95] tracking-[0.05em] text-midground whitespace-nowrap"
+          style={{ mixBlendMode: "plus-lighter" }}
+        >
+          {t.app.brand}
+        </Typography>
+
+        <div className="flex-1" />
+
+        {/* Right controls */}
+        <div className="flex items-center gap-2 shrink-0">
+          <ThemeSwitcher dropUp />
+          <LanguageSwitcher />
+        </div>
+      </header>
+
+      {/* ====== MOBILE HEADER ====== */}
       <header
         className={cn(
-          "lg:hidden fixed top-0 left-0 right-0 z-40 h-12",
+          "lg:hidden fixed top-0 left-0 right-0 z-50 h-12",
           "flex items-center gap-2 px-3",
           "border-b border-current/20",
           "bg-background-base/90 backdrop-blur-sm",
@@ -446,7 +377,6 @@ export default function App() {
         >
           <Menu />
         </Button>
-
         <Typography
           className="font-bold text-[0.95rem] leading-[0.95] tracking-[0.05em] text-midground"
           style={{ mixBlendMode: "plus-lighter" }}
@@ -460,45 +390,40 @@ export default function App() {
           ghost
           aria-label={t.app.closeNavigation}
           onClick={closeMobile}
-          className={cn(
-            "lg:hidden fixed inset-0 z-40 p-0 block",
-            "bg-black/60 backdrop-blur-sm",
-          )}
+          className={cn("lg:hidden fixed inset-0 z-40 p-0 block", "bg-black/60 backdrop-blur-sm")}
         />
       )}
 
       <PluginSlot name="header-banner" />
 
       <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden pt-12 lg:pt-0">
-        <div className="flex min-h-0 min-w-0 flex-1">
+        <div className="flex min-h-0 min-w-0 flex-1" style={{ position: "relative" }}>
+
+          {/* ====== SIDEBAR ====== */}
           <aside
+            ref={sidebarRef}
             id="app-sidebar"
             aria-label={t.app.navigation}
             className={cn(
-              "fixed top-0 left-0 z-50 flex h-dvh max-h-dvh w-64 min-h-0 flex-col",
+              "fixed top-0 left-0 z-40 flex h-dvh max-h-dvh flex-col",
               "border-r border-current/20",
               "bg-background-base/95 backdrop-blur-sm",
               "transition-transform duration-200 ease-out",
-              mobileOpen ? "translate-x-0" : "-translate-x-full",
-              "lg:sticky lg:top-0 lg:translate-x-0 lg:shrink-0",
+              "overflow-hidden",
+              "group/sidebar",
+              // Mobile: slide in/out
+              "lg:translate-x-0", // reset mobile translate on desktop
             )}
-            style={{
-              background: "var(--component-sidebar-background)",
-              clipPath: "var(--component-sidebar-clip-path)",
-              borderImage: "var(--component-sidebar-border-image)",
-            }}
+            style={sidebarStyle}
+            onMouseEnter={() => setHovering(true)}
+            onMouseLeave={() => setHovering(false)}
           >
-            <div
-              className={cn(
-                "flex h-14 shrink-0 items-center justify-between gap-2 px-4",
-                "border-b border-current/20",
-              )}
-            >
-              <div className="flex items-center gap-2">
+            {/* Sidebar header */}
+            <div className={cn("flex shrink-0 items-center justify-between gap-2 px-4 border-b border-current/20 min-h-14")}>
+              <div className="flex min-w-0 items-center gap-2 overflow-hidden">
                 <PluginSlot name="header-left" />
-
                 <Typography
-                  className="font-bold text-[1.125rem] leading-[0.95] tracking-[0.0525rem] text-midground"
+                  className="font-bold text-[1.125rem] leading-[0.95] tracking-[0.0525rem] text-midground whitespace-nowrap"
                   style={{ mixBlendMode: "plus-lighter" }}
                 >
                   Hermes
@@ -506,57 +431,32 @@ export default function App() {
                   Agent
                 </Typography>
               </div>
-
               <Button
                 ghost
                 size="icon"
                 onClick={closeMobile}
                 aria-label={t.app.closeNavigation}
-                className="lg:hidden text-midground/70 hover:text-midground"
+                className="lg:hidden text-midground/70 hover:text-midground shrink-0"
               >
                 <X />
               </Button>
             </div>
 
-            <nav
-              className="min-h-0 w-full flex-1 overflow-y-auto overflow-x-hidden border-t border-current/10 py-2"
-              aria-label={t.app.navigation}
-            >
+            {/* Navigation */}
+            <nav className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden border-t border-current/10 py-2" aria-label={t.app.navigation}>
               <ul className="flex flex-col">
                 {sidebarNav.coreItems.map((item) => (
-                  <SidebarNavLink
-                    closeMobile={closeMobile}
-                    item={item}
-                    key={item.path}
-                    t={t}
-                  />
+                  <SidebarNavLink closeMobile={closeMobile} item={item} key={item.path} t={t} />
                 ))}
               </ul>
-
               {sidebarNav.pluginItems.length > 0 && (
-                <div
-                  aria-labelledby="hermes-sidebar-plugin-nav-heading"
-                  className="flex flex-col border-t border-current/10 pb-2"
-                  role="group"
-                >
-                  <span
-                    className={cn(
-                      "px-5 pt-2.5 pb-1",
-                      "font-mondwest text-[0.6rem] tracking-[0.15em] uppercase opacity-30",
-                    )}
-                    id="hermes-sidebar-plugin-nav-heading"
-                  >
+                <div aria-labelledby="hermes-sidebar-plugin-nav-heading" className="flex flex-col border-t border-current/10 pb-2" role="group">
+                  <span className="px-5 pt-2.5 pb-1 font-mondwest text-[0.6rem] tracking-[0.15em] uppercase opacity-30" id="hermes-sidebar-plugin-nav-heading">
                     {t.app.pluginNavSection}
                   </span>
-
                   <ul className="flex flex-col">
                     {sidebarNav.pluginItems.map((item) => (
-                      <SidebarNavLink
-                        closeMobile={closeMobile}
-                        item={item}
-                        key={item.path}
-                        t={t}
-                      />
+                      <SidebarNavLink closeMobile={closeMobile} item={item} key={item.path} t={t} />
                     ))}
                   </ul>
                 </div>
@@ -565,23 +465,52 @@ export default function App() {
 
             <SidebarSystemActions onNavigate={closeMobile} />
 
-            <div
-              className={cn(
-                "flex shrink-0 items-center justify-between gap-2",
-                "px-3 py-2",
-                "border-t border-current/20",
-              )}
-            >
-              <div className="flex min-w-0 items-center gap-2">
+            <div className={cn("flex shrink-0 items-center justify-between gap-1 px-3 py-1.5 border-t border-current/20")}>
+              <div className="flex min-w-0 items-center gap-1">
                 <PluginSlot name="header-right" />
                 <ThemeSwitcher dropUp />
                 <LanguageSwitcher />
               </div>
             </div>
-
             <SidebarFooter />
           </aside>
 
+          {/* ====== RESIZE HANDLE ====== */}
+          <div
+            ref={resizeRef}
+            className={cn(
+              "hidden lg:block fixed z-[41] cursor-col-resize select-none flex items-center justify-center",
+              collapsed && !hovering ? "w-[3rem]" : "w-2",
+            )}
+            style={{
+              left: collapsed && !hovering ? `${swClamped}rem` : `${swClamped}rem`,
+              height: "100dvh",
+              transition: "width 0.2s, left 0.2s",
+            }}
+            title="Arraste para redimensionar a barra lateral"
+          >
+            <div className={cn(
+              "h-8 rounded-full transition-colors duration-150",
+              "bg-midground/20 hover:bg-accent",
+              collapsed && !hovering ? "w-[2px]" : "w-[2px]",
+            )} />
+          </div>
+
+          {/* ====== HOVER EXPAND ZONE (thin strip when collapsed) ====== */}
+          {collapsed && (
+            <div
+              className="hidden lg:block fixed top-0 z-[39] cursor-pointer"
+              style={{
+                left: 0,
+                width: `${swClamped + 1}rem`,
+                height: "100dvh",
+              }}
+              onMouseEnter={() => setHovering(true)}
+              onMouseLeave={() => setHovering(false)}
+            />
+          )}
+
+          {/* ====== MAIN CONTENT (reacts to sidebar width) ====== */}
           <PageHeaderProvider pluginTabs={pluginTabMeta}>
             <div
               className={cn(
@@ -592,54 +521,43 @@ export default function App() {
                   : "pt-2 sm:pt-4 lg:pt-6 pb-4 sm:pb-8",
                 isDocsRoute && "min-h-0 flex-1",
               )}
+              style={{
+                marginLeft: sidebarVisible ? `${swClamped}rem` : "0",
+                transition: "margin-left 0.2s ease-out",
+              }}
             >
               <PluginSlot name="pre-main" />
               <div
                 className={cn(
-                  "w-full min-w-0",
-                  (isDocsRoute || isChatRoute) &&
-                    "min-h-0 flex flex-1 flex-col",
+                  "w-full min-w-0 page-content-area",
+                  (isDocsRoute || isChatRoute) && "min-h-0 flex flex-1 flex-col",
                 )}
               >
                 <Routes>
                   {routes.map(({ key, path, element }) => (
                     <Route key={key} path={path} element={element} />
                   ))}
-                  <Route
-                    path="*"
-                    element={
-                      <UnknownRouteFallback pluginsLoading={pluginsLoading} />
-                    }
-                  />
+                  <Route path="*" element={<UnknownRouteFallback pluginsLoading={pluginsLoading} />} />
                 </Routes>
 
-                {embeddedChat &&
-                  !chatOverriddenByPlugin &&
-                  (pluginsLoading ? (
-                    isChatRoute ? (
-                      <div
-                        className="flex min-h-0 min-w-0 flex-1 items-center justify-center"
-                        aria-busy="true"
-                        aria-live="polite"
-                      >
-                        <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                          <Spinner />
-                          <span>Loading chat…</span>
-                        </div>
+                {embeddedChat && !chatOverriddenByPlugin && (pluginsLoading ? (
+                  isChatRoute && (
+                    <div className="flex min-h-0 min-w-0 flex-1 items-center justify-center" aria-busy="true" aria-live="polite">
+                      <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                        <Spinner />
+                        <span>Loading chat…</span>
                       </div>
-                    ) : null
-                  ) : (
-                    <div
-                      data-chat-active={isChatRoute ? "true" : "false"}
-                      className={cn(
-                        "min-h-0 min-w-0",
-                        isChatRoute ? "flex flex-1 flex-col" : "hidden",
-                      )}
-                      aria-hidden={!isChatRoute}
-                    >
-                      <ChatPage isActive={isChatRoute} />
                     </div>
-                  ))}
+                  )
+                ) : (
+                  <div
+                    data-chat-active={isChatRoute ? "true" : "false"}
+                    className={cn("min-h-0 min-w-0", isChatRoute ? "flex flex-1 flex-col" : "hidden")}
+                    aria-hidden={!isChatRoute}
+                  >
+                    <ChatPage isActive={isChatRoute} />
+                  </div>
+                ))}
               </div>
               <PluginSlot name="post-main" />
             </div>
@@ -654,11 +572,7 @@ export default function App() {
 
 function SidebarNavLink({ closeMobile, item, t }: SidebarNavLinkProps) {
   const { path, label, labelKey, icon: Icon } = item;
-
-  const navLabel = labelKey
-    ? ((t.app.nav as Record<string, string>)[labelKey] ?? label)
-    : label;
-
+  const navLabel = labelKey ? ((t.app.nav as Record<string, string>)[labelKey] ?? label) : label;
   return (
     <li>
       <NavLink
@@ -675,27 +589,14 @@ function SidebarNavLink({ closeMobile, item, t }: SidebarNavLinkProps) {
             isActive ? "text-midground" : "opacity-60 hover:opacity-100",
           )
         }
-        style={{
-          clipPath: "var(--component-tab-clip-path)",
-        }}
+        style={{ clipPath: "var(--component-tab-clip-path)" }}
       >
         {({ isActive }) => (
           <>
             <Icon className="h-3.5 w-3.5 shrink-0" />
             <span className="truncate">{navLabel}</span>
-
-            <span
-              aria-hidden
-              className="absolute inset-y-0.5 left-1.5 right-1.5 bg-midground opacity-0 pointer-events-none transition-opacity duration-200 group-hover:opacity-5"
-            />
-
-            {isActive && (
-              <span
-                aria-hidden
-                className="absolute left-0 top-0 bottom-0 w-px bg-midground"
-                style={{ mixBlendMode: "plus-lighter" }}
-              />
-            )}
+            <span aria-hidden className="absolute inset-y-0.5 left-1.5 right-1.5 bg-midground opacity-0 pointer-events-none transition-opacity duration-200 group-hover:opacity-5" />
+            {isActive && <span aria-hidden className="absolute left-0 top-0 bottom-0 w-px bg-midground" style={{ mixBlendMode: "plus-lighter" }} />}
           </>
         )}
       </NavLink>
@@ -706,61 +607,28 @@ function SidebarNavLink({ closeMobile, item, t }: SidebarNavLinkProps) {
 function SidebarSystemActions({ onNavigate }: { onNavigate: () => void }) {
   const { t } = useI18n();
   const navigate = useNavigate();
-  const { activeAction, isBusy, isRunning, pendingAction, runAction } =
-    useSystemActions();
-
+  const { activeAction, isBusy, isRunning, pendingAction, runAction } = useSystemActions();
   const items: SystemActionItem[] = [
-    {
-      action: "restart",
-      icon: RotateCw,
-      label: t.status.restartGateway,
-      runningLabel: t.status.restartingGateway,
-      spin: true,
-    },
-    {
-      action: "update",
-      icon: Download,
-      label: t.status.updateHermes,
-      runningLabel: t.status.updatingHermes,
-      spin: false,
-    },
+    { action: "restart", icon: RotateCw, label: t.status.restartGateway, runningLabel: t.status.restartingGateway, spin: true },
+    { action: "update", icon: Download, label: t.status.updateHermes, runningLabel: t.status.updatingHermes, spin: false },
   ];
-
   const handleClick = (action: SystemAction) => {
     if (isBusy) return;
     void runAction(action);
     navigate("/sessions");
     onNavigate();
   };
-
   return (
-    <div
-      className={cn(
-        "shrink-0 flex flex-col",
-        "border-t border-current/10",
-        "py-1",
-      )}
-    >
-      <span
-        className={cn(
-          "px-5 pt-0.5 pb-0.5",
-          "font-mondwest text-[0.6rem] tracking-[0.15em] uppercase opacity-30",
-        )}
-      >
-        {t.app.system}
-      </span>
-
+    <div className={cn("shrink-0 flex flex-col", "border-t border-current/10", "py-1")}>
+      <span className={cn("px-5 pt-0.5 pb-0.5", "font-mondwest text-[0.6rem] tracking-[0.15em] uppercase opacity-30")}>{t.app.system}</span>
       <SidebarStatusStrip />
-
       <ul className="flex flex-col">
         {items.map(({ action, icon: Icon, label, runningLabel, spin }) => {
           const isPending = pendingAction === action;
-          const isActionRunning =
-            activeAction === action && isRunning && !isPending;
+          const isActionRunning = activeAction === action && isRunning && !isPending;
           const busy = isPending || isActionRunning;
           const displayLabel = isActionRunning ? runningLabel : label;
           const disabled = isBusy && !busy;
-
           return (
             <li key={action}>
               <ListItem
@@ -768,43 +636,17 @@ function SidebarSystemActions({ onNavigate }: { onNavigate: () => void }) {
                 disabled={disabled}
                 aria-busy={busy}
                 active={busy}
-                className={cn(
-                  "gap-3 px-5 py-1.5 whitespace-nowrap",
-                  "font-mondwest text-[0.75rem] tracking-[0.1em]",
-                  "transition-opacity",
-                  busy
-                    ? "text-midground opacity-100"
-                    : "opacity-60 hover:opacity-100",
-                  "disabled:opacity-30",
-                )}
+                className={cn("gap-3 px-5 py-1.5 whitespace-nowrap", "font-mondwest text-[0.75rem] tracking-[0.1em]", "transition-opacity",
+                  busy ? "text-midground opacity-100" : "opacity-60 hover:opacity-100", "disabled:opacity-30")}
               >
-                {isPending ? (
-                  <Spinner className="shrink-0 text-[0.875rem]" />
-                ) : isActionRunning && spin ? (
+                {isPending ? <Spinner className="shrink-0 text-[0.875rem]" /> : isActionRunning && spin ? (
                   <Spinner className="shrink-0 text-[0.875rem]" />
                 ) : (
-                  <Icon
-                    className={cn(
-                      "h-3.5 w-3.5 shrink-0",
-                      isActionRunning && !spin && "animate-pulse",
-                    )}
-                  />
+                  <Icon className={cn("h-3.5 w-3.5 shrink-0", isActionRunning && !spin && "animate-pulse")} />
                 )}
-
                 <span className="truncate">{displayLabel}</span>
-
-                <span
-                  aria-hidden
-                  className="absolute inset-y-0.5 left-1.5 right-1.5 bg-midground opacity-0 pointer-events-none transition-opacity duration-200 group-hover:opacity-5"
-                />
-
-                {busy && (
-                  <span
-                    aria-hidden
-                    className="absolute left-0 top-0 bottom-0 w-px bg-midground"
-                    style={{ mixBlendMode: "plus-lighter" }}
-                  />
-                )}
+                <span aria-hidden className="absolute inset-y-0.5 left-1.5 right-1.5 bg-midground opacity-0 pointer-events-none transition-opacity duration-200 group-hover:opacity-5" />
+                {busy && <span aria-hidden className="absolute left-0 top-0 bottom-0 w-px bg-midground" style={{ mixBlendMode: "plus-lighter" }} />}
               </ListItem>
             </li>
           );
