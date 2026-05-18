@@ -493,11 +493,13 @@ V1 behavior:
 
 ```yaml
 provider: memory-integration
-version: 1
+schema_version: 1
 created_at: 2026-05-18T00:00:00Z
 hermes_home_fingerprint: sha256:<hash-of-canonical-hermes-home-path>
 memory_root: <relative-or-redacted-path>
 ```
+
+OWNER file spec: path is exactly `<memory_root>/_system/OWNER` with no extension; encoding is UTF-8; maximum read size is 8 KiB; parsing is a minimal YAML subset sufficient for scalar keys. Workstream 2C validates only `provider` and `schema_version`; it does **not** validate `hermes_home_fingerprint`, `created_at`, or `memory_root` for takeover decisions. Those checks belong to the future write-takeover/bootstrap slice. Keep parsing stdlib-only in 2C; do not add PyYAML or another YAML dependency for OWNER reads.
 
 Takeover rule: refuse to write if an existing OWNER has `provider` other than `memory-integration`; report typed status and require explicit manual migration.
 
@@ -658,13 +660,96 @@ If implementation proves a loader/test helper outside this allowlist is required
 - Sidecar path default is reported as `$HERMES_HOME/memory-integration/memory_integration.db`, but absent DB is not an error in W2B.
 
 **Verification gates:**
-1. Targeted tests pass: `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest tests/plugins/memory/memory_integration/ -q`.
+1. Targeted tests pass: `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -o addopts='' tests/plugins/memory/memory_integration/ -q`.
 2. Discovery works through the Hermes memory plugin loader.
 3. `get_tool_schemas()` returns exactly the status tool and works before `initialize()`.
 4. Status returns valid bounded JSON for missing config, invalid configured vault, valid configured vault, and absent SQLite sidecar.
 5. Tests snapshot temp `$HERMES_HOME` and fixture vaults before/after status calls to prove no files/directories were created.
 6. New files contain no hardcoded `~/.hermes`; use `hermes_home` kwarg or `get_hermes_home()`.
 7. New files contain no `hashline`, `opencode-hashline`, npm, Obsidian desktop, or Obsidian Headless runtime dependency.
+
+---
+
+## Workstream 2C — Vault Readiness and OWNER Read-Only Enforcement
+
+**Goal:** extend the status-only provider from Workstream 2B into a read-only readiness surface for the configured memory root. This slice answers “is the configured vault/memory root safe for memory-integration to use?” without creating or mutating any vault, SQLite, lock, patch, or semantic state.
+
+**Allowed files:**
+- `plugins/memory/memory-integration/config.py`
+- `plugins/memory/memory-integration/provider.py`
+- `plugins/memory/memory-integration/status.py`
+- `plugins/memory/memory-integration/README.md`
+- `plugins/memory/memory-integration/ownership.py` — new; owns minimal `_system/OWNER` parsing/status only
+- `tests/plugins/memory/memory_integration/test_config.py`
+- `tests/plugins/memory/memory_integration/test_status_readonly.py`
+- `tests/plugins/memory/memory_integration/test_ownership.py` — new
+- `tests/plugins/memory/memory_integration/test_vault_readiness.py` — new
+
+Memory-root/path-containment helpers should stay in `config.py` or `status.py` for 2C. Do not add a separate `vault.py` unless this plan is patched again with a concrete need.
+
+If implementation requires changes outside this allowlist, stop and update the plan before proceeding.
+
+**Forbidden in Workstream 2C:**
+- no semantic Markdown writes;
+- no `_system/OWNER` creation or modification;
+- no vault bootstrap file creation;
+- no SQLite file creation, migrations, or schema work;
+- no locks or lock-file creation;
+- no patch proposal/apply/search/retrieval tools;
+- no background write behavior;
+- no Hashline / npm / OpenCode plugin dependency or installation;
+- no Obsidian desktop/headless/sync-process dependency.
+
+**Read-only readiness behavior:**
+- Compute a memory root from explicit `vault.mode`:
+  - `dedicated`: memory root is the resolved vault root; `memory_subdir` is rejected by config validation.
+  - `shared`: memory root is `<vault_root>/<memory_subdir>`; `memory_subdir` is required, relative, normalized, and contained under the vault root.
+- Fail closed for unsafe subdirs: absolute paths, `..` traversal, empty path in shared mode, or resolved-path escape. Concrete rule: compare `Path.resolve(strict=False)` for the candidate memory root against `vault_root.resolve(strict=False)` and require the candidate to remain relative to the resolved vault root. Do not write any filesystem probes.
+- If a previously configured explicit vault path is absent or invalid, report typed readiness diagnostics and never silently bootstrap a replacement vault.
+- Read `_system/OWNER` only when it exists under the computed memory root. Missing owner is a readiness diagnostic, not an instruction to create one in 2C.
+- Parse only the minimal OWNER fields needed for takeover checks: `provider` and `schema_version`. Oversized, unreadable, encoding-error, and malformed files produce distinct typed diagnostics with bounded excerpts only when safe.
+- Matching owner means `provider: memory-integration`; mismatched owner means fail-closed and require explicit manual migration/approval before any future write slice.
+- Conflict-file detection is deferred out of 2C. The current `*.conflict-*.md` pattern remains provisional pending real-world confirmation and should not force vault-wide scans in the readiness slice.
+
+**Status output additions:**
+- `memory_root`: bounded path/status object, respecting `include_absolute_paths`.
+- `owner`: `{status: missing|valid|mismatch|invalid|unreadable|oversized|not_checked, provider?, schema_version?, diagnostics}`.
+- `readiness`: one of `not_configured`, `invalid_config`, `missing_vault`, `owner_missing`, `ready_readonly`, or `blocked`.
+- `diagnostics`: stable typed codes for tests and callers, not free-form-only strings.
+
+**Readiness decision table:**
+- missing/invalid `vault.mode` or unsafe `memory_subdir` -> `invalid_config`; OWNER is `not_checked` because no memory root is authoritative;
+- no resolved vault root because no adapter/path/env/config source exists -> `not_configured`; OWNER is `not_checked`;
+- explicit configured vault path no longer exists or is invalid -> `missing_vault`; OWNER is `not_checked`;
+- memory root exists but `_system/OWNER` is missing -> `owner_missing`;
+- OWNER exists with `provider: memory-integration` and supported `schema_version` in `{1}` -> `ready_readonly`;
+- OWNER exists with another provider, unreadable/oversized/invalid content, or unsupported schema -> `blocked`.
+
+W2C success does not require a fresh root to reach `ready_readonly`; because OWNER creation is deferred, the expected success path for a new valid root is a clear `owner_missing` readiness state with typed diagnostics.
+
+**Verification gates:**
+1. Targeted tests pass: `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -o addopts='' tests/plugins/memory/memory_integration/ -q`. Use the `-o addopts=''` form consistently for W2B/W2C local verification to avoid unrelated project-level pytest addopts/plugins affecting the slice gate.
+2. Existing Workstream 2B tests remain green.
+3. Status/readiness calls create no files or directories in temp `$HERMES_HOME`, vault root, or memory root.
+4. Dedicated/shared mode root computation is tested, including escaping `memory_subdir` rejection.
+5. OWNER missing/valid/mismatch/invalid cases are tested as read-only diagnostics.
+6. Disappeared/invalid explicit vault path reports fail-closed typed diagnostics.
+7. Conflict-file detection remains deferred; do not add scans or status fields for conflict copies in W2C.
+8. New files contain no `hashline`, `opencode-hashline`, npm, Obsidian desktop/headless, subprocess shell-out, SQLite connection, or write helpers.
+
+**Suggested TDD micro-slices for Workstream 2C:**
+1. Dedicated mode memory-root computation and `memory_subdir` rejection.
+2. Shared mode memory-root computation with relative normalized `memory_subdir`.
+3. Unsafe subdir rejection: absolute path, `..` traversal, empty shared subdir, resolved-path escape.
+4. Explicit configured vault disappearance/invalid path -> typed fail-closed diagnostic.
+5. OWNER missing under existing memory root -> `owner.status=missing`, readiness `owner_missing`.
+6. OWNER valid with `provider: memory-integration` and supported `schema_version` -> `ready_readonly`.
+7. OWNER mismatched provider or unsupported schema -> `blocked` with no overwrite path.
+8. OWNER unreadable, oversized, encoding-error, malformed -> distinct typed diagnostics with bounded excerpts.
+9. Integrated status shape and privacy behavior: no absolute paths when `include_absolute_paths=false`.
+10. Read-only invariance gate: snapshot temp `$HERMES_HOME`, vault root, memory root, and `$XDG_CONFIG_HOME` before/after status calls.
+
+**Recommended execution strategy:** use the usual subagent-driven flow: controller preflight, one mutating implementer for the slice in this worktree, controller verification, independent spec review, independent quality/adversarial review, then commit only after the gates above pass.
 
 ---
 
