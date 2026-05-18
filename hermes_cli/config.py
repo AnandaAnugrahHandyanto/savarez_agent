@@ -1720,6 +1720,9 @@ DEFAULT_CONFIG = {
     },
 
     # Hypura Harness — central actuator for Hakua (OSC, VOICEVOX, Evolution)
+    # Opt-in OpenClaw toolsets (NOT enabled by default — avoids prompt-cache / toolset churn):
+    #   enabled_toolsets: [..., "harness", "openclaw", "vrchat"]
+    # Voice capture optional extra: uv pip install "hermes-agent[openclaw-voice]"
     "harness": {
         "enabled": True,
         "auto_start": True,

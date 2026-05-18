@@ -60,12 +60,12 @@ export class OSCClient {
   /**
    * Send a chatbox message to VRChat
    */
-  sendChatbox(message: string, sendImmediately = true): void {
+  sendChatbox(message: string, sendImmediately = true, notify = true): void {
     if (message.length > 144) {
       throw new Error("Chatbox message exceeds 144 character limit");
     }
 
-    this.send(DEFAULT_OSC_PATHS.chatbox, [message, sendImmediately]);
+    this.send(DEFAULT_OSC_PATHS.chatbox, [message, sendImmediately, notify]);
   }
 
   /**

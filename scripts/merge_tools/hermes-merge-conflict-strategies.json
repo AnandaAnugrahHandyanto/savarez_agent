@@ -1,0 +1,200 @@
+{
+  "pinned_upstream_sha": "auto",
+  "default_action": "manual_api_followup",
+  "blocker_actions": ["official_with_overlay", "manual_api_followup"],
+  "dirty_tree_ignore": [
+    ".cursor/hooks/state/*",
+    ".specstory/**",
+    ".claude/**",
+    ".cursor/**",
+    "_docs/merge-reports/*",
+    "_docs/*merge-conflict-resolution*",
+    "_docs/upstream-main-diff-inventory.*",
+    "vendor/openclaw-mirror/**/scripts/generated/*",
+    "vendor/openclaw-mirror/**/web_scavenge.log",
+    "debug-*",
+    "logs/*",
+    "*.log",
+    "tmp-*"
+  ],
+  "rules": [
+    {
+      "pattern": "uv.lock",
+      "action": "upstream",
+      "note": "Official lockfile carries dependency and vulnerability fixes."
+    },
+    {
+      "pattern": "pyproject.toml",
+      "action": "official_with_overlay",
+      "note": "Take official deps; re-apply fork-only optional extras after merge."
+    },
+    {
+      "pattern": ".github/workflows/*",
+      "action": "upstream",
+      "note": "Keep official CI and security workflow changes."
+    },
+    {
+      "pattern": "brain/*",
+      "action": "preserve_custom",
+      "note": "Hakua / sovereign identity and brain context files."
+    },
+    {
+      "pattern": "vendor/openclaw-mirror/extensions/*",
+      "action": "preserve_custom",
+      "note": "Fork-owned OpenClaw extensions (hypura-harness, vrchat-relay, hypura-provider)."
+    },
+    {
+      "pattern": "vendor/openclaw-mirror/extensions/*/scripts/generated/*",
+      "action": "drop_generated",
+      "note": "Exclude generated harness artifacts from merge replay."
+    },
+    {
+      "pattern": "vendor/openclaw-mirror/ShinkaEvolve/**",
+      "action": "preserve_custom",
+      "note": "Local ShinkaEvolve vendor pin for harness evolution."
+    },
+    {
+      "pattern": "vendor/openclaw-mirror/AI-Scientist/**",
+      "action": "preserve_custom",
+      "note": "Local AI-Scientist vendor pin for harness evolution."
+    },
+    {
+      "pattern": "tools/harness_tools.py",
+      "action": "preserve_custom",
+      "note": "Hermes-native harness tool bridge."
+    },
+    {
+      "pattern": "tools/voicevox_tts_tool.py",
+      "action": "preserve_custom",
+      "note": "Ported from OpenClaw live2d-companion; keep until upstream parity."
+    },
+    {
+      "pattern": "tools/vrchat_osc_tool.py",
+      "action": "preserve_custom",
+      "note": "Ported VRChat OSC control."
+    },
+    {
+      "pattern": "tools/shinka_evolve_tool.py",
+      "action": "preserve_custom",
+      "note": "Shinka evolution integration."
+    },
+    {
+      "pattern": "tools/ai_scientist_tool.py",
+      "action": "preserve_custom",
+      "note": "AI-Scientist evolution integration."
+    },
+    {
+      "pattern": "hermes_cli/harness.py",
+      "action": "preserve_custom",
+      "note": "Harness CLI launcher."
+    },
+    {
+      "pattern": "tools/environments/local.py",
+      "action": "preserve_custom",
+      "note": "Windows-native shell compatibility layer.",
+      "context": "overlap_only"
+    },
+    {
+      "pattern": "tools/environments/persistent_shell.py",
+      "action": "preserve_custom",
+      "note": "Windows persistent shell backend.",
+      "context": "overlap_only"
+    },
+    {
+      "pattern": "tools/environments/platform_shell_compat.py",
+      "action": "preserve_custom",
+      "note": "Cross-platform shell compat harness.",
+      "context": "overlap_only"
+    },
+    {
+      "pattern": "README.md",
+      "action": "official_with_overlay",
+      "note": "Merge official README then re-apply Windows fork section.",
+      "context": "overlap_only"
+    },
+    {
+      "pattern": "gateway/run.py",
+      "action": "official_with_overlay",
+      "note": "Take upstream security/gateway fixes; overlay fork gateway hooks.",
+      "context": "overlap_only"
+    },
+    {
+      "pattern": "run_agent.py",
+      "action": "official_with_overlay",
+      "note": "Take upstream agent loop fixes; preserve fork tool intercepts.",
+      "context": "overlap_only"
+    },
+    {
+      "pattern": "agent/prompt_builder.py",
+      "action": "official_with_overlay",
+      "note": "Take upstream prompt hardening; keep brain/context injection paths.",
+      "context": "overlap_only"
+    },
+    {
+      "pattern": "model_tools.py",
+      "action": "official_with_overlay",
+      "note": "Take upstream tool orchestration; preserve harness toolset wiring.",
+      "context": "overlap_only"
+    },
+    {
+      "pattern": "toolsets.py",
+      "action": "official_with_overlay",
+      "note": "Merge toolset lists: official base + harness/voice/vrchat toolsets.",
+      "context": "overlap_only"
+    },
+    {
+      "pattern": "hermes_cli/config.py",
+      "action": "official_with_overlay",
+      "note": "Merge config schema: upstream defaults + fork OPTIONAL_ENV_VARS.",
+      "context": "overlap_only"
+    },
+    {
+      "pattern": "scripts/sync_upstream.py",
+      "action": "preserve_custom",
+      "note": "Fork merge automation scripts."
+    },
+    {
+      "pattern": "scripts/merge_tools/*",
+      "action": "preserve_custom",
+      "note": "Fork policy-based merge toolkit."
+    },
+    {
+      "pattern": "scripts/sync_openclaw_vendor.py",
+      "action": "preserve_custom",
+      "note": "Layered OpenClaw vendor sync (openclaw-sync + clawdbot-main)."
+    },
+    {
+      "pattern": "scripts/merge_tools/openclaw_*",
+      "action": "preserve_custom",
+      "note": "Layered OpenClaw merge helpers."
+    },
+    {
+      "pattern": "scripts/openclaw_ports/*",
+      "action": "preserve_custom",
+      "note": "CLI ports from clawdbot-main scripts/tools."
+    },
+    {
+      "pattern": "scripts/sync_all.py",
+      "action": "preserve_custom",
+      "note": "Unified upstream + OpenClaw sync entrypoint."
+    },
+    {
+      "pattern": "tests/tools/test_local_persistent.py",
+      "action": "preserve_custom",
+      "note": "Windows shell regression tests.",
+      "context": "overlap_only"
+    },
+    {
+      "pattern": "tests/tools/test_local_env_blocklist.py",
+      "action": "preserve_custom",
+      "note": "Windows env blocklist tests.",
+      "context": "overlap_only"
+    },
+    {
+      "pattern": "AGENTS.md",
+      "action": "official_with_overlay",
+      "note": "Merge official AGENTS.md; retain fork Windows/profile notes.",
+      "context": "overlap_only"
+    }
+  ]
+}

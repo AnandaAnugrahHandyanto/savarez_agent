@@ -1,0 +1,46 @@
+{
+  "description": "Layered OpenClaw vendor sync: openclaw-sync (official base) + clawdbot-main (fork advantages).",
+  "extensions": {
+    "hypura-harness": {
+      "base": "openclaw-sync",
+      "overlay": "clawdbot-main",
+      "overlay_paths": [
+        "scripts/channel_readiness.py",
+        "scripts/voice_bridge.py",
+        "scripts/vrchat_auto_osc_harness.py",
+        "scripts/hakua_persona.py",
+        "scripts/companion_sdk_bridge.mjs",
+        "scripts/hypura/**",
+        "scripts/tests/test_channel_readiness.py",
+        "scripts/tests/test_voice_bridge.py",
+        "scripts/tests/test_vrchat_existing_avatar.py",
+        "scripts/tests/test_vrchat_harness_daemon.py",
+        "skills/channel-readiness/**",
+        "skills/desktop-companion-3d/**"
+      ],
+      "prefer_overlay_for_changed": [
+        "scripts/**/*.py",
+        "config/harness.config.json",
+        "package.json",
+        "openclaw.plugin.json",
+        "index.ts"
+      ]
+    },
+    "hypura-provider": {
+      "base": "openclaw-sync",
+      "overlay": "clawdbot-main",
+      "prefer_overlay_for_changed": ["**/*"]
+    },
+    "vrchat-relay": {
+      "base": "openclaw-sync",
+      "overlay": "clawdbot-main",
+      "prefer_overlay_for_changed": ["**/*"]
+    }
+  },
+  "vendor_packages": {
+    "ShinkaEvolve": { "source": "claw-root-vendor" },
+    "AI-Scientist": { "source": "claw-root-vendor" }
+  },
+  "skip_dir_names": ["__pycache__", ".git", "node_modules", ".venv", "dist", ".turbo", ".pytest_cache"],
+  "skip_globs": ["**/scripts/generated/**", "**/*.log", "**/.DS_Store"]
+}

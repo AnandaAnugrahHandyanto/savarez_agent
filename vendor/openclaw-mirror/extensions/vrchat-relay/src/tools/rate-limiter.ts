@@ -18,10 +18,8 @@ export interface RateLimitState {
 export class TokenBucketRateLimiter {
   private config: RateLimitConfig;
   private state: RateLimitState;
-  private name: string;
 
-  constructor(name: string, config: Partial<RateLimitConfig> = {}) {
-    this.name = name;
+  constructor(_name: string, config: Partial<RateLimitConfig> = {}) {
     this.config = {
       bucketSize: 5,
       refillRate: 1,

@@ -19,7 +19,7 @@ EVOLVED_DIR.mkdir(exist_ok=True)
 
 _config: dict = {}
 if CONFIG_PATH.exists():
-    _config = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+    _config = json.loads(CONFIG_PATH.read_text(encoding="utf-8-sig"))
 
 _MAX_GENERATED = _config.get("generated_max_files", 50)
 _EXEC_TIMEOUT = _config.get("execution_timeout_sec", 60)

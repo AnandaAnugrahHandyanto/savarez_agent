@@ -178,51 +178,18 @@ def _run_async(coro):
 
 discover_builtin_tools()
 
-    Wrapped in a function so import errors in optional tools (e.g., fal_client
-    not installed) don't prevent the rest from loading.
-    """
-    _modules = [
-        "tools.web_tools",
-        "tools.terminal_tool",
-        "tools.file_tools",
-        "tools.vision_tools",
-        "tools.mixture_of_agents_tool",
-        "tools.image_generation_tool",
-        "tools.skills_tool",
-        "tools.skill_manager_tool",
-        "tools.browser_tool",
-        "tools.cronjob_tools",
-        "tools.rl_training_tool",
-        "tools.tts_tool",
-        "tools.todo_tool",
-        "tools.memory_tool",
-        "tools.session_search_tool",
-        "tools.clarify_tool",
-        "tools.code_execution_tool",
-        "tools.delegate_tool",
-        "tools.process_registry",
-        "tools.send_message_tool",
-        # "tools.honcho_tools",  # Removed — Honcho is now a memory provider plugin
-        "tools.homeassistant_tool",
-        "tools.harness_tools",
-        "tools.ghost_protocol_tool",
-    ]
-    import importlib
-    for mod_name in _modules:
-        try:
-            importlib.import_module(mod_name)
-        except Exception as e:
-            logger.warning("Could not import tool module %s: %s", mod_name, e)
-
-
-_discover_tools()
-
-# MCP tool discovery (external MCP servers from config)
-try:
-    from tools.mcp_tool import discover_mcp_tools
-    discover_mcp_tools()
-except Exception as e:
-    logger.debug("MCP tool discovery failed: %s", e)
+# MCP tool discovery (external MCP servers from config) used to run here as
+# a module-level side effect.  It was removed because discover_mcp_tools()
+# internally uses a blocking future.result(timeout=120) wait, and the
+# gateway lazy-imports this module from inside the asyncio event loop on
+# the first user message — freezing Discord/Telegram heartbeats for up to
+# 120s whenever any configured MCP server was slow or unreachable (#16856).
+#
+# Each entry point now runs discovery explicitly at its own startup:
+#   - gateway/run.py            -> start_gateway() uses run_in_executor
+#   - cli.py, hermes_cli/*      -> inline on startup (no event loop)
+#   - tui_gateway/server.py     -> inline on startup (no event loop)
+#   - acp_adapter/server.py     -> asyncio.to_thread on session init
 
 # Plugin tool discovery (user/project/pip plugins)
 try:
@@ -381,9 +348,11 @@ def _compute_tool_definitions(
             elif not quiet_mode:
                 print(f"⚠️  Unknown toolset: {toolset_name}")
     else:
-        # Default: start with everything
+        # Default: all toolsets except those marked opt_in (harness, openclaw, vrchat, …)
         from toolsets import get_all_toolsets
-        for ts_name in get_all_toolsets():
+        for ts_name, ts_def in get_all_toolsets().items():
+            if isinstance(ts_def, dict) and ts_def.get("opt_in"):
+                continue
             tools_to_include.update(resolve_toolset(ts_name))
 
     # Always apply disabled toolsets as a subtraction step at the end.

@@ -1,14 +1,57 @@
 {
   "id": "hypura-harness",
   "name": "Hypura Harness",
-  "description": "HTTP tools for the Hypura Python harness daemon (VRChat OSC, VOICEVOX, code execution, skill generation, Shinka evolve, LoRA jobs).",
+  "description": "HTTP tools for the Hypura Python harness daemon (VRChat OSC, local voice input/output, VOICEVOX, code execution, skill generation, Shinka evolve, LoRA jobs).",
+  "skills": ["./skills"],
+  "contracts": {
+    "tools": [
+      "hypura_harness_channel_readiness",
+      "hypura_harness_companion",
+      "hypura_harness_companion3d_event",
+      "hypura_harness_companion3d_load_model",
+      "hypura_harness_companion3d_set_state",
+      "hypura_harness_companion3d_status",
+      "hypura_harness_companion_mic",
+      "hypura_harness_companion_voice_turn",
+      "hypura_harness_evolve",
+      "hypura_harness_lora_curriculum_build",
+      "hypura_harness_lora_grpo",
+      "hypura_harness_lora_job",
+      "hypura_harness_lora_status",
+      "hypura_harness_lora_train",
+      "hypura_harness_osc",
+      "hypura_harness_run",
+      "hypura_harness_skill",
+      "hypura_harness_speak",
+      "hypura_harness_status",
+      "hypura_harness_submodule",
+      "hypura_harness_voice_devices",
+      "hypura_harness_voice_test_say",
+      "hypura_harness_voice_transcribe",
+      "hypura_harness_voice_turn",
+      "hypura_harness_vrc_action",
+      "hypura_harness_vrc_approve_profile",
+      "hypura_harness_vrc_chatbox",
+      "hypura_harness_vrc_current_avatar",
+      "hypura_harness_vrc_emergency_stop",
+      "hypura_harness_vrc_parameters",
+      "hypura_harness_vrc_profile",
+      "hypura_harness_vrc_status",
+      "hypura_harness_vrc_suggest_profile",
+      "hypura_loop_status",
+      "hypura_scientist_ideas",
+      "hypura_scientist_run",
+      "hypura_scientist_status",
+      "hypura_tinylora_train"
+    ]
+  },
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
     "properties": {
       "baseUrl": {
         "type": "string",
-        "description": "Hypura harness base URL (must match scripts/hypura/harness.config.json daemon_port; default http://127.0.0.1:18794)"
+        "description": "Hypura harness base URL (must match extensions/hypura-harness/config/harness.config.json daemon_port; default http://127.0.0.1:18794)"
       }
     }
   }

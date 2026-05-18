@@ -3,9 +3,11 @@
 
 Typical fork workflow:
   1. Ensure ``git remote add upstream https://github.com/NousResearch/hermes-agent.git``
-  2. ``py -3 scripts/sync_upstream.py --dry-run`` — fetch + divergence summary
-  3. ``py -3 scripts/sync_upstream.py --merge`` — create ``sync/upstream-YYYYMMDD`` and merge
-  4. Resolve conflicts (see WATCHLIST_PATHS), then ``py -3 scripts/sync_upstream.py --pytest-only``
+  2. ``py -3 scripts/sync_all.py --dry-run`` — inventory + policy classify (recommended)
+  3. ``py -3 scripts/sync_all.py --openclaw-vendor --dry-run`` — include clawdbot OpenClaw diff
+  4. ``py -3 scripts/sync_all.py --merge --target main --commit`` — policy merge + commit
+  5. Or legacy: ``py -3 scripts/sync_upstream.py --merge`` on branch ``sync/upstream-YYYYMMDD``
+  6. Resolve manual blockers (``official_with_overlay``), then ``py -3 scripts/sync_upstream.py --pytest-only``
 
 Conflict-prone Windows / shell files are listed in WATCHLIST_PATHS for quick review.
 """

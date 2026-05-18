@@ -2,6 +2,8 @@
 
 This skill provides direct access to the Hypura Harness for VRChat manifestation, VOICEVOX synthesis, and associative wisdom.
 
+Run CLI examples from the repository root after `cd extensions/hypura-harness/scripts` (or use `uv run --project extensions/hypura-harness/scripts python hypura_cli.py ...`).
+
 ## Actions
 
 ### 1. Unified Speech (VOICEVOX)
@@ -9,7 +11,8 @@ This skill provides direct access to the Hypura Harness for VRChat manifestation
 Speak via the VRChat virtual microphone.
 
 ```bash
-uv run python scripts/hypura/hypura_cli.py speak "Message" --emotion "neutral" --speaker 8
+cd extensions/hypura-harness/scripts
+uv run python hypura_cli.py speak "Message" --emotion "neutral" --speaker 8
 ```
 
 ### 2. VRChat Manifestation
@@ -17,7 +20,8 @@ uv run python scripts/hypura/hypura_cli.py speak "Message" --emotion "neutral" -
 Send a message to the VRChat chatbox.
 
 ```bash
-uv run python scripts/hypura/hypura_cli.py chatbox "Message"
+cd extensions/hypura-harness/scripts
+uv run python hypura_cli.py chatbox "Message"
 ```
 
 ### 3. Intent-Driven Scavenge
@@ -25,7 +29,8 @@ uv run python scripts/hypura/hypura_cli.py chatbox "Message"
 Trigger the web scavenger for specific intelligence gathering.
 
 ```bash
-uv run python scripts/hypura/hypura_cli.py scavenge "Query"
+cd extensions/hypura-harness/scripts
+uv run python hypura_cli.py scavenge "Query"
 ```
 
 ### 4. Associative Wisdom
@@ -33,7 +38,8 @@ uv run python scripts/hypura/hypura_cli.py scavenge "Query"
 Query the knowledge graph for topological insights.
 
 ```bash
-uv run python scripts/hypura/hypura_cli.py wisdom "Concept"
+cd extensions/hypura-harness/scripts
+uv run python hypura_cli.py wisdom "Concept"
 ```
 
 ### 5. Status Check
@@ -41,7 +47,8 @@ uv run python scripts/hypura/hypura_cli.py wisdom "Concept"
 Verify substrate and harness health.
 
 ```bash
-uv run python scripts/hypura/hypura_cli.py status
+cd extensions/hypura-harness/scripts
+uv run python hypura_cli.py status
 ```
 
 ---

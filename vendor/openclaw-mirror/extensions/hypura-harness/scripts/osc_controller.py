@@ -1,8 +1,9 @@
-"""VRChat OSC controller — chatbox, params, actions, emotion."""
+"""VRChat OSC controller — chatbox, params, actions, emotion, system info."""
 from __future__ import annotations
 
 import json
 import logging
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -60,6 +61,77 @@ class OSCController:
         params = emotions.get(emotion) or emotions.get("neutral") or {}
         for param_name, param_value in params.items():
             self.set_param(param_name, param_value)
+
+    def get_system_info(self) -> dict[str, Any]:
+        """Get GPU/RAM info for VRChat chatbox display.
+        
+        Returns:
+            dict with: gpu_name, gpu_util (%), vram_used (GB), vram_total (GB),
+            ram_used (GB), ram_total (GB)
+        """
+        info = {
+            "gpu_name": "Unknown",
+            "gpu_util": 0,
+            "vram_used": 0.0,
+            "vram_total": 0.0,
+            "ram_used": 0.0,
+            "ram_total": 0.0,
+        }
+
+        # GPU via nvidia-smi
+        try:
+            r = subprocess.run(
+                ["nvidia-smi", "--query-gpu=name,utilization.gpu,memory.used,memory.total",
+                 "--format=csv,noheader"],
+                capture_output=True, text=True, timeout=5,
+                encoding="utf-8", errors="ignore"
+            )
+            if r.returncode == 0 and r.stdout.strip():
+                parts = [p.strip() for p in r.stdout.strip().split(",")]
+                if len(parts) >= 4:
+                    info["gpu_name"] = parts[0]
+                    info["gpu_util"] = int(parts[1].replace(" %", "").replace("%", ""))
+                    info["vram_used"] = float(parts[2].replace(" MiB", "").replace("MiB", "")) / 1024
+                    info["vram_total"] = float(parts[3].replace(" MiB", "").replace("MiB", "")) / 1024
+        except Exception as e:
+            logging.warning(f"nvidia-smi failed: {e}")
+
+        # RAM via wmic (Windows)
+        try:
+            r = subprocess.run(
+                ["wmic", "OS", "get", "FreePhysicalMemory,TotalVisibleMemorySize", "/Value"],
+                capture_output=True, text=True, timeout=5,
+                encoding="utf-8", errors="ignore"
+            )
+            free = total = 0
+            for line in r.stdout.split("\n"):
+                if "=" in line:
+                    k, v = line.strip().split("=", 1)
+                    try:
+                        if "Free" in k:
+                            free = int(v.strip())
+                        if "Total" in k:
+                            total = int(v.strip())
+                    except ValueError:
+                        pass
+            if total > 0:
+                info["ram_used"] = round((total - free) / 1024 / 1024, 1)
+                info["ram_total"] = round(total / 1024 / 1024, 1)
+        except Exception as e:
+            logging.warning(f"wmic RAM query failed: {e}")
+
+        return info
+
+    def format_system_message(self, info: dict | None = None) -> str:
+        """Format system info for VRChat chatbox (1 decimal place GB)."""
+        if info is None:
+            info = self.get_system_info()
+        return (
+            f"PC: {info['gpu_name']} | "
+            f"GPU {info['gpu_util']}% | "
+            f"VRAM {info['vram_used']:.1f}/{info['vram_total']:.1f}GB | "
+            f"RAM {info['ram_used']:.1f}/{info['ram_total']:.1f}GB"
+        )
 
 
 class OSCListener:

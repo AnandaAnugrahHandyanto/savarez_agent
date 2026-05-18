@@ -2,10 +2,10 @@
 
 ## Quick reference (production SFT)
 
-- **Deps**: `cd scripts/hypura && uv sync --extra lora` (torch, transformers, peft, datasets, trl, accelerate).
+- **Deps**: `cd extensions/hypura-harness/scripts && uv sync --extra lora` (torch, transformers, peft, datasets, trl, accelerate).
 - **Base model**: set `HAKUA_BASE_MODEL_DIR` to a local Hugging Face–compatible folder (SafeTensors + `config.json` + tokenizer), or the same path in `harness.config.json` under `lora.base_model_dir`.
 - **Dataset**: `artifacts/lora/curriculum/latest.jsonl` (from `POST /lora/curriculum/build`) or `dataset_path` on `POST /lora/train`. Rows use `instruction` / `output`, or `messages` for chat templates when the tokenizer defines `chat_template`.
-- **Train**: `POST /lora/train` with `{ "dry_run": false }`. **Requires CUDA** unless `lora.sft.allow_cpu` is `true` (debug only). Hyperparameters live under `lora.sft` in [`scripts/hypura/harness.config.json`](scripts/hypura/harness.config.json) (epochs, batch size, LoRA rank, `max_seq_length`, etc.).
+- **Train**: `POST /lora/train` with `{ "dry_run": false }`. **Requires CUDA** unless `lora.sft.allow_cpu` is `true` (debug only). Hyperparameters live under `lora.sft` in [`extensions/hypura-harness/config/harness.config.json`](../config/harness.config.json) (epochs, batch size, LoRA rank, `max_seq_length`, etc.).
 - **Outputs**: `artifacts/lora/train_runs/<job_id>/manifest.json`, checkpoints under `train_runs/<job_id>/checkpoints/`, adapter + tokenizer under `train_runs/<job_id>/adapter/`.
 - **GRPO**: use `POST /lora/grpo` with `mode: "placeholder"` (default) or `mode: "train"` (manifest + TRL probe). Legacy `POST /lora/grpo/placeholder` is unchanged. See [GRPO (data, rewards, paper)](#grpo-data-rewards-paper) below.
 
@@ -34,7 +34,7 @@ Extend plain `instruction` / `output` with optional fields (one JSON object per 
 ### Rewards (design)
 
 - **Math / STEM (verifiable)**: **exact match** or **execution** against `gold` (paper-style **exact-match** on GSM8K-class tasks).
-- **Tool calling**: **KL** to a **reference** policy (base or SFT adapter) plus **format** rewards (valid JSON/tool schema, required tags). Configure `lora.grpo.reward`, `kl_coef`, `ref_model_dir` in [`scripts/hypura/harness.config.json`](scripts/hypura/harness.config.json).
+- **Tool calling**: **KL** to a **reference** policy (base or SFT adapter) plus **format** rewards (valid JSON/tool schema, required tags). Configure `lora.grpo.reward`, `kl_coef`, `ref_model_dir` in [`extensions/hypura-harness/config/harness.config.json`](../config/harness.config.json).
 - **Multimodal (short term)**: assume **frozen vision tower**; GRPO on **text/LoRA** only unless you extend the runner for image+text batches.
 
 ### Outputs

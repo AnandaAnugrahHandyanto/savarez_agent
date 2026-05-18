@@ -123,17 +123,19 @@ function sendViaPython(
  */
 export function sendRawOscViaPython(
   address: string,
-  value: string | number | boolean,
+  value: string | number | boolean | null | (string | number | boolean | null)[],
   options: { host?: string; port?: number } = {},
 ): Promise<{ success: boolean; error?: string }> {
   const { host = "127.0.0.1", port = 9000 } = options;
   const scriptPath = OSC_SCRIPT_PATH;
+  const values = Array.isArray(value) ? value : [value];
+  const mappedValues = values.map((entry) => String(entry));
 
   const args = [
     scriptPath,
     "--raw",
     address,
-    String(value),
+    ...mappedValues,
     "--host",
     host,
     "--port",

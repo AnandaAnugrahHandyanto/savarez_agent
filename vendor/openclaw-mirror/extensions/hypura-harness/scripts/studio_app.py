@@ -1,6 +1,6 @@
 """Optional Gradio UI for LoRA curriculum + train (calls local harness HTTP API).
 
-Run from ``scripts/hypura``::
+Run from ``extensions/hypura-harness/scripts``::
 
   uv sync --extra studio
   uv run python studio_app.py

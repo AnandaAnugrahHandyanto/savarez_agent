@@ -2,7 +2,10 @@
 
 import logging
 import os
+import platform
+import re
 import shutil
+import signal
 import subprocess
 import tempfile
 import time
@@ -10,18 +13,62 @@ from pathlib import Path
 
 from tools.environments.base import BaseEnvironment, _pipe_stdin
 
-from tools.environments.base import BaseEnvironment
-from tools.environments.persistent_shell import PersistentShellMixin
-from tools.environments.platform_shell_compat import (
-    apply_sane_path_if_unix,
-    get_popen_preexec_fn,
-    hermes_temp_prefix,
-    is_windows,
-    kill_shell_children,
-    terminate_process_on_timeout,
-    terminate_process_on_user_interrupt,
-)
-from tools.interrupt import is_interrupted
+_IS_WINDOWS = platform.system() == "Windows"
+
+logger = logging.getLogger(__name__)
+
+
+def _msys_to_windows_path(cwd: str) -> str:
+    """Translate a Git Bash / MSYS-style POSIX path (``/c/Users/x``) to the
+    native Windows form (``C:\\Users\\x``) so ``os.path.isdir`` and
+    ``subprocess.Popen(..., cwd=...)`` can find it.
+
+    No-ops on non-Windows hosts or for paths that aren't in MSYS form.
+    Returns the input unchanged when no translation applies. This is
+    idempotent — calling it on an already-Windows path returns it as-is.
+    """
+    if not _IS_WINDOWS or not cwd:
+        return cwd
+    # Match leading "/<single letter>/" or exactly "/<letter>" (bare drive root).
+    m = re.match(r'^/([a-zA-Z])(/.*)?$', cwd)
+    if not m:
+        return cwd
+    drive = m.group(1).upper()
+    tail = (m.group(2) or "").replace('/', '\\')
+    return f"{drive}:{tail or chr(92)}"  # chr(92) = backslash, avoid raw-string escape
+
+
+def _resolve_safe_cwd(cwd: str) -> str:
+    """Return ``cwd`` if it exists as a directory, else the nearest existing
+    ancestor.  Falls back to ``tempfile.gettempdir()`` only if walking up the
+    path can't find any existing directory (effectively never on a healthy
+    filesystem, but cheap belt-and-braces).
+
+    On Windows, also normalizes Git Bash / MSYS-style POSIX paths
+    (``/c/Users/x``) to native Windows form before the isdir check so a
+    perfectly valid ``pwd -P`` result from bash doesn't get rejected as
+    "missing" (see ``_msys_to_windows_path``).
+
+    Used by ``_run_bash`` to recover when the configured cwd is gone — most
+    commonly because a previous tool call deleted its own working directory
+    (issue #17558).  Without this guard, ``subprocess.Popen(..., cwd=...)``
+    raises ``FileNotFoundError`` before bash starts, wedging every subsequent
+    terminal call until the gateway restarts.
+    """
+    cwd = _msys_to_windows_path(cwd) if _IS_WINDOWS else cwd
+    if cwd and os.path.isdir(cwd):
+        return cwd
+    parent = os.path.dirname(cwd) if cwd else ""
+    while parent:
+        if os.path.isdir(parent):
+            return parent
+        next_parent = os.path.dirname(parent)
+        if next_parent == parent:
+            # Reached the filesystem root and it doesn't exist either —
+            # genuinely nothing to fall back to except the temp dir.
+            break
+        parent = next_parent
+    return tempfile.gettempdir()
 
 
 # Hermes-internal env vars that should NOT leak into terminal subprocesses.
@@ -169,13 +216,8 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
 
 
 def _find_bash() -> str:
-    """Find bash for command execution.
-
-    The fence wrapper uses bash syntax (semicolons, $?, printf), so we
-    must use bash — not the user's $SHELL which could be fish/zsh/etc.
-    On Windows: uses Git Bash (bundled with Git for Windows).
-    """
-    if not is_windows():
+    """Find bash for command execution."""
+    if not _IS_WINDOWS:
         return (
             shutil.which("bash")
             or ("/usr/bin/bash" if os.path.isfile("/usr/bin/bash") else None)
@@ -230,56 +272,11 @@ def _find_bash() -> str:
 _find_shell = _find_bash
 
 
-# Noise lines emitted by interactive shells when stdin is not a terminal.
-# Used as a fallback when output fence markers are missing.
-_SHELL_NOISE_SUBSTRINGS = (
-    # bash
-    "bash: cannot set terminal process group",
-    "bash: no job control in this shell",
-    "no job control in this shell",
-    "cannot set terminal process group",
-    "tcsetattr: Inappropriate ioctl for device",
-    # zsh / oh-my-zsh / macOS terminal session
-    "Restored session:",
-    "Saving session...",
-    "Last login:",
-    "command not found:",
-    "Oh My Zsh",
-    "compinit:",
+# Standard PATH entries for environments with minimal PATH.
+_SANE_PATH = (
+    "/opt/homebrew/bin:/opt/homebrew/sbin:"
+    "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 )
-
-
-def _clean_shell_noise(output: str) -> str:
-    """Strip shell startup/exit warnings that leak when using -i without a TTY.
-
-    Removes lines matching known noise patterns from both the beginning
-    and end of the output.  Lines in the middle are left untouched.
-    """
-
-    def _is_noise(line: str) -> bool:
-        return any(noise in line for noise in _SHELL_NOISE_SUBSTRINGS)
-
-    lines = output.split("\n")
-
-    # Strip leading noise
-    while lines and _is_noise(lines[0]):
-        lines.pop(0)
-
-    # Strip trailing noise (walk backwards, skip empty lines from split)
-    end = len(lines) - 1
-    while end >= 0 and (not lines[end] or _is_noise(lines[end])):
-        end -= 1
-
-    if end < 0:
-        return ""
-
-    cleaned = lines[: end + 1]
-    result = "\n".join(cleaned)
-
-    # Preserve trailing newline if original had one
-    if output.endswith("\n") and result and not result.endswith("\n"):
-        result += "\n"
-    return result
 
 
 def _make_run_env(env: dict) -> dict:
@@ -297,7 +294,39 @@ def _make_run_env(env: dict) -> dict:
             run_env[real_key] = v
         elif k not in _HERMES_PROVIDER_ENV_BLOCKLIST or _is_passthrough(k):
             run_env[k] = v
-    apply_sane_path_if_unix(run_env)
+    existing_path = run_env.get("PATH", "")
+    # The "/usr/bin not already present → inject sane POSIX path" heuristic
+    # only makes sense on POSIX.  On Windows the PATH separator is ";"
+    # (the split(":") above turns a full Windows PATH into a single
+    # unrecognisable chunk, which then triggers prepending POSIX paths
+    # to a Windows PATH — completely wrong).  Skip the injection entirely
+    # on Windows; the native PATH already points at whatever shell
+    # Hermes is driving via _find_bash (Git Bash), and Git Bash itself
+    # prepends its MSYS2 /usr/bin equivalent via the shell-init files.
+    if not _IS_WINDOWS and "/usr/bin" not in existing_path.split(":"):
+        run_env["PATH"] = f"{existing_path}:{_SANE_PATH}" if existing_path else _SANE_PATH
+
+    _inject_context_hermes_home(run_env)
+
+    # Per-profile HOME isolation: redirect system tool configs (git, ssh, gh,
+    # npm …) into {HERMES_HOME}/home/ when that directory exists.  Only the
+    # subprocess sees the override — the Python process keeps the real HOME.
+    from hermes_constants import get_subprocess_home
+    _profile_home = get_subprocess_home()
+    if _profile_home:
+        run_env["HOME"] = _profile_home
+
+    # Inject ContextVar-based session vars into subprocess env.
+    # ContextVars don't propagate to child processes, so we bridge them here.
+    try:
+        from gateway.session_context import get_session_env, _UNSET, _VAR_MAP
+        for var_name, var in _VAR_MAP.items():
+            value = var.get()
+            if value is not _UNSET and value:
+                run_env[var_name] = value
+    except Exception:
+        pass
+
     return run_env
 
 
@@ -398,9 +427,8 @@ class LocalEnvironment(BaseEnvironment):
         super().__init__(cwd=cwd or os.getcwd(), timeout=timeout, env=env)
         self.init_session()
 
-    @property
-    def _temp_prefix(self) -> str:
-        return hermes_temp_prefix("local", self._session_id)
+    def get_temp_dir(self) -> str:
+        """Return a shell-safe writable temp dir for local execution.
 
         Termux does not provide /tmp by default, but exposes a POSIX TMPDIR.
         Prefer POSIX-style env vars when available, keep using /tmp on regular
@@ -463,15 +491,6 @@ class LocalEnvironment(BaseEnvironment):
                 cmd_string = _prepend_shell_init(cmd_string, init_files)
         args = [bash, "-l", "-c", cmd_string] if login else [bash, "-c", cmd_string]
         run_env = _make_run_env(self.env)
-        return subprocess.Popen(
-            [user_shell, "-l"],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            text=True,
-            env=run_env,
-            preexec_fn=get_popen_preexec_fn(),
-        )
 
         # Recover when the cwd has been deleted out from under us — usually by
         # a previous tool call that ran ``rm -rf`` on its own working dir
@@ -498,42 +517,7 @@ class LocalEnvironment(BaseEnvironment):
                 )
             self.cwd = safe_cwd
 
-    def _kill_shell_children(self):
-        kill_shell_children(self._shell_pid)
-
-    def _cleanup_temp_files(self):
-        for f in glob.glob(f"{self._temp_prefix}-*"):
-            if os.path.exists(f):
-                os.remove(f)
-
-    def _execute_oneshot(self, command: str, cwd: str = "", *,
-                         timeout: int | None = None,
-                         stdin_data: str | None = None) -> dict:
-        work_dir = cwd or self.cwd or os.getcwd()
-        effective_timeout = timeout or self.timeout
-        exec_command, sudo_stdin = self._prepare_command(command)
-
-        if sudo_stdin is not None and stdin_data is not None:
-            effective_stdin = sudo_stdin + stdin_data
-        elif sudo_stdin is not None:
-            effective_stdin = sudo_stdin
-        else:
-            effective_stdin = stdin_data
-
-        user_shell = _find_bash()
-        # Newline-separated wrapper (not `cmd; __hermes_rc=...` on one line).
-        # A trailing `; __hermes_rc` glued to `<<EOF` / a closing `EOF` line breaks
-        # heredoc parsing: the delimiter must be alone on its line, otherwise the
-        # rest of this script becomes heredoc body and leaks into stdout (e.g. gh
-        # issue/PR flows that use here-documents for bodies).
-        fenced_cmd = (
-            f"printf '{_OUTPUT_FENCE}'\n"
-            f"{exec_command}\n"
-            f"__hermes_rc=$?\n"
-            f"printf '{_OUTPUT_FENCE}'\n"
-            f"exit $__hermes_rc\n"
-        )
-        run_env = _make_run_env(self.env)
+        _popen_cwd = self.cwd
 
         proc = subprocess.Popen(
             args,
@@ -543,8 +527,10 @@ class LocalEnvironment(BaseEnvironment):
             errors="replace",
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
-            stdin=subprocess.PIPE if effective_stdin is not None else subprocess.DEVNULL,
-            preexec_fn=get_popen_preexec_fn(),
+            stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
+            preexec_fn=None if _IS_WINDOWS else os.setsid,
+            creationflags=subprocess.CREATE_NO_WINDOW if _IS_WINDOWS else 0,
+            cwd=_popen_cwd,
         )
         if not _IS_WINDOWS:
             try:
@@ -589,28 +575,16 @@ class LocalEnvironment(BaseEnvironment):
                 pass
             return not _group_alive(pgid)
 
-        reader = threading.Thread(target=_drain_stdout, daemon=True)
-        reader.start()
-        deadline = time.monotonic() + effective_timeout
-
-        while proc.poll() is None:
-            if is_interrupted():
-                terminate_process_on_user_interrupt(proc)
-                reader.join(timeout=2)
-                return {
-                    "output": "".join(_output_chunks) + "\n[Command interrupted — user sent a new message]",
-                    "returncode": 130,
-                }
-            if time.monotonic() > deadline:
-                terminate_process_on_timeout(proc)
-                reader.join(timeout=2)
-                partial = "".join(_output_chunks)
-                timeout_msg = f"\n[Command timed out after {effective_timeout}s]"
-                return {
-                    "output": partial + timeout_msg if partial else timeout_msg.lstrip(),
-                    "returncode": 124,
-                }
-            time.sleep(0.2)
+        try:
+            if _IS_WINDOWS:
+                proc.terminate()
+            else:
+                try:
+                    pgid = os.getpgid(proc.pid)
+                except ProcessLookupError:
+                    pgid = getattr(proc, "_hermes_pgid", None)
+                    if pgid is None:
+                        raise
 
                 try:
                     os.killpg(pgid, signal.SIGTERM)  # windows-footgun: ok — POSIX process-group SIGTERM (guarded by _IS_WINDOWS above)

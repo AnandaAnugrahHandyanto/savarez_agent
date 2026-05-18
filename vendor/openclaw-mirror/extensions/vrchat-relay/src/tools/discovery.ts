@@ -1,6 +1,7 @@
 import { promises as fs } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { parseAvatarOscConfig } from "../own-avatar/registry.js";
 
 // OSCQuery and Avatar Discovery for VRChat
 // Based on VRChat 2025.3.3 Open Beta specs
@@ -48,10 +49,13 @@ export async function discoverFromLocalJSON(avatarId: string): Promise<AvatarPar
 
       try {
         const content = await fs.readFile(avatarPath, "utf8");
-        const config = JSON.parse(content) as AvatarConfig;
+        const config = parseAvatarOscConfig(content, avatarPath);
 
-        if (config.parameters) {
-          return config.parameters;
+        if (config.parameters.length > 0) {
+          return config.parameters.map((parameter) => ({
+            name: parameter.name,
+            type: parameter.type,
+          }));
         }
       } catch {
         // File not found or invalid, continue to next

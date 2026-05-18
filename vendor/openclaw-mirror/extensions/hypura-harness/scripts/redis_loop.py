@@ -27,6 +27,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -35,23 +36,39 @@ logger = logging.getLogger(__name__)
 # Redis 接続 (オプション — 未接続でも動作する)
 _redis = None
 _REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379")
+_REDIS_TIMEOUT_SEC = float(os.environ.get("OPENCLAW_HYPURA_REDIS_TIMEOUT_SEC", "0.5"))
+_REDIS_RETRY_INTERVAL_SEC = float(
+    os.environ.get("OPENCLAW_HYPURA_REDIS_RETRY_INTERVAL_SEC", "30")
+)
+_redis_unavailable_until = 0.0
 
 
 def _get_redis():
     """Redis クライアントを遅延初期化する。失敗しても None を返すだけ。"""
-    global _redis
+    global _redis, _redis_unavailable_until
     if _redis is not None:
         return _redis
+    now = time.monotonic()
+    if now < _redis_unavailable_until:
+        return None
     try:
         import redis as redis_lib
         url = _REDIS_URL.removeprefix("redis://")
         host, _, port = url.partition(":")
-        _redis = redis_lib.Redis(host=host or "localhost", port=int(port or 6379), decode_responses=True)
+        _redis = redis_lib.Redis(
+            host=host or "localhost",
+            port=int(port or 6379),
+            decode_responses=True,
+            socket_connect_timeout=_REDIS_TIMEOUT_SEC,
+            socket_timeout=_REDIS_TIMEOUT_SEC,
+        )
         _redis.ping()
+        _redis_unavailable_until = 0.0
         logger.info("Redis connected: %s", _REDIS_URL)
     except Exception as e:
         logger.debug("Redis unavailable (loop disabled): %s", e)
         _redis = None
+        _redis_unavailable_until = now + _REDIS_RETRY_INTERVAL_SEC
     return _redis
 
 

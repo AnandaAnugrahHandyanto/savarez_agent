@@ -15,7 +15,7 @@ SKILL_CREATOR_PKG = REPO_ROOT / "skills" / "skill-creator" / "scripts" / "packag
 CONFIG_PATH = ROOT / "harness.config.json"
 _config: dict = {}
 if CONFIG_PATH.exists():
-    _config = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+    _config = json.loads(CONFIG_PATH.read_text(encoding="utf-8-sig"))
 _OPENCLAW_CLI = _config.get("openclaw", {}).get("cli_binary", "openclaw")
 
 

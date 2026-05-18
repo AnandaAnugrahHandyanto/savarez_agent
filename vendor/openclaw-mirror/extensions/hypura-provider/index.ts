@@ -6,14 +6,20 @@ import {
   type ProviderAuthResult,
   type ProviderDiscoveryContext,
 } from "openclaw/plugin-sdk/core";
-import { resolveOllamaApiBase } from "openclaw/plugin-sdk/ollama-surface";
 
 const PROVIDER_ID = "hypura";
 const DEFAULT_BASE_URL = "http://127.0.0.1:8080";
 const DEFAULT_API_KEY = "hypura-local";
 
+export function resolveHypuraOllamaApiBase(configuredBaseUrl?: string): string {
+  if (!configuredBaseUrl) {
+    return DEFAULT_BASE_URL;
+  }
+  return configuredBaseUrl.trim().replace(/\/+$/u, "").replace(/\/v1$/iu, "");
+}
+
 /** Hypura serves an Ollama-compatible API at http://127.0.0.1:8080 by default.
- *  Start with: hypura serve --model ./model.gguf [--port 8080]
+ *  Start with: hypura serve ./model.gguf [--port 8080] (GGUF path is a positional arg; not --model)
  */
 export default definePluginEntry({
   id: "hypura",
@@ -39,7 +45,7 @@ export default definePluginEntry({
             const prompterAny = ctx.prompter as any;
             await prompterAny.print?.(
               `Connecting to Hypura server at ${baseUrl}\n` +
-                `Make sure it is running: hypura serve --model ./model.gguf\n`,
+                `Make sure it is running: hypura serve ./model.gguf\n`,
             );
 
             return {
@@ -73,7 +79,7 @@ export default definePluginEntry({
           },
         },
       ],
-      discovery: {
+      catalog: {
         order: "late",
         run: async (ctx: ProviderDiscoveryContext) => {
           const explicit = ctx.config.models?.providers?.hypura;
@@ -86,7 +92,7 @@ export default definePluginEntry({
                 ...explicit,
                 baseUrl:
                   typeof explicit.baseUrl === "string" && explicit.baseUrl.trim()
-                    ? resolveOllamaApiBase(explicit.baseUrl)
+                    ? resolveHypuraOllamaApiBase(explicit.baseUrl)
                     : DEFAULT_BASE_URL,
                 api: "ollama" as const,
                 apiKey: hypuraKey,

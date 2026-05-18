@@ -233,6 +233,58 @@ TOOLSETS = {
         "includes": []
     },
 
+    "harness": {
+        "description": (
+            "Hypura harness HTTP bridge (OpenClaw extension daemon). "
+            "Requires `hermes harness start`. Not in default toolset."
+        ),
+        "opt_in": True,
+        "tools": [
+            "harness_scavenge",
+            "harness_wisdom",
+            "harness_evolve",
+            "harness_speak",
+            "harness_osc",
+            "harness_status",
+            "voice_bridge_status",
+            "voice_bridge_devices",
+            "voice_bridge_turn",
+            "voice_bridge_speak",
+            "vrc_relay_status",
+            "vrc_relay_channels_readiness",
+            "vrc_relay_chatbox",
+            "vrc_relay_parameter",
+            "vrc_relay_auto_osc",
+        ],
+        "includes": [],
+    },
+
+    "openclaw": {
+        "description": (
+            "OpenClaw fork diagnostics: LINE/Telegram readiness without leaking secrets."
+        ),
+        "opt_in": True,
+        "tools": ["channel_readiness_check"],
+        "includes": [],
+    },
+
+    "vrchat": {
+        "description": (
+            "VRChat OSC chatbox/parameters plus avatar OSC catalog discovery (OpenClaw hypura port)."
+        ),
+        "opt_in": True,
+        "tools": [
+            "vrchat_chatbox",
+            "vrchat_typing",
+            "vrchat_avatar_param",
+            "vrchat_send_osc",
+            "vrchat_status",
+            "vrchat_avatar_catalog",
+            "vrchat_avatar_safe_parameters",
+        ],
+        "includes": [],
+    },
+
     "kanban": {
         "description": (
             "Kanban multi-agent coordination — only active when the agent "

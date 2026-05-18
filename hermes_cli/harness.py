@@ -22,13 +22,9 @@ def get_harness_url() -> str:
 
 def is_harness_running() -> bool:
     """Check if the harness is reachable."""
-    url = get_harness_url()
-    try:
-        with httpx.Client(timeout=1.0) as client:
-            resp = client.get(f"{url}/status")
-            return resp.status_code == 200
-    except Exception:
-        return False
+    from tools.openclaw.harness_client import is_harness_running as _probe
+
+    return _probe()
 
 def start_harness_daemon() -> bool:
     """Launch the Hypura Harness daemon in the background."""

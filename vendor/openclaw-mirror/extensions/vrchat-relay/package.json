@@ -4,6 +4,7 @@
   "description": "OpenClaw VRChat integration plugin with OSC protocol support",
   "type": "module",
   "dependencies": {
+    "@sinclair/typebox": "0.34.48",
     "keytar": "^7.9.0"
   },
   "devDependencies": {

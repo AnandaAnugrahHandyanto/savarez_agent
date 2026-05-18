@@ -1,49 +1,46 @@
 import json
-import httpx
 import logging
+
+from tools.openclaw.harness_client import call_harness_json, is_harness_running
 from tools.registry import registry
-from hermes_cli.harness import get_harness_url
 
 logger = logging.getLogger(__name__)
 
-def _call_harness(endpoint: str, payload: dict = None, method: str = "POST") -> str:
-    """Helper to call the local harness API."""
-    url = f"{get_harness_url()}/{endpoint.lstrip('/')}"
-    try:
-        with httpx.Client(timeout=30.0) as client:
-            if method == "POST":
-                resp = client.post(url, json=payload or {})
-            else:
-                resp = client.get(url)
-            
-            if resp.status_code != 200:
-                return json.dumps({"error": f"Harness returned status {resp.status_code}", "detail": resp.text})
-            return json.dumps(resp.json())
-    except Exception as e:
-        logger.error(f"Failed to call harness {endpoint}: {e}")
-        return json.dumps({"error": f"Connection failed: {str(e)}", "recommendation": "Ensure 'hermes harness start' has been run."})
+
+def _check_harness_running() -> bool:
+    return is_harness_running()
+
 
 def harness_scavenge(query: str, **kwargs) -> str:
     """Perform a distributed knowledge scavenging pulse."""
-    return _call_harness("scavenge", {"query": query})
+    return call_harness_json("scavenge", {"query": query})
+
 
 def harness_wisdom(concept: str, **kwargs) -> str:
     """Expand conceptual knowledge via the Shinka Knowledge Graph."""
-    return _call_harness("wisdom", {"concept": concept})
+    return call_harness_json("wisdom", {"concept": concept})
+
 
 def harness_evolve(idea: str, topic: str = None, **kwargs) -> str:
     """Trigger the AI-Scientist evolution loop for a specific idea or topic."""
-    return _call_harness("evolve", {"idea": idea, "topic": topic})
+    return call_harness_json("evolve", {"idea": idea, "topic": topic})
+
 
 def harness_speak(text: str, speaker: int = 8, emotion: str = "neutral", **kwargs) -> str:
     """Unified voice output via the harness sequencer (VOICEVOX)."""
-    return _call_harness("speak", {"text": text, "speaker": speaker, "emotion": emotion})
+    return call_harness_json("speak", {"text": text, "speaker": speaker, "emotion": emotion})
+
 
 def harness_osc(action: str, payload: dict = None, **kwargs) -> str:
     """Interact with VRChat or other OSC-compatible substrates."""
-    return _call_harness("osc", {"action": action, "payload": payload or {}})
+    return call_harness_json("osc", {"action": action, "payload": payload or {}})
 
-# Register tools
+
+def harness_status(**kwargs) -> str:
+    """Check Hypura harness daemon health."""
+    return call_harness_json("status", method="GET")
+
+
 registry.register(
     name="harness_scavenge",
     toolset="harness",
@@ -59,6 +56,7 @@ registry.register(
         }
     },
     handler=lambda args, **kw: harness_scavenge(args["query"]),
+    check_fn=_check_harness_running,
 )
 
 registry.register(
@@ -76,6 +74,7 @@ registry.register(
         }
     },
     handler=lambda args, **kw: harness_wisdom(args["concept"]),
+    check_fn=_check_harness_running,
 )
 
 registry.register(
@@ -94,6 +93,7 @@ registry.register(
         }
     },
     handler=lambda args, **kw: harness_evolve(args["idea"], args.get("topic")),
+    check_fn=_check_harness_running,
 )
 
 registry.register(
@@ -113,6 +113,7 @@ registry.register(
         }
     },
     handler=lambda args, **kw: harness_speak(args["text"], args.get("speaker", 8), args.get("emotion", "neutral")),
+    check_fn=_check_harness_running,
 )
 
 registry.register(
@@ -131,4 +132,17 @@ registry.register(
         }
     },
     handler=lambda args, **kw: harness_osc(args["action"], args.get("payload", {})),
+    check_fn=_check_harness_running,
+)
+
+registry.register(
+    name="harness_status",
+    toolset="harness",
+    schema={
+        "name": "harness_status",
+        "description": "Check whether the Hypura harness daemon is running and reachable.",
+        "parameters": {"type": "object", "properties": {}, "required": []},
+    },
+    handler=lambda args, **kw: harness_status(),
+    emoji="🔌",
 )

@@ -1,5 +1,4 @@
 import { promises as fs } from "node:fs";
-import { join } from "node:path";
 
 // Audit Logger for VRChat OSC Operations
 // Tracks all operations for safety and debugging

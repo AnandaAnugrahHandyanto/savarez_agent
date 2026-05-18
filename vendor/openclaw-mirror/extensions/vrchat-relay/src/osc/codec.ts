@@ -70,7 +70,9 @@ export function decodeOSCMessage(buffer: Buffer): OSCMessageIn | null {
 
     // Decode address
     const addressResult = decodeString(buffer, offset);
-    if (!addressResult) return null;
+    if (!addressResult) {
+      return null;
+    }
     const address = addressResult.value;
     offset = addressResult.newOffset;
 
@@ -82,7 +84,9 @@ export function decodeOSCMessage(buffer: Buffer): OSCMessageIn | null {
     // Check for comma (type tag start)
     if (buffer[offset] === 0x2c) {
       const typeTagResult = decodeString(buffer, offset);
-      if (!typeTagResult) return { address, args: [] };
+      if (!typeTagResult) {
+        return { address, args: [] };
+      }
       const typeTags = typeTagResult.value.slice(1); // Remove leading comma
       offset = typeTagResult.newOffset;
 
@@ -145,7 +149,9 @@ function decodeString(buffer: Buffer, offset: number): { value: string; newOffse
     end++;
   }
 
-  if (end >= buffer.length) return null;
+  if (end >= buffer.length) {
+    return null;
+  }
 
   const value = buffer.toString("utf8", offset, end);
   // Skip null terminator and padding

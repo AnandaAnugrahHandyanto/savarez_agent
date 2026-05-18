@@ -2,6 +2,55 @@
   "id": "vrchat-relay",
   "name": "VRChat Relay",
   "description": "VRChat integration with OSC protocol for avatar control, chatbox messaging, and input commands",
+  "contracts": {
+    "tools": [
+      "vrchat_ai_avatar_apply_decision",
+      "vrchat_ai_avatar_build_decision_request",
+      "vrchat_ai_avatar_chatbox",
+      "vrchat_ai_avatar_ingest",
+      "vrchat_ai_avatar_run_decision",
+      "vrchat_ai_avatar_status",
+      "vrchat_ai_avatar_voicevox_request",
+      "vrchat_audit_logs",
+      "vrchat_autonomy_react",
+      "vrchat_autonomy_start",
+      "vrchat_autonomy_status",
+      "vrchat_autonomy_stop",
+      "vrchat_camera_capture",
+      "vrchat_camera_greenscreen",
+      "vrchat_camera_lookatme",
+      "vrchat_camera_set",
+      "vrchat_change_avatar",
+      "vrchat_chatbox",
+      "vrchat_discover",
+      "vrchat_get_location",
+      "vrchat_get_online_friends",
+      "vrchat_get_world_info",
+      "vrchat_guardian_pulse_start",
+      "vrchat_guardian_pulse_status",
+      "vrchat_guardian_pulse_stop",
+      "vrchat_input",
+      "vrchat_listener_status",
+      "vrchat_login",
+      "vrchat_logout",
+      "vrchat_manual_move",
+      "vrchat_own_avatar_emergency_stop",
+      "vrchat_own_avatar_enable",
+      "vrchat_own_avatar_look",
+      "vrchat_own_avatar_set_state",
+      "vrchat_own_avatar_status",
+      "vrchat_own_avatar_test_command",
+      "vrchat_permission_set",
+      "vrchat_permission_status",
+      "vrchat_reset_rate_limits",
+      "vrchat_send_osc",
+      "vrchat_set_avatar_param",
+      "vrchat_start_listener",
+      "vrchat_status",
+      "vrchat_stop_listener",
+      "vrchat_typing"
+    ]
+  },
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
@@ -28,6 +77,216 @@
             "type": "string",
             "description": "VRChat host address (default: 127.0.0.1)",
             "default": "127.0.0.1"
+          }
+        }
+      },
+      "autonomousVrchatAi": {
+        "type": "object",
+        "description": "Autonomous VRChat AI Avatar runtime switch. Disabled by default.",
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "default": false
+          }
+        }
+      },
+      "inputHub": {
+        "type": "object",
+        "description": "InputHub source settings for text, STT, vision observations, and stream comments.",
+        "properties": {
+          "maxBufferedEvents": {
+            "type": "integer",
+            "default": 64,
+            "minimum": 1
+          },
+          "textBox": {
+            "type": "object",
+            "properties": { "enabled": { "type": "boolean", "default": true } }
+          },
+          "speechToText": {
+            "type": "object",
+            "properties": { "enabled": { "type": "boolean", "default": false } }
+          },
+          "visionObservation": {
+            "type": "object",
+            "properties": { "enabled": { "type": "boolean", "default": true } }
+          },
+          "streamComment": {
+            "type": "object",
+            "properties": { "enabled": { "type": "boolean", "default": true } }
+          }
+        }
+      },
+      "orchestrator": {
+        "type": "object",
+        "description": "Structured AgentDecision orchestrator defaults.",
+        "properties": {
+          "model": { "type": "string", "default": "gpt-5.5" },
+          "reasoning": {
+            "type": "object",
+            "properties": {
+              "effort": { "type": "string", "default": "low" }
+            }
+          },
+          "maxOutputTokens": { "type": "integer", "default": 700 }
+        }
+      },
+      "voicevox": {
+        "type": "object",
+        "description": "VOICEVOX Engine HTTP settings.",
+        "properties": {
+          "enabled": { "type": "boolean", "default": true },
+          "baseUrl": { "type": "string", "default": "http://127.0.0.1:50021" },
+          "speaker": { "type": "integer", "default": 8, "minimum": 0 },
+          "timeoutMs": { "type": "integer", "default": 30000, "minimum": 1000 }
+        }
+      },
+      "audioOutput": {
+        "type": "object",
+        "description": "Audio routing target for synthesized speech.",
+        "properties": {
+          "mode": {
+            "type": "string",
+            "description": "speaker, virtual_cable, or both",
+            "default": "speaker"
+          },
+          "virtualCableDeviceName": { "type": "string", "default": "" },
+          "emitSpeakingEvents": { "type": "boolean", "default": true }
+        }
+      },
+      "vrchatOsc": {
+        "type": "object",
+        "description": "Own-avatar OSC connection settings. Uses localhost by default and does not handle VRChat account credentials.",
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "description": "Enable the own-avatar OSC controller listener and sender.",
+            "default": true
+          },
+          "host": {
+            "type": "string",
+            "description": "OSC destination host. Defaults to localhost.",
+            "default": "127.0.0.1"
+          },
+          "sendPort": {
+            "type": "integer",
+            "description": "VRChat OSC receive port.",
+            "default": 9000,
+            "minimum": 1,
+            "maximum": 65535
+          },
+          "receivePort": {
+            "type": "integer",
+            "description": "OpenClaw OSC receive port for VRChat events such as /avatar/change.",
+            "default": 9001,
+            "minimum": 1,
+            "maximum": 65535
+          },
+          "allowRemoteOsc": {
+            "type": "boolean",
+            "description": "Allow non-local OSC destinations. Keep false unless explicitly routing to another trusted device.",
+            "default": false
+          },
+          "autoDiscoverAvatarConfig": {
+            "type": "boolean",
+            "description": "Read VRChat-generated avatar OSC JSON files after /avatar/change.",
+            "default": true
+          },
+          "oscJsonRoot": {
+            "type": "string",
+            "description": "Optional override for the VRChat OSC JSON root, mainly for tests or portable installs."
+          }
+        }
+      },
+      "avatarControl": {
+        "type": "object",
+        "description": "OpenClaw own-avatar OC_* parameter names.",
+        "properties": {
+          "requiredPrefix": { "type": "string", "default": "OC_" },
+          "manualLockParam": { "type": "string", "default": "OC_ManualLock" },
+          "autoEnabledParam": { "type": "string", "default": "OC_AutoEnabled" },
+          "stateParam": { "type": "string", "default": "OC_State" },
+          "emotionParam": { "type": "string", "default": "OC_Emotion" },
+          "actionParam": { "type": "string", "default": "OC_Action" },
+          "actionPulseParam": { "type": "string", "default": "OC_ActionPulse" },
+          "lookXParam": { "type": "string", "default": "OC_LookX" },
+          "lookYParam": { "type": "string", "default": "OC_LookY" },
+          "resetParam": { "type": "string", "default": "OC_Reset" },
+          "autoEnabledOnStart": {
+            "type": "boolean",
+            "description": "Send OC_AutoEnabled on plugin startup. Defaults false so the user opts in.",
+            "default": false
+          }
+        }
+      },
+      "behavior": {
+        "type": "object",
+        "description": "Subtle autonomous expression/action timing.",
+        "properties": {
+          "mode": { "type": "string", "default": "subtle" },
+          "idleMinIntervalMs": { "type": "integer", "default": 30000 },
+          "idleMaxIntervalMs": { "type": "integer", "default": 90000 },
+          "actionCooldownMs": { "type": "integer", "default": 15000 },
+          "emotionCooldownMs": { "type": "integer", "default": 3000 },
+          "maxCommandsPerSecond": { "type": "integer", "default": 6 },
+          "speakingHoldMs": { "type": "integer", "default": 2500 }
+        }
+      },
+      "movement": {
+        "type": "object",
+        "description": "Optional VRChat input controller guardrails. Movement is disabled by default.",
+        "properties": {
+          "enabled": { "type": "boolean", "default": false },
+          "allowInPublicInstances": { "type": "boolean", "default": false },
+          "maxInputDurationMs": { "type": "integer", "default": 1000 },
+          "alwaysResetToZero": { "type": "boolean", "default": true }
+        }
+      },
+      "chatBox": {
+        "type": "object",
+        "description": "Autonomous VRChat ChatBox guard. Disabled by default for public-instance safety.",
+        "properties": {
+          "enabled": { "type": "boolean", "default": false },
+          "maxChars": { "type": "integer", "default": 144, "minimum": 1, "maximum": 144 },
+          "maxLines": { "type": "integer", "default": 9, "minimum": 1, "maximum": 9 },
+          "minIntervalMs": { "type": "integer", "default": 3000, "minimum": 0 },
+          "submit": { "type": "boolean", "default": true },
+          "notify": { "type": "boolean", "default": false },
+          "typing": { "type": "boolean", "default": true }
+        }
+      },
+      "speechToText": {
+        "type": "object",
+        "description": "Speech-to-text guard settings for autonomous VRChat AI Avatar.",
+        "properties": {
+          "enabled": { "type": "boolean", "default": false },
+          "suppressDuringTts": { "type": "boolean", "default": true }
+        }
+      },
+      "safety": {
+        "type": "object",
+        "description": "Own-avatar safety controls.",
+        "properties": {
+          "requireOscJsonParameterPresence": { "type": "boolean", "default": true },
+          "disableChatBoxByDefault": { "type": "boolean", "default": true },
+          "emergencyStopHotkey": { "type": "string", "default": "Ctrl+Alt+O" }
+        }
+      },
+      "mirror": {
+        "type": "object",
+        "description": "Optional assistant reply mirroring into the VRChat ChatBox. Disabled by default for public-instance safety.",
+        "properties": {
+          "syncAiResponseToChatbox": {
+            "type": "boolean",
+            "description": "Mirror assistant text into the VRChat ChatBox.",
+            "default": false
+          },
+          "maxCharacters": {
+            "type": "integer",
+            "description": "Maximum ChatBox characters to send when mirroring is explicitly enabled.",
+            "default": 144,
+            "minimum": 1,
+            "maximum": 144
           }
         }
       },
