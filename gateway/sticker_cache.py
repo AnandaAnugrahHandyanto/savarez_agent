@@ -13,6 +13,7 @@ import time
 from typing import Optional
 
 from hermes_cli.config import get_hermes_home
+from utils import atomic_json_write
 
 
 CACHE_PATH = get_hermes_home() / "sticker_cache.json"
@@ -36,11 +37,7 @@ def _load_cache() -> dict:
 
 def _save_cache(cache: dict) -> None:
     """Save the sticker cache to disk."""
-    CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    CACHE_PATH.write_text(
-        json.dumps(cache, indent=2, ensure_ascii=False),
-        encoding="utf-8",
-    )
+    atomic_json_write(CACHE_PATH, cache)
 
 
 def get_cached_description(file_unique_id: str) -> Optional[dict]:
