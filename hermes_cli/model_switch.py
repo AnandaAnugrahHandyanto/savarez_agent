@@ -1232,8 +1232,14 @@ def list_authenticated_providers(
             try:
                 from hermes_cli.auth import _load_auth_store
                 store = _load_auth_store()
-                if store and hermes_id in store.get("credential_pool", {}):
-                    has_creds = True
+                # An empty credential pool entry (e.g. "minimax-cn": [])
+                # left over after a user deletes their env var must NOT
+                # be treated as authenticated — only an entry with at
+                # least one real credential counts.  Fixes #28140.
+                if store:
+                    pool_entries = store.get("credential_pool", {}).get(hermes_id) or []
+                    if pool_entries:
+                        has_creds = True
             except Exception:
                 pass
         if not has_creds:
