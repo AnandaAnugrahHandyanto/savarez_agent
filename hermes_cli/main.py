@@ -9222,6 +9222,9 @@ def cmd_profile(args):
         # --auto path: invoke the LLM describer.
         from hermes_cli import profile_describer as _pd
 
+        include_soul_flag = bool(getattr(args, "include_soul", False))
+        tag_skills_flag = bool(getattr(args, "tag_skills", False))
+
         if all_flag:
             targets = _pd.list_describable_profiles(missing_only=True)
             if not targets:
@@ -9233,7 +9236,12 @@ def cmd_profile(args):
         ok_count = 0
         fail_count = 0
         for tgt in targets:
-            outcome = _pd.describe_profile(tgt, overwrite=overwrite_flag)
+            outcome = _pd.describe_profile(
+                tgt,
+                overwrite=overwrite_flag,
+                include_soul=include_soul_flag,
+                tag_builtins=tag_skills_flag,
+            )
             if outcome.ok:
                 ok_count += 1
                 print(f"Described '{outcome.profile_name}': {outcome.description}")
@@ -12174,6 +12182,26 @@ Examples:
         dest="all_missing",
         action="store_true",
         help="With --auto, run on every profile missing a description",
+    )
+    profile_describe.add_argument(
+        "--tag-skills",
+        dest="tag_skills",
+        action="store_true",
+        help="With --auto, label each skill in the prompt as [user] or "
+             "[built-in] (built-ins ship with Hermes; user skills were "
+             "deliberately added) and instruct the LLM to weight [user] "
+             "skills as the dominant role/domain signal. Off by default "
+             "to keep prompt shape stable. Enable when profiles are "
+             "heavy with built-in skills that drown out the lane.",
+    )
+    profile_describe.add_argument(
+        "--include-soul",
+        dest="include_soul",
+        action="store_true",
+        help="With --auto, include SOUL.md content as a role-identity signal "
+             "in the prompt. Off by default — per the canonical Hermes docs "
+             "SOUL.md is for voice/tone only. Enable when your SOUL.md "
+             "encodes lane/role information you want the describer to read.",
     )
 
     profile_show = profile_subparsers.add_parser("show", help="Show profile details")

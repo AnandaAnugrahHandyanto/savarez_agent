@@ -166,3 +166,213 @@ def test_describer_returns_false_when_profile_missing(profile_env, monkeypatch):
     outcome = describer.describe_profile("ghost")
     assert outcome.ok is False
     assert "not found" in outcome.reason
+
+
+# ---------------------------------------------------------------------------
+# Built-in vs user-authored skill tagging + opt-in SOUL.md
+# ---------------------------------------------------------------------------
+
+
+def _capture_user_msg():
+    """Helper that returns (patch_ctx, captured_messages_list).
+
+    The patch_ctx is the unittest.mock context manager you `with`-enter.
+    captured_messages_list is appended to on each LLM call so tests can
+    assert on the prompt content the describer assembled.
+    """
+    captured: list = []
+    client = MagicMock()
+
+    def _fake_create(**kwargs):
+        captured.append(kwargs.get("messages", []))
+        return _fake_aux_response(jsonlib.dumps({"description": "ok"}))
+
+    client.chat.completions.create = MagicMock(side_effect=_fake_create)
+    return (
+        patch(
+            "agent.auxiliary_client.get_text_auxiliary_client",
+            return_value=(client, "test-model"),
+        ),
+        captured,
+    )
+
+
+def test_describer_does_not_tag_skills_by_default(profile_env, monkeypatch):
+    """Default behavior: no [user]/[built-in] labels appear in the prompt."""
+    monkeypatch.setattr(profiles_mod, "profile_exists", lambda n: n == "myprof")
+    monkeypatch.setattr(profiles_mod, "normalize_profile_name", lambda n: n)
+    monkeypatch.setattr(profiles_mod, "get_profile_dir", lambda n: profile_env)
+    monkeypatch.setattr(describer, "_builtin_skill_ids", lambda: set())
+
+    skills_dir = profile_env / "skills" / "trading"
+    skills_dir.mkdir(parents=True)
+    (skills_dir / "binance-trading-ops").mkdir()
+    (skills_dir / "binance-trading-ops" / "SKILL.md").write_text(
+        "---\nname: binance-trading-ops\n---\nbody"
+    )
+
+    patch_ctx, captured = _capture_user_msg()
+    with patch_ctx, patch(
+        "agent.auxiliary_client.get_auxiliary_extra_body", return_value={}
+    ):
+        outcome = describer.describe_profile("myprof")  # no flags
+    assert outcome.ok
+    user_text = captured[0][1]["content"]
+    # Skill name still appears, but no tags either way.
+    assert "trading/binance-trading-ops" in user_text
+    assert "[user]" not in user_text
+    assert "[built-in]" not in user_text
+
+
+def test_describer_tags_user_skill_when_not_in_builtin_set(profile_env, monkeypatch):
+    """A skill that doesn't exist in the install-root catalogue is tagged [user]."""
+    monkeypatch.setattr(profiles_mod, "profile_exists", lambda n: n == "myprof")
+    monkeypatch.setattr(profiles_mod, "normalize_profile_name", lambda n: n)
+    monkeypatch.setattr(profiles_mod, "get_profile_dir", lambda n: profile_env)
+    # Force the describer to think no skills are built-in.
+    monkeypatch.setattr(describer, "_builtin_skill_ids", lambda: set())
+
+    skills_dir = profile_env / "skills" / "trading"
+    skills_dir.mkdir(parents=True)
+    (skills_dir / "binance-trading-ops").mkdir()
+    (skills_dir / "binance-trading-ops" / "SKILL.md").write_text(
+        "---\nname: binance-trading-ops\n---\nbody"
+    )
+
+    patch_ctx, captured = _capture_user_msg()
+    with patch_ctx, patch(
+        "agent.auxiliary_client.get_auxiliary_extra_body", return_value={}
+    ):
+        outcome = describer.describe_profile("myprof", tag_builtins=True)
+    assert outcome.ok
+    assert captured, "describer should have called the LLM"
+    user_text = captured[0][1]["content"]
+    assert "[user] trading/binance-trading-ops" in user_text
+    assert "[built-in]" not in user_text
+
+
+def test_describer_tags_builtin_skill_when_in_builtin_set(profile_env, monkeypatch):
+    """A skill present in the install-root catalogue is tagged [built-in]."""
+    monkeypatch.setattr(profiles_mod, "profile_exists", lambda n: n == "myprof")
+    monkeypatch.setattr(profiles_mod, "normalize_profile_name", lambda n: n)
+    monkeypatch.setattr(profiles_mod, "get_profile_dir", lambda n: profile_env)
+    monkeypatch.setattr(
+        describer, "_builtin_skill_ids", lambda: {"github/codebase-inspection"}
+    )
+
+    skills_dir = profile_env / "skills" / "github"
+    skills_dir.mkdir(parents=True)
+    (skills_dir / "codebase-inspection").mkdir()
+    (skills_dir / "codebase-inspection" / "SKILL.md").write_text(
+        "---\nname: codebase-inspection\n---\nbody"
+    )
+
+    patch_ctx, captured = _capture_user_msg()
+    with patch_ctx, patch(
+        "agent.auxiliary_client.get_auxiliary_extra_body", return_value={}
+    ):
+        outcome = describer.describe_profile("myprof", tag_builtins=True)
+    assert outcome.ok
+    user_text = captured[0][1]["content"]
+    assert "[built-in] github/codebase-inspection" in user_text
+
+
+def test_describer_does_not_include_soul_by_default(profile_env, monkeypatch):
+    """SOUL.md content must not leak into the prompt when include_soul=False."""
+    monkeypatch.setattr(profiles_mod, "profile_exists", lambda n: n == "myprof")
+    monkeypatch.setattr(profiles_mod, "normalize_profile_name", lambda n: n)
+    monkeypatch.setattr(profiles_mod, "get_profile_dir", lambda n: profile_env)
+    monkeypatch.setattr(describer, "_builtin_skill_ids", lambda: set())
+
+    (profile_env / "SOUL.md").write_text(
+        "You are Hopper. Role: Fleet Performance Researcher."
+    )
+
+    patch_ctx, captured = _capture_user_msg()
+    with patch_ctx, patch(
+        "agent.auxiliary_client.get_auxiliary_extra_body", return_value={}
+    ):
+        outcome = describer.describe_profile("myprof")  # include_soul defaults to False
+    assert outcome.ok
+    user_text = captured[0][1]["content"]
+    assert "Hopper" not in user_text
+    assert "SOUL.md" not in user_text
+
+
+def test_describer_includes_soul_when_opt_in(profile_env, monkeypatch):
+    """include_soul=True pulls SOUL.md content into the prompt."""
+    monkeypatch.setattr(profiles_mod, "profile_exists", lambda n: n == "myprof")
+    monkeypatch.setattr(profiles_mod, "normalize_profile_name", lambda n: n)
+    monkeypatch.setattr(profiles_mod, "get_profile_dir", lambda n: profile_env)
+    monkeypatch.setattr(describer, "_builtin_skill_ids", lambda: set())
+
+    (profile_env / "SOUL.md").write_text(
+        "You are Hopper. Role: Fleet Performance Researcher."
+    )
+
+    patch_ctx, captured = _capture_user_msg()
+    with patch_ctx, patch(
+        "agent.auxiliary_client.get_auxiliary_extra_body", return_value={}
+    ):
+        outcome = describer.describe_profile("myprof", include_soul=True)
+    assert outcome.ok
+    user_text = captured[0][1]["content"]
+    assert "Hopper" in user_text
+    assert "Fleet Performance Researcher" in user_text
+
+
+def test_describer_include_soul_tolerates_missing_file(profile_env, monkeypatch):
+    """include_soul=True must not error when SOUL.md doesn't exist."""
+    monkeypatch.setattr(profiles_mod, "profile_exists", lambda n: n == "myprof")
+    monkeypatch.setattr(profiles_mod, "normalize_profile_name", lambda n: n)
+    monkeypatch.setattr(profiles_mod, "get_profile_dir", lambda n: profile_env)
+    monkeypatch.setattr(describer, "_builtin_skill_ids", lambda: set())
+
+    patch_ctx, captured = _capture_user_msg()
+    with patch_ctx, patch(
+        "agent.auxiliary_client.get_auxiliary_extra_body", return_value={}
+    ):
+        outcome = describer.describe_profile("myprof", include_soul=True)
+    assert outcome.ok
+    user_text = captured[0][1]["content"]
+    # No SOUL block should appear.
+    assert "SOUL.md" not in user_text
+
+
+def test_describer_caps_skill_list_and_keeps_user_skills(profile_env, monkeypatch):
+    """When skill count exceeds MAX_SKILLS_FOR_PROMPT, user skills must all survive."""
+    monkeypatch.setattr(profiles_mod, "profile_exists", lambda n: n == "myprof")
+    monkeypatch.setattr(profiles_mod, "normalize_profile_name", lambda n: n)
+    monkeypatch.setattr(profiles_mod, "get_profile_dir", lambda n: profile_env)
+
+    # Set up a small built-in catalogue containing 80 skills, plus 5 user skills.
+    builtin_ids = {f"category/builtin-{i:02d}" for i in range(80)}
+    monkeypatch.setattr(describer, "_builtin_skill_ids", lambda: builtin_ids)
+    # Lower the cap so the test stays compact.
+    monkeypatch.setattr(describer, "MAX_SKILLS_FOR_PROMPT", 20)
+
+    skills_root = profile_env / "skills" / "category"
+    skills_root.mkdir(parents=True)
+    for i in range(80):
+        sd = skills_root / f"builtin-{i:02d}"
+        sd.mkdir()
+        (sd / "SKILL.md").write_text("---\nname: x\n---\n")
+    for i in range(5):
+        sd = skills_root / f"user-{i:02d}"
+        sd.mkdir()
+        (sd / "SKILL.md").write_text("---\nname: x\n---\n")
+
+    patch_ctx, captured = _capture_user_msg()
+    with patch_ctx, patch(
+        "agent.auxiliary_client.get_auxiliary_extra_body", return_value={}
+    ):
+        outcome = describer.describe_profile("myprof", tag_builtins=True)
+    assert outcome.ok
+    user_text = captured[0][1]["content"]
+    # All 5 user skills must appear despite the cap.
+    for i in range(5):
+        assert f"[user] category/user-{i:02d}" in user_text
+    # Some built-ins should appear (sampled), but not all 80.
+    builtin_count = user_text.count("[built-in]")
+    assert builtin_count <= 20
+    assert builtin_count > 0
