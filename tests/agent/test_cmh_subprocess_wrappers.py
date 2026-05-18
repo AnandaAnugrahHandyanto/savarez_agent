@@ -56,6 +56,60 @@ def test_claude_missing_flags_reported_from_help_text(tmp_path, monkeypatch):
     ]
 
 
+def test_claude_prompt_beginning_with_option_prefix_is_unsafe(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    result = prepare_claude_print_invocation(
+        "  --dangerous-option prompt",
+        binary_resolver=lambda name: "/bin/claude",
+    )
+
+    assert result.ok is False
+    assert result.status == "unsafe_prompt"
+    assert "prompt begins with option prefix" in result.message.lower()
+    assert result.argv == ()
+
+
+def test_claude_malformed_envelope_state_returns_structured_state_error(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    path = envelope_state_path()
+    path.parent.mkdir(parents=True)
+    path.write_text("{not valid json", encoding="utf-8")
+
+    result = prepare_claude_print_invocation(
+        "prompt",
+        binary_resolver=lambda name: "/bin/claude",
+    )
+
+    assert result.ok is False
+    assert result.status == "state_error"
+    assert "state" in result.message.lower() or "envelope" in result.message.lower()
+    assert result.details["path"] == str(path)
+    assert result.argv == ()
+
+
+def test_codex_malformed_envelope_state_returns_structured_state_error(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    path = envelope_state_path()
+    path.parent.mkdir(parents=True)
+    path.write_text("{not valid json", encoding="utf-8")
+
+    result = prepare_codex_print_invocation(
+        "prompt",
+        binary_resolver=lambda name: "/bin/codex",
+    )
+
+    assert result.ok is False
+    assert result.status == "state_error"
+    assert "state" in result.message.lower() or "envelope" in result.message.lower()
+    assert result.details["path"] == str(path)
+    assert result.argv == ()
+
+
 def test_claude_budget_cap_blocks_non_priority(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     path = envelope_state_path()

@@ -7,10 +7,15 @@ and assembles argv tuples for later wrapper layers.
 
 from __future__ import annotations
 
+import json
 import shutil
 from collections.abc import Callable
 
-from agent.cmh_subprocess.envelope import check_budget, load_envelope_state
+from agent.cmh_subprocess.envelope import (
+    check_budget,
+    envelope_state_path,
+    load_envelope_state,
+)
 from agent.cmh_subprocess.flags import (
     CLAUDE_REQUIRED_FLAGS,
     CODEX_REQUIRED_FLAGS_UNRESOLVED,
@@ -28,11 +33,28 @@ Usage: claude [options] [prompt]
 """
 
 BinaryResolver = Callable[[str], str | None]
+STATE_ERROR_EXCEPTIONS = (
+    json.JSONDecodeError,
+    OSError,
+    ValueError,
+    TypeError,
+    KeyError,
+)
 
 
 def default_binary_resolver(binary_name: str) -> str | None:
     """Resolve a binary name using PATH without executing the binary."""
     return shutil.which(binary_name)
+
+
+def _state_error_result(wrapper_name: str, error: BaseException) -> PreflightResult:
+    path = envelope_state_path()
+    return PreflightResult(
+        status="state_error",
+        ok=False,
+        message=f"{wrapper_name} envelope state could not be loaded or evaluated: {error}",
+        details={"path": str(path), "error": str(error)},
+    )
 
 
 def prepare_claude_print_invocation(
@@ -78,7 +100,17 @@ def prepare_claude_print_invocation(
             },
         )
 
-    budget = check_budget(load_envelope_state(), "anthropic_max", priority=priority)
+    if prompt.lstrip().startswith("-"):
+        return PreflightResult(
+            status="unsafe_prompt",
+            ok=False,
+            message="Claude prompt begins with option prefix '-' and cannot be safely appended",
+        )
+
+    try:
+        budget = check_budget(load_envelope_state(), "anthropic_max", priority=priority)
+    except STATE_ERROR_EXCEPTIONS as error:
+        return _state_error_result("Claude", error)
     if not budget.allowed:
         return PreflightResult(
             status=budget.reason,
@@ -147,7 +179,10 @@ def prepare_codex_print_invocation(
             message="Required codex binary was not found on PATH",
         )
 
-    budget = check_budget(load_envelope_state(), "chatgpt_pro", priority=priority)
+    try:
+        budget = check_budget(load_envelope_state(), "chatgpt_pro", priority=priority)
+    except STATE_ERROR_EXCEPTIONS as error:
+        return _state_error_result("Codex", error)
     if not budget.allowed:
         return PreflightResult(
             status=budget.reason,
