@@ -14863,6 +14863,8 @@ class GatewayRunner:
         _env_tp = os.getenv("HERMES_TOOL_PROGRESS_MODE")
         _display_cfg = display_config if isinstance(display_config, dict) else {}
         _platforms_cfg = _display_cfg.get("platforms") or {}
+        if not isinstance(_platforms_cfg, dict):
+            _platforms_cfg = {}
         _platform_cfg = _platforms_cfg.get(platform_key) or {}
         _legacy_tp_overrides = _display_cfg.get("tool_progress_overrides") or {}
         _tool_progress_configured = (
@@ -14898,6 +14900,14 @@ class GatewayRunner:
         
         # Queue for progress messages (thread-safe)
         progress_queue = queue.Queue() if tool_progress_enabled else None
+        try:
+            tool_progress_max_lines = int(
+                resolve_display_setting(user_config, platform_key, "tool_progress_max_lines", 0) or 0
+            )
+        except (TypeError, ValueError):
+            tool_progress_max_lines = 0
+        if tool_progress_max_lines < 0:
+            tool_progress_max_lines = 0
         last_tool = [None]  # Mutable container for tracking in closure
         last_progress_msg = [None]  # Track last message for dedup
         repeat_count = [0]  # How many times the same message repeated
@@ -15084,6 +15094,15 @@ class GatewayRunner:
             _last_edit_ts = 0.0      # Throttle edits to avoid Telegram flood control
             _PROGRESS_EDIT_INTERVAL = 1.5  # Minimum seconds between edits
 
+            def _render_progress_text() -> str:
+                full_text = "\n".join(progress_lines)
+                if tool_progress_max_lines <= 0:
+                    return full_text
+                # Verbose entries and raw previews can contain embedded
+                # newlines, so trim the rendered physical lines rather than
+                # merely counting progress events.
+                return "\n".join(full_text.splitlines()[-tool_progress_max_lines:])
+
             while True:
                 try:
                     if not _run_still_current():
@@ -15154,7 +15173,7 @@ class GatewayRunner:
 
                     if can_edit and progress_msg_id is not None:
                         # Try to edit the existing progress message
-                        full_text = "\n".join(progress_lines)
+                        full_text = _render_progress_text()
                         result = await adapter.edit_message(
                             chat_id=source.chat_id,
                             message_id=progress_msg_id,
@@ -15186,7 +15205,7 @@ class GatewayRunner:
                     else:
                         if can_edit:
                             # First tool: send all accumulated text as new message
-                            full_text = "\n".join(progress_lines)
+                            full_text = _render_progress_text()
                             result = await adapter.send(
                                 chat_id=source.chat_id,
                                 content=full_text,
@@ -15229,7 +15248,7 @@ class GatewayRunner:
                                 # the current progress bubble and start a fresh
                                 # one for any tool lines that arrived after.
                                 if can_edit and progress_lines and progress_msg_id:
-                                    _pending_text = "\n".join(progress_lines)
+                                    _pending_text = _render_progress_text()
                                     try:
                                         await adapter.edit_message(
                                             chat_id=source.chat_id,
@@ -15248,7 +15267,7 @@ class GatewayRunner:
                             break
                     # Final edit with all remaining tools (only if editing works)
                     if can_edit and progress_lines and progress_msg_id:
-                        full_text = "\n".join(progress_lines)
+                        full_text = _render_progress_text()
                         try:
                             await adapter.edit_message(
                                 chat_id=source.chat_id,

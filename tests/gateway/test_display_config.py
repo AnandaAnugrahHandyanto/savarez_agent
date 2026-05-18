@@ -164,6 +164,28 @@ class TestYAMLNormalisation:
         config = {"display": {"platforms": {"slack": {"tool_preview_length": "80"}}}}
         assert resolve_display_setting(config, "slack", "tool_preview_length") == 80
 
+    def test_tool_progress_max_lines_string(self):
+        """String numbers are normalised to int for tool-progress line trimming."""
+        from gateway.display_config import resolve_display_setting
+
+        config = {"display": {"platforms": {"telegram": {"tool_progress_max_lines": "3"}}}}
+        assert resolve_display_setting(config, "telegram", "tool_progress_max_lines") == 3
+
+    def test_tool_progress_max_lines_invalid_values_are_unlimited(self):
+        """Invalid/non-integer line limits resolve to 0 (unlimited)."""
+        from gateway.display_config import resolve_display_setting
+
+        for value in ("many", None, {}, [], True, False):
+            config = {"display": {"tool_progress_max_lines": value}}
+            assert resolve_display_setting(config, "telegram", "tool_progress_max_lines") == 0
+
+    def test_malformed_display_config_falls_back_to_defaults(self):
+        """Malformed display blocks should not crash gateway startup."""
+        from gateway.display_config import resolve_display_setting
+
+        assert resolve_display_setting({"display": "bad"}, "telegram", "tool_progress_max_lines") == 0
+        assert resolve_display_setting({"display": {"platforms": "bad"}}, "telegram", "tool_progress_max_lines") == 0
+
     def test_platform_override_false_tool_progress(self):
         """Per-platform bare off → normalised."""
         from gateway.display_config import resolve_display_setting
@@ -337,6 +359,44 @@ class TestStreamingPerPlatform:
             }
         }
         assert resolve_display_setting(config, "email", "streaming") is True
+
+
+# ---------------------------------------------------------------------------
+# tool_progress_max_lines — trim displayed progress to the last N lines
+# ---------------------------------------------------------------------------
+
+class TestToolProgressMaxLines:
+    """``tool_progress_max_lines`` defaults to unlimited and supports overrides."""
+
+    def test_default_unlimited_for_all_platforms(self):
+        """No config set → tool_progress_max_lines resolves to 0 everywhere."""
+        from gateway.display_config import resolve_display_setting
+
+        for plat in ("telegram", "discord", "slack", "email", "unknown"):
+            assert resolve_display_setting({}, plat, "tool_progress_max_lines") == 0
+
+    def test_global_applies_to_all_platforms(self):
+        """display.tool_progress_max_lines applies globally."""
+        from gateway.display_config import resolve_display_setting
+
+        config = {"display": {"tool_progress_max_lines": 5}}
+        assert resolve_display_setting(config, "telegram", "tool_progress_max_lines") == 5
+        assert resolve_display_setting(config, "discord", "tool_progress_max_lines") == 5
+
+    def test_per_platform_override_wins(self):
+        """display.platforms.<plat>.tool_progress_max_lines beats global value."""
+        from gateway.display_config import resolve_display_setting
+
+        config = {
+            "display": {
+                "tool_progress_max_lines": 5,
+                "platforms": {
+                    "telegram": {"tool_progress_max_lines": 2},
+                },
+            }
+        }
+        assert resolve_display_setting(config, "telegram", "tool_progress_max_lines") == 2
+        assert resolve_display_setting(config, "discord", "tool_progress_max_lines") == 5
 
 
 # ---------------------------------------------------------------------------

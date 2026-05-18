@@ -34,6 +34,7 @@ _GLOBAL_DEFAULTS: dict[str, Any] = {
     "tool_progress": "all",
     "show_reasoning": False,
     "tool_preview_length": 0,
+    "tool_progress_max_lines": 0,  # 0 = unlimited accumulated progress lines
     "streaming": None,  # None = follow top-level streaming config
     # When true, delete tool-progress / "Still working..." / status bubbles
     # after the final response lands on platforms that support message
@@ -55,6 +56,7 @@ _TIER_HIGH = {
     "tool_progress": "all",
     "show_reasoning": False,
     "tool_preview_length": 40,
+    "tool_progress_max_lines": 0,
     "streaming": None,  # follow global
 }
 
@@ -62,6 +64,7 @@ _TIER_MEDIUM = {
     "tool_progress": "new",
     "show_reasoning": False,
     "tool_preview_length": 40,
+    "tool_progress_max_lines": 0,
     "streaming": None,
 }
 
@@ -69,6 +72,7 @@ _TIER_LOW = {
     "tool_progress": "off",
     "show_reasoning": False,
     "tool_preview_length": 40,
+    "tool_progress_max_lines": 0,
     "streaming": False,
 }
 
@@ -76,6 +80,7 @@ _TIER_MINIMAL = {
     "tool_progress": "off",
     "show_reasoning": False,
     "tool_preview_length": 0,
+    "tool_progress_max_lines": 0,
     "streaming": False,
 }
 
@@ -137,10 +142,17 @@ def resolve_display_setting(
     -------
     The resolved value, or *fallback* if nothing is configured.
     """
+    if not isinstance(user_config, dict):
+        user_config = {}
+
     display_cfg = user_config.get("display") or {}
+    if not isinstance(display_cfg, dict):
+        display_cfg = {}
 
     # 1. Explicit per-platform override (display.platforms.<platform>.<key>)
     platforms = display_cfg.get("platforms") or {}
+    if not isinstance(platforms, dict):
+        platforms = {}
     plat_overrides = platforms.get(platform_key)
     if isinstance(plat_overrides, dict):
         val = plat_overrides.get(setting)
@@ -198,9 +210,12 @@ def _normalise(setting: str, value: Any) -> Any:
         if isinstance(value, str):
             return value.lower() in {"true", "1", "yes", "on"}
         return bool(value)
-    if setting == "tool_preview_length":
+    if setting in ("tool_preview_length", "tool_progress_max_lines"):
+        if isinstance(value, bool):
+            return 0
         try:
-            return int(value)
+            value_int = int(value)
         except (TypeError, ValueError):
             return 0
+        return value_int if value_int > 0 else 0
     return value
