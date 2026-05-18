@@ -496,6 +496,7 @@ def create_job(
     enabled_toolsets: Optional[List[str]] = None,
     workdir: Optional[str] = None,
     no_agent: bool = False,
+    offer_context_inject: bool = False,
 ) -> Dict[str, Any]:
     """
     Create a new cron job.
@@ -540,6 +541,11 @@ def create_job(
                 and deliver its stdout directly. Empty stdout = silent (no
                 delivery). Requires ``script`` to be set. Ideal for classic
                 watchdogs and periodic alerts that don't need LLM reasoning.
+        offer_context_inject: When True and deliver targets Telegram, the cron
+                delivery message includes an inline button that lets the user
+                manually inject the raw output into the active session context.
+                If no session is active, tapping the button opens a new session
+                pre-seeded with the cron output. Defaults to False.
 
     Returns:
         The created job dict
@@ -574,6 +580,7 @@ def create_job(
     normalized_toolsets = normalized_toolsets or None
     normalized_workdir = _normalize_workdir(workdir)
     normalized_no_agent = bool(no_agent)
+    normalized_offer_context_inject = bool(offer_context_inject)
 
     # no_agent jobs are meaningless without a script — the script IS the job.
     # Surface this as a clear ValueError at create time so bad configs never
@@ -627,6 +634,10 @@ def create_job(
         "origin": origin,  # Tracks where job was created for "origin" delivery
         "enabled_toolsets": normalized_toolsets,
         "workdir": normalized_workdir,
+        # Context injection: when True, cron delivery on Telegram includes an
+        # inline button so the user can manually inject the output into the
+        # active session context (or start a new session pre-seeded with it).
+        "offer_context_inject": normalized_offer_context_inject,
     }
 
     jobs = load_jobs()
