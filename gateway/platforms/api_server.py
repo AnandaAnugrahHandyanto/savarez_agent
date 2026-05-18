@@ -878,8 +878,11 @@ class APIServerAdapter(BasePlatformAdapter):
         from hermes_cli.tools_config import _get_platform_tools
 
         runtime_kwargs = _resolve_runtime_agent_kwargs()
+        runtime_model = runtime_kwargs.pop("model", None)
         reasoning_config = GatewayRunner._load_reasoning_config()
         model = _resolve_gateway_model()
+        if runtime_model:
+            model = runtime_model
 
         user_config = _load_gateway_config()
         enabled_toolsets = sorted(_get_platform_tools(user_config, "api_server"))
