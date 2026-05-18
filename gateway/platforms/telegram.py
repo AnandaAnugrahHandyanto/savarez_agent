@@ -1397,11 +1397,20 @@ class TelegramAdapter(BasePlatformAdapter):
             # gateway command there automatically adds it to the Telegram menu.
             try:
                 from telegram import BotCommand
-                from hermes_cli.commands import telegram_menu_commands
+                from hermes_cli.commands import (
+                    telegram_menu_commands,
+                    telegram_quick_menu_commands,
+                )
                 # Telegram allows up to 100 commands but has an undocumented
                 # payload size limit.  Skill descriptions are truncated to 40
                 # chars in telegram_menu_commands() to fit 100 commands safely.
-                menu_commands, hidden_count = telegram_menu_commands(max_commands=100)
+                if self.config.extra.get("command_menu") == "quick_commands_only":
+                    menu_commands, hidden_count = telegram_quick_menu_commands(
+                        self._config.quick_commands,
+                        max_commands=100,
+                    )
+                else:
+                    menu_commands, hidden_count = telegram_menu_commands(max_commands=100)
                 await self._bot.set_my_commands([
                     BotCommand(name, desc) for name, desc in menu_commands
                 ])
