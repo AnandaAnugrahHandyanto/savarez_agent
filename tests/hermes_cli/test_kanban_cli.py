@@ -426,3 +426,99 @@ def test_run_slash_board_override_restores_prior_env(kanban_home, monkeypatch):
     kc.run_slash("--board alpha list")
 
     assert os.environ.get("HERMES_KANBAN_BOARD") == "beta"
+
+
+# ---------------------------------------------------------------------------
+# T1-T6: awaiting_human_ops state (PR-2)
+# ---------------------------------------------------------------------------
+
+
+def test_t1_new_card_default_status_unchanged(kanban_home):
+    """T1: a fresh card without --initial-status still lands in the usual
+    dispatch path (ready); the new state is strictly opt-in."""
+    out = kc.run_slash("add 'default state' --assignee alice --json")
+    payload = json.loads(out)
+    assert payload["status"] == "ready"
+    # Sanity: VALID_STATUSES now contains the new state, but it is not
+    # selected by default.
+    assert "awaiting_human_ops" in kb.VALID_STATUSES
+
+
+def test_t2_initial_status_awaiting_human_ops(kanban_home):
+    """T2: dispatcher / human can park a card directly in awaiting_human_ops
+    via --initial-status, distinct from blocked."""
+    out = kc.run_slash(
+        "add 'R3 gate' --assignee alice "
+        "--initial-status awaiting_human_ops --json"
+    )
+    payload = json.loads(out)
+    assert payload["status"] == "awaiting_human_ops"
+    # Status enum reject sentinel: only the documented set is allowed.
+    bad = kc.run_slash("add 'bad' --initial-status sleeping")
+    assert "invalid choice" in bad
+
+
+def test_t3_unblock_from_awaiting_human_ops(kanban_home):
+    """T3: unblock returns awaiting_human_ops cards to ready, matching the
+    existing blocked unblock contract."""
+    out = kc.run_slash(
+        "add 'gated' --assignee alice "
+        "--initial-status awaiting_human_ops --json"
+    )
+    tid = json.loads(out)["id"]
+    msg = kc.run_slash(f"unblock {tid}")
+    assert "Unblocked" in msg
+    with kb.connect() as conn:
+        assert kb.get_task(conn, tid).status == "ready"
+
+
+def test_t4_cli_move_awaiting_human_ops(kanban_home):
+    """T4: `kanban move <id> awaiting_human_ops` works for running cards and
+    invalid statuses are rejected by argparse choices."""
+    out = kc.run_slash("create 'movable' --assignee alice --json")
+    tid = json.loads(out)["id"]
+    kc.run_slash(f"claim {tid}")
+    msg = kc.run_slash(f"move {tid} awaiting_human_ops")
+    assert "Moved" in msg and "awaiting_human_ops" in msg
+    with kb.connect() as conn:
+        assert kb.get_task(conn, tid).status == "awaiting_human_ops"
+    bad = kc.run_slash(f"move {tid} sleeping")
+    assert "invalid choice" in bad
+
+
+def test_t5_filter_state_awaiting_human_ops(kanban_home):
+    """T5: `list --status awaiting_human_ops` returns only matching cards."""
+    kc.run_slash("add 'plain' --assignee alice")
+    kc.run_slash(
+        "add 'gated' --assignee alice "
+        "--initial-status awaiting_human_ops"
+    )
+    out = kc.run_slash("list --status awaiting_human_ops")
+    assert "gated" in out
+    assert "plain" not in out
+
+
+def test_t6_migration_keeps_existing_blocked_cards(kanban_home):
+    """T6: existing 'blocked' cards survive the v24 schema migration
+    untouched. Re-running init_db (idempotent) must not reclassify them or
+    raise CHECK violations."""
+    with kb.connect() as conn:
+        legacy = kb.create_task(conn, title="legacy", assignee="alice")
+        kb.claim_task(conn, legacy, claimer="alice")
+        kb.block_task(conn, legacy, reason="historical R3 gate")
+        assert kb.get_task(conn, legacy).status == "blocked"
+    # Re-run init twice (idempotent migration).
+    kb.init_db()
+    kb.init_db()
+    with kb.connect() as conn:
+        t = kb.get_task(conn, legacy)
+        # backward compatibility guarantee: status is preserved.
+        assert t.status == "blocked"
+        # And the new state is now permitted by the CHECK constraint.
+        new_id = kb.create_task(
+            conn,
+            title="new gate",
+            assignee="alice",
+            initial_status="awaiting_human_ops",
+        )
+        assert kb.get_task(conn, new_id).status == "awaiting_human_ops"

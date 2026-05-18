@@ -656,6 +656,7 @@ export const ga: Translations = {
       todo: "Le déanamh",
       ready: "Réidh",
       running: "Ar siúl",
+      awaiting_human_ops: "Awaiting Human Ops",
       blocked: "Bactha",
       done: "Críochnaithe",
       archived: "Cartlannaithe",
@@ -665,6 +666,7 @@ export const ga: Translations = {
       todo: "Ag fanacht ar spleáchais nó gan sannadh",
       ready: "Tá na spleáchais sásaithe; sann próifíl le dispatch a dhéanamh",
       running: "Éilithe ag worker — ar siúl",
+      awaiting_human_ops: "Waiting for human-ops approval",
       blocked: "D'iarr an worker ionchur duine",
       done: "Críochnaithe",
       archived: "Cartlannaithe",
@@ -673,6 +675,8 @@ export const ga: Translations = {
       "Marcáil an tasc seo mar críochnaithe? Scaoiltear éileamh an worker agus éiríonn leanaí spleácha ready.",
     confirmArchive:
       "Cartlannaigh an tasc seo? Imíonn sé as an réamhradharc cláir.",
+    confirmAwaitingHumanOps:
+      "Move this task to awaiting human ops? The worker's claim is released.",
     confirmBlocked:
       "Marcáil an tasc seo mar bactha? Scaoiltear éileamh an worker.",
     completionSummary:

@@ -436,7 +436,7 @@ def _handle_complete(args: dict, **kw) -> str:
 
 
 def _handle_block(args: dict, **kw) -> str:
-    """Transition the task to blocked with a reason a human will read."""
+    """Transition the task to a waiting state with a human-readable reason."""
     tid = _default_task_id(args.get("task_id"))
     if not tid:
         return tool_error(
@@ -448,6 +448,9 @@ def _handle_block(args: dict, **kw) -> str:
     reason = args.get("reason")
     if not reason or not str(reason).strip():
         return tool_error("reason is required — explain what input you need")
+    target_status = str(args.get("status") or "blocked")
+    if target_status not in {"blocked", "awaiting_human_ops"}:
+        return tool_error("status must be 'blocked' or 'awaiting_human_ops'")
     try:
         kb, conn = _connect()
         try:
@@ -455,6 +458,7 @@ def _handle_block(args: dict, **kw) -> str:
                 conn, tid,
                 reason=reason,
                 expected_run_id=_worker_run_id(tid),
+                target_status=target_status,
             )
             if not ok:
                 return tool_error(
@@ -462,7 +466,7 @@ def _handle_block(args: dict, **kw) -> str:
                     f"running/ready)"
                 )
             run = kb.latest_run(conn, tid)
-            return _ok(task_id=tid, run_id=run.id if run else None)
+            return _ok(task_id=tid, status=target_status, run_id=run.id if run else None)
         finally:
             conn.close()
     except Exception as e:
@@ -821,11 +825,11 @@ KANBAN_COMPLETE_SCHEMA = {
 KANBAN_BLOCK_SCHEMA = {
     "name": "kanban_block",
     "description": (
-        "Transition the task to blocked because you need human input "
-        "to proceed. ``reason`` will be shown to the human on the "
-        "board and included in context when someone unblocks you. "
-        "Use for genuine blockers only — don't block on things you can "
-        "resolve yourself."
+        "Transition the task to a waiting state because you need human "
+        "input or an R3 human-ops approval gate to proceed. ``reason`` "
+        "will be shown to the human on the board and included in "
+        "context when someone unblocks you. Use for genuine blockers "
+        "only — don't block on things you can resolve yourself."
     ),
     "parameters": {
         "type": "object",
@@ -840,6 +844,15 @@ KANBAN_BLOCK_SCHEMA = {
                     "What you need answered, in one or two sentences. "
                     "Don't paste the whole conversation; the human has "
                     "the board and can ask follow-ups via comments."
+                ),
+            },
+            "status": {
+                "type": "string",
+                "enum": ["blocked", "awaiting_human_ops"],
+                "description": (
+                    "Waiting state to apply. Use 'awaiting_human_ops' "
+                    "for R3 human-ops approval gates; use 'blocked' "
+                    "for technical or dependency blockers."
                 ),
             },
         },
@@ -1002,12 +1015,12 @@ KANBAN_CREATE_SCHEMA = {
             },
             "initial_status": {
                 "type": "string",
-                "enum": ["running", "blocked"],
+                "enum": ["running", "blocked", "awaiting_human_ops"],
                 "description": (
-                    "Initial card status. Use 'blocked' for tasks that "
-                    "require immediate human ops (R3 gate) to skip the "
-                    "brief running-to-blocked transition. Defaults to "
-                    "'running', which preserves the usual dispatch path."
+                    "Initial card status. Use 'awaiting_human_ops' for "
+                    "R3 human-ops gates; use 'blocked' for technical or "
+                    "dependency waits. Defaults to 'running', which "
+                    "preserves the usual dispatch path."
                 ),
             },
             "skills": {

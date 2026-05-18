@@ -655,6 +655,7 @@ export const es: Translations = {
       todo: "Por hacer",
       ready: "Listo",
       running: "En curso",
+      awaiting_human_ops: "Awaiting Human Ops",
       blocked: "Bloqueado",
       done: "Hecho",
       archived: "Archivado",
@@ -664,6 +665,7 @@ export const es: Translations = {
       todo: "Esperando dependencias o sin asignar",
       ready: "Dependencias satisfechas; asigna un perfil para despachar",
       running: "Reclamado por un worker — en ejecución",
+      awaiting_human_ops: "Waiting for human-ops approval",
       blocked: "El worker pidió intervención humana",
       done: "Completado",
       archived: "Archivado",
@@ -672,6 +674,8 @@ export const es: Translations = {
       "¿Marcar esta tarea como hecha? Se libera el reclamo del worker y los hijos dependientes pasan a estar listos.",
     confirmArchive:
       "¿Archivar esta tarea? Desaparecerá de la vista por defecto del tablero.",
+    confirmAwaitingHumanOps:
+      "Move this task to awaiting human ops? The worker's claim is released.",
     confirmBlocked:
       "¿Marcar esta tarea como bloqueada? Se libera el reclamo del worker.",
     completionSummary:

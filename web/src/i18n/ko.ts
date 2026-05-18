@@ -656,6 +656,7 @@ export const ko: Translations = {
       todo: "할 일",
       ready: "준비됨",
       running: "진행 중",
+      awaiting_human_ops: "Awaiting Human Ops",
       blocked: "차단됨",
       done: "완료",
       archived: "보관됨",
@@ -665,6 +666,7 @@ export const ko: Translations = {
       todo: "종속성 대기 중 또는 미지정",
       ready: "종속성이 충족됨; 디스패치하려면 프로필을 지정하세요",
       running: "워커가 점유 중 — 실행 중",
+      awaiting_human_ops: "Waiting for human-ops approval",
       blocked: "워커가 사람의 입력을 요청함",
       done: "완료됨",
       archived: "보관됨",
@@ -673,6 +675,8 @@ export const ko: Translations = {
       "이 작업을 완료로 표시하시겠습니까? 워커의 점유가 해제되고 종속된 하위 작업이 ready 상태가 됩니다.",
     confirmArchive:
       "이 작업을 보관하시겠습니까? 기본 보드 보기에서 사라집니다.",
+    confirmAwaitingHumanOps:
+      "Move this task to awaiting human ops? The worker's claim is released.",
     confirmBlocked:
       "이 작업을 차단됨으로 표시하시겠습니까? 워커의 점유가 해제됩니다.",
     completionSummary:

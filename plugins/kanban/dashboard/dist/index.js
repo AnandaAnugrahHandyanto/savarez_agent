@@ -52,7 +52,7 @@
   }
 
   // Order matches BOARD_COLUMNS in plugin_api.py.
-  const COLUMN_ORDER = ["triage", "todo", "ready", "running", "blocked", "done"];
+  const COLUMN_ORDER = ["triage", "todo", "ready", "running", "awaiting_human_ops", "blocked", "done"];
   // English fallback dictionaries — used when the i18n catalog is missing
   // a key, and as defaults for the get*() helpers below so callers running
   // outside any React component (where there's no `t`) still get sane text.
@@ -61,6 +61,7 @@
     todo: "Todo",
     ready: "Ready",
     running: "In Progress",
+    awaiting_human_ops: "Awaiting Human Ops",
     blocked: "Blocked",
     done: "Done",
     archived: "Archived",
@@ -70,6 +71,7 @@
     todo: "Waiting on dependencies or unassigned",
     ready: "Dependencies satisfied; assign a profile to dispatch",
     running: "Claimed by a worker — in-flight",
+    awaiting_human_ops: "Waiting for human-ops approval",
     blocked: "Worker asked for human input",
     done: "Completed",
     archived: "Archived",
@@ -77,6 +79,7 @@
   const FALLBACK_DESTRUCTIVE = {
     done: "Mark this task as done? The worker's claim is released and dependent children become ready.",
     archived: "Archive this task? It disappears from the default board view.",
+    awaiting_human_ops: "Move this task to awaiting human ops? The worker's claim is released.",
     blocked: "Mark this task as blocked? The worker's claim is released.",
   };
   const FALLBACK_DIAGNOSTIC_EVENT_LABELS = {
@@ -90,6 +93,7 @@
   const DESTRUCTIVE_KEYS = {
     done: "confirmDone",
     archived: "confirmArchive",
+    awaiting_human_ops: "confirmAwaitingHumanOps",
     blocked: "confirmBlocked",
   };
 
@@ -115,6 +119,7 @@
     todo: "hermes-kanban-dot-todo",
     ready: "hermes-kanban-dot-ready",
     running: "hermes-kanban-dot-running",
+    awaiting_human_ops: "hermes-kanban-dot-awaiting-human-ops",
     blocked: "hermes-kanban-dot-blocked",
     done: "hermes-kanban-dot-done",
     archived: "hermes-kanban-dot-archived",
@@ -1985,6 +1990,12 @@
         title: "Block selected tasks. Releases any active claims.",
       }, "Block"),
       h(Button, {
+        onClick: function () { props.onApply({ status: "awaiting_human_ops" },
+          `Move ${props.count} task(s) to awaiting human ops?`); },
+        size: "sm",
+        title: "Move selected tasks to Awaiting Human Ops. Releases any active claims.",
+      }, "Await ops"),
+      h(Button, {
         onClick: function () { props.onApply({ status: "ready" },
           `Unblock ${props.count} task(s)?`); },
         size: "sm",
@@ -2261,6 +2272,7 @@
   const STALENESS = {
     ready:   { amber: 1 * 60 * 60,   red: 24 * 60 * 60 },
     running: { amber: 10 * 60,       red: 60 * 60 },
+    awaiting_human_ops: { amber: 4 * 60 * 60, red: 48 * 60 * 60 },
     blocked: { amber: 1 * 60 * 60,   red: 24 * 60 * 60 },
     todo:    { amber: 7 * 24 * 60 * 60, red: 30 * 24 * 60 * 60 },
   };
@@ -3433,9 +3445,14 @@
         b(tx(t, "block", "Block"),     { status: "blocked" },
           task.status === "running" || task.status === "ready",
           getDestructiveConfirm(t, "blocked")),
-        b(tx(t, "unblock", "Unblock"),   { status: "ready" },    task.status === "blocked"),
+        b("Await ops", { status: "awaiting_human_ops" },
+          task.status !== "awaiting_human_ops" && task.status !== "archived",
+          getDestructiveConfirm(t, "awaiting_human_ops")),
+        b(tx(t, "unblock", "Unblock"),   { status: "ready" },
+          task.status === "blocked" || task.status === "awaiting_human_ops"),
         b(tx(t, "complete", "Complete"),  { status: "done" },
-          task.status === "running" || task.status === "ready" || task.status === "blocked",
+          task.status === "running" || task.status === "ready" ||
+          task.status === "blocked" || task.status === "awaiting_human_ops",
           getDestructiveConfirm(t, "done")),
         b(tx(t, "archive", "Archive"),   { status: "archived" }, task.status !== "archived",
           getDestructiveConfirm(t, "archived")),

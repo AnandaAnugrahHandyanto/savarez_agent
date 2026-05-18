@@ -652,6 +652,7 @@ export const zh: Translations = {
       todo: "待办",
       ready: "就绪",
       running: "进行中",
+      awaiting_human_ops: "Awaiting Human Ops",
       blocked: "阻塞",
       done: "已完成",
       archived: "已归档",
@@ -661,6 +662,7 @@ export const zh: Translations = {
       todo: "等待依赖项或未分配",
       ready: "依赖项已满足；分配一个配置文件以便调度",
       running: "已被工作者认领 — 执行中",
+      awaiting_human_ops: "Waiting for human-ops approval",
       blocked: "工作者请求人工输入",
       done: "已完成",
       archived: "已归档",
@@ -669,6 +671,8 @@ export const zh: Translations = {
       "将此任务标记为完成？工作者将被释放，依赖的子任务将变为就绪。",
     confirmArchive:
       "归档此任务？它将从默认看板视图中消失。",
+    confirmAwaitingHumanOps:
+      "Move this task to awaiting human ops? The worker's claim is released.",
     confirmBlocked:
       "将此任务标记为阻塞？工作者将被释放。",
     completionSummary:

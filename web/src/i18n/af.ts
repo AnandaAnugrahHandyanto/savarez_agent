@@ -656,6 +656,7 @@ export const af: Translations = {
       todo: "Te doen",
       ready: "Gereed",
       running: "Aan die gang",
+      awaiting_human_ops: "Awaiting Human Ops",
       blocked: "Geblokkeer",
       done: "Klaar",
       archived: "Gearchiveer",
@@ -665,6 +666,7 @@ export const af: Translations = {
       todo: "Wag op afhanklikhede of nie toegewys nie",
       ready: "Afhanklikhede is bevredig; wys 'n profiel toe om te versend",
       running: "Deur 'n werker geëis — in vlug",
+      awaiting_human_ops: "Waiting for human-ops approval",
       blocked: "Werker het mensinvoer aangevra",
       done: "Voltooi",
       archived: "Gearchiveer",
@@ -673,6 +675,8 @@ export const af: Translations = {
       "Merk hierdie taak as klaar? Die werker se eis word vrygestel en afhanklike kinders word gereed.",
     confirmArchive:
       "Argiveer hierdie taak? Dit verdwyn uit die verstek-bordaansig.",
+    confirmAwaitingHumanOps:
+      "Move this task to awaiting human ops? The worker's claim is released.",
     confirmBlocked:
       "Merk hierdie taak as geblokkeer? Die werker se eis word vrygestel.",
     completionSummary:

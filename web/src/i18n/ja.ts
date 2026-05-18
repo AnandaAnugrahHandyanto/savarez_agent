@@ -656,6 +656,7 @@ export const ja: Translations = {
       todo: "ToDo",
       ready: "準備完了",
       running: "進行中",
+      awaiting_human_ops: "ops承認待ち",
       blocked: "ブロック中",
       done: "完了",
       archived: "アーカイブ済み",
@@ -665,6 +666,7 @@ export const ja: Translations = {
       todo: "依存関係の待機中、または未割り当て",
       ready: "依存関係は満たされています。ディスパッチするにはプロファイルを割り当ててください",
       running: "ワーカーが取得中 — 実行中",
+      awaiting_human_ops: "ops承認を待っています",
       blocked: "ワーカーが人間の入力を求めています",
       done: "完了",
       archived: "アーカイブ済み",
@@ -673,6 +675,8 @@ export const ja: Translations = {
       "このタスクを完了にしますか？ワーカーの取得は解放され、依存している子タスクが ready になります。",
     confirmArchive:
       "このタスクをアーカイブしますか？既定のボードビューから消えます。",
+    confirmAwaitingHumanOps:
+      "このタスクをops承認待ちに移動しますか？ワーカーのクレームは解放されます。",
     confirmBlocked:
       "このタスクをブロック中にしますか？ワーカーの取得は解放されます。",
     completionSummary:

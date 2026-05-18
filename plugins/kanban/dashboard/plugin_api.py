@@ -130,7 +130,7 @@ def _conn(board: Optional[str] = None):
 # Columns shown by the dashboard, in left-to-right order. "archived" is
 # available via a filter toggle rather than a visible column.
 BOARD_COLUMNS: list[str] = [
-    "triage", "todo", "ready", "running", "blocked", "done",
+    "triage", "todo", "ready", "running", "awaiting_human_ops", "blocked", "done",
 ]
 
 
@@ -615,12 +615,28 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
                     summary=payload.summary,
                     metadata=payload.metadata,
                 )
-            elif s == "blocked":
-                ok = kanban_db.block_task(conn, task_id, reason=payload.block_reason)
+            elif s in {"blocked", "awaiting_human_ops"}:
+                current = kanban_db.get_task(conn, task_id)
+                if current and current.status in {"running", "ready"}:
+                    ok = kanban_db.block_task(
+                        conn,
+                        task_id,
+                        reason=payload.block_reason,
+                        target_status=s,
+                    )
+                else:
+                    ok = kanban_db.move_task(conn, task_id, s)
+                if ok and payload.block_reason:
+                    kanban_db.add_comment(
+                        conn,
+                        task_id,
+                        "dashboard",
+                        f"{s}: {payload.block_reason}",
+                    )
             elif s == "ready":
                 # Re-open a blocked task, or just an explicit status set.
                 current = kanban_db.get_task(conn, task_id)
-                if current and current.status == "blocked":
+                if current and current.status in {"blocked", "awaiting_human_ops"}:
                     ok = kanban_db.unblock_task(conn, task_id)
                 else:
                     # Direct status write for drag-drop (todo -> ready etc).
@@ -864,11 +880,11 @@ def bulk_update(payload: BulkTaskBody, board: Optional[str] = Query(None)):
                             summary=payload.summary,
                             metadata=payload.metadata,
                         )
-                    elif s == "blocked":
-                        ok = kanban_db.block_task(conn, tid)
+                    elif s in {"blocked", "awaiting_human_ops"}:
+                        ok = kanban_db.move_task(conn, tid, s)
                     elif s == "ready":
                         cur = kanban_db.get_task(conn, tid)
-                        if cur and cur.status == "blocked":
+                        if cur and cur.status in {"blocked", "awaiting_human_ops"}:
                             ok = kanban_db.unblock_task(conn, tid)
                         else:
                             ok = _set_status_direct(conn, tid, "ready")

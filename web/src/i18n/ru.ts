@@ -656,6 +656,7 @@ export const ru: Translations = {
       todo: "К выполнению",
       ready: "Готово к работе",
       running: "В работе",
+      awaiting_human_ops: "Awaiting Human Ops",
       blocked: "Заблокировано",
       done: "Готово",
       archived: "В архиве",
@@ -665,6 +666,7 @@ export const ru: Translations = {
       todo: "Ожидает зависимостей или без исполнителя",
       ready: "Зависимости выполнены; назначьте профиль для диспетчеризации",
       running: "Взято воркером — выполняется",
+      awaiting_human_ops: "Waiting for human-ops approval",
       blocked: "Воркер запросил вмешательство человека",
       done: "Завершено",
       archived: "В архиве",
@@ -673,6 +675,8 @@ export const ru: Translations = {
       "Отметить эту задачу как выполненную? Захват воркера будет освобождён, а зависимые потомки станут готовыми.",
     confirmArchive:
       "Архивировать эту задачу? Она исчезнет из стандартного вида доски.",
+    confirmAwaitingHumanOps:
+      "Move this task to awaiting human ops? The worker's claim is released.",
     confirmBlocked:
       "Отметить эту задачу как заблокированную? Захват воркера будет освобождён.",
     completionSummary:

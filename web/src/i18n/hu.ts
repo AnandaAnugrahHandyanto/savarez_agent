@@ -656,6 +656,7 @@ export const hu: Translations = {
       todo: "Tennivaló",
       ready: "Indulásra kész",
       running: "Folyamatban",
+      awaiting_human_ops: "Awaiting Human Ops",
       blocked: "Blokkolva",
       done: "Kész",
       archived: "Archivált",
@@ -665,6 +666,7 @@ export const hu: Translations = {
       todo: "Függőségekre vár vagy nincs felelőse",
       ready: "A függőségek teljesültek; rendelj hozzá profilt az indításhoz",
       running: "Worker felvette — folyamatban",
+      awaiting_human_ops: "Waiting for human-ops approval",
       blocked: "A worker emberi beavatkozást kért",
       done: "Befejezve",
       archived: "Archiválva",
@@ -673,6 +675,8 @@ export const hu: Translations = {
       "Megjelölöd ezt a feladatot késznek? A worker foglalása felszabadul, és a függő gyermekek ready állapotba kerülnek.",
     confirmArchive:
       "Archiválod ezt a feladatot? Eltűnik az alapértelmezett tábla nézetből.",
+    confirmAwaitingHumanOps:
+      "Move this task to awaiting human ops? The worker's claim is released.",
     confirmBlocked:
       "Megjelölöd ezt a feladatot blokkoltként? A worker foglalása felszabadul.",
     completionSummary:

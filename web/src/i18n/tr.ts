@@ -656,6 +656,7 @@ export const tr: Translations = {
       todo: "Yapılacak",
       ready: "Hazır",
       running: "Sürüyor",
+      awaiting_human_ops: "Awaiting Human Ops",
       blocked: "Engellendi",
       done: "Bitti",
       archived: "Arşivlendi",
@@ -665,6 +666,7 @@ export const tr: Translations = {
       todo: "Bağımlılıklar bekleniyor veya atanmamış",
       ready: "Bağımlılıklar karşılandı; dispatch için bir profil atayın",
       running: "Bir worker tarafından alındı — yürütülüyor",
+      awaiting_human_ops: "Waiting for human-ops approval",
       blocked: "Worker insan girdisi istedi",
       done: "Tamamlandı",
       archived: "Arşivlendi",
@@ -673,6 +675,8 @@ export const tr: Translations = {
       "Bu görev tamamlandı olarak işaretlensin mi? Worker'ın sahiplenmesi serbest bırakılır ve bağımlı altlar hazır hale gelir.",
     confirmArchive:
       "Bu görev arşivlensin mi? Varsayılan pano görünümünden kaybolur.",
+    confirmAwaitingHumanOps:
+      "Move this task to awaiting human ops? The worker's claim is released.",
     confirmBlocked:
       "Bu görev engellendi olarak işaretlensin mi? Worker'ın sahiplenmesi serbest bırakılır.",
     completionSummary:

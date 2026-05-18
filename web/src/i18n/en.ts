@@ -660,6 +660,7 @@ export const en: Translations = {
       todo: "Todo",
       ready: "Ready",
       running: "In Progress",
+      awaiting_human_ops: "Awaiting Human Ops",
       blocked: "Blocked",
       done: "Done",
       archived: "Archived",
@@ -669,6 +670,7 @@ export const en: Translations = {
       todo: "Waiting on dependencies or unassigned",
       ready: "Dependencies satisfied; assign a profile to dispatch",
       running: "Claimed by a worker — in-flight",
+      awaiting_human_ops: "Waiting for human-ops approval",
       blocked: "Worker asked for human input",
       done: "Completed",
       archived: "Archived",
@@ -677,6 +679,8 @@ export const en: Translations = {
       "Mark this task as done? The worker's claim is released and dependent children become ready.",
     confirmArchive:
       "Archive this task? It disappears from the default board view.",
+    confirmAwaitingHumanOps:
+      "Move this task to awaiting human ops? The worker's claim is released.",
     confirmBlocked:
       "Mark this task as blocked? The worker's claim is released.",
     completionSummary:

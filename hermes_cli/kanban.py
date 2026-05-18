@@ -35,6 +35,7 @@ _STATUS_ICONS = {
     "ready":    "▶",
     "running":  "●",
     "blocked":  "⊘",
+    "awaiting_human_ops": "!",
     "done":     "✓",
     "archived": "—",
 }
@@ -50,7 +51,7 @@ def _fmt_task_line(t: kb.Task) -> str:
     icon = _STATUS_ICONS.get(t.status, "?")
     assignee = t.assignee or "(unassigned)"
     tenant = f" [{t.tenant}]" if t.tenant else ""
-    return f"{icon} {t.id}  {t.status:8s}  {assignee:20s}{tenant}  {t.title}"
+    return f"{icon} {t.id}  {t.status:18s}  {assignee:20s}{tenant}  {t.title}"
 
 
 def _task_to_dict(t: kb.Task) -> dict[str, Any]:
@@ -297,9 +298,9 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_create.add_argument("--initial-status",
                           choices=sorted(kb.VALID_INITIAL_STATUSES),
                           default="running",
-                          help="Initial card status. Use 'blocked' for cards "
-                               "that require immediate human ops (R3 gate) "
-                               "to skip the brief running-to-blocked transition.")
+                          help="Initial card status. Use 'awaiting_human_ops' "
+                               "for R3 human-ops gates; use 'blocked' for "
+                               "technical or dependency waits.")
     p_create.add_argument("--json", action="store_true", help="Emit JSON output")
 
     # --- list ---
@@ -436,9 +437,17 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_block.add_argument("reason", nargs="*", help="Reason (also appended as a comment)")
     p_block.add_argument("--ids", nargs="+", default=None,
                          help="Additional task ids to block with the same reason (bulk mode)")
+    p_block.add_argument("--status",
+                         choices=["blocked", "awaiting_human_ops"],
+                         default="blocked",
+                         help="Waiting state to apply (default: blocked)")
 
     p_unblock = sub.add_parser("unblock", help="Return one or more blocked tasks to ready")
     p_unblock.add_argument("task_ids", nargs="+")
+
+    p_move = sub.add_parser("move", help="Move a task to a Kanban status")
+    p_move.add_argument("task_id")
+    p_move.add_argument("status", choices=sorted(kb.VALID_STATUSES))
 
     p_archive = sub.add_parser("archive", help="Archive one or more tasks")
     p_archive.add_argument("task_ids", nargs="+")
@@ -769,6 +778,7 @@ def kanban_command(args: argparse.Namespace) -> int:
         "edit":     _cmd_edit,
         "block":    _cmd_block,
         "unblock":  _cmd_unblock,
+        "move":     _cmd_move,
         "archive":  _cmd_archive,
         "tail":     _cmd_tail,
         "dispatch": _cmd_dispatch,
@@ -1674,11 +1684,14 @@ def _cmd_block(args: argparse.Namespace) -> int:
                 tid,
                 reason=reason,
                 expected_run_id=_worker_run_id_for(tid),
+                target_status=getattr(args, "status", "blocked"),
             ):
                 failed.append(tid)
                 print(f"cannot block {tid}", file=sys.stderr)
             else:
-                print(f"Blocked {tid}" + (f": {reason}" if reason else ""))
+                status = getattr(args, "status", "blocked")
+                verb = "Awaiting human ops" if status == "awaiting_human_ops" else "Blocked"
+                print(f"{verb} {tid}" + (f": {reason}" if reason else ""))
     return 0 if not failed else 1
 
 
@@ -1696,6 +1709,19 @@ def _cmd_unblock(args: argparse.Namespace) -> int:
             else:
                 print(f"Unblocked {tid}")
     return 0 if not failed else 1
+
+
+def _cmd_move(args: argparse.Namespace) -> int:
+    with kb.connect() as conn:
+        ok = kb.move_task(conn, args.task_id, args.status)
+    if not ok:
+        print(
+            f"cannot move {args.task_id} to {args.status}",
+            file=sys.stderr,
+        )
+        return 1
+    print(f"Moved {args.task_id} to {args.status}")
+    return 0
 
 
 def _cmd_archive(args: argparse.Namespace) -> int:
@@ -1977,8 +2003,8 @@ def _cmd_stats(args: argparse.Namespace) -> int:
         print(json.dumps(stats, indent=2, ensure_ascii=False))
         return 0
     print("By status:")
-    for k in ("triage", "todo", "ready", "running", "blocked", "done"):
-        print(f"  {k:8s}  {stats['by_status'].get(k, 0)}")
+    for k in ("triage", "todo", "ready", "running", "blocked", "awaiting_human_ops", "done"):
+        print(f"  {k:18s}  {stats['by_status'].get(k, 0)}")
     if stats["by_assignee"]:
         print("\nBy assignee:")
         for who, counts in sorted(stats["by_assignee"].items()):
@@ -2307,6 +2333,7 @@ Common subcommands:
   `comment <id> <msg>`  Append a comment
   `complete <id>…`      Mark task(s) done
   `block <id> [reason]` Mark blocked; `unblock <id>` to revive
+  `move <id> <status>`  Move to a Kanban status
   `assign <id> <profile>`  Reassign
   `boards list`         Show all boards
   `assignees`           Known profiles + counts

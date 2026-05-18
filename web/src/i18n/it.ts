@@ -655,6 +655,7 @@ export const it: Translations = {
       todo: "Da fare",
       ready: "Pronto",
       running: "In corso",
+      awaiting_human_ops: "Awaiting Human Ops",
       blocked: "Bloccato",
       done: "Fatto",
       archived: "Archiviato",
@@ -664,6 +665,7 @@ export const it: Translations = {
       todo: "In attesa di dipendenze o non assegnato",
       ready: "Dipendenze soddisfatte; assegna un profilo per il dispatch",
       running: "Preso in carico da un worker — in esecuzione",
+      awaiting_human_ops: "Waiting for human-ops approval",
       blocked: "Il worker ha richiesto input umano",
       done: "Completato",
       archived: "Archiviato",
@@ -672,6 +674,8 @@ export const it: Translations = {
       "Contrassegnare questa attività come completata? La presa in carico del worker viene rilasciata e i figli dipendenti diventano pronti.",
     confirmArchive:
       "Archiviare questa attività? Sparirà dalla vista predefinita della bacheca.",
+    confirmAwaitingHumanOps:
+      "Move this task to awaiting human ops? The worker's claim is released.",
     confirmBlocked:
       "Contrassegnare questa attività come bloccata? La presa in carico del worker viene rilasciata.",
     completionSummary:

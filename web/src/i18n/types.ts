@@ -668,6 +668,7 @@ export interface Translations {
       todo: string;
       ready: string;
       running: string;
+      awaiting_human_ops: string;
       blocked: string;
       done: string;
       archived: string;
@@ -677,12 +678,14 @@ export interface Translations {
       todo: string;
       ready: string;
       running: string;
+      awaiting_human_ops: string;
       blocked: string;
       done: string;
       archived: string;
     };
     confirmDone: string;
     confirmArchive: string;
+    confirmAwaitingHumanOps: string;
     confirmBlocked: string;
     completionSummary: string;
     completionSummaryRequired: string;

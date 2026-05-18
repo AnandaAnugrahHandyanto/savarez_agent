@@ -656,6 +656,7 @@ export const zhHant: Translations = {
       todo: "待辦",
       ready: "就緒",
       running: "進行中",
+      awaiting_human_ops: "Awaiting Human Ops",
       blocked: "已封鎖",
       done: "已完成",
       archived: "已封存",
@@ -665,6 +666,7 @@ export const zhHant: Translations = {
       todo: "等待相依項目或尚未指派",
       ready: "相依項目已滿足；指派設定檔以便排程",
       running: "已被工作者領取 — 執行中",
+      awaiting_human_ops: "Waiting for human-ops approval",
       blocked: "工作者請求人工輸入",
       done: "已完成",
       archived: "已封存",
@@ -673,6 +675,8 @@ export const zhHant: Translations = {
       "將此任務標記為完成？工作者的領取將被釋放，下層相依任務將變為就緒。",
     confirmArchive:
       "封存此任務？它將從預設看板檢視中消失。",
+    confirmAwaitingHumanOps:
+      "Move this task to awaiting human ops? The worker's claim is released.",
     confirmBlocked:
       "將此任務標記為已封鎖？工作者的領取將被釋放。",
     completionSummary:

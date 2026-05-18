@@ -90,8 +90,18 @@ from toolsets import get_toolset_names
 # Constants
 # ---------------------------------------------------------------------------
 
-VALID_STATUSES = {"triage", "todo", "ready", "running", "blocked", "done", "archived"}
-VALID_INITIAL_STATUSES = {"running", "blocked"}
+VALID_STATUSES = {
+    "triage",
+    "todo",
+    "ready",
+    "running",
+    "blocked",
+    "awaiting_human_ops",
+    "done",
+    "archived",
+}
+VALID_INITIAL_STATUSES = {"running", "blocked", "awaiting_human_ops"}
+KANBAN_SCHEMA_VERSION = 24
 VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
 KNOWN_TOOLSET_NAMES = frozenset(name.casefold() for name in get_toolset_names())
 _IS_WINDOWS = sys.platform == "win32"
@@ -758,7 +768,10 @@ CREATE TABLE IF NOT EXISTS tasks (
     title                TEXT NOT NULL,
     body                 TEXT,
     assignee             TEXT,
-    status               TEXT NOT NULL,
+    status               TEXT NOT NULL CHECK (
+        status IN ('triage', 'todo', 'ready', 'running', 'blocked',
+                   'awaiting_human_ops', 'done', 'archived')
+    ),
     priority             INTEGER DEFAULT 0,
     created_by           TEXT,
     created_at           INTEGER NOT NULL,
@@ -988,6 +1001,228 @@ def _add_column_if_missing(
         raise
 
 
+def _ensure_indexes(conn: sqlite3.Connection) -> None:
+    """Create indexes that may be dropped by table-rebuild migrations.
+
+    Skips indexes whose underlying table isn't present yet — legacy DBs
+    migrating in tests sometimes only have ``tasks`` and ``task_events``.
+    """
+    existing_tables = {
+        row["name"]
+        for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()
+    }
+    existing_cols = {}
+    for table in existing_tables:
+        existing_cols[table] = {
+            row["name"]
+            for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
+        }
+
+    def _maybe(index_sql: str, table: str, *required_cols: str) -> None:
+        if table not in existing_tables:
+            return
+        if any(col not in existing_cols[table] for col in required_cols):
+            return
+        conn.execute(index_sql)
+
+    _maybe(
+        "CREATE INDEX IF NOT EXISTS idx_tasks_assignee_status "
+        "ON tasks(assignee, status)",
+        "tasks", "assignee", "status",
+    )
+    _maybe(
+        "CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status)",
+        "tasks", "status",
+    )
+    _maybe(
+        "CREATE INDEX IF NOT EXISTS idx_tasks_tenant ON tasks(tenant)",
+        "tasks", "tenant",
+    )
+    _maybe(
+        "CREATE INDEX IF NOT EXISTS idx_tasks_idempotency "
+        "ON tasks(idempotency_key)",
+        "tasks", "idempotency_key",
+    )
+    _maybe(
+        "CREATE INDEX IF NOT EXISTS idx_links_child ON task_links(child_id)",
+        "task_links", "child_id",
+    )
+    _maybe(
+        "CREATE INDEX IF NOT EXISTS idx_links_parent ON task_links(parent_id)",
+        "task_links", "parent_id",
+    )
+    _maybe(
+        "CREATE INDEX IF NOT EXISTS idx_comments_task "
+        "ON task_comments(task_id, created_at)",
+        "task_comments", "task_id", "created_at",
+    )
+    _maybe(
+        "CREATE INDEX IF NOT EXISTS idx_events_task "
+        "ON task_events(task_id, created_at)",
+        "task_events", "task_id", "created_at",
+    )
+    _maybe(
+        "CREATE INDEX IF NOT EXISTS idx_events_run "
+        "ON task_events(run_id, id)",
+        "task_events", "run_id", "id",
+    )
+    _maybe(
+        "CREATE INDEX IF NOT EXISTS idx_runs_task "
+        "ON task_runs(task_id, started_at)",
+        "task_runs", "task_id", "started_at",
+    )
+    _maybe(
+        "CREATE INDEX IF NOT EXISTS idx_runs_status ON task_runs(status)",
+        "task_runs", "status",
+    )
+    _maybe(
+        "CREATE INDEX IF NOT EXISTS idx_notify_task "
+        "ON kanban_notify_subs(task_id)",
+        "kanban_notify_subs", "task_id",
+    )
+
+
+def _tasks_status_check_needs_migration(conn: sqlite3.Connection) -> bool:
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='tasks'"
+    ).fetchone()
+    sql = (row["sql"] if row else "") or ""
+    return "awaiting_human_ops" not in sql or "CHECK" not in sql.upper()
+
+
+# Columns defined by the v24 ``tasks`` schema, in DDL order. Used to
+# rebuild the table when we need to attach the new status CHECK constraint.
+# Legacy/extra columns present on the live table (e.g. ``spawn_failures``
+# from pre-#20842 DBs) are appended dynamically so they survive the
+# rebuild — the existing ADD-first-then-copy migration contract.
+_V24_TASKS_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("id", "TEXT PRIMARY KEY"),
+    ("title", "TEXT NOT NULL"),
+    ("body", "TEXT"),
+    ("assignee", "TEXT"),
+    (
+        "status",
+        "TEXT NOT NULL CHECK (status IN ("
+        "'triage', 'todo', 'ready', 'running', 'blocked', "
+        "'awaiting_human_ops', 'done', 'archived'))",
+    ),
+    ("priority", "INTEGER DEFAULT 0"),
+    ("created_by", "TEXT"),
+    ("created_at", "INTEGER NOT NULL"),
+    ("started_at", "INTEGER"),
+    ("completed_at", "INTEGER"),
+    ("workspace_kind", "TEXT NOT NULL DEFAULT 'scratch'"),
+    ("workspace_path", "TEXT"),
+    ("claim_lock", "TEXT"),
+    ("claim_expires", "INTEGER"),
+    ("tenant", "TEXT"),
+    ("result", "TEXT"),
+    ("idempotency_key", "TEXT"),
+    ("consecutive_failures", "INTEGER NOT NULL DEFAULT 0"),
+    ("worker_pid", "INTEGER"),
+    ("last_failure_error", "TEXT"),
+    ("max_runtime_seconds", "INTEGER"),
+    ("last_heartbeat_at", "INTEGER"),
+    ("current_run_id", "INTEGER"),
+    ("workflow_template_id", "TEXT"),
+    ("current_step_key", "TEXT"),
+    ("skills", "TEXT"),
+    ("max_retries", "INTEGER"),
+)
+
+
+def _migrate_tasks_status_check(conn: sqlite3.Connection) -> None:
+    """Rebuild ``tasks`` with the v24 status CHECK constraint.
+
+    SQLite cannot add a CHECK constraint in-place. Existing row statuses
+    are copied unchanged, so historical ``blocked`` cards stay ``blocked``;
+    operators can reclassify ambiguous cards manually. Legacy columns not
+    in the v24 schema (e.g. ``spawn_failures``) are preserved with their
+    original PRAGMA column definitions so the ADD-first-then-copy
+    contract still holds for very old DBs.
+    """
+    if not _tasks_status_check_needs_migration(conn):
+        conn.execute(f"PRAGMA user_version = {KANBAN_SCHEMA_VERSION}")
+        return
+
+    old_rows = conn.execute("PRAGMA table_info(tasks)").fetchall()
+    if not old_rows:
+        return
+    old_cols: dict[str, sqlite3.Row] = {row["name"]: row for row in old_rows}
+    if "status" not in old_cols:
+        # Concurrent or aborted prior migration left ``tasks`` without
+        # ``status``; defer the CHECK rebuild until the regular schema
+        # bootstrap (CREATE TABLE IF NOT EXISTS) runs again.
+        return
+    valid_statuses = sorted(VALID_STATUSES)
+    placeholders = ",".join("?" for _ in valid_statuses)
+    bad = conn.execute(
+        f"SELECT id, status FROM tasks WHERE status NOT IN ({placeholders}) LIMIT 1",
+        valid_statuses,
+    ).fetchone()
+    if bad:
+        raise sqlite3.IntegrityError(
+            f"cannot migrate kanban status CHECK: task {bad['id']} has "
+            f"unknown status {bad['status']!r}"
+        )
+
+    v24_names = {name for name, _ in _V24_TASKS_COLUMNS}
+    # Legacy columns we must round-trip (preserved harmlessly).
+    legacy_extras: list[tuple[str, str]] = []
+    for name, row in old_cols.items():
+        if name in v24_names:
+            continue
+        # Reconstruct a minimally compatible column definition: keep type,
+        # NOT NULL if applicable, default if present. We avoid PRIMARY KEY
+        # because the v24 schema already names the primary key on ``id``
+        # and PRAGMA only flags one column anyway.
+        col_type = row["type"] or ""
+        parts = [col_type] if col_type else []
+        if row["notnull"]:
+            parts.append("NOT NULL")
+        if row["dflt_value"] is not None:
+            parts.append(f"DEFAULT {row['dflt_value']}")
+        legacy_extras.append((name, " ".join(parts).strip() or "TEXT"))
+
+    column_ddl = ",\n                ".join(
+        f"{name:20s} {ddl}"
+        for name, ddl in (*_V24_TASKS_COLUMNS, *legacy_extras)
+    )
+
+    tmp_name = "tasks__pre_v24_status_check"
+    # SQLite officially-recommended table-rebuild pattern: temporarily
+    # disable foreign_keys, RENAME old → tmp, CREATE new schema, INSERT
+    # SELECT, DROP tmp, re-enable foreign_keys, restore indexes. We do
+    # NOT use ``write_txn`` here because the rest of the migration
+    # pipeline (_migrate_add_optional_columns) is run with the caller's
+    # transaction discipline (autocommit for kb.connect(),
+    # default-isolation for raw test connections); wrapping a DDL
+    # rebuild in BEGIN IMMEDIATE here breaks the latter.
+    prior_fk = conn.execute("PRAGMA foreign_keys").fetchone()[0]
+    if prior_fk:
+        conn.execute("PRAGMA foreign_keys=OFF")
+    try:
+        conn.execute(f"DROP TABLE IF EXISTS {tmp_name}")
+        conn.execute(f"ALTER TABLE tasks RENAME TO {tmp_name}")
+        conn.execute(f"CREATE TABLE tasks (\n                {column_ddl}\n            )")
+        new_cols = [
+            row["name"] for row in conn.execute("PRAGMA table_info(tasks)").fetchall()
+        ]
+        common = [col for col in new_cols if col in old_cols]
+        cols_sql = ", ".join(common)
+        conn.execute(
+            f"INSERT INTO tasks ({cols_sql}) SELECT {cols_sql} FROM {tmp_name}"
+        )
+        conn.execute(f"DROP TABLE {tmp_name}")
+        _ensure_indexes(conn)
+        conn.execute(f"PRAGMA user_version = {KANBAN_SCHEMA_VERSION}")
+    finally:
+        if prior_fk:
+            conn.execute("PRAGMA foreign_keys=ON")
+
+
 def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
     """Add columns that were introduced after v1 release to legacy DBs.
 
@@ -1077,6 +1312,10 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
         # which is the correct default (they keep the global behaviour
         # they were getting before the column existed).
         _add_column_if_missing(conn, "tasks", "max_retries", "max_retries INTEGER")
+
+    # v23 -> v24: extend the task status enum with awaiting_human_ops.
+    # Row statuses are copied unchanged; existing blocked cards remain blocked.
+    _migrate_tasks_status_check(conn)
 
     # task_events gained a run_id column; back-fill it as NULL for
     # historical events (they predate runs and can't be attributed).
@@ -1274,8 +1513,9 @@ def create_task(
 
     ``initial_status`` controls whether the task enters the usual
     dispatch path (``"running"``; default, preserving existing
-    ready/todo/triage inference) or is created directly in ``"blocked"``
-    for immediate human-ops review.
+    ready/todo/triage inference) or is created directly in an explicit
+    waiting state. Use ``"awaiting_human_ops"`` for R3 human-ops gates;
+    ``"blocked"`` remains the technical/dependency wait state.
     """
     assignee = _canonical_assignee(assignee)
     if not title or not title.strip():
@@ -1359,9 +1599,9 @@ def create_task(
         try:
             with write_txn(conn):
                 # Determine task status from parent status, unless the caller
-                # parks it directly in blocked for human-ops review.
-                if initial_status == "blocked":
-                    task_status = "blocked"
+                # parks it directly in an explicit waiting state.
+                if initial_status in {"blocked", "awaiting_human_ops"}:
+                    task_status = initial_status
                     if parents:
                         missing = _find_missing_parents(conn, parents)
                         if missing:
@@ -2169,7 +2409,8 @@ def reclaim_task(
         cur = conn.execute(
             "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
             "claim_expires = NULL, worker_pid = NULL "
-            "WHERE id = ? AND status IN ('running', 'ready', 'blocked') "
+            "WHERE id = ? "
+            "AND status IN ('running', 'ready', 'blocked', 'awaiting_human_ops') "
             "AND claim_lock IS ?",
             (task_id, prev_lock),
         )
@@ -2445,7 +2686,7 @@ def complete_task(
                        claim_expires= NULL,
                        worker_pid   = NULL
                  WHERE id = ?
-                   AND status IN ('running', 'ready', 'blocked')
+                   AND status IN ('running', 'ready', 'blocked', 'awaiting_human_ops')
                 """,
                 (result, now, task_id),
             )
@@ -2460,7 +2701,7 @@ def complete_task(
                        claim_expires= NULL,
                        worker_pid   = NULL
                  WHERE id = ?
-                   AND status IN ('running', 'ready', 'blocked')
+                   AND status IN ('running', 'ready', 'blocked', 'awaiting_human_ops')
                    AND current_run_id = ?
                 """,
                 (result, now, task_id, int(expected_run_id)),
@@ -2605,27 +2846,30 @@ def block_task(
     *,
     reason: Optional[str] = None,
     expected_run_id: Optional[int] = None,
+    target_status: str = "blocked",
 ) -> bool:
-    """Transition ``running -> blocked``."""
+    """Transition ``running``/``ready`` to a waiting state."""
+    if target_status not in {"blocked", "awaiting_human_ops"}:
+        raise ValueError("target_status must be 'blocked' or 'awaiting_human_ops'")
     with write_txn(conn):
         if expected_run_id is None:
             cur = conn.execute(
                 """
                 UPDATE tasks
-                   SET status       = 'blocked',
+                   SET status       = ?,
                        claim_lock   = NULL,
                        claim_expires= NULL,
                        worker_pid   = NULL
                  WHERE id = ?
                    AND status IN ('running', 'ready')
                 """,
-                (task_id,),
+                (target_status, task_id),
             )
         else:
             cur = conn.execute(
                 """
                 UPDATE tasks
-                   SET status       = 'blocked',
+                   SET status       = ?,
                        claim_lock   = NULL,
                        claim_expires= NULL,
                        worker_pid   = NULL
@@ -2633,13 +2877,13 @@ def block_task(
                    AND status IN ('running', 'ready')
                    AND current_run_id = ?
                 """,
-                (task_id, int(expected_run_id)),
+                (target_status, task_id, int(expected_run_id)),
             )
         if cur.rowcount != 1:
             return False
         run_id = _end_run(
             conn, task_id,
-            outcome="blocked", status="blocked",
+            outcome=target_status, status=target_status,
             summary=reason,
         )
         # Synthesize a run when blocking a never-claimed task so the
@@ -2647,15 +2891,21 @@ def block_task(
         if run_id is None and reason:
             run_id = _synthesize_ended_run(
                 conn, task_id,
-                outcome="blocked",
+                outcome=target_status,
                 summary=reason,
             )
-        _append_event(conn, task_id, "blocked", {"reason": reason}, run_id=run_id)
+        _append_event(
+            conn,
+            task_id,
+            target_status,
+            {"reason": reason},
+            run_id=run_id,
+        )
         return True
 
 
 def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
-    """Transition ``blocked -> ready``.
+    """Transition ``blocked``/``awaiting_human_ops`` back to ready/todo.
 
     Defensively closes any stale ``current_run_id`` pointer before flipping
     status. In the common path (``block_task`` closed the run already) this
@@ -2667,7 +2917,8 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
     now = int(time.time())
     with write_txn(conn):
         stale = conn.execute(
-            "SELECT current_run_id FROM tasks WHERE id = ? AND status = 'blocked'",
+            "SELECT current_run_id FROM tasks "
+            "WHERE id = ? AND status IN ('blocked', 'awaiting_human_ops')",
             (task_id,),
         ).fetchone()
         if stale and stale["current_run_id"]:
@@ -2682,7 +2933,7 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
                 """,
                 (now, int(stale["current_run_id"])),
             )
-        # Re-gate on parent completion before flipping 'blocked' back to
+        # Re-gate on parent completion before flipping a waiting card back to
         # 'ready'. Unconditionally setting status='ready' here bypasses the
         # parent-completion invariant (the dispatcher trusts that column);
         # if parents are still in progress the task must wait in 'todo'
@@ -2697,7 +2948,7 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
         new_status = "todo" if undone_parents else "ready"
         cur = conn.execute(
             "UPDATE tasks SET status = ?, current_run_id = NULL "
-            "WHERE id = ? AND status = 'blocked'",
+            "WHERE id = ? AND status IN ('blocked', 'awaiting_human_ops')",
             (new_status, task_id),
         )
         if cur.rowcount != 1:
@@ -2707,6 +2958,78 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
             {"status": new_status} if new_status != "ready" else None,
         )
         return True
+
+
+def move_task(conn: sqlite3.Connection, task_id: str, new_status: str) -> bool:
+    """Manual status move for CLI/dashboard parity."""
+    if new_status not in VALID_STATUSES:
+        raise ValueError(f"status must be one of {sorted(VALID_STATUSES)}")
+    if new_status == "running":
+        raise ValueError("cannot move to 'running' directly; use claim/dispatch")
+    if new_status == "done":
+        return complete_task(conn, task_id)
+    if new_status == "archived":
+        return archive_task(conn, task_id)
+    if new_status in {"blocked", "awaiting_human_ops"}:
+        current = get_task(conn, task_id)
+        if current is None:
+            return False
+        if current.status in {"blocked", "awaiting_human_ops"}:
+            with write_txn(conn):
+                cur = conn.execute(
+                    "UPDATE tasks SET status = ? WHERE id = ? "
+                    "AND status IN ('blocked', 'awaiting_human_ops')",
+                    (new_status, task_id),
+                )
+                if cur.rowcount != 1:
+                    return False
+                _append_event(conn, task_id, "status", {"status": new_status})
+                return True
+        if current.status in {"running", "ready"}:
+            return block_task(conn, task_id, target_status=new_status)
+    if new_status == "ready":
+        current = get_task(conn, task_id)
+        if current is None:
+            return False
+        if current.status in {"blocked", "awaiting_human_ops"}:
+            return unblock_task(conn, task_id)
+        undone_parents = conn.execute(
+            "SELECT 1 FROM task_links l "
+            "JOIN tasks p ON p.id = l.parent_id "
+            "WHERE l.child_id = ? AND p.status != 'done' LIMIT 1",
+            (task_id,),
+        ).fetchone()
+        if undone_parents:
+            return False
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT status, current_run_id FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        if row is None:
+            return False
+        was_running = row["status"] == "running"
+        cur = conn.execute(
+            "UPDATE tasks SET status = ?, "
+            "claim_lock = NULL, claim_expires = NULL, worker_pid = NULL "
+            "WHERE id = ? AND status != 'archived'",
+            (new_status, task_id),
+        )
+        if cur.rowcount != 1:
+            return False
+        run_id = None
+        if was_running and row["current_run_id"]:
+            run_id = _end_run(
+                conn,
+                task_id,
+                outcome="reclaimed",
+                status="reclaimed",
+                summary=f"status changed to {new_status} (manual move)",
+            )
+        _append_event(conn, task_id, "status", {"status": new_status}, run_id=run_id)
+    if new_status in {"done", "ready"}:
+        recompute_ready(conn)
+    return True
 
 
 def specify_triage_task(
