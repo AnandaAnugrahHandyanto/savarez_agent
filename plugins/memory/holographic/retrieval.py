@@ -489,6 +489,9 @@ class FactRetriever:
 
         Uses the store's database connection directly for FTS5 MATCH
         with rank scoring. Normalizes FTS5 rank to [0, 1] range.
+
+        Falls back to LIKE-based search when FTS5 returns no results
+        (common with CJK queries where unicode61 tokenizer over-splits).
         """
         conn = self.store._conn
 
@@ -520,11 +523,12 @@ class FactRetriever:
         try:
             rows = conn.execute(sql, params).fetchall()
         except Exception:
-            # FTS5 MATCH can fail on malformed queries — fall back to empty
-            return []
+            # FTS5 MATCH can fail on malformed queries — fall back to LIKE
+            return self._like_fallback(query, category, min_trust, limit)
 
         if not rows:
-            return []
+            # FTS5 returned empty — try LIKE fallback for CJK queries
+            return self._like_fallback(query, category, min_trust, limit)
 
         # Normalize FTS5 rank: rank is negative, lower = better
         # Convert to positive score in [0, 1] range
@@ -541,6 +545,99 @@ class FactRetriever:
 
         return results
 
+    def _like_fallback(
+        self,
+        query: str,
+        category: str | None,
+        min_trust: float,
+        limit: int,
+    ) -> list[dict]:
+        """Fallback search using LIKE on individual query tokens.
+
+        Extracts meaningful tokens from the query:
+        - Alphanumeric words kept whole (lowercased)
+        - CJK: split into overlapping 2-char bigrams for broader matching
+        Searches each via LIKE '%%token%%'. Results are deduplicated
+        and scored by Jaccard similarity (also using bigrams).
+        """
+        conn = self.store._conn
+        import re
+
+        _RE_CJK = re.compile(r'[\u4e00-\u9fff]+')
+
+        def _cjk_bigrams(text: str) -> list[str]:
+            """Generate overlapping 2-char bigrams from CJK text."""
+            return [text[i:i+2] for i in range(len(text) - 1)]
+
+        # Extract tokens: CJK bigrams + alphanumeric words
+        tokens: set[str] = set()
+        for word in query.split():
+            word = word.strip(".,;:!?\"'()[]{}#@<>")
+            if not word:
+                continue
+            # Alphanumeric tokens (whole word, lowercased)
+            if re.search(r'[a-zA-Z0-9]', word):
+                tokens.add(word.lower())
+            # CJK: split into overlapping bigrams for broader matching
+            cjk_chars = _RE_CJK.findall(word)
+            for cjk in cjk_chars:
+                if len(cjk) >= 2:
+                    tokens.update(_cjk_bigrams(cjk))
+
+        if not tokens:
+            return []
+
+        where_clauses = []
+        params: list = []
+        like_clauses = []
+        for token in tokens:
+            like_clauses.append("f.content LIKE ?")
+            params.append(f"%{token}%")
+        where_clauses.append(f"({' OR '.join(like_clauses)})")
+
+        if category:
+            where_clauses.append("f.category = ?")
+            params.append(category)
+
+        where_clauses.append("f.trust_score >= ?")
+        params.append(min_trust)
+
+        params.append(limit * 3)
+
+        sql = f"""
+            SELECT f.*
+            FROM facts f
+            WHERE {' AND '.join(where_clauses)}
+            ORDER BY f.updated_at DESC
+            LIMIT ?
+        """
+
+        try:
+            rows = conn.execute(sql, params).fetchall()
+        except Exception:
+            return []
+
+        if not rows:
+            return []
+
+        # Deduplicate by fact_id, score by CJK-bigram token overlap
+        seen = set()
+        scored = []
+        query_bigrams = self._query_bigrams(query)
+        for row in rows:
+            fact = dict(row)
+            if fact["fact_id"] in seen:
+                continue
+            seen.add(fact["fact_id"])
+            content_bigrams = self._query_bigrams(fact.get("content", ""))
+            tag_bigrams = self._query_bigrams(fact.get("tags", ""))
+            jaccard = self._jaccard_similarity(query_bigrams, content_bigrams | tag_bigrams)
+            fact["fts_rank"] = jaccard
+            scored.append(fact)
+
+        scored.sort(key=lambda x: x["fts_rank"], reverse=True)
+        return scored[:limit]
+
     @staticmethod
     def _tokenize(text: str) -> set[str]:
         """Simple whitespace tokenization with lowercasing.
@@ -556,6 +653,34 @@ class FactRetriever:
             if cleaned:
                 tokens.add(cleaned)
         return tokens
+
+    @staticmethod
+    def _query_bigrams(text: str) -> set[str]:
+        """Tokenize for CJK-bigram similarity scoring.
+
+        Splits text into whitespace-separated words. English/alphanumeric
+        words are kept whole (lowercased). CJK runs are split into
+        overlapping 2-char bigrams. This lets '群晖有哪些配置' and
+        '群晖 SA6400 配置' share overlapping bigrams like '群晖' and '配置'.
+        """
+        if not text:
+            return set()
+        import re
+        _RE_CJK = re.compile(r'[\u4e00-\u9fff]+')
+        result: set[str] = set()
+        for word in text.lower().split():
+            cleaned = word.strip(".,;:!?\"'()[]{}#@<>")
+            if not cleaned:
+                continue
+            if re.search(r'[a-zA-Z0-9]', cleaned):
+                result.add(cleaned)
+            cjk_chars = _RE_CJK.findall(cleaned)
+            for cjk in cjk_chars:
+                if len(cjk) >= 2:
+                    result.update(cjk[i:i+2] for i in range(len(cjk) - 1))
+                elif len(cjk) == 1:
+                    result.add(cjk)
+        return result
 
     @staticmethod
     def _jaccard_similarity(set_a: set, set_b: set) -> float:
