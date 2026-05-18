@@ -32,6 +32,20 @@ def _normalize_skills(single_skill=None, skills: Optional[Iterable[str]] = None)
     return normalized
 
 
+def _normalize_toolsets(toolsets=None) -> Optional[List[str]]:
+    if not toolsets:
+        return None
+    raw_items = [toolsets] if isinstance(toolsets, str) else list(toolsets)
+
+    normalized: List[str] = []
+    for item in raw_items:
+        for part in str(item or "").split(","):
+            text = part.strip()
+            if text and text not in normalized:
+                normalized.append(text)
+    return normalized or None
+
+
 def _cron_api(**kwargs):
     from tools.cronjob_tools import cronjob as cronjob_tool
 
@@ -73,6 +87,7 @@ def cron_list(show_all: bool = False):
         deliver_str = ", ".join(deliver)
 
         skills = job.get("skills") or ([job["skill"]] if job.get("skill") else [])
+        toolsets = job.get("enabled_toolsets") or []
         if state == "paused":
             status = color("[paused]", Colors.YELLOW)
         elif state == "completed":
@@ -90,6 +105,8 @@ def cron_list(show_all: bool = False):
         print(f"    Deliver:   {deliver_str}")
         if skills:
             print(f"    Skills:    {', '.join(skills)}")
+        if toolsets:
+            print(f"    Toolsets:  {', '.join(toolsets)}")
         script = job.get("script")
         if script:
             print(f"    Script:    {script}")
@@ -172,6 +189,7 @@ def cron_create(args):
         repeat=getattr(args, "repeat", None),
         skill=getattr(args, "skill", None),
         skills=_normalize_skills(getattr(args, "skill", None), getattr(args, "skills", None)),
+        enabled_toolsets=_normalize_toolsets(getattr(args, "toolsets", None)),
         script=getattr(args, "script", None),
         workdir=getattr(args, "workdir", None),
         no_agent=getattr(args, "no_agent", False) or None,
@@ -185,6 +203,8 @@ def cron_create(args):
     if result.get("skills"):
         print(f"  Skills: {', '.join(result['skills'])}")
     job_data = result.get("job", {})
+    if job_data.get("enabled_toolsets"):
+        print(f"  Toolsets: {', '.join(job_data['enabled_toolsets'])}")
     if job_data.get("script"):
         print(f"  Script: {job_data['script']}")
     if job_data.get("no_agent"):

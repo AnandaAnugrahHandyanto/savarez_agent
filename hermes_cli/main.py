@@ -10447,6 +10447,13 @@ def main():
         help="Attach a skill. Repeat to add multiple skills.",
     )
     cron_create.add_argument(
+        "--toolsets",
+        help=(
+            "Comma-separated toolsets to enable for this job "
+            "(for example: terminal,file,tdx-custom)."
+        ),
+    )
+    cron_create.add_argument(
         "--script",
         help=(
             "Path to a script under ~/.hermes/scripts/. Default mode: "

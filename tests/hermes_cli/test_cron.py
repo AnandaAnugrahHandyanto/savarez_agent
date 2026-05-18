@@ -1,11 +1,24 @@
 """Tests for hermes_cli.cron command handling."""
 
+import subprocess
+import sys
 from argparse import Namespace
 
 import pytest
 
 from cron.jobs import create_job, get_job, list_jobs
 from hermes_cli.cron import cron_command
+
+
+def test_cron_create_help_includes_toolsets_flag():
+    result = subprocess.run(
+        [sys.executable, "-m", "hermes_cli.main", "cron", "create", "--help"],
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    assert result.returncode == 0
+    assert "--toolsets" in result.stdout
 
 
 @pytest.fixture()
@@ -96,6 +109,7 @@ class TestCronCommandLifecycle:
                 repeat=None,
                 skill=None,
                 skills=["blogwatcher", "maps"],
+                toolsets=None,
             )
         )
         out = capsys.readouterr().out
@@ -105,3 +119,26 @@ class TestCronCommandLifecycle:
         assert len(jobs) == 1
         assert jobs[0]["skills"] == ["blogwatcher", "maps"]
         assert jobs[0]["name"] == "Skill combo"
+
+    def test_create_with_toolsets(self, tmp_cron_dir, capsys):
+        cron_command(
+            Namespace(
+                cron_command="create",
+                schedule="every 1h",
+                prompt="Run with scoped tools",
+                name="Scoped tools",
+                deliver=None,
+                repeat=None,
+                skill=None,
+                skills=None,
+                toolsets="terminal,file, terminal",
+            )
+        )
+        out = capsys.readouterr().out
+        assert "Created job" in out
+        assert "Toolsets: terminal, file" in out
+
+        jobs = list_jobs()
+        assert len(jobs) == 1
+        assert jobs[0]["enabled_toolsets"] == ["terminal", "file"]
+        assert jobs[0]["name"] == "Scoped tools"
