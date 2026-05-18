@@ -2,7 +2,7 @@
 
 When ``display.platforms.<plat>.cleanup_progress: true`` is set for a
 platform whose adapter supports message deletion (e.g. Telegram), the
-tool-progress bubble, "⏳ Still working..." notices, and status-callback
+tool-progress bubble, "Still working..." notices, and status-callback
 messages sent during a run are deleted after the final response is
 delivered.
 
@@ -12,6 +12,7 @@ Adapters without ``delete_message`` silently no-op.
 
 import asyncio
 import importlib
+import inspect
 import sys
 import time
 import types
@@ -186,6 +187,17 @@ def _install_fakes(monkeypatch, agent_cls, *, cleanup_on: bool):
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
+
+
+def test_routine_progress_status_is_text_only():
+    """Routine progress/status notices should not use alert emoji prefixes."""
+    gateway_run = importlib.import_module("gateway.run")
+    source = inspect.getsource(gateway_run.GatewayRunner._run_agent)
+
+    assert "Still working..." in source
+    assert "No activity for" in source
+    assert "⏳ Still working..." not in source
+    assert "⚠️ No activity" not in source
 
 
 @pytest.mark.asyncio

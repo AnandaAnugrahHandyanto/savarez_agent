@@ -4874,7 +4874,10 @@ class DiscordAdapter(BasePlatformAdapter):
                 and not skip_thread
                 and (not is_free_channel or should_thread_free_channel)
                 and not is_voice_linked_channel
-                and not is_reply_message
+                # Allow threading reply-reference messages in explicitly configured
+                # threaded free-response channels so each Discord reply still gets
+                # its own task thread; skip for all other channels.
+                and (not is_reply_message or should_thread_free_channel)
             ):
                 thread = await self._auto_create_thread(message)
                 if thread:
