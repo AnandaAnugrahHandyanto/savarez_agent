@@ -72,9 +72,13 @@ def set_approval_callback(cb) -> None:
 _SAFE_ACTIONS = frozenset({"capture", "wait", "list_apps"})
 
 # Actions that mutate user-visible state. Go through approval.
+#
+# Text entry and ordinary key chords are handled separately: dangerous
+# patterns are blocked up front, but safe text / shortcuts should not require
+# a live approval callback just to continue.
 _DESTRUCTIVE_ACTIONS = frozenset({
     "click", "double_click", "right_click", "middle_click",
-    "drag", "scroll", "type", "key", "set_value", "focus_app",
+    "drag", "scroll", "set_value", "focus_app",
 })
 
 # Hard-blocked key combinations. Mirrored from #4562 — these are destructive
@@ -235,12 +239,6 @@ def handle_computer_use(args: Dict[str, Any], **kwargs) -> Any:
                     "hint": "Destructive system shortcuts are hard-blocked.",
                 })
 
-    # Approval gate (destructive actions only).
-    if action in _DESTRUCTIVE_ACTIONS:
-        err = _request_approval(action, args)
-        if err is not None:
-            return err
-
     # Dispatch to backend.
     try:
         backend = _get_backend()
@@ -249,6 +247,12 @@ def handle_computer_use(args: Dict[str, Any], **kwargs) -> Any:
             "error": f"computer_use backend unavailable: {e}",
             "hint": "Run `hermes tools` and enable Computer Use to install cua-driver.",
         })
+
+    # The noop backend is a test stub; it should never require live approval.
+    if action in _DESTRUCTIVE_ACTIONS and not isinstance(backend, _NoopBackend):
+        err = _request_approval(action, args)
+        if err is not None:
+            return err
 
     try:
         return _dispatch(backend, action, args)
