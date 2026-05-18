@@ -16,8 +16,10 @@ Key design decisions:
 
 import json
 import logging
+import os
 import random
 import re
+import shutil
 import sqlite3
 import threading
 import time
@@ -87,6 +89,67 @@ def _sqlite_header_uses_wal(path: Path | str | None) -> Optional[bool]:
         return None
     return header[18] == 2 and header[19] == 2
 
+
+def _repair_wsl_sqlite_wal_header(path: Path | str | None, *, db_label: str) -> bool:
+    """Switch a WSL/DrvFS SQLite file header from WAL to rollback mode.
+
+    SQLite stores the write/read version at header bytes 18/19. A database
+    copied from a WAL-enabled environment can keep ``2,2`` there even when
+    ``*.db-wal`` / ``*.db-shm`` sidecars are absent. On WSL's Windows mount
+    that can make the first query fail before ``PRAGMA journal_mode=DELETE``
+    has a chance to repair the mode. We only do this on WSL Windows mounts,
+    only for genuine SQLite files, and only when no non-empty WAL sidecar is
+    present; then we create a timestamped backup before touching the header.
+    """
+    if path is None:
+        return False
+    db_path = Path(path)
+    if not _is_wsl_windows_mount(db_path):
+        return False
+
+    with _wal_header_repair_lock:
+        if _sqlite_header_uses_wal(db_path) is not True:
+            return False
+
+        active_sidecars: list[Path] = []
+        for suffix in ("-wal", "-shm"):
+            sidecar = Path(f"{db_path}{suffix}")
+            try:
+                if sidecar.exists() and sidecar.stat().st_size > 0:
+                    active_sidecars.append(sidecar)
+            except OSError:
+                active_sidecars.append(sidecar)
+
+        if active_sidecars:
+            logger.warning(
+                "%s: WSL WAL header repair skipped because active sidecar files exist: %s",
+                db_label,
+                ", ".join(str(p) for p in active_sidecars),
+            )
+            return False
+
+        backup_path = db_path.with_name(
+            f"{db_path.name}.wal-header-backup-{time.strftime('%Y%m%d-%H%M%S')}"
+        )
+        shutil.copy2(db_path, backup_path)
+
+        with open(db_path, "r+b") as handle:
+            header = handle.read(20)
+            if len(header) < 20 or not header.startswith(b"SQLite format 3\x00"):
+                return False
+            handle.seek(18)
+            handle.write(b"\x01\x01")
+            handle.flush()
+            os.fsync(handle.fileno())
+
+        logger.warning(
+            "%s: repaired WSL SQLite WAL header for %s; backup saved at %s",
+            db_label,
+            db_path,
+            backup_path,
+        )
+        return True
+
 # Last SessionDB() init error, per-process.  Surfaced in /resume and
 # related slash-command error strings so users know WHY the DB is
 # unavailable instead of getting a bare "Session database not available."
@@ -102,6 +165,7 @@ _last_init_error_lock = threading.Lock()
 # filesystem-incompat warning on every connection, filling errors.log.
 _wal_fallback_warned_paths: set[str] = set()
 _wal_fallback_warned_lock = threading.Lock()
+_wal_header_repair_lock = threading.Lock()
 
 
 def _set_last_init_error(msg: Optional[str]) -> None:
@@ -181,7 +245,13 @@ def apply_wal_with_fallback(
     """
     if _is_wsl_windows_mount(db_path):
         _log_wal_fallback_once(db_label, RuntimeError(f"{db_path} is on a WSL Windows mount"))
-        if _sqlite_header_uses_wal(db_path) is False:
+        header_uses_wal = _sqlite_header_uses_wal(db_path)
+        if header_uses_wal is False:
+            return "delete"
+        if header_uses_wal is True and _repair_wsl_sqlite_wal_header(
+            db_path,
+            db_label=db_label,
+        ):
             return "delete"
         conn.execute("PRAGMA journal_mode=DELETE")
         return "delete"

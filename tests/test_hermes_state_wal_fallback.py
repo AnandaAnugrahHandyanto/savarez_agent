@@ -177,6 +177,46 @@ class TestApplyWalWithFallback:
         assert mode == "delete"
         conn.close()
 
+    def test_repairs_wsl_wal_header_before_delete_pragma(self, tmp_path):
+        """DrvFS WAL headers are repaired before SQLite touches journal pragmas."""
+
+        class _JournalModeBlockingConnection(sqlite3.Connection):
+            def execute(self, sql, *args, **kwargs):  # type: ignore[override]
+                if "journal_mode" in sql.lower():
+                    raise sqlite3.OperationalError("journal pragma should not run")
+                return super().execute(sql, *args, **kwargs)
+
+        target = tmp_path / "drvfs-wal-header.db"
+        setup_conn = sqlite3.connect(str(target), isolation_level=None)
+        setup_conn.execute("CREATE TABLE t(x)")
+        setup_conn.close()
+
+        with open(target, "r+b") as handle:
+            handle.seek(18)
+            handle.write(b"\x02\x02")
+
+        conn = sqlite3.connect(
+            str(target),
+            factory=_JournalModeBlockingConnection,
+            isolation_level=None,
+        )
+        try:
+            with patch("hermes_state._is_wsl_windows_mount", return_value=True):
+                mode = apply_wal_with_fallback(
+                    conn,
+                    db_label="state.db",
+                    db_path=target,
+                )
+        finally:
+            conn.close()
+
+        assert mode == "delete"
+        with open(target, "rb") as handle:
+            header = handle.read(20)
+        assert header[18] == 1
+        assert header[19] == 1
+        assert list(tmp_path.glob("drvfs-wal-header.db.wal-header-backup-*"))
+
     def test_reraises_unrelated_operational_error(self, tmp_path):
         """Non-WAL-compat errors must NOT be silently swallowed by the fallback."""
         conn, _ = _open_blocking(
