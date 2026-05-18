@@ -7730,11 +7730,36 @@ class HermesCLI:
             self._force_full_redraw()
             _cprint(f"  {_DIM}✓ UI redrawn{_RST}")
         elif canonical == "clear":
+            # Parse optional `--then "<message>"` one-shot handoff.  The message
+            # (if any) is queued into _pending_input after the clear completes
+            # so process_loop dispatches it as the first user turn of the new
+            # session.  Consumed exactly once — not persisted across restarts.
+            handoff_message = None
+            try:
+                import shlex as _shlex
+                _parts = _shlex.split(cmd_original)
+            except ValueError:
+                _cprint(f"  {_DIM}✗ Could not parse /clear args (unbalanced quotes). Usage: /clear [--then \"<message>\"]{_RST}")
+                return True
+            if len(_parts) > 1:
+                _rest = _parts[1:]
+                if _rest and _rest[0] == "--then":
+                    if len(_rest) < 2 or not _rest[1].strip():
+                        _cprint(f"  {_DIM}✗ /clear --then requires a message. Usage: /clear --then \"<message>\"{_RST}")
+                        return True
+                    if len(_rest) > 2:
+                        _cprint(f"  {_DIM}✗ /clear --then takes a single quoted message. Got extra args: {_escape(' '.join(_rest[2:]))}{_RST}")
+                        return True
+                    handoff_message = _rest[1]
+                else:
+                    _cprint(f"  {_DIM}✗ Unknown argument(s) to /clear: {_escape(' '.join(_rest))}. Usage: /clear [--then \"<message>\"]{_RST}")
+                    return True
             if self._confirm_destructive_slash(
                 "clear",
                 "This clears the screen and starts a new session.\n"
                 "The current conversation history will be discarded.",
             ) is None:
+                # User cancelled — discard any handoff and abort the clear.
                 return
             self.new_session(silent=True)
             _clear_output_history()
@@ -7799,6 +7824,28 @@ class HermesCLI:
                     except Exception:
                         _tip_color = "#B8860B"
                     self._console_print(f"[dim {_tip_color}]✦ Tip: {_tip}[/]")
+                except Exception:
+                    pass
+            # One-shot post-clear handoff: queue the supplied message as the
+            # next user turn.  Echo a short banner so the user sees what just
+            # got auto-submitted (mirrors gateway-style transparency for
+            # injected inputs).  Consumed once by process_loop.
+            if handoff_message:
+                try:
+                    from hermes_cli.skin_engine import get_active_skin
+                    _handoff_color = get_active_skin().get_color("banner_dim", "#B8860B")
+                except Exception:
+                    _handoff_color = "#B8860B"
+                _handoff_line = f"[dim {_handoff_color}]↪ auto-submitting handoff: {handoff_message}[/]"
+                try:
+                    if self._app:
+                        ChatConsole().print(_handoff_line)
+                    else:
+                        self._console_print(_handoff_line)
+                except Exception:
+                    pass
+                try:
+                    self._pending_input.put(handoff_message)
                 except Exception:
                     pass
         elif canonical == "history":
