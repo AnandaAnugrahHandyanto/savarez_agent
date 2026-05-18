@@ -1245,7 +1245,12 @@ def _normalize_codex_response(
         finish_reason = "tool_calls"
     elif leaked_tool_call_text:
         finish_reason = "incomplete"
-    elif has_incomplete_items or (saw_commentary_phase and not saw_final_answer_phase):
+    elif (has_incomplete_items or saw_commentary_phase) and not saw_final_answer_phase:
+        # A `phase=final_answer` message indicates the model produced a
+        # complete user-visible answer, even if the top-level
+        # `response.status` is "incomplete" (Azure Foundry sometimes sets
+        # this on otherwise-complete gpt-5.x responses). Trust the
+        # per-message phase signal over the top-level accounting status.
         finish_reason = "incomplete"
     elif (reasoning_items_raw or reasoning_parts or saw_reasoning_item) and not final_text:
         # Response contains only reasoning (encrypted thinking state and/or
