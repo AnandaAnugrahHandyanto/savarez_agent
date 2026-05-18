@@ -21,16 +21,16 @@ random per-process ``_SESSION_TOKEN`` printed at startup; the dashboard's
 own pages inject it via ``window.__HERMES_SESSION_TOKEN__`` so logged-in
 browsers don't have to handle it manually.
 
-For the ``/events`` WebSocket we still require the session token as a
-``?token=`` query parameter (browsers cannot set the ``Authorization``
-header on an upgrade request), matching the established pattern used by
-the in-browser PTY bridge in ``hermes_cli/web_server.py``.
+For the ``/events`` WebSocket we require the dashboard session token as a
+``?token=`` query parameter. When native dashboard Basic Auth is enabled,
+the WebSocket also delegates to ``hermes_cli.web_server`` so plugin sockets
+honor the same auth gate as core dashboard sockets.
 
-This means ``hermes dashboard --host 0.0.0.0`` is safe to run on a LAN:
-plugin routes are no longer an unauthenticated exception. The auth still
-isn't multi-user — anyone who can read the printed URL+token gets full
-dashboard access — but they can't ride along just because they can reach
-the port.
+This means plugin routes are no longer an unauthenticated exception. The
+session token still is not multi-user — anyone who can read the printed
+URL+token gets dashboard access unless native auth or an external access
+proxy is enabled — so public exposure should stay behind a trusted tunnel
+or reverse proxy.
 """
 
 from __future__ import annotations
@@ -56,9 +56,25 @@ router = APIRouter()
 
 
 # ---------------------------------------------------------------------------
-# Auth helper — WebSocket only (HTTP routes live behind the dashboard's
-# existing plugin-bypass; this is documented above).
+# Auth helpers — WebSocket only (HTTP routes live behind the dashboard's
+# normal API middleware; this is documented above).
 # ---------------------------------------------------------------------------
+
+def _check_ws_native_auth(ws: WebSocket) -> bool:
+    """Apply optional native dashboard auth to plugin WebSockets.
+
+    HTTP middleware does not run for WebSocket upgrades, so plugin sockets
+    must explicitly delegate to the dashboard's WebSocket auth helper.
+    """
+    try:
+        from hermes_cli import web_server as _ws
+    except Exception:
+        return True
+    checker = getattr(_ws, "_websocket_has_dashboard_auth", None)
+    if checker is None:
+        return True
+    return bool(checker(ws))
+
 
 def _check_ws_token(provided: Optional[str]) -> bool:
     """Constant-time compare against the dashboard session token.
@@ -1813,6 +1829,10 @@ async def stream_events(ws: WebSocket):
     # Enforce the dashboard session token as a query param — browsers can't
     # set Authorization on a WS upgrade. This matches how the PTY bridge
     # authenticates in hermes_cli/web_server.py.
+    if not _check_ws_native_auth(ws):
+        await ws.close(code=http_status.WS_1008_POLICY_VIOLATION)
+        return
+
     token = ws.query_params.get("token")
     if not _check_ws_token(token):
         await ws.close(code=http_status.WS_1008_POLICY_VIOLATION)

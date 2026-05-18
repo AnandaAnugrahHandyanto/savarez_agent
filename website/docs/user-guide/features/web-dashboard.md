@@ -30,8 +30,8 @@ This starts a local web server and opens `http://127.0.0.1:9119` in your browser
 # Custom port
 hermes dashboard --port 8080
 
-# Bind to all interfaces (use with caution on shared networks)
-hermes dashboard --host 0.0.0.0
+# Bind to all interfaces (requires --insecure; prefer a private tunnel instead)
+hermes dashboard --host 0.0.0.0 --insecure
 
 # Start without opening browser
 hermes dashboard --no-open
@@ -182,7 +182,25 @@ Browse, search, and toggle skills and toolsets. Skills are loaded from `~/.herme
 - **Toolsets** — a separate section shows built-in toolsets (file operations, web browsing, etc.) with their active/inactive status, setup requirements, and list of included tools
 
 :::warning Security
-The web dashboard reads and writes your `.env` file, which contains API keys and secrets. It binds to `127.0.0.1` by default — only accessible from your local machine. If you bind to `0.0.0.0`, anyone on your network can view and modify your credentials. The dashboard has no authentication of its own.
+The web dashboard reads and writes your `.env` file, which contains API keys and secrets. It binds to `127.0.0.1` by default — only accessible from your local machine.
+
+For anywhere-access, keep the dashboard bound to localhost and put an authenticated tunnel/reverse proxy in front of it (for example Cloudflare Tunnel + Cloudflare Access). Hermes also supports an optional native Basic Auth guard:
+
+```yaml
+dashboard:
+  auth:
+    enabled: true
+    username: mauri
+    password_hash: "pbkdf2_sha256$..."
+```
+
+Generate the hash with:
+
+```bash
+python -c "from hermes_cli.web_server import hash_dashboard_password; print(hash_dashboard_password('your-password'))"
+```
+
+Native dashboard auth protects the SPA, REST API, and dashboard WebSockets, but direct `0.0.0.0` exposure is still not the recommended deployment pattern. Use it as defense-in-depth behind Cloudflare Access, Tailscale, Caddy, or another trusted edge.
 :::
 
 ## `/reload` Slash Command

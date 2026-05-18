@@ -7,6 +7,7 @@ REST surface without spinning up the whole dashboard.
 
 from __future__ import annotations
 
+import base64
 import importlib.util
 import os
 import sys
@@ -18,6 +19,11 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from hermes_cli import kanban_db as kb
+
+
+def _basic(username: str, password: str) -> str:
+    token = base64.b64encode(f"{username}:{password}".encode()).decode()
+    return f"Basic {token}"
 
 
 # ---------------------------------------------------------------------------
@@ -565,7 +571,10 @@ def test_ws_events_rejects_when_token_required(tmp_path, monkeypatch):
     # Stub web_server so _check_ws_token has a token to compare against.
     import hermes_cli
     import types
-    stub = types.SimpleNamespace(_SESSION_TOKEN="secret-xyz")
+    stub = types.SimpleNamespace(
+        _SESSION_TOKEN="secret-xyz",
+        _websocket_has_dashboard_auth=lambda ws: True,
+    )
     monkeypatch.setitem(sys.modules, "hermes_cli.web_server", stub)
     monkeypatch.setattr(hermes_cli, "web_server", stub, raising=False)
 
@@ -591,6 +600,61 @@ def test_ws_events_rejects_when_token_required(tmp_path, monkeypatch):
         "/api/plugins/kanban/events?token=secret-xyz"
     ) as ws:
         assert ws is not None  # handshake succeeded
+
+
+def test_ws_events_honors_native_dashboard_auth(tmp_path, monkeypatch):
+    """Kanban plugin WebSocket must not bypass native dashboard auth."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    kb.init_db()
+
+    import hermes_cli.web_server as web_server
+
+    password_hash = web_server.hash_dashboard_password("moon-secret")
+    monkeypatch.setattr(
+        web_server,
+        "load_config",
+        lambda: {
+            "dashboard": {
+                "auth": {
+                    "enabled": True,
+                    "username": "mauri",
+                    "password_hash": password_hash,
+                }
+            }
+        },
+    )
+    monkeypatch.setattr(web_server, "_SESSION_TOKEN", "secret-xyz")
+
+    app = FastAPI()
+    app.include_router(_load_plugin_router(), prefix="/api/plugins/kanban")
+    c = TestClient(app)
+
+    from starlette.websockets import WebSocketDisconnect
+
+    # Session token alone is not enough when native auth is enabled.
+    with pytest.raises(WebSocketDisconnect) as exc:
+        with c.websocket_connect("/api/plugins/kanban/events?token=secret-xyz"):
+            pass
+    assert exc.value.code == 1008
+
+    # Basic Auth plus the session token succeeds.
+    with c.websocket_connect(
+        "/api/plugins/kanban/events?token=secret-xyz",
+        headers={"Authorization": _basic("mauri", "moon-secret")},
+    ) as ws:
+        assert ws is not None
+
+    # Wrong Basic Auth remains rejected even with the session token.
+    with pytest.raises(WebSocketDisconnect) as exc:
+        with c.websocket_connect(
+            "/api/plugins/kanban/events?token=secret-xyz",
+            headers={"Authorization": _basic("mauri", "wrong")},
+        ):
+            pass
+    assert exc.value.code == 1008
 
 
 def test_ws_events_swallows_cancellation_on_shutdown(tmp_path, monkeypatch):

@@ -1050,6 +1050,13 @@ DEFAULT_CONFIG = {
         # Set this to True to re-enable the surfaces with the understanding
         # that the numbers are a local lower-bound estimate, not billing.
         "show_token_analytics": False,
+        "auth": {
+            "enabled": False,
+            "username": "",
+            # Generate with:
+            #   python -c "from hermes_cli.web_server import hash_dashboard_password; print(hash_dashboard_password('your-password'))"
+            "password_hash": "",
+        },
     },
 
     # Privacy settings

@@ -10,6 +10,8 @@ Usage:
 """
 
 import asyncio
+import base64
+import hashlib
 import hmac
 import importlib.util
 import json
@@ -85,6 +87,9 @@ app = FastAPI(title="Hermes Agent", version=__version__)
 # ---------------------------------------------------------------------------
 _SESSION_TOKEN = secrets.token_urlsafe(32)
 _SESSION_HEADER_NAME = "X-Hermes-Session-Token"
+_DASHBOARD_AUTH_REALM = "Hermes Dashboard"
+_DASHBOARD_PBKDF2_PREFIX = "pbkdf2_sha256"
+_DASHBOARD_PBKDF2_DEFAULT_ITERATIONS = 260_000
 
 # In-browser Chat tab (/chat, /api/pty, …).  Off unless ``hermes dashboard --tui``
 # or HERMES_DASHBOARD_TUI=1.  Set from :func:`start_server`.
@@ -146,6 +151,113 @@ def _require_token(request: Request) -> None:
     """Validate the ephemeral session token.  Raises 401 on mismatch."""
     if not _has_valid_session_token(request):
         raise HTTPException(status_code=401, detail="Unauthorized")
+
+
+def hash_dashboard_password(password: str, *, salt: Optional[str] = None, iterations: int = _DASHBOARD_PBKDF2_DEFAULT_ITERATIONS) -> str:
+    """Return a config-safe PBKDF2-SHA256 hash for dashboard Basic Auth.
+
+    Format: ``pbkdf2_sha256$iterations$salt_b64$digest_b64``.  This keeps
+    native dashboard auth dependency-free while still avoiding plaintext
+    passwords in config.yaml.
+    """
+    if not password:
+        raise ValueError("dashboard auth password must not be empty")
+    if iterations < 100_000:
+        raise ValueError("dashboard auth password hash iterations must be >= 100000")
+    salt_bytes = _b64decode_nopad(salt) if salt else secrets.token_bytes(16)
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode(), salt_bytes, iterations)
+    salt_b64 = base64.urlsafe_b64encode(salt_bytes).decode().rstrip("=")
+    digest_b64 = base64.urlsafe_b64encode(digest).decode().rstrip("=")
+    return f"{_DASHBOARD_PBKDF2_PREFIX}${iterations}${salt_b64}${digest_b64}"
+
+
+def _b64decode_nopad(value: str) -> bytes:
+    return base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
+
+
+def _verify_dashboard_password(password: str, password_hash: str) -> bool:
+    """Verify a password against the dashboard auth hash format."""
+    try:
+        prefix, iterations_s, salt_b64, digest_b64 = password_hash.split("$", 3)
+        if prefix != _DASHBOARD_PBKDF2_PREFIX:
+            return False
+        iterations = int(iterations_s)
+        if iterations < 100_000:
+            return False
+        salt_bytes = _b64decode_nopad(salt_b64)
+        expected = _b64decode_nopad(digest_b64)
+        actual = hashlib.pbkdf2_hmac("sha256", password.encode(), salt_bytes, iterations)
+    except Exception:
+        return False
+    return hmac.compare_digest(actual, expected)
+
+
+def _dashboard_auth_config() -> Dict[str, Any]:
+    dashboard = load_config().get("dashboard", {})
+    auth = dashboard.get("auth", {}) if isinstance(dashboard, dict) else {}
+    return auth if isinstance(auth, dict) else {}
+
+
+def _dashboard_native_auth_enabled() -> bool:
+    auth = _dashboard_auth_config()
+    return bool(auth.get("enabled"))
+
+
+def _parse_basic_auth_header(header_value: str) -> Optional[Tuple[str, str]]:
+    if not header_value.lower().startswith("basic "):
+        return None
+    encoded = header_value.split(" ", 1)[1].strip()
+    try:
+        decoded = base64.b64decode(encoded, validate=True).decode("utf-8")
+    except Exception:
+        return None
+    if ":" not in decoded:
+        return None
+    username, password = decoded.split(":", 1)
+    return username, password
+
+
+def _has_valid_dashboard_basic_auth_header(header_value: str) -> bool:
+    auth = _dashboard_auth_config()
+    expected_username = str(auth.get("username") or "")
+    expected_hash = str(auth.get("password_hash") or "")
+    parsed = _parse_basic_auth_header(header_value or "")
+    if not expected_username or not expected_hash or not parsed:
+        return False
+    username, password = parsed
+    if not hmac.compare_digest(username.encode(), expected_username.encode()):
+        return False
+    return _verify_dashboard_password(password, expected_hash)
+
+
+def _basic_auth_challenge() -> JSONResponse:
+    return JSONResponse(
+        status_code=401,
+        content={"detail": "Dashboard authentication required"},
+        headers={"WWW-Authenticate": f'Basic realm="{_DASHBOARD_AUTH_REALM}", charset="UTF-8"'},
+    )
+
+
+def _ws_client_is_loopback(ws: "WebSocket") -> bool:
+    client_host = ws.client.host if ws.client else ""
+    return not client_host or client_host in _LOOPBACK_HOSTS
+
+
+def _websocket_has_dashboard_auth(ws: "WebSocket", *, allow_loopback_token_only: bool = False) -> bool:
+    if not _dashboard_native_auth_enabled():
+        return True
+    auth_header = ws.headers.get("authorization", "")
+    if _has_valid_dashboard_basic_auth_header(auth_header):
+        return True
+    # Narrow exception for the PTY sidecar publisher: it is an internal process
+    # that cannot attach browser-cached Basic credentials, only the injected
+    # session token. Do not apply this to browser-facing sockets.
+    token = ws.query_params.get("token", "")
+    return bool(
+        allow_loopback_token_only
+        and _ws_client_is_loopback(ws)
+        and hmac.compare_digest(token.encode(), _SESSION_TOKEN.encode())
+    )
 
 
 # Accepted Host header values for loopback binds. DNS rebinding attacks
@@ -230,6 +342,22 @@ async def host_header_middleware(request: Request, call_next):
                     ),
                 },
             )
+    return await call_next(request)
+
+
+@app.middleware("http")
+async def dashboard_native_auth_middleware(request: Request, call_next):
+    """Optional native dashboard Basic Auth for the whole web surface.
+
+    The existing ephemeral session token protects REST calls from arbitrary
+    websites, but it is injected into index.html.  When ``dashboard.auth`` is
+    enabled, guard the HTML/static surface too so remote dashboard deployments
+    do not leak that token to unauthenticated clients.
+    """
+    if request.method == "OPTIONS" or not _dashboard_native_auth_enabled():
+        return await call_next(request)
+    if not _has_valid_dashboard_basic_auth_header(request.headers.get("authorization", "")):
+        return _basic_auth_challenge()
     return await call_next(request)
 
 
@@ -3291,6 +3419,10 @@ async def pty_ws(ws: WebSocket) -> None:
         return
 
     # --- auth + loopback check (before accept so we can close cleanly) ---
+    if not _websocket_has_dashboard_auth(ws):
+        await ws.close(code=4401)
+        return
+
     token = ws.query_params.get("token", "")
     expected = _SESSION_TOKEN
     if not hmac.compare_digest(token.encode(), expected.encode()):
@@ -3411,6 +3543,10 @@ async def gateway_ws(ws: WebSocket) -> None:
         await ws.close(code=4403)
         return
 
+    if not _websocket_has_dashboard_auth(ws):
+        await ws.close(code=4401)
+        return
+
     token = ws.query_params.get("token", "")
     if not hmac.compare_digest(token.encode(), _SESSION_TOKEN.encode()):
         await ws.close(code=4401)
@@ -3443,6 +3579,10 @@ async def pub_ws(ws: WebSocket) -> None:
         await ws.close(code=4403)
         return
 
+    if not _websocket_has_dashboard_auth(ws, allow_loopback_token_only=True):
+        await ws.close(code=4401)
+        return
+
     token = ws.query_params.get("token", "")
     if not hmac.compare_digest(token.encode(), _SESSION_TOKEN.encode()):
         await ws.close(code=4401)
@@ -3470,6 +3610,10 @@ async def pub_ws(ws: WebSocket) -> None:
 async def events_ws(ws: WebSocket) -> None:
     if not _DASHBOARD_EMBEDDED_CHAT_ENABLED:
         await ws.close(code=4403)
+        return
+
+    if not _websocket_has_dashboard_auth(ws):
+        await ws.close(code=4401)
         return
 
     token = ws.query_params.get("token", "")

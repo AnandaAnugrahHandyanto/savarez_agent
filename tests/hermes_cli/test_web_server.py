@@ -1,9 +1,11 @@
 """Tests for hermes_cli.web_server and related config utilities."""
 
 import os
+import base64
 import json
 import tempfile
 from pathlib import Path
+from typing import Any, cast
 from unittest.mock import patch, MagicMock
 
 import pytest
@@ -15,6 +17,11 @@ from hermes_cli.config import (
     _EXTRA_ENV_KEYS,
     OPTIONAL_ENV_VARS,
 )
+
+
+def _basic(username: str, password: str) -> str:
+    token = base64.b64encode(f"{username}:{password}".encode()).decode()
+    return f"Basic {token}"
 
 
 # ---------------------------------------------------------------------------
@@ -256,6 +263,106 @@ class TestWebServerEndpoints:
             json={"key": "TEST_REVEAL_NOAUTH"},
         )
         assert resp.status_code == 401
+
+    def test_dashboard_password_hash_verification(self):
+        """Dashboard auth stores PBKDF2 hashes, not plaintext passwords."""
+        from hermes_cli.web_server import hash_dashboard_password, _verify_dashboard_password
+
+        password_hash = hash_dashboard_password("correct horse battery staple")
+
+        assert password_hash.startswith("pbkdf2_sha256$")
+        assert _verify_dashboard_password("correct horse battery staple", password_hash)
+        assert not _verify_dashboard_password("wrong", password_hash)
+
+    def test_native_dashboard_auth_protects_spa_and_api(self, monkeypatch):
+        """When dashboard.auth is enabled, index.html and APIs require Basic Auth."""
+        from starlette.testclient import TestClient
+        import hermes_cli.web_server as web_server
+
+        password_hash = web_server.hash_dashboard_password("moon-secret")
+        monkeypatch.setattr(
+            web_server,
+            "load_config",
+            lambda: {
+                "dashboard": {
+                    "auth": {
+                        "enabled": True,
+                        "username": "mauri",
+                        "password_hash": password_hash,
+                    }
+                }
+            },
+        )
+
+        client = TestClient(web_server.app)
+
+        unauth = client.get("/api/status")
+        assert unauth.status_code == 401
+        assert "Basic" in unauth.headers.get("www-authenticate", "")
+
+        session_only = client.get(
+            "/api/env",
+            headers={web_server._SESSION_HEADER_NAME: web_server._SESSION_TOKEN},
+        )
+        assert session_only.status_code == 401
+        assert "Basic" in session_only.headers.get("www-authenticate", "")
+
+        basic_only = client.get("/api/env", headers={"Authorization": _basic("mauri", "moon-secret")})
+        assert basic_only.status_code == 401
+
+        bad = client.get("/api/status", headers={"Authorization": _basic("mauri", "wrong")})
+        assert bad.status_code == 401
+
+        ok = client.get("/api/status", headers={"Authorization": _basic("mauri", "moon-secret")})
+        assert ok.status_code == 200
+
+        protected_ok = client.get(
+            "/api/env",
+            headers={
+                "Authorization": _basic("mauri", "moon-secret"),
+                web_server._SESSION_HEADER_NAME: web_server._SESSION_TOKEN,
+            },
+        )
+        assert protected_ok.status_code == 200
+
+    def test_native_dashboard_auth_websocket_requires_basic_except_loopback_pub(self, monkeypatch):
+        """Browser-facing WebSockets cannot bypass native auth with only the session token."""
+        import hermes_cli.web_server as web_server
+
+        password_hash = web_server.hash_dashboard_password("moon-secret")
+        monkeypatch.setattr(
+            web_server,
+            "load_config",
+            lambda: {
+                "dashboard": {
+                    "auth": {
+                        "enabled": True,
+                        "username": "mauri",
+                        "password_hash": password_hash,
+                    }
+                }
+            },
+        )
+
+        class _Client:
+            host = "127.0.0.1"
+
+        class _WS:
+            client = _Client()
+
+            def __init__(self, *, auth: str = "", token: str = ""):
+                self.headers = {"authorization": auth} if auth else {}
+                self.query_params = {"token": token} if token else {}
+
+        token_only = cast(Any, _WS(token=web_server._SESSION_TOKEN))
+        assert not web_server._websocket_has_dashboard_auth(token_only)
+        assert web_server._websocket_has_dashboard_auth(token_only, allow_loopback_token_only=True)
+
+        good_basic = cast(Any, _WS(auth=_basic("mauri", "moon-secret"), token=web_server._SESSION_TOKEN))
+        assert web_server._websocket_has_dashboard_auth(good_basic)
+
+        bad_basic = cast(Any, _WS(auth=_basic("mauri", "wrong"), token=web_server._SESSION_TOKEN))
+        assert not web_server._websocket_has_dashboard_auth(bad_basic)
 
     def test_reveal_env_var_bad_token(self, tmp_path):
         """POST /api/env/reveal with wrong token should return 401."""
