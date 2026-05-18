@@ -37,10 +37,27 @@ def test_parse_project_prefix():
 def test_commute_help_text_includes_core_commands():
     text = ps.commute_help_text()
     assert "/projects" in text
+    assert "퇴근모드 또는 /afterwork all" in text
+    assert "출근모드 또는 /office all" in text
     assert "/afterwork current" in text
-    assert "/office current" in text
+    assert "고급/테스트 옵션" in text
+    assert "/psend" in text
     assert "[label]" in text
     assert "/approve" in text
+
+
+def test_load_state_migrates_legacy_active_by_user(tmp_path):
+    path = tmp_path / "project_sessions.json"
+    path.write_text(
+        '{"active_by_user": {"8584626899": "HUD", "test": "work", "old": "home"}, "pinned": {}}',
+        encoding="utf-8",
+    )
+
+    state = ps.load_state(path)
+
+    assert state.mode == "office"
+    assert state.active_by_chat == {"telegram:8584626899": "HUD"}
+    assert state.projects == {}
 
 
 def test_switch_and_current_project_with_alias(monkeypatch, tmp_path):

@@ -64,6 +64,16 @@ def load_state(path: Path | None = None) -> ProjectRoutingState:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except Exception:
         return ProjectRoutingState()
+    # Older builds stored project routing as:
+    # {"active_by_user": {"858...": "label"}, "pinned": {...}}.
+    # Keep reading that file instead of treating it as empty so a user's first
+    # /projects or /current after upgrading does not silently discard intent.
+    legacy_active = raw.get("active_by_user") if isinstance(raw, dict) else None
+    legacy_active_by_chat: dict[str, str] = {}
+    if isinstance(legacy_active, dict) and not raw.get("active_by_chat"):
+        for user_id, label in legacy_active.items():
+            if user_id and label and str(label).strip().lower() not in _BROAD_ROOT_NAMES:
+                legacy_active_by_chat[f"telegram:{user_id}"] = str(label)
     projects: dict[str, ProjectSession] = {}
     for label, item in (raw.get("projects") or {}).items():
         if isinstance(item, dict):
@@ -74,7 +84,7 @@ def load_state(path: Path | None = None) -> ProjectRoutingState:
     return ProjectRoutingState(
         version=int(raw.get("version") or STATE_VERSION),
         mode=str(raw.get("mode") or "office"),
-        active_by_chat=dict(raw.get("active_by_chat") or {}),
+        active_by_chat=dict(raw.get("active_by_chat") or legacy_active_by_chat),
         projects=projects,
         updated_at=float(raw.get("updated_at") or time.time()),
     )
@@ -203,19 +213,21 @@ def commute_help_text() -> str:
 기본 순서:
 1. /projects
    - 감지된 프로젝트 label 확인
-2. /switch <번호|label>
-   - Telegram의 현재 대상 프로젝트 선택
-3. /current
-   - 현재 선택 확인
-4. /afterwork current
-   - 선택한 프로젝트만 퇴근모드
-   또는 /afterwork all
-   - 감지된 모든 프로젝트 퇴근모드
-5. [label] <지시>
+2. 퇴근모드 또는 /afterwork all
+   - 감지된 모든 프로젝트를 퇴근모드로 전환
+3. [label] <지시>
    - 퇴근모드 중 특정 프로젝트에 지시 전달
    예: [llm-eval-pipeline] 다음 작업 진행해줘
-6. /office current 또는 /office all
-   - 출근모드로 복귀
+4. 출근모드 또는 /office all
+   - 모든 프로젝트를 출근모드로 복귀
+
+현재 프로젝트에만 지시:
+- /switch <번호|label> 후 /psend <지시>
+- /psend는 선택된 프로젝트 tmux pane에 /steer로 전달합니다.
+
+고급/테스트 옵션:
+- /afterwork current: 선택한 프로젝트만 퇴근모드
+- /office current: 선택한 프로젝트만 출근모드
 
 자연어 단축:
 - Telegram DM: 퇴근모드 → /afterwork all, 출근모드 → /office all
@@ -223,7 +235,6 @@ def commute_help_text() -> str:
 
 주의:
 - /afterwork all은 work/personal을 포함해 감지된 모든 tmux 프로젝트에 /steer를 보낼 수 있습니다.
-- 처음에는 /afterwork current로 한 프로젝트만 테스트하는 것을 권장합니다.
 - 긴 로그 확인은 tmux/Termius가 적합하고, Telegram은 요약/결정/짧은 지시용입니다.
 """.strip()
 
