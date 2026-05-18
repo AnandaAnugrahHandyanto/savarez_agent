@@ -718,21 +718,11 @@ class TestVisionClientFallback:
 
 
 class TestAuxiliaryPoolAwareness:
-    def test_try_nous_uses_pool_entry(self):
-        class _Entry:
-            access_token = "pooled-access-token"
-            agent_key = "pooled-agent-key"
-            inference_base_url = "https://inference.pool.example/v1"
-
-        class _Pool:
-            def has_credentials(self):
-                return True
-
-            def select(self):
-                return _Entry()
-
+    def test_try_nous_uses_resolved_runtime_credentials(self):
+        fresh_base = "https://inference.pool.example/v1"
         with (
-            patch("agent.auxiliary_client.load_pool", return_value=_Pool()),
+            patch("agent.auxiliary_client._read_nous_auth", return_value={"access_token": "stored-token"}),
+            patch("agent.auxiliary_client._resolve_nous_runtime_api", return_value=("fresh-agent-key", fresh_base)),
             patch("agent.auxiliary_client.OpenAI") as mock_openai,
             patch("hermes_cli.models.get_nous_recommended_aux_model", return_value=None),
         ):
@@ -742,8 +732,29 @@ class TestAuxiliaryPoolAwareness:
 
         assert client is not None
         assert model == "google/gemini-3-flash-preview"
-        assert mock_openai.call_args.kwargs["api_key"] == "pooled-agent-key"
+        assert mock_openai.call_args.kwargs["api_key"] == "fresh-agent-key"
         assert mock_openai.call_args.kwargs["base_url"] == "https://inference.pool.example/v1"
+
+    def test_try_nous_does_not_use_stale_stored_key_after_runtime_resolution_failure(self):
+        """A revoked/expired Nous session must not fall back to stale stored agent_key."""
+        with (
+            patch("agent.auxiliary_client._read_nous_auth", return_value={
+                "agent_key": "expired-agent-key",
+                "access_token": "expired-access-token",
+                "inference_base_url": "https://inference-api.nousresearch.com/v1",
+            }),
+            patch("agent.auxiliary_client._resolve_nous_runtime_api", return_value=None),
+            patch("agent.auxiliary_client.OpenAI") as mock_openai,
+            patch("agent.auxiliary_client._mark_provider_unhealthy") as mock_unhealthy,
+        ):
+            from agent.auxiliary_client import _try_nous
+
+            client, model = _try_nous()
+
+        assert client is None
+        assert model is None
+        mock_openai.assert_not_called()
+        mock_unhealthy.assert_called_once_with("nous", ttl=60)
 
     def test_try_nous_uses_portal_recommendation_for_text(self):
         """When the Portal recommends a compaction model, _try_nous honors it."""

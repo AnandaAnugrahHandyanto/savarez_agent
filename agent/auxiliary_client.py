@@ -1543,14 +1543,18 @@ def _try_nous(vision: bool = False) -> Tuple[Optional[OpenAI], Optional[str]]:
         _mark_provider_unhealthy("nous", ttl=60)
         return None, None
     if runtime is None and nous:
-        # Runtime credential mint failed but stored Nous auth is still present.
-        # Falls back to the raw stored token below; surface a debug line so
-        # operators investigating expired/invalid sessions have a breadcrumb,
-        # without blocking the fallback path the rest of this function relies on.
-        logger.debug(
-            "Auxiliary Nous: runtime credential mint failed; falling back to "
-            "stored auth.json token."
+        # Stored Nous state can contain expired/revoked access tokens and
+        # short-lived agent keys.  If the authoritative refresh+mint path cannot
+        # produce fresh runtime credentials, do not fall back to raw auth.json or
+        # pool tokens: inference will answer with a misleading generic 401
+        # ("invalid, blocked or out of funds") instead of the real auth problem.
+        logger.warning(
+            "Auxiliary Nous client unavailable: stored Nous authentication is "
+            "present but fresh runtime credentials could not be resolved "
+            "(run: hermes auth add nous --type oauth)."
         )
+        _mark_provider_unhealthy("nous", ttl=60)
+        return None, None
     global auxiliary_is_nous
     auxiliary_is_nous = True
     logger.debug("Auxiliary client: Nous Portal")
