@@ -62,6 +62,16 @@ def test_increment_usage_resets_after_five_hours():
     assert updated["anthropic_max"]["window_start_iso"] == later.isoformat()
 
 
+def test_save_envelope_state_uses_atomic_temp_file_without_lingering_tmp(tmp_path):
+    state_path = tmp_path / ENVELOPE_STATE_FILENAME
+    state = default_envelope_state()
+
+    save_envelope_state(state, path=state_path)
+
+    assert load_envelope_state(path=state_path) == state
+    assert list(tmp_path.glob(f".{ENVELOPE_STATE_FILENAME}.*.tmp")) == []
+
+
 def test_budget_blocks_non_priority_at_cap():
     state = default_envelope_state()
     state["anthropic_max"]["envelope_messages_used_5h"] = 191
@@ -74,6 +84,24 @@ def test_budget_blocks_non_priority_at_cap():
         used=191,
         cap=191,
         available=0,
+    )
+
+
+def test_budget_allows_capped_usage_after_expired_window():
+    start = datetime(2026, 5, 17, 20, 0, tzinfo=timezone.utc)
+    now = start + timedelta(hours=5, minutes=1)
+    state = default_envelope_state()
+    state["anthropic_max"]["window_start_iso"] = start.isoformat()
+    state["anthropic_max"]["envelope_messages_used_5h"] = 191
+
+    decision = check_budget(state, "anthropic_max", priority=False, now=now)
+
+    assert decision == EnvelopeDecision(
+        allowed=True,
+        reason="window_reset",
+        used=0,
+        cap=191,
+        available=191,
     )
 
 

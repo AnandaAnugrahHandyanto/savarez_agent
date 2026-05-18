@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import copy
 import json
+import os
+import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -73,9 +75,29 @@ def load_envelope_state(path: Path | None = None) -> dict[str, dict[str, Any]]:
 def save_envelope_state(state: dict[str, dict[str, Any]], path: Path | None = None) -> None:
     state_path = path or envelope_state_path()
     state_path.parent.mkdir(parents=True, exist_ok=True)
-    with state_path.open("w", encoding="utf-8") as handle:
-        json.dump(state, handle, indent=2, sort_keys=True)
-        handle.write("\n")
+    tmp_path: str | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            delete=False,
+            dir=state_path.parent,
+            prefix=f".{state_path.name}.",
+            suffix=".tmp",
+        ) as handle:
+            tmp_path = handle.name
+            json.dump(state, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_path, state_path)
+        tmp_path = None
+    finally:
+        if tmp_path is not None:
+            try:
+                os.unlink(tmp_path)
+            except FileNotFoundError:
+                pass
 
 
 def _parse_iso(value: str | None) -> datetime | None:
@@ -107,10 +129,17 @@ def check_budget(
     envelope_name: str,
     *,
     priority: bool = False,
+    now: datetime | None = None,
 ) -> EnvelopeDecision:
     record = state[envelope_name]
-    used = int(record.get("envelope_messages_used_5h", 0))
+    current = now or datetime.now(timezone.utc)
+    window_start = _parse_iso(record.get("window_start_iso"))
     cap = allocation_cap(record)
+
+    if window_start is not None and current - window_start >= WINDOW_DURATION:
+        return EnvelopeDecision(True, "window_reset", 0, cap, cap)
+
+    used = int(record.get("envelope_messages_used_5h", 0))
     available = max(cap - used, 0)
     if used >= cap and not priority:
         return EnvelopeDecision(False, "budget_blocked", used, cap, available)
