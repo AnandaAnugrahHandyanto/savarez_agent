@@ -2173,8 +2173,8 @@ def _apply_model_allowlist(provider: str, models: list[str]) -> list[str]:
     return [m for m in models if m.lower().strip() in allowed_set]
 
 
-def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) -> list[str]:
-    """Return the best known model catalog for a provider.
+def _provider_model_ids_unfiltered(provider: Optional[str], *, force_refresh: bool = False) -> list[str]:
+    """Return the best known model catalog for a provider (unfiltered).
 
     Tries live API endpoints for providers that support them (Codex, Nous),
     falling back to static lists. For providers in ``_MODELS_DEV_PREFERRED``
