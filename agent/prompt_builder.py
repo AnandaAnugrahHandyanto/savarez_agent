@@ -169,6 +169,24 @@ MEMORY_GUIDANCE = (
 
 PINECONE_RECALL_HEADING = "PINECONE RECALL (verify before relying):"
 
+_PINECONE_RECALL_THREAT_PATTERNS = [
+    r"ignore\s+(previous|all|above|prior)\s+instructions",
+    r"do\s+not\s+tell\s+the\s+user",
+    r"system\s+prompt\s+override",
+    r"disregard\s+(your|all|any)\s+(instructions|rules|guidelines)",
+    r"act\s+as\s+(if|though)\s+you\s+(have\s+no|don't\s+have)\s+(restrictions|limits|rules)",
+]
+
+
+def _sanitize_pinecone_recall_text(text: str) -> str:
+    candidate = text.strip()
+    if not candidate:
+        return ""
+    for pattern in _PINECONE_RECALL_THREAT_PATTERNS:
+        if re.search(pattern, candidate, re.IGNORECASE):
+            return "[blocked suspicious recalled text; verify source directly]"
+    return candidate
+
 
 def format_pinecone_recall_block(snippets: list[dict[str, object]] | list[object]) -> str:
     """Render retrieved Pinecone snippets as a clearly-marked prompt block."""
@@ -178,10 +196,10 @@ def format_pinecone_recall_block(snippets: list[dict[str, object]] | list[object
     lines = [PINECONE_RECALL_HEADING]
     for idx, snippet in enumerate(snippets, start=1):
         if isinstance(snippet, dict):
-            text = str(snippet.get("text") or "").strip()
+            text = _sanitize_pinecone_recall_text(str(snippet.get("text") or ""))
             provenance = str(snippet.get("provenance") or "unknown source")
         else:
-            text = str(getattr(snippet, "text", "") or "").strip()
+            text = _sanitize_pinecone_recall_text(str(getattr(snippet, "text", "") or ""))
             provenance = str(getattr(snippet, "provenance", "unknown source") or "unknown source")
         if not text:
             continue

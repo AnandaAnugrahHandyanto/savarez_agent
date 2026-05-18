@@ -24,6 +24,7 @@ class RetrievalRequest:
     query: str
     scope: str | None = None
     platform: str | None = None
+    require_platform_tag: bool = False
     min_score: float = 0.35
     max_items: int = 4
     top_k: int | None = None
@@ -102,6 +103,21 @@ def derive_repo_scope(cwd: str | None = None, *, repo_root: str | None = None) -
     return f"repo:{name}:{fingerprint}"
 
 
+def derive_repo_scope_aliases(scope: str | None) -> tuple[str, ...]:
+    normalized = (scope or "").strip()
+    if not normalized:
+        return ()
+    aliases = [normalized]
+    parts = normalized.split(":")
+    if len(parts) == 3 and parts[0] == "repo" and parts[1]:
+        aliases.append(f"repo:{parts[1]}")
+    deduped: list[str] = []
+    for alias in aliases:
+        if alias not in deduped:
+            deduped.append(alias)
+    return tuple(deduped)
+
+
 class ContextRetriever:
     def __init__(
         self,
@@ -137,9 +153,13 @@ class ContextRetriever:
 
     def _build_filter(self, request: RetrievalRequest) -> dict[str, Any] | None:
         clauses: list[dict[str, Any]] = []
-        if request.scope:
-            clauses.append({"scope": {"$eq": request.scope}})
-        if request.platform:
+        scope_aliases = derive_repo_scope_aliases(request.scope)
+        if scope_aliases:
+            if len(scope_aliases) == 1:
+                clauses.append({"scope": {"$eq": scope_aliases[0]}})
+            else:
+                clauses.append({"scope": {"$in": list(scope_aliases)}})
+        if request.platform and request.require_platform_tag:
             clauses.append({"tags": {"$in": [request.platform]}})
         if request.source_types:
             clauses.append({"memory_type": {"$in": list(request.source_types)}})
@@ -246,8 +266,8 @@ class OpenAIQueryEmbedder:
         model: str | None = None,
         client: Any | None = None,
     ) -> None:
-        self.api_key = (api_key or os.getenv("PINECONE_EMBEDDING_API_KEY") or os.getenv("OPENAI_API_KEY") or "").strip()
-        self.base_url = (base_url or os.getenv("PINECONE_EMBEDDING_BASE_URL") or os.getenv("OPENAI_BASE_URL") or "").strip()
+        self.api_key = (api_key or os.getenv("PINECONE_EMBEDDING_API_KEY") or "").strip()
+        self.base_url = (base_url or os.getenv("PINECONE_EMBEDDING_BASE_URL") or "").strip()
         self.model = (model or os.getenv("PINECONE_EMBEDDING_MODEL") or "text-embedding-3-small").strip()
         self._client = client
 
@@ -286,13 +306,30 @@ def build_pinecone_recall_context_block(raw_recall: str) -> str:
     )
 
 
+def _pinecone_recall_enabled(*, explicit_clients: bool) -> bool:
+    if explicit_clients:
+        return True
+    value = (os.getenv("PINECONE_RECALL_ENABLED") or "").strip().lower()
+    return value in {"1", "true", "yes", "on"}
+
+
+def _default_max_context_items() -> int:
+    raw = (os.getenv("PINECONE_MAX_CONTEXT_ITEMS") or "").strip()
+    if raw:
+        try:
+            return max(1, int(raw))
+        except ValueError:
+            logger.warning("Invalid PINECONE_MAX_CONTEXT_ITEMS=%r; using default 4", raw)
+    return 4
+
+
 def build_pinecone_recall(
     query: str,
     *,
     scope: str | None = None,
     platform: str | None = None,
     min_score: float = 0.35,
-    max_items: int = 4,
+    max_items: int | None = None,
     top_k: int | None = None,
     now: datetime | None = None,
     pinecone: PineconeMemoryClient | None = None,
@@ -300,8 +337,11 @@ def build_pinecone_recall(
 ) -> str:
     if not query or not query.strip() or not scope:
         return ""
+    if not _pinecone_recall_enabled(explicit_clients=pinecone is not None or embedder is not None):
+        return ""
     pinecone_client = pinecone or PineconeMemoryClient()
     query_embedder = embedder or OpenAIQueryEmbedder()
+    resolved_max_items = max_items if max_items is not None else _default_max_context_items()
     if not pinecone_client.is_configured():
         return ""
     if hasattr(query_embedder, "is_configured") and not getattr(query_embedder, "is_configured")():
@@ -310,7 +350,7 @@ def build_pinecone_recall(
         retriever = ContextRetriever(
             pinecone=pinecone_client,
             embed_query=query_embedder,
-            default_max_items=max_items,
+            default_max_items=resolved_max_items,
             default_min_score=min_score,
         )
         snippets = retriever.retrieve(
@@ -318,8 +358,9 @@ def build_pinecone_recall(
                 query=query,
                 scope=scope,
                 platform=platform,
+                require_platform_tag=bool(platform),
                 min_score=min_score,
-                max_items=max_items,
+                max_items=resolved_max_items,
                 top_k=top_k,
                 now=now or datetime.now(timezone.utc),
             )
@@ -338,4 +379,6 @@ __all__ = [
     "OpenAIQueryEmbedder",
     "RetrievedMemorySnippet",
     "RetrievalRequest",
+    "derive_repo_scope",
+    "derive_repo_scope_aliases",
 ]
