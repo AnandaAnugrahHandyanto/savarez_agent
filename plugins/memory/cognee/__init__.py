@@ -97,6 +97,12 @@ def _clean_turn_text(text: str) -> str:
 async def _cognee_setup() -> None:
     """Run cognee.setup() to ensure internal databases are created."""
     import cognee
+    # Point Cognee's data storage at HERMES_HOME so it survives container rebuilds.
+    import os
+    data_dir = os.path.join(os.environ.get("HERMES_HOME", ""), ".cognee")
+    if data_dir and data_dir != "/.cognee":
+        cognee.config.data_root_directory(data_dir)
+        cognee.config.system_root_directory(data_dir)
     await cognee.setup()
 
 
