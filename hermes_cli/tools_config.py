@@ -82,7 +82,7 @@ CONFIGURABLE_TOOLSETS = [
 # Toolsets that are OFF by default for new installs.
 # They're still in _HERMES_CORE_TOOLS (available at runtime if enabled),
 # but the setup checklist won't pre-select them for first-time users.
-_DEFAULT_OFF_TOOLSETS = {"moa", "homeassistant", "rl", "spotify", "discord", "discord_admin", "video"}
+_DEFAULT_OFF_TOOLSETS = {"moa", "homeassistant", "rl", "spotify", "discord", "discord_admin", "video", "computer_use"}
 
 # Platform-scoped toolsets: only appear in the `hermes tools` checklist for
 # these platforms, and only resolve/save for these platforms.  A toolset
@@ -973,25 +973,6 @@ def _parse_enabled_flag(value, default: bool = True) -> bool:
         if lowered in {"false", "0", "no", "off"}:
             return False
     return default
-
-
-_LEGACY_PLATFORM_TOOLSET_ALIASES = {
-    "qqbot": ("qq",),
-}
-
-
-def _implicit_default_off_toolsets(platform: str) -> Set[str]:
-    """Return default-off toolsets to suppress for implicit platform config.
-
-    A platform's own unrestricted toolset remains available for backwards
-    compatibility (for example the ``homeassistant`` platform keeps the
-    ``homeassistant`` toolset). Credentials such as ``HASS_TOKEN`` are not an
-    authorization grant for other platforms; they must opt in explicitly.
-    """
-    default_off = set(_DEFAULT_OFF_TOOLSETS)
-    if platform in default_off and platform not in _TOOLSET_PLATFORM_RESTRICTIONS:
-        default_off.remove(platform)
-    return default_off
 
 
 def _get_platform_tools(
