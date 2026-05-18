@@ -322,9 +322,16 @@ THREAT_PATTERNS = [
     (r'chr\s*\(\s*\d+\s*\)\s*\+\s*chr\s*\(\s*\d+',
      "chr_building", "high", "obfuscation",
      "building string from chr() calls (obfuscation)"),
-    (r'\\u[0-9a-fA-F]{4}.*\\u[0-9a-fA-F]{4}.*\\u[0-9a-fA-F]{4}',
+    # Real obfuscation chains escapes back-to-back with at most whitespace
+    # between them (e.g. ``\u0048\u0065\u006c\u006c\u006f`` for "Hello").
+    # Documentation/log output mentioning multiple ``\uXXXX`` codes with
+    # explanatory prose between them is not obfuscation — narrow the
+    # pattern to require >= 3 contiguous escapes (optionally separated by
+    # whitespace or ``+`` for string concatenation) so we stop flagging
+    # legitimate SKILL.md examples and pasted log snippets.
+    (r'(?:\\u[0-9a-fA-F]{4}[\s+]*){3,}',
      "unicode_escape_chain", "medium", "obfuscation",
-     "chain of unicode escapes (possible obfuscation)"),
+     "contiguous chain of unicode escapes (possible obfuscation)"),
 
     # ── Process execution in scripts ──
     (r'subprocess\.(run|call|Popen|check_output)\s*\(',

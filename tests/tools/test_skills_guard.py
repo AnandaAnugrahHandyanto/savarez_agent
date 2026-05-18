@@ -262,6 +262,40 @@ class TestScanFile:
         # Same pattern on same line should appear only once
         assert len(root_rm) == 1
 
+    def test_unicode_escape_chain_real_obfuscation_detected(self, tmp_path):
+        """Contiguous \\uXXXX chain that spells out a payload IS flagged."""
+        f = tmp_path / "evil.py"
+        # "Hello" as contiguous unicode escapes — classic obfuscation.
+        f.write_text('payload = "\\u0048\\u0065\\u006c\\u006c\\u006f"\n')
+        findings = scan_file(f, "evil.py")
+        assert any(fi.pattern_id == "unicode_escape_chain" for fi in findings), (
+            "Contiguous unicode escape chain must still be flagged"
+        )
+
+    def test_unicode_escape_chain_no_false_positive_in_prose(self, tmp_path):
+        """SKILL.md documenting multiple \\uXXXX codes with prose between
+        them used to trip the over-greedy `.* .* .*` pattern. The narrowed
+        pattern requires the escapes to be contiguous (whitespace/`+` only)
+        so explanatory text breaks the chain.
+        """
+        f = tmp_path / "doc.md"
+        f.write_text(
+            "Invisible characters include U+2068 (\\u2068, first strong isolate), "
+            "U+2069 (\\u2069, pop directional isolate), and U+200B (\\u200b, "
+            "zero-width space) — be careful when pasting unknown text.\n"
+        )
+        findings = scan_file(f, "doc.md")
+        assert not any(fi.pattern_id == "unicode_escape_chain" for fi in findings), (
+            f"prose with non-contiguous \\u escapes must NOT flag: got {findings!r}"
+        )
+
+    def test_unicode_escape_chain_no_false_positive_two_codes(self, tmp_path):
+        """Two escapes on a line should not trigger (need >= 3 contiguous)."""
+        f = tmp_path / "doc.md"
+        f.write_text('Example: "\\u0041\\u0042" decodes to "AB".\n')
+        findings = scan_file(f, "doc.md")
+        assert not any(fi.pattern_id == "unicode_escape_chain" for fi in findings)
+
 
 # ---------------------------------------------------------------------------
 # scan_skill — directory scanning
