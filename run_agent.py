@@ -185,7 +185,6 @@ from agent.tool_result_classification import (
     FILE_MUTATING_TOOL_NAMES as _FILE_MUTATING_TOOLS,
     file_mutation_result_landed,
 )
-from agent.credential_pool import STATUS_EXHAUSTED
 from agent.trajectory import (
     convert_scratchpad_to_think, has_incomplete_scratchpad,
     save_trajectory as _save_trajectory_to_file,
@@ -7364,103 +7363,9 @@ class AIAgent:
         classified_reason: Optional[FailoverReason] = None,
         error_context: Optional[Dict[str, Any]] = None,
     ) -> tuple[bool, bool]:
-        """Attempt credential recovery via pool rotation.
-
-        Returns (recovered, has_retried_429).
-        On rate limits: first occurrence retries same credential (sets flag True).
-                        second consecutive failure rotates to next credential.
-        On billing exhaustion: immediately rotates.
-        On auth failures: attempts token refresh before rotating.
-
-        `classified_reason` lets the recovery path honor the structured error
-        classifier instead of relying only on raw HTTP codes. This matters for
-        providers that surface billing/rate-limit/auth conditions under a
-        different status code, such as Anthropic returning HTTP 400 for
-        "out of extra usage".
-        """
-        pool = self._credential_pool
-        if pool is None:
-            return False, has_retried_429
-
-        effective_reason = classified_reason
-        if effective_reason is None:
-            if status_code == 402:
-                effective_reason = FailoverReason.billing
-            elif status_code == 429:
-                effective_reason = FailoverReason.rate_limit
-            elif status_code in {401, 403}:
-                effective_reason = FailoverReason.auth
-
-        if effective_reason == FailoverReason.billing:
-            rotate_status = status_code if status_code is not None else 402
-            next_entry = pool.mark_exhausted_and_rotate(status_code=rotate_status, error_context=error_context)
-            if next_entry is not None:
-                logger.info(
-                    "Credential %s (billing) — rotated to pool entry %s",
-                    rotate_status,
-                    getattr(next_entry, "id", "?"),
-                )
-                self._swap_credential(next_entry)
-                return True, False
-            return False, has_retried_429
-
-        if effective_reason == FailoverReason.rate_limit:
-            # If current credential is already marked exhausted, skip retry and
-            # rotate immediately. This prevents the "cancel-between-429s" trap
-            # where has_retried_429 (a local var) gets reset on each new prompt,
-            # causing the pool to retry the same exhausted credential forever.
-            current_entry = pool.current()
-            if current_entry and current_entry.last_status == STATUS_EXHAUSTED:
-                logger.info(
-                    "Credential already exhausted (last_status=%s) — rotating immediately instead of retrying",
-                    current_entry.last_status,
-                )
-                rotate_status = status_code if status_code is not None else 429
-                next_entry = pool.mark_exhausted_and_rotate(status_code=rotate_status, error_context=error_context)
-                if next_entry is not None:
-                    logger.info(
-                        "Credential %s (rate limit, pre-exhausted) — rotated to pool entry %s",
-                        rotate_status,
-                        getattr(next_entry, "id", "?"),
-                    )
-                    self._swap_credential(next_entry)
-                    return True, False
-                return False, True
-
-            if not has_retried_429:
-                return False, True
-            rotate_status = status_code if status_code is not None else 429
-            next_entry = pool.mark_exhausted_and_rotate(status_code=rotate_status, error_context=error_context)
-            if next_entry is not None:
-                logger.info(
-                    "Credential %s (rate limit) — rotated to pool entry %s",
-                    rotate_status,
-                    getattr(next_entry, "id", "?"),
-                )
-                self._swap_credential(next_entry)
-                return True, False
-            return False, True
-
-        if effective_reason == FailoverReason.auth:
-            refreshed = pool.try_refresh_current()
-            if refreshed is not None:
-                logger.info(f"Credential auth failure — refreshed pool entry {getattr(refreshed, 'id', '?')}")
-                self._swap_credential(refreshed)
-                return True, has_retried_429
-            # Refresh failed — rotate to next credential instead of giving up.
-            # The failed entry is already marked exhausted by try_refresh_current().
-            rotate_status = status_code if status_code is not None else 401
-            next_entry = pool.mark_exhausted_and_rotate(status_code=rotate_status, error_context=error_context)
-            if next_entry is not None:
-                logger.info(
-                    "Credential %s (auth refresh failed) — rotated to pool entry %s",
-                    rotate_status,
-                    getattr(next_entry, "id", "?"),
-                )
-                self._swap_credential(next_entry)
-                return True, False
-
-        return False, has_retried_429
+        """Forwarder — see ``agent.agent_runtime_helpers.recover_with_credential_pool``."""
+        from agent.agent_runtime_helpers import recover_with_credential_pool
+        return recover_with_credential_pool(self, status_code=status_code, has_retried_429=has_retried_429, classified_reason=classified_reason, error_context=error_context)
 
     def _credential_pool_may_recover_rate_limit(self) -> bool:
         """Whether a rate-limit retry should wait for same-provider credentials."""
