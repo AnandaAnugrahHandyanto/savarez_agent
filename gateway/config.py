@@ -973,6 +973,18 @@ def load_gateway_config() -> GatewayConfig:
                 if _discord_rtm is not None and not os.getenv("DISCORD_REPLY_TO_MODE"):
                     _rtm_str = "off" if _discord_rtm is False else str(_discord_rtm).lower()
                     os.environ["DISCORD_REPLY_TO_MODE"] = _rtm_str
+                # allow_bots: how to handle messages whose author.bot=true.
+                # Values: "none" (default), "mentions", "all".
+                if "allow_bots" in discord_cfg and not os.getenv("DISCORD_ALLOW_BOTS"):
+                    os.environ["DISCORD_ALLOW_BOTS"] = str(discord_cfg["allow_bots"]).lower()
+                # agent_user_ids: peer agents that auth via user-OAuth (not bot
+                # accounts). Treated under the allow_bots policy so plain-word
+                # mutual-wake between agents sharing a channel can be blocked.
+                aui = discord_cfg.get("agent_user_ids")
+                if aui is not None and not os.getenv("DISCORD_AGENT_USER_IDS"):
+                    if isinstance(aui, list):
+                        aui = ",".join(str(v) for v in aui)
+                    os.environ["DISCORD_AGENT_USER_IDS"] = str(aui)
 
             # Bridge top-level require_mention to Telegram when the telegram: section
             # does not already provide one.  Users often write "require_mention: true"

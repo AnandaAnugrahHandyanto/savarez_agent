@@ -739,22 +739,35 @@ class DiscordAdapter(BasePlatformAdapter):
                 if message.type not in {discord.MessageType.default, discord.MessageType.reply}:
                     return
 
-                # Bot message filtering (DISCORD_ALLOW_BOTS):
+                # Bot / agent-user message filtering (DISCORD_ALLOW_BOTS):
                 #   "none"     — ignore all other bots (default)
                 #   "mentions" — accept bot messages only when they @mention us
                 #   "all"      — accept all bot messages
                 # Must run BEFORE the user allowlist check so that bots
                 # permitted by DISCORD_ALLOW_BOTS are not rejected for
                 # not being in DISCORD_ALLOWED_USERS (fixes #4466).
-                if getattr(message.author, "bot", False):
+                #
+                # DISCORD_AGENT_USER_IDS: comma-separated Discord user IDs of
+                # peer agents that auth via user-OAuth (not bot accounts) — they
+                # are treated under the same allow_bots policy to prevent
+                # plain-word mutual-wake spam between agents sharing a channel.
+                _author_id = str(getattr(message.author, "id", ""))
+                _is_bot_author = bool(getattr(message.author, "bot", False))
+                _agent_user_ids = {
+                    s.strip()
+                    for s in os.getenv("DISCORD_AGENT_USER_IDS", "").split(",")
+                    if s.strip()
+                }
+                _is_agent_user = (not _is_bot_author) and (_author_id in _agent_user_ids)
+                if _is_bot_author or _is_agent_user:
                     allow_bots = os.getenv("DISCORD_ALLOW_BOTS", "none").lower().strip()
                     if allow_bots == "none":
                         return
                     elif allow_bots == "mentions":
                         if not self._client.user or self._client.user not in message.mentions:
                             return
-                    # "all" falls through; bot is permitted — skip the
-                    # human-user allowlist below (bots aren't in it).
+                    # "all" falls through; bot/agent is permitted — skip the
+                    # human-user allowlist below.
                 else:
                     # Non-bot: enforce the configured user/role allowlists.
                     # Pass guild + is_dm so role checks are scoped to the
