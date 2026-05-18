@@ -11328,6 +11328,87 @@ class GatewayRunner:
             cleaned = cleaned[:117].rstrip() + "..."
         return cleaned
 
+    def _sanitize_discord_thread_title(self, title: str) -> str:
+        """Return a Discord-safe thread name from a generated session title."""
+        cleaned = re.sub(r"\s+", " ", str(title or "")).strip()
+        if not cleaned:
+            return "Hermes Chat"
+        # Discord channel/thread names are capped at 100 characters. Keep room
+        # for an ellipsis and avoid churning on trailing whitespace.
+        if len(cleaned) > 100:
+            cleaned = cleaned[:97].rstrip() + "..."
+        return cleaned
+
+    async def _rename_discord_thread_for_session_title(
+        self,
+        source: SessionSource,
+        session_id: str,
+        title: str,
+    ) -> None:
+        """Best-effort rename of a Discord thread when Hermes auto-titles a session."""
+        if source.platform != Platform.DISCORD or not source.thread_id:
+            return
+
+        adapter = self.adapters.get(source.platform) if getattr(self, "adapters", None) else None
+        client = getattr(adapter, "_client", None) if adapter is not None else None
+        if client is None:
+            return
+
+        thread_id = str(source.thread_id)
+        thread_name = self._sanitize_discord_thread_title(title)
+        try:
+            channel = client.get_channel(int(thread_id))
+            if channel is None:
+                channel = await client.fetch_channel(int(thread_id))
+            edit = getattr(channel, "edit", None)
+            if edit is None:
+                return
+            await edit(name=thread_name)
+            logger.debug(
+                "Renamed Discord thread %s for session %s to %r",
+                thread_id,
+                session_id,
+                thread_name,
+            )
+        except Exception:
+            logger.debug("Failed to rename Discord thread for auto-generated title", exc_info=True)
+
+    def _schedule_discord_thread_title_rename(
+        self,
+        source: SessionSource,
+        session_id: str,
+        title: str,
+    ) -> None:
+        """Schedule a Discord thread rename from the auto-title background thread."""
+        if not title or source.platform != Platform.DISCORD or not source.thread_id:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = getattr(self, "_gateway_loop", None)
+        if loop is None or loop.is_closed():
+            return
+        try:
+            copied_source = dataclasses.replace(source)
+        except Exception:
+            copied_source = source
+        future = safe_schedule_threadsafe(
+            self._rename_discord_thread_for_session_title(copied_source, session_id, title),
+            loop,
+            logger=logger,
+            log_message="Discord thread title rename failed to schedule",
+        )
+        if future is None:
+            return
+
+        def _log_rename_failure(fut) -> None:
+            try:
+                fut.result()
+            except Exception:
+                logger.debug("Discord thread title rename failed", exc_info=True)
+
+        future.add_done_callback(_log_rename_failure)
+
     async def _rename_telegram_topic_for_session_title(
         self,
         source: SessionSource,
@@ -15888,6 +15969,24 @@ class GatewayRunner:
                             effective_session_id,
                             title,
                         )
+                    elif source.platform == Platform.DISCORD and source.thread_id:
+                        existing_discord_title = None
+                        try:
+                            existing_discord_title = self._session_db.get_session_title(effective_session_id)
+                        except Exception:
+                            existing_discord_title = None
+                        if existing_discord_title:
+                            self._schedule_discord_thread_title_rename(
+                                source,
+                                effective_session_id,
+                                existing_discord_title,
+                            )
+                        else:
+                            maybe_auto_title_kwargs["title_callback"] = lambda title: self._schedule_discord_thread_title_rename(
+                                source,
+                                effective_session_id,
+                                title,
+                            )
                     maybe_auto_title(
                         self._session_db,
                         effective_session_id,
