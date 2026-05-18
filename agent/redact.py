@@ -7,6 +7,7 @@ Short tokens (< 18 chars) are fully masked. Longer tokens preserve
 the first 6 and last 4 characters for debuggability.
 """
 
+import hashlib
 import logging
 import os
 import re
@@ -25,9 +26,13 @@ _SENSITIVE_QUERY_PARAMS = frozenset({
     "apikey",
     "client_secret",
     "password",
+    "passwd",
     "auth",
     "jwt",
     "session",
+    "cookie",
+    "credential",
+    "bearer",
     "secret",
     "key",
     "code",           # OAuth authorization codes
@@ -47,9 +52,13 @@ _SENSITIVE_BODY_KEYS = frozenset({
     "apikey",
     "client_secret",
     "password",
+    "passwd",
     "auth",
     "jwt",
+    "bearer",
     "secret",
+    "cookie",
+    "credential",
     "private_key",
     "authorization",
     "key",
@@ -110,6 +119,16 @@ _PREFIX_PATTERNS = [
 _SECRET_ENV_NAMES = r"(?:API_?KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|AUTH)"
 _ENV_ASSIGN_RE = re.compile(
     rf"([A-Z0-9_]{{0,50}}{_SECRET_ENV_NAMES}[A-Z0-9_]{{0,50}})\s*=\s*(['\"]?)(\S+)\2",
+)
+
+_SENSITIVE_NAME_RE = re.compile(
+    r"(?:api_?key|token|secret|password|passwd|auth|bearer|credential|cookie|jwt|private_?key)",
+    re.IGNORECASE,
+)
+
+_FINGERPRINTABLE_SECRET_NAME_RE = re.compile(
+    r"(?:api_?key|token|jwt|bearer)",
+    re.IGNORECASE,
 )
 
 # JSON field patterns: "apiKey": "value", "token": "value", etc.
@@ -182,6 +201,10 @@ _FORM_BODY_RE = re.compile(
     r"^[A-Za-z_][A-Za-z0-9_.-]*=[^&\s]*(?:&[A-Za-z_][A-Za-z0-9_.-]*=[^&\s]*)+$"
 )
 
+_DIAGNOSTIC_ASSIGN_RE = re.compile(
+    r"(?<![A-Za-z0-9_.-])([A-Za-z_][A-Za-z0-9_.-]*)(\s*=\s*)(['\"]?)([^\s;&]+)\3"
+)
+
 # Compile known prefix patterns into one alternation
 _PREFIX_RE = re.compile(
     r"(?<![A-Za-z0-9_-])(" + "|".join(_PREFIX_PATTERNS) + r")(?![A-Za-z0-9_-])"
@@ -233,6 +256,46 @@ def mask_secret(
     if len(value) < floor:
         return placeholder
     return f"{value[:head]}...{value[-tail:]}"
+
+
+def is_sensitive_name(name: str) -> bool:
+    """Return True when a setting/env name is secret-bearing by convention."""
+    return bool(name and _SENSITIVE_NAME_RE.search(str(name)))
+
+
+def should_fingerprint_secret_name(name: str) -> bool:
+    """Return True when a secret name is likely high-entropy enough to fingerprint.
+
+    Diagnostic fingerprints are useful for API keys/tokens but risky for
+    low-entropy or human-chosen secrets such as passwords, cookies, and generic
+    credentials because a public hash prefix can enable offline confirmation.
+    """
+    return bool(name and _FINGERPRINTABLE_SECRET_NAME_RE.search(str(name)))
+
+
+def secret_fingerprint(value: str) -> str:
+    """Return a non-reversible diagnostic fingerprint for a configured secret."""
+    if value is None:
+        value = ""
+    if not isinstance(value, str):
+        value = str(value)
+    digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:12]
+    return f"sha256:{digest}, len={len(value)}"
+
+
+def format_secret_status(value: str, *, empty: str = "(not set)", fingerprint: bool = True) -> str:
+    """Format secret presence for shareable diagnostics without revealing characters.
+
+    Unlike :func:`mask_secret`, this helper never preserves the head/tail of
+    the secret. Use it for status/config surfaces that users may paste into
+    support chats. ``fingerprint=True`` provides stable identity/debugging
+    value without exposing reversible substrings.
+    """
+    if not value:
+        return empty
+    if fingerprint:
+        return f"configured ({secret_fingerprint(value)})"
+    return "configured"
 
 
 def _mask_token(token: str) -> str:
@@ -309,7 +372,35 @@ def _redact_form_body(text: str) -> str:
     return _redact_query_string(text.strip())
 
 
-def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = False) -> str:
+def _is_exact_sensitive_key(key: str) -> bool:
+    normalized = key.lower().replace("-", "_")
+    return normalized in _SENSITIVE_BODY_KEYS or normalized in _SENSITIVE_QUERY_PARAMS
+
+
+def _redact_diagnostic_assignments(text: str, placeholder: str) -> str:
+    """Redact exact sensitive k=v snippets inside diagnostic text.
+
+    This is intentionally diagnostics-only: unlike the uppercase env-var pass,
+    it catches lower-case snippets such as `password=hunter2` while avoiding
+    substring matches like `prompt_tokens=123`.
+    """
+    def _sub(m: re.Match) -> str:
+        key, sep, quote, _value = m.group(1), m.group(2), m.group(3), m.group(4)
+        if not _is_exact_sensitive_key(key):
+            return m.group(0)
+        return f"{key}{sep}{quote}{placeholder}{quote}"
+
+    return _DIAGNOSTIC_ASSIGN_RE.sub(_sub, text)
+
+
+def redact_sensitive_text(
+    text: str,
+    *,
+    force: bool = False,
+    code_file: bool = False,
+    preserve_tokens: bool = True,
+    placeholder: str = "***",
+) -> str:
     """Apply all redaction patterns to a block of text.
 
     Safe to call on any string -- non-matching text passes through unchanged.
@@ -321,6 +412,9 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
     patterns when the text is known to be source code (e.g. MAX_TOKENS=***
     constants, "apiKey": "test" fixtures). Prefix patterns, auth headers,
     private keys, DB connstrings, JWTs, and URL secrets are still redacted.
+
+    Set preserve_tokens=False for shareable diagnostics where even prefix/suffix
+    token fragments must not be emitted.
     """
     if text is None:
         return None
@@ -331,32 +425,42 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
     if not (force or _REDACT_ENABLED):
         return text
 
+    def _display_token(token: str) -> str:
+        if preserve_tokens:
+            return _mask_token(token)
+        return placeholder
+
     # Known prefixes (sk-, ghp_, etc.)
-    text = _PREFIX_RE.sub(lambda m: _mask_token(m.group(1)), text)
+    text = _PREFIX_RE.sub(lambda m: _display_token(m.group(1)), text)
 
     # ENV assignments: OPENAI_API_KEY=***  (skip for code files — false positives)
     if not code_file:
         def _redact_env(m):
             name, quote, value = m.group(1), m.group(2), m.group(3)
-            return f"{name}={quote}{_mask_token(value)}{quote}"
+            return f"{name}={quote}{_display_token(value)}{quote}"
         text = _ENV_ASSIGN_RE.sub(_redact_env, text)
 
         # JSON fields: "apiKey": "***"  (skip for code files — false positives)
         def _redact_json(m):
             key, value = m.group(1), m.group(2)
-            return f'{key}: "{_mask_token(value)}"'
+            return f'{key}: "{_display_token(value)}"'
         text = _JSON_FIELD_RE.sub(_redact_json, text)
 
     # Authorization headers
     text = _AUTH_HEADER_RE.sub(
-        lambda m: m.group(1) + _mask_token(m.group(2)),
+        lambda m: m.group(1) + _display_token(m.group(2)),
         text,
     )
+
+    if not preserve_tokens:
+        text = _redact_diagnostic_assignments(text, placeholder)
 
     # Telegram bot tokens
     def _redact_telegram(m):
         prefix = m.group(1) or ""
         digits = m.group(2)
+        if not preserve_tokens:
+            return placeholder
         return f"{prefix}{digits}:***"
     text = _TELEGRAM_RE.sub(_redact_telegram, text)
 
@@ -364,10 +468,10 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
     text = _PRIVATE_KEY_RE.sub("[REDACTED PRIVATE KEY]", text)
 
     # Database connection string passwords
-    text = _DB_CONNSTR_RE.sub(lambda m: f"{m.group(1)}***{m.group(3)}", text)
+    text = _DB_CONNSTR_RE.sub(lambda m: f"{m.group(1)}{placeholder}{m.group(3)}", text)
 
     # JWT tokens (eyJ... — base64-encoded JSON headers)
-    text = _JWT_RE.sub(lambda m: _mask_token(m.group(0)), text)
+    text = _JWT_RE.sub(lambda m: _display_token(m.group(0)), text)
 
     # URL userinfo (http(s)://user:pass@host) — redact for non-DB schemes.
     # DB schemes are handled above by _DB_CONNSTR_RE.
@@ -391,6 +495,36 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
     text = _SIGNAL_PHONE_RE.sub(_redact_phone, text)
 
     return text
+
+
+def redact_diagnostic_text(text: str) -> str:
+    """Redact free-form diagnostic text without preserving token fragments."""
+    return redact_sensitive_text(
+        text,
+        force=True,
+        preserve_tokens=False,
+        placeholder="[REDACTED]",
+    )
+
+
+def redact_diagnostic_value(value, *, name: str | None = None):
+    """Recursively sanitize a structured value for status/config diagnostics."""
+    if is_sensitive_name(name or ""):
+        if value in (None, ""):
+            return "not configured"
+        if isinstance(value, (str, int, float, bool)):
+            return format_secret_status(
+                str(value),
+                fingerprint=should_fingerprint_secret_name(name or ""),
+            )
+        return "[REDACTED]"
+    if isinstance(value, dict):
+        return {k: redact_diagnostic_value(v, name=str(k)) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [redact_diagnostic_value(item) for item in value]
+    if isinstance(value, str):
+        return redact_diagnostic_text(value)
+    return value
 
 
 class RedactingFormatter(logging.Formatter):

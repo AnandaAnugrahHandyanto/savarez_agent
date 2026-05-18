@@ -962,6 +962,55 @@ class TestGatewaySystemServiceRouting:
         out = capsys.readouterr().out
         assert "Planned restart is stuck in systemd failed state" in out
 
+    def test_systemd_status_redacts_captured_status_and_journal_output(self, monkeypatch, capsys):
+        unit = SimpleNamespace(exists=lambda: True)
+        status_secret = "sk-" + "systemdstatus" + "0123456789abcdef"
+        journal_secret = "tvly-" + "journalredaction" + "0123456789abcdef"
+        monkeypatch.setattr(gateway_cli, "_select_systemd_scope", lambda system=False: False)
+        monkeypatch.setattr(gateway_cli, "get_systemd_unit_path", lambda system=False: unit)
+        monkeypatch.setattr(gateway_cli, "has_conflicting_systemd_units", lambda: False)
+        monkeypatch.setattr(gateway_cli, "has_legacy_hermes_units", lambda: False)
+        monkeypatch.setattr(gateway_cli, "systemd_unit_is_current", lambda system=False: True)
+        monkeypatch.setattr(gateway_cli, "_runtime_health_lines", lambda: [])
+        monkeypatch.setattr(gateway_cli, "get_systemd_linger_status", lambda: (True, ""))
+        monkeypatch.setattr(gateway_cli, "_read_systemd_unit_properties", lambda system=False: {})
+
+        def fake_run_systemctl(args, **kwargs):
+            if args[:2] == ["status", gateway_cli.get_service_name()]:
+                assert kwargs.get("capture_output") is True
+                assert kwargs.get("text") is True
+                return SimpleNamespace(
+                    returncode=0,
+                    stdout=f"Loaded: active Authorization: Bearer {status_secret}\n",
+                    stderr="",
+                )
+            if args[:2] == ["is-active", gateway_cli.get_service_name()]:
+                return SimpleNamespace(returncode=0, stdout="active\n", stderr="")
+            raise AssertionError(f"Unexpected args: {args}")
+
+        def fake_run(cmd, **kwargs):
+            assert cmd[:2] == ["journalctl", "--user"]
+            assert kwargs.get("capture_output") is True
+            assert kwargs.get("text") is True
+            return SimpleNamespace(
+                returncode=0,
+                stdout=f"gateway failed token={journal_secret}\n",
+                stderr="",
+            )
+
+        monkeypatch.setattr(gateway_cli, "_run_systemctl", fake_run_systemctl)
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        gateway_cli.systemd_status(deep=True)
+
+        output = capsys.readouterr().out
+        assert "Loaded: active Authorization: Bearer [REDACTED]" in output
+        assert "gateway failed token=[REDACTED]" in output
+        assert status_secret not in output
+        assert journal_secret not in output
+        assert "systemdstatus" not in output
+        assert "journalredaction" not in output
+
     def test_gateway_status_dispatches_full_flag(self, monkeypatch):
         user_unit = SimpleNamespace(exists=lambda: True)
         system_unit = SimpleNamespace(exists=lambda: False)

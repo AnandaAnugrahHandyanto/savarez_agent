@@ -4908,13 +4908,15 @@ def get_env_value(key: str) -> Optional[str]:
 # =============================================================================
 
 def redact_key(key: str) -> str:
-    """Redact an API key for display.
+    """Format API-key state for shareable config output."""
+    from agent.redact import format_secret_status
+    return format_secret_status(key, empty=color("(not set)", Colors.DIM))
 
-    Thin wrapper over :func:`agent.redact.mask_secret` — preserves the
-    "(not set)" placeholder in dim color for the empty case.
-    """
-    from agent.redact import mask_secret
-    return mask_secret(key, empty=color("(not set)", Colors.DIM))
+
+def _diagnostic_config_value(value):
+    """Format arbitrary config data without leaking embedded secrets."""
+    from agent.redact import redact_diagnostic_value
+    return redact_diagnostic_value(value)
 
 
 def show_config():
@@ -4959,7 +4961,7 @@ def show_config():
     # Model settings
     print()
     print(color("◆ Model", Colors.CYAN, Colors.BOLD))
-    print(f"  Model:        {config.get('model', 'not set')}")
+    print(f"  Model:        {_diagnostic_config_value(config.get('model', 'not set'))}")
     print(f"  Max turns:    {config.get('agent', {}).get('max_turns', DEFAULT_CONFIG['agent']['max_turns'])}")
     
     # Display
@@ -5044,8 +5046,8 @@ def show_config():
         print()
         print(color("◆ Auxiliary Models (overrides)", Colors.CYAN, Colors.BOLD))
         for label, task_cfg in aux_tasks.items():
-            prov = task_cfg.get('provider', 'auto')
-            mdl = task_cfg.get('model', '')
+            prov = _diagnostic_config_value(task_cfg.get('provider', 'auto'))
+            mdl = _diagnostic_config_value(task_cfg.get('model', ''))
             if prov != 'auto' or mdl:
                 parts = [f"provider={prov}"]
                 if mdl:
@@ -5064,6 +5066,12 @@ def show_config():
     
     # Skill config
     try:
+        from agent.redact import (
+            format_secret_status,
+            is_sensitive_name,
+            redact_diagnostic_text,
+            should_fingerprint_secret_name,
+        )
         from agent.skill_utils import discover_all_skill_config_vars, resolve_skill_config_values
         skill_vars = discover_all_skill_config_vars()
         if skill_vars:
@@ -5074,7 +5082,14 @@ def show_config():
                 key = var["key"]
                 value = resolved.get(key, "")
                 skill_name = var.get("skill", "")
-                display_val = str(value) if value else color("(not set)", Colors.DIM)
+                if is_sensitive_name(key):
+                    display_val = format_secret_status(
+                        value,
+                        empty=color("(not set)", Colors.DIM),
+                        fingerprint=should_fingerprint_secret_name(key),
+                    )
+                else:
+                    display_val = redact_diagnostic_text(str(value)) if value else color("(not set)", Colors.DIM)
                 print(f"  {key:<20s} {display_val}  {color(f'[{skill_name}]', Colors.DIM)}")
     except Exception:
         pass

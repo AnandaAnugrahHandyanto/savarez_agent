@@ -1,17 +1,28 @@
+import hashlib
 from types import SimpleNamespace
 
 from hermes_cli.status import show_status
 
 
-def test_show_status_includes_tavily_key(monkeypatch, capsys, tmp_path):
+def _safe_secret_status(value: str) -> str:
+    digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:12]
+    return f"configured (sha256:{digest}, len={len(value)})"
+
+
+def test_show_status_redacts_tavily_key_in_default_and_all_modes(monkeypatch, capsys, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    monkeypatch.setenv("TAVILY_API_KEY", "tvly-1234567890abcdef")
+    secret = "tvly-test-secret-0123456789abcdef"
+    monkeypatch.setenv("TAVILY_API_KEY", secret)
 
-    show_status(SimpleNamespace(all=False, deep=False))
+    for show_all in (False, True):
+        show_status(SimpleNamespace(all=show_all, deep=False))
+        output = capsys.readouterr().out
 
-    output = capsys.readouterr().out
-    assert "Tavily" in output
-    assert "tvly...cdef" in output
+        assert "Tavily" in output
+        assert secret not in output
+        assert "tvly-test" not in output
+        assert "89abcdef" not in output
+        assert _safe_secret_status(secret) in output
 
 
 def test_show_status_termux_gateway_section_skips_systemctl(monkeypatch, capsys, tmp_path):
@@ -81,6 +92,81 @@ def test_show_status_reports_nous_auth_error(monkeypatch, capsys, tmp_path):
     assert "Error:      Refresh session has been revoked" in output
     assert "Access exp:" in output
     assert "Key exp:" in output
+
+
+def test_show_status_redacts_secret_bearing_auth_errors(monkeypatch, capsys, tmp_path):
+    from hermes_cli import status as status_mod
+    import hermes_cli.auth as auth_mod
+    import hermes_cli.gateway as gateway_mod
+
+    secret = "tvly-auth-error-secret-0123456789abcdef"
+    bearer_secret = "sk-" + "statusdiagnostic" + "0123456789abcdef"
+    monkeypatch.setattr(status_mod, "get_env_path", lambda: tmp_path / ".env", raising=False)
+    monkeypatch.setattr(status_mod, "get_hermes_home", lambda: tmp_path, raising=False)
+    monkeypatch.setattr(status_mod, "load_config", lambda: {"model": "gpt-5.4"}, raising=False)
+    monkeypatch.setattr(status_mod, "resolve_requested_provider", lambda requested=None: "openai-codex", raising=False)
+    monkeypatch.setattr(status_mod, "resolve_provider", lambda requested=None, **kwargs: "openai-codex", raising=False)
+    monkeypatch.setattr(status_mod, "provider_label", lambda provider: "OpenAI Codex", raising=False)
+    monkeypatch.setattr(
+        auth_mod,
+        "get_nous_auth_status",
+        lambda: {
+            "logged_in": False,
+            "error": (
+                f"refresh failed at https://auth.example.test/cb?api_key={secret}; "
+                f"Authorization: Bearer {bearer_secret}"
+            ),
+        },
+        raising=False,
+    )
+    monkeypatch.setattr(auth_mod, "get_codex_auth_status", lambda: {}, raising=False)
+    monkeypatch.setattr(auth_mod, "get_qwen_auth_status", lambda: {}, raising=False)
+    monkeypatch.setattr(auth_mod, "get_xai_oauth_auth_status", lambda: {}, raising=False)
+    monkeypatch.setattr(gateway_mod, "find_gateway_pids", lambda exclude_pids=None: [], raising=False)
+
+    status_mod.show_status(SimpleNamespace(all=False, deep=False))
+
+    output = capsys.readouterr().out
+    assert secret not in output
+    assert bearer_secret not in output
+    assert "statusdiagnostic" not in output
+    assert "api_key=***" in output
+    assert "Authorization: Bearer [REDACTED]" in output
+
+
+def test_show_status_redacts_nous_upgrade_url(monkeypatch, capsys, tmp_path):
+    from hermes_cli import status as status_mod
+    import hermes_cli.auth as auth_mod
+    import hermes_cli.gateway as gateway_mod
+
+    secret = "tvly-upgrade-url-secret-0123456789abcdef"
+    monkeypatch.setattr(status_mod, "get_env_path", lambda: tmp_path / ".env", raising=False)
+    monkeypatch.setattr(status_mod, "get_hermes_home", lambda: tmp_path, raising=False)
+    monkeypatch.setattr(status_mod, "load_config", lambda: {"model": "gpt-5.4"}, raising=False)
+    monkeypatch.setattr(status_mod, "resolve_requested_provider", lambda requested=None: "openai-codex", raising=False)
+    monkeypatch.setattr(status_mod, "resolve_provider", lambda requested=None, **kwargs: "openai-codex", raising=False)
+    monkeypatch.setattr(status_mod, "provider_label", lambda provider: "OpenAI Codex", raising=False)
+    monkeypatch.setattr(status_mod, "managed_nous_tools_enabled", lambda: False, raising=False)
+    monkeypatch.setattr(
+        auth_mod,
+        "get_nous_auth_status",
+        lambda: {
+            "logged_in": True,
+            "portal_base_url": f"https://portal.example.test/upgrade?api_key={secret}",
+        },
+        raising=False,
+    )
+    monkeypatch.setattr(auth_mod, "get_codex_auth_status", lambda: {}, raising=False)
+    monkeypatch.setattr(auth_mod, "get_qwen_auth_status", lambda: {}, raising=False)
+    monkeypatch.setattr(auth_mod, "get_xai_oauth_auth_status", lambda: {}, raising=False)
+    monkeypatch.setattr(gateway_mod, "find_gateway_pids", lambda exclude_pids=None: [], raising=False)
+
+    status_mod.show_status(SimpleNamespace(all=False, deep=False))
+
+    output = capsys.readouterr().out
+    assert "Upgrade:" in output
+    assert secret not in output
+    assert "api_key=***" in output
 
 
 def test_show_status_reports_vercel_backend_contract(monkeypatch, capsys, tmp_path):
