@@ -28,6 +28,12 @@ _guess_extension = _simplex._guess_extension
 _is_image_ext = _simplex._is_image_ext
 _is_audio_ext = _simplex._is_audio_ext
 _CORR_PREFIX = _simplex._CORR_PREFIX
+POLL_COMMAND_TIMEOUT = _simplex.POLL_COMMAND_TIMEOUT
+POLL_CONNECT_TIMEOUT = _simplex.POLL_CONNECT_TIMEOUT
+POLL_WALL_TIMEOUT = _simplex.POLL_WALL_TIMEOUT
+POLL_STALL_WARN_SECONDS = _simplex.POLL_STALL_WARN_SECONDS
+SIMPLEX_ACTIVE_SESSION_MAX_SECONDS = _simplex.SIMPLEX_ACTIVE_SESSION_MAX_SECONDS
+SIMPLEX_PROCESSING_NOTICE_DELAY = _simplex.SIMPLEX_PROCESSING_NOTICE_DELAY
 
 
 # ---------------------------------------------------------------------------
@@ -64,8 +70,9 @@ def test_check_requirements_true_when_configured(monkeypatch):
     assert check_requirements() is websockets_present
 
 
-def test_validate_config_uses_env_or_extra():
+def test_validate_config_uses_env_or_extra(monkeypatch):
     from gateway.config import PlatformConfig
+    monkeypatch.delenv("SIMPLEX_WS_URL", raising=False)
     # Empty extra + no env → invalid
     cfg = PlatformConfig(enabled=True)
     assert validate_config(cfg) is False
@@ -246,7 +253,425 @@ async def test_send_when_ws_not_connected_does_not_crash():
 
 
 # ---------------------------------------------------------------------------
-# 8. Inbound: filter own-echo by corrId prefix
+# 8. Inbound: seen item bookkeeping
+# ---------------------------------------------------------------------------
+
+def test_item_key_is_per_chat_not_global_item_id():
+    from gateway.config import PlatformConfig
+    cfg = PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"})
+    adapter = SimplexAdapter(cfg)
+
+    direct = {
+        "chatInfo": {"type": "direct", "contact": {"contactId": 4}},
+        "chatItem": {"meta": {"itemId": 7}},
+    }
+    group = {
+        "chatInfo": {"type": "group", "groupInfo": {"groupId": 1}},
+        "chatItem": {"meta": {"itemId": 7}},
+    }
+
+    assert adapter._item_key(direct) == "direct:4:7"
+    assert adapter._item_key(group) == "group:1:7"
+    assert adapter._chat_ref(direct) == "@4"
+    assert adapter._chat_ref(group) == "#1"
+
+
+@pytest.mark.asyncio
+async def test_handle_new_chat_item_marks_inbound_item_read_without_blocking():
+    from gateway.config import PlatformConfig
+    cfg = PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"})
+    adapter = SimplexAdapter(cfg)
+
+    calls = []
+    handled = []
+
+    async def fake_command_once(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        return {"resp": {"type": "itemsReadForChat"}}
+
+    async def handler(event):
+        handled.append(event.text)
+        return ""
+
+    adapter._command_once = fake_command_once  # type: ignore[method-assign]
+    adapter.set_message_handler(handler)
+    wrapper = {
+        "chatInfo": {"type": "direct", "contact": {"contactId": 4, "localDisplayName": "Elkim"}},
+        "chatItem": {
+            "meta": {"itemId": 95, "itemStatus": {"type": "rcvNew"}, "itemTs": "2026-05-17T10:24:35Z"},
+            "content": {"type": "rcvMsgContent", "msgContent": {"type": "text", "text": "ping"}},
+        },
+    }
+
+    await adapter._handle_new_chat_item(wrapper)
+    await _simplex.asyncio.sleep(0)
+
+    assert handled == ["ping"]
+    assert calls == [(
+        "/_read chat items @4 95",
+        {"timeout": 1.0, "open_timeout": 1.0, "wall_timeout": 2.0},
+    )]
+
+
+def test_seen_items_persist_across_adapter_restart(tmp_path):
+    from gateway.config import PlatformConfig
+    cfg = PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"})
+
+    first = SimplexAdapter(cfg)
+    first._seen_items_path = tmp_path / "simplex_seen_items.json"
+    first._seen_item_ids.update({"direct:4:41", "group:1:39"})
+    first._save_seen_items()
+
+    second = SimplexAdapter(cfg)
+    second._seen_items_path = first._seen_items_path
+    second._load_seen_items()
+
+    assert "direct:4:41" in second._seen_item_ids
+    assert "group:1:39" in second._seen_item_ids
+
+
+@pytest.mark.asyncio
+async def test_seed_seen_items_does_not_consume_unread_inbound_text(tmp_path):
+    """Startup recovery must not silently eat missed SimpleX DMs."""
+    from gateway.config import PlatformConfig
+    cfg = PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"})
+    adapter = SimplexAdapter(cfg)
+    adapter._seen_items_path = tmp_path / "simplex_seen_items.json"
+
+    unread = {
+        "chatInfo": {"type": "direct", "contact": {"contactId": 4}},
+        "chatItem": {
+            "meta": {"itemId": 100, "itemStatus": {"type": "rcvNew"}, "itemTs": "2026-05-17T10:43:07Z"},
+            "content": {"type": "rcvMsgContent", "msgContent": {"type": "text", "text": "latency test 3"}},
+        },
+    }
+    sent = {
+        "chatInfo": {"type": "direct", "contact": {"contactId": 4}},
+        "chatItem": {
+            "meta": {"itemId": 99, "itemStatus": {"type": "sndRcvd"}, "itemTs": "2026-05-17T10:51:47Z"},
+            "content": {"type": "sndMsgContent", "msgContent": {"type": "text", "text": "shutdown"}},
+        },
+    }
+
+    async def fake_command_once(_cmd, **_kwargs):
+        return {"resp": {"chatItems": [unread, sent]}}
+
+    adapter._command_once = fake_command_once  # type: ignore[method-assign]
+    await adapter._seed_seen_items()
+
+    assert "direct:4:100" not in adapter._seen_item_ids
+    assert "direct:4:99" in adapter._seen_item_ids
+
+
+@pytest.mark.asyncio
+async def test_poll_dispatches_preconnect_unread_inbound_text(monkeypatch, tmp_path):
+    """Unread user text remains actionable even if its timestamp predates reconnect."""
+    from gateway.config import PlatformConfig
+    cfg = PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"})
+    adapter = SimplexAdapter(cfg)
+    adapter._seen_items_path = tmp_path / "simplex_seen_items.json"
+    adapter._running = True
+    adapter._connected_at = 1_779_012_000.0  # after the item timestamp
+    handled = []
+
+    unread = {
+        "chatInfo": {"type": "direct", "contact": {"contactId": 4}},
+        "chatItem": {
+            "meta": {"itemId": 100, "itemStatus": {"type": "rcvNew"}, "itemTs": "2026-05-17T10:43:07Z"},
+            "content": {"type": "rcvMsgContent", "msgContent": {"type": "text", "text": "latency test 3"}},
+        },
+    }
+
+    async def fake_sleep(_seconds):
+        adapter._running = False
+
+    calls = []
+
+    async def fake_command_once(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        if cmd == "/tail 50":
+            return {"resp": {"chatItems": [unread]}}
+        return {"resp": {"type": "itemsReadForChat"}}
+
+    async def fake_handle(wrapper):
+        handled.append(wrapper["chatItem"]["meta"]["itemId"])
+
+    monkeypatch.setattr(_simplex.asyncio, "sleep", fake_sleep)
+    adapter._command_once = fake_command_once  # type: ignore[method-assign]
+    adapter._handle_new_chat_item = fake_handle  # type: ignore[method-assign]
+
+    await adapter._poll_unread_items()
+    for task in list(adapter._poll_dispatch_tasks):
+        await task
+
+    assert handled == [100]
+    assert calls == [
+        (
+            "/tail 50",
+            {
+                "timeout": POLL_COMMAND_TIMEOUT,
+                "open_timeout": POLL_CONNECT_TIMEOUT,
+                "wall_timeout": POLL_WALL_TIMEOUT,
+            },
+        ),
+        (
+            "/_read chat items @4 100",
+            {"timeout": 1.0, "open_timeout": 1.0, "wall_timeout": 2.0},
+        ),
+    ]
+    assert "direct:4:100" in adapter._seen_item_ids
+
+
+@pytest.mark.asyncio
+async def test_poll_unread_uses_short_command_timeouts(monkeypatch):
+    """Polling is the latency fallback; it must not wait on 10s WS stalls."""
+    from gateway.config import PlatformConfig
+    cfg = PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"})
+    adapter = SimplexAdapter(cfg)
+    adapter._running = True
+
+    calls = []
+
+    async def fake_sleep(_seconds):
+        adapter._running = False
+
+    async def fake_command_once(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        return {"resp": {"chatItems": []}}
+
+    monkeypatch.setattr(_simplex.asyncio, "sleep", fake_sleep)
+    adapter._command_once = fake_command_once  # type: ignore[method-assign]
+
+    await adapter._poll_unread_items()
+
+    assert calls == [
+        (
+            "/tail 50",
+            {
+                "timeout": POLL_COMMAND_TIMEOUT,
+                "open_timeout": POLL_CONNECT_TIMEOUT,
+                "wall_timeout": POLL_WALL_TIMEOUT,
+            },
+        )
+    ]
+    assert POLL_COMMAND_TIMEOUT <= 2.0
+    assert POLL_CONNECT_TIMEOUT <= 2.0
+    assert POLL_WALL_TIMEOUT <= 3.5
+
+
+@pytest.mark.asyncio
+async def test_command_once_has_hard_wall_timeout(monkeypatch, caplog):
+    from gateway.config import PlatformConfig
+    cfg = PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"})
+    adapter = SimplexAdapter(cfg)
+
+    async def stuck_impl(*_args, **_kwargs):
+        await _simplex.asyncio.sleep(60)
+
+    adapter._command_once_impl = stuck_impl  # type: ignore[method-assign]
+
+    with caplog.at_level("WARNING"):
+        result = await adapter._command_once(
+            "/tail 50",
+            timeout=10,
+            open_timeout=10,
+            wall_timeout=0.01,
+        )
+
+    assert result is None
+    assert "exceeded wall timeout" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_poll_loop_logs_stall_gap(monkeypatch, caplog):
+    from gateway.config import PlatformConfig
+    cfg = PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"})
+    adapter = SimplexAdapter(cfg)
+    adapter._running = True
+    adapter._last_poll_started_at = 100.0
+
+    async def fake_sleep(_seconds):
+        adapter._running = False
+
+    async def fake_command_once(_cmd, **_kwargs):
+        return {"resp": {"chatItems": []}}
+
+    times = iter([100.0 + POLL_STALL_WARN_SECONDS + 1.0, 100.1])
+    monkeypatch.setattr(_simplex.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(_simplex.time, "time", lambda: next(times, 100.1))
+    adapter._command_once = fake_command_once  # type: ignore[method-assign]
+
+    with caplog.at_level("WARNING"):
+        await adapter._poll_unread_items()
+
+    assert "loop stalled" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_processing_notice_is_delayed_and_cancelled_before_send(monkeypatch):
+    from gateway.config import PlatformConfig
+    from gateway.platforms.base import MessageType, ProcessingOutcome
+
+    cfg = PlatformConfig(
+        enabled=True,
+        extra={"ws_url": "ws://localhost:5225", "processing_notice_delay": 10},
+    )
+    adapter = SimplexAdapter(cfg)
+    sent = []
+
+    async def fake_send(chat_id, content, **_kwargs):
+        sent.append((chat_id, content))
+        from gateway.platforms.base import SendResult
+        return SendResult(success=True)
+
+    adapter.send = fake_send  # type: ignore[method-assign]
+    source = adapter.build_source(
+        chat_id="4",
+        chat_name="Elkim",
+        chat_type="dm",
+        user_id="4",
+        user_name="Elkim",
+    )
+    event = _simplex.MessageEvent(source=source, text="slow", message_type=MessageType.TEXT)
+
+    await adapter.on_processing_start(event)
+    assert adapter._processing_notice_tasks
+    await adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
+    await _simplex.asyncio.sleep(0)
+
+    assert sent == []
+    assert adapter._processing_notice_tasks == {}
+
+
+@pytest.mark.asyncio
+async def test_processing_notice_sends_for_slow_simplex_turn(monkeypatch):
+    from gateway.config import PlatformConfig
+    from gateway.platforms.base import MessageType
+
+    cfg = PlatformConfig(
+        enabled=True,
+        extra={"ws_url": "ws://localhost:5225", "processing_notice_delay": 0.01},
+    )
+    adapter = SimplexAdapter(cfg)
+    sent = []
+
+    async def fake_send(chat_id, content, **_kwargs):
+        sent.append((chat_id, content))
+        from gateway.platforms.base import SendResult
+        return SendResult(success=True)
+
+    adapter.send = fake_send  # type: ignore[method-assign]
+    source = adapter.build_source(
+        chat_id="4",
+        chat_name="Elkim",
+        chat_type="dm",
+        user_id="4",
+        user_name="Elkim",
+    )
+    event = _simplex.MessageEvent(source=source, text="slow", message_type=MessageType.TEXT)
+
+    await adapter.on_processing_start(event)
+    await _simplex.asyncio.sleep(0.03)
+
+    assert sent == [("4", "Still here — SimpleX has no typing indicator, but I’m working on it.")]
+
+
+def test_simplex_adapter_opts_into_active_session_hard_timeout():
+    from gateway.config import PlatformConfig
+    cfg = PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"})
+    adapter = SimplexAdapter(cfg)
+
+    assert adapter._max_active_session_seconds == SIMPLEX_ACTIVE_SESSION_MAX_SECONDS
+    assert adapter._active_session_hard_timeout_seconds() == SIMPLEX_ACTIVE_SESSION_MAX_SECONDS
+
+
+def test_simplex_adapter_respects_configured_active_session_hard_timeout():
+    from gateway.config import PlatformConfig
+    cfg = PlatformConfig(
+        enabled=True,
+        extra={"ws_url": "ws://localhost:5225", "max_active_session_seconds": 12},
+    )
+    adapter = SimplexAdapter(cfg)
+
+    assert adapter._active_session_hard_timeout_seconds() == 12.0
+
+
+@pytest.mark.asyncio
+async def test_dispatch_polled_item_tracks_task_and_logs_slow_dispatch(monkeypatch, caplog):
+    from gateway.config import PlatformConfig
+    cfg = PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"})
+    adapter = SimplexAdapter(cfg)
+
+    gate = _simplex.asyncio.Event()
+    handled = []
+
+    async def fake_handle(wrapper):
+        handled.append(wrapper)
+        await gate.wait()
+
+    adapter._handle_new_chat_item = fake_handle  # type: ignore[method-assign]
+    task = adapter._dispatch_polled_item({"x": 1}, "direct:4:99")
+
+    await _simplex.asyncio.sleep(0)
+    assert task in adapter._poll_dispatch_tasks
+    assert handled == [{"x": 1}]
+
+    gate.set()
+    with caplog.at_level("INFO"):
+        await task
+    assert task not in adapter._poll_dispatch_tasks
+
+
+@pytest.mark.asyncio
+async def test_stale_active_simplex_session_is_cancelled_for_fresh_message(monkeypatch):
+    from gateway.config import PlatformConfig
+    from gateway.platforms.base import MessageType
+
+    cfg = PlatformConfig(
+        enabled=True,
+        extra={"ws_url": "ws://localhost:5225", "max_active_session_seconds": 0.01},
+    )
+    adapter = SimplexAdapter(cfg)
+    adapter._max_active_session_seconds = 0.01
+
+    started = _simplex.asyncio.Event()
+    cancelled = _simplex.asyncio.Event()
+    handled_texts = []
+
+    async def handler(event):
+        handled_texts.append(event.text)
+        if event.text == "old":
+            started.set()
+            try:
+                await _simplex.asyncio.sleep(60)
+            except _simplex.asyncio.CancelledError:
+                cancelled.set()
+                raise
+        return ""
+
+    adapter.set_message_handler(handler)
+    source = adapter.build_source(
+        chat_id="4",
+        chat_name="Elkim",
+        chat_type="dm",
+        user_id="4",
+        user_name="Elkim",
+    )
+    old = _simplex.MessageEvent(source=source, text="old", message_type=MessageType.TEXT)
+    fresh = _simplex.MessageEvent(source=source, text="fresh", message_type=MessageType.TEXT)
+
+    await adapter.handle_message(old)
+    await _simplex.asyncio.wait_for(started.wait(), timeout=1)
+    await _simplex.asyncio.sleep(0.02)
+    await adapter.handle_message(fresh)
+    await _simplex.asyncio.wait_for(cancelled.wait(), timeout=1)
+    await _simplex.asyncio.sleep(0)
+
+    assert handled_texts[:2] == ["old", "fresh"]
+
+
+# ---------------------------------------------------------------------------
+# 9. Inbound: filter own-echo by corrId prefix
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
