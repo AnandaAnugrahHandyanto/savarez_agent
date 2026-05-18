@@ -108,6 +108,8 @@ def _make_message(document=None, caption=None, media_group_id=None, photo=None):
     msg.from_user.id = 1
     msg.from_user.full_name = "Test User"
     msg.message_thread_id = None
+    # reply_text is used to send user-facing errors directly (not through agent pipeline)
+    msg.reply_text = AsyncMock()
     return msg
 
 
@@ -301,8 +303,10 @@ class TestDocumentDownloadBlock:
         update = _make_update(msg)
 
         await adapter._handle_media_message(update, MagicMock())
-        event = adapter.handle_message.call_args[0][0]
-        assert "too large" in event.text
+        # Should reply directly to user, not route to agent
+        msg.reply_text.assert_awaited_once()
+        assert "too large" in msg.reply_text.await_args.args[0].lower()
+        adapter.handle_message.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_none_file_size_rejected(self, adapter):
@@ -312,8 +316,9 @@ class TestDocumentDownloadBlock:
         update = _make_update(msg)
 
         await adapter._handle_media_message(update, MagicMock())
-        event = adapter.handle_message.call_args[0][0]
-        assert "too large" in event.text or "could not be verified" in event.text
+        msg.reply_text.assert_awaited_once()
+        assert "too large" in msg.reply_text.await_args.args[0].lower() or "20 mb" in msg.reply_text.await_args.args[0].lower()
+        adapter.handle_message.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_missing_filename_uses_mime_lookup(self, adapter):
@@ -339,8 +344,9 @@ class TestDocumentDownloadBlock:
         update = _make_update(msg)
 
         await adapter._handle_media_message(update, MagicMock())
-        event = adapter.handle_message.call_args[0][0]
-        assert "Unsupported" in event.text
+        msg.reply_text.assert_awaited_once()
+        assert "unsupported" in msg.reply_text.await_args.args[0].lower()
+        adapter.handle_message.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_unicode_decode_error_handled(self, adapter):
@@ -383,7 +389,7 @@ class TestDocumentDownloadBlock:
 
     @pytest.mark.asyncio
     async def test_download_exception_handled(self, adapter):
-        """If get_file() raises, the handler logs the error without crashing."""
+        """If get_file() raises, the handler logs the error and notifies the user directly."""
         doc = _make_document(file_name="crash.pdf", file_size=100)
         doc.get_file = AsyncMock(side_effect=RuntimeError("Telegram API down"))
         msg = _make_message(document=doc)
@@ -391,8 +397,10 @@ class TestDocumentDownloadBlock:
 
         # Should not raise
         await adapter._handle_media_message(update, MagicMock())
-        # handle_message should still be called (the handler catches the exception)
-        adapter.handle_message.assert_called_once()
+        # Should notify user directly, not route to agent
+        msg.reply_text.assert_awaited_once()
+        assert "couldn't download" in msg.reply_text.await_args.args[0].lower()
+        adapter.handle_message.assert_not_called()
 
 
 class TestVideoDownloadBlock:

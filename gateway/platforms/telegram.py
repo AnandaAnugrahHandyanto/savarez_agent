@@ -4329,12 +4329,14 @@ class TelegramAdapter(BasePlatformAdapter):
                 # document size limit by taking the image path.
                 MAX_DOC_BYTES = 20 * 1024 * 1024
                 if not doc.file_size or doc.file_size > MAX_DOC_BYTES:
-                    event.text = (
-                        "The document is too large or its size could not be verified. "
-                        "Maximum: 20 MB."
-                    )
                     logger.info("[Telegram] Document too large: %s bytes", doc.file_size)
-                    await self.handle_message(event)
+                    try:
+                        await update.message.reply_text(
+                            "⚠️ The document is too large or its size could not be verified. "
+                            "Maximum: 20 MB."
+                        )
+                    except Exception:
+                        logger.debug("[Telegram] Failed to reply size error", exc_info=True)
                     return
 
                 # Telegram may deliver screenshots/photos as documents. If the
@@ -4386,12 +4388,14 @@ class TelegramAdapter(BasePlatformAdapter):
                 # Check if supported
                 if ext not in SUPPORTED_DOCUMENT_TYPES:
                     supported_list = ", ".join(sorted(SUPPORTED_DOCUMENT_TYPES.keys()))
-                    event.text = (
-                        f"Unsupported document type '{ext or 'unknown'}'. "
-                        f"Supported types: {supported_list}"
-                    )
                     logger.info("[Telegram] Unsupported document type: %s", ext or "unknown")
-                    await self.handle_message(event)
+                    try:
+                        await update.message.reply_text(
+                            f"⚠️ Unsupported document type '{ext or 'unknown'}'. "
+                            f"Supported types: {supported_list}"
+                        )
+                    except Exception:
+                        logger.debug("[Telegram] Failed to reply unsupported type error", exc_info=True)
                     return
 
                 # Download and cache
@@ -4424,6 +4428,15 @@ class TelegramAdapter(BasePlatformAdapter):
 
             except Exception as e:
                 logger.warning("[Telegram] Failed to cache document: %s", e, exc_info=True)
+                try:
+                    filename_display = original_filename or ext or "unknown"
+                    await update.message.reply_text(
+                        f"⚠️ Couldn't download your attachment ({filename_display}): "
+                        f"{e.__class__.__name__}. Please try again."
+                    )
+                except Exception:
+                    logger.debug("[Telegram] Failed to reply cache error", exc_info=True)
+                return
 
         media_group_id = getattr(msg, "media_group_id", None)
         if media_group_id:
