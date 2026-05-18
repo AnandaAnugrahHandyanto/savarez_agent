@@ -151,6 +151,38 @@ def _connect():
     return kb, kb.connect()
 
 
+def _gateway_notify_origin() -> Optional[dict[str, Optional[str]]]:
+    """Return the current gateway origin for Kanban completion pings.
+
+    Orchestrator profiles may create specialist-dispatch tasks via the
+    structured ``kanban_create`` tool instead of the textual ``/kanban create``
+    command. When that tool runs inside a gateway turn, the gateway exposes the
+    concrete platform/chat/thread through session contextvars. Use those native
+    values to attach a ``kanban_notify_subs`` row immediately after task
+    creation. CLI/local sessions and workers without a concrete origin stay
+    board-only.
+    """
+    try:
+        from gateway.session_context import get_session_env
+    except Exception:
+        return None
+
+    platform = (get_session_env("HERMES_SESSION_PLATFORM", "") or "").strip().lower()
+    chat_id = (get_session_env("HERMES_SESSION_CHAT_ID", "") or "").strip()
+    if not platform or platform in {"cli", "local"} or not chat_id:
+        return None
+
+    thread_id = (get_session_env("HERMES_SESSION_THREAD_ID", "") or "").strip()
+    user_id = (get_session_env("HERMES_SESSION_USER_ID", "") or "").strip()
+    return {
+        "platform": platform,
+        "chat_id": chat_id,
+        "thread_id": thread_id or None,
+        "user_id": user_id or None,
+        "notifier_profile": os.environ.get("HERMES_PROFILE") or None,
+    }
+
+
 def _ok(**fields: Any) -> str:
     return json.dumps({"ok": True, **fields})
 
@@ -653,10 +685,30 @@ def _handle_create(args: dict, **kw) -> str:
                 skills=skills,
                 created_by=os.environ.get("HERMES_PROFILE") or "worker",
             )
+            notify_subscribed = False
+            notify_error = None
+            notify_origin = _gateway_notify_origin()
+            if notify_origin:
+                try:
+                    kb.add_notify_sub(conn, task_id=new_tid, **notify_origin)
+                    notify_subscribed = True
+                except Exception as exc:
+                    # The task already exists; preserve the successful create
+                    # result and surface the board-only notification failure so
+                    # the orchestrator can report the precise dispatch state
+                    # instead of retrying into duplicate-task risk.
+                    notify_error = str(exc)
+                    logger.warning(
+                        "kanban_create auto-notify subscription failed for %s: %s",
+                        new_tid,
+                        exc,
+                    )
             new_task = kb.get_task(conn, new_tid)
             return _ok(
                 task_id=new_tid,
                 status=new_task.status if new_task else None,
+                notify_subscribed=notify_subscribed,
+                notify_error=notify_error,
             )
         finally:
             conn.close()
@@ -971,7 +1023,10 @@ KANBAN_CREATE_SCHEMA = {
         "orchestrator workers to fan out — decompose work into child "
         "tasks with specific assignees, link them into a pipeline, "
         "then complete your own task. The dispatcher picks up the new "
-        "tasks on its next tick and spawns the assigned profiles."
+        "tasks on its next tick and spawns the assigned profiles. "
+        "When called from a messaging gateway turn with a concrete "
+        "platform/chat/thread origin, the runtime also attaches a native "
+        "kanban_notify_subs completion-notification subscription."
     ),
     "parameters": {
         "type": "object",

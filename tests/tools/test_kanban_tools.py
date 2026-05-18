@@ -679,6 +679,8 @@ def test_create_happy_path(worker_env):
     assert d["ok"] is True
     assert d["task_id"]
     assert d["status"] == "todo"  # parent isn't done yet
+    assert d["notify_subscribed"] is False
+    assert d["notify_error"] is None
     from hermes_cli import kanban_db as kb
     conn = kb.connect()
     try:
@@ -687,6 +689,65 @@ def test_create_happy_path(worker_env):
         assert child.assignee == "peer"
     finally:
         conn.close()
+
+
+def test_create_auto_subscribes_gateway_origin(worker_env):
+    """Gateway-origin kanban_create calls attach native notify subs."""
+    from gateway.session_context import set_session_vars
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    tokens = set_session_vars(
+        platform="discord",
+        chat_id="chat-123",
+        thread_id="thread-456",
+        user_id="user-789",
+        session_key="discord:chat-123:thread-456",
+    )
+    try:
+        out = kt._handle_create({
+            "title": "gateway child task",
+            "assignee": "researcher",
+        })
+        d = json.loads(out)
+        assert d["ok"] is True
+        assert d["notify_subscribed"] is True
+        assert d["notify_error"] is None
+
+        with kb.connect() as conn:
+            subs = kb.list_notify_subs(conn, d["task_id"])
+        assert len(subs) == 1
+        assert subs[0]["platform"] == "discord"
+        assert subs[0]["chat_id"] == "chat-123"
+        assert subs[0]["thread_id"] == "thread-456"
+        assert subs[0]["user_id"] == "user-789"
+        assert subs[0]["notifier_profile"] == "test-worker"
+    finally:
+        for token in reversed(tokens):
+            token.var.reset(token)
+
+
+def test_create_stays_board_only_without_gateway_origin(monkeypatch, worker_env):
+    """CLI/local/no-origin calls must not invent a callback target."""
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    for name in (
+        "HERMES_SESSION_PLATFORM",
+        "HERMES_SESSION_CHAT_ID",
+        "HERMES_SESSION_THREAD_ID",
+        "HERMES_SESSION_USER_ID",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    out = kt._handle_create({"title": "board only", "assignee": "peer"})
+    d = json.loads(out)
+    assert d["ok"] is True
+    assert d["notify_subscribed"] is False
+    assert d["notify_error"] is None
+
+    with kb.connect() as conn:
+        assert kb.list_notify_subs(conn, d["task_id"]) == []
 
 
 def test_create_rejects_no_title(worker_env):
