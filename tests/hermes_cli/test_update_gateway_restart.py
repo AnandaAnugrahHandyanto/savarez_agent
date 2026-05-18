@@ -7,6 +7,7 @@ when launchd will auto-respawn.
 """
 
 import os
+import plistlib
 import subprocess
 from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
@@ -156,6 +157,26 @@ class TestLaunchdPlistPath:
         assert "<key>PATH</key>" in plist
         assert "<key>VIRTUAL_ENV</key>" in plist
         assert "<key>HERMES_HOME</key>" in plist
+
+    def test_plist_preserves_proxy_environment(self, monkeypatch):
+        for key in (
+            "HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY",
+            "https_proxy", "http_proxy", "all_proxy",
+            "NO_PROXY", "no_proxy",
+        ):
+            monkeypatch.delenv(key, raising=False)
+        monkeypatch.setenv("HTTPS_PROXY", "http://proxy.example:8080")
+        monkeypatch.setenv("NO_PROXY", "localhost,.internal.example")
+        monkeypatch.setenv("no_proxy", "oneapi.example.com,.corp.example")
+        monkeypatch.setenv("http_proxy", "http://user:pa&ss@proxy.example:8080")
+
+        parsed = plistlib.loads(gateway_cli.generate_launchd_plist().encode("utf-8"))
+        env = parsed["EnvironmentVariables"]
+
+        assert env["HTTPS_PROXY"] == "http://proxy.example:8080"
+        assert env["NO_PROXY"] == "localhost,.internal.example"
+        assert env["no_proxy"] == "oneapi.example.com,.corp.example"
+        assert env["http_proxy"] == "http://user:pa&ss@proxy.example:8080"
 
     def test_plist_path_includes_venv_bin(self):
         plist = gateway_cli.generate_launchd_plist()
