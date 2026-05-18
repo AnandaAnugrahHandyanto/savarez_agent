@@ -3222,6 +3222,10 @@ def _ws_client_is_allowed(ws: "WebSocket") -> bool:
 # the chat tab generates on mount; entries auto-evict when the last subscriber
 # drops AND the publisher has disconnected.
 _event_channels: dict[str, set] = {}
+# TestClient opens websocket handlers on a server thread while the test thread
+# polls `_event_channels` directly to wait for subscriber registration. A
+# thread lock keeps those brief dict mutations safe across that boundary
+# without binding the registry to a specific event loop.
 _event_lock = threading.Lock()
 
 

@@ -73,9 +73,9 @@ _SAFE_ACTIONS = frozenset({"capture", "wait", "list_apps"})
 
 # Actions that mutate user-visible state. Go through approval.
 #
-# Text entry and ordinary key chords are handled separately: dangerous
-# patterns are blocked up front, but safe text / shortcuts should not require
-# a live approval callback just to continue.
+# Text entry and ordinary key chords are filtered by the pre-dispatch safety
+# checks above. The noop backend used in tests bypasses approval entirely so
+# those paths can still be exercised without an interactive callback.
 _DESTRUCTIVE_ACTIONS = frozenset({
     "click", "double_click", "right_click", "middle_click",
     "drag", "scroll", "set_value", "focus_app",
