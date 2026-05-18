@@ -1507,6 +1507,101 @@ def assign_task(conn: sqlite3.Connection, task_id: str, profile: Optional[str]) 
         return True
 
 
+def approve_proposal(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    assignee: Optional[str] = None,
+    author: str = "user",
+) -> Optional[Task]:
+    """Approve a triage proposal and promote it into the executable queue.
+
+    The proposal gate intentionally reuses existing statuses: proposed work
+    sits in ``triage`` so the dispatcher never claims it accidentally. Approval
+    moves it to ``ready`` when dependencies are satisfied, otherwise ``todo``.
+    """
+    assignee = _canonical_assignee(assignee) if assignee is not None else None
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT status, assignee FROM tasks WHERE id = ?", (task_id,),
+        ).fetchone()
+        if not row:
+            return None
+        if row["status"] != "triage":
+            raise ValueError(f"task {task_id} is not awaiting proposal approval")
+        parent_rows = conn.execute(
+            "SELECT t.status FROM tasks t "
+            "JOIN task_links l ON l.parent_id = t.id "
+            "WHERE l.child_id = ?",
+            (task_id,),
+        ).fetchall()
+        new_status = (
+            "ready"
+            if all(p["status"] in {"done", "archived"} for p in parent_rows)
+            else "todo"
+        )
+        final_assignee = assignee if assignee is not None else row["assignee"]
+        conn.execute(
+            "UPDATE tasks SET status = ?, assignee = ? WHERE id = ?",
+            (new_status, final_assignee, task_id),
+        )
+        body = (
+            f"Proposal approved by {author}. "
+            f"Status: {new_status}. Assignee: {final_assignee or '-'}"
+        )
+        conn.execute(
+            "INSERT INTO task_comments (task_id, author, body, created_at) "
+            "VALUES (?, ?, ?, ?)",
+            (task_id, author, body, int(time.time())),
+        )
+        _append_event(
+            conn,
+            task_id,
+            "proposal_approved",
+            {"status": new_status, "assignee": final_assignee, "author": author},
+        )
+    return get_task(conn, task_id)
+
+
+def deny_proposal(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    reason: str,
+    author: str = "user",
+) -> Optional[Task]:
+    """Deny a proposal and park it in ``blocked`` with an audit comment."""
+    if not reason or not reason.strip():
+        raise ValueError("denial reason is required")
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT status FROM tasks WHERE id = ?", (task_id,),
+        ).fetchone()
+        if not row:
+            return None
+        if row["status"] not in {"triage", "todo", "ready"}:
+            raise ValueError(f"task {task_id} cannot be denied from status {row['status']!r}")
+        conn.execute(
+            "UPDATE tasks SET status = 'blocked', claim_lock = NULL, "
+            "claim_expires = NULL, worker_pid = NULL WHERE id = ?",
+            (task_id,),
+        )
+        clean_reason = reason.strip()
+        body = f"Proposal denied by {author}: {clean_reason}"
+        conn.execute(
+            "INSERT INTO task_comments (task_id, author, body, created_at) "
+            "VALUES (?, ?, ?, ?)",
+            (task_id, author, body, int(time.time())),
+        )
+        _append_event(
+            conn,
+            task_id,
+            "proposal_denied",
+            {"reason": clean_reason, "author": author},
+        )
+    return get_task(conn, task_id)
+
+
 # ---------------------------------------------------------------------------
 # Links
 # ---------------------------------------------------------------------------

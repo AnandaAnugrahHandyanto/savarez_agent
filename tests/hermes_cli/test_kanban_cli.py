@@ -402,3 +402,60 @@ def test_run_slash_board_override_restores_prior_env(kanban_home, monkeypatch):
     kc.run_slash("--board alpha list")
 
     assert os.environ.get("HERMES_KANBAN_BOARD") == "beta"
+
+
+# ---------------------------------------------------------------------------
+# /kanban proposal approval gate
+# ---------------------------------------------------------------------------
+
+def test_run_slash_propose_creates_triage_recommendation(kanban_home):
+    out = kc.run_slash(
+        "propose 'add safe autopilot' "
+        "--rationale 'keeps the project aligned' "
+        "--guardrail 'no merge without approval' "
+        "--guardrail 'prefer tests first' "
+        "--assignee dori-fixer --json"
+    )
+    payload = json.loads(out)
+
+    assert payload["status"] == "triage"
+    assert payload["assignee"] == "dori-fixer"
+    assert payload["proposal"]["approval_gate"] == "approve_or_deny"
+    assert "Recommendation" in payload["body"]
+    assert "Rationale" in payload["body"]
+    assert "Guardrails" in payload["body"]
+    assert "Approval" in payload["body"]
+
+
+def test_run_slash_approve_promotes_proposal_to_ready(kanban_home):
+    created = json.loads(kc.run_slash(
+        "propose 'ship proposal gate' --rationale 'direction control' --json"
+    ))
+
+    approved = json.loads(kc.run_slash(
+        f"approve {created['id']} --assignee dori-fixer --json"
+    ))
+
+    assert approved["status"] == "ready"
+    assert approved["assignee"] == "dori-fixer"
+    assert approved["proposal"]["decision"] == "approved"
+
+    show = kc.run_slash(f"show {created['id']}")
+    assert "proposal approved" in show.lower()
+
+
+def test_run_slash_deny_blocks_proposal_with_reason(kanban_home):
+    created = json.loads(kc.run_slash(
+        "propose 'chase vanity metric' --rationale 'looks impressive' --json"
+    ))
+
+    denied = json.loads(kc.run_slash(
+        f"deny {created['id']} not aligned with roadmap --json"
+    ))
+
+    assert denied["status"] == "blocked"
+    assert denied["proposal"]["decision"] == "denied"
+
+    show = kc.run_slash(f"show {created['id']}")
+    assert "proposal denied" in show.lower()
+    assert "not aligned with roadmap" in show

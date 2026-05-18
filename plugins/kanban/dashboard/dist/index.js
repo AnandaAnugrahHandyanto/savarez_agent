@@ -2671,6 +2671,36 @@
       });
     };
 
+    const doApprove = function () {
+      return SDK.fetchJSON(
+        withBoard(`${API}/tasks/${encodeURIComponent(props.taskId)}/approve`, boardSlug),
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ author: "dashboard" }),
+        }
+      ).then(function (res) {
+        load();
+        props.onRefresh();
+        return res;
+      });
+    };
+
+    const doDeny = function (reason) {
+      return SDK.fetchJSON(
+        withBoard(`${API}/tasks/${encodeURIComponent(props.taskId)}/deny`, boardSlug),
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ reason: reason, author: "dashboard" }),
+        }
+      ).then(function (res) {
+        load();
+        props.onRefresh();
+        return res;
+      });
+    };
+
     // POST /tasks/:id/decompose — fan a triage task out into a graph
     // of child tasks routed to specialist profiles by description.
     // Refreshes both the drawer (so the user sees the root flip to
@@ -2781,6 +2811,8 @@
           boardSlug: boardSlug,
           onPatch: doPatch,
           onSpecify: doSpecify,
+          onApprove: doApprove,
+          onDeny: doDeny,
           onDecompose: doDecompose,
           onAddParent: addLink,
           onRemoveParent: removeLink,
@@ -2855,6 +2887,8 @@
         task: t,
         onPatch: props.onPatch,
         onSpecify: props.onSpecify,
+        onApprove: props.onApprove,
+        onDeny: props.onDeny,
         onDecompose: props.onDecompose,
       }),
       h(DiagnosticsSection, {
@@ -3320,6 +3354,8 @@
     const task = props.task;
     const [specifyBusy, setSpecifyBusy] = useState(false);
     const [specifyMsg, setSpecifyMsg] = useState(null);
+    const [decisionBusy, setDecisionBusy] = useState(false);
+    const [decisionMsg, setDecisionMsg] = useState(null);
     const [decomposeBusy, setDecomposeBusy] = useState(false);
     const [decomposeMsg, setDecomposeMsg] = useState(null);
     const b = function (label, patch, enabled, confirmMsg) {
@@ -3365,6 +3401,44 @@
           size: "sm",
         }, specifyBusy ? "Specifying…" : "✨ Specify")
       : null;
+
+    const proposalButtons = (task.status === "triage" && props.onApprove && props.onDeny)
+      ? [
+          h(Button, {
+            key: "approve",
+            onClick: function () {
+              if (decisionBusy) return;
+              setDecisionBusy(true);
+              setDecisionMsg(null);
+              props.onApprove().then(function () {
+                setDecisionMsg({ ok: true, text: "Approved for dispatch" });
+              }).catch(function (err) {
+                setDecisionMsg({ ok: false, text: "Approve failed: " + (err.message || String(err)) });
+              }).then(function () { setDecisionBusy(false); });
+            },
+            disabled: decisionBusy,
+            size: "sm",
+          }, decisionBusy ? "Approving…" : "✓ Approve"),
+          h(Button, {
+            key: "deny",
+            variant: "outline",
+            onClick: function () {
+              if (decisionBusy) return;
+              const reason = window.prompt("Why deny this proposal?");
+              if (!reason || !reason.trim()) return;
+              setDecisionBusy(true);
+              setDecisionMsg(null);
+              props.onDeny(reason.trim()).then(function () {
+                setDecisionMsg({ ok: true, text: "Denied and blocked" });
+              }).catch(function (err) {
+                setDecisionMsg({ ok: false, text: "Deny failed: " + (err.message || String(err)) });
+              }).then(function () { setDecisionBusy(false); });
+            },
+            disabled: decisionBusy,
+            size: "sm",
+          }, "✕ Deny"),
+        ]
+      : [];
 
     // "Decompose" is the orchestrator-driven fan-out. Like Specify, only
     // makes sense on triage-column tasks — elsewhere the backend short-
@@ -3416,6 +3490,7 @@
     return h("div", null,
       h("div", { className: "hermes-kanban-actions" },
         specifyButton,
+        proposalButtons,
         decomposeButton,
         b("→ triage",  { status: "triage" },   task.status !== "triage"),
         b("→ ready",   { status: "ready" },    task.status !== "ready"),
@@ -3438,6 +3513,11 @@
           ? "hermes-kanban-msg-ok"
           : "hermes-kanban-msg-err",
       }, specifyMsg.text) : null,
+      decisionMsg ? h("div", {
+        className: decisionMsg.ok
+          ? "hermes-kanban-msg-ok"
+          : "hermes-kanban-msg-err",
+      }, decisionMsg.text) : null,
       decomposeMsg ? h("div", {
         className: decomposeMsg.ok
           ? "hermes-kanban-msg-ok"

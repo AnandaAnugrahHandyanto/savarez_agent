@@ -296,6 +296,41 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                                f"(default {kb.DEFAULT_FAILURE_LIMIT}).")
     p_create.add_argument("--json", action="store_true", help="Emit JSON output")
 
+    # --- proposal gate ---
+    p_propose = sub.add_parser(
+        "propose",
+        help="Propose recommended next work that requires approve/deny before dispatch",
+    )
+    p_propose.add_argument("title", help="Recommendation title")
+    p_propose.add_argument("--rationale", required=True,
+                           help="Why this is the right next thing")
+    p_propose.add_argument("--guardrail", action="append", default=[],
+                           help="Direction/safety guardrail (repeatable)")
+    p_propose.add_argument("--assignee", default=None,
+                           help="Profile intended to execute after approval")
+    p_propose.add_argument("--tenant", default=None, help="Tenant namespace")
+    p_propose.add_argument("--priority", type=int, default=0, help="Priority tiebreaker")
+    p_propose.add_argument("--idempotency-key", default=None,
+                           help="Dedup key for repeated recommendations")
+    p_propose.add_argument("--json", action="store_true", help="Emit JSON output")
+
+    p_approve = sub.add_parser(
+        "approve",
+        help="Approve a proposed task and make it eligible for dispatch",
+    )
+    p_approve.add_argument("task_id")
+    p_approve.add_argument("--assignee", default=None,
+                           help="Assign/reassign the execution profile before approval")
+    p_approve.add_argument("--json", action="store_true", help="Emit JSON output")
+
+    p_deny = sub.add_parser(
+        "deny",
+        help="Deny a proposed task and block it with a reason",
+    )
+    p_deny.add_argument("task_id")
+    p_deny.add_argument("reason", nargs="+", help="Reason this proposal is not aligned")
+    p_deny.add_argument("--json", action="store_true", help="Emit JSON output")
+
     # --- list ---
     p_list = sub.add_parser("list", aliases=["ls"], help="List tasks")
     p_list.add_argument("--mine", action="store_true",
@@ -746,6 +781,9 @@ def kanban_command(args: argparse.Namespace) -> int:
     handlers = {
         "init":     _cmd_init,
         "create":   _cmd_create,
+        "propose":  _cmd_propose,
+        "approve":  _cmd_approve,
+        "deny":     _cmd_deny,
         "list":     _cmd_list,
         "ls":       _cmd_list,
         "show":     _cmd_show,
@@ -1084,7 +1122,11 @@ def _cmd_assignees(args: argparse.Namespace) -> int:
 
 
 def _cmd_create(args: argparse.Namespace) -> int:
-    ws_kind, ws_path = _parse_workspace_flag(args.workspace)
+    try:
+        ws_kind, ws_path = _parse_workspace_flag(args.workspace)
+    except argparse.ArgumentTypeError as exc:
+        print(f"kanban: {exc}", file=sys.stderr)
+        return 2
     try:
         max_runtime = _parse_duration(getattr(args, "max_runtime", None))
     except ValueError as exc:
@@ -1133,6 +1175,88 @@ def _cmd_create(args: argparse.Namespace) -> int:
             running, message = _check_dispatcher_presence()
             if not running and message:
                 print(f"\n⚠  {message}", file=sys.stderr)
+    return 0
+
+
+def _proposal_body(title: str, rationale: str, guardrails: list[str]) -> str:
+    guardrail_lines = guardrails or ["Human approval is required before dispatch."]
+    return "\n\n".join([
+        "## Recommendation\n" + title.strip(),
+        "## Rationale\n" + rationale.strip(),
+        "## Guardrails\n" + "\n".join(f"- {g.strip()}" for g in guardrail_lines if g.strip()),
+        "## Approval\nApprove this proposal with `hermes kanban approve <task_id>` "
+        "or deny it with `hermes kanban deny <task_id> <reason>`. The task "
+        "stays in triage until approved, so workers will not dispatch it by accident.",
+    ])
+
+
+def _proposal_response(task: kb.Task, *, decision: Optional[str] = None) -> dict[str, Any]:
+    data = _task_to_dict(task)
+    proposal: dict[str, Any] = {"approval_gate": "approve_or_deny"}
+    if decision:
+        proposal["decision"] = decision
+    data["proposal"] = proposal
+    return data
+
+
+def _cmd_propose(args: argparse.Namespace) -> int:
+    body = _proposal_body(args.title, args.rationale, list(args.guardrail or []))
+    with kb.connect() as conn:
+        task_id = kb.create_task(
+            conn,
+            title=args.title,
+            body=body,
+            assignee=args.assignee,
+            created_by=_profile_author(),
+            tenant=args.tenant,
+            priority=args.priority,
+            triage=True,
+            idempotency_key=getattr(args, "idempotency_key", None),
+        )
+        task = kb.get_task(conn, task_id)
+    if getattr(args, "json", False):
+        print(json.dumps(_proposal_response(task), indent=2, ensure_ascii=False))
+    else:
+        print(f"Proposed {task.id}  (triage, assignee={task.assignee or '-'})")
+        print(f"Approve: hermes kanban approve {task.id}")
+        print(f"Deny:    hermes kanban deny {task.id} <reason>")
+    return 0
+
+
+def _cmd_approve(args: argparse.Namespace) -> int:
+    with kb.connect() as conn:
+        task = kb.approve_proposal(
+            conn,
+            args.task_id,
+            assignee=getattr(args, "assignee", None),
+            author=_profile_author(),
+        )
+    if not task:
+        print(f"no such task: {args.task_id}", file=sys.stderr)
+        return 1
+    if getattr(args, "json", False):
+        print(json.dumps(_proposal_response(task, decision="approved"), indent=2, ensure_ascii=False))
+    else:
+        print(f"Approved {task.id}  ({task.status}, assignee={task.assignee or '-'})")
+    return 0
+
+
+def _cmd_deny(args: argparse.Namespace) -> int:
+    reason = " ".join(args.reason).strip()
+    with kb.connect() as conn:
+        task = kb.deny_proposal(
+            conn,
+            args.task_id,
+            reason=reason,
+            author=_profile_author(),
+        )
+    if not task:
+        print(f"no such task: {args.task_id}", file=sys.stderr)
+        return 1
+    if getattr(args, "json", False):
+        print(json.dumps(_proposal_response(task, decision="denied"), indent=2, ensure_ascii=False))
+    else:
+        print(f"Denied {task.id}  (blocked): {reason}")
     return 0
 
 

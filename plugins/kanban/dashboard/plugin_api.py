@@ -584,6 +584,16 @@ class UpdateTaskBody(BaseModel):
     metadata: Optional[dict] = None
 
 
+class ApproveTaskBody(BaseModel):
+    assignee: Optional[str] = None
+    author: Optional[str] = "dashboard"
+
+
+class DenyTaskBody(BaseModel):
+    reason: str
+    author: Optional[str] = "dashboard"
+
+
 @router.patch("/tasks/{task_id}")
 def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Query(None)):
     board = _resolve_board(board)
@@ -746,9 +756,57 @@ def _set_status_direct(
             (task_id, run_id, json.dumps({"status": new_status}), int(time.time())),
         )
     # If we re-opened something, children may have gone stale.
-    if new_status in {"done", "ready"}:
+    if new_status in ("done", "ready"):
         kanban_db.recompute_ready(conn)
     return True
+
+
+@router.post("/tasks/{task_id}/approve")
+def approve_task(task_id: str, payload: ApproveTaskBody, board: Optional[str] = Query(None)):
+    board = _resolve_board(board)
+    conn = _conn(board=board)
+    try:
+        try:
+            task = kanban_db.approve_proposal(
+                conn,
+                task_id,
+                assignee=payload.assignee,
+                author=payload.author or "dashboard",
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+        if task is None:
+            raise HTTPException(status_code=404, detail=f"task {task_id} not found")
+        return {
+            "task": _task_dict(task),
+            "proposal": {"approval_gate": "approve_or_deny", "decision": "approved"},
+        }
+    finally:
+        conn.close()
+
+
+@router.post("/tasks/{task_id}/deny")
+def deny_task(task_id: str, payload: DenyTaskBody, board: Optional[str] = Query(None)):
+    board = _resolve_board(board)
+    conn = _conn(board=board)
+    try:
+        try:
+            task = kanban_db.deny_proposal(
+                conn,
+                task_id,
+                reason=payload.reason,
+                author=payload.author or "dashboard",
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+        if task is None:
+            raise HTTPException(status_code=404, detail=f"task {task_id} not found")
+        return {
+            "task": _task_dict(task),
+            "proposal": {"approval_gate": "approve_or_deny", "decision": "denied"},
+        }
+    finally:
+        conn.close()
 
 
 # ---------------------------------------------------------------------------

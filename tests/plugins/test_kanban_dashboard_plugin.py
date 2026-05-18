@@ -238,6 +238,41 @@ def test_patch_block_then_unblock(client):
     assert r.json()["task"]["status"] == "ready"
 
 
+def test_proposal_approve_and_deny_endpoints(client):
+    approved_task = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "proposal", "triage": True},
+    ).json()["task"]
+
+    r = client.post(
+        f"/api/plugins/kanban/tasks/{approved_task['id']}/approve",
+        json={"assignee": "dori-fixer"},
+    )
+    assert r.status_code == 200, r.text
+    approved = r.json()["task"]
+    assert approved["status"] == "ready"
+    assert approved["assignee"] == "dori-fixer"
+    assert r.json()["proposal"]["decision"] == "approved"
+
+    denied_task = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "bad proposal", "triage": True},
+    ).json()["task"]
+    r = client.post(
+        f"/api/plugins/kanban/tasks/{denied_task['id']}/deny",
+        json={"reason": "not aligned"},
+    )
+    assert r.status_code == 200, r.text
+    denied = r.json()["task"]
+    assert denied["status"] == "blocked"
+    assert r.json()["proposal"]["decision"] == "denied"
+
+    detail = client.get(f"/api/plugins/kanban/tasks/{denied_task['id']}").json()
+    comments = "\n".join(c["body"] for c in detail["comments"])
+    assert "proposal denied" in comments.lower()
+    assert "not aligned" in comments
+
+
 def test_patch_drag_drop_move_todo_to_ready(client):
     """Direct status write: the drag-drop path for statuses without a
     dedicated verb (e.g. manually promoting todo -> ready).
@@ -1542,8 +1577,15 @@ def test_diagnostics_endpoint_surfaces_blocked_hallucination(client):
     assert "t_ffff00001234" in row["diagnostics"][0]["data"]["phantom_ids"]
 
 
-def test_diagnostics_endpoint_severity_filter(client):
+def test_diagnostics_endpoint_severity_filter(client, monkeypatch):
     """Warning-severity filter excludes error-severity entries."""
+    from hermes_cli import config as hermes_config
+
+    monkeypatch.setattr(
+        hermes_config,
+        "load_config",
+        lambda: {"kanban": {"diagnostics": {"failure_threshold": 5}}},
+    )
     conn = kb.connect()
     try:
         # A warning-severity diagnostic (prose phantom) on one task.
