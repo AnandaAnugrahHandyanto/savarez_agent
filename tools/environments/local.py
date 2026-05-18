@@ -13,9 +13,9 @@ from pathlib import Path
 
 from tools.environments.base import BaseEnvironment, _pipe_stdin
 
-_IS_WINDOWS = platform.system() == "Windows"
-
 logger = logging.getLogger(__name__)
+
+_IS_WINDOWS = platform.system() == "Windows"
 
 
 def _msys_to_windows_path(cwd: str) -> str:
@@ -170,8 +170,96 @@ def _build_provider_env_blocklist() -> frozenset:
 _HERMES_PROVIDER_ENV_BLOCKLIST = _build_provider_env_blocklist()
 
 
+_PRCTL = None
+_PRCTL_UNAVAILABLE = False
+_CTYPES_MOD = None
+_HARDEN_WARNED = False
+
+_PR_GET_DUMPABLE = 3
+_PR_SET_DUMPABLE = 4
+
+
+def _warn_harden_failed(reason: str) -> None:
+    global _HARDEN_WARNED
+    if _HARDEN_WARNED:
+        return
+    _HARDEN_WARNED = True
+    logger.warning(
+        "PR_SET_DUMPABLE could not be cleared (%s); /proc/<pid>/environ leak protection inactive — "
+        "subprocess children may recover stripped credentials. See issue #4427.",
+        reason,
+    )
+
+
+def _resolve_prctl():
+    """Resolve libc.prctl once and cache it.  Returns the bound function or None.
+
+    On musl-based distros (Alpine) `libc.so.6` does not exist, so we go through
+    `ctypes.util.find_library("c")` and fall back to `CDLL(None)` (the current
+    process's symbols).  After the first failed resolution we set a sentinel
+    and stop retrying, so a non-Linux or broken-libc host doesn't pay the
+    resolution cost on every spawn.
+    """
+    global _PRCTL, _PRCTL_UNAVAILABLE, _CTYPES_MOD
+    if _PRCTL is not None:
+        return _PRCTL
+    if _PRCTL_UNAVAILABLE:
+        return None
+    try:
+        import ctypes
+        import ctypes.util
+        libc_name = ctypes.util.find_library("c")
+        try:
+            libc = ctypes.CDLL(libc_name or "libc.so.6", use_errno=True)
+        except OSError:
+            libc = ctypes.CDLL(None, use_errno=True)
+        libc.prctl.argtypes = [
+            ctypes.c_int, ctypes.c_ulong, ctypes.c_ulong,
+            ctypes.c_ulong, ctypes.c_ulong,
+        ]
+        libc.prctl.restype = ctypes.c_int
+    except Exception as exc:
+        _PRCTL_UNAVAILABLE = True
+        _warn_harden_failed(f"libc/prctl unavailable: {type(exc).__name__}")
+        return None
+    _CTYPES_MOD = ctypes
+    _PRCTL = libc.prctl
+    return _PRCTL
+
+
+def _harden_against_proc_environ_leak() -> None:
+    """Drop the PR_SET_DUMPABLE flag so /proc/<pid>/environ is owned root:root.
+
+    Subprocesses inherit the same UID and can otherwise read the parent's
+    initial environment via /proc/<ppid>/environ — bypassing the env=
+    sanitization done at Popen time.  Dropping dumpable changes the ownership
+    of the /proc files to root:root with mode 400, which blocks same-UID
+    readers on Linux.  No-op on non-Linux platforms.
+
+    Re-reads PR_GET_DUMPABLE on every call so the helper self-corrects when
+    the flag is reset by a fork / extension / multiprocessing path.  libc
+    resolution is cached after the first success, so the steady-state cost is
+    one prctl syscall.
+
+    Privileged bypass paths still exist (CAP_SYS_PTRACE in the target's user
+    namespace, ptrace-mode FSCREDS overrides) and are out of scope for this
+    function; pair with /proc hidepid=2 mount option for defense in depth.
+    """
+    if platform.system() != "Linux":
+        return
+    prctl = _resolve_prctl()
+    if prctl is None:
+        return
+    if prctl(_PR_GET_DUMPABLE, 0, 0, 0, 0) == 0:
+        return
+    rc = prctl(_PR_SET_DUMPABLE, 0, 0, 0, 0)
+    if rc != 0:
+        _warn_harden_failed(f"prctl returned {rc}, errno={_CTYPES_MOD.get_errno()}")
+
+
 def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = None) -> dict:
     """Filter Hermes-managed secrets from a subprocess environment."""
+    _harden_against_proc_environ_leak()
     try:
         from tools.env_passthrough import is_env_passthrough as _is_passthrough
     except Exception:
@@ -267,6 +355,7 @@ _SANE_PATH = (
 
 def _make_run_env(env: dict) -> dict:
     """Build a run environment with a sane PATH and provider-var stripping."""
+    _harden_against_proc_environ_leak()
     try:
         from tools.env_passthrough import is_env_passthrough as _is_passthrough
     except Exception:
