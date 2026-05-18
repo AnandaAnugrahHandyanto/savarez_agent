@@ -17,6 +17,7 @@ import os
 import shutil
 import subprocess
 import sys
+import psutil
 
 # fcntl is Unix-only; on Windows use msvcrt for file locking
 try:
@@ -256,6 +257,26 @@ def _iter_home_target_platforms():
         pass
 
 
+def _has_active_tui_session() -> bool:
+    """Return True if a TUI process (ui-tui/dist/entry.js) is currently running.
+
+    Uses psutil for cross-platform process enumeration. Returns True on any
+    error so that delivery behaviour degrades gracefully rather than
+    incorrectly dropping cli-origin jobs.
+    """
+    try:
+        for proc in psutil.process_iter(["cmdline"]):
+            try:
+                cmdline = proc.info.get("cmdline") or []
+                if any("ui-tui/dist/entry.js" in arg for arg in cmdline):
+                    return True
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+        return False
+    except Exception:
+        return True
+
+
 def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[dict]:
     """Resolve one concrete auto-delivery target for a cron job."""
 
@@ -266,18 +287,26 @@ def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[d
 
     if deliver_value == "origin":
         if origin:
-            return {
-                "platform": origin["platform"],
-                "chat_id": str(origin["chat_id"]),
-                "thread_id": origin.get("thread_id"),
-            }
-        # Origin missing (e.g. job created via API/script) — try each
-        # platform's home channel as a fallback instead of silently dropping.
+            if origin.get("platform") == "cli" and not _has_active_tui_session():
+                # TUI session is dead — fall through to home-channel fallback
+                logger.info(
+                    "Job '%s' has deliver=origin with cli platform but no active TUI session;"
+                    " falling back to home channel",
+                    job.get("name", job.get("id", "?")),
+                )
+            else:
+                return {
+                    "platform": origin["platform"],
+                    "chat_id": str(origin["chat_id"]),
+                    "thread_id": origin.get("thread_id"),
+                }
+        # Origin missing or cli origin with dead TUI — try each platform's
+        # home channel as a fallback instead of silently dropping.
         for platform_name in _iter_home_target_platforms():
             chat_id = _get_home_target_chat_id(platform_name)
             if chat_id:
                 logger.info(
-                    "Job '%s' has deliver=origin but no origin; falling back to %s home channel",
+                    "Job '%s' has deliver=origin but no reachable origin; falling back to %s home channel",
                     job.get("name", job.get("id", "?")),
                     platform_name,
                 )

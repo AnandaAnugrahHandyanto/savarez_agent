@@ -7,7 +7,17 @@ from unittest.mock import AsyncMock, patch, MagicMock
 
 import pytest
 
-from cron.scheduler import _resolve_origin, _resolve_delivery_target, _deliver_result, _send_media_via_adapter, run_job, SILENT_MARKER, _build_job_prompt
+from cron.scheduler import (
+    _resolve_origin,
+    _resolve_delivery_target,
+    _resolve_single_delivery_target,
+    _has_active_tui_session,
+    _deliver_result,
+    _send_media_via_adapter,
+    run_job,
+    SILENT_MARKER,
+    _build_job_prompt,
+)
 from tools.env_passthrough import clear_env_passthrough
 from tools.credential_files import clear_credential_files
 
@@ -2386,3 +2396,85 @@ class TestSendMediaTimeoutCancelsFuture:
         # 2. Second file still got dispatched — one timeout doesn't abort the batch
         adapter.send_video.assert_called_once()
         assert adapter.send_video.call_args[1]["video_path"] == "/tmp/fast.mp4"
+
+
+class TestCliOriginTuiLivenessFallback:
+    """Tests for deliver=origin with cli platform and TUI liveness check."""
+
+    def test_has_active_tui_session_returns_bool(self):
+        """_has_active_tui_session() must always return a bool."""
+        result = _has_active_tui_session()
+        assert isinstance(result, bool)
+
+    def test_has_active_tui_session_true_when_tui_process_running(self):
+        """Returns True when a process with ui-tui/dist/entry.js in cmdline exists."""
+        fake_proc = MagicMock()
+        fake_proc.info = {"cmdline": ["node", "/home/user/ui-tui/dist/entry.js", "--port", "3000"]}
+        with patch("psutil.process_iter", return_value=[fake_proc]):
+            assert _has_active_tui_session() is True
+
+    def test_has_active_tui_session_false_when_no_tui_process(self):
+        """Returns False when no process with ui-tui/dist/entry.js in cmdline exists."""
+        fake_proc = MagicMock()
+        fake_proc.info = {"cmdline": ["node", "/home/user/other-app/dist/entry.js"]}
+        with patch("psutil.process_iter", return_value=[fake_proc]):
+            assert _has_active_tui_session() is False
+
+    def test_cli_origin_used_when_tui_alive(self):
+        """When TUI is alive, cli origin is returned as-is."""
+        job = {
+            "deliver": "origin",
+            "origin": {"platform": "cli", "chat_id": "local"},
+        }
+        with patch("cron.scheduler._has_active_tui_session", return_value=True):
+            result = _resolve_single_delivery_target(job, "origin")
+        assert result == {"platform": "cli", "chat_id": "local", "thread_id": None}
+
+    def test_cli_origin_falls_back_to_home_channel_when_tui_dead(self, monkeypatch):
+        """When TUI is dead, cli origin is skipped and home channel is used."""
+        job = {
+            "deliver": "origin",
+            "origin": {"platform": "cli", "chat_id": "local"},
+        }
+        for env_var in (
+            "MATRIX_HOME_ROOM", "MATRIX_HOME_CHANNEL", "TELEGRAM_HOME_CHANNEL",
+            "DISCORD_HOME_CHANNEL", "SLACK_HOME_CHANNEL", "SIGNAL_HOME_CHANNEL",
+            "MATTERMOST_HOME_CHANNEL", "SMS_HOME_CHANNEL", "EMAIL_HOME_ADDRESS",
+            "DINGTALK_HOME_CHANNEL", "BLUEBUBBLES_HOME_CHANNEL", "FEISHU_HOME_CHANNEL",
+            "WECOM_HOME_CHANNEL", "WEIXIN_HOME_CHANNEL", "QQ_HOME_CHANNEL",
+        ):
+            monkeypatch.delenv(env_var, raising=False)
+        monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "987654")
+        with patch("cron.scheduler._has_active_tui_session", return_value=False):
+            result = _resolve_single_delivery_target(job, "origin")
+        assert result == {"platform": "telegram", "chat_id": "987654", "thread_id": None}
+
+    def test_cli_origin_falls_back_to_none_when_tui_dead_and_no_home_channels(
+        self, monkeypatch
+    ):
+        """When TUI is dead and no home channels configured, returns None."""
+        job = {
+            "deliver": "origin",
+            "origin": {"platform": "cli", "chat_id": "local"},
+        }
+        for env_var in (
+            "MATRIX_HOME_ROOM", "MATRIX_HOME_CHANNEL", "TELEGRAM_HOME_CHANNEL",
+            "DISCORD_HOME_CHANNEL", "SLACK_HOME_CHANNEL", "SIGNAL_HOME_CHANNEL",
+            "MATTERMOST_HOME_CHANNEL", "SMS_HOME_CHANNEL", "EMAIL_HOME_ADDRESS",
+            "DINGTALK_HOME_CHANNEL", "BLUEBUBBLES_HOME_CHANNEL", "FEISHU_HOME_CHANNEL",
+            "WECOM_HOME_CHANNEL", "WEIXIN_HOME_CHANNEL", "QQ_HOME_CHANNEL",
+        ):
+            monkeypatch.delenv(env_var, raising=False)
+        with patch("cron.scheduler._has_active_tui_session", return_value=False):
+            result = _resolve_single_delivery_target(job, "origin")
+        assert result is None
+
+    def test_non_cli_origin_not_affected_by_tui_check(self):
+        """TUI liveness check only applies to cli platform; telegram origin is unaffected."""
+        job = {
+            "deliver": "origin",
+            "origin": {"platform": "telegram", "chat_id": "111222"},
+        }
+        with patch("cron.scheduler._has_active_tui_session", return_value=False):
+            result = _resolve_single_delivery_target(job, "origin")
+        assert result == {"platform": "telegram", "chat_id": "111222", "thread_id": None}
