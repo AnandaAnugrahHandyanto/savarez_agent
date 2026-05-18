@@ -5693,16 +5693,6 @@ class GatewayRunner:
                 return None
             return YuanbaoAdapter(config)
 
-        elif platform == Platform.NATS:
-            from gateway.platforms.nats import NatsAdapter, check_nats_requirements
-            if not check_nats_requirements():
-                logger.warning(
-                    "NATS: synadia-ai-agents / synadia-ai-agent-service not installed. "
-                    "Install with `pip install 'hermes-agent[nats]'`."
-                )
-                return None
-            return NatsAdapter(config)
-
         return None
     def _is_user_authorized(self, source: SessionSource) -> bool:
         """
@@ -5720,13 +5710,7 @@ class GatewayRunner:
         # connection, so HA events are always authorized.
         # Webhook events are authenticated via HMAC signature validation in
         # the adapter itself — no user allowlist applies.
-        # NATS events are authenticated at the NATS server layer (accounts,
-        # NKey / JWT / TLS) per design doc §10.1 — the envelope ``session``
-        # value we use as user_id is caller-supplied routing metadata, not
-        # an authenticated principal, so the gateway's user allowlist doesn't
-        # apply. Without this branch, ``/help`` over NATS replies with a
-        # pairing code instead of the help text.
-        if source.platform in {Platform.HOMEASSISTANT, Platform.WEBHOOK, Platform.NATS}:
+        if source.platform in {Platform.HOMEASSISTANT, Platform.WEBHOOK}:
             return True
 
         user_id = source.user_id

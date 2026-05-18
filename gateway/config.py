@@ -127,7 +127,6 @@ class Platform(Enum):
     BLUEBUBBLES = "bluebubbles"
     QQBOT = "qqbot"
     YUANBAO = "yuanbao"
-    NATS = "nats"
 
     @classmethod
     def _missing_(cls, value):
@@ -437,9 +436,6 @@ _PLATFORM_CONNECTED_CHECKERS: dict[Platform, Callable[[PlatformConfig], bool]] =
     Platform.DINGTALK: lambda cfg: bool(
         (cfg.extra.get("client_id") or os.getenv("DINGTALK_CLIENT_ID"))
         and (cfg.extra.get("client_secret") or os.getenv("DINGTALK_CLIENT_SECRET"))
-    ),
-    Platform.NATS: lambda cfg: bool(
-        cfg.extra.get("servers") or cfg.extra.get("context")
     ),
 }
 
@@ -1810,28 +1806,6 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         yuanbao_group_allow_from = os.getenv("YUANBAO_GROUP_ALLOW_FROM")
         if yuanbao_group_allow_from:
             extra["group_allow_from"] = yuanbao_group_allow_from
-
-    # NATS
-    nats_url = os.getenv("NATS_URL", "").strip()
-    nats_context = os.getenv("NATS_CONTEXT", "").strip()
-    nats_agent = os.getenv("HERMES_NATS_AGENT", "").strip()
-    nats_owner = os.getenv("HERMES_NATS_OWNER", "").strip()
-    nats_session_name = os.getenv("HERMES_NATS_SESSION_NAME", "").strip()
-    if nats_url or nats_context or nats_agent or nats_owner or nats_session_name:
-        if Platform.NATS not in config.platforms:
-            config.platforms[Platform.NATS] = PlatformConfig()
-        config.platforms[Platform.NATS].enabled = True
-        extra = config.platforms[Platform.NATS].extra
-        if nats_url:
-            extra["servers"] = [nats_url]
-        if nats_context:
-            extra["context"] = nats_context
-        if nats_agent:
-            extra["agent"] = nats_agent
-        if nats_owner:
-            extra["owner"] = nats_owner
-        if nats_session_name:
-            extra["session_name"] = nats_session_name
 
     # Session settings
     idle_minutes = os.getenv("SESSION_IDLE_MINUTES")

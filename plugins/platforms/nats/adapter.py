@@ -2188,10 +2188,7 @@ def register(ctx):
         validate_config=validate_config,
         is_connected=is_connected,
         required_env=["HERMES_NATS_OWNER", "HERMES_NATS_SESSION_NAME"],
-        install_hint=(
-            "pip install 'hermes-agent[nats]'   "
-            "# installs synadia-ai-agents, synadia-ai-agent-service, nkeys"
-        ),
+        install_hint="pip install synadia-ai-agents synadia-ai-agent-service nkeys",
         setup_fn=interactive_setup,
         env_enablement_fn=_env_enablement,
         # Honored at runtime by gateway auth integration; Stage 2 hardens
