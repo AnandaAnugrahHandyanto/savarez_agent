@@ -230,8 +230,11 @@ def _generic_recovery_actions(task: Any, *, running: bool) -> list[DiagnosticAct
 RuleFn = Callable[[Any, list[Any], list[Any], int, dict], list[Diagnostic]]
 
 
-def triage_specifier_configured(config: Optional[dict]) -> Optional[bool]:
-    """Return whether config clearly provides a triage specifier backend.
+def _auxiliary_task_configured(
+    config: Optional[dict],
+    task_name: str,
+) -> Optional[bool]:
+    """Return whether config clearly provides an auxiliary backend.
 
     ``None`` means "unknown" and suppresses the diagnostic. The diagnostics
     engine is called from tests and low-level helpers that may not have loaded
@@ -240,13 +243,9 @@ def triage_specifier_configured(config: Optional[dict]) -> Optional[bool]:
     if not isinstance(config, dict):
         return None
 
-    explicit = config.get("triage_specifier_configured")
-    if explicit is not None:
-        return bool(explicit)
-
     aux = config.get("auxiliary")
-    if isinstance(aux, dict) and "triage_specifier" in aux:
-        spec = aux.get("triage_specifier")
+    if isinstance(aux, dict) and task_name in aux:
+        spec = aux.get(task_name)
         if not isinstance(spec, dict):
             return False
         provider = str(spec.get("provider") or "").strip().lower()
@@ -274,6 +273,18 @@ def triage_specifier_configured(config: Optional[dict]) -> Optional[bool]:
         return False
 
     return None
+
+
+def triage_automation_configured(config: Optional[dict]) -> Optional[bool]:
+    """Return whether the active triage automation path has a backend."""
+    if not isinstance(config, dict):
+        return None
+    explicit = config.get("triage_automation_configured")
+    if explicit is not None:
+        return bool(explicit)
+    auto_decompose = bool(config.get("auto_decompose", True))
+    task_name = "kanban_decomposer" if auto_decompose else "triage_specifier"
+    return _auxiliary_task_configured(config, task_name)
 
 
 def _rule_hallucinated_cards(task, events, runs, now, cfg) -> list[Diagnostic]:
@@ -323,55 +334,58 @@ def _rule_hallucinated_cards(task, events, runs, now, cfg) -> list[Diagnostic]:
     )]
 
 
-def _rule_triage_missing_specifier(task, events, runs, now, cfg) -> list[Diagnostic]:
-    """A triage task cannot be auto-specified without a configured helper.
+def _rule_triage_automation_unavailable(task, events, runs, now, cfg) -> list[Diagnostic]:
+    """A triage task cannot advance without the active automation backend.
 
-    The dispatcher does not run rough ``triage`` cards directly; they need
-    ``hermes kanban specify`` (or the dashboard button) to flesh the request
-    out and promote it to ``todo``. If the config is missing the specifier
-    backend, those tasks can sit in triage indefinitely with no visible reason.
+    With auto-decompose enabled, triage uses ``auxiliary.kanban_decomposer``.
+    In manual mode, the fallback single-task path uses
+    ``auxiliary.triage_specifier``. If the active helper is missing and no
+    main model fallback is visible, triage cards can sit indefinitely.
     """
     if _task_field(task, "status") != "triage":
         return []
 
-    configured = triage_specifier_configured(cfg)
+    configured = triage_automation_configured(cfg)
     if configured is not False:
         return []
 
     task_id = _task_field(task, "id") or "<task_id>"
+    auto_decompose = bool(cfg.get("auto_decompose", True))
+    helper = "kanban_decomposer" if auto_decompose else "triage_specifier"
+    command = "decompose" if auto_decompose else "specify"
     actions = [
         DiagnosticAction(
             kind="cli_hint",
-            label="Configure auxiliary.triage_specifier",
+            label=f"Configure auxiliary.{helper}",
             payload={
                 "command": (
-                    "hermes config set auxiliary.triage_specifier.provider auto"
+                    f"hermes config set auxiliary.{helper}.provider auto"
                 )
             },
             suggested=True,
         ),
         DiagnosticAction(
             kind="cli_hint",
-            label=f"Specify manually: hermes kanban specify {task_id}",
-            payload={"command": f"hermes kanban specify {task_id}"},
+            label=f"Run manually: hermes kanban {command} {task_id}",
+            payload={"command": f"hermes kanban {command} {task_id}"},
         ),
     ]
     return [Diagnostic(
-        kind="triage_missing_specifier",
+        kind="triage_automation_unavailable",
         severity="warning",
-        title="Triage specifier is not configured",
+        title="Triage automation backend is not configured",
         detail=(
             "This task is still in triage, but the current config does not "
-            "define auxiliary.triage_specifier and no main model fallback is "
-            "visible to diagnostics. Triage tasks are not dispatched until "
-            "they are specified and promoted, so configure the specifier or "
-            "run the specify command after fixing model config."
+            f"define auxiliary.{helper} and no main model fallback is visible "
+            "to diagnostics. Triage tasks are not dispatched until they are "
+            "decomposed or specified and promoted, so configure the active "
+            "triage helper or run the command after fixing model config."
         ),
         actions=actions,
         first_seen_at=now,
         last_seen_at=now,
         count=1,
-        data={"task_id": task_id},
+        data={"task_id": task_id, "helper": helper},
     )]
 
 
@@ -793,7 +807,7 @@ def _rule_stranded_in_ready(task, events, runs, now, cfg) -> list[Diagnostic]:
 # severity ties. Add new rules here.
 _RULES: list[RuleFn] = [
     _rule_hallucinated_cards,
-    _rule_triage_missing_specifier,
+    _rule_triage_automation_unavailable,
     _rule_prose_phantom_refs,
     _rule_repeated_failures,
     _rule_repeated_crashes,
@@ -806,7 +820,7 @@ _RULES: list[RuleFn] = [
 # rules are added.
 DIAGNOSTIC_KINDS = (
     "hallucinated_cards",
-    "triage_missing_specifier",
+    "triage_automation_unavailable",
     "prose_phantom_refs",
     "repeated_failures",
     "repeated_crashes",
@@ -816,7 +830,7 @@ DIAGNOSTIC_KINDS = (
 
 
 DEFAULT_CONFIG = {
-    "triage_specifier_configured": None,
+    "triage_automation_configured": None,
     "failure_threshold": 3,
     # Legacy alias accepted at read time by _rule_repeated_failures.
     "spawn_failure_threshold": 3,
@@ -839,6 +853,8 @@ def config_from_runtime_config(raw_config: Optional[dict]) -> dict:
             builder = globals().get("config_from_kanban_config")
             if callable(builder):
                 cfg.update(builder(kanban_cfg))
+            if "auto_decompose" in kanban_cfg:
+                cfg["auto_decompose"] = bool(kanban_cfg.get("auto_decompose"))
         aux = raw_config.get("auxiliary")
         if aux is not None:
             cfg["auxiliary"] = aux
