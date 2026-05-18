@@ -1147,6 +1147,26 @@ agent:
   tool_use_enforcement: ["gpt", "codex", "gemini", "grok", "my-custom-model"]
 ```
 
+## Provider Error Sanitization
+
+When an API call fails after exhausting its retry loop, Hermes returns the raw upstream provider error as the user-facing response (for example, `API call failed after 3 retries: HTTP 402: Insufficient credits. Add more at https://openrouter.ai/settings/credits`).
+
+That verbatim error is useful when you operate Hermes for yourself. But when Hermes is run as a **managed service** — where end users chat with the agent but should not see the operator's provider plumbing — those raw errors can leak billing-dashboard URLs, account identifiers, and internal endpoint hosts.
+
+```yaml
+agent:
+  sanitize_provider_errors: false   # true | false
+```
+
+| Value | Behavior |
+|-------|----------|
+| `false` (default) | The user-facing response contains the raw provider error verbatim. Legacy behavior, unchanged. |
+| `true` | The user-facing response is replaced with a generic, category-based message (e.g. "The AI service is temporarily unavailable due to a billing or quota issue. Please contact your administrator."). |
+
+When enabled, the generic message still conveys *what kind* of failure occurred — billing/quota, rate limit, authentication, overload, timeout, model unavailable, or context overflow — so users get actionable guidance without exposure to provider internals.
+
+This only affects the user-facing `final_response`. **Full error detail is always preserved** in the logs and in the telemetry `error` field, so operators retain everything they need to diagnose failures.
+
 ## TTS Configuration
 
 ```yaml

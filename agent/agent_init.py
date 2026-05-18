@@ -1063,6 +1063,19 @@ def init_agent(
         _api_retries = 3
     agent._api_max_retries = _api_retries
 
+    # Provider-error sanitization: when enabled, the user-facing
+    # ``final_response`` returned after an exhausted API-failure retry loop
+    # is replaced with a generic, category-based message instead of the raw
+    # upstream provider error.  Raw provider errors can embed billing-
+    # dashboard URLs, account identifiers, and internal endpoint hosts —
+    # undesirable when Hermes is operated as a managed service whose end
+    # users should not see the operator's provider plumbing.  Default false
+    # preserves the legacy verbatim-error behavior; full detail is always
+    # kept in logs and the telemetry ``error`` field.
+    agent._sanitize_provider_errors = str(
+        _agent_section.get("sanitize_provider_errors", False)
+    ).lower() in ("true", "1", "yes")
+
     # Initialize context compressor for automatic context management
     # Compresses conversation when approaching model's context limit
     # Configuration via config.yaml (compression section)

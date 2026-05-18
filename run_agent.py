@@ -1428,6 +1428,55 @@ class AIAgent:
         prefix = f"HTTP {status_code}: " if status_code else ""
         return f"{prefix}{raw[:500]}"
 
+    @staticmethod
+    def _sanitized_user_error(reason: "FailoverReason") -> str:
+        """Map a classified failover reason to a generic, provider-agnostic
+        message safe to show end users.
+
+        Used only when ``agent.sanitize_provider_errors`` is enabled.  Raw
+        upstream provider errors frequently embed billing-dashboard URLs,
+        account identifiers, and internal endpoint hosts; this returns a
+        category-based message that conveys *what kind* of failure occurred
+        without leaking the operator's provider plumbing.  Full detail is
+        still recorded in logs and the telemetry ``error`` field.
+        """
+        messages = {
+            FailoverReason.billing:
+                "The AI service is temporarily unavailable due to a billing "
+                "or quota issue. Please contact your administrator.",
+            FailoverReason.rate_limit:
+                "The AI service is busy right now. Please wait a few minutes "
+                "and try again.",
+            FailoverReason.auth:
+                "The AI service rejected the request credentials. Please "
+                "contact your administrator.",
+            FailoverReason.auth_permanent:
+                "The AI service rejected the request credentials. Please "
+                "contact your administrator.",
+            FailoverReason.overloaded:
+                "The AI service is temporarily overloaded. Please try again "
+                "shortly.",
+            FailoverReason.server_error:
+                "The AI service encountered an internal error. Please try "
+                "again shortly.",
+            FailoverReason.timeout:
+                "The request to the AI service timed out. Please try again.",
+            FailoverReason.model_not_found:
+                "The configured AI model is currently unavailable. Please "
+                "contact your administrator.",
+            FailoverReason.context_overflow:
+                "The conversation is too long to process. Please start a new "
+                "session or shorten the request.",
+            FailoverReason.payload_too_large:
+                "The request was too large to process. Please shorten it and "
+                "try again.",
+        }
+        return messages.get(
+            reason,
+            "The AI service is temporarily unavailable. Please try again "
+            "later or contact your administrator.",
+        )
+
     def _mask_api_key_for_logs(self, key: Optional[str]) -> Optional[str]:
         if not key:
             return None
