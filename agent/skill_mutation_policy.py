@@ -7,6 +7,7 @@ importing the tool registry or agent runtime.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Optional
 
@@ -50,15 +51,35 @@ def readonly_external_skill_error(
     The current policy is deliberately narrow: local pinned skills keep their
     existing behavior, while skills resolved under configured external dirs are
     treated as read-only when pinned in the usage sidecar.
+
+    This check must fail closed when the usage sidecar exists but is unreadable:
+    otherwise a corrupt ``.usage.json`` silently erases the pin signal and makes
+    shared external skills mutable again.
     """
     if not is_external_skill_path(skill_dir):
         return None
     try:
         from tools import skill_usage
-        rec = skill_usage.get_record(name)
     except Exception:
         return None
-    if not rec.get("pinned"):
+
+    usage_path = skill_usage._usage_file()
+    if not usage_path.exists():
+        return None
+
+    try:
+        data = json.loads(usage_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return (
+            f"Skill '{name}' is an external skill at {skill_dir}; refusing {operation} "
+            "because skills/.usage.json is unreadable and pin state cannot be "
+            "verified safely. Repair or remove the broken usage sidecar first."
+        )
+    if not isinstance(data, dict):
+        return None
+
+    rec = data.get(name)
+    if not isinstance(rec, dict) or not rec.get("pinned"):
         return None
     return READONLY_EXTERNAL_SKILL_ERROR.format(
         name=name,

@@ -179,3 +179,22 @@ def test_archive_skill_refuses_pinned_external_skill(external_skill_env):
     assert "pinned/read-only external skill" in message
     assert skill_dir.exists()
     assert (skill_dir / "SKILL.md").read_text(encoding="utf-8") == SKILL_MD
+
+
+def test_corrupt_usage_sidecar_fail_closes_external_skill_mutation(external_skill_env):
+    tool = external_skill_env["skill_manager_tool"]
+    skill_dir = external_skill_env["skill_dir"]
+    usage_path = tool.SKILLS_DIR / ".usage.json"
+    usage_path.write_text("{not json", encoding="utf-8")
+
+    result = _manage(
+        tool,
+        action="patch",
+        name="atlas-load-bearing",
+        old_string="Original guidance.",
+        new_string="Patched guidance.",
+    )
+
+    assert result["success"] is False
+    assert "pin state cannot be verified safely" in result["error"]
+    assert (skill_dir / "SKILL.md").read_text(encoding="utf-8") == SKILL_MD
