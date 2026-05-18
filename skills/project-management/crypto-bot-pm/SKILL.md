@@ -291,7 +291,14 @@ The canonical completion evidence schema is
 authority for final branch-local completion. It fails closed when validators are
 missing, when `git diff --check` fails, when changed paths touch blocked
 surfaces, when sidecar evidence is stale or semantically insufficient, or when a
-sidecar result claims success without command evidence.
+sidecar result claims success without command evidence. Treat changed filenames
+as part of the blocked-surface contract: even safe planning/evidence artifacts
+can block if their path contains hard-surface tokens such as `trading`, `broker`,
+`order`, `account`, `live`, or `runtime`. Prefer neutral evidence filenames
+inside the allowlist, and if the gate blocks on path-token hygiene, rename the
+file, update evidence metadata, amend/recommit, regenerate the sidecar prompt,
+rerun the sidecar audit, and rerun the completion gate on the new HEAD. See
+`references/completion-gate-path-token-hygiene.md` for the repair pattern.
 
 Do not proceed to a new autonomous crypto_bot task while the readiness verifier
 reports `evidence_loop_ready: false` or `ready_for_next_task: false`. Readiness
@@ -390,6 +397,20 @@ status, read-only Gitea snapshots, development workstream packets, and Kanban
 evidence when available. Plugin tool output is evidence for planning and
 classification; it does not replace validators, local git evidence, Codex
 sidecar final audit, or the completion-gate JSON report.
+
+When PM status reports `Gitea snapshot module is unavailable` or recommends
+regenerating PM/Kanban context, cross-check the direct snapshot module and the
+Kanban packet before treating it as real Gitea unavailability. If Kanban or the
+direct snapshot sees live Gitea state while PM status reports a `<local-import>`
+blocker, classify it as Hermes control-plane/plugin import isolation and fix the
+PM status path before relying on its recommendation. See
+`references/pm-plugin-import-isolation.md` for the diagnostic sequence, durable
+fix pattern, semantic parity regression gates, and focused provider-isolation tests.
+
+When the fix is in the Hermes Agent control-plane checkout rather than the
+managed product repo, also follow the `hermes-agent` skill's control-plane branch
+hygiene and divergence reconciliation references before committing, pushing, or
+reporting branch readiness.
 
 ## Forbidden Actions
 
