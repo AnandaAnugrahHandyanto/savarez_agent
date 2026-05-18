@@ -23,6 +23,7 @@ def _reset_backend():
     import tools.computer_use.tool as tool_mod
 
     reset_backend_for_tests()
+    set_approval_callback(None)
     # Force the noop backend.
     with patch.dict(os.environ, {"HERMES_COMPUTER_USE_BACKEND": "noop"}, clear=False):
         # We need an approval callback for 'type', 'click', 'key' to pass
