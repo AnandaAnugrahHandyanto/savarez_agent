@@ -490,6 +490,8 @@ def _print_setup_summary(config: dict, hermes_home):
         tool_status.append(("Text-to-Speech (Mistral Voxtral)", True, None))
     elif tts_provider == "gemini" and (get_env_value("GEMINI_API_KEY") or get_env_value("GOOGLE_API_KEY")):
         tool_status.append(("Text-to-Speech (Google Gemini)", True, None))
+    elif tts_provider == "mimo" and (get_env_value("XIAOMI_API_KEY") or get_env_value("MIMO_API_KEY")):
+        tool_status.append(("Text-to-Speech (Xiaomi MiMo)", True, None))
     elif tts_provider == "neutts":
         try:
             neutts_ok = importlib.util.find_spec("neutts") is not None
