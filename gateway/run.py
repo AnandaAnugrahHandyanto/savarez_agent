@@ -7221,9 +7221,12 @@ class GatewayRunner:
                     adapter._pending_messages[_quick_key] = queued_event
                 return "No active agent — /steer queued for the next turn."
 
-            # /model must not be used while the agent is running.
+            # /model is a control-plane command. Showing the picker or setting
+            # a session override must not be blocked by an active turn; the
+            # running agent keeps its current request, and the override applies
+            # to the next model call/turn.
             if _cmd_def_inner and _cmd_def_inner.name == "model":
-                return "Agent is running — wait or /stop first, then switch models."
+                return await self._handle_model_command(event)
 
             # /codex-runtime must not be used while the agent is running.
             # Switching mid-turn would split a turn across two transports.
