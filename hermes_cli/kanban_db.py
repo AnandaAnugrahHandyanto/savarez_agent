@@ -2296,17 +2296,18 @@ def _verify_created_cards(
 # ``_new_task_id`` below. Kept permissive on length for forward compat:
 # accept 8+ hex chars after the ``t_`` prefix.
 _TASK_ID_PROSE_RE = re.compile(r"\bt_[a-f0-9]{8,}\b")
+_CHILD_BLOCKER_REASON_RE = re.compile(
+    r"\b(child|children|blocker|blockers|blocking|remediation|fix(?:es)?|waiting\s+on|wait(?:ing)?\s+for)\b",
+    re.IGNORECASE,
+)
 
 
-def _scan_prose_for_phantom_ids(
-    conn: sqlite3.Connection,
-    text: str,
-) -> list[str]:
-    """Regex-scan free-form text for ``t_<hex>`` references; return the
-    ones that don't exist in ``tasks``.
+def _scan_prose_for_phantom_ids(conn: sqlite3.Connection, text: str) -> list[str]:
+    """Return ``t_<hex>`` ids mentioned in ``text`` that do not exist.
 
-    Used as a non-blocking advisory check on completion summaries. An
-    empty return means "no suspicious references found" — either the
+    This is intentionally advisory: it is used to emit diagnostics when a
+    worker writes prose like "Created t_deadbeef" but forgot to pass the
+    structured ``created_cards`` manifest. An empty list means either the
     text had no IDs at all, or every ID it mentioned resolves to a real
     task. Duplicates are deduped.
     """
@@ -2329,6 +2330,132 @@ def _scan_prose_for_phantom_ids(
     ).fetchall()
     existing = {r["id"] for r in rows}
     return [m for m in unique if m not in existing]
+
+
+def _latest_block_reason(conn: sqlite3.Connection, task_id: str) -> Optional[str]:
+    """Return the most recent explicit block reason for ``task_id``."""
+    row = conn.execute(
+        """
+        SELECT payload FROM task_events
+         WHERE task_id = ? AND kind = 'blocked'
+         ORDER BY created_at DESC, id DESC
+         LIMIT 1
+        """,
+        (task_id,),
+    ).fetchone()
+    if not row or not row["payload"]:
+        return None
+    try:
+        payload = json.loads(row["payload"])
+    except Exception:
+        return None
+    reason = payload.get("reason") if isinstance(payload, dict) else None
+    if isinstance(reason, str) and reason.strip():
+        return reason.strip()
+    return None
+
+
+def _child_blockers_from_reason(reason: Optional[str], child_ids: list[str]) -> list[str]:
+    """Infer which direct child tasks a blocked parent is waiting on.
+
+    Conservative rules keep unrelated human/credential/review blocks stuck:
+    explicit direct child ids win; otherwise the reason must use child/blocker
+    language and then every direct child is treated as the blocking set.
+    """
+    if not reason or not child_ids:
+        return []
+    child_set = set(child_ids)
+    mentioned: list[str] = []
+    seen: set[str] = set()
+    for tid in _TASK_ID_PROSE_RE.findall(reason):
+        if tid in child_set and tid not in seen:
+            seen.add(tid)
+            mentioned.append(tid)
+    if mentioned:
+        return mentioned
+    if _CHILD_BLOCKER_REASON_RE.search(reason):
+        return list(child_ids)
+    return []
+
+
+def _auto_resume_blocked_parents_after_child_completion(
+    conn: sqlite3.Connection,
+    child_id: str,
+) -> int:
+    """Resume blocked parent tasks that explicitly waited on ``child_id``.
+
+    The kanban dependency graph only guarantees that children wait for parents.
+    This helper handles the human workflow where a parent/orchestrator blocks
+    itself after spawning remediation children, then should wake back up once
+    the referenced child blockers are all successfully done.
+    """
+    now = int(time.time())
+    resumed = 0
+    with write_txn(conn):
+        parents = conn.execute(
+            """
+            SELECT p.id
+              FROM task_links l
+              JOIN tasks p ON p.id = l.parent_id
+             WHERE l.child_id = ? AND p.status = 'blocked'
+            """,
+            (child_id,),
+        ).fetchall()
+        for parent in parents:
+            parent_id = parent["id"]
+            child_rows = conn.execute(
+                """
+                SELECT c.id, c.status
+                  FROM task_links l
+                  JOIN tasks c ON c.id = l.child_id
+                 WHERE l.parent_id = ?
+                 ORDER BY c.created_at, c.id
+                """,
+                (parent_id,),
+            ).fetchall()
+            child_ids = [r["id"] for r in child_rows]
+            blockers = _child_blockers_from_reason(
+                _latest_block_reason(conn, parent_id), child_ids
+            )
+            if not blockers or child_id not in blockers:
+                continue
+            statuses = {r["id"]: r["status"] for r in child_rows}
+            if any(statuses.get(blocker_id) != "done" for blocker_id in blockers):
+                continue
+            cur = conn.execute(
+                """
+                UPDATE tasks
+                   SET status = 'ready',
+                       claim_lock = NULL,
+                       claim_expires = NULL,
+                       worker_pid = NULL,
+                       current_run_id = NULL
+                 WHERE id = ? AND status = 'blocked'
+                """,
+                (parent_id,),
+            )
+            if cur.rowcount != 1:
+                continue
+            body = (
+                "auto-resume: child blocker(s) "
+                + ", ".join(blockers)
+                + f" completed; parent reset to ready after {child_id} completion."
+            )
+            conn.execute(
+                "INSERT INTO task_comments (task_id, author, body, created_at) "
+                "VALUES (?, ?, ?, ?)",
+                (parent_id, "system", body, now),
+            )
+            payload = {
+                "trigger_child_id": child_id,
+                "blocker_child_ids": blockers,
+                "status": "ready",
+            }
+            _append_event(conn, parent_id, "commented", {"author": "system", "len": len(body)})
+            _append_event(conn, parent_id, "unblocked", payload)
+            _append_event(conn, parent_id, "auto_resumed", payload)
+            resumed += 1
+    return resumed
 
 
 class HallucinatedCardsError(ValueError):
@@ -2510,6 +2637,8 @@ def complete_task(
     # just tracks "is there a current pathology the breaker should
     # care about", and a success resets that question.
     _clear_failure_counter(conn, task_id)
+    # Wake any blocked parent/orchestrator that explicitly waited on this child.
+    _auto_resume_blocked_parents_after_child_completion(conn, task_id)
     # Recompute ready status for dependents (separate txn so children see done).
     recompute_ready(conn)
     return True

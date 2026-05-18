@@ -145,6 +145,65 @@ def test_recompute_ready_fan_in_waits_for_all_parents(kanban_home):
         assert kb.get_task(conn, c).status == "ready"
 
 
+def test_child_completion_auto_resumes_blocked_parent_with_explicit_child_id(kanban_home):
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="parent", assignee="lead")
+        child = kb.create_task(conn, title="child blocker", assignee="dev")
+        assert kb.claim_task(conn, child, claimer="host:child") is not None
+        kb.link_tasks(conn, parent, child)
+        assert kb.claim_task(conn, parent, claimer="host:parent") is not None
+        assert kb.block_task(conn, parent, reason=f"waiting on child blocker {child}")
+
+        assert kb.complete_task(conn, child, summary="fixed")
+
+        assert kb.get_task(conn, parent).status == "ready"
+        events = conn.execute(
+            "SELECT kind FROM task_events WHERE task_id = ? ORDER BY id", (parent,)
+        ).fetchall()
+        assert "auto_resumed" in [r["kind"] for r in events]
+        comments = conn.execute(
+            "SELECT author, body FROM task_comments WHERE task_id = ?", (parent,)
+        ).fetchall()
+        assert any(r["author"] == "system" and child in r["body"] for r in comments)
+
+
+def test_child_completion_waits_for_all_child_blockers_before_resuming_parent(kanban_home):
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="parent", assignee="lead")
+        c1 = kb.create_task(conn, title="first blocker", assignee="dev")
+        c2 = kb.create_task(conn, title="second blocker", assignee="dev")
+        assert kb.claim_task(conn, c1, claimer="host:c1") is not None
+        assert kb.claim_task(conn, c2, claimer="host:c2") is not None
+        kb.link_tasks(conn, parent, c1)
+        kb.link_tasks(conn, parent, c2)
+        assert kb.claim_task(conn, parent, claimer="host:parent") is not None
+        assert kb.block_task(conn, parent, reason="waiting on child blockers")
+
+        assert kb.complete_task(conn, c1, summary="fixed one")
+        assert kb.get_task(conn, parent).status == "blocked"
+
+        assert kb.complete_task(conn, c2, summary="fixed two")
+        assert kb.get_task(conn, parent).status == "ready"
+
+
+def test_child_completion_does_not_resume_parent_blocked_for_unrelated_reason(kanban_home):
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="parent", assignee="lead")
+        child = kb.create_task(conn, title="child blocker", assignee="dev")
+        assert kb.claim_task(conn, child, claimer="host:child") is not None
+        kb.link_tasks(conn, parent, child)
+        assert kb.claim_task(conn, parent, claimer="host:parent") is not None
+        assert kb.block_task(conn, parent, reason="need production credentials")
+
+        assert kb.complete_task(conn, child, summary="fixed")
+
+        assert kb.get_task(conn, parent).status == "blocked"
+        events = conn.execute(
+            "SELECT kind FROM task_events WHERE task_id = ? ORDER BY id", (parent,)
+        ).fetchall()
+        assert "auto_resumed" not in [r["kind"] for r in events]
+
+
 # ---------------------------------------------------------------------------
 # Atomic claim (CAS)
 # ---------------------------------------------------------------------------
