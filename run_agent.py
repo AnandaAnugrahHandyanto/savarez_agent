@@ -10679,16 +10679,23 @@ class AIAgent:
         """
         return self.api_mode != "codex_responses"
 
-    def _compress_context(self, messages: list, system_message: str, *, approx_tokens: int = None, task_id: str = "default", focus_topic: str = None) -> tuple:
+    def _compress_context(self, messages: list, system_message: str, *, approx_tokens: int = None, task_id: str = "default", focus_topic: str = None, force: bool = False) -> tuple:
         """Compress conversation context and split the session in SQLite.
 
         Args:
             focus_topic: Optional focus string for guided compression — the
                 summariser will prioritise preserving information related to
                 this topic.  Inspired by Claude Code's ``/compact <focus>``.
+            force: If True, bypass any active summary-failure cooldown.
+                Set by the manual ``/compress`` slash command so users can
+                retry immediately after an auto-compress abort.
 
         Returns:
-            (compressed_messages, new_system_prompt) tuple
+            (compressed_messages, new_system_prompt) tuple.  When compression
+            aborts (aux LLM failed to produce a usable summary), returns the
+            original messages unchanged and the existing system prompt — the
+            session is NOT rotated.  Callers should detect the no-op via
+            ``len(returned) == len(input)`` and stop the retry loop.
         """
         _pre_msg_count = len(messages)
         logger.info(
@@ -10709,11 +10716,27 @@ class AIAgent:
                 pass
 
         try:
-            compressed = self.context_compressor.compress(messages, current_tokens=approx_tokens, focus_topic=focus_topic)
+            compressed = self.context_compressor.compress(messages, current_tokens=approx_tokens, focus_topic=focus_topic, force=force)
         except TypeError:
             # Plugin context engine with strict signature that doesn't accept
-            # focus_topic — fall back to calling without it.
+            # focus_topic / force — fall back to calling without them.
             compressed = self.context_compressor.compress(messages, current_tokens=approx_tokens)
+
+        # If compression aborted (aux LLM failed to produce a usable summary)
+        # the compressor returns the input messages unchanged.  Surface the
+        # error to the user, skip the session-rotation work entirely (no
+        # session has logically ended), and let auto-compress callers detect
+        # the no-op via len(returned) == len(input).
+        if getattr(self.context_compressor, "_last_compress_aborted", False):
+            _err = getattr(self.context_compressor, "_last_summary_error", None) or "unknown error"
+            if getattr(self, "_last_compression_summary_warning", None) != _err:
+                self._last_compression_summary_warning = _err
+                self._emit_warning(
+                    f"⚠ Compression aborted: {_err}. "
+                    "No messages were dropped — conversation continues unchanged. "
+                    "Run /compress to retry, or /new to start a fresh session."
+                )
+            return messages, self._cached_system_prompt or self._build_system_prompt(system_message)
 
         summary_error = getattr(self.context_compressor, "_last_summary_error", None)
         if summary_error:
