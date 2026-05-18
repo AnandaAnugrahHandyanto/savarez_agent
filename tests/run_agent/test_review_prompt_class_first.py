@@ -116,10 +116,12 @@ def test_skill_review_prompt_flags_overlap_and_defers_to_curator():
     assert "curator" in prompt.lower(), "must defer consolidation to the curator"
 
 
-def test_skill_review_prompt_still_has_opt_out_clause():
-    """'Nothing to save.' must remain as a real-but-not-default option."""
+def test_skill_review_prompt_has_null_result_clause():
+    """Skill review must allow honest null outcomes, not just memory phrasing."""
     prompt = AIAgent._SKILL_REVIEW_PROMPT
-    assert "Nothing to save." in prompt
+    assert "No update warranted." in prompt
+    assert "null results are valid" in prompt.lower()
+    assert "Nothing to save." not in prompt
 
 
 # ---------------------------------------------------------------------------
@@ -171,6 +173,12 @@ def test_combined_review_prompt_names_three_support_file_kinds():
     assert "references/" in prompt
     assert "templates/" in prompt
     assert "scripts/" in prompt
+
+
+def test_combined_review_prompt_has_null_result_clause():
+    prompt = AIAgent._COMBINED_REVIEW_PROMPT
+    assert "No update warranted." in prompt
+    assert "null results are valid" in prompt.lower()
 
 
 def test_combined_review_prompt_preserves_opt_out_clause():

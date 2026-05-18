@@ -4175,10 +4175,8 @@ class AIAgent:
         "command, config step, env var to set) under an existing setup or "
         "troubleshooting skill — never 'this tool does not work' as a "
         "standalone constraint.\n\n"
-        "'Nothing to save.' is a real option but should NOT be the "
-        "default. If the session ran smoothly with no corrections and "
-        "produced no new technique, just say 'Nothing to save.' and stop. "
-        "Otherwise, act."
+        "If no signal fired this session, respond exactly 'No update "
+        "warranted.' — null results are valid."
     )
 
     _COMBINED_REVIEW_PROMPT = (
@@ -4253,8 +4251,10 @@ class AIAgent:
         "troubleshooting skill — never 'this tool does not work' as a "
         "standalone constraint.\n\n"
         "Act on whichever of the two dimensions has real signal. If "
-        "genuinely nothing stands out on either, say 'Nothing to save.' "
-        "and stop — but don't reach for that conclusion as a default."
+        "no skill signal fired this session, respond exactly 'No update "
+        "warranted.' — null results are valid. If genuinely nothing "
+        "stands out on either, say 'Nothing to save.' and stop — but "
+        "don't reach for that conclusion as a default."
     )
 
     @staticmethod
