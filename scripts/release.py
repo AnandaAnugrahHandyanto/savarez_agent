@@ -64,11 +64,13 @@ AUTHOR_MAP = {
     "nidhi2894@gmail.com": "nidhi-singh02",
     "30312689+aashizpoudel@users.noreply.github.com": "aashizpoudel",
     "oleksii.lisikh@gmail.com": "olisikh",
+    "jefferson@jeffersonnunn.com": "Mind-Dragon",
     "jithendranaidunara@gmail.com": "JithendraNara",
     "jeremy@geocaching.com": "outdoorsea",
     "leone.parise@gmail.com": "leoneparise",
     "mr@shu.io": "mrshu",
     "adam.manning@gmail.com": "am423",
+    "agent@liminal-suite.local": "Mind-Dragon",
     "buraysandro9@gmail.com": "ygd58",
     "108427749+buntingszn@users.noreply.github.com": "buntingszn",
     "yanglongwei06@gmail.com": "Alex-yang00",
@@ -1171,6 +1173,8 @@ AUTHOR_MAP = {
     "hoangv.pham0803@gmail.com": "hehehe0803",  # PR #26212 salvage (codex kanban writable root)
     "26063003+hehehe0803@users.noreply.github.com": "hehehe0803",
     "38348871+vaddisrinivas@users.noreply.github.com": "vaddisrinivas",  # PR #26394 salvage (Docker messaging extra)
+    # Mind-Dragon contributions (xai-oauth flow, aux fix — PR #27677)
+    "agent@liminal-suite.local": "jefferson@jeffersonnunn.com",
 }
 
 

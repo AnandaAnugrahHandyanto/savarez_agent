@@ -286,7 +286,7 @@ def test_xai_callback_server_accepts_fallback_code_while_browser_connection_is_s
     showing the Grok Build fallback code. A single-threaded callback server then
     blocks forever and cannot accept the manual fallback callback.
     """
-    server, thread, result, redirect_uri = _xai_start_callback_server(preferred_port=0)
+    server, thread, result, redirect_uri, _callback_event = _xai_start_callback_server(preferred_port=0)
     stuck = socket.create_connection((XAI_OAUTH_REDIRECT_HOST, server.server_address[1]), timeout=2)
     try:
         stuck.sendall(b"GET /callback?code=stuck")
@@ -305,7 +305,7 @@ def test_xai_callback_server_accepts_fallback_code_while_browser_connection_is_s
 
 
 def test_xai_callback_server_latches_first_terminal_callback_result():
-    server, thread, result, redirect_uri = _xai_start_callback_server(preferred_port=0)
+    server, thread, result, redirect_uri, _callback_event = _xai_start_callback_server(preferred_port=0)
     try:
         with urllib.request.urlopen(f"{redirect_uri}?code=first-code&state=state-1", timeout=2) as response:
             assert response.status == 200
@@ -353,7 +353,7 @@ def test_xai_callback_handler_returns_400_when_callback_url_lacks_code_and_error
     return 200 "xAI authorization received" while the CLI's wait loop still timed
     out — leaving the user with a contradictory success page and a CLI error.
     """
-    server, thread, result, redirect_uri = _xai_start_callback_server(preferred_port=0)
+    server, thread, result, redirect_uri, _callback_event = _xai_start_callback_server(preferred_port=0)
     try:
         status, body = _get_callback(redirect_uri)
         assert status == 400
@@ -371,7 +371,7 @@ def test_xai_callback_handler_returns_400_when_callback_url_lacks_code_and_error
 
 def test_xai_callback_handler_accepts_callback_with_code():
     """A real OAuth redirect (code + state) still records both and shows success."""
-    server, thread, result, redirect_uri = _xai_start_callback_server(preferred_port=0)
+    server, thread, result, redirect_uri, _callback_event = _xai_start_callback_server(preferred_port=0)
     try:
         status, body = _get_callback(redirect_uri, query="code=abc&state=xyz")
         assert status == 200
@@ -387,7 +387,7 @@ def test_xai_callback_handler_accepts_callback_with_code():
 
 def test_xai_callback_handler_records_error_callback():
     """A redirect carrying an `error` param must surface the failure page and capture detail."""
-    server, thread, result, redirect_uri = _xai_start_callback_server(preferred_port=0)
+    server, thread, result, redirect_uri, _callback_event = _xai_start_callback_server(preferred_port=0)
     try:
         status, body = _get_callback(
             redirect_uri,
@@ -1610,11 +1610,9 @@ def test_auxiliary_client_routes_xai_oauth_through_responses_api(tmp_path, monke
     their xAI subscription.
 
     Pin the routing contract: ``resolve_provider_client("xai-oauth", model)``
-    must return a non-None client wrapping the xAI Responses API."""
-    from agent.auxiliary_client import (
-        CodexAuxiliaryClient,
-        resolve_provider_client,
-    )
+    must return a non-None client wrapping the xAI Chat Completions."""
+    from agent.auxiliary_client import resolve_provider_client
+    from openai import OpenAI
 
     hermes_home = tmp_path / "hermes"
     fresh = _jwt_with_exp(int(time.time()) + 3600)
@@ -1625,11 +1623,11 @@ def test_auxiliary_client_routes_xai_oauth_through_responses_api(tmp_path, monke
 
     client, model = resolve_provider_client("xai-oauth", model="grok-4")
     assert client is not None, (
-        "xai-oauth must route to a Responses-API client; falling through to "
+        "xai-oauth must route to an OpenAI Chat Completions client; falling through to "
         "the generic oauth_external branch silently swaps providers for "
         "every auxiliary task."
     )
-    assert isinstance(client, CodexAuxiliaryClient)
+    assert isinstance(client, OpenAI)
     assert model == "grok-4"
     # The wrapper preserves base_url + api_key so async wrappers and cache
     # eviction can introspect them.  Pin both to the live xAI runtime.
@@ -1655,7 +1653,7 @@ def test_auxiliary_client_xai_oauth_returns_none_when_unauthenticated(tmp_path, 
 
 
 def test_auxiliary_client_xai_oauth_requires_explicit_model(tmp_path, monkeypatch):
-    """xAI's Responses API has no safe "cheap aux model" default —
+    """xAI's Chat Completions has no safe "cheap aux model" default —
     pinning one would silently rot the same way Codex's did.  Callers
     must pass an explicit model (auxiliary.<task>.model in config.yaml)."""
     from agent.auxiliary_client import resolve_provider_client
