@@ -4,12 +4,14 @@ from .schemas import (
     MACOS_BUILD_PROJECT_SCHEMA,
     MACOS_INSPECT_PROJECT_SCHEMA,
     MACOS_LIST_SCHEMES_SCHEMA,
+    MACOS_TEST_PROJECT_SCHEMA,
 )
 from .tools import (
     check_macos_dev_requirements,
     handle_macos_build_project,
     handle_macos_inspect_project,
     handle_macos_list_schemes,
+    handle_macos_test_project,
 )
 
 TOOLSET = "macos-dev"
@@ -42,4 +44,13 @@ def register(ctx):
         check_fn=check_macos_dev_requirements,
         description=MACOS_BUILD_PROJECT_SCHEMA["description"],
         emoji="🛠️",
+    )
+    ctx.register_tool(
+        name="macos_test_project",
+        toolset=TOOLSET,
+        schema=MACOS_TEST_PROJECT_SCHEMA,
+        handler=handle_macos_test_project,
+        check_fn=check_macos_dev_requirements,
+        description=MACOS_TEST_PROJECT_SCHEMA["description"],
+        emoji="🧪",
     )

@@ -52,6 +52,15 @@ def _coerce_timeout(raw: Any, default: int = 1800) -> int:
     return max(30, min(7200, timeout))
 
 
+def _coerce_string_list(raw: Any) -> List[str]:
+    if raw is None:
+        return []
+    if isinstance(raw, list):
+        return [str(item).strip() for item in raw if str(item).strip()]
+    item = str(raw).strip()
+    return [item] if item else []
+
+
 def _iter_candidates(root: Path, suffix: str) -> Iterable[Path]:
     if root.is_file():
         if root.suffix == suffix:
@@ -157,6 +166,16 @@ def _select_container(base_path: Path, container_path: str | None) -> Dict[str, 
         "type": inspection["recommended_container_type"],
         "path": str(recommended),
     }
+
+
+def _resolve_optional_path(base_path: Path, raw_path: Any) -> str | None:
+    if not raw_path:
+        return None
+    candidate = Path(str(raw_path)).expanduser()
+    if not candidate.is_absolute():
+        base_dir = base_path if base_path.is_dir() else base_path.parent
+        candidate = (base_dir / candidate).resolve()
+    return str(_normalize_path(candidate))
 
 
 def _run_xcodebuild(
@@ -272,13 +291,9 @@ def handle_macos_build_project(args: dict, **kw) -> str:
             "-destination",
             destination,
         ]
-        derived_data_path = args.get("derived_data_path")
+        derived_data_path = _resolve_optional_path(path, args.get("derived_data_path"))
         if derived_data_path:
-            derived_path = Path(str(derived_data_path)).expanduser()
-            if not derived_path.is_absolute():
-                base_dir = path if path.is_dir() else path.parent
-                derived_path = (base_dir / derived_path).resolve()
-            command.extend(["-derivedDataPath", str(_normalize_path(derived_path))])
+            command.extend(["-derivedDataPath", derived_data_path])
         command.extend(_SIGNING_DISABLED_FLAGS)
 
         started = time.time()
@@ -309,6 +324,89 @@ def handle_macos_build_project(args: dict, **kw) -> str:
     except subprocess.TimeoutExpired as exc:
         return tool_error(
             "xcodebuild build timed out",
+            success=False,
+            timeout_seconds=exc.timeout,
+        )
+    except Exception as exc:
+        return tool_error(str(exc), success=False)
+
+
+def handle_macos_test_project(args: dict, **kw) -> str:
+    try:
+        path = _normalize_path(args.get("path"))
+        scheme = str(args.get("scheme") or "").strip()
+        if not scheme:
+            return tool_error("scheme is required", success=False)
+
+        container = _select_container(path, args.get("container_path"))
+        configuration = str(args.get("configuration") or "Debug").strip() or "Debug"
+        destination = str(args.get("destination") or "platform=macOS").strip() or "platform=macOS"
+        test_plan = str(args.get("test_plan") or "").strip() or None
+        only_testing = _coerce_string_list(args.get("only_testing"))
+        skip_testing = _coerce_string_list(args.get("skip_testing"))
+        timeout_seconds = _coerce_timeout(args.get("timeout_seconds"), default=1800)
+
+        command = [
+            _XCODEBUILD_PATH,
+            "test",
+            f"-{container['type']}",
+            container["path"],
+            "-scheme",
+            scheme,
+            "-configuration",
+            configuration,
+            "-destination",
+            destination,
+        ]
+        if test_plan:
+            command.extend(["-testPlan", test_plan])
+        for identifier in only_testing:
+            command.extend(["-only-testing", identifier])
+        for identifier in skip_testing:
+            command.extend(["-skip-testing", identifier])
+
+        derived_data_path = _resolve_optional_path(path, args.get("derived_data_path"))
+        if derived_data_path:
+            command.extend(["-derivedDataPath", derived_data_path])
+
+        result_bundle_path = _resolve_optional_path(path, args.get("result_bundle_path"))
+        if result_bundle_path:
+            command.extend(["-resultBundlePath", result_bundle_path])
+
+        command.extend(_SIGNING_DISABLED_FLAGS)
+
+        started = time.time()
+        completed = _run_xcodebuild(
+            command,
+            cwd=path if path.is_dir() else path.parent,
+            timeout_seconds=timeout_seconds,
+        )
+        duration_seconds = round(time.time() - started, 2)
+        shaped = _shape_xcode_output(completed.stdout, completed.stderr)
+        success = completed.returncode == 0
+
+        result = {
+            "success": success,
+            "command": shlex.join(command),
+            "container": container,
+            "scheme": scheme,
+            "configuration": configuration,
+            "destination": destination,
+            "test_plan": test_plan,
+            "only_testing": only_testing,
+            "skip_testing": skip_testing,
+            "result_bundle_path": result_bundle_path,
+            "signing_disabled": True,
+            "duration_seconds": duration_seconds,
+            "exit_code": completed.returncode,
+            "output": shaped,
+        }
+        if success:
+            return tool_result(result)
+        return tool_error("xcodebuild test failed", **result)
+    except subprocess.TimeoutExpired as exc:
+        return tool_error(
+            "xcodebuild test timed out",
             success=False,
             timeout_seconds=exc.timeout,
         )

@@ -187,3 +187,75 @@ class TestBuildProject:
         result = json.loads(tools_mod.handle_macos_build_project({"path": str(repo)}))
         assert result["success"] is False
         assert result["error"] == "scheme is required"
+
+
+class TestTestProject:
+    def test_test_includes_filters_and_result_bundle(self, tools_mod, tmp_path, monkeypatch):
+        repo = tmp_path / "TestRepo"
+        project = repo / "App.xcodeproj"
+        project.mkdir(parents=True)
+        captured = {}
+
+        def fake_run(command, cwd, timeout_seconds):
+            captured["command"] = command
+            captured["cwd"] = cwd
+            captured["timeout_seconds"] = timeout_seconds
+            return CompletedProcess(command, 0, stdout="Test Suite 'All tests' passed\n", stderr="")
+
+        monkeypatch.setattr(tools_mod, "_run_xcodebuild", fake_run)
+
+        result = json.loads(
+            tools_mod.handle_macos_test_project(
+                {
+                    "path": str(repo),
+                    "scheme": "App",
+                    "test_plan": "CI",
+                    "only_testing": ["AppTests/FooTests"],
+                    "skip_testing": ["AppUITests"],
+                    "result_bundle_path": "artifacts/AppTests.xcresult",
+                }
+            )
+        )
+
+        assert result["success"] is True
+        assert result["test_plan"] == "CI"
+        assert result["only_testing"] == ["AppTests/FooTests"]
+        assert result["skip_testing"] == ["AppUITests"]
+        assert result["signing_disabled"] is True
+        assert "-testPlan" in captured["command"]
+        assert "-only-testing" in captured["command"]
+        assert "-skip-testing" in captured["command"]
+        assert "-resultBundlePath" in captured["command"]
+        assert "CODE_SIGNING_ALLOWED=NO" in captured["command"]
+
+    def test_test_failure_returns_shaped_output(self, tools_mod, tmp_path, monkeypatch):
+        repo = tmp_path / "TestFailRepo"
+        workspace = repo / "App.xcworkspace"
+        workspace.mkdir(parents=True)
+
+        monkeypatch.setattr(
+            tools_mod,
+            "_run_xcodebuild",
+            lambda command, cwd, timeout_seconds: CompletedProcess(
+                command,
+                65,
+                stdout="Test Case '-[AppTests FooTests testBar]' failed\n** TEST FAILED **\n",
+                stderr="FooTests.swift:12: error: XCTAssertTrue failed\n",
+            ),
+        )
+
+        result = json.loads(
+            tools_mod.handle_macos_test_project({"path": str(repo), "scheme": "App"})
+        )
+
+        assert result["success"] is False
+        assert result["exit_code"] == 65
+        assert result["output"]["highlights"]
+
+    def test_test_requires_scheme(self, tools_mod, tmp_path):
+        repo = tmp_path / "NoTestSchemeRepo"
+        (repo / "App.xcodeproj").mkdir(parents=True)
+
+        result = json.loads(tools_mod.handle_macos_test_project({"path": str(repo)}))
+        assert result["success"] is False
+        assert result["error"] == "scheme is required"

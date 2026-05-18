@@ -59,7 +59,7 @@ The repo ships these bundled plugins under `plugins/`. All are opt-in — enable
 | `observability/langfuse` | hooks | Trace turns / LLM calls / tools to [Langfuse](https://langfuse.com) |
 | `spotify` | backend (7 tools) | Native Spotify playback, queue, search, playlists, albums, library |
 | `google_meet` | standalone | Join Meet calls, live-caption transcription, optional realtime duplex audio |
-| `build-macos-apps` | standalone | Inspect local Xcode projects, list schemes, and run unsigned macOS builds |
+| `build-macos-apps` | standalone | Inspect local Xcode projects, list schemes, run tests, and run unsigned macOS builds |
 | `image_gen/openai` | image backend | OpenAI `gpt-image-2` image generation backend (alternative to FAL) |
 | `image_gen/openai-codex` | image backend | OpenAI image generation via Codex OAuth |
 | `image_gen/xai` | image backend | xAI `grok-2-image` backend |
@@ -203,7 +203,7 @@ The agent kicks off the meeting join, streams the transcription back into its co
 
 ### build-macos-apps
 
-Bundled standalone plugin for local macOS app build workflows. Phase 1 combines read-only inspection with real unsigned build support.
+Bundled standalone plugin for local macOS app build workflows. Phase 2 adds xcodebuild test support on top of the existing inspection and build flow.
 
 **Included toolset:** `macos-dev`
 
@@ -212,22 +212,22 @@ Bundled standalone plugin for local macOS app build workflows. Phase 1 combines 
 - `macos_inspect_project` — inspect a repo for `.xcworkspace`, `.xcodeproj`, and `Package.swift`
 - `macos_list_schemes` — run `xcodebuild -list -json` for a selected workspace or project
 - `macos_build_project` — run an unsigned `xcodebuild build` for a chosen scheme
+- `macos_test_project` — run `xcodebuild test` for a chosen scheme with optional test filtering
 
 **Availability gate:** only exposed when Hermes is running on macOS and `xcodebuild` is available in `PATH`.
 
-**Phase 1 exclusions:**
+**Current exclusions:**
 
-- no test execution
 - no app launch or stop flow
 - no logs or crash diagnostics
 - no signing or notarization
 - no GUI automation or computer-use
 
-**Build behavior:** `macos_build_project` disables signing with `CODE_SIGNING_ALLOWED=NO`, `CODE_SIGNING_REQUIRED=NO`, and `CODE_SIGN_IDENTITY=` so the PR stays focused on local unsigned builds.
+**Build/test behavior:** `macos_build_project` and `macos_test_project` disable signing with `CODE_SIGNING_ALLOWED=NO`, `CODE_SIGNING_REQUIRED=NO`, and `CODE_SIGN_IDENTITY=` so the plugin stays focused on local unsigned workflows. `macos_test_project` also supports optional `test_plan`, `only_testing`, `skip_testing`, and `result_bundle_path` arguments.
 
 **Enabling:** `hermes plugins enable build-macos-apps`
 
-**Recommended flow:** inspect the repo, list schemes, then build the target scheme.
+**Recommended flow:** inspect the repo, list schemes, then build or test the target scheme.
 
 ### hermes-achievements
 

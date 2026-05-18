@@ -42,6 +42,7 @@ class TestBundledBuildMacosAppsDiscovery:
             "macos_build_project",
             "macos_inspect_project",
             "macos_list_schemes",
+            "macos_test_project",
         ]
 
     def test_toolset_is_visible_when_enabled(self, tmp_path, monkeypatch):
@@ -67,4 +68,5 @@ class TestBundledBuildMacosAppsDiscovery:
             "macos_build_project",
             "macos_inspect_project",
             "macos_list_schemes",
+            "macos_test_project",
         ]

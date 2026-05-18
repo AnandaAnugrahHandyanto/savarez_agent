@@ -88,3 +88,69 @@ MACOS_BUILD_PROJECT_SCHEMA = {
         "required": ["path", "scheme"],
     },
 }
+
+MACOS_TEST_PROJECT_SCHEMA = {
+    "name": "macos_test_project",
+    "description": (
+        "Run xcodebuild test for a local macOS Xcode scheme. This Phase 2 "
+        "tool adds test execution support without expanding into app launch, "
+        "diagnostics, or signing workflows."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "path": {
+                "type": "string",
+                "description": "Repository or project path that contains the Xcode container.",
+            },
+            "scheme": {
+                "type": "string",
+                "description": "Xcode scheme to test.",
+            },
+            "container_path": {
+                "type": "string",
+                "description": "Optional explicit .xcworkspace or .xcodeproj path to use.",
+            },
+            "configuration": {
+                "type": "string",
+                "description": "Test configuration, usually Debug.",
+                "default": "Debug",
+            },
+            "destination": {
+                "type": "string",
+                "description": "xcodebuild destination string.",
+                "default": "platform=macOS",
+            },
+            "test_plan": {
+                "type": "string",
+                "description": "Optional Xcode test plan name.",
+            },
+            "only_testing": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Optional list of -only-testing identifiers.",
+            },
+            "skip_testing": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Optional list of -skip-testing identifiers.",
+            },
+            "derived_data_path": {
+                "type": "string",
+                "description": "Optional DerivedData output path.",
+            },
+            "result_bundle_path": {
+                "type": "string",
+                "description": "Optional path for the generated .xcresult bundle.",
+            },
+            "timeout_seconds": {
+                "type": "integer",
+                "description": "Maximum test time before Hermes aborts the command.",
+                "default": 1800,
+                "minimum": 30,
+                "maximum": 7200,
+            },
+        },
+        "required": ["path", "scheme"],
+    },
+}
