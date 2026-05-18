@@ -10,7 +10,70 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, TYPE_CHECKING
 
+from plugins.memory.honcho.circuit_breaker import get_breaker
 from plugins.memory.honcho.client import get_honcho_client
+
+
+def _is_backend_unreachable(exc: BaseException) -> bool:
+    """Return True when an exception indicates the Honcho backend is unreachable.
+
+    These are the failure classes that should advance the circuit breaker:
+      - Connection refused / DNS failure / network unreachable
+      - HTTP timeout (per-request or per-connect)
+      - SDK-level "server disconnected" / 5xx upstream errors
+
+    Application-level errors (4xx, schema mismatch, ValueError) are NOT
+    transport failures — they don't predict that the next call will fail
+    the same way, so they should not advance the breaker.
+    """
+    if isinstance(exc, (ConnectionError, ConnectionRefusedError, ConnectionResetError)):
+        return True
+    if isinstance(exc, TimeoutError):
+        return True
+    if isinstance(exc, OSError) and getattr(exc, "errno", None) in {
+        61,   # macOS: connection refused
+        111,  # linux: connection refused
+        60,   # macOS: operation timed out
+        110,  # linux: connection timed out
+        65,   # macOS: no route to host
+        51,   # macOS: network unreachable
+    }:
+        return True
+    # The Honcho SDK wraps httpx errors; match on class name to avoid an
+    # import cycle and to stay forward-compatible if SDK versions change
+    # which httpx symbols leak through.
+    name = type(exc).__name__
+    if name in {
+        "APITimeoutError",
+        "APIConnectionError",
+        "ConnectError",
+        "ReadTimeout",
+        "WriteTimeout",
+        "ConnectTimeout",
+        "PoolTimeout",
+        "RemoteProtocolError",
+    }:
+        return True
+    if name == "APIStatusError" or name == "APIError":
+        # Honcho SDK error with a `.status_code` — 5xx is a backend
+        # health signal; 4xx is a request bug, not a connectivity problem.
+        status = getattr(exc, "status_code", None) or getattr(exc, "status", None)
+        try:
+            return bool(status and 500 <= int(status) < 600)
+        except (TypeError, ValueError):
+            return False
+    msg = str(exc).lower()
+    return any(
+        phrase in msg
+        for phrase in (
+            "connection refused",
+            "server disconnected",
+            "request timed out",
+            "timed out",
+            "errno 61",
+            "no route to host",
+        )
+    )
 
 if TYPE_CHECKING:
     from honcho import Honcho
@@ -369,6 +432,22 @@ class HonchoSessionManager:
             peer = user_peer if msg["role"] == "user" else assistant_peer
             honcho_messages.append(peer.message(msg["content"]))
 
+        breaker = get_breaker()
+        if not breaker.allow():
+            # Circuit open — skip the network round-trip and leave messages
+            # unsynced. They'll retry on the next flush after the cooldown
+            # window. Log at DEBUG so a sustained outage doesn't flood
+            # errors.log; the open-transition warning already covered it.
+            for msg in new_messages:
+                msg["_synced"] = False
+            logger.debug(
+                "Honcho message sync skipped for %s: circuit breaker open",
+                session.key,
+            )
+            with self._cache_lock:
+                self._cache[session.key] = session
+            return False
+
         try:
             honcho_session.add_messages(honcho_messages)
             for msg in new_messages:
@@ -376,11 +455,24 @@ class HonchoSessionManager:
             logger.debug("Synced %d messages to Honcho for %s", len(honcho_messages), session.key)
             with self._cache_lock:
                 self._cache[session.key] = session
+            breaker.record_success()
             return True
         except Exception as e:
             for msg in new_messages:
                 msg["_synced"] = False
-            logger.error("Failed to sync messages to Honcho: %s", e)
+            if _is_backend_unreachable(e):
+                # Backend unreachable — advance the breaker. Demote to DEBUG
+                # once the transition warning has fired; the first-failure
+                # message at INFO+ would otherwise repeat every flush tick.
+                if not breaker.record_failure(e):
+                    logger.debug(
+                        "Failed to sync messages to Honcho (backend unreachable): %s",
+                        e,
+                    )
+            else:
+                # Application-level error — keep the original ERROR level so
+                # a genuine bug (schema mismatch, 4xx) is still visible.
+                logger.error("Failed to sync messages to Honcho: %s", e)
             with self._cache_lock:
                 self._cache[session.key] = session
             return False
@@ -565,6 +657,16 @@ class HonchoSessionManager:
         else:
             level = self._default_reasoning_level()
 
+        breaker = get_breaker()
+        if not breaker.allow():
+            # Circuit open — skip the call entirely. Single WARN per
+            # transition already fired in record_failure; per-call rejections
+            # log at DEBUG so we don't flood errors.log during an outage.
+            logger.debug(
+                "Honcho dialectic query skipped: circuit breaker open"
+            )
+            return ""
+
         try:
             if self._ai_observe_others:
                 # AI peer can observe other peers — use assistant as observer.
@@ -585,9 +687,24 @@ class HonchoSessionManager:
             # Apply Hermes-side char cap before caching
             if result and self._dialectic_max_chars and len(result) > self._dialectic_max_chars:
                 result = result[:self._dialectic_max_chars].rsplit(" ", 1)[0] + " …"
+            breaker.record_success()
             return result
         except Exception as e:
-            logger.warning("Honcho dialectic query failed: %s", e)
+            if _is_backend_unreachable(e):
+                # Advance the breaker. record_failure logs the
+                # closed→open transition exactly once; further per-call
+                # failures only DEBUG-log here, keeping errors.log quiet
+                # during a sustained outage.
+                if not breaker.record_failure(e):
+                    logger.debug(
+                        "Honcho dialectic query failed (backend unreachable): %s", e
+                    )
+                # When the breaker just opened, the transition warning
+                # already covered this call; skip the legacy WARN.
+            else:
+                # Application-level error — still surface at WARN so a
+                # genuine bug (bad schema, 4xx) isn't silently swallowed.
+                logger.warning("Honcho dialectic query failed: %s", e)
             return ""
 
     def prefetch_context(self, session_key: str, user_message: str | None = None) -> None:
@@ -704,6 +821,14 @@ class HonchoSessionManager:
         content_bytes = self._format_migration_transcript(session_key, messages)
         first_ts = messages[0].get("timestamp") if messages else None
 
+        breaker = get_breaker()
+        if not breaker.allow():
+            logger.debug(
+                "Honcho local-history upload skipped for %s: circuit breaker open",
+                session_key,
+            )
+            return False
+
         try:
             honcho_session.upload_file(
                 file=("prior_history.txt", content_bytes, "text/plain"),
@@ -712,9 +837,19 @@ class HonchoSessionManager:
                 created_at=first_ts,
             )
             logger.info("Migrated %d local messages to Honcho for %s", len(messages), session_key)
+            breaker.record_success()
             return True
         except Exception as e:
-            logger.error("Failed to upload local history to Honcho for %s: %s", session_key, e)
+            if _is_backend_unreachable(e):
+                if not breaker.record_failure(e):
+                    logger.debug(
+                        "Failed to upload local history to Honcho for %s "
+                        "(backend unreachable): %s",
+                        session_key,
+                        e,
+                    )
+            else:
+                logger.error("Failed to upload local history to Honcho for %s: %s", session_key, e)
             return False
 
     @staticmethod
@@ -806,12 +941,23 @@ class HonchoSessionManager:
             ),
         ]
 
+        breaker = get_breaker()
         for filename, upload_name, description, target_peer, target_kind in files:
             filepath = memory_path / filename
             if not filepath.exists():
                 continue
             content = filepath.read_text(encoding="utf-8").strip()
             if not content:
+                continue
+
+            if not breaker.allow():
+                # Skip remaining uploads while the circuit is open. The next
+                # call to upload_user_file (next session boot) will retry
+                # after the cooldown.
+                logger.debug(
+                    "Honcho %s upload skipped: circuit breaker open",
+                    filename,
+                )
                 continue
 
             wrapped = (
@@ -842,8 +988,17 @@ class HonchoSessionManager:
                     target_kind,
                 )
                 uploaded = True
+                breaker.record_success()
             except Exception as e:
-                logger.error("Failed to upload %s to Honcho: %s", filename, e)
+                if _is_backend_unreachable(e):
+                    if not breaker.record_failure(e):
+                        logger.debug(
+                            "Failed to upload %s to Honcho (backend unreachable): %s",
+                            filename,
+                            e,
+                        )
+                else:
+                    logger.error("Failed to upload %s to Honcho: %s", filename, e)
 
         return uploaded
 
