@@ -1,5 +1,5 @@
 name: "Hermes Agent"
-version: "0.14.0"
+version: "0.15.0"
 slug: "hermes"
 description: "The self-improving AI agent by Nous Research"
 url: "https://github.com/NousResearch/hermes-agent"
@@ -10,6 +10,7 @@ startup: application
 boot: auto
 ingress: true
 ingress_port: 9119
+panel: true
 panel_icon: "mdi:robot-assistant"
 panel_title: "Hermes Agent"
 hassio_api: true
