@@ -1496,6 +1496,33 @@ def _import_codex_cli_tokens() -> Optional[Dict[str, str]]:
         return None
 
 
+def _try_codex_cli_login() -> Optional[Dict[str, str]]:
+    """Run the official Codex CLI login flow and import its tokens.
+
+    Returns the imported token dict on success, or None if the CLI is missing,
+    the login command fails, or no usable tokens were written.
+    """
+    codex_bin = shutil.which("codex")
+    if not codex_bin:
+        return None
+
+    print("Launching the official Codex CLI login flow...")
+    print("After it completes, Hermes will import the resulting session.")
+    print()
+
+    try:
+        result = subprocess.run([codex_bin, "login"], check=False)
+    except Exception as exc:
+        logger.debug("Failed to launch codex login: %s", exc)
+        return None
+
+    if result.returncode != 0:
+        logger.debug("codex login exited with status %s", result.returncode)
+        return None
+
+    return _import_codex_cli_tokens()
+
+
 def resolve_codex_runtime_credentials(
     *,
     force_refresh: bool = False,
@@ -2859,7 +2886,21 @@ def _login_openai_codex(args, pconfig: ProviderConfig) -> None:
     print("(Hermes creates its own session — won't affect Codex CLI or VS Code)")
     print()
 
-    creds = _codex_device_code_login()
+    creds: Optional[Dict[str, Any]] = None
+
+    cli_tokens = _try_codex_cli_login()
+    if cli_tokens:
+        creds = {
+            "tokens": cli_tokens,
+            "base_url": os.getenv("HERMES_CODEX_BASE_URL", "").strip().rstrip("/") or DEFAULT_CODEX_BASE_URL,
+            "last_refresh": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "auth_mode": "chatgpt",
+            "source": "codex-cli-import",
+        }
+    else:
+        print("Falling back to Hermes's built-in Codex login flow...")
+        print()
+        creds = _codex_device_code_login()
 
     # Save tokens to Hermes auth store
     _save_codex_tokens(creds["tokens"], creds.get("last_refresh"))

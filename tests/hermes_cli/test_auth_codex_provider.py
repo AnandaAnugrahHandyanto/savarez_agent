@@ -14,6 +14,7 @@ from hermes_cli.auth import (
     PROVIDER_REGISTRY,
     _read_codex_tokens,
     _save_codex_tokens,
+    _try_codex_cli_login,
     _write_codex_cli_tokens,
     _import_codex_cli_tokens,
     get_codex_auth_status,
@@ -159,6 +160,41 @@ def test_import_codex_cli_tokens(tmp_path, monkeypatch):
 def test_import_codex_cli_tokens_missing(tmp_path, monkeypatch):
     monkeypatch.setenv("CODEX_HOME", str(tmp_path / "nonexistent"))
     assert _import_codex_cli_tokens() is None
+
+
+def test_try_codex_cli_login_imports_tokens(tmp_path, monkeypatch):
+    codex_home = tmp_path / "codex-cli"
+    codex_home.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    monkeypatch.setattr("hermes_cli.auth.shutil.which", lambda _: "/opt/homebrew/bin/codex")
+
+    def _fake_run(argv, check=False):
+        assert argv == ["/opt/homebrew/bin/codex", "login"]
+        assert check is False
+        (codex_home / "auth.json").write_text(json.dumps({
+            "tokens": {"access_token": "cli-at", "refresh_token": "cli-rt"},
+        }))
+
+        class _Result:
+            returncode = 0
+
+        return _Result()
+
+    monkeypatch.setattr("hermes_cli.auth.subprocess.run", _fake_run)
+
+    tokens = _try_codex_cli_login()
+    assert tokens == {"access_token": "cli-at", "refresh_token": "cli-rt"}
+
+
+def test_try_codex_cli_login_returns_none_when_command_fails(monkeypatch):
+    monkeypatch.setattr("hermes_cli.auth.shutil.which", lambda _: "/opt/homebrew/bin/codex")
+
+    class _Result:
+        returncode = 1
+
+    monkeypatch.setattr("hermes_cli.auth.subprocess.run", lambda *a, **kw: _Result())
+
+    assert _try_codex_cli_login() is None
 
 
 def test_codex_tokens_not_written_to_shared_file(tmp_path, monkeypatch):
