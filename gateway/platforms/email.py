@@ -479,13 +479,25 @@ class EmailAdapter(BasePlatformAdapter):
             "message_id": msg_data["message_id"],
         }
 
-        # Build a subject-scoped chat_id so each unique email subject gets its
-        # own isolated session. Strip "Re:" prefixes so replies stay in the
-        # same thread as the original message (issue #27804).
+        # Build a thread-scoped chat_id for session isolation (issue #27804).
+        # Strategy:
+        #   1. In-Reply-To header present → use it as thread anchor (RFC 5322)
+        #   2. No In-Reply-To → normalize subject for new thread isolation
+        # This keeps replies in the same session while isolating new threads.
         import re as _re
-        _normalized_subject = _re.sub(r"^(Re:\s*)+", "", subject, flags=_re.IGNORECASE).strip().lower()
-        _normalized_subject = _re.sub(r"[^a-z0-9]+", "_", _normalized_subject)[:64]
-        _session_chat_id = f"{sender_addr}:{_normalized_subject}" if _normalized_subject else sender_addr
+        _in_reply_to = (msg_data.get("in_reply_to") or "").strip()
+        _thread_root_id = None
+        if _in_reply_to:
+            # Use In-Reply-To message-id as stable thread anchor
+            _msg_ids = _re.findall(r"<[^>]+>", _in_reply_to)
+            if _msg_ids:
+                _thread_root_id = _re.sub(r"[^a-z0-9@._-]", "_", _msg_ids[0].strip("<>").lower())[:80]
+        if not _thread_root_id:
+            # Fresh thread: normalize subject for isolation
+            _normalized_subject = _re.sub(r"^(Re:\s*)+", "", subject, flags=_re.IGNORECASE).strip().lower()
+            _normalized_subject = _re.sub(r"[^a-z0-9]+", "_", _normalized_subject)[:64]
+            _thread_root_id = _normalized_subject or "default"
+        _session_chat_id = f"{sender_addr}:{_thread_root_id}"
 
         source = self.build_source(
             chat_id=_session_chat_id,
