@@ -2741,8 +2741,15 @@ def run_conversation(
                             api_kwargs, reason="max_retries_exhausted", error=api_error,
                         )
                     agent._persist_session(messages, conversation_history)
-                    _final_response = f"API call failed after {max_retries} retries: {_final_summary}"
-                    if _is_stream_drop:
+                    if getattr(agent, "_sanitize_provider_errors", False):
+                        # Managed-service mode: the user-facing response must
+                        # not leak raw provider errors (billing URLs, account
+                        # IDs, internal endpoints).  The logs above and the
+                        # telemetry `error` field below keep full detail.
+                        _final_response = agent._sanitized_user_error(classified.reason)
+                    else:
+                        _final_response = f"API call failed after {max_retries} retries: {_final_summary}"
+                    if _is_stream_drop and not getattr(agent, "_sanitize_provider_errors", False):
                         _final_response += (
                             "\n\nThe provider's stream connection keeps "
                             "dropping — this often happens when generating "

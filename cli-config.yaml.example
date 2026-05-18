@@ -578,7 +578,15 @@ agent:
   # primaries (default 3). The OpenAI SDK does its own low-level retries
   # underneath this wrapper — this is the Hermes-level loop.
   # api_max_retries: 3
-  
+
+  # Sanitize user-facing provider errors. When false (default), an API call
+  # that fails after exhausting its retry loop returns the raw upstream
+  # provider error as the response — which can include billing-dashboard
+  # URLs, account IDs, and internal endpoint hosts. Set true when running
+  # Hermes as a managed service so end users see a generic, category-based
+  # message instead. Full detail is always kept in logs and telemetry.
+  # sanitize_provider_errors: false
+
   # Enable verbose logging
   verbose: false
   
