@@ -344,6 +344,10 @@ Full config reference: https://hermes-agent.nousresearch.com/docs/user-guide/con
 
 When pulling Telegram/gateway, cron, provider-fallback, memory, or compression fixes into Gordon's Railway fork, use the conservative workflow and pitfalls in `references/railway-gateway-fix-pullin.md`.
 
+### Gordon GBrain path layout
+
+For Gordon's Railway instance, keep Hermes native memory and GBrain concerns separated like upstream gbrain: native memory at `/opt/data/memories`, durable markdown content source at `/opt/data/gbrain-content`, source checkout at `/opt/data/repos/gbrain`, and runtime/config/DB convention under `/opt/data/.gbrain`. See `references/gordon-gbrain-path-layout.md` for migration/verification commands and root-owned legacy path pitfalls.
+
 ### Providers
 
 20+ providers supported. Set via `hermes model` or `hermes setup`.
