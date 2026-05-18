@@ -101,7 +101,7 @@ def test_profile_env_does_not_inherit_root_bot_token(tmp_path, monkeypatch):
     profile_home = root_home / "profiles" / "worker"
     profile_home.mkdir(parents=True)
     (root_home / ".env").write_text(
-        "OPENROUTER_API_KEY=sk-or-v1-root-key\nTELEGRAM_BOT_TOKEN=root-token\n",
+        "OPENROUTER_API_KEY=***\nTELEGRAM_BOT_TOKEN=root-token\n",
         encoding="utf-8",
     )
 
@@ -112,8 +112,34 @@ def test_profile_env_does_not_inherit_root_bot_token(tmp_path, monkeypatch):
     loaded = load_hermes_dotenv(hermes_home=profile_home)
 
     assert loaded == [root_home / ".env"]
-    assert os.getenv("OPENROUTER_API_KEY") == "sk-or-v1-root-key"
+    assert os.getenv("OPENROUTER_API_KEY") == "***"
     assert os.getenv("TELEGRAM_BOT_TOKEN") is None
+
+
+def test_profile_placeholder_bot_token_does_not_restore_root_bot_token(tmp_path, monkeypatch):
+    user_home = tmp_path / "user"
+    root_home = user_home / ".hermes"
+    profile_home = root_home / "profiles" / "worker"
+    profile_home.mkdir(parents=True)
+    (root_home / ".env").write_text(
+        "OPENROUTER_API_KEY=real-openrouter-key\n"
+        "TELEGRAM_BOT_TOKEN=real-root-telegram-token\n",
+        encoding="utf-8",
+    )
+    (profile_home / ".env").write_text(
+        "OPENROUTER_API_KEY=xxx\nTELEGRAM_BOT_TOKEN=xxx\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("HOME", str(user_home))
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+
+    loaded = load_hermes_dotenv(hermes_home=profile_home)
+
+    assert loaded == [root_home / ".env", profile_home / ".env"]
+    assert os.getenv("OPENROUTER_API_KEY") == "real-openrouter-key"
+    assert os.getenv("TELEGRAM_BOT_TOKEN") == "xxx"
 
 
 def test_main_import_applies_user_env_over_shell_values(tmp_path, monkeypatch):

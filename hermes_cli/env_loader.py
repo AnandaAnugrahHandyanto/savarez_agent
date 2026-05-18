@@ -101,6 +101,8 @@ def _restore_credentials_overridden_by_placeholders(before: dict[str, str]) -> N
     not erase a valid shared key already loaded from ~/.hermes/.env.
     """
     for key, previous in before.items():
+        if not _shared_profile_env_key(key):
+            continue
         current = os.environ.get(key)
         if previous and not _is_placeholder_credential(previous) and _is_placeholder_credential(current):
             os.environ[key] = previous
