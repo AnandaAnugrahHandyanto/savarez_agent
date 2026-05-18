@@ -42,7 +42,6 @@ def _make_self(modal_response):
     self_ = SimpleNamespace(
         _app=None,
         _pending_relaunch=None,
-        _prompt_text_input=lambda _prompt: modal_response,
         _prompt_text_input_modal=lambda **_kw: modal_response,
     )
     self_._normalize_slash_confirm_choice = _bound(
@@ -64,7 +63,15 @@ def _call(self_):
 def test_managed_install_refuses_and_does_not_set_pending_relaunch(capsys):
     """Under a managed install (brew/docker), /update prints a hint and
     returns without setting ``_pending_relaunch``."""
-    self_ = _make_self(modal_response="should not be called")
+    self_ = SimpleNamespace(
+        _app=None,
+        _pending_relaunch=None,
+        # Use pytest.fail so any unexpected modal invocation surfaces as a failure.
+        _prompt_text_input_modal=lambda **_kw: pytest.fail("Modal should not be called"),
+    )
+    self_._normalize_slash_confirm_choice = _bound(
+        HermesCLI._normalize_slash_confirm_choice, self_
+    )
     with (
         patch("hermes_cli.config.is_managed", return_value=True),
         patch(
