@@ -287,6 +287,14 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
     if not session or session.get("_finalized"):
         return
     session["_finalized"] = True
+    # Clean up session status file
+    try:
+        for _sid, _s in _sessions.items():
+            if _s is session:
+                (_STATUS_DIR / f"{_sid}.json").unlink(missing_ok=True)
+                break
+    except Exception:
+        pass
     stop_event = session.get("_notif_stop")
     if stop_event is not None:
         stop_event.set()
