@@ -317,6 +317,7 @@ def test_setup_keyboard_interrupt_gracefully_handled(tmp_path, monkeypatch):
         raise KeyboardInterrupt()
 
     monkeypatch.setattr("hermes_cli.main.select_provider_and_model", fake_select)
+    monkeypatch.setattr("hermes_cli.setup.save_config", lambda *_args, **_kwargs: None)
 
     setup_model_provider(config)
 
@@ -485,6 +486,7 @@ def test_modal_setup_persists_direct_mode_when_user_chooses_their_own_account(tm
         ),
     )
     monkeypatch.setitem(sys.modules, "swe_rex", object())
+    monkeypatch.setitem(sys.modules, "modal", object())
 
     from hermes_cli.setup import setup_terminal_backend
 

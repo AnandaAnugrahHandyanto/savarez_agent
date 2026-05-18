@@ -49,7 +49,7 @@ import yaml
 
 from hermes_cli.config import get_hermes_home, get_config_path, read_raw_config
 from hermes_constants import OPENROUTER_BASE_URL
-from utils import atomic_replace, atomic_yaml_write, is_truthy_value
+from hermes_cli.shared_utils import atomic_replace, atomic_yaml_write, is_truthy_value
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +94,7 @@ ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 120       # refresh 2 min before expiry
 NOUS_INVOKE_JWT_MIN_TTL_SECONDS = ACCESS_TOKEN_REFRESH_SKEW_SECONDS
 DEVICE_AUTH_POLL_INTERVAL_CAP_SECONDS = 1     # poll at most every 1s
 DEFAULT_CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex"
+DEFAULT_CHATGPT_WEB_BASE_URL = "https://chatgpt.com/backend-api/f"
 DEFAULT_XAI_OAUTH_BASE_URL = "https://api.x.ai/v1"
 MINIMAX_OAUTH_CLIENT_ID = "78257093-7e40-4613-99e0-527b14b39113"
 MINIMAX_OAUTH_SCOPE = "group_id profile model.completion"
@@ -196,6 +197,12 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         auth_type="oauth_external",
         inference_base_url=DEFAULT_CODEX_BASE_URL,
     ),
+    "chatgpt-web": ProviderConfig(
+        id="chatgpt-web",
+        name="ChatGPT Web",
+        auth_type="oauth_external",
+        inference_base_url=DEFAULT_CHATGPT_WEB_BASE_URL,
+    ),
     "xai-oauth": ProviderConfig(
         id="xai-oauth",
         name="xAI Grok OAuth (SuperGrok Subscription)",
@@ -252,6 +259,20 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         inference_base_url="https://api.z.ai/api/paas/v4",
         api_key_env_vars=("GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY"),
         base_url_env_var="GLM_BASE_URL",
+    ),
+    "zai-coding-plan": ProviderConfig(
+        id="zai-coding-plan",
+        name="Z.AI Coding Plan",
+        auth_type="api_key",
+        inference_base_url="https://api.z.ai/api/coding/paas/v4",
+        api_key_env_vars=(
+            "GLM_CODING_PLAN_API_KEY",
+            "ZAI_CODING_PLAN_API_KEY",
+            "GLM_API_KEY",
+            "ZAI_API_KEY",
+            "Z_AI_API_KEY",
+        ),
+        base_url_env_var="GLM_CODING_PLAN_BASE_URL",
     ),
     "kimi-coding": ProviderConfig(
         id="kimi-coding",
@@ -335,7 +356,7 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         name="Alibaba Cloud (Coding Plan)",
         auth_type="api_key",
         inference_base_url="https://coding-intl.dashscope.aliyuncs.com/v1",
-        api_key_env_vars=("ALIBABA_CODING_PLAN_API_KEY", "DASHSCOPE_API_KEY"),
+        api_key_env_vars=("BAILIAN_CODING_PLAN_API_KEY", "ALIBABA_CODING_PLAN_API_KEY", "DASHSCOPE_API_KEY"),
         base_url_env_var="ALIBABA_CODING_PLAN_BASE_URL",
     ),
     "minimax-cn": ProviderConfig(
@@ -1402,6 +1423,8 @@ def resolve_provider(
     # Normalize provider aliases
     _PROVIDER_ALIASES = {
         "glm": "zai", "z-ai": "zai", "z.ai": "zai", "zhipu": "zai",
+        "glm-coding-plan": "zai-coding-plan", "zai-coding": "zai-coding-plan",
+        "zai_coding_plan": "zai-coding-plan", "z-ai-coding-plan": "zai-coding-plan",
         "google": "gemini", "google-gemini": "gemini", "google-ai-studio": "gemini",
         "x-ai": "xai", "x.ai": "xai", "grok": "xai",
         "xai-oauth": "xai-oauth", "x-ai-oauth": "xai-oauth",
@@ -3009,6 +3032,76 @@ def _read_codex_tokens(*, _lock: bool = True) -> Dict[str, Any]:
     }
 
 
+def _write_codex_cli_tokens(
+    access_token: str,
+    refresh_token: str,
+    *,
+    last_refresh: Optional[str] = None,
+) -> None:
+    """Write refreshed tokens back to ~/.codex/auth.json.
+
+    OpenAI OAuth refresh tokens are single-use and rotate on every refresh.
+    When Hermes refreshes a token it consumes the old refresh_token; if we
+    don't write the new pair back, the Codex CLI (or VS Code extension) will
+    fail with ``refresh_token_reused`` on its next refresh attempt.
+
+    This mirrors the Anthropic write-back to ~/.claude/.credentials.json
+    via ``_write_claude_code_credentials()``.
+    """
+    codex_home = os.getenv("CODEX_HOME", "").strip()
+    if not codex_home:
+        codex_home = str(Path.home() / ".codex")
+    auth_path = Path(codex_home).expanduser() / "auth.json"
+    try:
+        existing: Dict[str, Any] = {}
+        if auth_path.is_file():
+            existing = json.loads(auth_path.read_text(encoding="utf-8"))
+        if not isinstance(existing, dict):
+            existing = {}
+
+        tokens_dict = existing.get("tokens")
+        if not isinstance(tokens_dict, dict):
+            tokens_dict = {}
+        tokens_dict["access_token"] = access_token
+        tokens_dict["refresh_token"] = refresh_token
+        existing["tokens"] = tokens_dict
+        if last_refresh is not None:
+            existing["last_refresh"] = last_refresh
+
+        auth_path.parent.mkdir(parents=True, exist_ok=True)
+        auth_path.write_text(json.dumps(existing, indent=2), encoding="utf-8")
+        auth_path.chmod(0o600)
+    except (OSError, IOError) as exc:
+        logger.debug("Failed to write refreshed tokens to %s: %s", auth_path, exc)
+
+
+def _resolve_shared_codex_home() -> Optional[Path]:
+    """Return the shared Codex CLI home when it is safe to consult.
+
+    Tests and custom Hermes profiles often point ``HERMES_HOME`` at an isolated
+    temporary directory while leaving the user's real ``~/.codex/auth.json`` in
+    place. Blindly importing from that shared file makes those isolated stores
+    unexpectedly pick up real local credentials. To keep profile/test state
+    hermetic, only fall back to the default shared Codex home when Hermes is
+    running from the default ``~/.hermes`` root, or when the caller explicitly
+    opted in via ``CODEX_HOME``.
+    """
+    codex_home = os.getenv("CODEX_HOME", "").strip()
+    if codex_home:
+        return Path(codex_home).expanduser()
+
+    hermes_home = get_hermes_home().expanduser()
+    default_hermes_home = (Path.home() / ".hermes").expanduser()
+    try:
+        if hermes_home.resolve() != default_hermes_home.resolve():
+            return None
+    except Exception:
+        if str(hermes_home) != str(default_hermes_home):
+            return None
+
+    return Path.home() / ".codex"
+
+
 def _save_codex_tokens(tokens: Dict[str, str], last_refresh: str = None) -> None:
     """Save Codex OAuth tokens to Hermes auth store (~/.hermes/auth.json)."""
     if last_refresh is None:
@@ -3145,19 +3238,24 @@ def _refresh_codex_auth_tokens(
     updated_tokens["refresh_token"] = refreshed["refresh_token"]
 
     _save_codex_tokens(updated_tokens)
+    _write_codex_cli_tokens(
+        refreshed["access_token"],
+        refreshed["refresh_token"],
+        last_refresh=refreshed.get("last_refresh"),
+    )
     return updated_tokens
 
 
 def _import_codex_cli_tokens() -> Optional[Dict[str, str]]:
     """Try to read tokens from ~/.codex/auth.json (Codex CLI shared file).
-    
+
     Returns tokens dict if valid and not expired, None otherwise.
     Does NOT write to the shared file.
     """
-    codex_home = os.getenv("CODEX_HOME", "").strip()
-    if not codex_home:
-        codex_home = str(Path.home() / ".codex")
-    auth_path = Path(codex_home).expanduser() / "auth.json"
+    codex_home = _resolve_shared_codex_home()
+    if codex_home is None:
+        return None
+    auth_path = codex_home / "auth.json"
     if not auth_path.is_file():
         return None
     try:
@@ -5322,6 +5420,76 @@ def get_codex_auth_status() -> Dict[str, Any]:
         }
 
 
+def get_chatgpt_web_auth_status() -> Dict[str, Any]:
+    """Status snapshot for ChatGPT Web auth.
+
+    Prefers explicit ChatGPT Web credentials, then ChatGPT Web pool entries,
+    then falls back to Codex OAuth credentials.
+    """
+    access_token = os.getenv("CHATGPT_WEB_ACCESS_TOKEN", "").strip()
+    session_token = os.getenv("CHATGPT_WEB_SESSION_TOKEN", "").strip()
+    if access_token:
+        return {
+            "logged_in": True,
+            "auth_mode": "access_token",
+            "source": "env:CHATGPT_WEB_ACCESS_TOKEN",
+            "api_key": access_token,
+        }
+    if session_token:
+        return {
+            "logged_in": True,
+            "auth_mode": "session_token",
+            "source": "env:CHATGPT_WEB_SESSION_TOKEN",
+            "api_key": "",
+        }
+
+    try:
+        from agent.credential_pool import load_pool
+
+        pool = load_pool("chatgpt-web")
+        if pool and pool.has_credentials():
+            entry = pool.select() or pool.peek()
+            if entry is None:
+                entries = pool.entries()
+                entry = entries[0] if entries else None
+            if entry is not None:
+                api_key = str(
+                    getattr(entry, "runtime_api_key", None)
+                    or getattr(entry, "access_token", "")
+                    or ""
+                ).strip()
+                session_token = str(getattr(entry, "session_token", "") or "").strip()
+                if api_key and not _codex_access_token_is_expiring(api_key, 0):
+                    return {
+                        "logged_in": True,
+                        "auth_store": str(_auth_file_path()),
+                        "last_refresh": getattr(entry, "last_refresh", None),
+                        "auth_mode": getattr(entry, "auth_type", None) or "oauth",
+                        "source": f"pool:{getattr(entry, 'label', 'unknown')}",
+                        "api_key": api_key,
+                    }
+                if session_token:
+                    return {
+                        "logged_in": True,
+                        "auth_store": str(_auth_file_path()),
+                        "last_refresh": getattr(entry, "last_refresh", None),
+                        "auth_mode": "session_token",
+                        "source": f"pool:{getattr(entry, 'label', 'unknown')}",
+                        "api_key": api_key,
+                    }
+    except Exception:
+        pass
+
+    codex_status = get_codex_auth_status()
+    if codex_status.get("logged_in"):
+        return {
+            **codex_status,
+            "auth_mode": "codex_oauth",
+            "source": codex_status.get("source") or "codex-oauth",
+        }
+    return codex_status
+
+
 def get_xai_oauth_auth_status() -> Dict[str, Any]:
     try:
         from agent.credential_pool import load_pool
@@ -5436,6 +5604,8 @@ def get_auth_status(provider_id: Optional[str] = None) -> Dict[str, Any]:
         return get_nous_auth_status()
     if target == "openai-codex":
         return get_codex_auth_status()
+    if target == "chatgpt-web":
+        return get_chatgpt_web_auth_status()
     if target == "xai-oauth":
         return get_xai_oauth_auth_status()
     if target == "qwen-oauth":

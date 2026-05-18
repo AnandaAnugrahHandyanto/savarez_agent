@@ -2009,8 +2009,8 @@ def select_provider_and_model(args=None):
         _model_flow_nous(config, current_model, args=args)
     elif selected_provider == "openai-codex":
         _model_flow_openai_codex(config, current_model)
-    elif selected_provider == "xai-oauth":
-        _model_flow_xai_oauth(config, current_model)
+    elif selected_provider == "chatgpt-web":
+        _model_flow_chatgpt_web(config, current_model)
     elif selected_provider == "qwen-oauth":
         _model_flow_qwen_oauth(config, current_model)
     elif selected_provider == "minimax-oauth":
@@ -2891,58 +2891,30 @@ def _model_flow_openai_codex(config, current_model=""):
     else:
         print("No change.")
 
-
-def _model_flow_xai_oauth(_config, current_model=""):
-    """xAI Grok OAuth (SuperGrok Subscription) provider: ensure logged in, then pick model."""
+def _model_flow_chatgpt_web(config, current_model=""):
+    """ChatGPT Web provider: reuse ChatGPT auth, then pick a web-app model slug."""
     from hermes_cli.auth import (
-        get_xai_oauth_auth_status,
+        get_chatgpt_web_auth_status,
         _prompt_model_selection,
         _save_model_choice,
         _update_config_for_provider,
-        resolve_xai_oauth_runtime_credentials,
-        _login_xai_oauth,
-        DEFAULT_XAI_OAUTH_BASE_URL,
+        _login_openai_codex,
         PROVIDER_REGISTRY,
     )
-    from hermes_cli.models import _PROVIDER_MODELS
+    from hermes_cli.chatgpt_web import (
+        DEFAULT_CHATGPT_WEB_BASE_URL,
+        fetch_chatgpt_web_model_ids,
+        resolve_chatgpt_web_runtime_credentials,
+    )
+    import argparse
 
-    status = get_xai_oauth_auth_status()
-    if status.get("logged_in"):
-        print("  xAI Grok OAuth (SuperGrok Subscription) credentials: ✓")
-        print()
-        print("    1. Use existing credentials")
-        print("    2. Reauthenticate (new OAuth login)")
-        print("    3. Cancel")
-        print()
-        try:
-            choice = input("  Choice [1/2/3]: ").strip()
-        except (KeyboardInterrupt, EOFError):
-            choice = "1"
-
-        if choice == "2":
-            print("Starting a fresh xAI OAuth login...")
-            print()
-            try:
-                mock_args = argparse.Namespace()
-                _login_xai_oauth(
-                    mock_args,
-                    PROVIDER_REGISTRY["xai-oauth"],
-                    force_new_login=True,
-                )
-            except SystemExit:
-                print("Login cancelled or failed.")
-                return
-            except Exception as exc:
-                print(f"Login failed: {exc}")
-                return
-        elif choice == "3":
-            return
-    else:
-        print("Not logged into xAI Grok OAuth (SuperGrok Subscription). Starting login...")
+    status = get_chatgpt_web_auth_status()
+    if not status.get("logged_in"):
+        print("Not logged into ChatGPT Web. Starting OpenAI login...")
         print()
         try:
             mock_args = argparse.Namespace()
-            _login_xai_oauth(mock_args, PROVIDER_REGISTRY["xai-oauth"])
+            _login_openai_codex(mock_args, PROVIDER_REGISTRY["openai-codex"])
         except SystemExit:
             print("Login cancelled or failed.")
             return
@@ -2950,29 +2922,21 @@ def _model_flow_xai_oauth(_config, current_model=""):
             print(f"Login failed: {exc}")
             return
 
-    # Resolve a usable base URL.  ``resolve_xai_oauth_runtime_credentials``
-    # only reads from the auth.json singleton — but credentials may legitimately
-    # live only in the pool (e.g. after ``hermes auth add xai-oauth``).  Fall
-    # back to the default base URL in that case so the model picker still
-    # completes successfully instead of bailing out with
-    # ``Could not resolve xAI OAuth credentials``.
-    base_url = DEFAULT_XAI_OAUTH_BASE_URL
+    access_token = None
     try:
-        creds = resolve_xai_oauth_runtime_credentials()
-        base_url = (creds.get("base_url") or "").strip().rstrip("/") or base_url
+        creds = resolve_chatgpt_web_runtime_credentials()
+        access_token = creds.get("api_key")
     except Exception:
         pass
 
-    models = list(_PROVIDER_MODELS.get("xai-oauth") or _PROVIDER_MODELS.get("xai") or [])
-    selected = _prompt_model_selection(models, current_model=current_model or (models[0] if models else "grok-4.3"))
+    web_models = fetch_chatgpt_web_model_ids(access_token=access_token)
+    selected = _prompt_model_selection(web_models, current_model=current_model)
     if selected:
         _save_model_choice(selected)
-        _update_config_for_provider("xai-oauth", base_url)
-        print(f"Default model set to: {selected} (via xAI Grok OAuth — SuperGrok Subscription)")
+        _update_config_for_provider("chatgpt-web", DEFAULT_CHATGPT_WEB_BASE_URL)
+        print(f"Default model set to: {selected} (via ChatGPT Web)")
     else:
         print("No change.")
-
-
 _DEFAULT_QWEN_PORTAL_MODELS = [
     "qwen3-coder-plus",
     "qwen3-coder",
@@ -6496,7 +6460,7 @@ def _update_via_zip(args):
     pip_cmd = [sys.executable, "-m", "pip"]
     uv_bin = shutil.which("uv") or _ensure_uv_for_termux(pip_cmd)
     if uv_bin:
-        uv_env = {**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")}
+        uv_env = {**os.environ, "VIRTUAL_ENV": str(_detect_project_venv_dir())}
         if _is_termux_env(uv_env):
             uv_env.pop("PYTHONPATH", None)
             uv_env.pop("PYTHONHOME", None)
@@ -7040,6 +7004,30 @@ def _load_installable_optional_extras(group: str = "all") -> list[str]:
     return referenced
 
 
+def _detect_project_venv_dir() -> Path:
+    """Return the best project venv directory for update/install commands.
+
+    Preference order:
+    1) Active interpreter's parent venv when inside PROJECT_ROOT (supports .venv)
+    2) PROJECT_ROOT/.venv
+    3) PROJECT_ROOT/venv (legacy fallback)
+    """
+    exe = Path(sys.executable).resolve()
+    try:
+        if PROJECT_ROOT in exe.parents:
+            candidate = exe.parent.parent
+            if (candidate / "bin" / "python").exists():
+                return candidate
+    except Exception:
+        pass
+
+    dot_venv = PROJECT_ROOT / ".venv"
+    if (dot_venv / "bin" / "python").exists():
+        return dot_venv
+
+    return PROJECT_ROOT / "venv"
+
+
 def _run_install_with_heartbeat(
     cmd: list[str],
     *,
@@ -7312,6 +7300,112 @@ def _is_termux_env(env: dict[str, str] | None = None) -> bool:
 
 def _is_android_python() -> bool:
     return sys.platform == "android"
+
+
+def _termux_snapshot_prompt_marker_path() -> Path:
+    return get_hermes_home() / ".termux_snapshot_cleanup_prompt"
+
+
+def _termux_state_snapshots_dir() -> Path:
+    return get_hermes_home() / "state-snapshots"
+
+
+def _list_termux_state_snapshots() -> list[Path]:
+    root = _termux_state_snapshots_dir()
+    if not root.exists() or not root.is_dir():
+        return []
+    return sorted((p for p in root.iterdir() if p.is_dir()), key=lambda p: p.name)
+
+
+def _prompt_termux_snapshot_cleanup_on_launch() -> None:
+    """Termux-only one-shot prompt to prune update snapshots.
+
+    Triggered on the next interactive launch after a successful ``hermes update``.
+    """
+    if not _is_termux_env() or not (sys.stdin.isatty() and sys.stdout.isatty()):
+        return
+
+    marker = _termux_snapshot_prompt_marker_path()
+    if not marker.exists():
+        return
+
+    snapshots = _list_termux_state_snapshots()
+    if len(snapshots) <= 1:
+        try:
+            marker.unlink(missing_ok=True)
+        except Exception:
+            pass
+        return
+
+    newest = snapshots[-1]
+    older = snapshots[:-1]
+
+    print()
+    print("→ Termux snapshot cleanup")
+    print("  Select snapshots to delete:")
+    print("  0 = delete every snapshot before the most recent one")
+    print("  all = delete ALL snapshots (including the most recent)")
+    print("  Enter comma-separated numbers to delete specific entries")
+    print()
+
+    indexed: list[Path] = []
+    for idx, p in enumerate(reversed(snapshots), start=1):
+        tag = " (most recent)" if p == newest else ""
+        print(f"  {idx}. {p.name}{tag}")
+        indexed.append(p)
+
+    try:
+        raw = input("Delete selection [Enter to skip]: ").strip().lower()
+    except EOFError:
+        raw = ""
+
+    to_delete: list[Path] = []
+    if raw == "":
+        print("  Skipped snapshot cleanup.")
+    elif raw == "0":
+        to_delete = older
+    elif raw == "all":
+        to_delete = list(snapshots)
+    else:
+        picks: list[int] = []
+        for token in raw.split(","):
+            token = token.strip()
+            if not token:
+                continue
+            if not token.isdigit():
+                print(f"  Invalid token '{token}' — skipping cleanup.")
+                to_delete = []
+                picks = []
+                break
+            picks.append(int(token))
+
+        if picks:
+            max_idx = len(indexed)
+            bad = [n for n in picks if n < 1 or n > max_idx]
+            if bad:
+                print(f"  Invalid selection(s): {bad} — skipping cleanup.")
+            else:
+                chosen = {indexed[n - 1] for n in picks}
+                to_delete = sorted(chosen, key=lambda p: p.name)
+
+    removed = 0
+    for p in to_delete:
+        # Safety guard: never delete outside the snapshots directory.
+        try:
+            if p.parent != _termux_state_snapshots_dir():
+                continue
+            shutil.rmtree(p)
+            removed += 1
+        except Exception as exc:
+            print(f"  Could not remove {p.name}: {exc}")
+
+    if to_delete:
+        print(f"  Removed {removed}/{len(to_delete)} snapshot directories.")
+
+    try:
+        marker.unlink(missing_ok=True)
+    except Exception:
+        pass
 
 
 def _install_psutil_android_compat(
@@ -8177,7 +8271,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         install_group = "all"
 
         if uv_bin:
-            uv_env = {**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")}
+            uv_env = {**os.environ, "VIRTUAL_ENV": str(_detect_project_venv_dir())}
             if _is_termux_env(uv_env):
                 uv_env.pop("PYTHONPATH", None)
                 uv_env.pop("PYTHONHOME", None)
@@ -8386,6 +8480,14 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
         print()
         print("✓ Update complete!")
+
+        # On Termux, prompt at next interactive launch to prune state snapshots.
+        # This keeps update non-blocking while still giving users granular cleanup.
+        if _is_termux_env():
+            try:
+                _termux_snapshot_prompt_marker_path().write_text("1", encoding="utf-8")
+            except Exception:
+                pass
 
         # Curator first-run heads-up. Only prints when curator is enabled AND
         # has never run — i.e. the window where the ticker would otherwise
@@ -9996,6 +10098,12 @@ def main():
     except Exception:
         pass
 
+    # Termux-only one-shot cleanup prompt shown after successful updates.
+    try:
+        _prompt_termux_snapshot_cleanup_on_launch()
+    except Exception:
+        pass
+
     from hermes_cli._parser import build_top_level_parser
 
     parser, subparsers, chat_parser = build_top_level_parser()
@@ -10411,7 +10519,7 @@ def main():
     )
     login_parser.add_argument(
         "--provider",
-        choices=["nous", "openai-codex", "xai-oauth"],
+        choices=["nous", "openai-codex", "chatgpt-web"],
         default=None,
         help="Provider to authenticate with (default: nous)",
     )
@@ -10457,7 +10565,7 @@ def main():
     )
     logout_parser.add_argument(
         "--provider",
-        choices=["nous", "openai-codex", "xai-oauth", "spotify"],
+        choices=["nous", "openai-codex", "spotify", "chatgpt-web"],
         default=None,
         help="Provider to log out from (default: active provider)",
     )
@@ -10546,6 +10654,34 @@ def main():
     )
     auth_spotify.add_argument(
         "--timeout", type=float, help="Callback/token exchange timeout in seconds"
+    )
+    auth_browser = auth_subparsers.add_parser(
+        "browser", help="Bootstrap auth by launching a local browser session"
+    )
+    auth_browser.add_argument(
+        "provider",
+        nargs="?",
+        default="chatgpt-web",
+        choices=["chatgpt-web"],
+        help="Provider id (currently only chatgpt-web)",
+    )
+    auth_browser.add_argument("--label", help="Optional display label for the stored credential")
+    auth_browser.add_argument(
+        "--timeout",
+        type=int,
+        default=15 * 60,
+        help="How long to wait for the browser login flow in seconds",
+    )
+    auth_browser.add_argument(
+        "--debug-port",
+        type=int,
+        default=9222,
+        help="Local Chromium remote-debugging port",
+    )
+    auth_browser.add_argument(
+        "--keep-open",
+        action="store_true",
+        help="Leave the browser/X11 session running after auth completes",
     )
     auth_parser.set_defaults(func=cmd_auth)
 

@@ -65,6 +65,11 @@ class TestParseModelInput:
         assert provider == "zai"
         assert model == "glm-5"
 
+    def test_zai_coding_plan_alias_resolved(self):
+        provider, model = parse_model_input("glm-coding-plan:glm-5.1", "openrouter")
+        assert provider == "zai-coding-plan"
+        assert model == "glm-5.1"
+
     def test_stepfun_alias_resolved(self):
         provider, model = parse_model_input("step:step-3.5-flash", "openrouter")
         assert provider == "stepfun"
@@ -146,6 +151,10 @@ class TestCuratedModelsForProvider:
         models = curated_models_for_provider("zai")
         assert any("glm" in m[0] for m in models)
 
+    def test_zai_coding_plan_returns_glm_models(self):
+        models = curated_models_for_provider("zai-coding-plan")
+        assert any("glm" in m[0] for m in models)
+
     def test_unknown_provider_returns_empty(self):
         assert curated_models_for_provider("totally-unknown") == []
 
@@ -159,6 +168,7 @@ class TestNormalizeProvider:
 
     def test_known_aliases(self):
         assert normalize_provider("glm") == "zai"
+        assert normalize_provider("glm-coding-plan") == "zai-coding-plan"
         assert normalize_provider("kimi") == "kimi-coding"
         assert normalize_provider("moonshot") == "kimi-coding"
         assert normalize_provider("step") == "stepfun"
@@ -201,6 +211,9 @@ class TestProviderModelIds:
 
     def test_zai_returns_glm_models(self):
         assert "glm-5" in provider_model_ids("zai")
+
+    def test_zai_coding_plan_returns_glm_models(self):
+        assert "glm-5.1" in provider_model_ids("zai-coding-plan")
 
     def test_stepfun_prefers_live_catalog(self):
         with patch(
@@ -518,13 +531,37 @@ class TestValidateApiFound:
 
     def test_model_found_for_custom_endpoint(self):
         result = _validate(
-            "my-model", provider="openrouter",
-            api_models=["my-model"], base_url="http://localhost:11434/v1",
+            "my-model",
+            provider="custom",
+            api_models=["my-model"],
+            api_key="key",
+            base_url="http://localhost:11434",
         )
         assert result["accepted"] is True
         assert result["persist"] is True
         assert result["recognized"] is True
 
+    def test_custom_endpoint_unreachable_warns_but_accepts(self):
+        result = _validate("llama3.2", "custom", api_models=None, api_key="key", base_url="http://localhost:11434")
+        assert result["accepted"] is True
+        assert result["persist"] is True
+        assert result["recognized"] is False
+        assert "could not reach this custom endpoint's model listing" in result["message"].lower()
+
+    def test_chatgpt_web_validation_uses_provider_catalog_instead_of_generic_models_probe(self):
+        with patch("hermes_cli.models.provider_model_ids", return_value=["gpt-5-thinking", "gpt-5-instant"]), \
+             patch("hermes_cli.models.fetch_api_models", side_effect=AssertionError("generic /models probe should not be used for chatgpt-web")):
+            result = validate_requested_model(
+                "gpt-5-thinking",
+                "chatgpt-web",
+                api_key="chatgpt-web-token",
+                base_url="https://chatgpt.com/backend-api/f",
+            )
+
+        assert result["accepted"] is True
+        assert result["persist"] is True
+        assert result["recognized"] is True
+        assert result["message"] is None
 
 # -- validate — API not found ------------------------------------------------
 
@@ -634,7 +671,7 @@ class TestValidateApiFallback:
         # Unreachable /models on a custom endpoint no longer hard-rejects —
         # the model is persisted with a warning so Cloudflare-protected /
         # proxy endpoints that don't expose /models still work. See #12950.
-        assert result["accepted"] is False
+        assert result["accepted"] is True
         assert result["persist"] is True
         assert "http://localhost:8000/v1/models" in result["message"]
         assert "http://localhost:8000/v1" in result["message"]

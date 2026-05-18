@@ -54,6 +54,7 @@ import functools
 import json
 import logging
 import os
+import posixpath
 import re
 import signal
 import subprocess
@@ -67,7 +68,7 @@ from typing import Dict, Any, Optional, List, Tuple
 from pathlib import Path
 from agent.auxiliary_client import call_llm
 from hermes_constants import get_hermes_home
-from utils import is_truthy_value
+from hermes_cli.shared_utils import is_truthy_value
 from hermes_cli.config import cfg_get
 
 try:
@@ -146,7 +147,7 @@ def _discover_homebrew_node_dirs() -> tuple[str, ...]:
     try:
         for entry in os.listdir(homebrew_opt):
             if entry.startswith("node") and entry != "node":
-                bin_dir = os.path.join(homebrew_opt, entry, "bin")
+                bin_dir = posixpath.join(homebrew_opt, entry, "bin")
                 if os.path.isdir(bin_dir):
                     dirs.append(bin_dir)
     except OSError:
@@ -156,11 +157,14 @@ def _discover_homebrew_node_dirs() -> tuple[str, ...]:
 
 def _browser_candidate_path_dirs() -> list[str]:
     """Return ordered browser CLI PATH candidates shared by discovery and execution."""
-    hermes_home = get_hermes_home()
-    hermes_node_bin = str(hermes_home / "node" / "bin")
-    hermes_node_root = str(hermes_home / "node")
-    hermes_nm_bin = str(hermes_home / "node_modules" / ".bin")
-    return [hermes_node_bin, hermes_node_root, hermes_nm_bin, *list(_discover_homebrew_node_dirs()), *_SANE_PATH_DIRS]
+    candidate_dirs: list[str] = []
+    try:
+        candidate_dirs.append(str(get_hermes_home() / "node" / "bin"))
+    except Exception:
+        pass
+    candidate_dirs.extend(_discover_homebrew_node_dirs())
+    candidate_dirs.extend(_SANE_PATH_DIRS)
+    return candidate_dirs
 
 
 def _merge_browser_path(existing_path: str = "") -> str:
@@ -810,15 +814,21 @@ def _run_chrome_fallback_command(
     """
     import uuid
 
-    # 1. Grab the current URL from the Lightpanda session. Use
-    # ``_engine_override=\"auto\"`` so this helper does not recursively trigger
-    # Lightpanda→Chrome fallback if the eval call itself fails.
-    url_result = _run_browser_command(
-        task_id, "eval", ["window.location.href"], timeout=10, _engine_override="auto"
-    )
+    # 1. Determine the URL Chrome should load.
+    # For a failed LP ``open <url>`` call, retry the same target directly.
+    # For all other commands, grab the current URL from the LP session.
     current_url = None
-    if url_result.get("success"):
-        current_url = url_result.get("data", {}).get("result", "").strip().strip('"').strip("'")
+    if command == "open" and args:
+        current_url = str(args[0] or "").strip()
+
+    if not current_url:
+        # Use ``_engine_override=\"auto\"`` so this helper does not recursively
+        # trigger Lightpanda→Chrome fallback if the eval call itself fails.
+        url_result = _run_browser_command(
+            task_id, "eval", ["window.location.href"], timeout=10, _engine_override="auto"
+        )
+        if url_result.get("success"):
+            current_url = url_result.get("data", {}).get("result", "").strip().strip('"').strip("'")
     if not current_url:
         logger.warning("Chrome fallback: could not determine current URL from LP session")
         return {"success": False, "error": "Chrome fallback failed: could not determine current URL"}

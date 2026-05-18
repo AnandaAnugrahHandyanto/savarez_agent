@@ -58,7 +58,20 @@ def _make_mock_parent(depth=0):
     return parent
 
 
-class TestDelegateRequirements(unittest.TestCase):
+class _DelegateConfigIsolatedTestCase(unittest.TestCase):
+    """Keep delegate-tool tests independent from ambient ~/.hermes config."""
+
+    def setUp(self):
+        super().setUp()
+        self._delegate_cfg_patcher = patch("tools.delegate_tool._load_config", return_value={})
+        self._delegate_cfg_patcher.start()
+
+    def tearDown(self):
+        self._delegate_cfg_patcher.stop()
+        super().tearDown()
+
+
+class TestDelegateRequirements(_DelegateConfigIsolatedTestCase):
     def test_always_available(self):
         self.assertTrue(check_delegate_requirements())
 
@@ -125,7 +138,7 @@ class TestDelegateRequirements(unittest.TestCase):
         self.assertIn(f"max_spawn_depth={_get_max_spawn_depth()}", fn["description"])
 
 
-class TestChildSystemPrompt(unittest.TestCase):
+class TestChildSystemPrompt(_DelegateConfigIsolatedTestCase):
     def test_goal_only(self):
         prompt = _build_child_system_prompt("Fix the tests")
         self.assertIn("Fix the tests", prompt)
@@ -143,7 +156,7 @@ class TestChildSystemPrompt(unittest.TestCase):
         self.assertNotIn("CONTEXT", prompt)
 
 
-class TestStripBlockedTools(unittest.TestCase):
+class TestStripBlockedTools(_DelegateConfigIsolatedTestCase):
     def test_removes_blocked_toolsets(self):
         result = _strip_blocked_tools(["terminal", "file", "delegation", "clarify", "memory", "code_execution"])
         self.assertEqual(sorted(result), ["file", "terminal"])
@@ -157,7 +170,7 @@ class TestStripBlockedTools(unittest.TestCase):
         self.assertEqual(result, [])
 
 
-class TestDelegateTask(unittest.TestCase):
+class TestDelegateTask(_DelegateConfigIsolatedTestCase):
     def test_no_parent_agent(self):
         result = json.loads(delegate_task(goal="test"))
         self.assertIn("error", result)
@@ -415,7 +428,7 @@ class TestDelegateTask(unittest.TestCase):
         parent.tool_progress_callback.assert_not_called()
 
 
-class TestToolNamePreservation(unittest.TestCase):
+class TestToolNamePreservation(_DelegateConfigIsolatedTestCase):
     """Verify _last_resolved_tool_names is restored after subagent runs."""
 
     def test_global_tool_names_restored_after_delegation(self):
@@ -511,7 +524,7 @@ class TestToolNamePreservation(unittest.TestCase):
         self.assertEqual(captured["saved"], expected_tools)
 
 
-class TestDelegateObservability(unittest.TestCase):
+class TestDelegateObservability(_DelegateConfigIsolatedTestCase):
     """Tests for enriched metadata returned by _run_single_child."""
 
     def test_observability_fields_present(self):
@@ -830,8 +843,7 @@ class TestSubagentCostRollup(unittest.TestCase):
         self.assertEqual(parent.session_estimated_cost_usd, 0.10)
         self.assertEqual(len(result["results"]), 1)
 
-
-class TestBlockedTools(unittest.TestCase):
+class TestBlockedTools(_DelegateConfigIsolatedTestCase):
     def test_blocked_tools_constant(self):
         for tool in ["delegate_task", "clarify", "memory", "send_message", "execute_code"]:
             self.assertIn(tool, DELEGATE_BLOCKED_TOOLS)
@@ -849,7 +861,7 @@ class TestBlockedTools(unittest.TestCase):
         self.assertEqual(_MAX_SPAWN_DEPTH_CAP, 3)
 
 
-class TestDelegationCredentialResolution(unittest.TestCase):
+class TestDelegationCredentialResolution(_DelegateConfigIsolatedTestCase):
     """Tests for provider:model credential resolution in delegation config."""
 
     def test_no_provider_returns_none_credentials(self):
@@ -873,7 +885,50 @@ class TestDelegationCredentialResolution(unittest.TestCase):
         self.assertIsNone(creds["base_url"])
         self.assertIsNone(creds["api_key"])
 
+    @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
+    def test_provider_resolves_full_credentials(self, mock_resolve):
+        """When delegation.provider is set, full credentials are resolved."""
+        mock_resolve.return_value = {
+            "provider": "openrouter",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key": "sk-or-test-key",
+            "api_mode": "chat_completions",
+        }
+        parent = _make_mock_parent(depth=0)
+        cfg = {"model": "google/gemini-3-flash-preview", "provider": "openrouter"}
+        creds = _resolve_delegation_credentials(cfg, parent)
+        self.assertEqual(creds["model"], "google/gemini-3-flash-preview")
+        self.assertEqual(creds["provider"], "openrouter")
+        self.assertEqual(creds["base_url"], "https://openrouter.ai/api/v1")
+        self.assertEqual(creds["api_key"], "sk-or-test-key")
+        self.assertEqual(creds["api_mode"], "chat_completions")
+        mock_resolve.assert_called_once_with(
+            requested="openrouter",
+            target_model="google/gemini-3-flash-preview",
+        )
 
+    @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
+    def test_provider_resolution_uses_runtime_model_when_config_model_missing(self, mock_resolve):
+        """Named providers should propagate their runtime default model to children."""
+        mock_resolve.return_value = {
+            "provider": "custom",
+            "base_url": "https://my-server.example/v1",
+            "api_key": "sk-test-key",
+            "api_mode": "chat_completions",
+            "model": "server-default-model",
+        }
+        parent = _make_mock_parent(depth=0)
+        cfg = {"provider": "custom:my-server", "model": ""}
+
+        creds = _resolve_delegation_credentials(cfg, parent)
+
+        self.assertEqual(creds["model"], "server-default-model")
+        self.assertEqual(creds["provider"], "custom")
+        self.assertEqual(creds["base_url"], "https://my-server.example/v1")
+        mock_resolve.assert_called_once_with(
+            requested="custom:my-server",
+            target_model=None,
+        )
 
     def test_direct_endpoint_uses_configured_base_url_and_api_key(self):
         parent = _make_mock_parent(depth=0)
@@ -881,71 +936,28 @@ class TestDelegationCredentialResolution(unittest.TestCase):
             "model": "qwen2.5-coder",
             "provider": "openrouter",
             "base_url": "http://localhost:1234/v1",
-            "api_key": "local-key",
+            "api_key": "delegation-token",
         }
         creds = _resolve_delegation_credentials(cfg, parent)
         self.assertEqual(creds["model"], "qwen2.5-coder")
         self.assertEqual(creds["provider"], "custom")
         self.assertEqual(creds["base_url"], "http://localhost:1234/v1")
-        self.assertEqual(creds["api_key"], "local-key")
+        self.assertEqual(creds["api_key"], "delegation-token")
         self.assertEqual(creds["api_mode"], "chat_completions")
 
-    def test_direct_endpoint_auto_detects_anthropic_messages_suffix(self):
-        # Issue #10213: Azure AI Foundry exposes Anthropic-compatible models at
-        # a /anthropic URL suffix. Subagents must pick anthropic_messages
-        # automatically, matching the main agent's runtime resolver.
+    def test_direct_endpoint_detects_chatgpt_web_api_mode(self):
         parent = _make_mock_parent(depth=0)
         cfg = {
-            "model": "claude-opus-4-6",
-            "provider": "custom",
-            "base_url": "https://myfoundry.services.ai.azure.com/anthropic",
-            "api_key": "foundry-key",
+            "model": "gpt-5-thinking",
+            "base_url": "https://chatgpt.com/backend-api/f",
+            "api_key": "chatgpt-web-token",
         }
         creds = _resolve_delegation_credentials(cfg, parent)
-        self.assertEqual(creds["provider"], "custom")
-        self.assertEqual(creds["base_url"], "https://myfoundry.services.ai.azure.com/anthropic")
-        self.assertEqual(creds["api_key"], "foundry-key")
-        self.assertEqual(creds["api_mode"], "anthropic_messages")
-
-    def test_direct_endpoint_honors_explicit_api_mode(self):
-        # When delegation.api_mode is set explicitly, it overrides URL-based
-        # detection so users can force a transport on non-standard endpoints.
-        parent = _make_mock_parent(depth=0)
-        cfg = {
-            "model": "claude-opus-4-6",
-            "provider": "custom",
-            "base_url": "https://proxy.example.com/v1",
-            "api_key": "proxy-key",
-            "api_mode": "anthropic_messages",
-        }
-        creds = _resolve_delegation_credentials(cfg, parent)
-        self.assertEqual(creds["api_mode"], "anthropic_messages")
-
-    def test_direct_endpoint_explicit_api_mode_overrides_url_detection(self):
-        # Explicit api_mode in config always wins over auto-detection.
-        parent = _make_mock_parent(depth=0)
-        cfg = {
-            "model": "claude-opus-4-6",
-            "provider": "custom",
-            "base_url": "https://myfoundry.services.ai.azure.com/anthropic",
-            "api_key": "foundry-key",
-            "api_mode": "chat_completions",
-        }
-        creds = _resolve_delegation_credentials(cfg, parent)
-        self.assertEqual(creds["api_mode"], "chat_completions")
-
-    def test_direct_endpoint_invalid_api_mode_falls_back_to_detection(self):
-        # An invalid api_mode string must not break detection; fall back to URL heuristic.
-        parent = _make_mock_parent(depth=0)
-        cfg = {
-            "model": "claude-opus-4-6",
-            "provider": "custom",
-            "base_url": "https://myfoundry.services.ai.azure.com/anthropic",
-            "api_key": "foundry-key",
-            "api_mode": "garbage",
-        }
-        creds = _resolve_delegation_credentials(cfg, parent)
-        self.assertEqual(creds["api_mode"], "anthropic_messages")
+        self.assertEqual(creds["model"], "gpt-5-thinking")
+        self.assertEqual(creds["provider"], "chatgpt-web")
+        self.assertEqual(creds["base_url"], "https://chatgpt.com/backend-api/f")
+        self.assertEqual(creds["api_key"], "chatgpt-web-token")
+        self.assertEqual(creds["api_mode"], "chatgpt_web")
 
     def test_direct_endpoint_returns_none_api_key_when_not_configured(self):
         # When base_url is set without api_key, api_key should be None so
@@ -979,6 +991,25 @@ class TestDelegationCredentialResolution(unittest.TestCase):
         self.assertIsNone(creds["api_key"])
         self.assertEqual(creds["provider"], "custom")
 
+    @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
+    def test_nous_provider_resolves_nous_credentials(self, mock_resolve):
+        """Nous provider resolves Nous Portal base_url and api_key."""
+        mock_resolve.return_value = {
+            "provider": "nous",
+            "base_url": "https://inference-api.nousresearch.com/v1",
+            "api_key": "nous-agent-key-xyz",
+            "api_mode": "chat_completions",
+        }
+        parent = _make_mock_parent(depth=0)
+        cfg = {"model": "hermes-3-llama-3.1-8b", "provider": "nous"}
+        creds = _resolve_delegation_credentials(cfg, parent)
+        self.assertEqual(creds["provider"], "nous")
+        self.assertEqual(creds["base_url"], "https://inference-api.nousresearch.com/v1")
+        self.assertEqual(creds["api_key"], "nous-agent-key-xyz")
+        mock_resolve.assert_called_once_with(
+            requested="nous",
+            target_model="hermes-3-llama-3.1-8b",
+        )
 
     @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
     def test_provider_resolution_failure_raises_valueerror(self, mock_resolve):
@@ -1041,64 +1072,7 @@ class TestDelegationCredentialResolution(unittest.TestCase):
             requested="crof.ai", target_model="deepseek-v4-pro-CEER"
         )
 
-    @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
-    def test_standard_provider_not_overwritten_by_configured_name(self, mock_resolve):
-        """Standard (non-custom) providers must still return runtime identity,
-        not the configured name, to preserve existing behaviour for openrouter,
-        nous, etc.
-        """
-        mock_resolve.return_value = {
-            "provider": "openrouter",
-            "model": "anthropic/claude-sonnet-4",
-            "base_url": "https://openrouter.ai/api/v1",
-            "api_key": "or-key-xyz",
-            "api_mode": "chat_completions",
-        }
-        parent = _make_mock_parent(depth=0)
-        cfg = {"model": "anthropic/claude-sonnet-4", "provider": "openrouter"}
-        creds = _resolve_delegation_credentials(cfg, parent)
-        # Standard provider returns its own name, not "custom"
-        self.assertEqual(creds["provider"], "openrouter")
-
-    @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
-    def test_custom_provider_with_empty_configured_provider_falls_back_to_runtime(self, mock_resolve):
-        """When configured_provider is empty/None, the early return kicks in and
-        we return provider=None regardless of what runtime resolved. The runtime
-        path is only reached when configured_provider is a non-empty string.
-        """
-        mock_resolve.return_value = {
-            "provider": "custom",
-            "model": "some-model",
-            "base_url": "https://fallback.example.com/v1",
-            "api_key": "key-fallback",
-            "api_mode": "chat_completions",
-        }
-        parent = _make_mock_parent(depth=0)
-        cfg = {"model": "some-model", "provider": ""}
-        creds = _resolve_delegation_credentials(cfg, parent)
-        # Empty provider → early return with None (child inherits parent)
-        self.assertIsNone(creds["provider"])
-
-    @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
-    def test_runtime_missing_provider_key_returns_none(self, mock_resolve):
-        """When resolve_runtime_provider returns a dict without 'provider' key,
-        the result must be None regardless of configured_provider.
-        This protects against malformed runtime responses.
-        """
-        mock_resolve.return_value = {
-            # deliberately missing "provider"
-            "model": "some-model",
-            "base_url": "https://example.com/v1",
-            "api_key": "key-123",
-            "api_mode": "chat_completions",
-        }
-        parent = _make_mock_parent(depth=0)
-        cfg = {"model": "some-model", "provider": "crof.ai"}
-        creds = _resolve_delegation_credentials(cfg, parent)
-        self.assertIsNone(creds["provider"])
-
-
-class TestDelegationProviderIntegration(unittest.TestCase):
+class TestDelegationProviderIntegration(_DelegateConfigIsolatedTestCase):
     """Integration tests: delegation config → _run_single_child → AIAgent construction."""
 
     @patch("tools.delegate_tool._load_config")
@@ -1222,13 +1196,13 @@ class TestDelegationProviderIntegration(unittest.TestCase):
             "max_iterations": 45,
             "model": "qwen2.5-coder",
             "base_url": "http://localhost:1234/v1",
-            "api_key": "local-key",
+            "api_key": "delegation-token",
         }
         mock_creds.return_value = {
             "model": "qwen2.5-coder",
             "provider": "custom",
             "base_url": "http://localhost:1234/v1",
-            "api_key": "local-key",
+            "api_key": "delegation-token",
             "api_mode": "chat_completions",
         }
         parent = _make_mock_parent(depth=0)
@@ -1246,7 +1220,7 @@ class TestDelegationProviderIntegration(unittest.TestCase):
             self.assertEqual(kwargs["model"], "qwen2.5-coder")
             self.assertEqual(kwargs["provider"], "custom")
             self.assertEqual(kwargs["base_url"], "http://localhost:1234/v1")
-            self.assertEqual(kwargs["api_key"], "local-key")
+            self.assertEqual(kwargs["api_key"], "delegation-token")
             self.assertEqual(kwargs["api_mode"], "chat_completions")
 
     @patch("tools.delegate_tool._load_config")
@@ -1276,6 +1250,36 @@ class TestDelegationProviderIntegration(unittest.TestCase):
             self.assertEqual(kwargs["model"], parent.model)
             self.assertEqual(kwargs["provider"], parent.provider)
             self.assertEqual(kwargs["base_url"], parent.base_url)
+
+    @patch("tools.delegate_tool._load_config")
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_delegate_task_clamps_low_config_max_iterations_for_child_summary_turn(self, mock_creds, mock_cfg):
+        """Subagents need at least one tool turn plus one summary turn."""
+        mock_cfg.return_value = {"max_iterations": 1, "model": "", "provider": ""}
+        mock_creds.return_value = {
+            "model": None,
+            "provider": None,
+            "base_url": None,
+            "api_key": None,
+            "api_mode": None,
+        }
+        parent = _make_mock_parent(depth=0)
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.run_conversation.return_value = {
+                "final_response": "done", "completed": True, "api_calls": 1
+            }
+            MockAgent.return_value = mock_child
+
+            delegate_task(
+                goal="Use the terminal tool to print the current working directory.",
+                toolsets=["terminal"],
+                parent_agent=parent,
+            )
+
+            _, kwargs = MockAgent.call_args
+            self.assertEqual(kwargs["max_iterations"], 2)
 
     @patch("tools.delegate_tool._load_config")
     @patch("tools.delegate_tool._resolve_delegation_credentials")
@@ -1406,7 +1410,7 @@ class TestDelegationProviderIntegration(unittest.TestCase):
             self.assertEqual(kwargs["base_url"], parent.base_url)
 
 
-class TestChildCredentialPoolResolution(unittest.TestCase):
+class TestChildCredentialPoolResolution(_DelegateConfigIsolatedTestCase):
     def test_same_provider_shares_parent_pool(self):
         parent = _make_mock_parent()
         mock_pool = MagicMock()
@@ -1528,9 +1532,7 @@ class TestChildCredentialPoolResolution(unittest.TestCase):
             MockAgent.call_args[1]["enabled_toolsets"],
             ["web", "browser"],
         )
-
-
-class TestChildCredentialLeasing(unittest.TestCase):
+class TestChildCredentialLeasing(_DelegateConfigIsolatedTestCase):
     def test_run_single_child_acquires_and_releases_lease(self):
         from tools.delegate_tool import _run_single_child
 
@@ -1581,7 +1583,7 @@ class TestChildCredentialLeasing(unittest.TestCase):
         child._credential_pool.release_lease.assert_called_once_with("cred-a")
 
 
-class TestDelegateHeartbeat(unittest.TestCase):
+class TestDelegateHeartbeat(_DelegateConfigIsolatedTestCase):
     """Heartbeat propagates child activity to parent during delegation.
 
     Without the heartbeat, the gateway inactivity timeout fires because the
@@ -1770,12 +1772,14 @@ class TestDelegateHeartbeat(unittest.TestCase):
 
         child.run_conversation.side_effect = slow_run
 
-        # Patch both the interval AND the idle ceiling so the test proves
-        # the in-tool branch takes effect: with a 0.05s interval and the
-        # default _HEARTBEAT_STALE_CYCLES_IDLE=5, the old behavior would
-        # trip after 0.25s and stop firing. We should see heartbeats
-        # continuing through the full 0.4s run.
-        with patch("tools.delegate_tool._HEARTBEAT_INTERVAL", 0.05):
+        # Patch both the interval and idle ceiling so the test proves the
+        # in-tool branch takes effect: at 0.05s * 5 idle cycles, the old
+        # behavior would trip after 0.25s and stop firing. We should see
+        # heartbeats continuing through the full 0.4s run.
+        with (
+            patch("tools.delegate_tool._HEARTBEAT_INTERVAL", 0.05),
+            patch("tools.delegate_tool._HEARTBEAT_STALE_CYCLES_IDLE", 5),
+        ):
             _run_single_child(
                 task_index=0,
                 goal="Test long-running tool",
@@ -1792,9 +1796,57 @@ class TestDelegateHeartbeat(unittest.TestCase):
             f"got {len(touch_calls)} touches over 0.4s at 0.05s interval",
         )
 
+    def test_heartbeat_still_trips_idle_stale_when_no_tool(self):
+        """A wedged child with no current_tool still trips the idle threshold.
 
+        Regression guard: the fix for #13041 must not disable stale
+        detection entirely. A child that's hung between turns (no tool
+        running, no iteration progress) must still stop touching the
+        parent so the gateway timeout can fire.
+        """
+        from tools.delegate_tool import _run_single_child
 
-class TestDelegationReasoningEffort(unittest.TestCase):
+        parent = _make_mock_parent()
+        touch_calls = []
+        parent._touch_activity = lambda desc: touch_calls.append(desc)
+
+        child = MagicMock()
+        # Wedged child: no tool running, iteration frozen.
+        child.get_activity_summary.return_value = {
+            "current_tool": None,
+            "api_call_count": 3,
+            "max_iterations": 50,
+            "last_activity_desc": "waiting for API response",
+        }
+
+        def slow_run(**kwargs):
+            time.sleep(0.6)
+            return {"final_response": "done", "completed": True, "api_calls": 3}
+
+        child.run_conversation.side_effect = slow_run
+
+        # At interval 0.05s, the patched idle threshold trips at ~0.25s.
+        # We should see the heartbeat stop firing well before 0.6s.
+        with (
+            patch("tools.delegate_tool._HEARTBEAT_INTERVAL", 0.05),
+            patch("tools.delegate_tool._HEARTBEAT_STALE_CYCLES_IDLE", 5),
+        ):
+            _run_single_child(
+                task_index=0,
+                goal="Test wedged child",
+                child=child,
+                parent_agent=parent,
+            )
+
+        # With idle threshold=5 + interval=0.05s, touches should cap
+        # around 5. Bound loosely to avoid timing flakes.
+        self.assertLess(
+            len(touch_calls), 9,
+            f"Idle stale detection did not fire: got {len(touch_calls)} "
+            f"touches over 0.6s — expected heartbeat to stop after "
+            f"~5 stale cycles",
+        )
+class TestDelegationReasoningEffort(_DelegateConfigIsolatedTestCase):
     """Tests for delegation.reasoning_effort config override."""
 
     @patch("tools.delegate_tool._load_config")

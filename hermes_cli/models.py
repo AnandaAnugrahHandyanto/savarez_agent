@@ -200,7 +200,15 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "gpt-4o-mini",
     ],
     "openai-codex": _codex_curated_models(),
-    "xai-oauth": _xai_curated_models(),
+    "chatgpt-web": [
+        "gpt-5-thinking",
+        "gpt-5-instant",
+        "gpt-5",
+        "gpt-4o",
+        "gpt-4.1",
+        "o3",
+        "o4-mini",
+    ],
     "copilot-acp": [
         "copilot-acp",
     ],
@@ -241,6 +249,12 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "glm-4.7",
         "glm-4.5",
         "glm-4.5-flash",
+    ],
+    "zai-coding-plan": [
+        "glm-5.1",
+        "glm-5",
+        "glm-5v-turbo",
+        "glm-4.7",
     ],
     "xai": _xai_curated_models(),
     "nvidia": [
@@ -928,8 +942,7 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("lmstudio",       "LM Studio",                "LM Studio (local desktop app with built-in model server)"),
     ProviderEntry("anthropic",      "Anthropic",                "Anthropic (Claude models — API key or Claude Code)"),
     ProviderEntry("openai-codex",   "OpenAI Codex",             "OpenAI Codex"),
-    ProviderEntry("alibaba",        "Qwen Cloud",               "Qwen Cloud / DashScope Coding (Qwen + multi-provider)"),
-    ProviderEntry("xai-oauth",      "xAI Grok OAuth (SuperGrok Subscription)", "xAI Grok OAuth (SuperGrok Subscription)"),
+    ProviderEntry("chatgpt-web",    "ChatGPT Web",              "ChatGPT Web (ChatGPT.com web-app models)"),
     ProviderEntry("xiaomi",         "Xiaomi MiMo",              "Xiaomi MiMo (MiMo-V2.5 and V2 models — pro, omni, flash)"),
     ProviderEntry("tencent-tokenhub", "Tencent TokenHub",       "Tencent TokenHub (Hy3 Preview — direct API via tokenhub.tencentmaas.com)"),
     ProviderEntry("nvidia",         "NVIDIA NIM",               "NVIDIA NIM (Nemotron models — build.nvidia.com or local NIM)"),
@@ -941,6 +954,7 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("deepseek",       "DeepSeek",                 "DeepSeek (DeepSeek-V3, R1, coder — direct API)"),
     ProviderEntry("xai",            "xAI",                      "xAI (Grok models — direct API)"),
     ProviderEntry("zai",            "Z.AI / GLM",               "Z.AI / GLM (Zhipu AI direct API)"),
+    ProviderEntry("zai-coding-plan","Z.AI Coding Plan",         "Z.AI GLM Coding Plan (dedicated coding endpoint)"),
     ProviderEntry("kimi-coding",    "Kimi / Kimi Coding Plan",  "Kimi Coding Plan (api.kimi.com) & Moonshot API"),
     ProviderEntry("kimi-coding-cn", "Kimi / Moonshot (China)",  "Kimi / Moonshot China (Moonshot CN direct API)"),
     ProviderEntry("stepfun",        "StepFun Step Plan",       "StepFun Step Plan (agent/coding models via Step Plan API)"),
@@ -988,6 +1002,13 @@ _PROVIDER_ALIASES = {
     "z-ai": "zai",
     "z.ai": "zai",
     "zhipu": "zai",
+    "glm-coding-plan": "zai-coding-plan",
+    "zai-coding": "zai-coding-plan",
+    "zai_coding_plan": "zai-coding-plan",
+    "z-ai-coding-plan": "zai-coding-plan",
+    "chatgpt": "chatgpt-web",
+    "chatgpt.com": "chatgpt-web",
+    "openai-chatgpt": "chatgpt-web",
     "github": "copilot",
     "github-copilot": "copilot",
     "github-models": "copilot",
@@ -1627,7 +1648,6 @@ def list_available_providers() -> list[dict[str, str]]:
     """
     # Derive display order from canonical list + custom
     provider_order = [p.slug for p in CANONICAL_PROVIDERS] + ["custom"]
-
     # Build reverse alias map
     aliases_for: dict[str, list[str]] = {}
     for alias, canonical in _PROVIDER_ALIASES.items():
@@ -2182,8 +2202,24 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
         except Exception:
             access_token = None
         return get_codex_model_ids(access_token=access_token)
-    if normalized == "xai-oauth":
-        return list(_PROVIDER_MODELS.get("xai-oauth", _PROVIDER_MODELS.get("xai", [])))
+    if normalized == "chatgpt-web":
+        try:
+            from hermes_cli.chatgpt_web import (
+                DEFAULT_CHATGPT_WEB_MODELS,
+                fetch_chatgpt_web_model_ids,
+                resolve_chatgpt_web_runtime_credentials,
+            )
+
+            creds = resolve_chatgpt_web_runtime_credentials()
+            live = fetch_chatgpt_web_model_ids(access_token=creds.get("api_key", ""))
+            if live:
+                merged: list[str] = []
+                for mid in list(live) + list(DEFAULT_CHATGPT_WEB_MODELS):
+                    if mid and mid not in merged:
+                        merged.append(mid)
+                return merged
+        except Exception:
+            pass
     if normalized in {"copilot", "copilot-acp"}:
         try:
             live = _fetch_github_models(_resolve_copilot_catalog_api_key())
@@ -3238,7 +3274,7 @@ def _load_ollama_cloud_cache(*, ignore_ttl: bool = False) -> Optional[dict]:
 def _save_ollama_cloud_cache(models: list[str]) -> None:
     """Persist the merged Ollama Cloud model list to disk."""
     try:
-        from utils import atomic_json_write
+        from hermes_cli.shared_utils import atomic_json_write
         cache_path = _ollama_cloud_cache_path()
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         atomic_json_write(cache_path, {"models": models, "cached_at": time.time()}, indent=None)
@@ -3457,7 +3493,7 @@ def validate_requested_model(
             message += f"\n  If this server expects `/v1`, try base URL: `{probe.get('suggested_base_url')}`"
 
         return {
-            "accepted": api_mode == "anthropic_messages",
+            "accepted": True,
             "persist": True,
             "recognized": False,
             "message": message,
@@ -3493,12 +3529,84 @@ def validate_requested_model(
                 suggestion_text = "\n  Similar models: " + ", ".join(f"`{s}`" for s in suggestions)
             provider_label = "OpenAI Codex" if normalized == "openai-codex" else "xAI Grok OAuth (SuperGrok Subscription)"
             return {
-                "accepted": True,
-                "persist": True,
+                "accepted": False,
+                "persist": False,
                 "recognized": False,
                 "message": (
                     f"Note: `{requested}` was not found in the {provider_label} model listing. "
                     "It may still work if your account has access to a newer or hidden model ID."
+                    f"{suggestion_text}"
+                ),
+            }
+
+    if normalized == "chatgpt-web":
+        try:
+            chatgpt_models = provider_model_ids("chatgpt-web")
+        except Exception:
+            chatgpt_models = []
+        if chatgpt_models:
+            if requested_for_lookup in set(chatgpt_models):
+                return {
+                    "accepted": True,
+                    "persist": True,
+                    "recognized": True,
+                    "message": None,
+                }
+            auto = get_close_matches(requested_for_lookup, chatgpt_models, n=1, cutoff=0.9)
+            if auto:
+                return {
+                    "accepted": True,
+                    "persist": True,
+                    "recognized": True,
+                    "corrected_model": auto[0],
+                    "message": f"Auto-corrected `{requested}` → `{auto[0]}`",
+                }
+            suggestions = get_close_matches(requested_for_lookup, chatgpt_models, n=3, cutoff=0.5)
+            suggestion_text = ""
+            if suggestions:
+                suggestion_text = "\n  Similar models: " + ", ".join(f"`{s}`" for s in suggestions)
+            return {
+                "accepted": False,
+                "persist": False,
+                "recognized": False,
+                "message": (
+                    f"`{requested}` was not found in the ChatGPT Web model catalog."
+                    f"{suggestion_text}"
+                ),
+            }
+
+    if normalized == "chatgpt-web":
+        try:
+            chatgpt_models = provider_model_ids("chatgpt-web")
+        except Exception:
+            chatgpt_models = []
+        if chatgpt_models:
+            if requested_for_lookup in set(chatgpt_models):
+                return {
+                    "accepted": True,
+                    "persist": True,
+                    "recognized": True,
+                    "message": None,
+                }
+            auto = get_close_matches(requested_for_lookup, chatgpt_models, n=1, cutoff=0.9)
+            if auto:
+                return {
+                    "accepted": True,
+                    "persist": True,
+                    "recognized": True,
+                    "corrected_model": auto[0],
+                    "message": f"Auto-corrected `{requested}` → `{auto[0]}`",
+                }
+            suggestions = get_close_matches(requested_for_lookup, chatgpt_models, n=3, cutoff=0.5)
+            suggestion_text = ""
+            if suggestions:
+                suggestion_text = "\n  Similar models: " + ", ".join(f"`{s}`" for s in suggestions)
+            return {
+                "accepted": False,
+                "persist": False,
+                "recognized": False,
+                "message": (
+                    f"`{requested}` was not found in the ChatGPT Web model catalog."
                     f"{suggestion_text}"
                 ),
             }

@@ -1,5 +1,6 @@
 .DS_Store
 /venv/
+build/
 /_pycache/
 *.pyc*
 __pycache__/
@@ -30,6 +31,8 @@ run_datagen_sonnet.sh
 source-data/*
 run_datagen_megascience_glm4-6.sh
 data/*
+!android/app/src/main/java/com/nousresearch/hermesagent/data/
+!android/app/src/main/java/com/nousresearch/hermesagent/data/*.kt
 node_modules/
 browser-use/
 agent-browser/
@@ -63,6 +66,7 @@ web/public/ds-assets/
 # Release script temp files
 .release_notes.md
 mini-swe-agent/
+artifacts/
 
 # Nix
 .direnv/
@@ -70,6 +74,11 @@ mini-swe-agent/
 result
 website/static/api/skills-index.json
 models-dev-upstream/
-hermes_cli/tui_dist/*
-hermes_cli/scripts/
-docs/superpowers/*
+
+# Android local build / signing state
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/keystore.properties
+android/release.keystore

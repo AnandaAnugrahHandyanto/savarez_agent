@@ -23,7 +23,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
-from utils import base_url_host_matches, base_url_hostname
+from hermes_cli.shared_utils import base_url_host_matches, base_url_hostname
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 class HermesOverlay:
     """Hermes-specific provider metadata layered on top of models.dev."""
 
-    transport: str = "openai_chat"        # openai_chat | anthropic_messages | codex_responses
+    transport: str = "openai_chat"        # openai_chat | anthropic_messages | codex_responses | chatgpt_web
     is_aggregator: bool = False
     auth_type: str = "api_key"            # api_key | oauth_device_code | oauth_external | external_process
     extra_env_vars: Tuple[str, ...] = ()  # env vars models.dev doesn't list
@@ -60,11 +60,11 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         auth_type="oauth_external",
         base_url_override="https://chatgpt.com/backend-api/codex",
     ),
-    "xai-oauth": HermesOverlay(
-        transport="codex_responses",
+    "chatgpt-web": HermesOverlay(
+        transport="chatgpt_web",
         auth_type="oauth_external",
-        base_url_override="https://api.x.ai/v1",
-        base_url_env_var="XAI_BASE_URL",
+        extra_env_vars=("CHATGPT_WEB_ACCESS_TOKEN", "CHATGPT_WEB_SESSION_TOKEN"),
+        base_url_override="https://chatgpt.com/backend-api/f",
     ),
     "qwen-oauth": HermesOverlay(
         transport="openai_chat",
@@ -102,6 +102,18 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         transport="openai_chat",
         extra_env_vars=("GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY"),
         base_url_env_var="GLM_BASE_URL",
+    ),
+    "zai-coding-plan": HermesOverlay(
+        transport="openai_chat",
+        extra_env_vars=(
+            "GLM_CODING_PLAN_API_KEY",
+            "ZAI_CODING_PLAN_API_KEY",
+            "GLM_API_KEY",
+            "ZAI_API_KEY",
+            "Z_AI_API_KEY",
+        ),
+        base_url_override="https://api.z.ai/api/coding/paas/v4",
+        base_url_env_var="GLM_CODING_PLAN_BASE_URL",
     ),
     "kimi-for-coding": HermesOverlay(
         transport="openai_chat",
@@ -245,6 +257,10 @@ ALIASES: Dict[str, str] = {
     "z-ai": "zai",
     "z.ai": "zai",
     "zhipu": "zai",
+    "glm-coding-plan": "zai-coding-plan",
+    "zai-coding": "zai-coding-plan",
+    "zai_coding_plan": "zai-coding-plan",
+    "z-ai-coding-plan": "zai-coding-plan",
 
     # xai
     "x-ai": "xai",
@@ -371,7 +387,9 @@ ALIASES: Dict[str, str] = {
 _LABEL_OVERRIDES: Dict[str, str] = {
     "nous": "Nous Portal",
     "openai-codex": "OpenAI Codex",
+    "chatgpt-web": "ChatGPT Web",
     "copilot-acp": "GitHub Copilot ACP",
+    "zai-coding-plan": "Z.AI Coding Plan",
     "stepfun": "StepFun Step Plan",
     "xiaomi": "Xiaomi MiMo",
     "gmi": "GMI Cloud",
@@ -390,6 +408,7 @@ TRANSPORT_TO_API_MODE: Dict[str, str] = {
     "anthropic_messages": "anthropic_messages",
     "codex_responses": "codex_responses",
     "bedrock_converse": "bedrock_converse",
+    "chatgpt_web": "chatgpt_web",
 }
 
 

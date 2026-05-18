@@ -1,6 +1,7 @@
 """Tests for HermesCLI initialization -- catches configuration bugs
 that only manifest at runtime (not in mocked unit tests)."""
 
+import math
 import os
 import sys
 from types import SimpleNamespace
@@ -80,6 +81,14 @@ class TestMaxTurnsResolution:
         """Invalid env values should not crash CLI init."""
         cli_obj = _make_cli(env_overrides={"HERMES_MAX_ITERATIONS": "not-a-number"})
         assert cli_obj.max_turns == 90
+
+    def test_env_var_max_turns_accepts_unlimited(self):
+        cli_obj = _make_cli(env_overrides={"HERMES_MAX_ITERATIONS": "unlimited"})
+        assert cli_obj.max_turns == math.inf
+
+    def test_agent_config_max_turns_accepts_unlimited(self):
+        cli_obj = _make_cli(config_overrides={"agent": {"max_turns": "unlimited"}})
+        assert cli_obj.max_turns == math.inf
 
     def test_legacy_root_max_turns_is_used_when_agent_key_exists_without_value(self):
         cli_obj = _make_cli(config_overrides={"agent": {}, "max_turns": 77})
@@ -163,6 +172,20 @@ class TestBusyInputMode:
 
 
 class TestPromptToolkitTerminalCompatibility:
+    def test_cprint_falls_back_when_prompt_toolkit_output_has_no_console(self, monkeypatch, capsys):
+        import cli
+        import prompt_toolkit.application as app_mod
+
+        def _raise_no_console(*_args, **_kwargs):
+            raise RuntimeError("no console buffer")
+
+        monkeypatch.setattr(app_mod, "get_app_or_none", lambda: None)
+        monkeypatch.setattr(cli, "_pt_print", _raise_no_console)
+
+        cli._cprint("fallback works")
+
+        assert "fallback works" in capsys.readouterr().out
+
     def test_lf_enter_binds_to_submit_handler_posix(self):
         """Some thin PTYs deliver Enter as LF/c-j instead of CR/enter.
 

@@ -18,24 +18,56 @@ _IS_WINDOWS = platform.system() == "Windows"
 logger = logging.getLogger(__name__)
 
 
-def _msys_to_windows_path(cwd: str) -> str:
-    """Translate a Git Bash / MSYS-style POSIX path (``/c/Users/x``) to the
-    native Windows form (``C:\\Users\\x``) so ``os.path.isdir`` and
-    ``subprocess.Popen(..., cwd=...)`` can find it.
+def _windows_path_to_git_bash(path: str) -> str:
+    """Translate native Windows paths into the form Git Bash accepts for cd."""
+    if not path:
+        return path
 
-    No-ops on non-Windows hosts or for paths that aren't in MSYS form.
-    Returns the input unchanged when no translation applies. This is
-    idempotent — calling it on an already-Windows path returns it as-is.
-    """
-    if not _IS_WINDOWS or not cwd:
-        return cwd
-    # Match leading "/<single letter>/" or exactly "/<letter>" (bare drive root).
-    m = re.match(r'^/([a-zA-Z])(/.*)?$', cwd)
-    if not m:
-        return cwd
-    drive = m.group(1).upper()
-    tail = (m.group(2) or "").replace('/', '\\')
-    return f"{drive}:{tail or chr(92)}"  # chr(92) = backslash, avoid raw-string escape
+    # Extended-length paths keep the same drive/UNC payload after the prefix.
+    if path.startswith("\\\\?\\UNC\\"):
+        path = "\\\\" + path[8:]
+    elif path.startswith("\\\\?\\"):
+        path = path[4:]
+
+    if re.match(r"^[a-zA-Z]:[\\/]", path):
+        drive = path[0].lower()
+        rest = path[2:].replace("\\", "/").lstrip("/")
+        return f"/{drive}/{rest}" if rest else f"/{drive}"
+
+    if path.startswith("\\\\"):
+        return "//" + path.lstrip("\\").replace("\\", "/")
+
+    return path
+
+
+def _git_bash_path_to_windows(path: str) -> str:
+    if not path:
+        return path
+    if re.match(r"^/[a-zA-Z]($|/)", path):
+        drive = path[1].upper()
+        rest = path[2:].lstrip("/").replace("/", "\\")
+        return f"{drive}:\\" + rest if rest else f"{drive}:\\"
+    if re.match(r"^/mnt/[a-zA-Z]($|/)", path):
+        drive = path[5].upper()
+        rest = path[6:].lstrip("/").replace("/", "\\")
+        return f"{drive}:\\" + rest if rest else f"{drive}:\\"
+    if path.startswith("//"):
+        return "\\\\" + path[2:].replace("/", "\\")
+    return path
+
+
+def _is_windows_wsl_bash(candidate: str | None) -> bool:
+    if not candidate:
+        return False
+    try:
+        normalized = os.path.normcase(os.path.abspath(candidate))
+    except Exception:
+        normalized = os.path.normcase(str(candidate))
+    return (
+        normalized.endswith(r"\windows\system32\bash.exe")
+        or normalized.endswith(r"\windows\sysnative\bash.exe")
+        or normalized.endswith(r"\microsoft\windowsapps\bash.exe")
+    )
 
 
 def _resolve_safe_cwd(cwd: str) -> str:
@@ -249,10 +281,6 @@ def _find_bash() -> str:
             if os.path.isfile(candidate):
                 return candidate
 
-    found = shutil.which("bash")
-    if found:
-        return found
-
     for candidate in (
         os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), "Git", "bin", "bash.exe"),
         os.path.join(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"), "Git", "bin", "bash.exe"),
@@ -260,6 +288,10 @@ def _find_bash() -> str:
     ):
         if candidate and os.path.isfile(candidate):
             return candidate
+
+    found = shutil.which("bash")
+    if found and not _is_windows_wsl_bash(found):
+        return found
 
     raise RuntimeError(
         "Git Bash not found. Hermes Agent requires Git for Windows on Windows.\n"
@@ -475,6 +507,23 @@ class LocalEnvironment(BaseEnvironment):
 
         return "/tmp"
 
+    def _cwd_for_shell(self, cwd: str) -> str:
+        if _IS_WINDOWS:
+            return _windows_path_to_git_bash(cwd)
+        return cwd
+
+    def _set_cwd_from_shell(self, cwd_path: str) -> None:
+        if _IS_WINDOWS:
+            native = _git_bash_path_to_windows(cwd_path)
+            if native and os.path.isdir(native):
+                self.cwd = native
+                return
+            if cwd_path and os.path.isdir(cwd_path):
+                self.cwd = cwd_path
+                return
+            return
+        super()._set_cwd_from_shell(cwd_path)
+
     def _run_bash(self, cmd_string: str, *, login: bool = False,
                   timeout: int = 120,
                   stdin_data: str | None = None) -> subprocess.Popen:
@@ -631,10 +680,8 @@ class LocalEnvironment(BaseEnvironment):
         try:
             with open(self._cwd_file, encoding="utf-8") as f:
                 cwd_path = f.read().strip()
-            if _IS_WINDOWS:
-                cwd_path = _msys_to_windows_path(cwd_path)
-            if cwd_path and os.path.isdir(cwd_path):
-                self.cwd = cwd_path
+            if cwd_path:
+                self._set_cwd_from_shell(cwd_path)
         except (OSError, FileNotFoundError):
             pass
 

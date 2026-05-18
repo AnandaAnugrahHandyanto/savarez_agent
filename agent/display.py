@@ -13,8 +13,7 @@ from dataclasses import dataclass, field
 from difflib import unified_diff
 from pathlib import Path
 
-from utils import safe_json_loads
-from agent.tool_result_classification import file_mutation_result_landed
+from hermes_cli.shared_utils import safe_json_loads
 
 # ANSI escape codes for coloring tool failure indicators
 _RED = "\033[31m"
@@ -983,5 +982,4 @@ def get_cute_tool_message(
 # =========================================================================
 # Honcho session line (one-liner with clickable OSC 8 hyperlink)
 # =========================================================================
-
 

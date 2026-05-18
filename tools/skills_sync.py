@@ -28,7 +28,7 @@ import shutil
 from pathlib import Path
 from hermes_constants import get_hermes_home
 from typing import Dict, List, Tuple
-from utils import atomic_replace
+from hermes_cli.shared_utils import atomic_replace
 
 logger = logging.getLogger(__name__)
 
@@ -140,9 +140,9 @@ def _discover_bundled_skills(bundled_dir: Path) -> List[Tuple[str, Path]]:
     if not bundled_dir.exists():
         return skills
 
+    ignored_path_parts = {".git", ".github", ".hub"}
     for skill_md in bundled_dir.rglob("SKILL.md"):
-        path_str = str(skill_md)
-        if "/.git/" in path_str or "/.github/" in path_str or "/.hub/" in path_str:
+        if any(part in ignored_path_parts for part in skill_md.parts):
             continue
         skill_dir = skill_md.parent
         skill_name = _read_skill_name(skill_md, skill_dir.name)

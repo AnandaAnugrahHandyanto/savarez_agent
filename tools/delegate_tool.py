@@ -30,6 +30,7 @@ from concurrent.futures import (
 )
 from typing import Any, Dict, List, Optional
 
+from iteration_limits import is_unlimited_iteration_limit, parse_iteration_limit
 from toolsets import TOOLSETS
 
 # Sentinel value used by the runtime provider system for providers that are
@@ -38,7 +39,7 @@ from toolsets import TOOLSETS
 _RUNTIME_PROVIDER_CUSTOM = "custom"
 from tools import file_state
 from tools.terminal_tool import set_approval_callback as _set_subagent_approval_cb
-from utils import base_url_hostname, is_truthy_value
+from hermes_cli.shared_utils import base_url_hostname, is_truthy_value
 
 
 # Tools that children must never have access to
@@ -511,6 +512,7 @@ def _preserve_parent_mcp_toolsets(
 
 DEFAULT_MAX_ITERATIONS = 50
 DEFAULT_CHILD_TIMEOUT = 600  # seconds before a child agent is considered stuck
+MIN_SUBAGENT_MAX_ITERATIONS = 2
 _HEARTBEAT_INTERVAL = 30  # seconds between parent activity heartbeats during delegation
 # Stale-heartbeat thresholds. A child with no API-call progress is either:
 #   - idle between turns (no current_tool) — probably stuck on a slow API call
@@ -559,6 +561,21 @@ _LEGACY_EVENT_MAP: Dict[str, DelegateEvent] = {
     "tool.completed": DelegateEvent.TASK_TOOL_COMPLETED,
     "subagent_progress": DelegateEvent.TASK_PROGRESS,
 }
+
+
+def _resolve_effective_max_iterations(default: Any = DEFAULT_MAX_ITERATIONS) -> float | int:
+    """Normalize subagent iteration limits.
+
+    Subagents typically need one LLM turn to decide/use a tool and a second turn
+    to produce their final summary.
+
+    Clamp finite limits to at least ``MIN_SUBAGENT_MAX_ITERATIONS`` while still
+    preserving unlimited/sentinel values from config.
+    """
+    parsed = parse_iteration_limit(default, default=DEFAULT_MAX_ITERATIONS)
+    if is_unlimited_iteration_limit(parsed):
+        return parsed
+    return max(MIN_SUBAGENT_MAX_ITERATIONS, int(parsed))
 
 
 def check_delegate_requirements() -> bool:
@@ -1366,75 +1383,81 @@ def _run_single_child(
     _last_seen_tool = [None]  # type: list
     _stale_count = [0]
 
-    def _heartbeat_loop():
-        while not _heartbeat_stop.wait(_HEARTBEAT_INTERVAL):
-            if parent_agent is None:
-                continue
-            touch = getattr(parent_agent, "_touch_activity", None)
-            if not touch:
-                continue
-            # Pull detail from the child's own activity tracker
-            desc = f"delegate_task: subagent {task_index} working"
-            try:
-                child_summary = child.get_activity_summary()
-                child_tool = child_summary.get("current_tool")
-                child_iter = child_summary.get("api_call_count", 0)
-                child_max = child_summary.get("max_iterations", 0)
+    def _emit_heartbeat() -> bool:
+        if parent_agent is None:
+            return True
+        touch = getattr(parent_agent, "_touch_activity", None)
+        if not touch:
+            return True
+        # Pull detail from the child's own activity tracker
+        desc = f"delegate_task: subagent {task_index} working"
+        try:
+            child_summary = child.get_activity_summary()
+            child_tool = child_summary.get("current_tool")
+            child_iter = child_summary.get("api_call_count", 0)
+            child_max = child_summary.get("max_iterations", 0)
 
-                # Stale detection: count cycles where neither the iteration
-                # count nor the current_tool advances. A child running a
-                # legitimately long-running tool (terminal command, web
-                # fetch) keeps current_tool set but doesn't advance
-                # api_call_count — we don't want that to look stale at the
-                # idle threshold.
-                iter_advanced = child_iter > _last_seen_iter[0]
-                tool_changed = child_tool != _last_seen_tool[0]
-                if iter_advanced or tool_changed:
-                    _last_seen_iter[0] = child_iter
-                    _last_seen_tool[0] = child_tool
-                    _stale_count[0] = 0
-                else:
-                    _stale_count[0] += 1
+            # Stale detection: count cycles where neither the iteration
+            # count nor the current_tool advances. A child running a
+            # legitimately long-running tool (terminal command, web
+            # fetch) keeps current_tool set but doesn't advance
+            # api_call_count — we don't want that to look stale at the
+            # idle threshold.
+            iter_advanced = child_iter > _last_seen_iter[0]
+            tool_changed = child_tool != _last_seen_tool[0]
+            if iter_advanced or tool_changed:
+                _last_seen_iter[0] = child_iter
+                _last_seen_tool[0] = child_tool
+                _stale_count[0] = 0
+            else:
+                _stale_count[0] += 1
 
-                # Pick threshold based on whether the child is currently
-                # inside a tool call. In-tool threshold is high enough to
-                # cover legitimately slow tools; idle threshold stays
-                # tight so the gateway timeout can fire on a truly wedged
-                # child.
-                stale_limit = (
-                    _HEARTBEAT_STALE_CYCLES_IN_TOOL
-                    if child_tool
-                    else _HEARTBEAT_STALE_CYCLES_IDLE
+            # Pick threshold based on whether the child is currently
+            # inside a tool call. In-tool threshold is high enough to
+            # cover legitimately slow tools; idle threshold stays
+            # tight so the gateway timeout can fire on a truly wedged
+            # child.
+            stale_limit = (
+                _HEARTBEAT_STALE_CYCLES_IN_TOOL
+                if child_tool
+                else _HEARTBEAT_STALE_CYCLES_IDLE
+            )
+            if _stale_count[0] >= stale_limit:
+                logger.warning(
+                    "Subagent %d appears stale (no progress for %d "
+                    "heartbeat cycles, tool=%s) — stopping heartbeat",
+                    task_index,
+                    _stale_count[0],
+                    child_tool or "<none>",
                 )
-                if _stale_count[0] >= stale_limit:
-                    logger.warning(
-                        "Subagent %d appears stale (no progress for %d "
-                        "heartbeat cycles, tool=%s) — stopping heartbeat",
-                        task_index,
-                        _stale_count[0],
-                        child_tool or "<none>",
-                    )
-                    break  # stop touching parent, let gateway timeout fire
+                return False
 
-                if child_tool:
+            if child_tool:
+                desc = (
+                    f"delegate_task: subagent running {child_tool} "
+                    f"(iteration {child_iter}/{child_max})"
+                )
+            else:
+                child_desc = child_summary.get("last_activity_desc", "")
+                if child_desc:
                     desc = (
-                        f"delegate_task: subagent running {child_tool} "
+                        f"delegate_task: subagent {child_desc} "
                         f"(iteration {child_iter}/{child_max})"
                     )
-                else:
-                    child_desc = child_summary.get("last_activity_desc", "")
-                    if child_desc:
-                        desc = (
-                            f"delegate_task: subagent {child_desc} "
-                            f"(iteration {child_iter}/{child_max})"
-                        )
-            except Exception:
-                pass
-            try:
-                touch(desc)
-            except Exception:
-                pass
+        except Exception:
+            pass
+        try:
+            touch(desc)
+        except Exception:
+            pass
+        return True
 
+    def _heartbeat_loop():
+        while not _heartbeat_stop.wait(_HEARTBEAT_INTERVAL):
+            if not _emit_heartbeat():
+                break
+
+    _emit_heartbeat()
     _heartbeat_thread = threading.Thread(target=_heartbeat_loop, daemon=True)
 
     # Register the live agent in the module-level registry so the TUI can
@@ -1985,17 +2008,7 @@ def delegate_task(
             "using delegation.max_iterations=%s from config",
             max_iterations, default_max_iter,
         )
-    effective_max_iter = default_max_iter
-
-    # Resolve delegation credentials (provider:model pair).
-    # When delegation.provider is configured, this resolves the full credential
-    # bundle (base_url, api_key, api_mode) via the same runtime provider system
-    # used by CLI/gateway startup.  When unconfigured, returns None values so
-    # children inherit from the parent.
-    try:
-        creds = _resolve_delegation_credentials(cfg, parent_agent)
-    except ValueError as exc:
-        return tool_error(str(exc))
+    effective_max_iter = _resolve_effective_max_iterations(default_max_iter)
 
     # Normalize to task list
     max_children = _get_max_concurrent_children()
@@ -2033,6 +2046,18 @@ def delegate_task(
             )
         if not task.get("goal", "").strip():
             return tool_error(f"Task {i} is missing a 'goal'.")
+
+    # Resolve delegation credentials (provider:model pair) only after the
+    # request shape is validated, so malformed/batch-limit errors are reported
+    # deterministically without depending on runtime provider auth.
+    # When delegation.provider is configured, this resolves the full credential
+    # bundle (base_url, api_key, api_mode) via the same runtime provider system
+    # used by CLI/gateway startup. When unconfigured, returns None values so
+    # children inherit from the parent.
+    try:
+        creds = _resolve_delegation_credentials(cfg, parent_agent)
+    except ValueError as exc:
+        return tool_error(str(exc))
 
     overall_start = time.monotonic()
     results = []
@@ -2391,6 +2416,15 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
         api_mode = _detect_api_mode_for_url(configured_base_url) or "chat_completions"
         if (
             base_url_hostname(configured_base_url) == "chatgpt.com"
+            and (
+                "/backend-api/f" in base_lower
+                or "/backend-anon/f" in base_lower
+            )
+        ):
+            provider = "chatgpt-web"
+            api_mode = "chatgpt_web"
+        elif (
+            base_url_hostname(configured_base_url) == "chatgpt.com"
             and "/backend-api/codex" in base_lower
         ):
             provider = "openai-codex"
@@ -2435,7 +2469,7 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
             f"Cannot resolve delegation provider '{configured_provider}': {exc}. "
             f"Check that the provider is configured (API key set, valid provider name), "
             f"or set delegation.base_url/delegation.api_key for a direct endpoint. "
-            f"Available providers: openrouter, nous, zai, kimi-coding, minimax."
+            f"Available providers include: openrouter, nous, chatgpt-web, openai-codex, qwen-oauth, zai, kimi-coding, minimax."
         ) from exc
 
     api_key = runtime.get("api_key", "")
@@ -2445,9 +2479,18 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
             f"Set the appropriate environment variable or run 'hermes auth'."
         )
 
+    runtime_provider = runtime.get("provider")
+    child_provider = runtime_provider
+    if (
+        runtime_provider == _RUNTIME_PROVIDER_CUSTOM
+        and configured_provider
+        and not configured_provider.lower().startswith("custom:")
+    ):
+        child_provider = configured_provider
+
     return {
         "model": configured_model or runtime.get("model") or None,
-        "provider": configured_provider if runtime.get("provider") == _RUNTIME_PROVIDER_CUSTOM else runtime.get("provider"),
+        "provider": child_provider,
         "base_url": runtime.get("base_url"),
         "api_key": api_key,
         "api_mode": runtime.get("api_mode"),

@@ -4,44 +4,28 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hermes-agent"
-version = "0.14.0"
+version = "0.13.111"
 description = "The self-improving AI agent — creates skills from experience, improves them during use, and runs anywhere"
 readme = "README.md"
 requires-python = ">=3.11"
 authors = [{ name = "Nous Research" }]
 license = { text = "MIT" }
 dependencies = [
-  # Core — every direct dep is exact-pinned to ==X.Y.Z (no ranges).
-  # Rationale: ranges allow PyPI to ship a fresh version of a transitive
-  # at any time without a code review on our side. Exact pins mean the
-  # only way a new package version reaches a user is via an intentional
-  # update on our end (bump the pin in this file, regenerate uv.lock).
-  # This was tightened on 2026-05-12 in response to the Mini Shai-Hulud
-  # worm hitting mistralai 2.4.6 on PyPI; if that release had been
-  # captured by `mistralai>=2.3.0,<3` rather than an exact pin, every
-  # install in the hours before the quarantine would have pulled it.
-  #
-  # When updating: bump the version below AND regenerate uv.lock with
-  # `uv lock` so the transitive resolution stays consistent. Don't
-  # introduce ranges back without a written justification.
-  #
-  # Scope rule: only packages used by EVERY hermes session belong here.
-  # Anything that's provider-specific (`anthropic`, `firecrawl-py`,
-  # `exa-py`, `fal-client`, `edge-tts`, `parallel-web`) belongs in an
-  # extra and gets lazy-installed via `tools/lazy_deps.py` when the
-  # user picks that backend. Smaller `dependencies` = smaller blast
-  # radius for the next supply-chain attack.
-  "openai==2.24.0",
-  "python-dotenv==1.2.1",
-  "fire==0.7.1",
-  "httpx[socks]==0.28.1",
-  "rich==14.3.3",
-  "tenacity==9.1.4",
-  "pyyaml==6.0.3",
-  "ruamel.yaml==0.18.17",
-  "requests==2.33.0",  # CVE-2026-25645
-  "jinja2==3.1.6",
-  "pydantic==2.12.5",
+  # Core — pinned to known-good ranges to limit supply chain attack surface
+  "openai>=2.21.0,<3",
+  "anthropic>=0.39.0,<1",
+  "python-dotenv>=1.2.1,<2",
+  "fire>=0.7.1,<1",
+  "httpx[socks]>=0.28.1,<1",
+  "websockets>=15.0.1,<16",
+  "rich>=14.3.3,<15",
+  "tenacity>=9.1.4,<10",
+  "pyyaml>=6.0.2,<7",
+  "ruamel.yaml>=0.18.16,<0.19",
+  "tzdata>=2025.2,<2027",  # ZoneInfo data for Termux/Windows/containers without system tzdb
+  "requests>=2.33.0,<3",  # CVE-2026-25645
+  "jinja2>=3.1.5,<4",
+  "pydantic>=2.12.5,<3",
   # Interactive CLI (prompt_toolkit is used directly by cli.py)
   "prompt_toolkit==3.0.52",
   # Cron scheduler (built-in feature — scheduled cron/interval jobs use croniter).
@@ -52,8 +36,9 @@ dependencies = [
   # (PEP 615) raises ``ZoneInfoNotFoundError`` for every non-UTC timezone
   # out of the box.  ``tzdata`` ships the Olson database as a data package
   # Python resolves automatically.  No-op on Linux/macOS (which have
-  # /usr/share/zoneinfo).  Credits: PR #13182 (@sprmn24).
-  "tzdata==2025.3; sys_platform == 'win32'",
+  # /usr/share/zoneinfo), but required on Windows, Termux and containers
+  # without system tzdb. Credits: PR #13182 (@sprmn24).
+  "tzdata==2025.3",
   # Cross-platform process / PID management.  `psutil` is the canonical
   # answer for "is this PID alive" and process-tree walking across Linux,
   # macOS and Windows.  It replaces POSIX-only idioms like `os.kill(pid, 0)`
@@ -147,8 +132,15 @@ termux-all = [
   "hermes-agent[sms]",
   "hermes-agent[web]",
 ]
-dingtalk = ["dingtalk-stream==0.24.3", "alibabacloud-dingtalk==2.2.42", "qrcode==7.4.2"]
-feishu = ["lark-oapi==1.5.3", "qrcode==7.4.2"]
+android = [
+  # Dedicated APK / embedded-Python lane. Keep this separate from [termux]
+  # so the app only pulls the API-server runtime dependencies it needs.
+  # Chaquopy currently exposes aiohttp wheels only up to the 3.10 line.
+  "aiohttp>=3.10.10,<4",
+  "croniter>=6.0.0,<7",
+]
+dingtalk = ["dingtalk-stream>=0.20,<1", "alibabacloud-dingtalk>=2.0.0", "qrcode>=7.0,<8"]
+feishu = ["lark-oapi>=1.5.3,<2", "qrcode>=7.0,<8"]
 google = [
   # Required by the google-workspace skill (Gmail, Calendar, Drive, Contacts,
   # Sheets, Docs).  Declared here so packagers (Nix, Homebrew) ship them with
@@ -168,27 +160,6 @@ youtube = [
 # `hermes dashboard` (localhost SPA + API).  Not in core to keep the default install lean.
 web = ["fastapi==0.133.1", "uvicorn[standard]==0.41.0"]
 all = [
-  # Policy (2026-05-12): `[all]` includes only extras that genuinely
-  # CAN'T be lazy-installed via `tools/lazy_deps.py` — i.e. things every
-  # session can use, things needed before the agent loop is alive
-  # (terminal/CLI), and skill deps that packagers (Nix, AUR, Homebrew)
-  # need in the wheel. Anything an opt-in backend (provider, search,
-  # TTS, image, memory, messaging platform, terminal sandbox) needs
-  # MUST live exclusively in `LAZY_DEPS` and resolve at first use —
-  # otherwise one quarantined PyPI release breaks every fresh install.
-  #
-  # Removed from [all] on 2026-05-12 (covered by lazy-install):
-  #   anthropic, exa, firecrawl, parallel-web, fal, edge-tts,
-  #   modal, daytona, vercel, messaging (telegram/discord/slack),
-  #   matrix, slack, honcho, voice (faster-whisper),
-  #   dingtalk, feishu, bedrock, tts-premium (elevenlabs)
-  #
-  # Why: the matrix extra in particular pulls `mautrix[encryption]`
-  # which depends on `python-olm`. python-olm has Linux-only wheels and
-  # no native build path on Windows or modern macOS. With matrix in
-  # [all], `uv sync --locked` on Windows tried to build it from sdist
-  # and failed on `make`. Lazy-install routes that build to first use,
-  # where the user is expected to have a toolchain available.
   "hermes-agent[cron]",
   "hermes-agent[cli]",
   "hermes-agent[dev]",
@@ -198,6 +169,7 @@ all = [
   "hermes-agent[sms]",
   "hermes-agent[acp]",
   "hermes-agent[google]",
+  "hermes-agent[mistral]",
   "hermes-agent[web]",
   "hermes-agent[youtube]",
 ]
@@ -208,14 +180,14 @@ hermes-agent = "run_agent:main"
 hermes-acp = "acp_adapter.entry:main"
 
 [tool.setuptools]
-py-modules = ["run_agent", "model_tools", "toolsets", "batch_runner", "trajectory_compressor", "toolset_distributions", "cli", "hermes_bootstrap", "hermes_constants", "hermes_state", "hermes_time", "hermes_logging", "utils"]
+py-modules = ["run_agent", "model_tools", "toolsets", "batch_runner", "trajectory_compressor", "toolset_distributions", "cli", "hermes_bootstrap", "hermes_constants", "hermes_state", "hermes_time", "hermes_logging", "iteration_limits", "rl_cli", "utils"]
 
 [tool.setuptools.package-data]
 hermes_cli = ["web_dist/**/*", "tui_dist/**/*", "scripts/install.sh", "scripts/install.ps1"]
 gateway = ["assets/**/*"]
 
 [tool.setuptools.packages.find]
-include = ["agent", "agent.*", "tools", "tools.*", "hermes_cli", "gateway", "gateway.*", "tui_gateway", "tui_gateway.*", "cron", "acp_adapter", "plugins", "plugins.*", "providers", "providers.*"]
+include = ["agent", "agent.*", "tools", "tools.*", "hermes_cli", "gateway", "gateway.*", "tui_gateway", "tui_gateway.*", "cron", "acp_adapter", "plugins", "plugins.*", "providers", "providers.*", "hermes_android", "hermes_android.*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
