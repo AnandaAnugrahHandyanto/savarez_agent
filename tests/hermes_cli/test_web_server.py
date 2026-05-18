@@ -3,6 +3,7 @@
 import os
 import json
 import tempfile
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
@@ -2313,8 +2314,6 @@ class TestPtyWebSocket:
 
             with self.client.websocket_connect(pub_path) as pub:
                 pub.send_text('{"type":"tool.start","payload":{"tool_id":"t1"}}')
-                from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
-
                 with ThreadPoolExecutor(max_workers=1) as executor:
                     future = executor.submit(sub.receive_text)
                     try:
