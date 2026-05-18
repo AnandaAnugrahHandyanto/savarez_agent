@@ -125,6 +125,49 @@ class TestWebServerEndpoints:
         assert "hermes_home" in data
         assert "active_sessions" in data
 
+    def test_get_status_includes_dashboard_chat_diagnostics(self, monkeypatch):
+        import hermes_cli.web_server as web_server
+
+        monkeypatch.setattr(
+            web_server,
+            "_dashboard_chat_diagnostics",
+            lambda: {
+                "embedded_chat_enabled": True,
+                "stale_slash_worker_count": 2,
+                "stale_slash_worker_pids": [111, 222],
+            },
+        )
+
+        resp = self.client.get("/api/status")
+
+        assert resp.status_code == 200
+        assert resp.json()["dashboard_chat"] == {
+            "embedded_chat_enabled": True,
+            "stale_slash_worker_count": 2,
+            "stale_slash_worker_pids": [111, 222],
+        }
+
+    def test_dashboard_chat_diagnostics_counts_slash_worker_processes(self, monkeypatch):
+        import subprocess
+        import hermes_cli.web_server as web_server
+
+        ps_output = """
+          101 /usr/bin/python -m tui_gateway.slash_worker --session-key old-one
+          202 /usr/bin/python -m tui_gateway.entry
+          303 /usr/bin/python -m tui_gateway.slash_worker --session-key old-two
+        """
+        monkeypatch.setattr(
+            subprocess,
+            "check_output",
+            lambda *args, **kwargs: ps_output,
+        )
+
+        diagnostics = web_server._dashboard_chat_diagnostics()
+
+        assert diagnostics["embedded_chat_enabled"] is web_server._DASHBOARD_EMBEDDED_CHAT_ENABLED
+        assert diagnostics["stale_slash_worker_count"] == 2
+        assert diagnostics["stale_slash_worker_pids"] == [101, 303]
+
     def test_get_status_filters_unconfigured_gateway_platforms(self, monkeypatch):
         import gateway.config as gateway_config
         import hermes_cli.web_server as web_server

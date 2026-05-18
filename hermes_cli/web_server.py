@@ -534,6 +534,45 @@ def _probe_gateway_health() -> tuple[bool, dict | None]:
     return False, None
 
 
+def _dashboard_chat_diagnostics() -> dict[str, Any]:
+    """Return lightweight diagnostics for the dashboard embedded Chat path.
+
+    The browser Chat tab runs a PTY-backed TUI, which in turn may spawn a
+    persistent ``tui_gateway.slash_worker`` helper.  If those helpers survive
+    their parent session, dashboard Chat can feel progressively heavier.  Keep
+    this status payload best-effort and read-only so /api/status remains cheap
+    and safe.
+    """
+
+    pids: list[int] = []
+    if sys.platform != "win32":
+        try:
+            output = subprocess.check_output(
+                ["ps", "-axo", "pid=,command="],
+                text=True,
+                stderr=subprocess.DEVNULL,
+                timeout=1,
+            )
+        except Exception:
+            output = ""
+        for line in output.splitlines():
+            if "tui_gateway.slash_worker" not in line:
+                continue
+            parts = line.strip().split(maxsplit=1)
+            if not parts:
+                continue
+            try:
+                pids.append(int(parts[0]))
+            except ValueError:
+                continue
+
+    return {
+        "embedded_chat_enabled": _DASHBOARD_EMBEDDED_CHAT_ENABLED,
+        "stale_slash_worker_count": len(pids),
+        "stale_slash_worker_pids": pids[:20],
+    }
+
+
 @app.get("/api/status")
 async def get_status():
     current_ver, latest_ver = check_config_version()
@@ -637,6 +676,7 @@ async def get_status():
         "gateway_exit_reason": gateway_exit_reason,
         "gateway_updated_at": gateway_updated_at,
         "active_sessions": active_sessions,
+        "dashboard_chat": _dashboard_chat_diagnostics(),
     }
 
 
