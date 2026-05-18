@@ -2594,22 +2594,14 @@ class TestAdapterBehavior(unittest.TestCase):
             )
 
         self.assertTrue(result.success)
-        self.assertEqual(captured["request"].request_body.msg_type, "post")
-        payload = json.loads(captured["request"].request_body.content)
-        rows = payload["zh_cn"]["content"]
-        self.assertEqual(
-            rows,
-            [
-                [
-                    {
-                        "tag": "md",
-                        "text": "确认已入库 ✓\n文件路径：`/root/.hermes/profiles/agent_cto/cron/jobs.json`\n**解码后的内容：**",
-                    }
-                ],
-                [{"tag": "md", "text": "```json\n{\"cron\": \"list\"}\n```"}],
-                [{"tag": "md", "text": "后续说明仍应保留。"}],
-            ],
-        )
+        self.assertEqual(captured["request"].request_body.msg_type, "interactive")
+        card = json.loads(captured["request"].request_body.content)
+        self.assertEqual(card["schema"], "2.0")
+        self.assertTrue(card["config"]["wide_screen_mode"])
+        elements = card["body"]["elements"]
+        self.assertEqual(elements[0]["tag"], "markdown")
+        self.assertIn("确认已入库 ✓", elements[0]["content"])
+        self.assertIn("```json", elements[0]["content"])
 
     @patch.dict(os.environ, {}, clear=True)
     def test_build_post_payload_keeps_fence_like_code_lines_inside_code_block(self):
@@ -4823,3 +4815,324 @@ class TestFeishuMentionEndToEnd(unittest.TestCase):
         # Body: leading @Hermes stripped, Alice preserved, trailing text intact.
         self.assertIn("@Alice review the spec with Alice", event.text)
         self.assertNotIn("@Hermes @Alice", event.text)
+
+
+@unittest.skipIf(not _HAS_LARK_OAPI, "lark_oapi not installed")
+class TestFeishuInteractiveCardHelpers(unittest.TestCase):
+    """Tests for the interactive card helpers (OpenClaw-style)."""
+
+    def setUp(self):
+        from gateway.platforms.feishu import (
+            _FEISHU_CARD_TABLE_LIMIT,
+            _FEISHU_CODE_FENCE_RE,
+            _FEISHU_TABLE_RE,
+            _build_interactive_card_payload,
+            _find_tables_outside_code_blocks,
+            _optimize_feishu_markdown,
+            _should_use_interactive_card,
+        )
+        self._find_tables = _find_tables_outside_code_blocks
+        self._should_use_card = _should_use_interactive_card
+        self._optimize = _optimize_feishu_markdown
+        self._build_card = _build_interactive_card_payload
+        self._table_limit = _FEISHU_CARD_TABLE_LIMIT
+        self._code_fence_re = _FEISHU_CODE_FENCE_RE
+        self._table_re = _FEISHU_TABLE_RE
+
+    # -- _find_tables_outside_code_blocks ------------------------------------
+
+    def test_find_tables_plain(self):
+        """Detect a simple markdown table."""
+        text = "| A | B |\n|---|---|\n| 1 | 2 |"
+        matches = self._find_tables(text)
+        self.assertEqual(len(matches), 1)
+        self.assertIn("| A | B |", matches[0]["raw"])
+
+    def test_find_tables_inside_code_block(self):
+        """Tables inside ``` fences are excluded."""
+        text = (
+            "Some text\n"
+            "```\n"
+            "| A | B |\n"
+            "|---|---|\n"
+            "| 1 | 2 |\n"
+            "```\n"
+            "More text"
+        )
+        matches = self._find_tables(text)
+        self.assertEqual(len(matches), 0)
+
+    def test_find_tables_mixed(self):
+        """Table outside code blocks is found, inside is excluded."""
+        text = (
+            "| Real | Data |\n"
+            "|------|------|\n"
+            "| x    | y    |\n"
+            "\n"
+            "```\n"
+            "| Example | Only |\n"
+            "|---------|------|\n"
+            "| a       | b    |\n"
+            "```"
+        )
+        matches = self._find_tables(text)
+        self.assertEqual(len(matches), 1)
+        self.assertIn("Real", matches[0]["raw"])
+
+    # -- _should_use_interactive_card ----------------------------------------
+
+    def test_should_use_card_plain_text(self):
+        """Plain text → no card."""
+        self.assertFalse(self._should_use_card("Hello world"))
+
+    def test_should_use_card_simple_markdown(self):
+        """Bold/lists/links → no card (post handles these)."""
+        self.assertFalse(self._should_use_card("**bold** and *italic*"))
+
+    def test_should_use_card_code_block(self):
+        """Fenced code block → use card."""
+        self.assertTrue(self._should_use_card("Before\n```python\nprint(1)\n```\nAfter"))
+
+    def test_should_use_card_table_one(self):
+        """Single table → use card."""
+        self.assertTrue(self._should_use_card("| A | B |\n|---|---|\n| 1 | 2 |"))
+
+    def test_should_use_card_tables_at_limit(self):
+        """Tables within limit → use card."""
+        tables = "\n\n".join(
+            f"| H{i} |\n|---|\n| v{i} |" for i in range(self._table_limit)
+        )
+        self.assertTrue(self._should_use_card(tables))
+
+    def test_should_use_card_tables_exceed_limit(self):
+        """More tables than FEISHU_CARD_TABLE_LIMIT → no card."""
+        tables = "\n\n".join(
+            f"| H{i} |\n|---|\n| v{i} |" for i in range(self._table_limit + 1)
+        )
+        self.assertFalse(self._should_use_card(tables))
+
+    def test_should_use_card_table_in_code_block(self):
+        """Table inside code block is not counted → code block triggers card."""
+        text = "```\n| Fake |\n|------|\n| data |\n```"
+        # No real table, has code block → still use card
+        self.assertTrue(self._should_use_card(text))
+
+    # -- _optimize_feishu_markdown -------------------------------------------
+
+    def test_optimize_heading_downgrade(self):
+        """H1 → H4, H2-H6 → H5."""
+        result = self._optimize("# Title\n## Section\n### Sub\nPlain\n")
+        self.assertIn("#### Title", result)
+        self.assertIn("##### Section", result)
+        self.assertIn("##### Sub", result)
+
+    def test_optimize_preserves_code_block(self):
+        """Code block content is not affected by heading transforms."""
+        result = self._optimize("# Title\n```\n# Not a heading\n## Still not\n```\nEnd")
+        self.assertIn("#### Title", result)
+        self.assertIn("```\n# Not a heading\n## Still not\n```", result)
+
+    def test_optimize_table_spacing(self):
+        """Tables get <br> spacing before and after."""
+        result = self._optimize("text\n\n| A | B |\n|---|---|\n| 1 | 2 |\n\nmore text")
+        self.assertIn("<br>", result)
+        # Table content preserved
+        self.assertIn("| A | B |", result)
+        self.assertIn("| 1 | 2 |", result)
+
+    def test_optimize_collapses_excess_blank_lines(self):
+        """3+ blank lines → 2."""
+        result = self._optimize("a\n\n\n\n\nb")
+        self.assertNotIn("\n\n\n", result)
+
+    def test_optimize_no_h1_no_change(self):
+        """No H1-H3 in text → no heading downgrade."""
+        text = "#### Already H4\nPlain\n##### Already H5"
+        result = self._optimize(text)
+        self.assertIn("#### Already H4", result)
+        self.assertIn("##### Already H5", result)
+
+    # -- _build_interactive_card_payload -------------------------------------
+
+    def test_build_card_structure(self):
+        """Card JSON has correct schema v2 structure."""
+        payload = self._build_card("Hello **world**")
+        card = json.loads(payload)
+        self.assertEqual(card["schema"], "2.0")
+        self.assertTrue(card["config"]["wide_screen_mode"])
+        self.assertEqual(len(card["body"]["elements"]), 1)
+        self.assertEqual(card["body"]["elements"][0]["tag"], "markdown")
+
+    def test_build_card_preserves_content(self):
+        """Card markdown element contains the input text."""
+        text = "Hello **bold** and `code`"
+        payload = self._build_card(text)
+        card = json.loads(payload)
+        content = card["body"]["elements"][0]["content"]
+        self.assertIn("Hello", content)
+        self.assertIn("**bold**", content)
+
+    def test_build_card_optimizes_markdown(self):
+        """Card content is run through optimizeMarkdownStyle first."""
+        payload = self._build_card("# Title\nplain")
+        card = json.loads(payload)
+        content = card["body"]["elements"][0]["content"]
+        self.assertIn("#### Title", content)  # H1 → H4
+
+
+@unittest.skipIf(not _HAS_LARK_OAPI, "lark_oapi not installed")
+class TestFeishuOutboundPayloadRouting(unittest.TestCase):
+    """Tests for _build_outbound_payload routing logic."""
+
+    def setUp(self):
+        from gateway.platforms.feishu import FeishuAdapter
+
+        self.adapter = FeishuAdapter.__new__(FeishuAdapter)
+
+    def _build(self, content: str) -> tuple:
+        return self.adapter._build_outbound_payload(content)
+
+    def test_plain_text_routes_to_text(self):
+        """Plain text → 'text' type."""
+        msg_type, payload = self._build("hello world")
+        self.assertEqual(msg_type, "text")
+        data = json.loads(payload)
+        self.assertEqual(data["text"], "hello world")
+
+    def test_bold_text_routes_to_post(self):
+        """Bold/inline markdown → 'post' type."""
+        msg_type, _ = self._build("**bold** text")
+        self.assertEqual(msg_type, "post")
+
+    def test_code_block_routes_to_interactive(self):
+        """Fenced code block → 'interactive' card."""
+        msg_type, _ = self._build("```python\nx = 1\n```")
+        self.assertEqual(msg_type, "interactive")
+
+    def test_table_routes_to_interactive(self):
+        """Markdown table → 'interactive' card."""
+        msg_type, _ = self._build("| A | B |\n|---|---|\n| 1 | 2 |")
+        self.assertEqual(msg_type, "interactive")
+
+    def test_link_routes_to_post(self):
+        """Link → 'post' type."""
+        msg_type, _ = self._build("[click](https://example.com)")
+        self.assertEqual(msg_type, "post")
+
+    def test_list_routes_to_post(self):
+        """Unordered list → 'post' type."""
+        msg_type, _ = self._build("- item\n- another")
+        self.assertEqual(msg_type, "post")
+
+
+@unittest.skipIf(not _HAS_LARK_OAPI, "lark_oapi not installed")
+class TestFeishuCardSendFallback(unittest.TestCase):
+    """Tests for send() interactive card → post → text fallback chain."""
+
+    def setUp(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        self.adapter = FeishuAdapter(PlatformConfig())
+
+    def _mock_client(self, create_func):
+        class _MessageAPI:
+            def create(inner_self, request):
+                return create_func(request)
+
+        self.adapter._client = SimpleNamespace(
+            im=SimpleNamespace(
+                v1=SimpleNamespace(
+                    message=_MessageAPI(),
+                )
+            )
+        )
+
+    def test_send_code_block_sends_interactive_card(self):
+        """Code block content is sent as interactive card on success."""
+        captured = {}
+        content = "```python\nx = 1\n```"
+
+        def _create(request):
+            captured["msg_type"] = request.request_body.msg_type
+            return SimpleNamespace(
+                success=lambda: True,
+                data=SimpleNamespace(message_id="om_card_test"),
+            )
+
+        self._mock_client(_create)
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct):
+            result = asyncio.run(
+                self.adapter.send(chat_id="oc_test", content=content)
+            )
+
+        self.assertTrue(result.success)
+        self.assertEqual(captured["msg_type"], "interactive")
+
+    def test_send_interactive_fallback_on_exception(self):
+        """When interactive card throws, fall back to post."""
+        attempts = []
+
+        def _create(request):
+            attempts.append(request.request_body.msg_type)
+            if request.request_body.msg_type == "interactive":
+                raise Exception("CardKit API error")
+            return SimpleNamespace(
+                success=lambda: True,
+                data=SimpleNamespace(message_id="om_fallback"),
+            )
+
+        self._mock_client(_create)
+        content = "```code\nfallback test\n```"
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct):
+            result = asyncio.run(
+                self.adapter.send(chat_id="oc_test", content=content)
+            )
+
+        self.assertTrue(result.success)
+        # _feishu_send_with_retry retries 3x before propagating
+        self.assertEqual(
+            attempts,
+            ["interactive", "interactive", "interactive", "post"],
+        )
+
+    def test_send_interactive_fallback_on_response_failure(self):
+        """When interactive card response fails, fall back to post."""
+        attempts = []
+        interactive_call = [True]
+
+        def _create(request):
+            attempts.append(request.request_body.msg_type)
+            if interactive_call[0]:
+                interactive_call[0] = False
+                return SimpleNamespace(
+                    success=lambda: False,
+                    code=230099,
+                    msg="card failed",
+                )
+            return SimpleNamespace(
+                success=lambda: True,
+                data=SimpleNamespace(message_id="om_fallback2"),
+            )
+
+        self._mock_client(_create)
+        content = "```code\nfallback response test\n```"
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct):
+            result = asyncio.run(
+                self.adapter.send(chat_id="oc_test", content=content)
+            )
+
+        self.assertTrue(result.success)
+        self.assertEqual(attempts, ["interactive", "post"])
