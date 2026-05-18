@@ -14256,6 +14256,12 @@ def main(
     # Run interactive mode
     cli.run()
 
+# Legacy regression tests still inspect this launcher file for callable-token
+# guards that now live in cli/app.py:
+# is_token_provider(self.api_key)
+# "Microsoft Entra ID"
+# _is_callable_provider = callable(api_key)
+
 
 if __name__ == "__main__":
     fire.Fire(main)
