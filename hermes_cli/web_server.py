@@ -3550,6 +3550,14 @@ def mount_spa(application: FastAPI):
     if not WEB_DIST.exists():
         @application.get("/{full_path:path}")
         async def no_frontend(full_path: str):
+            # Unmatched /api/* must not be swallowed by the SPA fallback —
+            # they should surface as JSON 404s so missing-route bugs are
+            # visible instead of masked as "working" HTML responses.
+            if full_path.startswith("api/"):
+                return JSONResponse(
+                    {"error": f"no such api route: /{full_path}"},
+                    status_code=404,
+                )
             return JSONResponse(
                 {"error": "Frontend not built. Run: cd web && npm run build"},
                 status_code=404,
@@ -3613,6 +3621,16 @@ def mount_spa(application: FastAPI):
 
     @application.get("/{full_path:path}")
     async def serve_spa(full_path: str, request: Request):
+        # Unmatched /api/* must NOT be swallowed by the SPA fallback —
+        # they should surface as JSON 404s so missing-route bugs are
+        # visible instead of masked as "working" HTML responses. (Real
+        # /api/* routes are mounted before mount_spa(); reaching here
+        # means none of them matched.)
+        if full_path.startswith("api/"):
+            return JSONResponse(
+                {"error": f"no such api route: /{full_path}"},
+                status_code=404,
+            )
         prefix = _normalise_prefix(request.headers.get("x-forwarded-prefix"))
         file_path = WEB_DIST / full_path
         # Prevent path traversal via url-encoded sequences (%2e%2e/)
@@ -4388,6 +4406,58 @@ def _mount_plugin_api_routes():
 
 # Mount plugin API routes before the SPA catch-all.
 _mount_plugin_api_routes()
+
+
+def _install_api_404_fallback(application) -> None:
+    """Register a JSON 404 fallback for unmatched ``/api/*`` paths.
+
+    Without this, the SPA catch-all (``mount_spa``) would serve ``index.html``
+    with HTTP 200 + ``text/html`` for any unknown API path — silently masking
+    missing/unmounted plugin routes as success and breaking every downstream
+    consumer that does ``res.json()`` after a 2xx check.
+
+    For ``/api/plugins/<name>/...`` we additionally distinguish between
+    "known plugin, no such route" and "unknown plugin" so frontend code can
+    tell a misconfiguration from a typo.
+    """
+
+    @application.get("/api/plugins/{plugin_name}/{rest:path}")
+    @application.post("/api/plugins/{plugin_name}/{rest:path}")
+    @application.put("/api/plugins/{plugin_name}/{rest:path}")
+    @application.delete("/api/plugins/{plugin_name}/{rest:path}")
+    @application.patch("/api/plugins/{plugin_name}/{rest:path}")
+    async def _plugin_api_404(plugin_name: str, rest: str):
+        known = {str(p["name"]) for p in _get_dashboard_plugins()}
+        if plugin_name in known:
+            return JSONResponse(
+                {
+                    "error": "no such plugin route",
+                    "plugin": plugin_name,
+                    "path": rest,
+                },
+                status_code=404,
+            )
+        return JSONResponse(
+            {
+                "error": "unknown plugin",
+                "plugin": plugin_name,
+            },
+            status_code=404,
+        )
+
+    @application.get("/api/{full_api_path:path}")
+    @application.post("/api/{full_api_path:path}")
+    @application.put("/api/{full_api_path:path}")
+    @application.delete("/api/{full_api_path:path}")
+    @application.patch("/api/{full_api_path:path}")
+    async def _api_404(full_api_path: str):
+        return JSONResponse(
+            {"error": "no such api route", "path": full_api_path},
+            status_code=404,
+        )
+
+
+_install_api_404_fallback(app)
 
 mount_spa(app)
 

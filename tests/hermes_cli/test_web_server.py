@@ -2324,3 +2324,96 @@ class TestPtyWebSocket:
             ):
                 pass
         assert exc.value.code == 4400
+
+
+# ---------------------------------------------------------------------------
+# SPA catch-all must not swallow unmatched /api/* paths
+# ---------------------------------------------------------------------------
+
+
+class TestSpaCatchAllExcludesApi:
+    """Regression for hermes-ui board t_201cd739.
+
+    The SPA fallback (``serve_spa``) used to match ``/{full_path:path}``
+    for *every* unrouted request, which meant typos and missing-route
+    mounts under ``/api/*`` returned the SPA ``index.html`` shell with
+    HTTP 200 + ``text/html`` instead of a JSON 404. That masked real
+    routing bugs as "working" responses and produced at least one
+    false-positive bug report against a plugin that was, in fact, fine.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _setup_clients(self, monkeypatch, _isolate_hermes_home):
+        try:
+            from starlette.testclient import TestClient
+        except ImportError:
+            pytest.skip("fastapi/starlette not installed")
+
+        import hermes_state
+        from hermes_constants import get_hermes_home
+        from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
+
+        monkeypatch.setattr(
+            hermes_state, "DEFAULT_DB_PATH", get_hermes_home() / "state.db"
+        )
+
+        self.auth_client = TestClient(app)
+        self.auth_client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
+
+    def test_unknown_plugin_returns_json_404(self):
+        """A completely fake plugin name must 404 JSON, not 200 HTML."""
+        resp = self.auth_client.get(
+            "/api/plugins/_definitely_not_a_plugin_/anything"
+        )
+        assert resp.status_code == 404
+        assert resp.headers["content-type"].startswith("application/json")
+        assert "<!doctype" not in resp.text.lower()
+        assert "<html" not in resp.text.lower()
+
+    def test_known_plugin_unknown_endpoint_returns_json_404(self):
+        """Real plugin + bogus endpoint must 404 JSON, not 200 HTML.
+
+        This is the headline trap: the plugin's router is mounted, so the
+        prefix exists, but the specific path is bogus. The auth middleware
+        passes the request through (token is valid), the plugin's router
+        returns 404, and the SPA catch-all used to swallow that and return
+        the index.html shell with 200. After the fix it must surface as a
+        JSON 404.
+        """
+        # Use hermes-achievements — a plugin loaded by default whose
+        # router has a stable set of endpoints. Any bogus suffix should
+        # 404 without being eaten by the SPA fallback.
+        resp = self.auth_client.get(
+            "/api/plugins/hermes-achievements/does-not-exist"
+        )
+        assert resp.status_code == 404
+        assert resp.headers["content-type"].startswith("application/json")
+        assert "<!doctype" not in resp.text.lower()
+
+    def test_unknown_top_level_api_returns_json_404(self):
+        """``/api/<bogus>`` (no plugin namespace) must also 404 JSON."""
+        resp = self.auth_client.get("/api/no-such-endpoint")
+        assert resp.status_code == 404
+        assert resp.headers["content-type"].startswith("application/json")
+
+    def test_real_api_route_still_works(self):
+        """Regression check: the catch-all must not break real /api routes."""
+        resp = self.auth_client.get("/api/status")
+        assert resp.status_code == 200
+        # /api/status returns JSON
+        assert resp.headers["content-type"].startswith("application/json")
+
+    def test_spa_route_still_falls_back_to_index(self):
+        """Non-/api/ client-side routes still hit the SPA index.html.
+
+        Skipped when the SPA bundle isn't built — the no_frontend branch
+        returns JSON 404 instead in that case (also a regression we test
+        below as a side effect, but the index-html assertion is moot).
+        """
+        from hermes_cli import web_server as ws_mod
+
+        if not ws_mod.WEB_DIST.exists():
+            pytest.skip("SPA bundle not built; /any/spa/route would JSON 404")
+        resp = self.auth_client.get("/any/client/side/route")
+        assert resp.status_code == 200
+        assert resp.headers["content-type"].startswith("text/html")
