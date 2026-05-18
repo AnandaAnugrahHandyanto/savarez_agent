@@ -4,7 +4,7 @@ import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { Input } from "@/components/ui/input";
 import type { GatewayClient } from "@/lib/gatewayClient";
 import { Check, Search, X } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 /**
  * Two-stage model picker modal.
@@ -147,6 +147,11 @@ export function ModelPickerDialog(props: Props) {
   );
 
   const needle = query.trim().toLowerCase();
+  const matchesNeedle = useCallback(
+    (value: unknown) =>
+      value != null && String(value).toLowerCase().includes(needle),
+    [needle],
+  );
 
   const filteredProviders = useMemo(
     () =>
@@ -154,17 +159,16 @@ export function ModelPickerDialog(props: Props) {
         ? providers
         : providers.filter(
             (p) =>
-              p.name.toLowerCase().includes(needle) ||
-              p.slug.toLowerCase().includes(needle) ||
-              (p.models ?? []).some((m) => m.toLowerCase().includes(needle)),
+              matchesNeedle(p.name) ||
+              matchesNeedle(p.slug) ||
+              (p.models ?? []).some((m) => matchesNeedle(m)),
           ),
-    [providers, needle],
+    [providers, matchesNeedle, needle],
   );
 
   const filteredModels = useMemo(
-    () =>
-      !needle ? models : models.filter((m) => m.toLowerCase().includes(needle)),
-    [models, needle],
+    () => !needle ? models : models.filter((m) => matchesNeedle(m)),
+    [models, matchesNeedle, needle],
   );
 
   const canConfirm = !!selectedProvider && !!selectedModel && !applying;
