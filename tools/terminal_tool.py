@@ -988,7 +988,9 @@ def _is_api_session_task_id(task_id: str) -> bool:
     if not task_id.startswith("api-session-"):
         return False
     suffix = task_id[len("api-session-") :]
-    return all(segment.isalnum() for segment in suffix.split("-"))
+    return bool(suffix) and all(
+        segment and segment.isalnum() for segment in suffix.split("-")
+    )
 
 
 def _resolve_container_task_id(task_id: Optional[str]) -> str:
@@ -1016,13 +1018,13 @@ def _resolve_container_task_id(task_id: Optional[str]) -> str:
     """
     if not task_id or task_id == "default":
         return "default"
+    if not _SAFE_TASK_ID_CHARS_PATTERN.fullmatch(task_id):
+        logger.warning("Invalid task_id format for sandbox routing; using default: %r", task_id)
+        return "default"
     if task_id in _task_env_overrides:
         return task_id
     if task_id in _task_container_aliases:
         return _task_container_aliases[task_id]
-    if not _SAFE_TASK_ID_CHARS_PATTERN.fullmatch(task_id):
-        logger.warning("Invalid task_id format for sandbox routing; using default: %r", task_id)
-        return "default"
     # API gateway sessions share the legacy default sandbox key.
     # Accepted forms: "api-session" or "api-session-<alnum[-alnum]...>".
     if _is_api_session_task_id(task_id):
