@@ -188,3 +188,52 @@ def test_codex_worker_failure_blocks_with_error_metadata(kanban_home, tmp_path, 
         assert run.summary.startswith("codex-failed:")
         assert run.error == "boom"
         assert run.metadata["codex"]["exit_code"] == 2
+
+
+def test_codex_worker_missing_binary_blocks_without_spawning(kanban_home, tmp_path, monkeypatch):
+    from hermes_cli import codex_worker
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / ".git").mkdir()
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="implement", assignee="codex")
+        task = kb.claim_task(conn, task_id)
+        assert task is not None
+
+    monkeypatch.setattr(codex_worker.shutil, "which", lambda name: None)
+
+    rc = codex_worker.main(["--task-id", task_id, "--workspace", str(repo), "--board", "default", "--codex-bin", "missing-codex"])
+
+    assert rc == 127
+    with kb.connect() as conn:
+        task = kb.get_task(conn, task_id)
+        assert task is not None
+        assert task.status == "blocked"
+        run = kb.list_runs(conn, task_id)[-1]
+        assert run.summary is not None
+        assert run.summary.startswith("codex-failed:")
+        assert run.error == "Codex executable not found: missing-codex"
+        assert run.metadata is not None
+        assert run.metadata["codex"]["exit_code"] == 127
+    worker_log = kb.read_worker_log(task_id, board="default")
+    assert worker_log is not None
+    assert "Codex executable not found" in worker_log
+
+
+def test_block_task_can_persist_metadata_without_active_claim(kanban_home):
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="manual block", assignee="codex")
+        ok = kb.block_task(
+            conn,
+            task_id,
+            reason="codex-failed: preflight failed",
+            error="missing binary",
+            metadata={"codex": {"exit_code": 127}},
+        )
+        assert ok is True
+        run = kb.list_runs(conn, task_id)[-1]
+        assert run.summary == "codex-failed: preflight failed"
+        assert run.error == "missing binary"
+        assert run.metadata is not None
+        assert run.metadata["codex"]["exit_code"] == 127

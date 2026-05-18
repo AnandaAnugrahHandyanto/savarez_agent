@@ -88,13 +88,44 @@ When you create profiles for your fleet, choose names that match the *role* you 
 
 A specialisation of the profile lane: an orchestrator is a Hermes profile whose toolset includes `kanban` but excludes `terminal` / `file` / `code` / `web` for implementation. Its job is decomposing a high-level goal into child tasks via `kanban_create` + `kanban_link` and stepping back. The orchestrator skill encodes the anti-temptation rules.
 
-## Adding an external CLI worker lane
+### Native Codex CLI lane
 
-Wiring a non-Hermes CLI tool (Codex CLI, Claude Code CLI, OpenCode CLI, a local coding-model runner, etc.) as a kanban worker lane is *not yet a paved path*. The dispatcher's spawn function is pluggable (`spawn_fn` is a parameter on `dispatch_once`), and a plugin could register its own `spawn_fn` for a non-Hermes assignee, but the surrounding integration work — wrapping the CLI's exit code into `kanban_complete` / `kanban_block` calls, mapping the CLI's workspace/sandbox conventions onto the dispatcher's `HERMES_KANBAN_WORKSPACE` env, handling auth and per-CLI policy — is still per-integration design work.
+The native Codex lane is the first paved non-Hermes CLI worker lane. Assign a task to the canonical assignee `codex` and the dispatcher spawns:
 
-If you're considering adding a CLI lane, open an issue describing the specific CLI and the workflow you're trying to enable. The contract above is the constraints any such lane must satisfy; the implementation shape (one plugin per CLI vs a generic CLI-runner plugin parameterised by config) is open.
+```text
+python -m hermes_cli.codex_worker --task-id <id> --workspace <path> --board <slug>
+```
 
-The historical issue for this is [#19931](https://github.com/NousResearch/hermes-agent/issues/19931) and the closed-not-merged Codex-specific PR [#19924](https://github.com/NousResearch/hermes-agent/pull/19924) — those describe the original architecture proposal but didn't land a runner.
+`codex_worker` then runs native Codex CLI in the resolved task workspace:
+
+```text
+codex --cd <workspace> --sandbox workspace-write --ask-for-approval never exec -
+```
+
+The Kanban card body is the goal contract. A good Codex card includes: goal, context, acceptance criteria, boundaries/non-goals, required gates, and receipt requirements. See `docs/codex-kanban-card-template.md` for a copyable template.
+
+Lifecycle contract:
+
+- Exit code `0` blocks the task with `review-required: Codex completed; Hermes review required`.
+- Nonzero exit, missing Codex binary, or timeout blocks with `codex-failed: Codex failed`.
+- The worker log captures Codex stdout/stderr and is available via `hermes kanban log <task_id>`.
+- Run metadata includes Codex exit code, output tail, command shape, git status, changed files, untracked files, and diff summary.
+- A reviewer/verifier marks the card done only after inspecting the log, metadata, diff, and gates.
+
+Prerequisites:
+
+- Codex CLI installed and authenticated on the machine running the dispatcher.
+- A real git workspace for the task (`--workspace dir:<repo>` or a board-managed worktree/scratch repo).
+
+Use the Codex lane when you want Kanban to own lifecycle/audit/review while native Codex owns implementation. Use a Hermes profile lane when the worker should run as a normal Hermes agent. Use the Codex app-server runtime when the desired behavior is a Hermes profile worker running on Codex's runtime rather than a direct external CLI worker.
+
+## Adding another external CLI worker lane
+
+The Codex lane provides a concrete reference implementation for non-Hermes CLI workers. Other CLIs (Claude Code CLI, OpenCode CLI, local coding-model runners, etc.) need the same pieces: assignee identity, spawn function, workspace/sandbox mapping, output logging, heartbeat/crash handling, and a lifecycle adapter that terminates every claim through Kanban.
+
+Today Codex is the only built-in external CLI lane. The dispatcher's spawn function is still pluggable (`spawn_fn` is a parameter on `dispatch_once`), so future implementations can move this toward a generic external-worker registry or plugin-provided lane registration.
+
+The historical issue for this is [#19931](https://github.com/NousResearch/hermes-agent/issues/19931) and the closed-not-merged Codex-specific PR [#19924](https://github.com/NousResearch/hermes-agent/pull/19924). The native Codex lane is the landed concrete path for that class of workflow.
 
 ## Failure modes the dispatcher handles
 
