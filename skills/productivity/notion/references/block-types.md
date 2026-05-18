@@ -148,8 +148,8 @@ Image uploaded with File Upload API:
 
 Read-only/generated media caveats:
 
-- `link_preview` blocks can be returned by the API but cannot be created or appended through the public block API; use bookmarks or rich-text links for API-created content. Source: `developers-notion-com-reference-block-md.md#L658-L676`.
-- Rich-text `template_mention` values such as `today`, `now`, and `me` are populated template placeholders, not generic programmatic mention primitives. Sources: `developers-notion-com-reference-rich-text-md.md#L101-L110`, `#L237-L280`.
+- `link_preview` blocks can be returned by the API but cannot be created or appended through the public block API; use bookmarks or rich-text links for API-created content. Source: `https://developers.notion.com/reference/block.md`.
+- Rich-text `template_mention` values such as `today`, `now`, and `me` are populated template placeholders, not generic programmatic mention primitives. Source: `https://developers.notion.com/reference/rich-text.md`.
 
 Child page:
 
@@ -189,8 +189,8 @@ Always confirm current child support from the block reference before relying on 
 
 Meeting notes:
 
-- `meeting_notes` replaced the older `transcription` block name in `2026-03-11` responses, but meeting-notes blocks are read-only; the API cannot create or update them. Source: `developers-notion-com-reference-block-md.md#L681-L688`.
-- Query meeting notes with `POST /v1/blocks/meeting_notes/query` or retrieve existing meeting-notes blocks, then fetch `summary_block_id`, `notes_block_id`, and `transcript_block_id` children as needed. Sources: `developers-notion-com-reference-block-md.md#L691-L699`, `/tmp/notion-api-official-md/openapi.json` operation `query-meeting-notes`.
+- `meeting_notes` replaced the older `transcription` block name in `2026-03-11` responses, but meeting-notes blocks are read-only; the API cannot create or update them. Source: `https://developers.notion.com/reference/block.md`.
+- Query meeting notes with `POST /v1/blocks/meeting_notes/query` or retrieve existing meeting-notes blocks, then fetch `summary_block_id`, `notes_block_id`, and `transcript_block_id` children as needed. Sources: `https://developers.notion.com/reference/query-meeting-notes.md` and official OpenAPI operation `query-meeting-notes`.
 - For page markdown reads, use `include_transcript=true` when transcript text is needed.
 
 ## Reading text

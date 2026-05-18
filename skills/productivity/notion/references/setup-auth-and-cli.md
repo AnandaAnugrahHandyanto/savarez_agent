@@ -86,6 +86,8 @@ Redirect URI rule from docs:
 Refresh behavior:
 
 - Refreshing returns a new access token and a new refresh token.
+- Store both returned tokens atomically; a half-written refresh result can strand the authorization record.
+- No `expires_in` or token expiry timestamp is documented in the focused official token response; use introspection/refresh/error handling rather than invented expiry math.
 - Treat refresh token families as single-owner secrets; do not share across tools without a cutover plan.
 
 ## Personal access tokens
@@ -100,6 +102,8 @@ Facts:
 - Expires one year after creation.
 - Guests/restricted members cannot create PATs or log into `ntn`.
 - Admins can view/revoke PATs but cannot reveal another member's secret.
+- PATs cannot list all workspace users; use `/v1/users/me` or retrieve the token creator instead.
+- Admin policy changes or creator access loss can invalidate API access even if the literal token string still exists.
 
 Use public OAuth rather than PATs for products used by multiple users.
 

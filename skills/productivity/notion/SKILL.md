@@ -11,7 +11,7 @@ metadata:
   hermes:
     tags: [Notion, Productivity, Notes, Data Sources, API, CLI, Markdown, Files, Webhooks, MCP]
     homepage: https://developers.notion.com
-    related_skills: [webhook-subscriptions]
+    related_skills: [web-apis, oauth-sota, webhook-subscriptions]
 ---
 
 # Notion
@@ -155,6 +155,7 @@ Rules:
 - Empty strings are not supported. Use `null` to unset nullable strings.
 - Ignore unknown response fields; additive changes can occur without version bumps.
 - Treat cursors as opaque. Pass `next_cursor` back as `start_cursor`; never parse it.
+- For full endpoint/current-schema inventory, load `references/openapi-generated-inventory-2026-05-18.md`; for drift/codegen traps, load `references/deep-edge-cases-and-codegen.md`.
 
 ## Common Task Recipes
 
@@ -340,6 +341,9 @@ Load these support files for deeper work:
 - `references/block-types.md` — block payload examples and traversal/update rules.
 - `references/file-uploads.md` — File Upload API and `ntn files` workflows.
 - `references/webhooks-mcp-workers-sdk.md` — webhooks, MCP, Workers, JS SDK, monitor gaps.
+- `references/openapi-generated-inventory-2026-05-18.md` — generated endpoint/operation/webhook/schema inventory from official OpenAPI.
+- `references/deep-edge-cases-and-codegen.md` — second-pass edge cases, docs drift, codegen rules, and monitor inputs.
+- `scripts/notion_api_surface_snapshot.py` — no-credential public docs/spec/package snapshot tool for drift monitoring.
 
 ## Common Pitfalls
 
@@ -359,7 +363,7 @@ Load these support files for deeper work:
 ## Verification Checklist
 
 - [ ] Chosen source: OpenAPI/spec, official `.md` docs, SDK README, CLI docs, or explicitly lower-authority product/beta docs.
-- [ ] `Authorization: Bearer ...` and `Notion-Version: 2026-03-11` are present on REST calls.
+- [ ] REST calls include `Authorization: Bearer …` and `Notion-Version: 2026-03-11`.
 - [ ] Content access was granted/shared to the internal/public connection, or a PAT is intentionally used.
 - [ ] Required capabilities match the endpoint.
 - [ ] Data-source work uses `data_source_id`; old database endpoints are treated as deprecated/compat paths.

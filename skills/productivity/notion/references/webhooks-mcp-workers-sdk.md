@@ -92,6 +92,14 @@ Comment events:
 - `comment.deleted`
 - `comment.updated`
 
+Additional event families exposed by the official OpenAPI/event reference surface:
+
+- File uploads: `file_upload.created`, `file_upload.completed`, `file_upload.expired`, `file_upload.upload_failed`.
+- Views: `view.created`, `view.updated`, `view.deleted`.
+- Transcript deletion: `page.transcription_block.transcript_deleted` can still appear in event naming even though REST block type is `meeting_notes` in `2026-03-11`.
+
+Use the generated OpenAPI inventory for the current event-key list before hardcoding allowlists.
+
 Delivery facts:
 
 - Target delivery is within 5 minutes; most events within 1 minute.
@@ -103,8 +111,8 @@ Delivery facts:
 
 Connection webhook subscriptions carry an API version selected in the Developer Portal, separately from REST request `Notion-Version` headers.
 
-- Upgrade handlers deliberately. `2025-09-03` introduces data-source event/entity shapes and database/data-source parent changes. Source: `developers-notion-com-guides-get-started-upgrade-guide-2025-09-03-md.md#L665-L699`.
-- `2026-03-11` is available for webhooks and database-automation webhooks, but the docs say its webhook payloads are identical to `2025-09-03`. Source: `developers-notion-com-guides-get-started-upgrade-guide-2026-03-11-md.md#L263-L298`.
+- Upgrade handlers deliberately. `2025-09-03` introduces data-source event/entity shapes and database/data-source parent changes. Source: `https://developers.notion.com/guides/get-started/upgrade-guide-2025-09-03.md`.
+- `2026-03-11` is available for webhooks and database-automation webhooks, but the docs say its webhook payloads are identical to `2025-09-03`. Source: `https://developers.notion.com/guides/get-started/upgrade-guide-2026-03-11.md`.
 - REST `archived` → `in_trash` does **not** apply to webhook payload fields; keep webhook payload parsers compatible with documented webhook shapes.
 
 Monitor gaps:

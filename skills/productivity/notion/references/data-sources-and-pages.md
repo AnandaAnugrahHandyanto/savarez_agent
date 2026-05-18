@@ -108,6 +108,8 @@ Operational notes:
 
 - Use filters and narrow `page_size` for large sources.
 - Query can stop/cap around 10,000 results. For large syncs, use filters and webhooks instead of full polling.
+- Always inspect query `request_status`; a response can be a valid page of results but still marked incomplete because the query-result limit was reached.
+- `filter_properties[]` is a URL/query parameter on a `POST` endpoint, not a JSON body field in raw HTTP; SDKs may expose it as a named option.
 - Query 503 guidance recommends backoff with jitter, smaller page size, and narrower filters/sorts.
 
 ## Property schemas and values
@@ -242,11 +244,11 @@ View query notes:
 
 Create/update/dashboard caveats:
 
-- Views require API version `2025-09-03` or newer. Source: `developers-notion-com-guides-data-apis-working-with-views-md.md#L15-L17`.
-- `POST /v1/views` requires `data_source_id` and exactly one placement parent: `database_id`, dashboard `view_id`, or `create_database`. Database IDs and data-source IDs are different. Source: `working-with-views#L253-L256`.
-- Dashboard view `configuration.rows` is read-only; manage dashboard layout by creating/deleting widget views. Widgets can only be placed with `view_id`, and the docs cap widgets at four per row. Sources: `working-with-views#L1038-L1039`, `#L1446-L1448`.
-- `PATCH /v1/views/{view_id}` updates configuration by shallow merge and still needs required config fields. Source: `working-with-views#L1258-L1259`.
-- View-query access still depends on data-source/database access; `404 object_not_found` can mean the connection cannot access the underlying database. Source: `working-with-views#L1597-L1610`.
+- Views require API version `2025-09-03` or newer. Source: `https://developers.notion.com/guides/data-apis/working-with-views.md`.
+- `POST /v1/views` requires `data_source_id` and exactly one placement parent: `database_id`, dashboard `view_id`, or `create_database`. Database IDs and data-source IDs are different. Source: `https://developers.notion.com/reference/create-view.md`.
+- Dashboard view `configuration.rows` is read-only; manage dashboard layout by creating/deleting widget views. Widgets can only be placed with `view_id`, and the docs cap widgets at four per row. Source: `https://developers.notion.com/guides/data-apis/working-with-views.md`.
+- `PATCH /v1/views/{view_id}` updates configuration by shallow merge and still needs required config fields. Source: `https://developers.notion.com/reference/update-view.md`.
+- View-query access still depends on data-source/database access; `404 object_not_found` can mean the connection cannot access the underlying database. Source: `https://developers.notion.com/reference/get-view-query-results.md`.
 
 ## Search
 
