@@ -67,9 +67,14 @@ class _FakeResponse:
         return False
 
 
-def _make_fake_urlopen(verdict: str, offending: list[str] | None = None,
+def _make_fake_urlopen(voice_verdict: str = "PASS",
+                       voice_offending: list[str] | None = None,
+                       structure_verdict: str = "PASS",
+                       structure_reason: str = "",
                        raise_exc: Exception | None = None,
                        content_override: str | None = None):
+    """Phase 5: dual-verdict canned response. Defaults to PASS/PASS so older
+    PASS-path tests can keep their minimal call sites."""
     def fake_urlopen(req, timeout=None):
         if raise_exc:
             raise raise_exc
@@ -77,8 +82,10 @@ def _make_fake_urlopen(verdict: str, offending: list[str] | None = None,
             content = content_override
         else:
             content = json.dumps({
-                "verdict": verdict,
-                "offending_phrases": offending or [],
+                "voice_verdict": voice_verdict,
+                "voice_offending": voice_offending or [],
+                "structure_verdict": structure_verdict,
+                "structure_reason": structure_reason,
             })
         return _FakeResponse({
             "choices": [{"message": {"content": content}}],
@@ -97,7 +104,7 @@ def test_voice_scan_flags_amy_quiet_day_name_third(monkeypatch):
     import urllib.request
     monkeypatch.setattr(
         urllib.request, "urlopen",
-        _make_fake_urlopen("FAIL", ["if Amy responds"]),
+        _make_fake_urlopen(voice_verdict="FAIL", voice_offending=["if Amy responds"]),
     )
     clean, reason = _voice_scan_check(AMY_QUIET_DAY_NAME_THIRD, job_id="amy-test")
     assert clean is False
@@ -112,7 +119,7 @@ def test_voice_scan_flags_crystal_executor_third_person(monkeypatch):
     import urllib.request
     monkeypatch.setattr(
         urllib.request, "urlopen",
-        _make_fake_urlopen("FAIL", ["Crystal's positioning shift", "Her CS + SWE", "She requested"]),
+        _make_fake_urlopen(voice_verdict="FAIL", voice_offending=["Crystal's positioning shift", "Her CS + SWE", "She requested"]),
     )
     clean, reason = _voice_scan_check(CRYSTAL_EXEC_THIRD_PERSON, job_id="crystal-test")
     assert clean is False
@@ -126,7 +133,7 @@ def test_voice_scan_passes_second_person_with_recipient_name(monkeypatch, tmp_pa
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     import urllib.request
-    monkeypatch.setattr(urllib.request, "urlopen", _make_fake_urlopen("PASS"))
+    monkeypatch.setattr(urllib.request, "urlopen", _make_fake_urlopen())
     clean, reason = _voice_scan_check(MAGGIE_SECOND_PERSON_REAL_QUESTION, job_id="maggie-test")
     assert clean is True
     assert reason == ""
@@ -141,7 +148,7 @@ def test_voice_scan_passes_third_party_entities(monkeypatch):
     """Third-party proper nouns (events, companies) — must NOT flag."""
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
     import urllib.request
-    monkeypatch.setattr(urllib.request, "urlopen", _make_fake_urlopen("PASS"))
+    monkeypatch.setattr(urllib.request, "urlopen", _make_fake_urlopen())
     clean, reason = _voice_scan_check(CRYSTAL_THIRD_PARTY_ENTITIES, job_id="crystal-clean-test")
     assert clean is True
     assert reason == ""
@@ -164,7 +171,7 @@ def test_voice_scan_fail_open_on_http_error(monkeypatch):
     import urllib.error
     monkeypatch.setattr(
         urllib.request, "urlopen",
-        _make_fake_urlopen("FAIL", raise_exc=urllib.error.URLError("connection refused")),
+        _make_fake_urlopen(raise_exc=urllib.error.URLError("connection refused")),
     )
     clean, reason = _voice_scan_check(AMY_QUIET_DAY_NAME_THIRD, job_id="http-err-test")
     assert clean is True
@@ -176,7 +183,7 @@ def test_voice_scan_fail_open_on_non_json_content(monkeypatch):
     import urllib.request
     monkeypatch.setattr(
         urllib.request, "urlopen",
-        _make_fake_urlopen("FAIL", content_override="sorry, I cannot judge this"),
+        _make_fake_urlopen(content_override="sorry, I cannot judge this"),
     )
     clean, reason = _voice_scan_check(AMY_QUIET_DAY_NAME_THIRD, job_id="bad-json-test")
     assert clean is True
@@ -189,6 +196,152 @@ def test_voice_scan_disabled_via_env(monkeypatch):
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
     # Intentionally no urlopen patch — would raise if called.
     clean, reason = _voice_scan_check(AMY_QUIET_DAY_NAME_THIRD, job_id="disabled-test")
+    assert clean is True
+    assert reason == ""
+
+
+# -----------------------------------------------------------------------------
+# Phase 5: structure axis — A-class reasoning leaks. Voice axis may pass
+# (model uses "the user" or no recipient reference) but the deliverable is
+# replaced by, or preceded by, planning narration. Verifies the fallback
+# substitution still fires on structure-only FAIL.
+# -----------------------------------------------------------------------------
+
+MAGGIE_A_TOTAL_REPLACEMENT = """Status is "ready" with 0 new roles — skip the jobs section and follow the "ready with 0 jobs" format. The briefing centers on the follow-up.
+
+Now let me construct the briefing.
+
+Key facts:
+- Today's follow-up: ...
+- Approaching deadlines: ...
+
+Format:
+- Code block with Follow-ups section
+- Coach's Take acknowledging inertia
+
+Let me build it."""
+
+ELVA_A_PRIME_PREFIX_PLUS_DELIVERABLE = """The `status` is `no_resume` — no resume on file, so skip the New Roles section. The user's emotional context shows sustained anxiety.
+
+The strategic playbook is clear: deliver the study guide and resource pack as pure value, then go quiet until May 22.
+
+Let me compose it per the format — quiet-day briefing, no code block, 2-3 sentences, warm:
+
+今天没有新的安排 — 面试指南已经发出，5月22日会再发一份免费资料包。这段时间你先按照自己的节奏看，不需要回复任何东西。"""
+
+JAMES_A_QUIET_DAY_REPLACEMENT = """Now let me assess the current date: Saturday, May 09, 2026. The strategy was last updated May 8. The follow-ups mention June 12, June 15, June 18.
+
+The emotional context shows the user is 11 days post-graduation with zero engagement, high stress, avoidance patterns. The `do_not_do` says don't surface job listings until resume content exists.
+
+This is a quiet day with heavy emotional context. I should send a quiet-day briefing that acknowledges the situation without pushing."""
+
+GARWIN_A_PRIME_PREFIX_PLUS_FOLLOWUPS = """The matched roles are all entry-level — well below Garwin's C-suite level. I'll skip New Roles entirely.
+
+Garwin is in acute ambiguity fatigue with the May 5 forced default in 3 days. I'll acknowledge the weight, surface only the 2 highest-leverage actions, and keep it binary.
+
+```
+📌 Follow-ups
+───────────
+⭐ TODAY     Warm intro names
+```
+
+:speech_balloon: *Coach's Take:* The lowest-friction move today is naming 2-3 familiar faces."""
+
+
+def test_voice_scan_flags_maggie_a_class_total_replacement(monkeypatch):
+    """Maggie 5/18 prod A-class: planning narration replaces deliverable.
+    Voice axis PASSes (no third-person recipient reference); structure FAILs."""
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    import urllib.request
+    monkeypatch.setattr(
+        urllib.request, "urlopen",
+        _make_fake_urlopen(
+            voice_verdict="PASS",
+            structure_verdict="FAIL",
+            structure_reason="Planning narration ('Now let me construct', 'Key facts:', 'Let me build it.') replaces the deliverable.",
+        ),
+    )
+    clean, reason = _voice_scan_check(MAGGIE_A_TOTAL_REPLACEMENT, job_id="maggie-a-test")
+    assert clean is False
+    assert "voice-scan FAIL" in reason
+    assert "structure=" in reason
+
+
+def test_voice_scan_flags_elva_a_prime_reasoning_prefix(monkeypatch):
+    """Elva 5/19 prod A' class: reasoning prefix before clean deliverable.
+    Structure axis FAILs because user sees planning before the quiet-day note."""
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    import urllib.request
+    monkeypatch.setattr(
+        urllib.request, "urlopen",
+        _make_fake_urlopen(
+            voice_verdict="PASS",
+            structure_verdict="FAIL",
+            structure_reason="Planning narration ('The status is no_resume', 'Let me compose it per the format') precedes the deliverable.",
+        ),
+    )
+    clean, reason = _voice_scan_check(ELVA_A_PRIME_PREFIX_PLUS_DELIVERABLE, job_id="elva-test")
+    assert clean is False
+    assert "structure=" in reason
+
+
+def test_voice_scan_flags_james_quiet_day_replacement(monkeypatch):
+    """James 5/9 prod A-class: quiet-day briefing entirely replaced by
+    reasoning narration. Both axes FAIL ('the user is 11 days post-graduation'
+    is third-person voice; structure is pure planning)."""
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    import urllib.request
+    monkeypatch.setattr(
+        urllib.request, "urlopen",
+        _make_fake_urlopen(
+            voice_verdict="FAIL",
+            voice_offending=["the user is 11 days post-graduation"],
+            structure_verdict="FAIL",
+            structure_reason="Pure planning narration; no deliverable addressed to the user.",
+        ),
+    )
+    clean, reason = _voice_scan_check(JAMES_A_QUIET_DAY_REPLACEMENT, job_id="james-test")
+    assert clean is False
+    assert "voice=" in reason
+    assert "structure=" in reason
+
+
+def test_voice_scan_flags_garwin_reasoning_prefix(monkeypatch):
+    """Garwin 5/2 prod A' class: reasoning prefix (3 lines) before clean
+    Follow-ups + Coach's Take. Both axes FAIL — voice axis catches
+    'Garwin is in acute ambiguity fatigue', structure axis catches the
+    pre-deliverable planning."""
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    import urllib.request
+    monkeypatch.setattr(
+        urllib.request, "urlopen",
+        _make_fake_urlopen(
+            voice_verdict="FAIL",
+            voice_offending=["Garwin's C-suite level", "Garwin is in acute ambiguity fatigue"],
+            structure_verdict="FAIL",
+            structure_reason="Reasoning prefix ('I'll skip New Roles entirely', 'I'll acknowledge the weight') precedes the Follow-ups block.",
+        ),
+    )
+    clean, reason = _voice_scan_check(GARWIN_A_PRIME_PREFIX_PLUS_FOLLOWUPS, job_id="garwin-test")
+    assert clean is False
+    assert "voice=" in reason
+    assert "structure=" in reason
+
+
+def test_voice_scan_passes_long_clean_daily_briefing(monkeypatch):
+    """GREEN sanity: long full daily-briefing (Follow-ups + New Roles +
+    Pending + Coach's Take) must not be misjudged as planning leak.
+    Catherine 5/18 prod fixture."""
+    catherine_text = (
+        "Thirteen days of quiet — that reads as process friction, not fading interest. "
+        "The May 21 sustainability networking event in Toronto is three days out.\n\n"
+        "```\n📌 Follow-ups\n───────────\n⭐ TODAY    Climate Week June 4 — still planning to attend?\n```\n\n"
+        ":speech_balloon: *Coach's Take:* One yes-or-no move — are you going to the June 4 Climate Week session?"
+    )
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    import urllib.request
+    monkeypatch.setattr(urllib.request, "urlopen", _make_fake_urlopen())
+    clean, reason = _voice_scan_check(catherine_text, job_id="catherine-test")
     assert clean is True
     assert reason == ""
 

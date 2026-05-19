@@ -290,29 +290,65 @@ def _quiet_day_fallback() -> str:
 # person. Fail-open on any error — the scan is an enforcement layer, not the
 # primary defense.
 #
-# Bench evidence: logs/bench/voice-scan-2026-05-18.md in the Artemis repo —
-# gemini-3-flash-preview hit 7/7 on the calibration fixture set at ~1.7s
-# median latency and ~$0.0003 per call.
+# Phase 5 (2026-05-19) extends the judge to a DUAL VERDICT — voice axis
+# (unchanged) + structure axis (new). Structure axis catches A-class
+# reasoning leaks: the model emitting its planning narration ("Now let me
+# construct...", "Key facts:", "Format:", "Let me build it.") instead of, or
+# preceded by, the actual deliverable. Phase 1's F template and Phase 3's
+# marker list both missed Maggie 5/18 and Elva 5/19 prod A-class regressions
+# — same root cause as Phase 4b's B-class miss (enumeration is structurally
+# insufficient). One LLM call, two independent verdicts. Either FAIL → run
+# fallback. Bench evidence: logs/bench/voice-scan-phase5-2026-05-19.md
+# (gemini-3-flash-preview 10/10 voice + 10/10 structure, ~2.2s, ~$0.0003).
 
 _VOICE_SCAN_PROMPT = """You are auditing a Coach's daily briefing for a single user before delivery.
 
+The briefing is judged on TWO INDEPENDENT axes:
+
+================================================================
+AXIS 1 — VOICE
+================================================================
 The briefing must be in SECOND PERSON ("you / your") when referring to the recipient.
 
-A voice violation is when the briefing uses THIRD PERSON to refer to the recipient — either by name (e.g. "if Amy responds" when Amy IS the recipient) or by pronoun ("she / he / her / his / they") when the pronoun refers to the recipient.
+A voice violation is when the briefing uses THIRD PERSON to refer to the recipient — either by name (e.g. "if Amy responds" when Amy IS the recipient) or by pronoun ("she / he / her / his / they" / "the user") when the pronoun refers to the recipient.
 
 Third-party names (events, companies, other people) are NOT violations even if they are proper nouns. Only the recipient being named/pronouned in third person counts.
 
-Examples of violations (recipient is the named person):
+Examples of voice violations:
 - "if Amy responds" (recipient=Amy)
 - "Crystal's positioning" (recipient=Crystal)
-- "she reaches out" (referring to the recipient)
+- "she reaches out" (referring to recipient)
 - "Maggie's bandwidth is the blocker" (recipient=Maggie)
+- "the user is 11 days post-graduation" (third-person "the user" referring to recipient)
 
-Examples of OK content:
-- "let me know if you're going" (second person — recipient addressed directly)
-- "Women in Tech SF on 5/21" (Women in Tech SF is an event, not the recipient)
+Examples of OK voice:
+- "let me know if you're going" (second person)
+- "Women in Tech SF on 5/21" (third-party event)
 - "AIET 2026 in Zagreb" (event name)
 - "Andiamo role" (company name)
+
+================================================================
+AXIS 2 — STRUCTURE
+================================================================
+The briefing must be a DELIVERABLE addressed to the user, not the LLM's internal planning narration about how it intends to write the briefing.
+
+A structure violation is when the briefing contains:
+(a) Planning narration — the model talking to itself about what it's going to produce. Signals: "Now let me construct ...", "Let me build it.", "Let me compose it ...", "Key facts:", "Format:", "Status is ..." (as a leading sentence stating the model's own situation read), "I should send ...", "The strategic playbook is ..." followed by self-instruction.
+(b) The deliverable being entirely replaced by the planning (no Coach's Take, no Follow-ups block, no quiet-day note actually addressed to the user).
+(c) The deliverable being preceded by planning narration (even if a clean deliverable appears later in the text). The user should never see the model's internal thinking before the deliverable.
+
+A quiet-day note counts as a valid deliverable as long as it stands alone without planning prefix. Example of acceptable quiet-day deliverable: "Nothing urgent on the board today — I'll keep scanning in the background."
+
+Examples of structure violations:
+- "Now let me construct the briefing. Key facts: ..." (planning, not deliverable)
+- A briefing that opens with "The status is no_resume — no resume on file..." then later contains a clean quiet-day note (planning prefix before deliverable)
+- A briefing that opens with "I'll skip New Roles entirely. Garwin is in acute ambiguity fatigue." then a Follow-ups block (planning prefix before deliverable)
+
+Examples of OK structure:
+- Opens directly with a sentence addressed to the user, followed by Follow-ups block + Coach's Take.
+- Quiet-day note that addresses the user from the first word.
+
+================================================================
 
 Briefing content:
 <<<
@@ -320,7 +356,7 @@ Briefing content:
 >>>
 
 Respond with strict JSON only. No prose, no markdown fences, just JSON:
-{{"verdict": "PASS" or "FAIL", "offending_phrases": ["..."]}}"""
+{{"voice_verdict": "PASS" or "FAIL", "voice_offending": ["..."], "structure_verdict": "PASS" or "FAIL", "structure_reason": "..."}}"""
 
 
 def _voice_scan_log_path() -> Path:
@@ -375,7 +411,7 @@ def _voice_scan_check(text: str, job_id: str = "?") -> tuple[bool, str]:
         "model": model,
         "messages": [{"role": "user", "content": prompt}],
         "temperature": 0,
-        "max_tokens": 400,
+        "max_tokens": 600,
     }).encode("utf-8")
     req = urllib.request.Request(
         "https://openrouter.ai/api/v1/chat/completions",
@@ -413,17 +449,28 @@ def _voice_scan_check(text: str, job_id: str = "?") -> tuple[bool, str]:
         _voice_scan_log("WARN", job_id, f"non-JSON model output — fail-open. raw={raw[:200]!r}")
         return True, ""
 
-    verdict = str(verdict_obj.get("verdict", "")).upper()
-    if verdict == "FAIL":
-        offending = verdict_obj.get("offending_phrases") or []
-        reason = f"voice-scan FAIL ({model}): {offending}"
+    voice_verdict = str(verdict_obj.get("voice_verdict", "")).upper()
+    structure_verdict = str(verdict_obj.get("structure_verdict", "")).upper()
+    voice_offending = verdict_obj.get("voice_offending") or []
+    structure_reason = verdict_obj.get("structure_reason") or ""
+
+    # Phase 5: either axis FAIL → run the fallback. Same enforcement
+    # mechanism as Phase 3 / 4b (substitute deterministic quiet-day note).
+    fail_axes = []
+    if voice_verdict == "FAIL":
+        fail_axes.append(f"voice={voice_offending}")
+    if structure_verdict == "FAIL":
+        fail_axes.append(f"structure={structure_reason!r}")
+
+    if fail_axes:
+        reason = f"voice-scan FAIL ({model}): " + " | ".join(fail_axes)
         _voice_scan_log("HIT", job_id, reason)
         return False, reason
 
     # Log every PASS so dev observation can confirm voice-scan is wired
     # in even when no violation fires. One line per cron briefing — low
     # volume (≤10/day at current user count).
-    _voice_scan_log("PASS", job_id, f"verdict=PASS model={model}")
+    _voice_scan_log("PASS", job_id, f"voice=PASS structure=PASS model={model}")
     return True, ""
 
 
