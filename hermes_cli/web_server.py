@@ -3724,6 +3724,10 @@ def mount_spa(application: FastAPI):
                 css = css.replace(f"url('{asset_dir}", f"url('{prefix}{asset_dir}")
         # Apply gzip compression + cache headers for CSS assets
         accept_encoding = request.headers.get("accept-encoding", "")
+        # Build vary header: always vary on prefix when present
+        vary_values = []
+        if prefix:
+            vary_values.append("x-forwarded-prefix")
         if _accepts_gzip_static(accept_encoding):
             import gzip
             content = css.encode("utf-8")
@@ -3731,7 +3735,7 @@ def mount_spa(application: FastAPI):
             if len(compressed) < len(content):
                 headers = {
                     "content-encoding": "gzip",
-                    "vary": "accept-encoding",
+                    "vary": ", ".join(["accept-encoding"] + vary_values),
                     "content-length": str(len(compressed)),
                     "cache-control": "public, max-age=31536000, immutable",
                 }
@@ -3739,11 +3743,10 @@ def mount_spa(application: FastAPI):
                     return Response(headers=headers, media_type="text/css")
                 return Response(content=compressed, headers=headers, media_type="text/css")
         # Fallback: uncompressed with cache header
-        return Response(
-            content=css,
-            media_type="text/css",
-            headers={"cache-control": "public, max-age=31536000, immutable"},
-        )
+        fallback_headers = {"cache-control": "public, max-age=31536000, immutable"}
+        if vary_values:
+            fallback_headers["vary"] = ", ".join(vary_values)
+        return Response(content=css, media_type="text/css", headers=fallback_headers)
 
     def _accepts_gzip_static(accept_encoding: str) -> bool:
         """Parse Accept-Encoding header and return True if gzip is accepted (q > 0).
