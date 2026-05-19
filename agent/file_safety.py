@@ -26,6 +26,7 @@ def build_write_denied_paths(home: str) -> set[str]:
             os.path.join(home, ".ssh", "id_rsa"),
             os.path.join(home, ".ssh", "id_ed25519"),
             os.path.join(home, ".ssh", "config"),
+            os.path.join(home, ".hermes", ".env"),
             str(hermes_home / ".env"),
             str(hermes_home / "config.yaml"),
             os.path.join(home, ".bashrc"),
@@ -82,15 +83,21 @@ def _is_outside_root(candidate: str, root: str) -> bool:
         return True
 
 
-def is_write_denied(path: str, base_dir: str | None = None) -> bool:
+def is_write_denied(
+    path: str,
+    home: str | None = None,
+    base_dir: str | None = None,
+) -> bool:
     """Return True if path is blocked by denylist or root constraints.
 
     Enforcement order is additive (most restrictive wins):
     1) static denylist/prefixes
     2) optional call-site ``base_dir`` sandbox
     3) optional ``HERMES_WRITE_SAFE_ROOT`` sandbox
+
+    ``home`` selects which user-home denylist paths are evaluated.
     """
-    home = os.path.realpath(os.path.expanduser("~"))
+    home = os.path.realpath(os.path.expanduser(home or "~"))
     resolved = os.path.realpath(os.path.expanduser(str(path)))
 
     if resolved in build_write_denied_paths(home):
