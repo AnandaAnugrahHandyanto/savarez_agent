@@ -430,6 +430,13 @@ _PROVIDER_REGISTRY: Dict[str, type] = {
 # monkeypatching. NEVER mutate this dict.
 _DEFAULT_PROVIDER_REGISTRY: Dict[str, type] = dict(_PROVIDER_REGISTRY)
 
+
+def _new_cloud_provider(provider_key: str) -> Optional[CloudBrowserProvider]:
+    """Compatibility shim for tests that monkeypatch provider construction."""
+    factory = _PROVIDER_REGISTRY.get(provider_key)
+    return factory() if factory is not None else None
+
+
 _cached_cloud_provider: Optional[CloudBrowserProvider] = None
 _cloud_provider_resolved = False
 _allow_private_urls_resolved = False

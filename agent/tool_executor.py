@@ -31,6 +31,8 @@ from agent.display import (
 )
 from agent.tool_guardrails import ToolGuardrailDecision
 from agent.tool_dispatch_helpers import (
+    _PARALLEL_ARGS_CACHE_ATTR,
+    _PARALLEL_ARGS_CACHE_MISSING,
     _is_destructive_command,
     _is_multimodal_tool_result,
     _multimodal_text_summary,
@@ -93,12 +95,22 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         elif function_name == "skill_manage":
             agent._iters_since_skill = 0
 
-        try:
-            function_args = json.loads(tool_call.function.arguments)
-        except json.JSONDecodeError:
-            function_args = {}
-        if not isinstance(function_args, dict):
-            function_args = {}
+        cached_args = getattr(
+            tool_call, _PARALLEL_ARGS_CACHE_ATTR, _PARALLEL_ARGS_CACHE_MISSING
+        )
+        if cached_args is not _PARALLEL_ARGS_CACHE_MISSING:
+            function_args = cached_args if isinstance(cached_args, dict) else {}
+            try:
+                delattr(tool_call, _PARALLEL_ARGS_CACHE_ATTR)
+            except Exception:
+                pass
+        else:
+            try:
+                function_args = json.loads(tool_call.function.arguments)
+            except json.JSONDecodeError:
+                function_args = {}
+            if not isinstance(function_args, dict):
+                function_args = {}
 
         # Checkpoint for file-mutating tools
         if function_name in {"write_file", "patch"} and agent._checkpoint_mgr.enabled:
