@@ -158,6 +158,61 @@ class TestApplyEndpoint:
 
 
 # ---------------------------------------------------------------------------
+# apply_endpoint — port_override parameter
+# ---------------------------------------------------------------------------
+
+class TestApplyEndpointPortOverride:
+    _CONFIGURED = {
+        "host": "10.0.0.1",
+        "ssh_user": "dgx",
+        "ollama_port": 11434,
+        "vllm_port": 30800,
+        "vllm_32b_port": 30881,
+        "litellm_host": "10.0.0.2",
+        "litellm_port": 4000,
+    }
+
+    def _dgx(self, **overrides):
+        from plugins.dgx._dgx_config import DEFAULTS
+        d = dict(DEFAULTS)
+        d.update(self._CONFIGURED)
+        d.update(overrides)
+        return d
+
+    def test_vllm_with_port_override_uses_override_in_url(self, monkeypatch):
+        from plugins.dgx._dgx_config import apply_endpoint
+        store = _make_config(monkeypatch, {})
+        apply_endpoint(self._dgx(), "vllm", port_override=8900)
+        assert "8900" in store["model"]["base_url"]
+        assert "30800" not in store["model"]["base_url"]
+
+    def test_vllm_without_port_override_uses_vllm_port(self, monkeypatch):
+        from plugins.dgx._dgx_config import apply_endpoint
+        store = _make_config(monkeypatch, {})
+        apply_endpoint(self._dgx(), "vllm")
+        assert "30800" in store["model"]["base_url"]
+
+    def test_port_override_does_not_persist_to_config_vllm_port(self, monkeypatch):
+        from plugins.dgx._dgx_config import apply_endpoint
+        store = _make_config(monkeypatch, {})
+        apply_endpoint(self._dgx(), "vllm", port_override=8900)
+        assert store.get("dgx", {}).get("vllm_port") == 30800
+
+    def test_ollama_ignores_port_override(self, monkeypatch):
+        from plugins.dgx._dgx_config import apply_endpoint
+        store = _make_config(monkeypatch, {})
+        apply_endpoint(self._dgx(), "ollama", port_override=9999)
+        assert "11434" in store["model"]["base_url"]
+        assert "9999" not in store["model"]["base_url"]
+
+    def test_provider_is_custom_with_port_override(self, monkeypatch):
+        from plugins.dgx._dgx_config import apply_endpoint
+        store = _make_config(monkeypatch, {})
+        apply_endpoint(self._dgx(), "vllm", port_override=8900)
+        assert store["model"]["provider"] == "custom"
+
+
+# ---------------------------------------------------------------------------
 # URL helpers
 # ---------------------------------------------------------------------------
 
