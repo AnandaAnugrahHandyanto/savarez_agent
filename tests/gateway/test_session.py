@@ -1,10 +1,12 @@
 """Tests for gateway session management."""
 
+import builtins
 import json
 import pytest
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 from gateway.config import Platform, HomeChannel, GatewayConfig, PlatformConfig
+from gateway.platforms.base import MessageEvent
 from gateway.session import (
     SessionSource,
     SessionStore,
@@ -12,8 +14,12 @@ from gateway.session import (
     build_session_context_prompt,
     build_session_key,
     canonical_whatsapp_identifier,
-    normalize_whatsapp_identifier,
 )
+
+# Legacy name preserved for these tests; product renamed the function to
+# canonical_whatsapp_identifier.  Keep the tests referencing the old name
+# working without duplicating the suite.
+normalize_whatsapp_identifier = canonical_whatsapp_identifier
 
 
 class TestSessionSourceRoundtrip:
@@ -85,8 +91,13 @@ class TestSessionSourceRoundtrip:
         assert restored.chat_topic is None
         assert restored.chat_type == "dm"
 
-    def test_invalid_platform_raises(self):
-        with pytest.raises((ValueError, KeyError)):
+    def test_unknown_platform_rejected_for_bad_names(self):
+        """Arbitrary platform names are rejected (no accidental enum pollution).
+
+        Only bundled platform plugins (discovered under ``plugins/platforms/``)
+        and runtime-registered plugins get dynamic enum members.
+        """
+        with pytest.raises(ValueError):
             SessionSource.from_dict({"platform": "nonexistent", "chat_id": "1"})
 
 
@@ -421,6 +432,76 @@ class TestBuildSessionContextPrompt:
         assert "Multi-user thread" not in prompt
 
 
+class TestSenderPrefixWithBackfill:
+    """Regression: sender prefix must not wrap the backfill context block.
+
+    Tests exercise the real GatewayRunner._prepare_inbound_message_text()
+    method to ensure the [sender_name] prefix applies only to the trigger
+    message, not the channel_context backfill block.
+    """
+
+    @pytest.fixture()
+    def runner(self):
+        from gateway.run import GatewayRunner
+
+        r = GatewayRunner.__new__(GatewayRunner)
+        r.config = GatewayConfig(group_sessions_per_user=False)
+        r.adapters = {}
+        r._model = "test-model"
+        r._base_url = ""
+        r._has_setup_skill = lambda: False
+        return r
+
+    @pytest.fixture()
+    def source(self):
+        return SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="c1",
+            chat_type="group",
+            user_name="Alice",
+        )
+
+    @pytest.mark.asyncio
+    async def test_plain_message_gets_prefix(self, runner, source):
+        """Normal message without backfill gets [sender] prefix."""
+        event = MessageEvent(text="hello world", source=source)
+        result = await runner._prepare_inbound_message_text(
+            event=event, source=source, history=[],
+        )
+        assert result == "[Alice] hello world"
+
+    @pytest.mark.asyncio
+    async def test_backfill_prefix_only_on_trigger(self, runner, source):
+        """Backfill context must NOT get the sender prefix."""
+        event = MessageEvent(
+            text="hello world",
+            source=source,
+            channel_context="[Recent channel messages]\n[Bob] some context",
+        )
+        result = await runner._prepare_inbound_message_text(
+            event=event, source=source, history=[],
+        )
+        assert result.startswith("[Recent channel messages]")
+        assert "[Alice] [Recent channel messages]" not in result
+        assert "[New message]\n[Alice] hello world" in result
+
+    @pytest.mark.asyncio
+    async def test_backfill_preserves_context_block(self, runner, source):
+        """The backfill block should pass through unchanged — no double-prefixing."""
+        context = "[Recent channel messages]\n[Bob] first\n[Charlie [bot]] second"
+        event = MessageEvent(
+            text="hey everyone", source=source, channel_context=context,
+        )
+        result = await runner._prepare_inbound_message_text(
+            event=event, source=source, history=[],
+        )
+        assert result.startswith(context)
+        assert "[Alice] hey everyone" in result
+        assert "[Alice] [Bob]" not in result
+        assert "[Alice] [Charlie" not in result
+        assert "[Alice] [Recent" not in result
+
+
 class TestSessionStoreRewriteTranscript:
     """Regression: /retry and /undo must persist truncated history to disk."""
 
@@ -607,6 +688,32 @@ class TestLoadTranscriptPreferLongerSource:
         assert len(result) == 2
         # Should be the SQLite version (equal count → prefers SQLite)
         assert result[0]["content"] == "db-q"
+
+    def test_unreadable_jsonl_returns_sqlite(self, store_with_db, monkeypatch):
+        """Unreadable legacy JSONL must not hide valid SQLite history."""
+        sid = "unreadable_jsonl"
+        store_with_db._db.create_session(session_id=sid, source="gateway", model="m")
+        store_with_db._db.append_message(session_id=sid, role="user", content="db-q")
+        store_with_db._db.append_message(session_id=sid, role="assistant", content="db-a")
+
+        transcript_path = store_with_db.get_transcript_path(sid)
+        transcript_path.parent.mkdir(parents=True, exist_ok=True)
+        transcript_path.write_text('{"role": "user", "content": "jsonl-q"}\n', encoding="utf-8")
+
+        real_open = builtins.open
+
+        def raise_for_transcript(path, *args, **kwargs):
+            mode = args[0] if args else kwargs.get("mode", "r")
+            if Path(path) == transcript_path and "r" in mode:
+                raise OSError("simulated unreadable transcript")
+            return real_open(path, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "open", raise_for_transcript)
+
+        result = store_with_db.load_transcript(sid)
+        assert len(result) == 2
+        assert result[0]["content"] == "db-q"
+        assert result[1]["content"] == "db-a"
 
 
 class TestSessionStoreSwitchSession:
@@ -1234,7 +1341,7 @@ class TestRewriteTranscriptPreservesReasoning:
         assert after[0].get("reasoning_details") == [{"type": "summary", "text": "step by step"}]
         assert after[0].get("codex_reasoning_items") == [{"id": "r1", "type": "reasoning"}]
 
-    def test_db_rewrite_is_atomic_on_insert_failure(self, tmp_path):
+    def test_db_rewrite_is_atomic_on_insert_failure(self, tmp_path, monkeypatch):
         from hermes_state import SessionDB
 
         db = SessionDB(db_path=tmp_path / "test.db")
@@ -1249,16 +1356,27 @@ class TestRewriteTranscriptPreservesReasoning:
         store._db = db
         store._loaded = True
 
+        # Force the second insert inside replace_messages to fail, simulating
+        # any storage-layer error that might abort a multi-row rewrite.
+        real_encode = SessionDB._encode_content
+        calls = {"n": 0}
+
+        def flaky_encode(cls, content):
+            calls["n"] += 1
+            if calls["n"] == 2:
+                raise RuntimeError("simulated storage failure")
+            return real_encode.__func__(cls, content)
+
+        monkeypatch.setattr(SessionDB, "_encode_content", classmethod(flaky_encode))
+
         replacement = [
             {"role": "user", "content": "after user"},
-            {
-                "role": "assistant",
-                "content": {"not": "sqlite-bindable but JSONL-safe"},
-            },
+            {"role": "assistant", "content": "after assistant"},
         ]
 
         store.rewrite_transcript(session_id, replacement)
 
+        # The rewrite must roll back atomically — original messages preserved.
         after = db.get_messages_as_conversation(session_id)
         assert [msg["content"] for msg in after] == [
             "before user",
