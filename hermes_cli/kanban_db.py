@@ -1588,6 +1588,8 @@ def list_tasks(
     include_archived: bool = False,
     limit: Optional[int] = None,
     order_by: Optional[str] = None,
+    workflow_template_id: Optional[str] = None,
+    current_step_key: Optional[str] = None,
 ) -> list[Task]:
     query = "SELECT * FROM tasks WHERE 1=1"
     params: list[Any] = []
@@ -1605,6 +1607,12 @@ def list_tasks(
     if session_id is not None:
         query += " AND session_id = ?"
         params.append(session_id)
+    if workflow_template_id is not None:
+        query += " AND workflow_template_id = ?"
+        params.append(workflow_template_id)
+    if current_step_key is not None:
+        query += " AND current_step_key = ?"
+        params.append(current_step_key)
     if not include_archived and status != "archived":
         query += " AND status != 'archived'"
     if order_by is not None:
@@ -3447,6 +3455,32 @@ DEFAULT_LOG_BACKUP_COUNT = 1
 # and call kanban_block/kanban_complete before max_runtime_seconds kills it.
 KANBAN_TERMINAL_TIMEOUT_GRACE_SECONDS = 30
 
+# ---------------------------------------------------------------------------
+# Respawn guard constants
+# ---------------------------------------------------------------------------
+
+# Patterns in last_failure_error that indicate a quota / auth blocker.
+# These errors won't resolve by retrying immediately — auto-block instead.
+_RESPAWN_BLOCKER_RE = re.compile(
+    r"\b(quota|rate[\s_\-]?limit|429|403|auth\w*|"
+    r"unauthorized|forbidden|billing|subscription|"
+    r"access[\s_]denied|permission[\s_]denied|"
+    r"invalid[\s_]api[\s_]key)\b",
+    re.IGNORECASE,
+)
+
+# Within this window a completed run counts as "recent proof"; don't re-spawn.
+_RESPAWN_GUARD_SUCCESS_WINDOW = 3600  # 1 hour
+
+# Within this window a GitHub PR URL in a comment blocks re-spawn.
+_RESPAWN_GUARD_PR_WINDOW = 86400  # 24 hours
+
+# Pattern matching a GitHub PR URL in task comments.
+_RESPAWN_GUARD_PR_URL_RE = re.compile(
+    r"https?://github\.com/[^/\s]+/[^/\s]+/pull/\d+",
+    re.IGNORECASE,
+)
+
 
 @dataclass
 class DispatchResult:
@@ -3475,6 +3509,12 @@ class DispatchResult:
     stale: list[str] = field(default_factory=list)
     """Task ids reclaimed because no progress (heartbeat) was seen
     within ``dispatch_stale_timeout_seconds``."""
+    respawn_guarded: list[tuple[str, str]] = field(default_factory=list)
+    """Tasks skipped by the respawn guard, as ``(task_id, reason)`` pairs.
+
+    Reasons: ``"blocker_auth"`` (quota/auth error — also auto-blocked),
+    ``"recent_success"`` (completed run within guard window),
+    ``"active_pr"`` (GitHub PR URL in a recent comment)."""
 
 
 # Bounded registry of recently-reaped worker child exits, populated by the
@@ -4350,6 +4390,67 @@ def _clear_failure_counter(conn: sqlite3.Connection, task_id: str) -> None:
 _clear_spawn_failures = _clear_failure_counter
 
 
+def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]:
+    """Return a guard reason if ``task_id`` should NOT be re-spawned, else None.
+
+    Called per ready task in ``dispatch_once`` before any claim attempt.
+    Checks in priority order:
+
+    ``"blocker_auth"``
+        The task's last failure error matches a quota / authentication
+        pattern.  Retrying immediately will not help; the dispatcher
+        should auto-block the task to stop the respawn cycle.
+
+    ``"recent_success"``
+        A completed run exists within ``_RESPAWN_GUARD_SUCCESS_WINDOW``
+        seconds.  Useful work already succeeded for this task; wait for
+        human review rather than immediately re-spawning.
+
+    ``"active_pr"``
+        A GitHub PR URL appears in a recent task comment (within
+        ``_RESPAWN_GUARD_PR_WINDOW`` seconds).  A prior worker already
+        opened a PR; re-spawning risks a duplicate PR on the same task.
+
+    Stale / dead claim locks are NOT a guard reason — they are handled
+    by ``release_stale_claims`` and ``detect_crashed_workers`` which
+    reset the task to ``ready`` only after verifying the lock is
+    genuinely dead (no live PID on this host).
+    """
+    row = conn.execute(
+        "SELECT last_failure_error FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    if row is None:
+        return None
+
+    # 1. Quota / auth blocker: retrying immediately will not help.
+    err = row["last_failure_error"]
+    if err and _RESPAWN_BLOCKER_RE.search(err):
+        return "blocker_auth"
+
+    now = int(time.time())
+
+    # 2. Completed run within guard window — proof of recent success.
+    cutoff = now - _RESPAWN_GUARD_SUCCESS_WINDOW
+    if conn.execute(
+        "SELECT id FROM task_runs "
+        "WHERE task_id = ? AND outcome = 'completed' AND ended_at >= ?",
+        (task_id, cutoff),
+    ).fetchone():
+        return "recent_success"
+
+    # 3. GitHub PR URL in a recent comment — prior worker already opened a PR.
+    pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
+    for c in conn.execute(
+        "SELECT body FROM task_comments WHERE task_id = ? AND created_at >= ?",
+        (task_id, pr_cutoff),
+    ).fetchall():
+        if c["body"] and _RESPAWN_GUARD_PR_URL_RE.search(c["body"]):
+            return "active_pr"
+
+    return None
+
+
 def has_spawnable_ready(conn: sqlite3.Connection) -> bool:
     """Return True iff there is at least one ready+assigned+unclaimed task
     whose assignee maps to a real Hermes profile.
@@ -4560,6 +4661,32 @@ def dispatch_once(
             # multi-lane setups where the ready queue is steadily full
             # of human-pulled work.
             result.skipped_nonspawnable.append(row["id"])
+            continue
+        # Respawn guard: refuse to re-spawn when useful work is already
+        # in-flight/recent, or when the last failure is a deterministic
+        # blocker (quota / auth) that retrying won't resolve.
+        guard_reason = check_respawn_guard(conn, row["id"])
+        if guard_reason is not None:
+            if guard_reason == "blocker_auth" and not dry_run:
+                # Auto-block to stop the cycle — quota/auth errors are
+                # deterministic and retrying immediately wastes quota.
+                # block_task emits its own "blocked" event, so no
+                # additional respawn_guarded event is needed here.
+                if block_task(conn, row["id"], reason=f"respawn_guard: {guard_reason}"):
+                    result.auto_blocked.append(row["id"])
+                else:
+                    result.respawn_guarded.append((row["id"], guard_reason))
+            else:
+                result.respawn_guarded.append((row["id"], guard_reason))
+                # Emit an event so operators can see why the task was
+                # skipped when reading `hermes kanban tail` — without
+                # this the task appears stuck in ready with no diagnosis.
+                if not dry_run:
+                    with write_txn(conn):
+                        _append_event(
+                            conn, row["id"], "respawn_guarded",
+                            {"reason": guard_reason},
+                        )
             continue
         if dry_run:
             result.spawned.append((row["id"], row["assignee"], ""))
@@ -5854,17 +5981,31 @@ def list_runs(
     task_id: str,
     *,
     include_active: bool = True,
+    state_type: Optional[str] = None,
+    state_name: Optional[str] = None,
 ) -> list[Run]:
     """Return all runs for ``task_id`` in start order.
 
     ``include_active=True`` (default) includes the currently-running
     attempt if any. Set False to return only closed runs (useful for
     "how many prior attempts have there been?" checks).
+
+    When ``state_type`` and ``state_name`` are set, restrict to rows
+    where that column equals ``state_name`` (``state_type`` is
+    ``status`` or ``outcome``). Both must be passed together.
     """
+    if (state_type is None) ^ (state_name is None):
+        raise ValueError("state_type and state_name must both be set or both omitted")
+    if state_type is not None:
+        if state_type not in ("status", "outcome"):
+            raise ValueError("state_type must be 'status' or 'outcome'")
     q = "SELECT * FROM task_runs WHERE task_id = ?"
     params: list[Any] = [task_id]
     if not include_active:
         q += " AND ended_at IS NOT NULL"
+    if state_type is not None:
+        q += f" AND {state_type} = ?"
+        params.append(state_name)
     q += " ORDER BY started_at ASC, id ASC"
     rows = conn.execute(q, params).fetchall()
     return [Run.from_row(r) for r in rows]
