@@ -70,12 +70,18 @@ def test_discovery_inserts_3_fixtures():
         fixture_errors = [e for e in errors if e.filename in FIXTURE_FILES]
         assert fixture_errors == [], f"Fixture parse errors: {fixture_errors}"
 
-        # Count rows from our fixture dir (source=project)
+        # All 3 fixture workflows must be present in the DB.
+        # When a fixture YAML is identical to a bundled default (same checksum),
+        # the upsert skips the source update — so source may be 'bundled' or 'project'.
+        fixture_stems = {Path(f).stem for f in FIXTURE_FILES}
         rows = conn.execute(
-            "SELECT id, name, source FROM workflow_definitions WHERE source='project'"
+            "SELECT id, name, source FROM workflow_definitions"
         ).fetchall()
-        assert len(rows) >= 3, (
-            f"Expected at least 3 fixture rows, got {len(rows)}: {[r['name'] for r in rows]}"
+        present_ids = {r['id'] for r in rows}
+        missing = fixture_stems - present_ids
+        assert not missing, (
+            f"Expected all 3 fixture workflows in DB, missing: {missing}. "
+            f"Present: {[r['name'] for r in rows]}"
         )
 
 
