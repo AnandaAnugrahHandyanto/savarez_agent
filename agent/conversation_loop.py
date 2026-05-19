@@ -97,6 +97,66 @@ class ContentSegment:
     tool_names: List[str] = field(default_factory=list)
 
 
+@dataclass
+class ToolCallResult:
+    """One tool call invocation with its outcome and timing.
+
+    Attributes:
+        call_id: The model's tool_call_id for this invocation.
+        tool_name: Name of the tool invoked.
+        arguments: The deserialized arguments dict passed to the tool.
+        outcome: One of "success", "error", "skipped", "blocked".
+        response: The tool's result string (None for skipped/blocked).
+        duration_ms: Wall-clock time in milliseconds (0 for skipped/blocked).
+    """
+    call_id: str
+    tool_name: str
+    arguments: dict
+    outcome: str
+    response: Optional[str]
+    duration_ms: float
+
+
+@dataclass
+class RunMetadata:
+    """Summary metadata about a run_conversation() invocation.
+
+    Attributes:
+        model: Resolved model name (e.g. "gpt-4o").
+        turns: Number of assistant turns in this run.
+        total_tokens: Sum of prompt + completion + cached tokens (None if unavailable).
+        finish_reason: Why the loop exited (e.g. "stop", "length", "guardrail_halt").
+        duration_seconds: Total wall-clock time for the run (None if unavailable).
+    """
+    model: str
+    turns: int
+    total_tokens: Optional[int]
+    finish_reason: Optional[str]
+    duration_seconds: Optional[float]
+
+
+def _safe_content_segment(s: ContentSegment) -> dict:
+    """Convert a ContentSegment dataclass to a JSON-serializable dict."""
+    return {
+        "content": s.content,
+        "had_tool_calls": s.had_tool_calls,
+        "tool_call_count": s.tool_call_count,
+        "tool_names": s.tool_names,
+    }
+
+
+def _safe_tool_call_record(r: ToolCallResult) -> dict:
+    """Convert a ToolCallResult dataclass to a JSON-serializable dict."""
+    return {
+        "call_id": r.call_id,
+        "tool_name": r.tool_name,
+        "arguments": r.arguments,
+        "outcome": r.outcome,
+        "response": r.response,
+        "duration_ms": r.duration_ms,
+    }
+
+
 def _ra():
     """Lazy reference to ``run_agent`` so callers can patch
     ``run_agent.handle_function_call`` / ``run_agent._set_interrupt`` /
@@ -310,6 +370,10 @@ def run_conversation(
     # Collect structured per-turn content metadata for downstream consumers.
     # See FR #28431.
     _content_segments: List[ContentSegment] = []
+    # Collect per-tool invocation log for structured response metadata.
+    # See FR #28474.
+    agent._tool_call_log: List[ToolCallResult] = []
+    _run_start_time = time.time()
     agent._unicode_sanitization_passes = 0
     agent._tool_guardrails.reset_for_turn()
     agent._tool_guardrail_halt_decision = None
@@ -559,6 +623,7 @@ def run_conversation(
     truncated_tool_call_retries = 0
     truncated_response_parts: List[str] = []
     compression_attempts = 0
+    _raw_finish_reason: Optional[str] = None
     _turn_exit_reason = "unknown"  # Diagnostic: why the loop ended
 
     # Per-turn file-mutation verifier state.  Keyed by resolved path;
@@ -3783,6 +3848,7 @@ def run_conversation(
 
                 messages.append(final_msg)
                 
+                _raw_finish_reason = finish_reason
                 _turn_exit_reason = f"text_response(finish_reason={finish_reason})"
                 if not agent.quiet_mode:
                     agent._safe_print(f"🎉 Conversation completed after {api_call_count} OpenAI-compatible API call(s)")
@@ -4065,7 +4131,17 @@ def run_conversation(
         # Each ContentSegment records the text and tool-call info for one
         # assistant turn, allowing consumers to reconstruct multi-turn
         # content without relying on the single overwritten ``final_response``.
-        "content_segments": _content_segments,
+        "content_segments": list(_content_segments),
+        # Structured per-tool invocation log.  See FR #28474.
+        "tool_call_log": [_safe_tool_call_record(r) for r in agent._tool_call_log],
+        # Summary metadata about this run.  See FR #28474.
+        "metadata": RunMetadata(
+            model=agent.model,
+            turns=len(_content_segments),
+            total_tokens=agent.session_total_tokens,
+            finish_reason=_raw_finish_reason,
+            duration_seconds=round(time.time() - _run_start_time, 3) if _run_start_time else None,
+        ),
     }
     if agent._tool_guardrail_halt_decision is not None:
         result["guardrail"] = agent._tool_guardrail_halt_decision.to_metadata()
@@ -4141,4 +4217,4 @@ def run_conversation(
 
 
 
-__all__ = ["run_conversation", "ContentSegment"]
+__all__ = ["run_conversation", "ContentSegment", "ToolCallResult", "RunMetadata"]

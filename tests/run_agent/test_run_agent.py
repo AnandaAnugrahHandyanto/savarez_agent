@@ -5504,6 +5504,67 @@ class TestMemoryProviderTurnStart:
         assert "on_turn_start(agent._user_turn_count" in src
 
 
+class TestToolCallLog:
+    """FR #28474: run_conversation() returns structured tool_call_log and metadata."""
+
+    @patch("run_agent.handle_function_call")
+    def test_tool_call_log_success(self, mock_hfc, agent):
+        """Tool call with success outcome is recorded with correct fields."""
+        mock_hfc.return_value = "AI news article here"
+        tc = _mock_tool_call("web_search", '{"query":"AI news"}', "tc-001")
+        resp1 = _mock_response(content="Here is what I found", tool_calls=[tc])
+        resp2 = _mock_response(content="Done.")
+        agent.client.chat.completions.create.side_effect = [resp1, resp2]
+        result = agent.run_conversation("search for AI news")
+        log = result["tool_call_log"]
+        assert len(log) == 1
+        assert log[0]["tool_name"] == "web_search"
+        assert log[0]["outcome"] == "success"
+        assert log[0]["response"] == "AI news article here"
+        assert log[0]["duration_ms"] >= 0
+        assert log[0]["arguments"] == {"query": "AI news"}
+
+    @patch("run_agent.handle_function_call")
+    def test_tool_call_log_error(self, mock_hfc, agent):
+        """Tool call that returns an error is recorded with outcome=error."""
+        # _detect_tool_failure generic heuristic checks for '"error"' in result[:500].lower()
+        mock_hfc.return_value = '{"error": "search engine unavailable"}'
+        tc = _mock_tool_call("web_search", '{"query":"x"}', "tc-001")
+        resp1 = _mock_response(content="Here is what I found", tool_calls=[tc])
+        resp2 = _mock_response(content="Done.")
+        agent.client.chat.completions.create.side_effect = [resp1, resp2]
+        result = agent.run_conversation("search")
+        log = result["tool_call_log"]
+        assert len(log) == 1
+        assert log[0]["outcome"] == "error"
+        assert log[0]["response"] == '{"error": "search engine unavailable"}'
+
+    def test_metadata_fields_present(self, agent):
+        """metadata dict is present with model/turns/finish_reason."""
+        resp = _mock_response(content="Hello world")
+        agent.client.chat.completions.create.return_value = resp
+        result = agent.run_conversation("hi")
+        md = result["metadata"]
+        assert md.model == agent.model
+        assert md.turns == 1
+        assert md.finish_reason in ("stop", None)
+
+    @patch("run_agent.handle_function_call")
+    def test_tool_call_log_and_content_segments_coexist(self, mock_hfc, agent):
+        """Both tool_call_log and content_segments are present simultaneously."""
+        mock_hfc.return_value = "result"
+        tc = _mock_tool_call("web_search", '{"query":"x"}', "tc-001")
+        resp1 = _mock_response(content="Found", tool_calls=[tc])
+        resp2 = _mock_response(content="Done.")
+        agent.client.chat.completions.create.side_effect = [resp1, resp2]
+        result = agent.run_conversation("search")
+        assert "content_segments" in result
+        assert "tool_call_log" in result
+        assert "metadata" in result
+        assert len(result["content_segments"]) == 2
+        assert len(result["tool_call_log"]) == 1
+
+
 class TestContentSegments:
     """FR #28431: run_conversation() returns structured per-turn content metadata."""
 

@@ -36,6 +36,7 @@ from agent.tool_dispatch_helpers import (
     _multimodal_text_summary,
     _append_subdir_hint_to_multimodal,
 )
+from agent.conversation_loop import ToolCallResult
 from tools.terminal_tool import (
     _get_approval_callback,
     _get_sudo_password_callback,
@@ -353,8 +354,10 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             # Tool was cancelled (interrupt) or thread didn't return
             if agent._interrupt_requested:
                 function_result = f"[Tool execution cancelled — {name} was skipped due to user interrupt]"
+                _conc_is_error = False  # Not a tool error — tool was skipped
             else:
                 function_result = f"Error executing tool '{name}': thread did not return a result"
+                _conc_is_error = True
             tool_duration = 0.0
         else:
             function_name, function_args, function_result, tool_duration, is_error, blocked = r
@@ -451,8 +454,23 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         }
         messages.append(tool_msg)
 
+        # ── Tool call log instrumentation.  See FR #28474. ───────────
+        if hasattr(agent, "_tool_call_log"):
+            if r is None:
+                _conc_outcome = "skipped" if not _conc_is_error else "error"
+            else:
+                _conc_outcome = "blocked" if blocked else ("error" if is_error else "success")
+            _conc_response = function_result if _conc_outcome not in ("blocked", "skipped") else None
+            agent._tool_call_log.append(ToolCallResult(
+                call_id=tc.id,
+                tool_name=name,
+                arguments=args,
+                outcome=_conc_outcome,
+                response=_conc_response,
+                duration_ms=round(tool_duration * 1000, 2),
+            ))
+
         # ── Per-tool /steer drain ───────────────────────────────────
-        # Same as the sequential path: drain between each collected
         # result so the steer lands as early as possible.
         agent._apply_pending_steer_to_tool_results(messages, 1)
 
@@ -490,6 +508,16 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     "tool_call_id": skipped_tc.id,
                 }
                 messages.append(skip_msg)
+                # ── Tool call log: skipped due to interrupt.  See FR #28474.
+                if hasattr(agent, "_tool_call_log"):
+                    agent._tool_call_log.append(ToolCallResult(
+                        call_id=skipped_tc.id,
+                        tool_name=skipped_name,
+                        arguments={},
+                        outcome="skipped",
+                        response=None,
+                        duration_ms=0.0,
+                    ))
             break
 
         function_name = tool_call.function.name
@@ -871,6 +899,25 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             "tool_call_id": tool_call.id
         }
         messages.append(tool_msg)
+
+        # ── Tool call log instrumentation.  See FR #28474. ───────────
+        # Determine outcome: blocked takes priority, then error, else success.
+        _tc_outcome = (
+            "blocked"
+            if (_block_msg is not None or _guardrail_block_decision is not None)
+            else ("error" if _is_error_result else "success")
+        )
+        # blocked/skipped tools have no meaningful response to record.
+        _tc_response = function_result if _tc_outcome not in ("blocked", "skipped") else None
+        if hasattr(agent, "_tool_call_log"):
+            agent._tool_call_log.append(ToolCallResult(
+                call_id=tool_call.id,
+                tool_name=function_name,
+                arguments=function_args,
+                outcome=_tc_outcome,
+                response=_tc_response,
+                duration_ms=round(tool_duration * 1000, 2),
+            ))
 
         # ── Per-tool /steer drain ───────────────────────────────────
         # Drain pending steer BETWEEN individual tool calls so the
