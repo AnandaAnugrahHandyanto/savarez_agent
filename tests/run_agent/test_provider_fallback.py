@@ -305,3 +305,97 @@ class TestFallbackChainDedup:
 
         assert ok is False
         mock_resolve.assert_not_called()
+
+
+# ── Eager-fallback wiring through the extracted conversation_loop ─────────
+
+
+class TestRateLimitFallbackWiringFromConversationLoop:
+    """The eager rate-limit fallback branch in ``agent.conversation_loop``
+    calls ``_pool_may_recover_from_rate_limit`` to decide whether to wait
+    for credential rotation or switch providers immediately.
+
+    The May 2026 ``run_conversation`` extraction moved that branch out of
+    ``run_agent.py`` but left the call site as a bare unqualified name, so
+    any rate-limited turn with a configured fallback chain raised
+    ``NameError`` at runtime. These tests pin the wiring so the regression
+    cannot recur.
+    """
+
+    def test_helper_resolvable_via_module_reference(self):
+        """``agent.conversation_loop`` resolves cross-module helpers through
+        its ``_ra()`` lazy reference. Assert the rate-limit helper is
+        reachable that way — that is the exact lookup path the eager
+        fallback branch uses."""
+        from agent.conversation_loop import _ra
+
+        helper = getattr(_ra(), "_pool_may_recover_from_rate_limit", None)
+        assert callable(helper), (
+            "_pool_may_recover_from_rate_limit must be reachable from "
+            "agent.conversation_loop via _ra(); see "
+            "agent/conversation_loop.py rate-limit fallback branch."
+        )
+
+    def test_rate_limited_turn_with_fallback_chain_does_not_NameError(self):
+        """End-to-end: a 429 on a turn with a configured fallback chain
+        must route through the eager-fallback branch and activate the
+        fallback — not crash with NameError on the pool-rotation check.
+        """
+        from unittest.mock import patch as _patch
+
+        class _RateLimitError(Exception):
+            status_code = 429
+
+            def __str__(self):
+                return "Error code: 429 - Rate limit exceeded."
+
+        agent = _make_agent(
+            fallback_model={"provider": "openai", "model": "gpt-4o"}
+        )
+        # No credential pool — pool_may_recover should return False, so the
+        # branch must reach _try_activate_fallback.
+        agent._credential_pool = None
+        agent.suppress_status_output = True
+
+        # First API call raises 429, then the (post-fallback) call returns
+        # a normal completion.
+        from tests.run_agent.test_run_agent import _mock_response
+
+        responses = [_RateLimitError(), _mock_response(content="Recovered")]
+
+        def _fake_api_call(api_kwargs):
+            result = responses.pop(0)
+            if isinstance(result, Exception):
+                raise result
+            return result
+
+        agent._interruptible_api_call = _fake_api_call
+        agent._persist_session = lambda *a, **kw: None
+        agent._save_trajectory = lambda *a, **kw: None
+        agent._save_session_log = lambda *a, **kw: None
+
+        # Track that fallback activation was actually reached — proves the
+        # NameError-prone branch executed successfully.
+        fallback_called = {"n": 0}
+
+        def _activate(reason=None):
+            fallback_called["n"] += 1
+            agent._fallback_index = 1
+            agent._fallback_activated = True
+            agent.model = "gpt-4o"
+            agent.provider = "openai"
+            return True
+
+        with (
+            _patch.object(agent, "_try_activate_fallback", side_effect=_activate),
+            _patch("run_agent.time.sleep", return_value=None),
+        ):
+            result = agent.run_conversation("hello")
+
+        assert fallback_called["n"] >= 1, (
+            "Expected the rate-limit + fallback branch to reach "
+            "_try_activate_fallback; if it raised NameError before this "
+            "point, the regression has returned."
+        )
+        assert result["completed"] is True
+        assert result["final_response"] == "Recovered"
