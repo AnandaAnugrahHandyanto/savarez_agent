@@ -698,6 +698,29 @@ async def get_harness_autonomous_loops():
         }
 
 
+@app.get("/api/harness/security-policy")
+async def get_harness_security_policy():
+    """Return metadata-only Tier 7 security policy/check status."""
+    try:
+        return _control_plane_or_unavailable().security_policy()
+    except Exception as exc:
+        return {
+            "schema_version": 1,
+            "content_policy": "metadata_only",
+            "mode": "audit_only_no_side_effects",
+            "degraded": True,
+            "error_type": type(exc).__name__,
+            "policy": {},
+            "checks": {},
+            "approval_matrix": [],
+            "profile_permission_matrix": [],
+            "credential_inventory": {"raw_values_returned": False},
+            "issues": [],
+            "issue_count": 0,
+            "highest_severity": "none",
+        }
+
+
 @app.get("/api/harness/core")
 async def get_core_harness_status():
     """Return the first-class seven-case Hermes core harness status."""

@@ -137,6 +137,11 @@ class ControlPlaneHarness:
 
         return autonomous_loops.audit_autonomous_loops()
 
+    def security_policy(self) -> Dict[str, Any]:
+        from agent import security_policy
+
+        return security_policy.audit_security_policy()
+
     def learning_health_unavailable(self, error: Optional[str] = None) -> Dict[str, Any]:
         from agent import harness_control_plane
 

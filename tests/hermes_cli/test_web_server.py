@@ -298,6 +298,43 @@ class TestWebServerEndpoints:
         assert "token" not in raw.lower()
         assert "sk-" not in raw
 
+    def test_harness_security_policy_endpoint_is_metadata_only(self, monkeypatch):
+        import agent.harness as harness_module
+
+        class _ControlPlane:
+            def security_policy(self):
+                return {
+                    "schema_version": 1,
+                    "content_policy": "metadata_only",
+                    "mode": "audit_only_no_side_effects",
+                    "policy": {"credential_values": "never_returned"},
+                    "checks": {"redaction": {"enabled": True}},
+                    "approval_matrix": [{"surface": "cli"}],
+                    "profile_permission_matrix": [{"profile": "active"}],
+                    "credential_inventory": {"raw_values_returned": False},
+                    "issues": [],
+                    "issue_count": 0,
+                    "highest_severity": "none",
+                }
+
+        class _Harness:
+            @property
+            def control_plane(self):
+                return _ControlPlane()
+
+        monkeypatch.setattr(harness_module, "HermesHarness", _Harness)
+
+        resp = self.client.get("/api/harness/security-policy")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["content_policy"] == "metadata_only"
+        assert data["mode"] == "audit_only_no_side_effects"
+        assert data["credential_inventory"]["raw_values_returned"] is False
+        raw = json.dumps(data, sort_keys=True)
+        assert "sk-" not in raw
+        assert "should-not-leak" not in raw
+
     def test_core_harness_status_endpoint(self, monkeypatch):
         import agent.harness as harness_module
 

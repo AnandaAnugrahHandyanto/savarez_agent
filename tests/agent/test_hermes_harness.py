@@ -137,3 +137,18 @@ def test_control_plane_harness_exposes_autonomous_loops(monkeypatch):
         "content_policy": "metadata_only",
         "mode": "audit_only_no_create",
     }
+
+
+def test_control_plane_harness_exposes_security_policy(monkeypatch):
+    from agent import security_policy
+
+    monkeypatch.setattr(
+        security_policy,
+        "audit_security_policy",
+        lambda: {"content_policy": "metadata_only", "mode": "audit_only_no_side_effects"},
+    )
+
+    assert HermesHarness().control_plane.security_policy() == {
+        "content_policy": "metadata_only",
+        "mode": "audit_only_no_side_effects",
+    }
