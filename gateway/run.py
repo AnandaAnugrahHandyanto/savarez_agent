@@ -8001,6 +8001,9 @@ class GatewayRunner:
         if canonical == "status":
             return await self._handle_status_command(event)
 
+        if canonical == "today":
+            return await self._handle_today_command(event)
+
         if canonical == "agents":
             return await self._handle_agents_command(event)
 
@@ -10019,6 +10022,25 @@ class GatewayRunner:
         ]
 
         return "\n".join(lines)
+
+    def _queue_pending_agent_note(self, session_key: str, note: str) -> None:
+        """Queue a session note to prepend to the next real user turn."""
+        clean = str(note or "").strip()
+        if not clean or not session_key:
+            return
+        if not hasattr(self, "_pending_model_notes"):
+            self._pending_model_notes = {}
+        existing = self._pending_model_notes.get(session_key)
+        self._pending_model_notes[session_key] = f"{existing}\n\n{clean}" if existing else clean
+
+    async def _handle_today_command(self, event: MessageEvent) -> str:
+        """Handle /today by syncing the local todo snapshot into the session."""
+        from today_todo import build_today_todo_note, load_today_todo_snapshot, render_today_todo_text
+
+        session_entry = self.session_store.get_or_create_session(event.source)
+        snapshot = load_today_todo_snapshot()
+        self._queue_pending_agent_note(session_entry.session_key, build_today_todo_note(snapshot))
+        return render_today_todo_text(snapshot)
 
 
     def _check_slash_access(

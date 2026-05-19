@@ -32,6 +32,7 @@ Requires:
 """
 
 import asyncio
+from datetime import datetime, timezone
 import hashlib
 import hmac
 import json
@@ -495,6 +496,240 @@ class ResponseStore:
         return row[0] if row else 0
 
 
+class IPhoneCompanionStore:
+    """SQLite-backed store for iPhone companion registrations and uploads."""
+
+    def __init__(self, db_path: str = None):
+        if db_path is None:
+            try:
+                from hermes_cli.config import get_hermes_home
+                db_path = str(get_hermes_home() / "iphone_companion.db")
+            except Exception:
+                db_path = ":memory:"
+        try:
+            self._conn = sqlite3.connect(db_path, check_same_thread=False)
+        except Exception:
+            self._conn = sqlite3.connect(":memory:", check_same_thread=False)
+        self._conn.row_factory = sqlite3.Row
+        self._conn.execute("PRAGMA journal_mode=WAL")
+        self._conn.execute(
+            """CREATE TABLE IF NOT EXISTS iphone_devices (
+                client_id TEXT PRIMARY KEY,
+                device_name TEXT NOT NULL,
+                bundle_identifier TEXT NOT NULL,
+                platform TEXT NOT NULL,
+                os_version TEXT NOT NULL,
+                capabilities_json TEXT NOT NULL,
+                submitted_at TEXT NOT NULL,
+                registered_device_id TEXT NOT NULL,
+                device_token TEXT NOT NULL UNIQUE,
+                registered_at TEXT NOT NULL
+            )"""
+        )
+        self._conn.execute(
+            """CREATE TABLE IF NOT EXISTS iphone_event_uploads (
+                upload_id TEXT PRIMARY KEY,
+                client_id TEXT NOT NULL,
+                device_name TEXT NOT NULL,
+                submitted_at TEXT NOT NULL,
+                event_count INTEGER NOT NULL,
+                payload_json TEXT NOT NULL,
+                received_at TEXT NOT NULL
+            )"""
+        )
+        self._conn.execute(
+            """CREATE TABLE IF NOT EXISTS iphone_location_requests (
+                request_id TEXT PRIMARY KEY,
+                client_id TEXT NOT NULL,
+                reason TEXT NOT NULL,
+                requested_at TEXT NOT NULL,
+                status TEXT NOT NULL,
+                decided_at TEXT,
+                decision_note TEXT
+            )"""
+        )
+        self._conn.commit()
+
+    @staticmethod
+    def _iso_now() -> str:
+        return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+    @staticmethod
+    def _receipt_from_row(row: sqlite3.Row) -> Dict[str, Any]:
+        return {
+            "clientID": row["client_id"],
+            "registeredDeviceID": row["registered_device_id"],
+            "deviceToken": row["device_token"],
+            "registeredAt": row["registered_at"],
+        }
+
+    def register_device(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        client_id = str(payload["clientID"]).strip()
+        existing = self._conn.execute(
+            "SELECT client_id, registered_device_id, device_token, registered_at FROM iphone_devices WHERE client_id = ?",
+            (client_id,),
+        ).fetchone()
+        if existing is not None:
+            return self._receipt_from_row(existing)
+
+        row = {
+            "client_id": client_id,
+            "device_name": str(payload["deviceName"]).strip(),
+            "bundle_identifier": str(payload["bundleIdentifier"]).strip(),
+            "platform": str(payload["platform"]).strip(),
+            "os_version": str(payload["osVersion"]).strip(),
+            "capabilities_json": json.dumps(payload["capabilities"], sort_keys=True),
+            "submitted_at": str(payload["submittedAt"]).strip(),
+            "registered_device_id": str(uuid.uuid4()),
+            "device_token": f"iphone_{uuid.uuid4().hex}",
+            "registered_at": self._iso_now(),
+        }
+        self._conn.execute(
+            """INSERT INTO iphone_devices (
+                client_id, device_name, bundle_identifier, platform, os_version,
+                capabilities_json, submitted_at, registered_device_id, device_token, registered_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                row["client_id"],
+                row["device_name"],
+                row["bundle_identifier"],
+                row["platform"],
+                row["os_version"],
+                row["capabilities_json"],
+                row["submitted_at"],
+                row["registered_device_id"],
+                row["device_token"],
+                row["registered_at"],
+            ),
+        )
+        self._conn.commit()
+        return {
+            "clientID": row["client_id"],
+            "registeredDeviceID": row["registered_device_id"],
+            "deviceToken": row["device_token"],
+            "registeredAt": row["registered_at"],
+        }
+
+    def get_device_by_token(self, token: str) -> Optional[Dict[str, Any]]:
+        row = self._conn.execute(
+            """SELECT client_id, device_name, bundle_identifier, platform, os_version,
+                      submitted_at, registered_device_id, device_token, registered_at
+               FROM iphone_devices WHERE device_token = ?""",
+            (token,),
+        ).fetchone()
+        return dict(row) if row is not None else None
+
+    def get_device_by_client_id(self, client_id: str) -> Optional[Dict[str, Any]]:
+        row = self._conn.execute(
+            """SELECT client_id, device_name, bundle_identifier, platform, os_version,
+                      submitted_at, registered_device_id, device_token, registered_at
+               FROM iphone_devices WHERE client_id = ?""",
+            (client_id,),
+        ).fetchone()
+        return dict(row) if row is not None else None
+
+    @staticmethod
+    def _location_request_from_row(row: sqlite3.Row) -> Dict[str, Any]:
+        return {
+            "requestID": row["request_id"],
+            "clientID": row["client_id"],
+            "reason": row["reason"],
+            "requestedAt": row["requested_at"],
+            "status": row["status"],
+        }
+
+    def create_location_request(self, *, client_id: str, reason: str, requested_at: str) -> Dict[str, Any]:
+        request_id = str(uuid.uuid4())
+        self._conn.execute(
+            """INSERT INTO iphone_location_requests (
+                request_id, client_id, reason, requested_at, status, decided_at, decision_note
+            ) VALUES (?, ?, ?, ?, ?, NULL, NULL)""",
+            (request_id, client_id, reason, requested_at, "pending"),
+        )
+        self._conn.commit()
+        return {
+            "requestID": request_id,
+            "clientID": client_id,
+            "reason": reason,
+            "requestedAt": requested_at,
+            "status": "pending",
+        }
+
+    def get_next_pending_location_request_for_client(self, client_id: str) -> Optional[Dict[str, Any]]:
+        row = self._conn.execute(
+            """SELECT request_id, client_id, reason, requested_at, status
+               FROM iphone_location_requests
+               WHERE client_id = ? AND status = 'pending'
+               ORDER BY requested_at ASC, request_id ASC
+               LIMIT 1""",
+            (client_id,),
+        ).fetchone()
+        return self._location_request_from_row(row) if row is not None else None
+
+    def decide_location_request(
+        self,
+        *,
+        request_id: str,
+        client_id: str,
+        status: str,
+        decided_at: str,
+        note: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        row = self._conn.execute(
+            """SELECT request_id, client_id, reason, requested_at, status
+               FROM iphone_location_requests
+               WHERE request_id = ? AND client_id = ?""",
+            (request_id, client_id),
+        ).fetchone()
+        if row is None or row["status"] != "pending":
+            return None
+        self._conn.execute(
+            """UPDATE iphone_location_requests
+               SET status = ?, decided_at = ?, decision_note = ?
+               WHERE request_id = ? AND client_id = ?""",
+            (status, decided_at, note, request_id, client_id),
+        )
+        self._conn.commit()
+        return {
+            "requestID": request_id,
+            "clientID": client_id,
+            "reason": row["reason"],
+            "requestedAt": row["requested_at"],
+            "status": status,
+        }
+
+    def record_event_upload(
+        self,
+        *,
+        client_id: str,
+        device_name: str,
+        submitted_at: str,
+        event_count: int,
+        payload: Dict[str, Any],
+    ) -> None:
+        self._conn.execute(
+            """INSERT INTO iphone_event_uploads (
+                upload_id, client_id, device_name, submitted_at, event_count, payload_json, received_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (
+                uuid.uuid4().hex,
+                client_id,
+                device_name,
+                submitted_at,
+                event_count,
+                json.dumps(payload, ensure_ascii=False, sort_keys=True),
+                self._iso_now(),
+            ),
+        )
+        self._conn.commit()
+
+    def close(self) -> None:
+        try:
+            self._conn.close()
+        except Exception:
+            pass
+
+
 # ---------------------------------------------------------------------------
 # CORS middleware
 # ---------------------------------------------------------------------------
@@ -718,6 +953,7 @@ class APIServerAdapter(BasePlatformAdapter):
         # in-flight run by run_id.
         self._run_approval_sessions: Dict[str, str] = {}
         self._session_db: Optional[Any] = None  # Lazy-init SessionDB for session continuity
+        self._iphone_companion_store = IPhoneCompanionStore()
 
     @staticmethod
     def _parse_cors_origins(value: Any) -> tuple[str, ...]:
@@ -865,6 +1101,36 @@ class APIServerAdapter(BasePlatformAdapter):
             {"error": {"message": "Invalid API key", "type": "invalid_request_error", "code": "invalid_api_key"}},
             status=401,
         )
+
+    @staticmethod
+    def _parse_uuid_string(value: Any) -> Optional[str]:
+        try:
+            return str(uuid.UUID(str(value).strip()))
+        except Exception:
+            return None
+
+    @staticmethod
+    def _parse_iso8601_string(value: Any) -> Optional[str]:
+        raw = str(value or "").strip()
+        if not raw:
+            return None
+        try:
+            datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            return raw
+        except Exception:
+            return None
+
+    def _check_iphone_device_auth(
+        self, request: "web.Request",
+    ) -> tuple[Optional[Dict[str, Any]], Optional["web.Response"]]:
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header.startswith("Bearer "):
+            token = auth_header[7:].strip()
+            if token:
+                record = self._iphone_companion_store.get_device_by_token(token)
+                if record is not None:
+                    return record, None
+        return None, web.json_response({"error": "Invalid device token"}, status=401)
 
     # ------------------------------------------------------------------
     # Session header helpers
@@ -1019,6 +1285,180 @@ class APIServerAdapter(BasePlatformAdapter):
     # ------------------------------------------------------------------
     # HTTP Handlers
     # ------------------------------------------------------------------
+
+    async def _handle_iphone_register(self, request: "web.Request") -> "web.Response":
+        """POST /api/iphone/register — register an iPhone companion device."""
+        auth_error = self._check_auth(request)
+        if auth_error is not None:
+            return auth_error
+
+        try:
+            payload = await request.json()
+        except Exception:
+            return web.json_response({"error": "Invalid JSON body"}, status=400)
+        if not isinstance(payload, dict):
+            return web.json_response({"error": "JSON body must be an object"}, status=400)
+
+        client_id = self._parse_uuid_string(payload.get("clientID"))
+        submitted_at = self._parse_iso8601_string(payload.get("submittedAt"))
+        device_name = str(payload.get("deviceName") or "").strip()
+        bundle_identifier = str(payload.get("bundleIdentifier") or "").strip()
+        platform_name = str(payload.get("platform") or "").strip()
+        os_version = str(payload.get("osVersion") or "").strip()
+        capabilities = payload.get("capabilities")
+
+        if client_id is None:
+            return web.json_response({"error": "clientID must be a valid UUID"}, status=400)
+        if not device_name:
+            return web.json_response({"error": "deviceName is required"}, status=400)
+        if not bundle_identifier:
+            return web.json_response({"error": "bundleIdentifier is required"}, status=400)
+        if not platform_name:
+            return web.json_response({"error": "platform is required"}, status=400)
+        if not os_version:
+            return web.json_response({"error": "osVersion is required"}, status=400)
+        if not isinstance(capabilities, dict):
+            return web.json_response({"error": "capabilities must be an object"}, status=400)
+        if submitted_at is None:
+            return web.json_response({"error": "submittedAt must be an ISO8601 timestamp"}, status=400)
+
+        receipt = self._iphone_companion_store.register_device(
+            {
+                "clientID": client_id,
+                "deviceName": device_name,
+                "bundleIdentifier": bundle_identifier,
+                "platform": platform_name,
+                "osVersion": os_version,
+                "capabilities": capabilities,
+                "submittedAt": submitted_at,
+            }
+        )
+        return web.json_response(receipt)
+
+    async def _handle_iphone_events(self, request: "web.Request") -> "web.Response":
+        """POST /api/iphone/events — accept iPhone companion relay event uploads."""
+        device_record, auth_error = self._check_iphone_device_auth(request)
+        if auth_error is not None:
+            return auth_error
+
+        try:
+            payload = await request.json()
+        except Exception:
+            return web.json_response({"error": "Invalid JSON body"}, status=400)
+        if not isinstance(payload, dict):
+            return web.json_response({"error": "JSON body must be an object"}, status=400)
+
+        client_id = self._parse_uuid_string(payload.get("clientID"))
+        submitted_at = self._parse_iso8601_string(payload.get("submittedAt"))
+        device_name = str(payload.get("deviceName") or "").strip()
+        events = payload.get("events")
+
+        if client_id is None:
+            return web.json_response({"error": "clientID must be a valid UUID"}, status=400)
+        if client_id != device_record["client_id"]:
+            return web.json_response({"error": "Device token does not match clientID"}, status=403)
+        if not device_name:
+            return web.json_response({"error": "deviceName is required"}, status=400)
+        if submitted_at is None:
+            return web.json_response({"error": "submittedAt must be an ISO8601 timestamp"}, status=400)
+        if not isinstance(events, list):
+            return web.json_response({"error": "events must be an array"}, status=400)
+
+        self._iphone_companion_store.record_event_upload(
+            client_id=client_id,
+            device_name=device_name,
+            submitted_at=submitted_at,
+            event_count=len(events),
+            payload=payload,
+        )
+        return web.json_response(
+            {
+                "status": "accepted",
+                "acceptedCount": len(events),
+                "clientID": client_id,
+            },
+            status=202,
+        )
+
+    async def _handle_iphone_location_request_create(self, request: "web.Request") -> "web.Response":
+        """POST /api/iphone/location-requests — enqueue a location approval request."""
+        auth_error = self._check_auth(request)
+        if auth_error is not None:
+            return auth_error
+
+        try:
+            payload = await request.json()
+        except Exception:
+            return web.json_response({"error": "Invalid JSON body"}, status=400)
+        if not isinstance(payload, dict):
+            return web.json_response({"error": "JSON body must be an object"}, status=400)
+
+        client_id = self._parse_uuid_string(payload.get("clientID"))
+        requested_at = self._parse_iso8601_string(payload.get("requestedAt"))
+        reason = str(payload.get("reason") or "").strip()
+
+        if client_id is None:
+            return web.json_response({"error": "clientID must be a valid UUID"}, status=400)
+        if not reason:
+            return web.json_response({"error": "reason is required"}, status=400)
+        if requested_at is None:
+            return web.json_response({"error": "requestedAt must be an ISO8601 timestamp"}, status=400)
+        if self._iphone_companion_store.get_device_by_client_id(client_id) is None:
+            return web.json_response({"error": "Unknown iPhone clientID"}, status=404)
+
+        created = self._iphone_companion_store.create_location_request(
+            client_id=client_id,
+            reason=reason,
+            requested_at=requested_at,
+        )
+        return web.json_response(created, status=202)
+
+    async def _handle_iphone_location_request_next(self, request: "web.Request") -> "web.Response":
+        """GET /api/iphone/location-requests/next — fetch the next pending location request."""
+        device_record, auth_error = self._check_iphone_device_auth(request)
+        if auth_error is not None:
+            return auth_error
+
+        pending = self._iphone_companion_store.get_next_pending_location_request_for_client(device_record["client_id"])
+        if pending is None:
+            return web.Response(status=204)
+        return web.json_response(pending)
+
+    async def _handle_iphone_location_request_decision(self, request: "web.Request") -> "web.Response":
+        """POST /api/iphone/location-requests/{request_id}/decision — resolve a location request."""
+        device_record, auth_error = self._check_iphone_device_auth(request)
+        if auth_error is not None:
+            return auth_error
+
+        request_id = self._parse_uuid_string(request.match_info.get("request_id"))
+        if request_id is None:
+            return web.json_response({"error": "request_id must be a valid UUID"}, status=400)
+
+        try:
+            payload = await request.json()
+        except Exception:
+            return web.json_response({"error": "Invalid JSON body"}, status=400)
+        if not isinstance(payload, dict):
+            return web.json_response({"error": "JSON body must be an object"}, status=400)
+
+        decision = str(payload.get("decision") or "").strip().lower()
+        decided_at = self._parse_iso8601_string(payload.get("decidedAt"))
+        note = str(payload.get("note") or "").strip() or None
+        if decision not in {"denied", "fulfilled", "failed"}:
+            return web.json_response({"error": "decision must be denied, fulfilled, or failed"}, status=400)
+        if decided_at is None:
+            return web.json_response({"error": "decidedAt must be an ISO8601 timestamp"}, status=400)
+
+        decided = self._iphone_companion_store.decide_location_request(
+            request_id=request_id,
+            client_id=device_record["client_id"],
+            status=decision,
+            decided_at=decided_at,
+            note=note,
+        )
+        if decided is None:
+            return web.json_response({"error": "Location request not found"}, status=404)
+        return web.json_response(decided)
 
     async def _handle_health(self, request: "web.Request") -> "web.Response":
         """GET /health — simple health check."""
@@ -4110,6 +4550,15 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_post("/v1/responses", self._handle_responses)
             self._app.router.add_get("/v1/responses/{response_id}", self._handle_get_response)
             self._app.router.add_delete("/v1/responses/{response_id}", self._handle_delete_response)
+            # iPhone companion bridge API
+            self._app.router.add_post("/api/iphone/register", self._handle_iphone_register)
+            self._app.router.add_post("/api/iphone/events", self._handle_iphone_events)
+            self._app.router.add_post("/api/iphone/location-requests", self._handle_iphone_location_request_create)
+            self._app.router.add_get("/api/iphone/location-requests/next", self._handle_iphone_location_request_next)
+            self._app.router.add_post(
+                "/api/iphone/location-requests/{request_id}/decision",
+                self._handle_iphone_location_request_decision,
+            )
             # Cron jobs management API
             self._app.router.add_get("/api/jobs", self._handle_list_jobs)
             self._app.router.add_post("/api/jobs", self._handle_create_job)
