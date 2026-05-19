@@ -1755,9 +1755,29 @@ def list_picker_providers(
         current_model=current_model,
     )
 
+    hidden_providers: set[str] = set()
+    try:
+        from hermes_cli.config import load_config
+
+        picker_cfg = (load_config().get("model_picker") or {})
+        raw_hidden = picker_cfg.get("hidden_providers", [])
+        if isinstance(raw_hidden, str):
+            raw_hidden = [part.strip() for part in raw_hidden.split(",")]
+        if isinstance(raw_hidden, list):
+            hidden_providers = {
+                str(item).strip().lower()
+                for item in raw_hidden
+                if str(item).strip()
+            }
+    except Exception:
+        hidden_providers = set()
+
     filtered: List[dict] = []
     for p in providers:
         slug = str(p.get("slug", "")).lower()
+        name = str(p.get("name", "")).lower()
+        if slug in hidden_providers or name in hidden_providers:
+            continue
         if slug == "openrouter":
             try:
                 live = fetch_openrouter_models()

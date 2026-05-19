@@ -1441,14 +1441,26 @@ def run_doctor(args):
                 base = _to_openai_base_url(base)
             if base_url_host_matches(base, "api.kimi.com") and base.rstrip("/").endswith("/coding"):
                 base = base.rstrip("/") + "/v1"
+
+            # Gemini / Google AI Studio does not accept Bearer auth on the
+            # /models endpoint. It expects the API key via x-goog-api-key or
+            # a query parameter, so the generic Bearer probe returns a false
+            # invalid-key result even when the key is valid.
             url = (base.rstrip("/") + "/models") if base else default_url
-            headers = {
-                "Authorization": f"Bearer {key}",
-                "User-Agent": _HERMES_USER_AGENT,
-            }
-            if base_url_host_matches(base, "api.kimi.com"):
-                headers["User-Agent"] = "claude-code/0.1.0"
-            r = httpx.get(url, headers=headers, timeout=10)
+            if pname == "gemini" or base_url_host_matches(url, "generativelanguage.googleapis.com"):
+                headers = {
+                    "x-goog-api-key": key,
+                    "User-Agent": _HERMES_USER_AGENT,
+                }
+                r = httpx.get(url, headers=headers, timeout=10)
+            else:
+                headers = {
+                    "Authorization": f"Bearer {key}",
+                    "User-Agent": _HERMES_USER_AGENT,
+                }
+                if base_url_host_matches(base, "api.kimi.com"):
+                    headers["User-Agent"] = "claude-code/0.1.0"
+                r = httpx.get(url, headers=headers, timeout=10)
             if (
                 pname == "Alibaba/DashScope"
                 and not base

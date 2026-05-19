@@ -3682,21 +3682,19 @@ class GatewayRunner:
             await asyncio.sleep(1.0)
 
         # Notify the chat that initiated /restart that the gateway is back.
-        restart_notification_pending = _restart_notification_pending()
         delivered_restart_target = await self._send_restart_notification()
 
-        # Broadcast a lightweight "gateway is back" message to configured
-        # home channels only when this startup is resuming from /restart. If a
-        # /restart requester already received a direct completion notice in the
-        # same chat, skip the generic broadcast there to avoid duplicates while
-        # still allowing a home-channel fallback when the direct send fails.
-        if restart_notification_pending or delivered_restart_target is not None:
-            skip_home_targets = (
-                {delivered_restart_target} if delivered_restart_target else None
-            )
-            await self._send_home_channel_startup_notifications(
-                skip_targets=skip_home_targets,
-            )
+        # Broadcast a lightweight "gateway is back" message to configured home
+        # channels on every successful gateway startup. If a /restart requester
+        # already received a direct completion notice in the same chat, skip the
+        # generic broadcast there to avoid duplicates while still allowing a
+        # home-channel fallback when the direct send fails.
+        skip_home_targets = (
+            {delivered_restart_target} if delivered_restart_target else None
+        )
+        await self._send_home_channel_startup_notifications(
+            skip_targets=skip_home_targets,
+        )
 
         # Automatically continue fresh sessions that were interrupted by the
         # previous gateway restart/shutdown.  The resume_pending flag is cleared
@@ -4803,6 +4801,10 @@ class GatewayRunner:
                             error_message=None,
                         )
                         logger.info("✓ %s reconnected successfully", platform.value)
+
+                        await self._send_home_channel_startup_notifications(
+                            only_platforms={platform},
+                        )
 
                         # Rebuild channel directory with the new adapter
                         try:
@@ -13023,18 +13025,23 @@ class GatewayRunner:
         self,
         *,
         skip_targets: Optional[set[tuple[str, str, Optional[str]]]] = None,
+        only_platforms: Optional[set[Platform]] = None,
     ) -> set[tuple[str, str, Optional[str]]]:
         """Notify configured home channels that the gateway is back online.
 
         The notification is best-effort and sent once per connected platform
         home channel. ``skip_targets`` lets startup avoid duplicate messages
         when a more specific restart notification is queued for the same chat.
+        ``only_platforms`` restricts delivery to a subset, which is useful for
+        per-platform reconnect recovery.
         """
         delivered: set[tuple[str, str, Optional[str]]] = set()
         skipped = skip_targets or set()
         message = "♻️ Gateway online — Hermes is back and ready."
 
         for platform, adapter in self.adapters.items():
+            if only_platforms is not None and platform not in only_platforms:
+                continue
             home = self.config.get_home_channel(platform)
             if not home or not home.chat_id:
                 continue
