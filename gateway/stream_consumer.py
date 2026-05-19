@@ -197,6 +197,62 @@ class GatewayStreamConsumer:
         the subsequent cosmetic edit (cursor removal) failed."""
         return self._final_content_delivered
 
+    @property
+    def editable_message_id(self) -> Optional[str]:
+        """Return the current streamed message id when it can be edited."""
+        if not self._message_id or self._message_id == "__no_edit__":
+            return None
+        if not self._edit_supported:
+            return None
+        return self._message_id
+
+    async def try_finalize_with_text(self, final_response: str) -> bool:
+        """Best-effort edit of the streamed message to the final response.
+
+        Gateway callers use this when streaming showed partial text but did
+        not confirm final delivery.  Editable platforms should reconcile the
+        existing streamed message first; callers fall back to a normal send
+        when this returns False.
+        """
+        text = self._clean_for_display(final_response or "")
+        if not text or text == "(empty)":
+            return False
+        if self._final_response_sent and self._last_sent_text == text:
+            return True
+        if self._last_sent_text == text and (self._final_content_delivered or self._already_sent):
+            self._final_response_sent = True
+            self._final_content_delivered = True
+            self._already_sent = True
+            return True
+
+        message_id = self.editable_message_id
+        if not message_id:
+            return False
+
+        try:
+            result = await self.adapter.edit_message(
+                chat_id=self.chat_id,
+                message_id=message_id,
+                content=text,
+                finalize=True,
+            )
+        except Exception as exc:
+            logger.debug("Final stream reconcile edit failed: %s", exc, exc_info=True)
+            return False
+
+        if not getattr(result, "success", False):
+            return False
+
+        new_message_id = getattr(result, "message_id", None)
+        if new_message_id:
+            self._message_id = str(new_message_id)
+        self._last_sent_text = text
+        self._already_sent = True
+        self._final_content_delivered = True
+        self._final_response_sent = True
+        self._flood_strikes = 0
+        return True
+
     def on_segment_break(self) -> None:
         """Finalize the current stream segment and start a fresh message."""
         self._queue.put(_NEW_SEGMENT)
