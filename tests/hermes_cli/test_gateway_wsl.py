@@ -220,7 +220,7 @@ class TestGatewayCommandWSLMessages:
 
         args = SimpleNamespace(
             gateway_command="install", force=False, system=False,
-            run_as_user=None,
+            run_as_user=None, start_now=False, start_on_login=True,
         )
         gateway.gateway_command(args)
 

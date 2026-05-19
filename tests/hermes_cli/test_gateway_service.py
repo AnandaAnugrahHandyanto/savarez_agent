@@ -1008,14 +1008,28 @@ class TestGatewaySystemServiceRouting:
         monkeypatch.setattr(
             gateway_cli,
             "systemd_install",
-            lambda force=False, system=False, run_as_user=None: calls.append((force, system, run_as_user)),
+            lambda force=False, system=False, run_as_user=None, enable_on_startup=True: calls.append((force, system, run_as_user, enable_on_startup)),
+        )
+        starts = []
+        monkeypatch.setattr(
+            gateway_cli,
+            "systemd_start",
+            lambda system=False: starts.append(system),
         )
 
         gateway_cli.gateway_command(
-            SimpleNamespace(gateway_command="install", force=True, system=True, run_as_user="alice")
+            SimpleNamespace(
+                gateway_command="install",
+                force=True,
+                system=True,
+                run_as_user="alice",
+                start_now=False,
+                start_on_login=True,
+            )
         )
 
-        assert calls == [(True, True, "alice")]
+        assert calls == [(True, True, "alice", True)]
+        assert starts == []
 
     def test_gateway_install_reports_termux_manual_mode(self, monkeypatch, capsys):
         monkeypatch.setattr(gateway_cli, "is_termux", lambda: True)
