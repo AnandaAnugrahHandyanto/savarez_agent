@@ -607,6 +607,73 @@ class OpenVikingMemoryProvider(MemoryProvider):
         except Exception as e:
             logger.warning("OpenViking session commit failed: %s", e)
 
+    def on_session_switch(
+        self,
+        new_session_id: str,
+        *,
+        parent_session_id: str = "",
+        reset: bool = False,
+        **kwargs,
+    ) -> None:
+        """Commit the old session and rotate cached state to the new session_id.
+
+        Fires on /resume, /branch, /reset, /new, and context compression.
+        Without this hook, ``_session_id`` stays stuck at the value
+        ``initialize()`` cached, so subsequent ``sync_turn()`` writes land in
+        the already-closed old session and ``on_session_end()`` tries to
+        commit it a second time. The new session never accumulates messages,
+        and memory extraction never fires for it. See hermes-agent#28296.
+
+        Flushes any in-flight sync under the old session_id, commits the old
+        session if it has pending turns (same extraction semantics as
+        ``on_session_end``), drains and clears any stale prefetch result,
+        then rotates ``_session_id`` and resets ``_turn_count``.
+        """
+        new_id = str(new_session_id or "").strip()
+        if not new_id or not self._client:
+            return
+
+        # Snapshot the old session id BEFORE rotation so the join+commit
+        # below always target the session whose writes we want to flush.
+        old_session_id = self._session_id
+        old_turn_count = self._turn_count
+
+        # 1. Wait for any in-flight sync_turn to finish writing under the
+        # OLD session id — otherwise it races the commit below.
+        if self._sync_thread and self._sync_thread.is_alive():
+            self._sync_thread.join(timeout=10.0)
+
+        # 2. Commit the old session if it accumulated turns — same
+        # extraction semantics as on_session_end. Skip if empty (nothing
+        # to extract) or if the provider was never initialized.
+        if old_session_id and old_turn_count > 0:
+            try:
+                self._client.post(f"/api/v1/sessions/{old_session_id}/commit")
+                logger.info(
+                    "OpenViking session %s committed on switch (%d turns)",
+                    old_session_id, old_turn_count,
+                )
+            except Exception as e:
+                logger.warning(
+                    "OpenViking commit-on-switch failed for %s: %s",
+                    old_session_id, e,
+                )
+
+        # 3. Drain in-flight prefetch from the old session and drop its
+        # cached result so the new session doesn't see stale recall.
+        if self._prefetch_thread and self._prefetch_thread.is_alive():
+            self._prefetch_thread.join(timeout=3.0)
+        with self._prefetch_lock:
+            self._prefetch_result = ""
+
+        # 4. Rotate to the new session.
+        self._session_id = new_id
+        self._turn_count = 0
+        logger.debug(
+            "OpenViking on_session_switch: old=%s new=%s parent=%s reset=%s",
+            old_session_id, new_id, parent_session_id, reset,
+        )
+
     def on_memory_write(self, action: str, target: str, content: str) -> None:
         """Mirror built-in memory writes to OpenViking as explicit memories."""
         if not self._client or action != "add" or not content:
