@@ -1039,7 +1039,9 @@ def list_diagnostics(
         if severity:
             filtered: dict[str, list[dict]] = {}
             for tid, dl in diags_by_task.items():
-                keep = [d for d in dl if kd.severity_at_or_above(d.get("severity"), severity)]
+                # The endpoint filter is an exact severity match.
+                # (UI uses it to render "just warnings" vs "just errors".)
+                keep = [d for d in dl if d.get("severity") == severity]
                 if keep:
                     filtered[tid] = keep
             diags_by_task = filtered
