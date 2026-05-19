@@ -179,3 +179,41 @@ async def test_command_handler_uses_effective_message_for_channel_post(telegram_
     assert event.message_type == MessageType.COMMAND
     assert event.source.chat_type == "channel"
     assert event.source.chat_id == "-1003950368353"
+
+
+@pytest.mark.asyncio
+async def test_media_handler_uses_effective_message_for_channel_post(
+    telegram_adapter_cls,
+    monkeypatch,
+):
+    adapter = _make_adapter(telegram_adapter_cls)
+    msg = _make_channel_message(text=None)
+    msg.caption = "channel photo"
+    file_obj = SimpleNamespace(
+        file_path="photos/channel.jpg",
+        download_as_bytearray=AsyncMock(return_value=bytearray(b"jpg-bytes")),
+    )
+    msg.photo = [SimpleNamespace(get_file=AsyncMock(return_value=file_obj))]
+    msg.video = None
+    msg.audio = None
+    msg.voice = None
+    msg.document = None
+    msg.sticker = None
+    update = _make_channel_update(msg)
+    adapter._enqueue_photo_event = MagicMock()
+    monkeypatch.setattr(
+        sys.modules["gateway.platforms.telegram"],
+        "cache_image_from_bytes",
+        lambda _data, ext=".jpg": f"/tmp/channel-post{ext}",
+    )
+
+    await adapter._handle_media_message(update, MagicMock())
+
+    adapter._enqueue_photo_event.assert_called_once()
+    event = adapter._enqueue_photo_event.call_args.args[1]
+    assert event.text == "channel photo"
+    assert event.message_type == MessageType.PHOTO
+    assert event.source.chat_type == "channel"
+    assert event.source.chat_id == "-1003950368353"
+    assert event.media_urls == ["/tmp/channel-post.jpg"]
+    assert event.media_types == ["image/jpg"]
