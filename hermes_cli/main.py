@@ -7656,8 +7656,13 @@ def _install_hangup_protection(gateway_mode: bool = False):
         )
 
         state["log_file"] = log_file
-        sys.stdout = _UpdateOutputStream(state["prev_stdout"], log_file)
-        sys.stderr = _UpdateOutputStream(state["prev_stderr"], log_file)
+        stream_cls = getattr(
+            sys.modules.get(__name__),
+            "_UpdateOutputStream",
+            _UpdateOutputStream,
+        )
+        sys.stdout = stream_cls(state["prev_stdout"], log_file)
+        sys.stderr = stream_cls(state["prev_stderr"], log_file)
         state["installed"] = True
     except Exception:
         # Leave stdio untouched on any setup failure.  Update continues

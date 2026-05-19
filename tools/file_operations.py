@@ -659,6 +659,29 @@ class ShellFileOperations(FileOperations):
         """Escape a string for safe use in shell commands."""
         # Use single quotes and escape any single quotes in the string
         return "'" + arg.replace("'", "'\"'\"'") + "'"
+
+    def _check_git_baseline(self, path: str) -> Optional[str]:
+        """Return a warning when ``path`` is inside a dirty git worktree."""
+        if not self._has_command("git"):
+            return None
+
+        repo_cwd = os.path.dirname(path) or getattr(self.env, "cwd", None) or self.cwd
+        inside = self._exec("git rev-parse --is-inside-work-tree", cwd=repo_cwd)
+        if inside.exit_code != 0 or inside.stdout.strip().lower() != "true":
+            return None
+
+        branch_result = self._exec("git rev-parse --abbrev-ref HEAD", cwd=repo_cwd)
+        branch = branch_result.stdout.strip() if branch_result.exit_code == 0 else ""
+        branch = branch or "unknown"
+
+        status = self._exec("git status --porcelain", cwd=repo_cwd)
+        if status.exit_code != 0 or not status.stdout.strip():
+            return None
+
+        return (
+            f"Git working tree is dirty on branch {branch}; write_file is "
+            "editing a checkout with uncommitted changes."
+        )
     
     def _unified_diff(self, old_content: str, new_content: str, filename: str) -> str:
         """Generate unified diff between old and new content."""
@@ -909,6 +932,8 @@ class ShellFileOperations(FileOperations):
         if _is_write_denied(path):
             return WriteResult(error=f"Write denied: '{path}' is a protected system/credential file.")
 
+        git_warning = self._check_git_baseline(path)
+
         # Capture pre-write content.  Two consumers want it:
         #
         #   1. The lint-delta layer (for in-process linters like ast.parse
@@ -993,6 +1018,7 @@ class ShellFileOperations(FileOperations):
             dirs_created=dirs_created,
             lint=lint_result.to_dict() if lint_result else None,
             lsp_diagnostics=lsp_diagnostics,
+            warning=git_warning,
         )
     
     # =========================================================================

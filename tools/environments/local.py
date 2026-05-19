@@ -294,6 +294,11 @@ def _make_run_env(env: dict) -> dict:
             run_env[real_key] = v
         elif k not in _HERMES_PROVIDER_ENV_BLOCKLIST or _is_passthrough(k):
             run_env[k] = v
+    # Terminal commands are wrapped explicitly below.  Inheriting POSIX shell
+    # startup hooks makes non-interactive commands depend on the developer's
+    # rc files and can change signal/trap behavior under tests.
+    run_env.pop("BASH_ENV", None)
+    run_env.pop("ENV", None)
     existing_path = run_env.get("PATH", "")
     # The "/usr/bin not already present → inject sane POSIX path" heuristic
     # only makes sense on POSIX.  On Windows the PATH separator is ";"

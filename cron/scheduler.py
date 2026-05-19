@@ -876,6 +876,11 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
         argv = [sys.executable, str(path)]
 
     run_env = os.environ.copy()
+    # Cron scripts should execute from their script file alone.  User shell
+    # startup hooks can make an otherwise empty watchdog fail, notably when
+    # BASH_ENV points at an interactive rc file.
+    run_env.pop("BASH_ENV", None)
+    run_env.pop("ENV", None)
     run_env["HERMES_HOME"] = str(_get_hermes_home())
     try:
         from hermes_constants import get_subprocess_home
