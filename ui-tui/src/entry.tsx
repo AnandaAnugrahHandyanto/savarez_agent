@@ -11,6 +11,7 @@ import { formatBytes, type HeapDumpResult, performHeapDump } from './lib/memory.
 import { type MemorySnapshot, startMemoryMonitor } from './lib/memoryMonitor.js'
 import { openExternalUrl } from './lib/openExternalUrl.js'
 import { resetTerminalModes } from './lib/terminalModes.js'
+import { prewarmLinuxClipboard } from '@hermes/ink'
 
 if (!process.stdin.isTTY) {
   console.log('hermes-tui: no TTY')
@@ -30,6 +31,11 @@ process.stdout.write('\x1b[2J\x1b[H\x1b[3J')
 const gw = new GatewayClient()
 
 gw.start()
+
+// Pre-warm the Linux clipboard tool cache at startup so the first
+// selection copy doesn't race an async probe (wl-copy/xclip/xsel
+// discovery). No-op on non-Linux and after the first probe.
+prewarmLinuxClipboard()
 
 const dumpNotice = (snap: MemorySnapshot, dump: HeapDumpResult | null) =>
   `hermes-tui: ${snap.level} memory (${formatBytes(snap.heapUsed)}) — auto heap dump → ${dump?.heapPath ?? '(failed)'}\n`

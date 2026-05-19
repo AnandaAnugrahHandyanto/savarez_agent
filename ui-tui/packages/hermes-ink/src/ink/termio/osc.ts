@@ -267,7 +267,7 @@ export async function setClipboard(text: string): Promise<ClipboardResult> {
   // Skipped entirely on terminals with first-class OSC 52 support (see
   // `shouldUseNativeClipboard()` above): running wl-copy/xclip/pbcopy in
   // parallel with OSC 52 on those terminals can corrupt the clipboard.
-  // wl-copy on Wayland is the worst offender — `probeLinuxCopy()` runs it
+  // wl-copy on Wayland is the worst offender — previously `probeLinuxCopy()` ran it
   // with empty stdin to check if the binary exists (which destructively
   // wipes the clipboard), and the subsequent real invocation forks a
   // background daemon that races the terminal's own OSC 52 write plus its
@@ -284,7 +284,7 @@ export async function setClipboard(text: string): Promise<ClipboardResult> {
   // HERMES_TUI_FORCE_OSC52=0 (otherwise the clipboard write becomes a
   // complete no-op). Fire-and-forget, but `nativeAttempted` tells us
   // whether ANY native path will be tried.
-  const nativeAttempted = shouldUseNativeClipboard(process.env, envModule.terminal) && copyNative(text)
+  const nativeAttempted = shouldUseNativeClipboard(process.env, envModule.terminal) && (await copyNative(text))
 
   const tmuxBufferLoaded = await tmuxLoadBuffer(text)
 
@@ -307,26 +307,42 @@ export async function setClipboard(text: string): Promise<ClipboardResult> {
 // Probe order: wl-copy (Wayland) → xclip (X11) → xsel (X11 fallback).
 // Cached after first attempt so repeated mouse-ups skip the probe chain.
 let linuxCopy: 'wl-copy' | 'xclip' | 'xsel' | null | undefined
+/** @internal Cache the in-flight probe promise so concurrent calls await one probe. */
+let linuxCopyProbePromise: Promise<'wl-copy' | 'xclip' | 'xsel' | null> | undefined
 
 /** Internal: probe once and cache — wl-copy first, then xclip, then xsel. */
 async function probeLinuxCopy(): Promise<'wl-copy' | 'xclip' | 'xsel' | null> {
   const opts = { useCwd: false, timeout: 500 }
 
-  const r = await execFileNoThrow('wl-copy', [], opts)
+  // Use `which` to check binary existence instead of running the clipboard tool
+  // with empty stdin — wl-copy hangs without a Wayland compositor (even with the
+  // SIGTERM timeout), and running wl-copy/xclip/xsel as a probe destructively
+  // wipes the clipboard. The actual copy happens in copyNative() where the tool
+  // receives the text to copy via stdin.
+  const tools: Array<'wl-copy' | 'xclip' | 'xsel'> = ['wl-copy', 'xclip', 'xsel']
 
-  if (r.code === 0) {
-    return 'wl-copy'
+  for (const tool of tools) {
+    const r = await execFileNoThrow('which', [tool], opts)
+
+    if (r.code === 0) {
+      return tool
+    }
   }
 
-  const r2 = await execFileNoThrow('xclip', ['-selection', 'clipboard'], opts)
+  return null
+}
 
-  if (r2.code === 0) {
-    return 'xclip'
+/**
+ * Fire the Linux probe, cache the promise and the result.
+ * Callers (prewarmLinuxClipboard, copyNative) both use this so the
+ * probe is started at most once.
+ */
+function startLinuxProbe(): Promise<'wl-copy' | 'xclip' | 'xsel' | null> {
+  if (!linuxCopyProbePromise) {
+    linuxCopyProbePromise = probeLinuxCopy()
   }
 
-  const r3 = await execFileNoThrow('xsel', ['--clipboard', '--input'], opts)
-
-  return r3.code === 0 ? 'xsel' : null
+  return linuxCopyProbePromise
 }
 
 /**
@@ -345,8 +361,12 @@ async function probeLinuxCopy(): Promise<'wl-copy' | 'xclip' | 'xsel' | null> {
  * Linux behaviour: if DISPLAY and WAYLAND_DISPLAY are both unset, native
  * clipboard tools cannot work (they need a display server). In that case
  * we skip probing entirely and treat linuxCopy as permanently null.
+ *
+ * Async: on Linux with no cached probe, the first call awaits the probe
+ * (started by prewarmLinuxClipboard or this call itself) so the result
+ * is deterministic — no silent first-copy failure.
  */
-function copyNative(text: string): boolean {
+async function copyNative(text: string): Promise<boolean> {
   const opts = { input: text, useCwd: false, timeout: 2000 }
 
   switch (process.platform) {
@@ -378,25 +398,24 @@ function copyNative(text: string): boolean {
 
         return false
       }
-      // First call: probe in the background and cache the result for future copies.
-      // We don't await — this is fire-and-forget. Treat as an attempt:
-      // the probe will discover a tool and spawn it. If probing finds
-      // nothing, the NEXT copy will short-circuit above.
-      void (async () => {
-        const winner = await probeLinuxCopy()
-        linuxCopy = winner
 
-        if (process.env.HERMES_TUI_DEBUG_CLIPBOARD) {
-          console.error(`[clipboard] [native] Linux: clipboard probe complete → ${winner ?? 'no tool available'}`)
-        }
+      // First call: await the probe (shared via startLinuxProbe so
+      // prewarm and concurrent setClipboard calls share one).
+      const winner = await startLinuxProbe()
+      linuxCopy = winner
 
-        // Actually perform the copy with the discovered tool.
-        if (winner) {
-          void execFileNoThrow(winner, winner === 'wl-copy' ? [] : ['-selection', 'clipboard'], opts)
-        }
-      })()
+      if (process.env.HERMES_TUI_DEBUG_CLIPBOARD) {
+        console.error(`[clipboard] [native] Linux: clipboard probe complete → ${winner ?? 'no tool available'}`)
+      }
 
-      return true
+      // Now that we know which tool is available, fire the copy.
+      if (winner) {
+        void execFileNoThrow(winner, winner === 'wl-copy' ? [] : ['-selection', 'clipboard'], opts)
+
+        return true
+      }
+
+      return false
     }
 
     case 'win32':
@@ -413,6 +432,28 @@ function copyNative(text: string): boolean {
 /** @internal test-only */
 export function _resetLinuxCopyCache(): void {
   linuxCopy = undefined
+  linuxCopyProbePromise = undefined
+}
+
+/** @internal test-only — expose the probe promise so tests can verify caching. */
+export function _getProbePromise(): Promise<'wl-copy' | 'xclip' | 'xsel' | null> | undefined {
+  return linuxCopyProbePromise
+}
+
+/**
+ * Pre-warm the Linux clipboard tool cache at startup so the first selection
+ * copy doesn't race an async probe. Fires the probe in the background and
+ * caches the promise. No-op on non-Linux platforms and when already probed.
+ * Call this from the TUI entry point after module initialisation.
+ * The probe promise is cached globally so concurrent `setClipboard` calls
+ * (via the async `copyNative`) share the same in-flight probe.
+ */
+export function prewarmLinuxClipboard(): void {
+  if (process.platform === 'linux' && linuxCopy === undefined) {
+    // startLinuxProbe() either returns the existing cached promise or
+    // starts a new one. Firing it without awaiting pre-warms the cache.
+    void startLinuxProbe()
+  }
 }
 
 /**

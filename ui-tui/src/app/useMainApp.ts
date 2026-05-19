@@ -18,7 +18,7 @@ import { useGitBranch } from '../hooks/useGitBranch.js'
 import { useVirtualHistory } from '../hooks/useVirtualHistory.js'
 import { composerPromptWidth } from '../lib/inputMetrics.js'
 import { appendTranscriptMessage } from '../lib/messages.js'
-import { DEFAULT_VOICE_RECORD_KEY, isMac, type ParsedVoiceRecordKey } from '../lib/platform.js'
+import { DEFAULT_VOICE_RECORD_KEY, type ParsedVoiceRecordKey } from '../lib/platform.js'
 import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
 import { terminalParityHints } from '../lib/terminalParity.js'
 import { buildToolTrailLine, sameToolTrailGroup, toolTrailLabel } from '../lib/text.js'
@@ -68,6 +68,27 @@ const statusColorOf = (status: string, t: { error: string; muted: string; ok: st
   }
 
   return t.muted
+}
+
+export const CLIPBOARD_COPY_TOAST_LABEL = 'clipboard-copy'
+export const CLIPBOARD_COPY_TOAST_MSG = 'Copied to clipboard'
+
+/**
+ * Copy-on-select handler: copies the current selection to clipboard and shows
+ * a success toast only when text was actually copied. Returns the copied text.
+ * Extracted for unit-testability — the useEffect in useMainApp calls this.
+ */
+export async function handleSelectionCopy(
+  selection: { copySelectionNoClear: () => Promise<string> },
+  pushToast: (label: string, message: string, tone: 'success') => void,
+): Promise<string> {
+  const text = await selection.copySelectionNoClear()
+
+  if (text) {
+    pushToast(CLIPBOARD_COPY_TOAST_LABEL, CLIPBOARD_COPY_TOAST_MSG, 'success')
+  }
+
+  return text
 }
 
 export function useMainApp(gw: GatewayClient) {
@@ -152,19 +173,18 @@ export function useMainApp(gw: GatewayClient) {
     selection.setSelectionBgColor(ui.theme.color.selectionBg)
   }, [selection, ui.theme.color.selectionBg])
 
-  // macOS Terminal.app does not forward Cmd+C to fullscreen TUIs that enable
-  // mouse tracking, so the only reliable native-feeling path is iTerm-style
-  // copy-on-select: once a drag creates a stable TUI selection, write it to
-  // the system clipboard while keeping the highlight visible.
+  // Terminals generally route native selection/copy around fullscreen TUIs
+  // until mouse tracking is enabled; then the app owns selection. Mirror
+  // terminal copy-on-select behavior by writing stable TUI selections to the
+  // clipboard while keeping the highlight visible.
   //
   // Subscribe directly via the ink selection bus (not useSyncExternalStore)
   // so React doesn't re-render MainApp on every drag-move tick. The version
   // ref de-dupes against re-entrant notifications.
   useEffect(() => {
-    if (!isMac) {
+    if (!ui.selectioncopy) {
       return
     }
-
     return selection.subscribe(() => {
       if (!selection.hasSelection()) {
         return
@@ -183,9 +203,9 @@ export function useMainApp(gw: GatewayClient) {
       }
 
       lastCopiedVersionRef.current = version
-      void selection.copySelectionNoClear()
+      void handleSelectionCopy(selection, (label, message, tone) => turnController.pushToast(label, message, tone))
     })
-  }, [selection])
+  }, [selection, ui.selectioncopy])
 
   const clearSelection = useCallback(() => {
     selection.clearSelection()
