@@ -23,8 +23,8 @@ check_key() {
     local var="$1"
     local kc_account="${2:-hermes}"
     local kc_service="${3:-$1}"
-    if grep -q "^${var}=" "$HOME/.hermes/.env" 2>/dev/null && \
-       [ -n "$(grep "^${var}=" "$HOME/.hermes/.env" | cut -d= -f2-)" ]; then
+    if grep -q "^${var}=" "${HERMES_HOME:-$HOME/.hermes-recommended}/.env" 2>/dev/null && \
+       [ -n "$(grep "^${var}=" "${HERMES_HOME:-$HOME/.hermes-recommended}/.env" | cut -d= -f2-)" ]; then
         echo "  ✓ ${var} (env)"
         return 0
     fi

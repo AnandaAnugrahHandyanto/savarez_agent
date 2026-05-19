@@ -281,23 +281,23 @@ class TestHermesConstantsFallback:
         module = self._load_helper(monkeypatch)
         assert module.get_hermes_home() == tmp_path / "custom-hermes"
 
-    def test_fallback_defaults_to_dot_hermes(self, monkeypatch):
-        """When hermes_constants is missing and HERMES_HOME unset, default to ~/.hermes."""
+    def test_fallback_defaults_to_dot_hermes_recommended(self, monkeypatch):
+        """When hermes_constants is missing and HERMES_HOME unset, default to ~/.hermes-recommended."""
         monkeypatch.delenv("HERMES_HOME", raising=False)
         module = self._load_helper(monkeypatch)
-        assert module.get_hermes_home() == Path.home() / ".hermes"
+        assert module.get_hermes_home() == Path.home() / ".hermes-recommended"
 
     def test_fallback_ignores_empty_hermes_home(self, monkeypatch):
         """Empty/whitespace HERMES_HOME is treated as unset."""
         monkeypatch.setenv("HERMES_HOME", "  ")
         module = self._load_helper(monkeypatch)
-        assert module.get_hermes_home() == Path.home() / ".hermes"
+        assert module.get_hermes_home() == Path.home() / ".hermes-recommended"
 
     def test_fallback_display_hermes_home_shortens_path(self, monkeypatch):
         """Fallback display_hermes_home() uses ~/ shorthand like the real one."""
         monkeypatch.delenv("HERMES_HOME", raising=False)
         module = self._load_helper(monkeypatch)
-        assert module.display_hermes_home() == "~/.hermes"
+        assert module.display_hermes_home() == "~/.hermes-recommended"
 
     def test_fallback_display_hermes_home_profile_path(self, monkeypatch):
         """Fallback display_hermes_home() handles profile paths under ~/."""
