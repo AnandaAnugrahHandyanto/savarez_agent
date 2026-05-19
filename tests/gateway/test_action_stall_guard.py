@@ -64,3 +64,26 @@ def test_corrective_continuation_is_bounded_and_preserves_context():
     assert "Send them to me via email" in continuation
     assert "Previous assistant response:" in continuation
     assert "Sending now" in continuation
+
+
+def test_corrective_continuation_uses_forward_direction_not_retrospective_scold():
+    """The corrective text must direct the model forward (call a tool now)
+    rather than re-litigate the prior turn ("Your previous response promised…",
+    "Do not claim sent/executed/verified/done…").  Retrospective scolds prime
+    defensive prose; tool_choice=required + a forward instruction is the
+    mechanically-enforced path.
+    """
+    continuation = _build_action_stall_continuation(
+        user_message="Send them to me via email",
+        assistant_response="Sending now…",
+        attempt=1,
+        max_attempts=2,
+    )
+
+    # Retrospective scolds that primed more prose on retry — must be gone.
+    assert "Your previous response promised" not in continuation
+    assert "Do not claim sent/executed/verified/done" not in continuation
+    assert "Do not answer with another status update" not in continuation
+
+    # Forward direction must be present.
+    assert "Continue the task" in continuation

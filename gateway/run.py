@@ -145,15 +145,21 @@ def _build_action_stall_continuation(
     attempt: int,
     max_attempts: int,
 ) -> str:
-    """Build the synthetic follow-up that forces action after a no-tool promise."""
+    """Build the synthetic follow-up that forces action after a no-tool promise.
+
+    Forward-directional only: the prefix + ``Attempt: N/M`` line are protocol
+    markers (see :data:`agent.action_stall.ACTION_STALL_EVENT_PREFIX` and
+    :data:`_ACTION_STALL_ATTEMPT_RE`).  The natural-language body tells the
+    model to call a tool now; retrospective scolds were removed because they
+    primed defensive prose on retry.  Mechanical enforcement lives in the
+    codex transport, which sees the prefix and sets ``tool_choice=required``.
+    """
     return (
         f"{_ACTION_STALL_EVENT_PREFIX}\n"
         f"Attempt: {attempt}/{max_attempts}\n\n"
-        "Your previous response promised or described execution, but the turn "
-        "completed with zero tool calls/tool results. Do not answer with another "
-        "status update. Use the available tools now to perform the action. If no "
-        "tool can perform it, state the precise blocker and the evidence. Do not "
-        "claim sent/executed/verified/done without current tool/API/file evidence.\n\n"
+        "The turn completed with zero tool calls/tool results. Continue the "
+        "task by calling an available tool now. If no available tool can "
+        "perform the action, return one sentence stating the precise blocker.\n\n"
         "Original user message:\n"
         f"{(user_message or '').strip()[:2000]}\n\n"
         "Previous assistant response:\n"
