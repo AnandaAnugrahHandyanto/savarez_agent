@@ -81,3 +81,35 @@ class TestLatestUserMessageIsStallContinuation:
     def test_missing_content_returns_false(self):
         messages = [{"role": "user"}]
         assert latest_user_message_is_stall_continuation(messages) is False
+
+    def test_returns_false_when_prior_assistant_already_emitted_tool_calls(self):
+        """Defensive check: if work was already done on the previous turn,
+        forcing tool_choice=required now would either loop or contradict the
+        agent's just-completed action.  The stall guard is only meant to
+        recover narration-without-tool_use turns.
+        """
+        messages = [
+            {"role": "user", "content": "send the report"},
+            {"role": "assistant", "tool_calls": [{"id": "c1", "function": {"name": "send"}}]},
+            {"role": "tool", "tool_call_id": "c1", "content": "ok"},
+            {"role": "user", "content": f"{ACTION_STALL_EVENT_PREFIX}\nAttempt: 1/2"},
+        ]
+        assert latest_user_message_is_stall_continuation(messages) is False
+
+    def test_returns_true_when_prior_assistant_had_no_tool_calls(self):
+        """Normal stall-recovery case: assistant turn emitted only prose."""
+        messages = [
+            {"role": "user", "content": "send the report"},
+            {"role": "assistant", "content": "I will now send the report."},
+            {"role": "user", "content": f"{ACTION_STALL_EVENT_PREFIX}\nAttempt: 1/2"},
+        ]
+        assert latest_user_message_is_stall_continuation(messages) is True
+
+    def test_returns_true_when_no_prior_assistant_turn_at_all(self):
+        """First-turn edge case: stall continuation as the very first user
+        entry (shouldn't happen in production but defend against it).
+        """
+        messages = [
+            {"role": "user", "content": f"{ACTION_STALL_EVENT_PREFIX}\nAttempt: 1/2"},
+        ]
+        assert latest_user_message_is_stall_continuation(messages) is True
