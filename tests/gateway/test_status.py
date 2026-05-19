@@ -358,6 +358,19 @@ class TestGatewayRuntimeStatus:
         assert payload["platforms"]["discord"]["error_code"] is None
         assert payload["platforms"]["discord"]["error_message"] is None
 
+    def test_write_runtime_status_recovers_from_non_utf8_state_file(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        state_path = tmp_path / "gateway_state.json"
+        state_path.write_bytes(b'{"gateway_state":"running"}\x17\x03\x03\x00\x13')
+
+        status.write_runtime_status(gateway_state="connected", active_agents=2)
+
+        payload = status.read_runtime_status()
+        assert payload["gateway_state"] == "connected"
+        assert payload["active_agents"] == 2
+        assert payload["pid"] == os.getpid()
+
 
 class TestTerminatePid:
     def test_force_uses_taskkill_on_windows(self, monkeypatch):
