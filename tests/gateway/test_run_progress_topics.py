@@ -121,6 +121,51 @@ class NonEditingProgressCaptureAdapter(ProgressCaptureAdapter):
         raise AssertionError("non-editable adapters should not receive edit_message calls")
 
 
+class TransientEditFailureAdapter(ProgressCaptureAdapter):
+    def __init__(self, platform=Platform.TELEGRAM):
+        super().__init__(platform=platform)
+        self.edit_attempts = 0
+
+    async def edit_message(self, chat_id, message_id, content) -> SendResult:
+        self.edit_attempts += 1
+        self.edits.append(
+            {
+                "chat_id": chat_id,
+                "message_id": message_id,
+                "content": content,
+            }
+        )
+        if self.edit_attempts == 1:
+            return SendResult(success=False, error="temporary edit failure")
+        return SendResult(success=True, message_id=message_id)
+
+
+class InitialProgressNoMessageIdAdapter(ProgressCaptureAdapter):
+    async def send(self, chat_id, content, reply_to=None, metadata=None) -> SendResult:
+        self.sent.append(
+            {
+                "chat_id": chat_id,
+                "content": content,
+                "reply_to": reply_to,
+                "metadata": metadata,
+            }
+        )
+        return SendResult(success=True, message_id=None)
+
+
+class InitialProgressFailureAdapter(ProgressCaptureAdapter):
+    async def send(self, chat_id, content, reply_to=None, metadata=None) -> SendResult:
+        self.sent.append(
+            {
+                "chat_id": chat_id,
+                "content": content,
+                "reply_to": reply_to,
+                "metadata": metadata,
+            }
+        )
+        return SendResult(success=False, error="Timed out", retryable=False)
+
+
 class FakeAgent:
     def __init__(self, **kwargs):
         # Capture anything passed via kwargs (older code path) but don't
@@ -197,6 +242,27 @@ class ManyProgressLinesAgent:
         for idx in range(1, 8):
             cb("tool.started", "terminal", f"overflow-line-{idx}-" + "x" * 45, {})
         time.sleep(0.1)
+        return {
+            "final_response": "done",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
+class ThreeStepProgressAgent:
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        cb = self.tool_progress_callback
+        if cb is not None:
+            cb("tool.started", "terminal", "first command", {})
+            time.sleep(0.4)
+            cb("tool.started", "browser_navigate", "second command", {})
+            time.sleep(1.6)
+            cb("tool.started", "read_file", "third command", {})
+            time.sleep(0.6)
         return {
             "final_response": "done",
             "messages": [],
@@ -767,6 +833,63 @@ async def test_run_agent_rolls_progress_bubble_before_platform_limit(monkeypatch
     assert adapter.oversized_edits == []
     all_bubbles = [call["content"] for call in adapter.sent + adapter.edits]
     assert all(len(text) <= adapter.MAX_MESSAGE_LENGTH for text in all_bubbles)
+
+
+@pytest.mark.asyncio
+async def test_run_agent_keeps_tool_progress_batched_after_transient_edit_failure(monkeypatch, tmp_path):
+    """A transient edit failure must not turn later tool progress into standalone sends."""
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        ThreeStepProgressAgent,
+        session_id="sess-progress-transient-edit-failure",
+        config_data={"display": {"tool_progress": "all"}},
+        adapter_cls=TransientEditFailureAdapter,
+    )
+
+    assert result["final_response"] == "done"
+    assert getattr(adapter, "edit_attempts", 0) >= 1
+    assert [call["content"] for call in adapter.sent] == [
+        '💻 terminal: "first command"'
+    ]
+
+
+@pytest.mark.asyncio
+async def test_run_agent_suppresses_later_progress_when_initial_send_has_no_message_id(monkeypatch, tmp_path):
+    """If the first progress send cannot be edited, do not resend accumulated lines."""
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        ThreeStepProgressAgent,
+        session_id="sess-progress-initial-no-message-id",
+        config_data={"display": {"tool_progress": "all"}},
+        adapter_cls=InitialProgressNoMessageIdAdapter,
+    )
+
+    assert result["final_response"] == "done"
+    assert [call["content"] for call in adapter.sent] == [
+        '💻 terminal: "first command"'
+    ]
+    assert adapter.edits == []
+
+
+@pytest.mark.asyncio
+async def test_run_agent_suppresses_later_progress_when_initial_send_fails(monkeypatch, tmp_path):
+    """A failed initial progress send may have reached Telegram; never retry as cumulative bubbles."""
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        ThreeStepProgressAgent,
+        session_id="sess-progress-initial-send-fails",
+        config_data={"display": {"tool_progress": "all"}},
+        adapter_cls=InitialProgressFailureAdapter,
+    )
+
+    assert result["final_response"] == "done"
+    assert [call["content"] for call in adapter.sent] == [
+        '💻 terminal: "first command"'
+    ]
+    assert adapter.edits == []
 
 
 @pytest.mark.asyncio

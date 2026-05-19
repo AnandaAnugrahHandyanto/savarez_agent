@@ -16085,40 +16085,30 @@ class GatewayRunner:
                         result = await _edit_progress_message(progress_msg_id, full_text)
                         if not result.success:
                             _err = (getattr(result, "error", "") or "").lower()
-                            # Transient network errors (ConnectError, timeouts)
-                            # must not permanently disable progress-message
-                            # editing — the next cycle can catch up.  Only
-                            # permanent failures (flood control, message not
-                            # found, permissions) should set can_edit = False.
-                            if getattr(result, "retryable", False):
-                                logger.debug(
-                                    "[%s] Transient edit failure — keeping can_edit=True",
-                                    adapter.name,
-                                )
-                                continue
                             if "flood" in _err or "retry after" in _err:
-                                # Flood control hit — backoff but keep editing.
-                                # Only disable edits for non-recoverable errors.
+                                # Flood control hit — pause progress edits for
+                                # this run. Do not fall back to fresh sends:
+                                # Telegram users experience that as tool-report
+                                # spam, and edit-capable adapters may recover on
+                                # the next turn.
                                 logger.info(
-                                    "[%s] Progress edit flood control, backing off",
+                                    "[%s] Progress edits paused due to flood control; suppressing standalone progress fallback",
                                     adapter.name,
                                 )
-                                _last_edit_ts = time.monotonic()
-                            else:
                                 can_edit = False
-                            _flood_result = await adapter.send(
-                                chat_id=source.chat_id,
-                                content=msg,
-                                reply_to=_progress_reply_to,
-                                metadata=_progress_metadata,
-                            )
-                            if (
-                                _cleanup_progress
-                                and getattr(_flood_result, "success", False)
-                                and getattr(_flood_result, "message_id", None)
-                            ):
-                                _cleanup_msg_ids.append(str(_flood_result.message_id))
+                            else:
+                                # A transient edit failure is not proof that the
+                                # adapter is non-editing. Keep batching in the
+                                # original progress bubble and try again later
+                                # (or in the final drain) instead of creating a
+                                # new visible tool-progress message.
+                                logger.debug(
+                                    "[%s] Progress edit failed; keeping progress batched: %s",
+                                    adapter.name,
+                                    getattr(result, "error", "") or "unknown error",
+                                )
                     else:
+                        result = None
                         if can_edit:
                             # First tool: send all accumulated text as new message
                             full_text = "\n".join(progress_lines)
@@ -16129,17 +16119,35 @@ class GatewayRunner:
                                 metadata=_progress_metadata,
                             )
                         else:
-                            # Editing unsupported: send just this line
-                            result = await adapter.send(
-                                chat_id=source.chat_id,
-                                content=msg,
-                                reply_to=_progress_reply_to,
-                                metadata=_progress_metadata,
+                            # Edits are temporarily disabled (for example after
+                            # Telegram flood control). Keep accumulating/silent
+                            # rather than sending each progress line as a new
+                            # standalone message.
+                            logger.debug(
+                                "[%s] Suppressing standalone tool-progress send while edits are paused",
+                                adapter.name,
                             )
-                        if result.success and result.message_id:
+                        if result is not None and result.success and result.message_id:
                             progress_msg_id = result.message_id
                             if _cleanup_progress:
                                 _cleanup_msg_ids.append(str(result.message_id))
+                        elif result is not None:
+                            # We attempted the initial visible progress send but
+                            # cannot edit it: either Telegram timed out after the
+                            # request may have landed, or the adapter reported
+                            # success without an editable message id. Retrying by
+                            # sending the accumulated progress text again creates
+                            # the duplicated standalone tool-report bubbles users
+                            # see in Telegram. Tool progress is auxiliary, so
+                            # fail closed for this run and keep later updates
+                            # silent instead of sending cumulative fallbacks.
+                            _err = getattr(result, "error", "") or "missing message id"
+                            logger.info(
+                                "[%s] Progress send returned no editable message id; suppressing standalone progress fallback: %s",
+                                adapter.name,
+                                _err,
+                            )
+                            can_edit = False
 
                     _last_edit_ts = time.monotonic()
 
