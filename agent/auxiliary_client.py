@@ -110,8 +110,10 @@ logger = logging.getLogger(__name__)
 # Module-level context for propagating default_headers (from
 # custom_providers[].custom_headers or runtime resolution) through the
 # auto-detection chain.  Set by _resolve_auto() / resolve_provider_client()
-# before invoking the chain; read by _try_anthropic().  This avoids changing
-# the _get_provider_chain() callback interface for all _try_* functions.
+# before invoking the chain; merged by _headers_with_config() so every _try_*
+# branch that builds an OpenAI/Anthropic-compatible client sees the same
+# provider-level headers without changing the _get_provider_chain() callback
+# interface.
 _resolution_default_headers: Optional[Dict[str, str]] = None
 
 
@@ -402,7 +404,8 @@ _AI_GATEWAY_HEADERS = {
 }
 
 def _headers_with_config(base_headers: Optional[Dict[str, str]] = None) -> Dict[str, str]:
-    return merge_default_headers(base_headers, get_model_custom_headers())
+    headers = merge_default_headers(base_headers, get_model_custom_headers())
+    return merge_default_headers(headers, _resolution_default_headers)
 
 
 def _client_default_headers(client: Any) -> Dict[str, str]:

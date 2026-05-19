@@ -1954,6 +1954,64 @@ class TestTryAnthropicDefaultHeaders:
                 aux_mod._resolution_default_headers = None
 
 
+class TestFallbackChainDefaultHeaders:
+    def test_custom_endpoint_merges_resolution_default_headers(self, monkeypatch):
+        import agent.auxiliary_client as aux_mod
+
+        captured = {}
+
+        class FakeOpenAI:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        monkeypatch.setattr("agent.auxiliary_client.OpenAI", FakeOpenAI)
+        monkeypatch.setattr(
+            "agent.auxiliary_client._resolve_custom_runtime",
+            lambda: ("https://relay.example.com/v1", "relay-key", "chat_completions"),
+        )
+        monkeypatch.setattr("agent.auxiliary_client._read_main_model", lambda: "relay-model")
+        monkeypatch.setattr("agent.auxiliary_client.get_model_custom_headers", lambda: {})
+
+        aux_mod._resolution_default_headers = {"X-Relay-Key": "relay-secret"}
+        try:
+            client, model = aux_mod._try_custom_endpoint()
+        finally:
+            aux_mod._resolution_default_headers = None
+
+        assert isinstance(client, FakeOpenAI)
+        assert model == "relay-model"
+        assert captured["default_headers"] == {"X-Relay-Key": "relay-secret"}
+
+    def test_openrouter_merges_resolution_default_headers(self, monkeypatch):
+        import agent.auxiliary_client as aux_mod
+
+        captured = {}
+
+        class FakeOpenAI:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        monkeypatch.setattr("agent.auxiliary_client.OpenAI", FakeOpenAI)
+        monkeypatch.setattr("agent.auxiliary_client._select_pool_entry", lambda _provider: (False, None))
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+        monkeypatch.setattr("agent.auxiliary_client.get_model_custom_headers", lambda: {})
+        monkeypatch.setattr(
+            "agent.auxiliary_client.build_or_headers",
+            lambda: {"HTTP-Referer": "https://hermes-agent.nousresearch.com"},
+        )
+
+        aux_mod._resolution_default_headers = {"X-Relay-Key": "relay-secret"}
+        try:
+            client, model = aux_mod._try_openrouter()
+        finally:
+            aux_mod._resolution_default_headers = None
+
+        assert isinstance(client, FakeOpenAI)
+        assert model
+        assert captured["default_headers"]["HTTP-Referer"] == "https://hermes-agent.nousresearch.com"
+        assert captured["default_headers"]["X-Relay-Key"] == "relay-secret"
+
+
 class _AuxAuth401(Exception):
     status_code = 401
 
