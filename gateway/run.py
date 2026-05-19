@@ -7254,10 +7254,10 @@ class GatewayRunner:
         if getattr(event, "channel_context", None):
             message_text = f"{event.channel_context}\n\n[New message]\n{message_text}"
 
+        audio_file_paths: list[str] = []  # audio file attachments — not for STT
         if event.media_urls:
             image_paths = []
             audio_paths = []
-            audio_file_paths: list[str] = []  # audio file attachments — not for STT
             for i, path in enumerate(event.media_urls):
                 mtype = event.media_types[i] if i < len(event.media_types) else ""
                 if mtype.startswith("image/") or event.message_type == MessageType.PHOTO:
