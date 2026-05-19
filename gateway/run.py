@@ -661,9 +661,7 @@ from gateway.whatsapp_identity import (
 )
 from gateway.busy_queue import (
     event_fingerprint as _busy_event_fingerprint,
-    extract_priority as _busy_extract_priority,
     load_busy_queue_config as _busy_load_config,
-    priority_rank as _busy_priority_rank,
 )
 from gateway.busy_queue_store import FileBusyQueueStore
 
@@ -2581,14 +2579,6 @@ class GatewayRunner:
     @staticmethod
     def _load_busy_queue_config() -> dict:
         return _busy_load_config(_hermes_home)
-
-    @staticmethod
-    def _extract_priority(text: str, default: str = "P1") -> str:
-        return _busy_extract_priority(text, default)
-
-    @staticmethod
-    def _priority_rank(priority: str) -> int:
-        return _busy_priority_rank(priority)
 
     @staticmethod
     def _event_fingerprint(event: "MessageEvent") -> str:

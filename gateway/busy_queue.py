@@ -1,4 +1,4 @@
-"""Busy-queue configuration and priority helpers.
+"""Busy-queue configuration and persistence helpers.
 
 Standalone module so GatewayRunner logic can stay thin while keeping file-based
 queue behavior.
@@ -15,9 +15,6 @@ def default_busy_queue_config(hermes_home: Path) -> Dict[str, Any]:
     return {
         "enabled": True,
         "storage_path": str(hermes_home / "queues" / "busy_queue.json"),
-        "dedupe_exact": True,
-        "default_priority": "P1",
-        "ack_template": "✅ Queued. I'll process this right after the current task.",
     }
 
 
@@ -35,21 +32,6 @@ def load_busy_queue_config(hermes_home: Path) -> Dict[str, Any]:
     except Exception:
         pass
     return cfg
-
-
-def extract_priority(text: str, default: str = "P1") -> str:
-    t = (text or "").upper()
-    if "P0" in t:
-        return "P0"
-    if "P2" in t:
-        return "P2"
-    if "P1" in t:
-        return "P1"
-    return default if default in {"P0", "P1", "P2"} else "P1"
-
-
-def priority_rank(priority: str) -> int:
-    return {"P0": 0, "P1": 1, "P2": 2}.get((priority or "P1").upper(), 1)
 
 
 def event_fingerprint(event: Any) -> str:
