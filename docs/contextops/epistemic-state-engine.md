@@ -1,6 +1,8 @@
 # ContextOps: Epistemic State Engine
 
 > **Lane anchor:** This is a standalone ContextOps lane. It is related to prior Hermes/Agent OS memory work, but it is not subordinate to the existing `#hermes-main` memory/compaction track. The priority here is cognitive phase continuity: restoring the user's active thought-state, unresolved tensions, and epistemic stance across turns/sessions without flattening contamination.
+>
+> **Repo boundary:** During the prototype phase, ContextOps lives in this repo as a separate repo-local module because it needs Hermes session/runtime evidence. Treat that as proximity, not ownership: core ContextOps should remain extractable into an independent package/repo later, with Hermes integration kept at explicit adapter boundaries.
 
 ## Operator summary
 

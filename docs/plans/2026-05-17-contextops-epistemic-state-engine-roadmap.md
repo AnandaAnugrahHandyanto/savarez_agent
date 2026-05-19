@@ -8,6 +8,8 @@
 
 **Tech stack:** Python, JSONL/YAML file state, pytest, optional Pydantic schemas, later SQLite/Postgres + vector/graph indexes only after MVP proves the cognitive object model.
 
+**Repository boundary decision:** For now, manage ContextOps inside this repo as a separate repo-local module and lane because it is tightly coupled to Hermes conversation/runtime evidence. Design every interface so it can later be extracted into an independent package/repo: keep ContextOps core free of gateway dispatch, Hermes durable-memory mutation, Obsidian/Qdrant/Neo4j writes, and non-ContextOps control-plane assumptions.
+
 ---
 
 ## Lane contract
