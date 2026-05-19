@@ -17,6 +17,8 @@ All Bedrock API calls are mocked — no real AWS credentials needed.
 """
 
 import os
+from contextlib import contextmanager
+from types import ModuleType
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -25,6 +27,19 @@ import pytest
 # ---------------------------------------------------------------------------
 # Shared helpers / fixtures
 # ---------------------------------------------------------------------------
+
+
+
+@contextmanager
+def _mock_botocore_session(*, return_value=None):
+    """Patch botocore.session even when botocore is not installed."""
+    botocore_mod = ModuleType("botocore")
+    session_mod = ModuleType("botocore.session")
+    session_mod.get_session = MagicMock(return_value=return_value)
+    botocore_mod.session = session_mod
+    with patch.dict("sys.modules", {"botocore": botocore_mod, "botocore.session": session_mod}):
+        yield session_mod.get_session
+
 
 _EU_MODELS = [
     {"id": "eu.anthropic.claude-sonnet-4-6-20250514-v1:0", "name": "Claude Sonnet 4.6 (EU)", "provider": "inference-profile"},
@@ -273,17 +288,10 @@ class TestBedrockRegionRouting:
 
         mock_session = MagicMock()
         mock_session.get_config_variable.return_value = "eu-central-1"
-        fake_session_mod = MagicMock()
-        fake_session_mod.get_session = MagicMock(return_value=mock_session)
-        fake_botocore = MagicMock()
-        fake_botocore.session = fake_session_mod
 
         with patch("agent.bedrock_adapter.has_aws_credentials", return_value=True), \
              patch("agent.bedrock_adapter.discover_bedrock_models", side_effect=_mock_discover), \
-             patch.dict("sys.modules", {
-                 "botocore": fake_botocore,
-                 "botocore.session": fake_session_mod,
-             }):
+             _mock_botocore_session(return_value=mock_session):
             providers = list_authenticated_providers(current_provider="bedrock")
 
         bedrock = next((p for p in providers if p["slug"] == "bedrock"), None)
@@ -316,15 +324,8 @@ class TestBedrockRegionRouting:
 
         mock_session = MagicMock()
         mock_session.get_config_variable.return_value = "eu-central-1"
-        fake_session_mod = MagicMock()
-        fake_session_mod.get_session = MagicMock(return_value=mock_session)
-        fake_botocore = MagicMock()
-        fake_botocore.session = fake_session_mod
 
-        with patch.dict("sys.modules", {
-            "botocore": fake_botocore,
-            "botocore.session": fake_session_mod,
-        }):
+        with _mock_botocore_session(return_value=mock_session):
             region = resolve_bedrock_region()
 
         assert region == "us-west-2", "env var should override botocore profile"
