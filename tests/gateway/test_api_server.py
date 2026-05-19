@@ -18,6 +18,7 @@ import os
 import stat
 import time
 import uuid
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -34,6 +35,7 @@ from gateway.platforms.api_server import (
     cors_middleware,
     security_headers_middleware,
 )
+from gateway.platforms.telegram import TelegramAdapter
 
 
 # ---------------------------------------------------------------------------
@@ -429,6 +431,99 @@ def adapter():
 @pytest.fixture
 def auth_adapter():
     return _make_adapter(api_key="sk-secret")
+
+
+# ---------------------------------------------------------------------------
+# Telegram peer relay endpoint
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_telegram_bot_relay_endpoint_dispatches_to_telegram_adapter(auth_adapter):
+    telegram_adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***"))
+    telegram_adapter.handle_message = AsyncMock()
+    auth_adapter.gateway_runner = SimpleNamespace(
+        adapters={Platform.TELEGRAM: telegram_adapter}
+    )
+
+    app = _create_app(auth_adapter)
+    app.router.add_post(
+        "/api/telegram/bot-relay",
+        auth_adapter._handle_telegram_bot_relay,
+    )
+
+    payload = {
+        "chat_id": "-1001",
+        "chat_name": "THEKINGDOM",
+        "thread_id": "17",
+        "text": "你看得到我吗？",
+        "raw_text": "@Draco_hermes_bot 你看得到我吗？",
+        "sender_bot_username": "superwing_bot",
+        "message_id": "555",
+        "relay_id": "relay-123",
+    }
+
+    async with TestClient(TestServer(app)) as cli:
+        resp = await cli.post(
+            "/api/telegram/bot-relay",
+            headers={"Authorization": "Bearer sk-secret"},
+            json=payload,
+        )
+        assert resp.status == 202
+        data = await resp.json()
+        assert data["status"] == "accepted"
+        assert data["relay_id"] == "relay-123"
+
+    await asyncio.sleep(0)
+    telegram_adapter.handle_message.assert_awaited_once()
+    event = telegram_adapter.handle_message.await_args.args[0]
+    assert event.internal is True
+    assert event.source.platform == Platform.TELEGRAM
+    assert event.source.chat_id == "-1001"
+    assert event.source.thread_id == "17"
+    assert event.source.user_name == "@superwing_bot"
+    assert event.message_id == "555"
+    assert event.text == "你看得到我吗？"
+
+
+@pytest.mark.asyncio
+async def test_telegram_bot_relay_endpoint_deduplicates_relay_id(auth_adapter):
+    telegram_adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***"))
+    telegram_adapter.handle_message = AsyncMock()
+    auth_adapter.gateway_runner = SimpleNamespace(
+        adapters={Platform.TELEGRAM: telegram_adapter}
+    )
+
+    app = _create_app(auth_adapter)
+    app.router.add_post(
+        "/api/telegram/bot-relay",
+        auth_adapter._handle_telegram_bot_relay,
+    )
+
+    payload = {
+        "chat_id": "-1001",
+        "thread_id": "17",
+        "text": "你看得到我吗？",
+        "raw_text": "@Draco_hermes_bot 你看得到我吗？",
+        "sender_bot_username": "superwing_bot",
+        "message_id": "555",
+        "relay_id": "relay-duplicate-123",
+    }
+
+    async with TestClient(TestServer(app)) as cli:
+        for _ in range(2):
+            resp = await cli.post(
+                "/api/telegram/bot-relay",
+                headers={"Authorization": "Bearer sk-secret"},
+                json=payload,
+            )
+            assert resp.status == 202
+            data = await resp.json()
+            assert data["status"] == "accepted"
+            assert data["relay_id"] == "relay-duplicate-123"
+
+    await asyncio.sleep(0)
+    telegram_adapter.handle_message.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------

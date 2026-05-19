@@ -56,6 +56,8 @@ except ImportError:
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
     BasePlatformAdapter,
+    MessageEvent,
+    MessageType,
     SendResult,
     is_network_accessible,
 )
@@ -954,6 +956,8 @@ class APIServerAdapter(BasePlatformAdapter):
         self._run_approval_sessions: Dict[str, str] = {}
         self._session_db: Optional[Any] = None  # Lazy-init SessionDB for session continuity
         self._iphone_companion_store = IPhoneCompanionStore()
+        self.gateway_runner = None
+        self._telegram_peer_relay_cache = _IdempotencyCache(max_items=1000, ttl_seconds=900)
 
     @staticmethod
     def _parse_cors_origins(value: Any) -> tuple[str, ...]:
@@ -1459,6 +1463,107 @@ class APIServerAdapter(BasePlatformAdapter):
         if decided is None:
             return web.json_response({"error": "Location request not found"}, status=404)
         return web.json_response(decided)
+
+    async def _handle_telegram_bot_relay(self, request: "web.Request") -> "web.Response":
+        """POST /api/telegram/bot-relay — inject a synthetic Telegram event."""
+        auth_error = self._check_auth(request)
+        if auth_error is not None:
+            return auth_error
+
+        if not self.gateway_runner:
+            return web.json_response({"error": "Gateway runner unavailable"}, status=503)
+
+        telegram_adapter = getattr(self.gateway_runner, "adapters", {}).get(Platform.TELEGRAM)
+        if telegram_adapter is None:
+            return web.json_response({"error": "Telegram adapter not configured"}, status=503)
+
+        try:
+            payload = await request.json()
+        except Exception:
+            return web.json_response({"error": "Invalid JSON body"}, status=400)
+        if not isinstance(payload, dict):
+            return web.json_response({"error": "JSON body must be an object"}, status=400)
+
+        chat_id = str(payload.get("chat_id") or "").strip()
+        text = str(payload.get("text") or "").strip()
+        if not chat_id or not text:
+            return web.json_response(
+                {"error": "Missing required fields: chat_id and text"},
+                status=400,
+            )
+
+        thread_id = payload.get("thread_id")
+        thread_id_str = str(thread_id).strip() if thread_id not in (None, "") else None
+        sender_bot_username = str(payload.get("sender_bot_username") or "").strip().lstrip("@")
+        sender_bot_id = payload.get("sender_bot_id")
+        relay_id = str(payload.get("relay_id") or "").strip()
+        user_name = f"@{sender_bot_username}" if sender_bot_username else "@telegram-bot-relay"
+        user_id = (
+            str(sender_bot_id)
+            if sender_bot_id not in (None, "")
+            else f"telegram-bot-relay:{sender_bot_username or 'unknown'}"
+        )
+        chat_type = str(payload.get("chat_type") or ("group" if chat_id.startswith("-") else "dm"))
+        chat_name = payload.get("chat_name")
+
+        async def _dispatch_peer_relay() -> None:
+            chat_topic = None
+            topic_skill = None
+            resolve_topic = getattr(telegram_adapter, "_resolve_group_topic_binding", None)
+            if callable(resolve_topic):
+                chat_topic, topic_skill = resolve_topic(chat_id, thread_id_str)
+
+            source = telegram_adapter.build_source(
+                chat_id=chat_id,
+                chat_name=chat_name,
+                chat_type=chat_type,
+                user_id=user_id,
+                user_name=user_name,
+                thread_id=thread_id_str,
+                chat_topic=chat_topic,
+            )
+            event = MessageEvent(
+                text=text,
+                message_type=MessageType.TEXT,
+                source=source,
+                raw_message=payload,
+                message_id=str(payload.get("message_id")) if payload.get("message_id") not in (None, "") else None,
+                auto_skill=topic_skill,
+                internal=True,
+            )
+
+            suppress_peer_relays = getattr(telegram_adapter, "_suppress_peer_relays", None)
+            if callable(suppress_peer_relays):
+                with suppress_peer_relays():
+                    await telegram_adapter.handle_message(event)
+            else:
+                await telegram_adapter.handle_message(event)
+
+        if relay_id:
+            relay_fingerprint = _make_request_fingerprint(
+                payload,
+                keys=[
+                    "chat_id",
+                    "thread_id",
+                    "text",
+                    "raw_text",
+                    "message_id",
+                    "sender_bot_username",
+                    "sender_bot_id",
+                ],
+            )
+            await self._telegram_peer_relay_cache.get_or_set(
+                f"telegram-bot-relay:{relay_id}",
+                relay_fingerprint,
+                _dispatch_peer_relay,
+            )
+        else:
+            await _dispatch_peer_relay()
+
+        return web.json_response(
+            {"status": "accepted", "relay_id": relay_id or None},
+            status=202,
+        )
 
     async def _handle_health(self, request: "web.Request") -> "web.Response":
         """GET /health — simple health check."""
@@ -4559,6 +4664,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "/api/iphone/location-requests/{request_id}/decision",
                 self._handle_iphone_location_request_decision,
             )
+            self._app.router.add_post("/api/telegram/bot-relay", self._handle_telegram_bot_relay)
             # Cron jobs management API
             self._app.router.add_get("/api/jobs", self._handle_list_jobs)
             self._app.router.add_post("/api/jobs", self._handle_create_job)

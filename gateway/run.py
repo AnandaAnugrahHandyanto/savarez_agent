@@ -6796,7 +6796,9 @@ class GatewayRunner:
             if not check_api_server_requirements():
                 logger.warning("API Server: aiohttp not installed")
                 return None
-            return APIServerAdapter(config)
+            adapter = APIServerAdapter(config)
+            adapter.gateway_runner = self
+            return adapter
 
         elif platform == Platform.WEBHOOK:
             from gateway.platforms.webhook import WebhookAdapter, check_webhook_requirements
@@ -9298,6 +9300,7 @@ class GatewayRunner:
                 run_generation=run_generation,
                 event_message_id=self._reply_anchor_for_event(event),
                 channel_prompt=event.channel_prompt,
+                event=event,
             )
 
             # Stop persistent typing indicator now that the agent is done
@@ -16701,6 +16704,7 @@ class GatewayRunner:
         _interrupt_depth: int = 0,
         event_message_id: Optional[str] = None,
         channel_prompt: Optional[str] = None,
+        event: Optional[MessageEvent] = None,
     ) -> Dict[str, Any]:
         """
         Run the agent with the given message and context.
@@ -16737,6 +16741,117 @@ class GatewayRunner:
         
         user_config = _load_gateway_config()
         platform_key = _platform_config_key(source.platform)
+        _is_telegram_turn = getattr(source.platform, "value", source.platform) == "telegram"
+        _is_internal_peer_relay_turn = (
+            _is_telegram_turn
+            and event is not None
+            and getattr(event, "internal", False)
+            and isinstance(getattr(event, "raw_message", None), dict)
+            and (
+                event.raw_message.get("sender_bot_username")
+                or event.raw_message.get("peer_relay_hop") not in (None, "")
+            )
+        )
+        _is_visible_telegram_other_bot_turn = False
+        _actionable_visible_telegram_peer_turn = False
+        _peer_turn_sender_label = None
+
+        if _is_telegram_turn and event is not None and not getattr(event, "internal", False):
+            _raw_message_obj = getattr(event, "raw_message", None)
+            _raw_sender = getattr(_raw_message_obj, "from_user", None)
+            if _raw_sender is not None and bool(getattr(_raw_sender, "is_bot", False)) and source.chat_type != "dm":
+                _telegram_adapter = self.adapters.get(source.platform)
+                _current_bot = getattr(_telegram_adapter, "_bot", None)
+                _current_bot_id = getattr(_current_bot, "id", None)
+                _current_bot_username = str(getattr(_current_bot, "username", "") or "").strip().lstrip("@")
+                _sender_id = getattr(_raw_sender, "id", None)
+                _is_visible_telegram_other_bot_turn = _sender_id != _current_bot_id
+                if _is_visible_telegram_other_bot_turn:
+                    _raw_username = str(getattr(_raw_sender, "username", "") or "").strip().lstrip("@")
+                    if _raw_username and re.fullmatch(r"[A-Za-z0-9_]{1,64}", _raw_username):
+                        _peer_turn_sender_label = f"@{_raw_username}"
+
+                    _raw_reply = getattr(_raw_message_obj, "reply_to_message", None)
+                    _reply_target_id = getattr(getattr(_raw_reply, "from_user", None), "id", None)
+                    _raw_message_mentions_current_bot = False
+                    for _source_text, _entities in (
+                        (getattr(_raw_message_obj, "text", None) or "", getattr(_raw_message_obj, "entities", None) or []),
+                        (getattr(_raw_message_obj, "caption", None) or "", getattr(_raw_message_obj, "caption_entities", None) or []),
+                    ):
+                        if _current_bot_username and re.search(
+                            rf"(?i)(?<![A-Za-z0-9_])@{re.escape(_current_bot_username)}(?![A-Za-z0-9_./-])",
+                            _source_text,
+                        ):
+                            _raw_message_mentions_current_bot = True
+                            break
+                        for _entity in _entities:
+                            _entity_type = str(getattr(_entity, "type", "")).split(".")[-1].lower()
+                            if _entity_type == "mention" and _current_bot_username:
+                                _offset = int(getattr(_entity, "offset", -1))
+                                _length = int(getattr(_entity, "length", 0))
+                                if _offset < 0 or _length <= 0:
+                                    continue
+                                if _source_text[_offset:_offset + _length].strip().lower() == f"@{_current_bot_username.lower()}":
+                                    _raw_message_mentions_current_bot = True
+                                    break
+                            elif _entity_type == "text_mention":
+                                _entity_user = getattr(_entity, "user", None)
+                                if _entity_user and getattr(_entity_user, "id", None) == _current_bot_id:
+                                    _raw_message_mentions_current_bot = True
+                                    break
+                        if _raw_message_mentions_current_bot:
+                            break
+                    _actionable_visible_telegram_peer_turn = bool(
+                        _raw_message_mentions_current_bot
+                        or (_reply_target_id is not None and _reply_target_id == _current_bot_id)
+                    )
+
+        _force_one_shot_telegram_reply = _is_internal_peer_relay_turn or _is_visible_telegram_other_bot_turn
+        _peer_turn_context_note = None
+        if _is_internal_peer_relay_turn or _actionable_visible_telegram_peer_turn:
+            if _is_internal_peer_relay_turn and isinstance(getattr(event, "raw_message", None), dict):
+                _relay_username = str(event.raw_message.get("sender_bot_username") or "").strip().lstrip("@")
+                if _relay_username and re.fullmatch(r"[A-Za-z0-9_]{1,64}", _relay_username):
+                    _peer_turn_sender_label = f"@{_relay_username}"
+            _sender_fragment = f" from {_peer_turn_sender_label}" if _peer_turn_sender_label else ""
+            _delivery_fragment = (
+                "Hermes internally relayed it because Telegram does not deliver bot-authored messages directly."
+                if _is_internal_peer_relay_turn
+                else "Telegram delivered a visible peer-bot message that explicitly addressed you, so treat it as a direct bot turn."
+            )
+            _peer_turn_context_note = (
+                "[System note: This Telegram peer-bot turn is actionable. "
+                f"A peer bot directly addressed you{_sender_fragment}. "
+                f"{_delivery_fragment} "
+                "Reply directly in this same chat/thread. "
+                "Do not treat cron delivery footer text like 'The agent cannot see this message, and therefore cannot respond to it.' "
+                "as a reason to stay silent; that footer is transport boilerplate.]"
+            )
+
+        if _is_internal_peer_relay_turn:
+            try:
+                _peer_relay_hop = int(event.raw_message.get("peer_relay_hop") or 0)
+            except (TypeError, ValueError):
+                _peer_relay_hop = 0
+            if _peer_relay_hop >= 1:
+                logger.info(
+                    "Consuming Telegram peer-relay return hop without reply in %s (hop=%s)",
+                    source.chat_id,
+                    _peer_relay_hop,
+                )
+                return {
+                    "final_response": "",
+                    "messages": [],
+                    "api_calls": 0,
+                    "tools": [],
+                    "history_offset": len(history),
+                    "last_prompt_tokens": 0,
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                    "model": None,
+                    "session_id": session_id,
+                    "response_previewed": False,
+                }
 
         from hermes_cli.tools_config import _get_platform_tools
         enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
@@ -16787,6 +16902,8 @@ class GatewayRunner:
         # so each progress line would be sent as a separate message.
         from gateway.config import Platform
         tool_progress_enabled = progress_mode != "off" and source.platform != Platform.WEBHOOK
+        if _force_one_shot_telegram_reply:
+            tool_progress_enabled = False
         # Natural assistant status messages are intentionally independent from
         # tool progress and token streaming. Users can keep tool_progress quiet
         # in chat platforms while opting into concise mid-turn updates.
@@ -16801,6 +16918,8 @@ class GatewayRunner:
                 )
             )
         )
+        if _force_one_shot_telegram_reply:
+            interim_assistant_messages_enabled = False
         
         # Queue for progress messages (thread-safe)
         progress_queue = queue.Queue() if tool_progress_enabled else None
@@ -17406,6 +17525,8 @@ class GatewayRunner:
             event_channel_prompt = (channel_prompt or "").strip()
             if event_channel_prompt:
                 combined_ephemeral = (combined_ephemeral + "\n\n" + event_channel_prompt).strip()
+            if _peer_turn_context_note:
+                combined_ephemeral = (combined_ephemeral + "\n\n" + _peer_turn_context_note).strip()
             if self._ephemeral_system_prompt:
                 combined_ephemeral = (combined_ephemeral + "\n\n" + self._ephemeral_system_prompt).strip()
 
@@ -18826,6 +18947,7 @@ class GatewayRunner:
                     _interrupt_depth=_interrupt_depth + 1,
                     event_message_id=next_message_id,
                     channel_prompt=next_channel_prompt,
+                    event=pending_event,
                 )
                 return _preserve_queued_followup_history_offset(result, followup_result)
         finally:
