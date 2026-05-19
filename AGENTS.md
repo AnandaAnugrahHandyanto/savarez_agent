@@ -13,6 +13,34 @@ source .venv/bin/activate   # or: source venv/bin/activate
 `$HOME/.hermes/hermes-agent/venv` (for worktrees that share a venv with the
 main checkout).
 
+## Sevenlevels Local Change Gate
+
+This checkout carries local `sevenlevels` profile patches and should be treated
+as a running user environment, not as a disposable upstream clone.
+
+For this checkout, do not edit source files, migrate configuration, sync built
+assets into the WSL runtime, restart the dashboard, restart the gateway, or
+mutate profile state until all of the following are done:
+
+1. Run a read-only grounding pass against the current worktree and runtime.
+2. Present a decision-complete `<proposed_plan>` for the specific change.
+3. Wait for explicit user confirmation of that plan.
+
+Allowed before confirmation: read-only inspection, status checks, diff review,
+and tests/builds that do not intentionally rewrite repo-tracked files.
+
+Operational guardrails:
+
+- Preserve the running gateway unless the user explicitly asks to restart or stop
+  it.
+- Never read back, print, or summarize secret values from `.env` files or other
+  credential stores.
+- Keep the current runtime anchored to the `sevenlevels` profile unless a plan
+  explicitly changes that anchor.
+- After any confirmed implementation, update
+  `docs/local/sevenlevels-stability.md` when the local patch surface, runtime
+  status, validation evidence, or rollback path changes.
+
 ## Project Structure
 
 File counts shift constantly — don't treat the tree below as exhaustive.
