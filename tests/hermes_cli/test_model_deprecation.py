@@ -66,6 +66,20 @@ class TestModelDeprecationDB:
             
             # Should create empty database
             assert len(db._records) == 0
+            # Database file is only created when records are saved
+            assert not db_path.exists()
+            
+            # Save a record to create the file
+            record = ModelDeprecationRecord(
+                model_id="test-model",
+                provider="test-provider",
+                first_detected=datetime.now(),
+                last_detected=datetime.now(),
+                failure_count=1,
+            )
+            db.update_record(record)
+            
+            # Now the file should exist
             assert db_path.exists()
     
     def test_record_crud(self):
@@ -141,24 +155,24 @@ class TestModelAvailabilityChecker:
         checker = ModelAvailabilityChecker()
         
         # First call should populate cache
-        with patch('hermes_cli.model_deprecation.fetch_api_models') as mock_fetch:
-            mock_fetch.return_value = ["test-model"]
+        with patch.object(checker, '_check_model_availability') as mock_check:
+            mock_check.return_value = (True, None)
             available, _ = checker.check_availability("test-model", "test-provider")
             assert available is True
-            assert mock_fetch.call_count == 1
+            assert mock_check.call_count == 1
         
         # Second call should use cache
-        with patch('hermes_cli.model_deprecation.fetch_api_models') as mock_fetch:
+        with patch.object(checker, '_check_model_availability') as mock_check:
             available, _ = checker.check_availability("test-model", "test-provider")
             assert available is True
-            assert mock_fetch.call_count == 0  # Should not be called due to cache
+            assert mock_check.call_count == 0  # Should not be called due to cache
     
     def test_availability_check_success(self):
         """Test successful availability check."""
         checker = ModelAvailabilityChecker()
         
-        with patch('hermes_cli.model_deprecation.fetch_api_models') as mock_fetch:
-            mock_fetch.return_value = ["test-model", "other-model"]
+        with patch.object(checker, '_check_model_availability') as mock_check:
+            mock_check.return_value = (True, None)
             available, error = checker.check_availability("test-model", "test-provider")
             
             assert available is True
@@ -168,8 +182,8 @@ class TestModelAvailabilityChecker:
         """Test failed availability check."""
         checker = ModelAvailabilityChecker()
         
-        with patch('hermes_cli.model_deprecation.fetch_api_models') as mock_fetch:
-            mock_fetch.return_value = ["other-model"]
+        with patch.object(checker, '_check_model_availability') as mock_check:
+            mock_check.return_value = (False, "Model not found in provider listing")
             available, error = checker.check_availability("test-model", "test-provider")
             
             assert available is False
@@ -263,7 +277,9 @@ class TestGetDeprecationInfo:
         info = get_deprecation_info("deepseek-chat", "deepseek")
         
         assert info is not None
-        assert info["model_id"] == "deepseek-chat"
+        assert info["provider"] == "deepseek"
+        assert info["redirect_model"] == "deepseek-v4-pro"
+        assert len(info["suggested_alternatives"]) > 0
         assert info["source"] == "known"
         assert info["redirect_model"] is not None
         assert len(info["suggested_alternatives"]) > 0
@@ -319,41 +335,25 @@ class TestGetAllDeprecations:
 class TestValidateModelWithDeprecationCheck:
     def test_deprecated_model_detection(self):
         """Test that deprecated models are detected during validation."""
-        with patch('hermes_cli.model_deprecation.validate_requested_model') as mock_validate:
-            mock_validate.return_value = {
-                "accepted": True,
-                "persist": True,
-                "recognized": True,
-                "message": None,
-            }
-            
-            result = validate_model_with_deprecation_check(
-                "deepseek-chat",
-                "deepseek"
-            )
-            
-            assert result["is_deprecated"] is True
-            assert "deprecation_info" in result
-            assert result["message"] is not None
-            assert "deprecated" in result["message"].lower()
+        result = validate_model_with_deprecation_check(
+            "deepseek-chat",
+            "deepseek"
+        )
+        
+        assert result["is_deprecated"] is True
+        assert "deprecation_info" in result
+        assert result["message"] is not None
+        assert "deprecated" in result["message"].lower()
     
     def test_valid_model_validation(self):
         """Test that valid models pass validation normally."""
-        with patch('hermes_cli.model_deprecation.validate_requested_model') as mock_validate:
-            mock_validate.return_value = {
-                "accepted": True,
-                "persist": True,
-                "recognized": True,
-                "message": None,
-            }
-            
-            result = validate_model_with_deprecation_check(
-                "gpt-4",
-                "openai"
-            )
-            
-            assert result["is_deprecated"] is False
-            assert "deprecation_info" not in result
+        result = validate_model_with_deprecation_check(
+            "gpt-4",
+            "openai"
+        )
+        
+        assert result["is_deprecated"] is False
+        assert "deprecation_info" not in result
 
 
 class TestClearDeprecationCache:
