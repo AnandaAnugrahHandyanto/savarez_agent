@@ -1,8 +1,8 @@
 diff --git a/node_modules/sanitize-html/index.js b/node_modules/sanitize-html/index.js
-index 1234567..abcdefg 100644
+index 58db0be..f008439 100644
 --- a/node_modules/sanitize-html/index.js
 +++ b/node_modules/sanitize-html/index.js
-@@ -139,6 +139,7 @@ module.exports = function sanitizeHtml(html, options) {
+@@ -139,6 +139,7 @@ function sanitizeHtml(html, options, _recursing) {
      'script',
      'style',
      'textarea',
