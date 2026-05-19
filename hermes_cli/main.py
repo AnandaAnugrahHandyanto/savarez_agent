@@ -13063,6 +13063,18 @@ Examples:
         subparsers.required = False
         args = parser.parse_args(_processed_argv)
 
+    # Fix: when -t/--toolsets is placed BEFORE the subcommand (e.g. `hermes -t web
+    # chat`), the main parser captures it but the subparser's
+    # add_argument(default=None) overwrites it with None.  Recover the value by
+    # scanning _processed_argv for -t before the subcommand token.
+    if getattr(args, "toolsets", None) is None and args.command == "chat":
+        for i, tok in enumerate(_processed_argv):
+            if tok in ("-t", "--toolsets") and i + 1 < len(_processed_argv):
+                nxt = _processed_argv[i + 1]
+                if not nxt.startswith("-"):
+                    args.toolsets = nxt
+                    break
+
     # Handle --version flag
     if args.version:
         cmd_version(args)
