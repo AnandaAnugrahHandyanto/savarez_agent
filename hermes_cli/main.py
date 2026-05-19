@@ -1416,6 +1416,18 @@ def cmd_chat(args):
         print("You can run 'hermes setup' at any time to configure.")
         sys.exit(1)
 
+    # Interactive prompt_toolkit chat requires a real terminal for stdin.
+    # In headless/non-PTY invocations (regular file/pipe stdin), kqueue on macOS
+    # can raise OSError(EINVAL) from loop.add_reader(fd=0). Fail early with a
+    # clear message, while still allowing `hermes chat -q ...` / `--image ...`
+    # automation paths to run without a TTY.
+    if (
+        not use_tui
+        and not getattr(args, "query", None)
+        and not getattr(args, "image", None)
+    ):
+        _require_tty("chat")
+
     # Start update check in background (runs while other init happens)
     try:
         from hermes_cli.banner import prefetch_update_check
