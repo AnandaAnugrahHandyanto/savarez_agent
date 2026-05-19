@@ -322,7 +322,9 @@ class TestCallServiceStringData:
             "entity_id": "climate.living_room",
             "data": '{"hvac_mode": "heat"}',
         })
-        call_args = mock_run.call_args[0][0]  # the coroutine arg
+        # Explicitly close the unawaited coroutine to avoid RuntimeWarning
+        coro = mock_run.call_args[0][0]
+        coro.close()
         # _run_async was called, meaning we got past validation
 
     @patch("tools.homeassistant_tool._run_async", return_value={"success": True})
@@ -334,6 +336,9 @@ class TestCallServiceStringData:
             "entity_id": "light.bedroom",
             "data": {"brightness": 255},
         })
+        # Explicitly close the unawaited coroutine to avoid RuntimeWarning
+        coro = mock_run.call_args[0][0]
+        coro.close()
         mock_run.assert_called_once()
 
     def test_invalid_json_string_returns_error(self):
@@ -356,6 +361,9 @@ class TestCallServiceStringData:
             "entity_id": "light.bedroom",
             "data": "   ",
         })
+        # Explicitly close the unawaited coroutine to avoid RuntimeWarning
+        coro = mock_run.call_args[0][0]
+        coro.close()
         mock_run.assert_called_once()
 
 
