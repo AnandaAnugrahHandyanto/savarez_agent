@@ -35,3 +35,26 @@ def test_create_openai_client_does_not_mutate_input_kwargs(mock_openai):
     assert kwargs == snapshot, (
         f"_create_openai_client mutated input kwargs; expected {snapshot}, got {kwargs}"
     )
+
+
+@patch("agent.ssl_guard.check_ssl_ca_bundle")
+@patch("run_agent.OpenAI")
+def test_create_openai_client_runs_ssl_ca_guard(mock_openai, mock_ssl_guard):
+    mock_openai.return_value = MagicMock()
+    agent = AIAgent(
+        api_key="test-key",
+        base_url="https://openrouter.ai/api/v1",
+        model="test/model",
+        quiet_mode=True,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+    mock_ssl_guard.reset_mock()
+
+    agent._create_openai_client(
+        {"api_key": "test-key", "base_url": "https://api.example.com/v1"},
+        reason="test",
+        shared=False,
+    )
+
+    mock_ssl_guard.assert_called_once_with()
