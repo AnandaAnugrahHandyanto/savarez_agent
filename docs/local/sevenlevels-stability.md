@@ -202,6 +202,32 @@ Result: `185 passed`.
   running, and gateway PID remained `17370`.
 - The gateway was not restarted.
 
+2026-05-20 patch savepoint pass:
+
+- Created documentation/change-gate savepoint:
+  `8786a653c docs: record sevenlevels stability gate`.
+- Created backend/API savepoint:
+  `a1eed9bdd feat: add dashboard session APIs`.
+- Created Dashboard/UI savepoint:
+  `25c3f5c14 feat: add dashboard session workspace UI`.
+- Backend/API validation before commit:
+  `PYTHONPATH=. .venv/bin/python -m pytest tests/test_tui_gateway_server.py -q`
+  from `/root/hermes-agent-wsl`, result `178 passed`.
+- Dashboard/UI validation before commit:
+  `npm.cmd run build --prefix web`, passed with the existing Vite large chunk
+  warning.
+- Runtime status after the UI savepoint remained healthy:
+  `hermes_home` stayed on the `sevenlevels` profile, gateway stayed running,
+  and gateway PID stayed `17370`.
+- `hermes_cli/web_dist` already matched between the source checkout and
+  `/root/hermes-agent-wsl`, so no built asset sync was needed after the UI
+  savepoint.
+- Repaired the local Windows desktop/taskbar launcher by restoring
+  `C:\Users\Administrator\Desktop\herms_video_analysis\open-sevenlevels-desktop-app.ps1`
+  and repointing the desktop, Start Menu, and pinned taskbar shortcuts to it.
+  This launcher opens `http://127.0.0.1:9122/chat` in an app-style Chrome
+  window with translation disabled.
+
 ## Rollback Path
 
 Do not use destructive reset commands casually. If a confirmed change breaks the
