@@ -49,6 +49,7 @@ _ensure_telegram_mock()
 
 from gateway.platforms.telegram import TelegramAdapter
 from gateway.config import Platform, PlatformConfig
+from tools import clarify_gateway
 
 
 def _make_adapter(extra=None):
@@ -524,3 +525,147 @@ class TestTelegramApprovalCallback:
         query.answer.assert_called_once()
         query.edit_message_text.assert_called_once()
         assert (tmp_path / ".update_response").read_text() == "n"
+
+
+# ===========================================================================
+# clarify() inline keyboard choices
+# ===========================================================================
+
+class TestTelegramClarifyButtons:
+    """Test clarify() choice prompts and cl: callback handling."""
+
+    @pytest.mark.asyncio
+    async def test_send_clarify_sends_inline_keyboard_and_state(self):
+        adapter = _make_adapter()
+        mock_msg = MagicMock()
+        mock_msg.message_id = 77
+        adapter._send_message_with_thread_fallback = AsyncMock(return_value=mock_msg)
+
+        result = await adapter.send_clarify(
+            chat_id="12345",
+            clarify_id="abc123",
+            session_key="agent:main:telegram:dm:12345",
+            question="Pick a color?",
+            choices=["Red", "Blue"],
+        )
+
+        assert result.success is True
+        assert result.message_id == "77"
+        adapter._send_message_with_thread_fallback.assert_called_once()
+        kwargs = adapter._send_message_with_thread_fallback.call_args[1]
+        assert kwargs["chat_id"] == 12345
+        assert "Pick a color?" in kwargs["text"]
+        assert kwargs["reply_markup"] is not None
+        assert adapter._clarify_state["abc123"] == "agent:main:telegram:dm:12345"
+
+    @pytest.mark.asyncio
+    async def test_clarify_callback_resolves_pending_question(self):
+        adapter = _make_adapter()
+        session_key = "agent:main:telegram:dm:12345"
+        pending = clarify_gateway.register(
+            "clarify-1",
+            session_key,
+            "Pick a color?",
+            ["Red", "Blue"],
+        )
+        adapter._clarify_state[pending.clarify_id] = session_key
+
+        query = AsyncMock()
+        query.data = f"cl:{pending.clarify_id}:1"
+        query.message = MagicMock()
+        query.message.chat_id = 12345
+        query.message.chat.type = "private"
+        query.message.text = "❓ Pick a color?"
+        query.from_user = MagicMock()
+        query.from_user.id = 111
+        query.from_user.first_name = "Alice"
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+
+        update = MagicMock()
+        update.callback_query = query
+
+        await adapter._handle_callback_query(update, MagicMock())
+
+        assert pending.event.is_set()
+        assert pending.response == "Blue"
+        assert pending.clarify_id not in adapter._clarify_state
+        query.answer.assert_called_once()
+        query.edit_message_text.assert_called_once()
+        edit_kwargs = query.edit_message_text.call_args[1]
+        assert "Blue" in edit_kwargs["text"]
+        clarify_gateway.clear_session(session_key)
+
+    @pytest.mark.asyncio
+    async def test_clarify_callback_other_marks_awaiting_text(self):
+        adapter = _make_adapter()
+        session_key = "agent:main:telegram:dm:12345"
+        pending = clarify_gateway.register(
+            "clarify-other",
+            session_key,
+            "Pick a color?",
+            ["Red", "Blue"],
+        )
+        adapter._clarify_state[pending.clarify_id] = session_key
+
+        query = AsyncMock()
+        query.data = f"cl:{pending.clarify_id}:other"
+        query.message = MagicMock()
+        query.message.chat_id = 12345
+        query.message.chat.type = "private"
+        query.message.text = "❓ Pick a color?"
+        query.from_user = MagicMock()
+        query.from_user.id = 111
+        query.from_user.first_name = "Alice"
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+
+        update = MagicMock()
+        update.callback_query = query
+
+        await adapter._handle_callback_query(update, MagicMock())
+
+        assert not pending.event.is_set()
+        assert pending.awaiting_text is True
+        assert adapter._clarify_state[pending.clarify_id] == session_key
+        query.answer.assert_called_once()
+        assert "type your answer" in query.answer.call_args[1]["text"].lower()
+        query.edit_message_text.assert_called_once()
+        clarify_gateway.clear_session(session_key)
+
+    @pytest.mark.asyncio
+    async def test_clarify_callback_rejects_unauthorized_user(self):
+        adapter = _make_adapter()
+        runner = _AuthRunner(authorized=False)
+        adapter._message_handler = runner._handle_message
+        session_key = "agent:main:telegram:dm:12345"
+        pending = clarify_gateway.register(
+            "clarify-denied",
+            session_key,
+            "Pick a color?",
+            ["Red", "Blue"],
+        )
+        adapter._clarify_state[pending.clarify_id] = session_key
+
+        query = AsyncMock()
+        query.data = f"cl:{pending.clarify_id}:0"
+        query.message = MagicMock()
+        query.message.chat_id = 12345
+        query.message.chat.type = "private"
+        query.from_user = MagicMock()
+        query.from_user.id = 222
+        query.from_user.first_name = "Mallory"
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+
+        update = MagicMock()
+        update.callback_query = query
+
+        await adapter._handle_callback_query(update, MagicMock())
+
+        assert not pending.event.is_set()
+        assert adapter._clarify_state[pending.clarify_id] == session_key
+        query.answer.assert_called_once()
+        assert "not authorized" in query.answer.call_args[1]["text"].lower()
+        query.edit_message_text.assert_not_called()
+        clarify_gateway.clear_session(session_key)
