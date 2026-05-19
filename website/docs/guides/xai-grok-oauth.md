@@ -1,12 +1,16 @@
 ---
 sidebar_position: 16
-title: "xAI Grok OAuth (SuperGrok Subscription)"
-description: "Sign in with your SuperGrok subscription to use Grok models in Hermes Agent — no API key required"
+title: "xAI Grok OAuth (Grok Subscription)"
+description: "Sign in with your Grok subscription — including X Premium — to use Grok models in Hermes Agent. No API key required."
 ---
 
-# xAI Grok OAuth (SuperGrok Subscription)
+# xAI Grok OAuth (Grok Subscription)
 
-Hermes Agent supports xAI Grok through a browser-based OAuth login flow against [accounts.x.ai](https://accounts.x.ai), using your existing **SuperGrok subscription**. No `XAI_API_KEY` is required — log in once and Hermes automatically refreshes your session in the background.
+Hermes Agent supports xAI Grok through a browser-based OAuth login flow against [accounts.x.ai](https://accounts.x.ai), using your existing **Grok subscription**. No `XAI_API_KEY` is required — log in once and Hermes automatically refreshes your session in the background.
+
+:::info Any Grok subscription tier works
+X Premium ($8/mo), X Premium+ ($40/mo), and SuperGrok ($30/mo) all grant OAuth access. You do **not** need SuperGrok specifically. ([xAI announcement](https://x.ai/news/grok-hermes): *"Connecting Grok to your Hermes agent is available on every tier."*)
+:::
 
 The transport reuses the `codex_responses` adapter (xAI exposes a Responses-style endpoint), so reasoning, tool-calling, streaming, and prompt caching work without any adapter changes.
 
@@ -24,17 +28,17 @@ The same OAuth bearer token is also reused by every direct-to-xAI surface in Her
 | Endpoint | `https://api.x.ai/v1` |
 | Auth server | `https://accounts.x.ai` |
 | Requires env var | No (`XAI_API_KEY` is **not** used for this provider) |
-| Subscription | [SuperGrok](https://x.ai/grok) — see note below |
+| Subscription | Any [Grok subscription](https://x.ai/grok) — X Premium, X Premium+, or SuperGrok |
 
 ## Prerequisites
 
 - Python 3.9+
 - Hermes Agent installed
-- An active SuperGrok subscription on your xAI account
+- An active Grok subscription on your xAI account (X Premium, X Premium+, or SuperGrok)
 - A browser available on the local machine (or use `--no-browser` for remote sessions)
 
 :::warning xAI may restrict OAuth API access by tier
-xAI's backend enforces its own allowlist on the OAuth API surface and has been seen to reject standard SuperGrok subscribers with `HTTP 403` (see issue [#26847](https://github.com/NousResearch/hermes-agent/issues/26847)) even though the in-app subscription is active. If OAuth login succeeds in the browser but inference returns 403, set `XAI_API_KEY` and switch to the API-key path (`provider: xai`) — that surface is not subject to the same gating today.
+xAI's backend enforces its own allowlist on the OAuth API surface and has been seen to reject subscribers with `HTTP 403` (see issue [#26847](https://github.com/NousResearch/hermes-agent/issues/26847)) despite the subscription being active. If OAuth login succeeds in the browser but inference returns 403, set `XAI_API_KEY` and switch to the API-key path (`provider: xai`) — that surface is not subject to the same gating today.
 :::
 
 ## Quick Start
@@ -165,7 +169,7 @@ The `video_gen` toolset is disabled by default. Enable it in `hermes tools` → 
 :::
 
 :::note X search auto-enables when xAI credentials are present
-The `x_search` toolset auto-enables whenever xAI credentials (a SuperGrok OAuth token or `XAI_API_KEY`) are configured. Disable explicitly via `hermes tools` → `🐦 X (Twitter) Search` (press space) if you don't want this. The tool routes through xAI's built-in `x_search` Responses API — it works with **either** your SuperGrok OAuth login or a paid `XAI_API_KEY`, and prefers OAuth when both are configured (uses your subscription quota instead of API spend). The tool schema is hidden from the model when no xAI credentials are configured, regardless of whether the toolset is enabled.
+The `x_search` toolset auto-enables whenever xAI credentials (a Grok OAuth token or `XAI_API_KEY`) are configured. Disable explicitly via `hermes tools` → `🐦 X (Twitter) Search` (press space) if you don't want this. The tool routes through xAI's built-in `x_search` Responses API — it works with **either** your Grok OAuth login or a paid `XAI_API_KEY`, and prefers OAuth when both are configured (uses your subscription quota instead of API spend). The tool schema is hidden from the model when no xAI credentials are configured, regardless of whether the toolset is enabled.
 :::
 
 ### Models
@@ -230,7 +234,7 @@ Full walkthrough (jump boxes, mosh/tmux, port conflicts): [OAuth over SSH / Remo
 
 OAuth completed in the browser, tokens are saved, but inference or token refresh returns `HTTP 403` with a message similar to *"The caller does not have permission to execute the specified operation"*.
 
-This is **not** a stale-token problem — re-running `hermes model` won't change it. xAI's backend has been seen to restrict OAuth API access to specific SuperGrok tiers despite the in-app subscription being active (issue [#26847](https://github.com/NousResearch/hermes-agent/issues/26847)).
+This is **not** a stale-token problem — re-running `hermes model` won't change it. xAI's backend has been seen to restrict OAuth API access to specific subscription tiers despite the subscription being active (issue [#26847](https://github.com/NousResearch/hermes-agent/issues/26847)).
 
 **Fix:** set `XAI_API_KEY` and switch to the API-key path:
 
@@ -239,7 +243,7 @@ export XAI_API_KEY=xai-...
 hermes config set model.provider xai
 ```
 
-Or upgrade your subscription at [x.ai/grok](https://x.ai/grok) if the OAuth route is required.
+Or upgrade your subscription at [x.ai/grok](https://x.ai/grok) if a higher tier is required.
 
 ### "No xAI credentials found" error at runtime
 
