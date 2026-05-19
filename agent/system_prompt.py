@@ -40,6 +40,7 @@ from agent.prompt_builder import (
     TOOL_USE_ENFORCEMENT_GUIDANCE,
     TOOL_USE_ENFORCEMENT_MODELS,
 )
+from model_tools import sort_openai_tool_schemas
 
 
 def _ra():
@@ -325,7 +326,7 @@ def format_tools_for_system_message(agent: Any) -> str:
 
     # Convert tool definitions to the format expected in trajectories
     formatted_tools = []
-    for tool in agent.tools:
+    for tool in sort_openai_tool_schemas(agent.tools):
         func = tool["function"]
         formatted_tool = {
             "name": func["name"],

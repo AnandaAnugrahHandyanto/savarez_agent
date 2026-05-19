@@ -52,7 +52,11 @@ from agent.tool_guardrails import (
 from hermes_cli.config import cfg_get
 from hermes_cli.timeouts import get_provider_request_timeout
 from hermes_constants import get_hermes_home
-from model_tools import check_toolset_requirements, get_tool_definitions
+from model_tools import (
+    check_toolset_requirements,
+    get_tool_definitions,
+    sort_openai_tool_schemas,
+)
 from utils import base_url_host_matches
 
 # Use the same logger name as run_agent so tests patching ``run_agent.logger``
@@ -1063,6 +1067,7 @@ def init_agent(
             if _tname:
                 agent.valid_tool_names.add(_tname)
                 _existing_tool_names.add(_tname)
+        agent.tools = sort_openai_tool_schemas(agent.tools)
 
     # Skills config: nudge interval for skill creation reminders
     agent._skill_nudge_interval = 10
@@ -1374,6 +1379,7 @@ def init_agent(
                 agent.valid_tool_names.add(_tname)
                 agent._context_engine_tool_names.add(_tname)
                 _existing_tool_names.add(_tname)
+        agent.tools = sort_openai_tool_schemas(agent.tools)
 
     # Notify context engine of session start
     if hasattr(agent, "context_compressor") and agent.context_compressor:
