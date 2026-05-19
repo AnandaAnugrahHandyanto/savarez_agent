@@ -953,6 +953,12 @@ def _spawn_hermes_action(subcommand: List[str], name: str) -> subprocess.Popen:
     Uses the running interpreter's ``hermes_cli.main`` module so the action
     inherits the same venv/PYTHONPATH the web server is using.
     """
+    existing = _ACTION_PROCS.get(name)
+    if existing is not None and existing.poll() is None:
+        # Desktop can fire duplicate restart/update requests from retries.
+        # Reuse the active process instead of spawning overlapping actions.
+        return existing
+
     log_file_name = _ACTION_LOG_FILES[name]
     _ACTION_LOG_DIR.mkdir(parents=True, exist_ok=True)
     log_path = _ACTION_LOG_DIR / log_file_name

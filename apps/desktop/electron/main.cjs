@@ -667,6 +667,43 @@ function isCommandScript(command) {
   return IS_WINDOWS && /\.(cmd|bat)$/i.test(command || '')
 }
 
+function normalizeExecutablePathForCompare(commandPath) {
+  if (!commandPath) return null
+
+  let resolved = path.resolve(String(commandPath))
+  try {
+    resolved = fs.realpathSync.native
+      ? fs.realpathSync.native(commandPath)
+      : fs.realpathSync(commandPath)
+  } catch {
+    // Fallback to path.resolve() above.
+  }
+
+  return IS_WINDOWS ? resolved.toLowerCase() : resolved
+}
+
+function looksLikeDesktopAppBinary(commandPath) {
+  if (!IS_WINDOWS || !commandPath) return false
+
+  const normalizedCandidate = normalizeExecutablePathForCompare(commandPath)
+  const normalizedCurrentExec = normalizeExecutablePathForCompare(process.execPath)
+  if (normalizedCandidate && normalizedCurrentExec && normalizedCandidate === normalizedCurrentExec) {
+    return true
+  }
+
+  let resolved = path.resolve(String(commandPath))
+  try {
+    resolved = fs.realpathSync.native
+      ? fs.realpathSync.native(commandPath)
+      : fs.realpathSync(commandPath)
+  } catch {
+    // Keep resolved path fallback.
+  }
+
+  const resourcesDir = path.join(path.dirname(resolved), 'resources')
+  return fileExists(path.join(resourcesDir, 'app.asar')) || directoryExists(path.join(resourcesDir, 'app.asar.unpacked'))
+}
+
 function isHermesSourceRoot(root) {
   return directoryExists(root) && fileExists(path.join(root, 'hermes_cli', 'main.py'))
 }
@@ -1301,6 +1338,13 @@ function resolveHermesBackend(dashboardArgs) {
       }
     } else {
       hermesCommand = findOnPath('hermes')
+    }
+
+    if (hermesCommand) {
+      if (looksLikeDesktopAppBinary(hermesCommand)) {
+        rememberLog(`Ignoring desktop app executable on PATH while resolving Hermes CLI: ${hermesCommand}`)
+        hermesCommand = null
+      }
     }
 
     if (hermesCommand) {

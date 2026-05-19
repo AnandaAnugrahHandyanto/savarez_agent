@@ -305,18 +305,25 @@ def _scan_gateway_pids(exclude_pids: set[int], all_profiles: bool = False) -> li
         "hermes_cli/main.py --profile",
         "hermes_cli/main.py -p",
         "hermes gateway",
+        "hermes.exe gateway",
+        "hermes.exe --profile",
+        "hermes.exe -p",
+        "hermes-gateway.exe",
         "gateway/run.py",
     ]
     current_home = str(get_hermes_home().resolve())
+    current_home_lc = current_home.lower()
     current_profile_arg = _profile_arg(current_home)
     current_profile_name = current_profile_arg.split()[-1] if current_profile_arg else ""
+    current_profile_name_lc = current_profile_name.lower()
 
     def _matches_current_profile(command: str) -> bool:
+        command_lc = command.lower()
         if current_profile_name:
             return (
-                f"--profile {current_profile_name}" in command
-                or f"-p {current_profile_name}" in command
-                or f"HERMES_HOME={current_home}" in command
+                f"--profile {current_profile_name_lc}" in command_lc
+                or f"-p {current_profile_name_lc}" in command_lc
+                or f"hermes_home={current_home_lc}" in command_lc
             )
 
         # Default-profile case: no profile flag in argv. Accept as long as
@@ -324,9 +331,9 @@ def _scan_gateway_pids(exclude_pids: set[int], all_profiles: bool = False) -> li
         # may be passed via env (not visible in wmic/CIM command line) so
         # its absence is NOT disqualifying — only a non-matching explicit
         # HERMES_HOME= in argv is.
-        if "--profile " in command or " -p " in command:
+        if "--profile " in command_lc or " -p " in command_lc:
             return False
-        if "HERMES_HOME=" in command and f"HERMES_HOME={current_home}" not in command:
+        if "hermes_home=" in command_lc and f"hermes_home={current_home_lc}" not in command_lc:
             return False
         return True
 
@@ -387,7 +394,8 @@ def _scan_gateway_pids(exclude_pids: set[int], all_profiles: bool = False) -> li
                     current_cmd = line[len("CommandLine="):]
                 elif line.startswith("ProcessId="):
                     pid_str = line[len("ProcessId="):]
-                    if any(p in current_cmd for p in patterns) and (
+                    current_cmd_lc = current_cmd.lower()
+                    if any(p in current_cmd_lc for p in patterns) and (
                         all_profiles or _matches_current_profile(current_cmd)
                     ):
                         try:
@@ -411,7 +419,8 @@ def _scan_gateway_pids(exclude_pids: set[int], all_profiles: bool = False) -> li
                         try:
                             cmdline = open(f"/proc/{pid}/cmdline", "rb").read().decode("utf-8", errors="replace")
                             cmdline = cmdline.replace("\x00", " ")
-                            if any(p in cmdline for p in patterns) and (
+                            cmdline_lc = cmdline.lower()
+                            if any(p in cmdline_lc for p in patterns) and (
                                 all_profiles or _matches_current_profile(cmdline)
                             ):
                                 _append_unique_pid(pids, pid, exclude_pids)
@@ -454,7 +463,8 @@ def _scan_gateway_pids(exclude_pids: set[int], all_profiles: bool = False) -> li
 
                     if pid is None:
                         continue
-                    if any(pattern in command for pattern in patterns) and (
+                    command_lc = command.lower()
+                    if any(pattern in command_lc for pattern in patterns) and (
                         all_profiles or _matches_current_profile(command)
                     ):
                         _append_unique_pid(pids, pid, exclude_pids)

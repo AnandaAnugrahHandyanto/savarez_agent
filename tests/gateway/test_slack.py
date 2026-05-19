@@ -66,6 +66,17 @@ _slack_mod.SLACK_AVAILABLE = True
 from gateway.platforms.slack import SlackAdapter  # noqa: E402
 
 
+def _fake_create_task(coro):
+    """Test helper: consume coroutine and return a lightweight task mock."""
+    if asyncio.iscoroutine(coro):
+        coro.close()
+
+    task = MagicMock(name="socket-mode-task")
+    task.done.return_value = False
+    task.cancelled.return_value = False
+    return task
+
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -184,7 +195,7 @@ class TestAppMentionHandler:
              patch.object(_slack_mod, "AsyncSocketModeHandler", return_value=MagicMock()), \
              patch.dict(os.environ, {"SLACK_APP_TOKEN": "xapp-fake"}), \
              patch("gateway.status.acquire_scoped_lock", return_value=(True, None)), \
-             patch("asyncio.create_task"):
+             patch("asyncio.create_task", side_effect=_fake_create_task):
             asyncio.run(adapter.connect())
 
         assert "message" in registered_events
@@ -273,7 +284,7 @@ class TestSlackConnectCleanup:
              patch.dict(os.environ, {"SLACK_APP_TOKEN": "xapp-fake"}), \
              patch("gateway.status.acquire_scoped_lock", return_value=(True, None)), \
              patch("gateway.status.release_scoped_lock"), \
-             patch("asyncio.create_task"):
+             patch("asyncio.create_task", side_effect=_fake_create_task):
             result = await adapter.connect()
 
         assert result is True
@@ -379,7 +390,7 @@ class TestSlackProxyBehavior:
              patch.object(_slack_mod, "_resolve_slack_proxy_url", return_value="http://proxy.example.com:3128"), \
              patch.dict(os.environ, {"SLACK_APP_TOKEN": "xapp-fake"}, clear=False), \
              patch("gateway.status.acquire_scoped_lock", return_value=(True, None)), \
-             patch("asyncio.create_task", return_value=MagicMock(name="socket-mode-task")):
+             patch("asyncio.create_task", side_effect=_fake_create_task):
             result = await adapter.connect()
 
         assert result is True
@@ -462,7 +473,7 @@ class TestSlackProxyBehavior:
              patch.object(_slack_mod, "_resolve_slack_proxy_url", return_value=None), \
              patch.dict(os.environ, {"SLACK_APP_TOKEN": "xapp-fake"}, clear=False), \
              patch("gateway.status.acquire_scoped_lock", return_value=(True, None)), \
-             patch("asyncio.create_task", return_value=MagicMock(name="socket-mode-task")):
+             patch("asyncio.create_task", side_effect=_fake_create_task):
             result = await adapter.connect()
 
         assert result is True
