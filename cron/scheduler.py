@@ -684,16 +684,37 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                         except TimeoutError:
                             future.cancel()
                             raise
-                        if send_result and not getattr(send_result, "success", True):
-                            err = getattr(send_result, "error", "unknown")
+                        # Require POSITIVE confirmation that a message was
+                        # actually sent: a SendResult with success True AND a
+                        # real message_id. A None result, success=False, or
+                        # success=True with message_id=None (the adapter's
+                        # "nothing actually sent" skip path — e.g. empty
+                        # content, or a stale adapter after a gateway
+                        # interruption/restart) is NOT a delivery. Without
+                        # this the scheduler logged "delivered via live
+                        # adapter" and set delivered=True while the message
+                        # was silently dropped, never falling back to the
+                        # working standalone HTTP path. Genuine sends always
+                        # carry a real message_id, so confirmed delivery is
+                        # not double-sent.
+                        confirmed = bool(
+                            send_result is not None
+                            and getattr(send_result, "success", False)
+                            and getattr(send_result, "message_id", None) is not None
+                        )
+                        if not confirmed:
+                            err = (
+                                getattr(send_result, "error", None)
+                                or ("sent-but-unconfirmed (no message_id)"
+                                    if send_result is not None else "no result")
+                            )
                             logger.warning(
-                                "Job '%s': live adapter send to %s:%s failed (%s), falling back to standalone",
+                                "Job '%s': live adapter send to %s:%s not confirmed (%s), falling back to standalone",
                                 job["id"], platform_name, chat_id, err,
                             )
                             adapter_ok = False  # fall through to standalone path
                         elif (
-                            send_result
-                            and thread_id
+                            thread_id
                             and getattr(send_result, "raw_response", None)
                             and send_result.raw_response.get("thread_fallback")
                         ):
