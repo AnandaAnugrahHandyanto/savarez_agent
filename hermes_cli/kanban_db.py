@@ -861,11 +861,12 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- inside an agent loop that propagated ``HERMES_SESSION_ID``. NULL
     -- for tasks created from the CLI, dashboard, or any path that doesn't
     -- set the env var. Indexed so per-session list queries stay cheap on
-    -- larger boards.
+    -- larger boards.  The accompanying index is created later in
+    -- ``_migrate_add_optional_columns`` so legacy DBs (where
+    -- ``CREATE TABLE IF NOT EXISTS`` is a no-op) still get the column
+    -- added *before* the index is asserted — see #28712.
     session_id           TEXT
 );
-
-CREATE INDEX IF NOT EXISTS idx_tasks_session_id ON tasks(session_id);
 
 CREATE TABLE IF NOT EXISTS task_links (
     parent_id  TEXT NOT NULL,
@@ -937,8 +938,15 @@ CREATE TABLE IF NOT EXISTS kanban_notify_subs (
 
 CREATE INDEX IF NOT EXISTS idx_tasks_assignee_status ON tasks(assignee, status);
 CREATE INDEX IF NOT EXISTS idx_tasks_status          ON tasks(status);
-CREATE INDEX IF NOT EXISTS idx_tasks_tenant          ON tasks(tenant);
-CREATE INDEX IF NOT EXISTS idx_tasks_idempotency     ON tasks(idempotency_key);
+-- ``idx_tasks_tenant``, ``idx_tasks_idempotency`` and
+-- ``idx_tasks_session_id`` are created in
+-- ``_migrate_add_optional_columns`` instead of here.  Those columns
+-- were added after v1, so on a legacy DB ``CREATE TABLE IF NOT EXISTS``
+-- above is a no-op and the columns don't exist yet — running the
+-- index DDL before the additive migration crashed ``init_db`` with
+-- ``no such column`` on real-world upgrades (#28712).  Deferring the
+-- indexes lets the migration ALTER the columns in first, then assert
+-- the indexes idempotently.
 CREATE INDEX IF NOT EXISTS idx_links_child           ON task_links(child_id);
 CREATE INDEX IF NOT EXISTS idx_links_parent          ON task_links(parent_id);
 CREATE INDEX IF NOT EXISTS idx_comments_task         ON task_comments(task_id, created_at);
@@ -1083,10 +1091,18 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
         _add_column_if_missing(
             conn, "tasks", "idempotency_key", "idempotency_key TEXT"
         )
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_tasks_idempotency "
-            "ON tasks(idempotency_key)"
-        )
+    # Indexes for late-added columns live here (not in SCHEMA_SQL) so
+    # legacy DBs don't crash on the ``CREATE INDEX`` before the
+    # additive migrations had a chance to run — see #28712.  Both
+    # statements use ``IF NOT EXISTS`` so they're cheap no-ops on
+    # fresh DBs where the columns and indexes were created together.
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_tasks_tenant ON tasks(tenant)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_tasks_idempotency "
+        "ON tasks(idempotency_key)"
+    )
 
     # Refresh after early additive migrations above. Some existing DBs were
     # partially migrated in older releases and can already contain the later
@@ -1170,14 +1186,21 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
         # created from within an agent loop that propagated
         # ``HERMES_SESSION_ID`` (e.g. ACP). NULL on legacy rows and on any
         # creation path that doesn't set the env var (CLI, dashboard).
-        # Index keeps per-session list queries cheap.
         _add_column_if_missing(
             conn, "tasks", "session_id", "session_id TEXT"
         )
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_tasks_session_id "
-            "ON tasks(session_id)"
-        )
+    # Index is always (re-)asserted here rather than in SCHEMA_SQL so
+    # legacy DBs — where ``CREATE TABLE IF NOT EXISTS`` is a no-op and
+    # the ``session_id`` column does not yet exist — get the migration
+    # ALTER first, then the index.  Otherwise ``init_db`` blew up with
+    # ``no such column: session_id`` mid-script and never reached this
+    # migration at all (#28712).  ``IF NOT EXISTS`` makes the call a
+    # cheap no-op on fresh DBs where the column was already in the
+    # ``CREATE TABLE``.
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_tasks_session_id "
+        "ON tasks(session_id)"
+    )
 
     # task_events gained a run_id column; back-fill it as NULL for
     # historical events (they predate runs and can't be attributed).
