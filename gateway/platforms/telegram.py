@@ -4454,6 +4454,13 @@ class TelegramAdapter(BasePlatformAdapter):
         recognised as mentions by :meth:`_message_mentions_bot`.
         """
         if not self._is_group_chat(message):
+            # Root DM: ignore messages without a thread when ignore_root_dm is
+            # configured and this chat has dm_topics set up.
+            _dm_thread_id = getattr(message, "message_thread_id", None)
+            if _dm_thread_id is None and self.config.extra.get("ignore_root_dm", False):
+                chat_id = str(getattr(getattr(message, "chat", None), "id", ""))
+                if not is_command and chat_id in self._dm_topic_chat_ids:
+                    return False
             return True
 
         thread_id = getattr(message, "message_thread_id", None)
@@ -4470,14 +4477,6 @@ class TelegramAdapter(BasePlatformAdapter):
                     return False
             except (TypeError, ValueError):
                 logger.warning("[%s] Ignoring non-numeric Telegram message_thread_id: %r", self.name, thread_id)
-
-        if not self._is_group_chat(message):
-            # Root DM (non-topic): ignore if ignore_root_dm is configured
-            if thread_id is None and self.config.extra.get("ignore_root_dm", False):
-                chat_id = str(getattr(getattr(message, "chat", None), "id", ""))
-                if not is_command and chat_id in self._dm_topic_chat_ids:
-                    return False
-            return True
 
         chat_id_str = str(getattr(getattr(message, "chat", None), "id", ""))
 
