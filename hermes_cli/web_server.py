@@ -1445,7 +1445,7 @@ _OAUTH_PROVIDER_CATALOG: tuple[Dict[str, Any], ...] = (
     },
     {
         "id": "google-gemini-cli",
-        "name": "Google Gemini CLI (OAuth)",
+        "name": "Google Gemini (OAuth)",
         "flow": "external",
         "cli_command": "hermes auth add google-gemini-cli",
         "docs_url": "https://google-gemini.github.io/gemini-cli/docs/get-started/",
