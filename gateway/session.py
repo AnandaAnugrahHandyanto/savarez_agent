@@ -22,6 +22,96 @@ from typing import Dict, List, Optional, Any
 logger = logging.getLogger(__name__)
 
 
+# ---------------------------------------------------------------------------
+# Telegram Topic Memory — ensure_project_for_topic()
+# ---------------------------------------------------------------------------
+
+HERMES_HOME = Path.home() / ".hermes"
+PROJECTS_DIR = HERMES_HOME / "projects"
+MEMORY_TEMPLATE = """# Telegram Topic Memory
+
+*Auto-generated. Edits survive /new resets and session expiry.*
+*Last updated: {date}*
+
+---
+
+## User Facts
+-
+
+## This Topic's Context
+- Current project:
+- Key decisions:
+
+## Notes
+-
+"""
+
+
+def _get_workspace_router():
+    """Lazily import WorkspaceRouter from ~/.hermes/sessions/workspace_router.py."""
+    try:
+        import sys
+        _sessions_dir = str(HERMES_HOME / "sessions")
+        if _sessions_dir not in sys.path:
+            sys.path.insert(0, _sessions_dir)
+        from workspace_router import WorkspaceRouter
+        return WorkspaceRouter()
+    except Exception:
+        return None
+
+
+def ensure_project_for_topic(source, session_entry) -> Optional[str]:
+    """Create ~/.hermes/projects/<topic>/ for a Telegram forum topic.
+
+    Called from get_or_create_session() for every new or resumed forum-topic
+    session.  Idempotent — safe to call repeatedly.
+
+    Returns the project folder path, or None if this is not a forum topic
+    (no thread_id) or if creation fails.
+
+    Side-effects:
+      - Creates ~/.hermes/projects/<topic>/ and MEMORY.md if missing
+      - Sets session_entry.project_path
+      - Updates .workspace_index.json via WorkspaceRouter
+    """
+    # Only applies to Telegram topics
+    if not (source and source.thread_id):
+        return None
+
+    # Already initialised?
+    if session_entry.project_path:
+        return session_entry.project_path
+
+    router = _get_workspace_router()
+    topic_id = str(source.thread_id)
+
+    try:
+        if router:
+            # get_folder_for_topic creates + caches + persists the folder mapping
+            folder_name = router.get_folder_for_topic(topic_id)
+        else:
+            # Fallback: use topic ID as folder name directly
+            folder_name = topic_id
+
+        project_path = str(PROJECTS_DIR / folder_name)
+        Path(project_path).mkdir(parents=True, exist_ok=True)
+
+        memory_path = Path(project_path) / "MEMORY.md"
+        if not memory_path.exists():
+            memory_path.write_text(
+                MEMORY_TEMPLATE.format(date=datetime.now().strftime("%Y-%m-%d")),
+                encoding="utf-8",
+            )
+            logger.info("Created MEMORY.md for topic %s at %s", topic_id, memory_path)
+
+        session_entry.project_path = project_path
+        return project_path
+
+    except Exception as exc:
+        logger.warning("ensure_project_for_topic failed for topic %s: %s", topic_id, exc)
+        return None
+
+
 def _now() -> datetime:
     """Return the current local time."""
     return datetime.now()
@@ -176,6 +266,11 @@ class SessionContext:
     session_id: str = ""
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
+
+    # Topic project path for Telegram forum topics (auto-created on first use)
+    project_path: str = ""
+    # Path to the persistent MEMORY.md within that project folder
+    memory_path: str = ""
     
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -418,6 +513,20 @@ def build_session_context_prompt(
     lines.append("")
     lines.append("*For explicit targeting, use `\"platform:chat_id\"` format if the user provides a specific chat ID.*")
 
+    # Inject Telegram Topic Memory if present
+    if context.memory_path:
+        mem_path = Path(context.memory_path)
+        if mem_path.exists():
+            try:
+                mem_content = mem_path.read_text(encoding="utf-8").strip()
+                if mem_content:
+                    lines.append("")
+                    lines.append("=== TOPIC MEMORY (persists across /new resets) ===")
+                    lines.append(mem_content)
+                    lines.append("=== END TOPIC MEMORY ===")
+            except Exception:
+                pass
+
     return "\n".join(lines)
 
 
@@ -458,6 +567,16 @@ class SessionEntry:
     was_auto_reset: bool = False
     auto_reset_reason: Optional[str] = None  # "idle" or "daily"
     reset_had_activity: bool = False  # whether the expired session had any messages
+
+    # Set by the background expiry watcher after it finalizes an expired
+    # session (invoking on_session_finalize hooks and evicting the cached
+    # agent).  Persisted to sessions.json so the flag survives gateway
+    # restarts.  Cleared after the next successful agent turn.
+    is_finalized: bool = False
+
+    # Auto-created topic project path. ~/hermes/projects/<topic>/ for this
+    # session's Telegram forum topic. Set by ensure_project_for_topic().
+    project_path: Optional[str] = None
 
     # Set by reset_session() when the user explicitly sends /new or /reset.
     # Consumed once by _handle_message_with_agent to trigger topic/channel
@@ -521,6 +640,7 @@ class SessionEntry:
             "was_auto_reset": self.was_auto_reset,
             "auto_reset_reason": self.auto_reset_reason,
             "reset_had_activity": self.reset_had_activity,
+            "project_path": self.project_path,
         }
         if self.origin:
             result["origin"] = self.origin.to_dict()
@@ -573,6 +693,7 @@ class SessionEntry:
             was_auto_reset=data.get("was_auto_reset", False),
             auto_reset_reason=data.get("auto_reset_reason"),
             reset_had_activity=data.get("reset_had_activity", False),
+            project_path=data.get("project_path"),
         )
 
 
@@ -901,6 +1022,11 @@ class SessionStore:
                 if not reset_reason:
                     entry.updated_at = now
                     self._save()
+                    # Ensure project folder exists for existing topic sessions that may
+                    # have been loaded from an older sessions.json (pre-project_path).
+                    if source.thread_id and not entry.project_path:
+                        ensure_project_for_topic(source, entry)
+                        self._save()
                     return entry
                 else:
                     # Session is being auto-reset.
@@ -930,6 +1056,11 @@ class SessionStore:
                 auto_reset_reason=auto_reset_reason,
                 reset_had_activity=reset_had_activity,
             )
+
+            # Auto-create topic project folder + MEMORY.md for Telegram forum topics.
+            # Idempotent — safe to call for resumed sessions too (checks project_path first).
+            if source.thread_id:
+                ensure_project_for_topic(source, entry)
 
             self._entries[session_key] = entry
             self._save()
@@ -1155,6 +1286,7 @@ class SessionStore:
                 platform=old_entry.platform,
                 chat_type=old_entry.chat_type,
                 is_fresh_reset=True,
+                project_path=old_entry.project_path,
             )
 
             self._entries[session_key] = new_entry
@@ -1400,5 +1532,10 @@ def build_session_context(
         context.session_id = session_entry.session_id
         context.created_at = session_entry.created_at
         context.updated_at = session_entry.updated_at
-    
+        context.project_path = session_entry.project_path or ""
+        if session_entry.project_path:
+            context.memory_path = str(Path(session_entry.project_path) / "MEMORY.md")
+        else:
+            context.memory_path = ""
+
     return context

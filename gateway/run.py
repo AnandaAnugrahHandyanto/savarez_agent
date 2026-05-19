@@ -7894,7 +7894,8 @@ class GatewayRunner:
         )
         # Consume the is_fresh_reset flag immediately so it doesn't leak
         # onto subsequent messages in the same session (issue #6508).
-        if getattr(session_entry, "is_fresh_reset", False):
+        _had_fresh_reset = getattr(session_entry, "is_fresh_reset", False)
+        if _had_fresh_reset:
             session_entry.is_fresh_reset = False
         if _is_new_session:
             await self.hooks.emit("session:start", {
@@ -7920,10 +7921,14 @@ class GatewayRunner:
 
         # Build the context prompt to inject
         context_prompt = build_session_context_prompt(context, redact_pii=_redact_pii)
-        
+
+        # Capture reset flags before they are consumed below.
+        _had_auto_reset = getattr(session_entry, 'was_auto_reset', False)
+        _had_fresh_reset = getattr(session_entry, "is_fresh_reset", False)
+
         # If the previous session expired and was auto-reset, prepend a notice
         # so the agent knows this is a fresh conversation (not an intentional /reset).
-        if getattr(session_entry, 'was_auto_reset', False):
+        if _had_auto_reset:
             reset_reason = getattr(session_entry, 'auto_reset_reason', None) or 'idle'
             if reset_reason == "suspended":
                 context_note = "[System note: The user's previous session was stopped and suspended. This is a fresh conversation with no prior context.]"
@@ -7984,6 +7989,26 @@ class GatewayRunner:
 
             session_entry.was_auto_reset = False
             session_entry.auto_reset_reason = None
+
+        # Telegram Topic Memory: if this session has a MEMORY.md, send a visible
+        # "Memory restored" notification to the topic on /new or auto-reset so the
+        # user knows their topic memory is active.
+        _memory_restored = False
+        if context.memory_path and (_had_auto_reset or _had_fresh_reset):
+            try:
+                from pathlib import Path as _P
+                _mp = _P(context.memory_path)
+                if _mp.exists() and _mp.stat().st_size > 0:
+                    _memory_restored = True
+                    _adapter = self.adapters.get(source.platform)
+                    if _adapter and source.thread_id:
+                        await _adapter.send(
+                            source.chat_id,
+                            "✨ Memory restored — topic memory is active for this session",
+                            metadata={"message_thread_id": str(source.thread_id)},
+                        )
+            except Exception:
+                pass
 
         # Auto-load skill(s) for topic/channel bindings (Telegram DM Topics,
         # Discord channel_skill_bindings).  Supports a single name or ordered list.
