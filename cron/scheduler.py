@@ -132,10 +132,70 @@ SILENT_MARKER = "[SILENT]"
 # Backward-compatible module override used by tests and emergency monkeypatches.
 _hermes_home: Path | None = None
 
+_RAW_USER_VISIBLE_ERROR_MARKERS = (
+    "traceback",
+    "runtimeerror",
+    "httperror",
+    "http 5",
+    "http 429",
+    "ret=-2",
+    "errcode=-2",
+)
+
 
 def _get_hermes_home() -> Path:
     """Resolve Hermes home dynamically while preserving test monkeypatch hooks."""
     return _hermes_home or get_hermes_home()
+
+
+def _friendly_card(
+    title: str,
+    *,
+    action: str,
+    result: str,
+    impact: str,
+    boundary: str,
+    next_step: str,
+) -> str:
+    lines = [
+        title,
+        "",
+        "【状态】",
+        f"动作｜{_sanitize_user_visible(action)}",
+        f"结果｜{_sanitize_user_visible(result)}",
+        f"影响｜{_sanitize_user_visible(impact)}",
+        f"边界｜{_sanitize_user_visible(boundary)}",
+        "",
+        "【下一步】",
+        _sanitize_user_visible(next_step),
+    ]
+    return "\n".join(lines)
+
+
+def _sanitize_user_visible(text: str) -> str:
+    value = str(text or "")
+    lowered = value.lower()
+    if any(marker in lowered for marker in _RAW_USER_VISIBLE_ERROR_MARKERS):
+        return "任务运行或上游服务暂时不可用；原始技术细节已写入本地任务输出。"
+    return value
+
+
+def _format_cron_failure_card(job: dict, error: str | None) -> str:
+    job_name = str(job.get("name") or job.get("id") or "未命名任务")
+    error_text = str(error or "任务未返回可展示结果")
+    safe_result = "任务没有完成，已停止继续重试。"
+    if "blocked" in error_text.lower() or "injection" in error_text.lower():
+        safe_result = "任务触发安全保护，已停止执行。"
+    elif "timeout" in error_text.lower() or "timed out" in error_text.lower():
+        safe_result = "任务执行超时，已保留现场。"
+    return _friendly_card(
+        f"⚠️ 定时任务未完成｜{job_name}",
+        action="已记录失败并停止本轮自动补发",
+        result=safe_result,
+        impact="不会把原始异常直接发到聊天里，也不会因为告警刷屏延长限流。",
+        boundary="详细堆栈、HTTP 状态和命令输出只保存在本地输出文件。",
+        next_step="我会在下一次调度周期重新执行；如果连续失败，请打开本地任务输出查看详情。",
+    )
 
 
 def _get_lock_paths() -> tuple[Path, Path]:
@@ -585,7 +645,9 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         # rooms (e.g. Matrix) where the standalone HTTP path cannot encrypt.
         runtime_adapter = (adapters or {}).get(platform)
         delivered = False
-        if runtime_adapter is not None and loop is not None and getattr(loop, "is_running", lambda: False)():
+        if platform_name.lower() == "weixin":
+            logger.debug("Job '%s': using governed standalone Weixin delivery path", job["id"])
+        elif runtime_adapter is not None and loop is not None and getattr(loop, "is_running", lambda: False)():
             send_metadata = {"thread_id": thread_id} if thread_id else None
             try:
                 # Send cleaned text (MEDIA tags stripped) — not the raw content
@@ -805,19 +867,19 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
             pass
 
         if result.returncode != 0:
-            parts = [f"Script exited with code {result.returncode}"]
+            parts = [f"脚本执行未完成，退出码 {result.returncode}。"]
             if stderr:
-                parts.append(f"stderr:\n{stderr}")
+                parts.append(f"错误输出摘要：\n{stderr}")
             if stdout:
-                parts.append(f"stdout:\n{stdout}")
+                parts.append(f"标准输出摘要：\n{stdout}")
             return False, "\n".join(parts)
 
         return True, stdout
 
     except subprocess.TimeoutExpired:
-        return False, f"Script timed out after {script_timeout}s: {path}"
+        return False, f"脚本执行超时，已在 {script_timeout} 秒后停止：{path}"
     except Exception as exc:
-        return False, f"Script execution failed: {exc}"
+        return False, f"脚本执行未完成：{exc}"
 
 
 def _parse_wake_gate(script_output: str) -> bool:
@@ -1752,7 +1814,7 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
                 # Deliver the final response to the origin/target chat.
                 # If the agent responded with [SILENT], skip delivery (but
                 # output is already saved above).  Failed jobs always deliver.
-                deliver_content = final_response if success else f"⚠️ Cron job '{job.get('name', job['id'])}' failed:\n{error}"
+                deliver_content = final_response if success else _format_cron_failure_card(job, error)
                 should_deliver = bool(deliver_content)
                 if should_deliver and success and SILENT_MARKER in deliver_content.strip().upper():
                     logger.info("Job '%s': agent returned %s — skipping delivery", job["id"], SILENT_MARKER)

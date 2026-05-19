@@ -395,6 +395,82 @@ def _get_cron_auto_delivery_target():
     }
 
 
+def _get_weixin_delivery_source() -> str:
+    from gateway.session_context import get_session_env
+    explicit = os.getenv("HERMES_WEIXIN_DELIVERY_SOURCE", "").strip()
+    if explicit:
+        return explicit[:80]
+    if os.getenv("HERMES_GUARDIAN_RUN", "").strip():
+        return "guardian"
+    if get_session_env("HERMES_CRON_AUTO_DELIVER_PLATFORM", ""):
+        return "cron"
+    session_platform = get_session_env("HERMES_SESSION_PLATFORM", "").strip()
+    return session_platform[:80] if session_platform else "send_message_tool"
+
+
+def _get_weixin_delivery_priority() -> str:
+    value = os.getenv("HERMES_WEIXIN_DELIVERY_PRIORITY", "").strip().lower()
+    return value if value in {"critical", "high", "normal", "low"} else "normal"
+
+
+def _weixin_governor_config_from_env():
+    from gateway.platforms.weixin_delivery_governor import WeixinDeliveryGovernorConfig
+
+    def _env_int(name: str, default: int) -> int:
+        try:
+            return int(os.getenv(name, "").strip() or default)
+        except (TypeError, ValueError):
+            return default
+
+    def _env_bool(name: str, default: bool) -> bool:
+        value = os.getenv(name, "").strip().lower()
+        if value in {"1", "true", "yes", "on"}:
+            return True
+        if value in {"0", "false", "no", "off"}:
+            return False
+        return default
+
+    state_dir = os.getenv("WEIXIN_DELIVERY_GOVERNOR_STATE_DIR", "").strip() or None
+    return WeixinDeliveryGovernorConfig(
+        enabled=_env_bool("WEIXIN_DELIVERY_GOVERNOR_ENABLED", True),
+        state_dir=state_dir,
+        window_seconds=_env_int("WEIXIN_DELIVERY_GOVERNOR_WINDOW_SECONDS", 60),
+        initial_capacity=_env_int("WEIXIN_DELIVERY_GOVERNOR_INITIAL_CAPACITY", 3),
+        min_capacity=_env_int("WEIXIN_DELIVERY_GOVERNOR_MIN_CAPACITY", 1),
+        max_capacity=_env_int("WEIXIN_DELIVERY_GOVERNOR_MAX_CAPACITY", 20),
+        max_flush_per_window=_env_int("WEIXIN_DELIVERY_GOVERNOR_MAX_FLUSH_PER_WINDOW", 3),
+        queue_max_size=_env_int("WEIXIN_DELIVERY_GOVERNOR_QUEUE_MAX_SIZE", 500),
+        base_backoff_seconds=_env_int("WEIXIN_DELIVERY_GOVERNOR_BASE_BACKOFF_SECONDS", 300),
+        max_backoff_seconds=_env_int("WEIXIN_DELIVERY_GOVERNOR_MAX_BACKOFF_SECONDS", 3600),
+        low_priority_ttl_seconds=_env_int("WEIXIN_DELIVERY_GOVERNOR_LOW_TTL_SECONDS", 1800),
+        default_ttl_seconds=_env_int("WEIXIN_DELIVERY_GOVERNOR_DEFAULT_TTL_SECONDS", 7200),
+        high_priority_ttl_seconds=_env_int("WEIXIN_DELIVERY_GOVERNOR_HIGH_TTL_SECONDS", 21600),
+        critical_ttl_seconds=_env_int("WEIXIN_DELIVERY_GOVERNOR_CRITICAL_TTL_SECONDS", 86400),
+        hash_salt=os.getenv("WEIXIN_DELIVERY_GOVERNOR_HASH_SALT", ""),
+    )
+
+
+def _get_weixin_governor():
+    from gateway.platforms.weixin_delivery_governor import WeixinDeliveryGovernor
+    return WeixinDeliveryGovernor(_weixin_governor_config_from_env())
+
+
+def _weixin_governed_result(decision) -> dict:
+    return {
+        "success": True,
+        "platform": "weixin",
+        "queued": True,
+        "governed": True,
+        "reason": decision.reason,
+        "delivery_id": decision.delivery_id,
+        "queue_size": decision.queue_size,
+        "remaining": decision.remaining,
+        "capacity": decision.capacity,
+        "next_available_at": decision.next_available_at,
+        "friendly_card": decision.friendly_text,
+    }
+
+
 def _maybe_skip_cron_duplicate_send(platform_name: str, chat_id: str, thread_id: str | None):
     """Skip redundant cron send_message calls when the scheduler will auto-deliver there."""
     auto_target = _get_cron_auto_delivery_target()
@@ -1659,20 +1735,82 @@ async def _send_weixin(pconfig, chat_id, message, media_files=None):
     """Send via Weixin iLink using the native adapter helper."""
     try:
         from gateway.platforms.weixin import check_weixin_requirements, send_weixin_direct
+        from gateway.platforms.weixin_delivery_governor import is_rate_limited_result
         if not check_weixin_requirements():
             return {"error": "Weixin requirements not met. Need aiohttp + cryptography."}
     except ImportError:
         return {"error": "Weixin adapter not available."}
 
+    governor = _get_weixin_governor()
+    source = _get_weixin_delivery_source()
+    priority = _get_weixin_delivery_priority()
+    decision = governor.admit_or_queue(
+        message,
+        target_id=chat_id,
+        priority=priority,
+        source=source,
+        metadata={"media_count": len(media_files or []), "source": source},
+    )
+    if not decision.allowed:
+        return _weixin_governed_result(decision)
+
+    reserved = None
     try:
-        return await send_weixin_direct(
+        result = await send_weixin_direct(
             extra=pconfig.extra,
             token=pconfig.token,
             chat_id=chat_id,
             message=message,
             media_files=media_files,
         )
+        if isinstance(result, dict) and result.get("error"):
+            error_text = str(result.get("error") or "")
+            governor.record_result(success=False, error_text=error_text)
+            if is_rate_limited_result(error_text):
+                decision = governor.queue_delivery(
+                    message,
+                    target_id=chat_id,
+                    priority=priority,
+                    source=source,
+                    metadata={"media_count": len(media_files or []), "source": source, "after_attempt": True},
+                )
+                return _weixin_governed_result(decision)
+            return result
+        governor.record_result(success=True)
+
+        flush_limit = int(os.getenv("WEIXIN_DELIVERY_GOVERNOR_FLUSH_AFTER_SUCCESS", "1") or "1")
+        for reserved in governor.flush_plan(target_id=chat_id, limit=max(0, flush_limit)):
+            queued_result = await send_weixin_direct(
+                extra=pconfig.extra,
+                token=pconfig.token,
+                chat_id=chat_id,
+                message=reserved.message,
+                media_files=None,
+            )
+            if isinstance(queued_result, dict) and queued_result.get("error"):
+                queued_error = str(queued_result.get("error") or "")
+                governor.record_result(success=False, error_text=queued_error)
+                governor.requeue_delivery(reserved, reason="flush_rate_limited" if is_rate_limited_result(queued_error) else "flush_send_failed")
+                break
+            governor.record_result(success=True)
+        if isinstance(result, dict):
+            result["governed"] = True
+            result["governor"] = decision.to_dict()
+        return result
     except Exception as e:
+        error_text = str(e)
+        governor.record_result(success=False, error_text=error_text)
+        if reserved is not None:
+            governor.requeue_delivery(reserved, reason="flush_exception")
+        if is_rate_limited_result(error_text):
+            decision = governor.queue_delivery(
+                message,
+                target_id=chat_id,
+                priority=priority,
+                source=source,
+                metadata={"media_count": len(media_files or []), "source": source, "after_exception": True},
+            )
+            return _weixin_governed_result(decision)
         return _error(f"Weixin send failed: {e}")
 
 

@@ -1632,6 +1632,8 @@ class WeixinAdapter(BasePlatformAdapter):
                             last_error = RuntimeError(
                                 f"iLink sendmessage rate limited: ret={ret} errcode={errcode} errmsg={errmsg}"
                             )
+                            if os.getenv("WEIXIN_RATE_LIMIT_FAST_FAIL", "1").strip().lower() not in {"0", "false", "no", "off"}:
+                                break
                             if attempt >= self._send_chunk_retries:
                                 break
                             wait = self._send_chunk_retry_delay_seconds * 3  # 3x backoff for rate limit

@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 import sys
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -28,6 +29,7 @@ from tools.send_message_tool import (
     _send_matrix_via_adapter,
     _send_signal,
     _send_telegram,
+    _send_weixin,
     _send_to_platform,
     send_message_tool,
 )
@@ -43,6 +45,49 @@ def _make_config():
         platforms={Platform.TELEGRAM: telegram_cfg},
         get_home_channel=lambda _platform: None,
     ), telegram_cfg
+
+
+class TestWeixinDeliveryGovernor:
+    def test_rate_limit_queues_after_counted_attempt(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("WEIXIN_DELIVERY_GOVERNOR_STATE_DIR", str(tmp_path / "governor"))
+        monkeypatch.setenv("WEIXIN_DELIVERY_GOVERNOR_INITIAL_CAPACITY", "1")
+        monkeypatch.setenv("WEIXIN_DELIVERY_GOVERNOR_BASE_BACKOFF_SECONDS", "60")
+        monkeypatch.setenv("WEIXIN_DELIVERY_GOVERNOR_MAX_BACKOFF_SECONDS", "60")
+        pconfig = SimpleNamespace(extra={}, token="token")
+
+        async def fake_send_weixin_direct(**_kwargs):
+            return {"error": "iLink sendmessage rate limited: ret=-2 errcode=-2"}
+
+        with patch("gateway.platforms.weixin.check_weixin_requirements", return_value=True), \
+             patch("gateway.platforms.weixin.send_weixin_direct", new=AsyncMock(side_effect=fake_send_weixin_direct)) as send_mock:
+            result = asyncio.run(_send_weixin(pconfig, "wxid_target", "hello"))
+
+        assert result["success"] is True
+        assert result["governed"] is True
+        assert result["queued"] is True
+        assert result["reason"] == "queued_after_rate_limit"
+        assert "ret=-2" not in result["friendly_card"]
+        send_mock.assert_awaited_once()
+
+    def test_open_governor_blocks_without_calling_ilink(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("WEIXIN_DELIVERY_GOVERNOR_STATE_DIR", str(tmp_path / "governor"))
+        monkeypatch.setenv("WEIXIN_DELIVERY_GOVERNOR_INITIAL_CAPACITY", "1")
+        pconfig = SimpleNamespace(extra={}, token="token")
+        from gateway.platforms.weixin_delivery_governor import WeixinDeliveryGovernor
+        governor = WeixinDeliveryGovernor()
+        current_time = time.time()
+        assert governor.admit_or_queue("first", target_id="wxid_target", now=current_time).allowed is True
+        governor.record_result(success=False, error_text="rate limited ret=-2", now=current_time + 1)
+
+        with patch("gateway.platforms.weixin.check_weixin_requirements", return_value=True), \
+             patch("gateway.platforms.weixin.send_weixin_direct", new=AsyncMock(return_value={"success": True})) as send_mock:
+            result = asyncio.run(_send_weixin(pconfig, "wxid_target", "second"))
+
+        assert result["success"] is True
+        assert result["queued"] is True
+        assert result["governed"] is True
+        assert result["reason"] == "queued_rate_limited"
+        send_mock.assert_not_awaited()
 
 
 def _install_telegram_mock(monkeypatch, bot):

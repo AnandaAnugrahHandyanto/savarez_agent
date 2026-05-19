@@ -572,7 +572,7 @@ if _config_path.exists():
         # initialized at module-import time (logger is defined further
         # down this module).
         print(
-            f"  Warning: config.yaml → env bridge failed: "
+            f"  Notice: config.yaml → env bridge failed: "
             f"{type(_bridge_err).__name__}: {_bridge_err}",
             file=sys.stderr,
         )
@@ -589,21 +589,21 @@ try:
     if isinstance(_network_cfg, dict) and _network_cfg.get("force_ipv4"):
         apply_ipv4_preference(force=True)
 except Exception as _bootstrap_exc:
-    print(f"  Warning: IPv4 preference application failed: {_bootstrap_exc}", file=sys.stderr)
+    print(f"  Notice: IPv4 preference application failed: {_bootstrap_exc}", file=sys.stderr)
 
 # Validate config structure early — log warnings so gateway operators see problems
 try:
     from hermes_cli.config import print_config_warnings
     print_config_warnings()
 except Exception as _bootstrap_exc:
-    print(f"  Warning: config validation failed: {_bootstrap_exc}", file=sys.stderr)
+    print(f"  Notice: config validation failed: {_bootstrap_exc}", file=sys.stderr)
 
 # Warn if user has deprecated MESSAGING_CWD / TERMINAL_CWD in .env
 try:
     from hermes_cli.config import warn_deprecated_cwd_env_vars
     warn_deprecated_cwd_env_vars()
 except Exception as _bootstrap_exc:
-    print(f"  Warning: deprecation check failed: {_bootstrap_exc}", file=sys.stderr)
+    print(f"  Notice: deprecation check failed: {_bootstrap_exc}", file=sys.stderr)
 
 # Gateway runs in quiet mode - suppress debug output and use cwd directly (no temp dirs)
 os.environ["HERMES_QUIET"] = "1"
@@ -2020,6 +2020,9 @@ class GatewayRunner:
     def _status_action_gerund(self) -> str:
         return "restarting" if self._restart_requested else "shutting down"
 
+    def _status_action_zh(self) -> str:
+        return "重启" if self._restart_requested else "关闭"
+
     def _queue_during_drain_enabled(self) -> bool:
         # Both "queue" and "steer" modes imply the user doesn't want messages
         # to be lost during restart — queue them for the newly-spawned gateway
@@ -2590,9 +2593,25 @@ class GatewayRunner:
             thread_meta = self._thread_metadata_for_source(event.source, reply_anchor)
             if self._queue_during_drain_enabled():
                 self._queue_or_replace_pending_event(session_key, event)
-                message = f"⏳ Gateway {self._status_action_gerund()} — queued for the next turn after it comes back."
+                message = (
+                    f"⏳ 网关正在{self._status_action_zh()}｜消息已进入下一轮队列\n\n"
+                    "【状态】\n"
+                    "动作｜已保留你的最新消息\n"
+                    "结果｜网关恢复后会自动继续处理\n"
+                    "影响｜不会丢消息，也不会重复刷屏\n"
+                    "边界｜当前轮次不会再追加新任务\n\n"
+                    "【下一步】\n请等待网关恢复；恢复后我会继续处理队列中的消息。"
+                )
             else:
-                message = f"⏳ Gateway is {self._status_action_gerund()} and is not accepting another turn right now."
+                message = (
+                    f"⏳ 网关正在{self._status_action_zh()}｜暂不接收新轮次\n\n"
+                    "【状态】\n"
+                    "动作｜已拒绝本次追加输入\n"
+                    "结果｜当前会话正在收尾\n"
+                    "影响｜请稍后重发，避免状态切换时丢失上下文\n"
+                    "边界｜不会在收尾阶段启动第二个任务\n\n"
+                    "【下一步】\n等网关恢复后再发送这条消息。"
+                )
 
             await adapter._send_with_retry(
                 chat_id=event.source.chat_id,
@@ -2699,18 +2718,33 @@ class GatewayRunner:
         status_detail = f" ({', '.join(status_parts)})" if status_parts else ""
         if is_steer_mode:
             message = (
-                f"⏩ Steered into current run{status_detail}. "
-                f"Your message arrives after the next tool call."
+                f"⏩ 已接入当前任务｜消息会在下一次工具调用后生效\n\n"
+                "【状态】\n"
+                f"动作｜已尝试追加到当前运行{status_detail}\n"
+                "结果｜当前任务继续执行\n"
+                "影响｜不会开启第二个并发任务\n"
+                "边界｜如果工具调用长期无返回，仍会进入超时保护\n\n"
+                "【下一步】\n请等待当前任务继续输出。"
             )
         elif is_queue_mode:
             message = (
-                f"⏳ Queued for the next turn{status_detail}. "
-                f"I'll respond once the current task finishes."
+                f"⏳ 已排到下一轮｜当前任务完成后处理\n\n"
+                "【状态】\n"
+                f"动作｜已保存你的后续消息{status_detail}\n"
+                "结果｜当前任务完成后会自动继续\n"
+                "影响｜不会打断正在执行的任务\n"
+                "边界｜短时间多条消息会合并，避免刷屏\n\n"
+                "【下一步】\n请等待当前任务结束，我会继续处理。"
             )
         else:
             message = (
-                f"⚡ Interrupting current task{status_detail}. "
-                f"I'll respond to your message shortly."
+                f"⚡ 正在切换到你的新消息｜当前任务会被中断\n\n"
+                "【状态】\n"
+                f"动作｜已请求中断当前任务{status_detail}\n"
+                "结果｜会尽快处理你的新消息\n"
+                "影响｜当前任务可能不会继续输出\n"
+                "边界｜只发送一次中断确认\n\n"
+                "【下一步】\n请稍等，我会回复新的请求。"
             )
 
         # First-touch onboarding: the very first time a user sends a message
@@ -6169,8 +6203,8 @@ class GatewayRunner:
                     self._enqueue_fifo(_quick_key, queued_event, adapter)
                 depth = self._queue_depth(_quick_key, adapter=self.adapters.get(source.platform))
                 if depth <= 1:
-                    return "Queued for the next turn."
-                return f"Queued for the next turn. ({depth} queued)"
+                    return "⏳ 已排到下一轮｜当前任务完成后处理。"
+                return f"⏳ 已排到下一轮｜当前还有 {depth} 条待处理。"
 
             # /steer <prompt> — inject mid-run after the next tool call.
             # Unlike /queue (turn boundary), /steer lands BETWEEN tool-call
@@ -6194,7 +6228,7 @@ class GatewayRunner:
                             channel_prompt=event.channel_prompt,
                         )
                         adapter._pending_messages[_quick_key] = queued_event
-                    return "Agent still starting — /steer queued for the next turn."
+                    return "⏳ 当前任务仍在启动｜/steer 已排到下一轮。"
                 if running_agent and hasattr(running_agent, "steer"):
                     try:
                         accepted = running_agent.steer(steer_text)
@@ -6203,7 +6237,7 @@ class GatewayRunner:
                         return f"⚠️ Steer failed: {exc}"
                     if accepted:
                         preview = steer_text[:60] + ("..." if len(steer_text) > 60 else "")
-                        return f"⏩ Steer queued — arrives after the next tool call: '{preview}'"
+                        return f"⏩ Steer 已接入｜会在下一次工具调用后生效：'{preview}'"
                     return "Steer rejected (empty payload)."
                 # Running agent is missing or lacks steer() — fall back to queue.
                 adapter = self.adapters.get(source.platform)
@@ -6216,17 +6250,16 @@ class GatewayRunner:
                         channel_prompt=event.channel_prompt,
                     )
                     adapter._pending_messages[_quick_key] = queued_event
-                return "No active agent — /steer queued for the next turn."
+                return "⏳ 当前没有可接入的运行任务｜/steer 已排到下一轮。"
 
             # /model must not be used while the agent is running.
             if _cmd_def_inner and _cmd_def_inner.name == "model":
-                return "Agent is running — wait or /stop first, then switch models."
+                return "⏳ 当前任务正在运行｜请等待完成，或先发送 /stop 后再切换模型。"
 
             # /codex-runtime must not be used while the agent is running.
             # Switching mid-turn would split a turn across two transports.
             if _cmd_def_inner and _cmd_def_inner.name == "codex-runtime":
-                return ("Agent is running — wait or /stop first, then "
-                        "change runtime.")
+                return "⏳ 当前任务正在运行｜请等待完成，或先发送 /stop 后再切换运行时。"
 
             # /approve and /deny must bypass the running-agent interrupt path.
             # The agent thread is blocked on a threading.Event inside
@@ -6265,7 +6298,7 @@ class GatewayRunner:
                 _goal_arg = (event.get_command_args() or "").strip().lower()
                 if not _goal_arg or _goal_arg in {"status", "pause", "resume", "clear", "stop", "done"}:
                     return await self._handle_goal_command(event)
-                return "Agent is running — use /goal status / pause / clear mid-run, or /stop before setting a new goal."
+                return "⏳ 当前任务正在运行｜可使用 /goal status、/goal pause 或 /goal clear；设置新目标前请先 /stop。"
 
             # /subgoal is safe mid-run — it only modifies the goal's
             # subgoals list, which the judge reads at the next turn
@@ -6312,8 +6345,8 @@ class GatewayRunner:
             # producing a zero-char response. See #5057, #6252, #10370.
             if _cmd_def_inner:
                 return (
-                    f"⏳ Agent is running — `/{_cmd_def_inner.name}` can't run "
-                    f"mid-turn. Wait for the current response or `/stop` first."
+                    f"⏳ 当前任务正在运行｜`/{_cmd_def_inner.name}` 不能在本轮中途执行。"
+                    "请等待当前回复完成，或先发送 `/stop`。"
                 )
 
             if event.message_type == MessageType.PHOTO:
@@ -6372,9 +6405,9 @@ class GatewayRunner:
                 if self._queue_during_drain_enabled():
                     self._queue_or_replace_pending_event(_quick_key, event)
                 return (
-                    f"⏳ Gateway {self._status_action_gerund()} — queued for the next turn after it comes back."
+                    f"⏳ 网关正在{self._status_action_zh()}｜消息已进入下一轮队列。"
                     if self._queue_during_drain_enabled()
-                    else f"⏳ Gateway is {self._status_action_gerund()} and is not accepting another turn right now."
+                    else f"⏳ 网关正在{self._status_action_zh()}｜暂不接收新轮次。"
                 )
             if self._busy_input_mode == "queue":
                 logger.debug("PRIORITY queue follow-up for session %s", _quick_key)
@@ -6664,7 +6697,7 @@ class GatewayRunner:
             return await self._handle_voice_command(event)
 
         if self._draining:
-            return f"⏳ Gateway is {self._status_action_gerund()} and is not accepting new work right now."
+            return f"⏳ 网关正在{self._status_action_zh()}｜暂不接收新任务。"
 
         # User-defined quick commands (bypass agent loop, no LLM call)
         if command:
@@ -7748,9 +7781,13 @@ class GatewayRunner:
             # looks like a bug; a short explanation is more helpful.
             if response == "(empty)":
                 response = (
-                    "⚠️ The model returned no response after processing tool "
-                    "results. This can happen with some models — try again or "
-                    "rephrase your question."
+                    "⚠️ 模型本轮没有返回可展示内容\n\n"
+                    "【状态】\n"
+                    "动作｜已完成工具结果处理\n"
+                    "结果｜没有生成可发送的正文\n"
+                    "影响｜本轮不会展示空白或内部占位符\n"
+                    "边界｜不会把原始模型空响应直接发给你\n\n"
+                    "【下一步】\n请重试一次，或换一种问法；如果连续发生，我会保留诊断线索。"
                 )
             agent_messages = agent_result.get("messages", [])
             _response_time = time.time() - _msg_start_time
@@ -13185,7 +13222,7 @@ class GatewayRunner:
             metadata = {"thread_id": thread_id} if thread_id else None
             result = await adapter.send(
                 str(chat_id),
-                "♻ Gateway restarted successfully. Your session continues.",
+                "♻️ 网关已恢复｜会话可以继续\n\n【状态】\n动作｜已完成重启并恢复连接\n结果｜当前会话保持可用\n影响｜无需重新发送上一条消息\n边界｜仅发送一次恢复提示，避免刷屏\n\n【下一步】\n你可以继续对话；如果仍无响应，请发送 /reset。",
                 metadata=metadata,
             )
             # adapter.send() catches provider errors (e.g. "Chat not found")
@@ -13226,7 +13263,7 @@ class GatewayRunner:
         """
         delivered: set[tuple[str, str, Optional[str]]] = set()
         skipped = skip_targets or set()
-        message = "♻️ Gateway online — Hermes is back and ready."
+        message = "♻️ Hermes 网关已上线｜可以继续使用\n\n【状态】\n动作｜已完成启动检查\n结果｜消息入口已恢复\n影响｜后续消息会正常进入 Hermes\n边界｜只通知配置的主页渠道一次\n\n【下一步】\n你可以继续发送消息；如果正在等待旧任务，请查看任务状态。"
 
         for platform, adapter in self.adapters.items():
             home = self.config.get_home_channel(platform)
@@ -16021,7 +16058,15 @@ class GatewayRunner:
                 try:
                     _notify_res = await _notify_adapter.send(
                         source.chat_id,
-                        f"⏳ Still working... ({_elapsed_mins} min elapsed{_status_detail})",
+                        (
+                            f"⏳ 任务仍在处理中｜已运行约 {_elapsed_mins} 分钟\n\n"
+                            "【状态】\n"
+                            f"动作｜继续等待后台任务{_status_detail}\n"
+                            "结果｜尚未完成，但仍有活动迹象\n"
+                            "影响｜我不会重复刷屏，只保留这一次进度提示\n"
+                            "边界｜如果后续无活动，会进入超时保护\n\n"
+                            "【下一步】\n你可以继续等待，或发送 /reset 取消当前会话。"
+                        ),
                         metadata=_status_thread_metadata,
                     )
                     if (
@@ -16118,10 +16163,15 @@ class GatewayRunner:
                             try:
                                 await _warn_adapter.send(
                                     source.chat_id,
-                                    f"⚠️ No activity for {_elapsed_warn} min. "
-                                    f"If the agent does not respond soon, it will "
-                                    f"be timed out in {_remaining_mins} min. "
-                                    f"You can continue waiting or use /reset.",
+                                    (
+                                        f"⚠️ 会话活动变慢｜约 {_elapsed_warn} 分钟没有新进展\n\n"
+                                        "【状态】\n"
+                                        "动作｜已启动超时保护观察\n"
+                                        f"结果｜如果仍无活动，约 {_remaining_mins} 分钟后会自动停止\n"
+                                        "影响｜避免后台任务无限占用会话\n"
+                                        "边界｜不会重复发送原始错误或内部堆栈\n\n"
+                                        "【下一步】\n你可以继续等待，或发送 /reset 立即重置。"
+                                    ),
                                     metadata=_status_thread_metadata,
                                 )
                             except Exception as _warn_err:

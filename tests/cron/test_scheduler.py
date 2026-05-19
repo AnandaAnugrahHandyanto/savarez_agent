@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, patch, MagicMock
 
 import pytest
 
-from cron.scheduler import _resolve_origin, _resolve_delivery_target, _deliver_result, _send_media_via_adapter, run_job, SILENT_MARKER, _build_job_prompt
+from cron.scheduler import _resolve_origin, _resolve_delivery_target, _deliver_result, _send_media_via_adapter, run_job, SILENT_MARKER, _build_job_prompt, _format_cron_failure_card
 from tools.env_passthrough import clear_env_passthrough
 from tools.credential_files import clear_credential_files
 
@@ -596,6 +596,47 @@ class TestDeliverResultWrapping:
         adapter.send_voice.assert_called_once()
         voice_call = adapter.send_voice.call_args
         assert voice_call[1]["audio_path"] == "/tmp/cron-voice.mp3"
+
+    def test_weixin_delivery_bypasses_live_adapter_for_governor(self):
+        """Weixin cron delivery must use the governed standalone path even when a live adapter exists."""
+        from gateway.config import Platform
+
+        adapter = AsyncMock()
+        adapter.send.return_value = MagicMock(success=True)
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.WEIXIN: pconfig}
+        loop = MagicMock()
+        loop.is_running.return_value = True
+        job = {
+            "id": "weixin-governed",
+            "deliver": "origin",
+            "origin": {"platform": "weixin", "chat_id": "wxid_target"},
+        }
+
+        standalone_send = AsyncMock(return_value={"success": True, "governed": True})
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("tools.send_message_tool._send_to_platform", new=standalone_send):
+            result = _deliver_result(job, "hello", adapters={Platform.WEIXIN: adapter}, loop=loop)
+
+        assert result is None
+        adapter.send.assert_not_called()
+        standalone_send.assert_awaited_once()
+
+    def test_cron_failure_card_hides_raw_error_markers(self):
+        card = _format_cron_failure_card(
+            {"id": "job-1", "name": "daily"},
+            "RuntimeError: HTTP 502 ret=-2 Traceback: boom",
+        )
+
+        assert "【状态】" in card
+        assert "【下一步】" in card
+        assert "RuntimeError" not in card
+        assert "HTTP 502" not in card
+        assert "ret=-2" not in card
+        assert "Traceback" not in card
 
     def test_live_adapter_routes_image_to_send_image_file(self):
         """Image MEDIA files should be routed to send_image_file, not send_voice."""
