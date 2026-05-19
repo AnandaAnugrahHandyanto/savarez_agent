@@ -228,6 +228,31 @@ Result: `185 passed`.
   This launcher opens `http://127.0.0.1:9122/chat` in an app-style Chrome
   window with translation disabled.
 
+2026-05-20 TUI/CLI savepoint pass:
+
+- Created TUI/CLI savepoint:
+  `7d13fd84f feat: add TUI session title display`.
+- Scope: CLI/banner and TUI gateway now surface the active session title when
+  available; the TUI intro panel can show that title, inline mode suppresses the
+  large hero, virtual-height caching accounts for the title line, and the tool
+  trail uses concise Chinese process labels.
+- Validation before commit:
+  `npm.cmd run build --prefix ui-tui`, passed.
+- WSL targeted validation before commit:
+
+```bash
+cd /mnt/c/Users/Administrator/Documents/Codex/2026-05-12/herms-upstream-20260517
+PYTHONPATH=. /root/hermes-agent-wsl/.venv/bin/python -m pytest \
+  tests/test_tui_gateway_server.py tests/hermes_cli/test_banner.py -q
+```
+
+Result: `185 passed`.
+
+- Runtime status after validation remained healthy:
+  `hermes_home` stayed on the `sevenlevels` profile, gateway stayed running,
+  and gateway PID stayed `17370`.
+- No built asset sync was performed, and the gateway was not restarted.
+
 ## Rollback Path
 
 Do not use destructive reset commands casually. If a confirmed change breaks the
