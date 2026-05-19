@@ -111,7 +111,7 @@ def check_discord_requirements() -> bool:
     Intents = _Intents
     commands = _commands
     DISCORD_AVAILABLE = True
-    _define_discord_ui_components()
+    _define_discord_views()
     return True
 
 
@@ -4883,86 +4883,90 @@ class DiscordAdapter(BasePlatformAdapter):
 # ---------------------------------------------------------------------------
 # Discord UI Components (outside the adapter class)
 # ---------------------------------------------------------------------------
-# Defined via _define_discord_ui_components() so they work even after
-# discord.py is lazy-installed via check_discord_requirements() -- the
-# module-level ``if DISCORD_AVAILABLE:`` gate would miss the class defs
-# when initial import fails and DISCORD_AVAILABLE flips to True later.
-
-_DISCORD_UI_COMPONENTS_DEFINED = False
+# Module-level placeholders — overwritten by _define_discord_views()
+# when discord.py is available.  Prevents NameError on lazy-install.
+# See https://github.com/NousResearch/hermes-agent/issues/26958
 
 
-def _define_discord_ui_components():
-    """Define discord-dependent UI components.
+def _component_check_auth(
+    interaction,
+    allowed_user_ids: Optional[set],
+    allowed_role_ids: Optional[set],
+) -> bool:
+    """Shared user-or-role OR semantics for component view button clicks.
 
-    Safe to call multiple times (idempotent).  Called at module load time
-    AND at the end of ``check_discord_requirements()`` so the views are
-    available even when discord.py is lazy-installed after initial import.
+    Mirrors ``DiscordAdapter._is_allowed_user`` / the slash and on_message
+    gates so every Discord interaction surface honors the same trust
+    boundary. Component views (ExecApprovalView, SlashConfirmView,
+    UpdatePromptView, ModelPickerView) used to receive only
+    ``allowed_user_ids``: in role-only deployments
+    (DISCORD_ALLOWED_ROLES set, DISCORD_ALLOWED_USERS empty) the user
+    set was empty and the legacy "no allowlist = allow everyone" branch
+    let any guild member click the buttons -- approving exec commands,
+    cancelling slash confirmations, switching the model.
+
+    Behavior:
+
+      - both allowlists empty -> allow (preserves existing no-allowlist
+        deployments, no regression)
+      - user is in user allowlist -> allow
+      - role allowlist set + user has a role in it -> allow
+      - role allowlist set + interaction.user has no resolvable
+        ``roles`` attribute (e.g. DM context with a role policy active)
+        -> reject (fail closed)
+      - otherwise -> reject
     """
-    if not DISCORD_AVAILABLE:
-        return
-    global _DISCORD_UI_COMPONENTS_DEFINED, _component_check_auth, ExecApprovalView, SlashConfirmView, UpdatePromptView, ModelPickerView, ClarifyChoiceView
-    if _DISCORD_UI_COMPONENTS_DEFINED:
-        return
+    user_set = allowed_user_ids or set()
+    role_set = allowed_role_ids or set()
+    has_users = bool(user_set)
+    has_roles = bool(role_set)
+    if not has_users and not has_roles:
+        return True
 
-    def _component_check_auth(
-        interaction,
-        allowed_user_ids: Optional[set],
-        allowed_role_ids: Optional[set],
-    ) -> bool:
-        """Shared user-or-role OR semantics for component view button clicks.
+    user = getattr(interaction, "user", None)
+    if user is None:
+        return False
 
-        Mirrors ``DiscordAdapter._is_allowed_user`` / the slash and on_message
-        gates so every Discord interaction surface honors the same trust
-        boundary. Component views (ExecApprovalView, SlashConfirmView,
-        UpdatePromptView, ModelPickerView) used to receive only
-        ``allowed_user_ids``: in role-only deployments
-        (DISCORD_ALLOWED_ROLES set, DISCORD_ALLOWED_USERS empty) the user
-        set was empty and the legacy "no allowlist = allow everyone" branch
-        let any guild member click the buttons -- approving exec commands,
-        cancelling slash confirmations, switching the model.
-
-        Behavior:
-
-          - both allowlists empty -> allow (preserves existing no-allowlist
-            deployments, no regression)
-          - user is in user allowlist -> allow
-          - role allowlist set + user has a role in it -> allow
-          - role allowlist set + interaction.user has no resolvable
-            ``roles`` attribute (e.g. DM context with a role policy active)
-            -> reject (fail closed)
-          - otherwise -> reject
-        """
-        user_set = allowed_user_ids or set()
-        role_set = allowed_role_ids or set()
-        has_users = bool(user_set)
-        has_roles = bool(role_set)
-        if not has_users and not has_roles:
+    if has_users:
+        try:
+            uid = str(user.id)
+        except AttributeError:
+            uid = ""
+        if uid and uid in user_set:
             return True
 
-        user = getattr(interaction, "user", None)
-        if user is None:
+    if has_roles:
+        roles_attr = getattr(user, "roles", None)
+        if roles_attr is None:
             return False
+        try:
+            user_role_ids = {getattr(r, "id", None) for r in roles_attr}
+        except TypeError:
+            return False
+        if user_role_ids & role_set:
+            return True
 
-        if has_users:
-            try:
-                uid = str(user.id)
-            except AttributeError:
-                uid = ""
-            if uid and uid in user_set:
-                return True
+    return False
 
-        if has_roles:
-            roles_attr = getattr(user, "roles", None)
-            if roles_attr is None:
-                return False
-            try:
-                user_role_ids = {getattr(r, "id", None) for r in roles_attr}
-            except TypeError:
-                return False
-            if user_role_ids & role_set:
-                return True
 
-        return False
+ExecApprovalView = None
+SlashConfirmView = None
+UpdatePromptView = None
+ModelPickerView = None
+ClarifyChoiceView = None
+
+
+def _define_discord_views():
+    """Define Discord View classes available after lazy-install.
+
+    Called at module load time and again from
+    ``check_discord_requirements()`` so the classes exist regardless
+    of when discord.py becomes available.
+    """
+    global ExecApprovalView, SlashConfirmView, UpdatePromptView
+    global ModelPickerView, ClarifyChoiceView
+    if not DISCORD_AVAILABLE or discord is None:
+        return
 
     class ExecApprovalView(discord.ui.View):
         """
@@ -5663,10 +5667,9 @@ def _define_discord_ui_components():
             for child in self.children:
                 child.disabled = True
 
-    _DISCORD_UI_COMPONENTS_DEFINED = True
 
 
-# Module-level call so component views are available immediately, both at
-# module load time AND after check_discord_requirements() lazy-installs
-# discord.py (which flips DISCORD_AVAILABLE from False to True).
-_define_discord_ui_components()
+# Define View classes at module load if discord.py is pre-installed.
+# When discord.py is lazily installed, check_discord_requirements()
+# calls _define_discord_views() again to define them post-install.
+_define_discord_views()
