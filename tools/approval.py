@@ -118,8 +118,23 @@ def get_env_immune_session_key() -> str:
         value = _SESSION_KEY.get()
         if value is not _UNSET and value:
             return str(value)
-    except Exception:
+    except ImportError:
+        # The only expected failure: the gateway module isn't importable
+        # in this execution context (bare tool-only imports, minimal test
+        # environments). Fall through to the "" sentinel silently.
         pass
+    except Exception:
+        # Any other exception here is a genuine regression, not an
+        # expected fallthrough. This helper is the load-bearing primitive
+        # for the wakeup-misroute safety net, so surface it at debug level
+        # (with traceback) instead of hiding it behind the empty-string
+        # sentinel. Behavior is unchanged: we still return "" so Option 3
+        # stays a pure pass-through and never suppresses a valid wakeup.
+        logger.debug(
+            "get_env_immune_session_key: unexpected error reading "
+            "gateway.session_context._SESSION_KEY; falling back to \"\"",
+            exc_info=True,
+        )
     return ""
 
 
