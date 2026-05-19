@@ -1940,6 +1940,15 @@ class OwnerCommandMiddleware(InboundMiddleware):
         if not cmd:
             await next_fn()
             return
+        
+        from hermes_cli.commands import is_gateway_known_command
+        if not is_gateway_known_command(cmd.lstrip("/")):
+            await next_fn()
+            return
+
+        if ctx.chat_type == "group" and not GroupAtGuardMiddleware._is_at_bot(ctx.msg_body, adapter._bot_id):
+            await next_fn()
+            return
 
         from hermes_cli.commands import is_gateway_known_command
         if not is_gateway_known_command(cmd.lstrip("/")):
