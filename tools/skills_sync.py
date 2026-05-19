@@ -91,7 +91,7 @@ def _get_external_skill_names() -> Set[str]:
         # Scan for SKILL.md and read names
         for skill_md in p.rglob("SKILL.md"):
             path_str = str(skill_md)
-            if "/.git/" in path_str or "/.hub/" in path_str:
+            if "/.git/" in path_str or "/.github/" in path_str or "/.hub/" in path_str:
                 continue
             name = _read_skill_name(skill_md, skill_md.parent.name)
             names.add(name)
