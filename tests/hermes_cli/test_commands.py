@@ -115,6 +115,18 @@ class TestResolveCommand:
         assert topic.name == "topic"
         assert "topic" in GATEWAY_KNOWN_COMMANDS
 
+    def test_workspace_and_complete_are_gateway_commands(self):
+        workspace = resolve_command("workspace")
+        complete = resolve_command("complete")
+        assert workspace is not None
+        assert workspace.name == "workspace"
+        assert workspace.gateway_only is True
+        assert complete is not None
+        assert complete.name == "complete"
+        assert complete.gateway_only is True
+        assert "workspace" in GATEWAY_KNOWN_COMMANDS
+        assert "complete" in GATEWAY_KNOWN_COMMANDS
+
     def test_leading_slash_stripped(self):
         assert resolve_command("/help").name == "help"
         assert resolve_command("/bg").name == "background"

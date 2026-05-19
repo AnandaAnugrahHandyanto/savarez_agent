@@ -2,10 +2,12 @@
 import json
 import os
 import time
+from types import SimpleNamespace
 import pytest
 from unittest.mock import MagicMock, patch, AsyncMock
 
 from gateway.config import Platform, PlatformConfig
+from gateway.platforms.base import MessageType
 
 
 # ---------------------------------------------------------------------------
@@ -738,3 +740,57 @@ class TestMattermostMediaTypes:
         assert msg.media_types == ["application/pdf"]
         assert not msg.media_types[0].startswith("image/")
         assert not msg.media_types[0].startswith("audio/")
+
+
+class TestMattermostSlashCallback:
+    def setup_method(self):
+        self.adapter = _make_adapter()
+        self.adapter.handle_message = AsyncMock()
+        self.adapter._message_handler = object()
+
+    @pytest.mark.asyncio
+    async def test_slash_callback_turns_payload_into_command_event(self):
+        request = SimpleNamespace(
+            post=AsyncMock(return_value={
+                "trigger_id": "trig-123",
+                "command": "/approve",
+                "text": "scope-a",
+                "channel_id": "chan-1",
+                "channel_name": "town-square",
+                "user_id": "user-9",
+                "user_name": "matt",
+                "team_domain": "jarvis",
+                "post_id": "post-77",
+                "root_id": "root-55",
+            })
+        )
+
+        response = await self.adapter._handle_slash_callback(request)
+
+        assert response.status == 200
+        self.adapter.handle_message.assert_awaited_once()
+        event = self.adapter.handle_message.await_args.args[0]
+        assert event.text == "/approve scope-a"
+        assert event.message_type == MessageType.COMMAND
+        assert event.message_id == "trig-123"
+        assert event.reply_to_message_id == "root-55"
+        assert event.source.chat_id == "chan-1"
+        assert event.source.thread_id == "root-55"
+        assert event.source.user_name == "matt"
+
+    @pytest.mark.asyncio
+    async def test_slash_callback_rejects_invalid_token(self):
+        self.adapter._slash_tokens = {"expected-token"}
+        request = SimpleNamespace(
+            post=AsyncMock(return_value={
+                "token": "wrong-token",
+                "command": "/approve",
+                "channel_id": "chan-1",
+                "user_id": "user-9",
+            })
+        )
+
+        response = await self.adapter._handle_slash_callback(request)
+
+        assert response.status == 403
+        self.adapter.handle_message.assert_not_awaited()

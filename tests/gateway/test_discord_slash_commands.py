@@ -158,6 +158,38 @@ async def test_registers_native_restart_slash_command(adapter):
     )
 
 
+@pytest.mark.asyncio
+async def test_registers_goal_as_standard_goal_slash(adapter):
+    adapter._run_simple_slash = AsyncMock()
+    adapter._register_slash_commands()
+
+    assert "goal" in adapter._client.tree.commands
+
+    interaction = SimpleNamespace()
+    await adapter._client.tree.commands["goal"](interaction, prompt="status")
+
+    adapter._run_simple_slash.assert_awaited_once_with(
+        interaction,
+        "/goal status",
+    )
+
+
+@pytest.mark.asyncio
+async def test_registers_workspace_as_native_workspace_channel_slash(adapter):
+    adapter._handle_workspace_goal_slash = AsyncMock()
+    adapter._register_slash_commands()
+
+    assert "workspace" in adapter._client.tree.commands
+
+    interaction = SimpleNamespace()
+    await adapter._client.tree.commands["workspace"](interaction, prompt="Ship the Discord workflow")
+
+    adapter._handle_workspace_goal_slash.assert_awaited_once_with(
+        interaction,
+        "Ship the Discord workflow",
+    )
+
+
 # ------------------------------------------------------------------
 # Auto-registration from COMMAND_REGISTRY
 # ------------------------------------------------------------------

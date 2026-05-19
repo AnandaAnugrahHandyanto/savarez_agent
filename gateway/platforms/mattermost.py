@@ -18,8 +18,9 @@ import json
 import logging
 import os
 import re
+import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import MessageDeduplicator
@@ -98,6 +99,23 @@ class MattermostAdapter(BasePlatformAdapter):
 
         # Dedup cache (prevent reprocessing)
         self._dedup = MessageDeduplicator()
+
+        # Optional Mattermost custom slash-command callback server. Mattermost
+        # intercepts native /commands before they ever reach the websocket, so
+        # we expose a tiny POST endpoint that converts the slash payload back
+        # into a synthetic MessageEvent and feeds it through the normal gateway
+        # command pipeline.
+        self._slash_enabled: bool = bool(config.extra.get("slash_commands_enabled", False))
+        self._slash_host: str = str(config.extra.get("slash_commands_host", "127.0.0.1"))
+        self._slash_port: int = int(config.extra.get("slash_commands_port", 8768))
+        self._slash_path: str = str(config.extra.get("slash_commands_path", "/mattermost/slash"))
+        self._slash_public_url: str = str(config.extra.get("slash_commands_public_url", "")).strip()
+        raw_tokens = config.extra.get("slash_commands_tokens") or []
+        if isinstance(raw_tokens, str):
+            raw_tokens = [t.strip() for t in raw_tokens.split(",") if t.strip()]
+        self._slash_tokens: Set[str] = {str(token).strip() for token in raw_tokens if str(token).strip()}
+        self._slash_runner: Any = None
+        self._slash_site: Any = None
 
     # ------------------------------------------------------------------
     # HTTP helpers
@@ -223,6 +241,8 @@ class MattermostAdapter(BasePlatformAdapter):
 
         # Start WebSocket in background.
         self._ws_task = asyncio.create_task(self._ws_loop())
+        if self._slash_enabled:
+            await self._start_slash_server()
         self._mark_connected()
         return True
 
@@ -243,6 +263,8 @@ class MattermostAdapter(BasePlatformAdapter):
         if self._ws:
             await self._ws.close()
             self._ws = None
+
+        await self._stop_slash_server()
 
         if self._session and not self._session.closed:
             await self._session.close()
@@ -391,6 +413,129 @@ class MattermostAdapter(BasePlatformAdapter):
         # image URLs as inline previews automatically.
         content = re.sub(r"!\[([^\]]*)\]\(([^)]+)\)", r"\2", content)
         return content
+
+    # ------------------------------------------------------------------
+    # Slash-command bridge
+    # ------------------------------------------------------------------
+
+    async def _start_slash_server(self) -> None:
+        """Start the local callback server for Mattermost custom slash commands."""
+        import aiohttp.web
+
+        if self._slash_runner is not None:
+            return
+
+        app = aiohttp.web.Application()
+        app.router.add_post(self._slash_path, self._handle_slash_callback)
+        app.router.add_get(f"{self._slash_path}/health", self._handle_slash_health)
+
+        self._slash_runner = aiohttp.web.AppRunner(app, access_log=None)
+        await self._slash_runner.setup()
+        self._slash_site = aiohttp.web.TCPSite(
+            self._slash_runner,
+            host=self._slash_host,
+            port=self._slash_port,
+        )
+        await self._slash_site.start()
+        logger.info(
+            "Mattermost: slash-command callback listening on http://%s:%s%s%s",
+            self._slash_host,
+            self._slash_port,
+            self._slash_path,
+            f" (public: {self.get_slash_callback_url()})" if self.get_slash_callback_url() else "",
+        )
+
+    async def _stop_slash_server(self) -> None:
+        if self._slash_site is not None:
+            try:
+                await self._slash_site.stop()
+            except Exception:
+                logger.debug("Mattermost: slash-command site stop failed", exc_info=True)
+            self._slash_site = None
+        if self._slash_runner is not None:
+            try:
+                await self._slash_runner.cleanup()
+            except Exception:
+                logger.debug("Mattermost: slash-command runner cleanup failed", exc_info=True)
+            self._slash_runner = None
+
+    def get_slash_callback_url(self) -> str:
+        path = self._slash_path if self._slash_path.startswith("/") else f"/{self._slash_path}"
+        if self._slash_public_url:
+            return self._slash_public_url.rstrip("/")
+        return f"{self._base_url}{path}" if self._base_url else ""
+
+    async def _handle_slash_health(self, request: Any) -> Any:
+        import aiohttp.web
+
+        return aiohttp.web.json_response(
+            {
+                "ok": True,
+                "platform": "mattermost",
+                "path": self._slash_path,
+                "public_url": self.get_slash_callback_url(),
+            }
+        )
+
+    async def _handle_slash_callback(self, request: Any) -> Any:
+        import aiohttp.web
+
+        if not self._message_handler:
+            return aiohttp.web.json_response({"text": "Hermes gateway is not ready yet."}, status=503)
+
+        form = await request.post()
+        if self._slash_tokens:
+            supplied = str(form.get("token", "")).strip()
+            if supplied not in self._slash_tokens:
+                logger.warning("Mattermost: rejected slash callback with invalid token")
+                return aiohttp.web.json_response({"text": "Forbidden"}, status=403)
+
+        trigger = str(form.get("command", "")).strip()
+        if not trigger.startswith("/"):
+            trigger_word = str(form.get("trigger_word", "")).strip()
+            if trigger_word:
+                trigger = f"/{trigger_word.lstrip('/')}"
+        if not trigger.startswith("/"):
+            return aiohttp.web.json_response({"text": "Invalid Mattermost slash command payload."}, status=400)
+
+        text = str(form.get("text", "")).strip()
+        raw_payload = {k: str(v) for k, v in form.items()}
+        channel_id = str(form.get("channel_id", "")).strip()
+        user_id = str(form.get("user_id", "")).strip()
+        channel_name = str(form.get("channel_name", "")).strip() or None
+        username = str(form.get("user_name", "")).strip() or None
+        team_domain = str(form.get("team_domain", "")).strip() or None
+        post_id = str(form.get("post_id", "")).strip() or None
+        root_id = str(form.get("root_id", "")).strip() or None
+        message_id = str(form.get("trigger_id", "")).strip() or f"mm-slash-{uuid.uuid4().hex}"
+
+        if not channel_id or not user_id:
+            return aiohttp.web.json_response({"text": "Missing channel_id or user_id."}, status=400)
+
+        chat_type = "channel"
+        if channel_name and channel_name.startswith("@"):  # defensive only
+            chat_type = "dm"
+
+        source = self.build_source(
+            chat_id=channel_id,
+            chat_name=channel_name,
+            chat_type=chat_type,
+            user_id=user_id,
+            user_name=username,
+            thread_id=root_id or post_id,
+            chat_topic=team_domain,
+            message_id=message_id,
+        )
+        event = MessageEvent(
+            text=f"{trigger} {text}".strip(),
+            message_type=MessageType.COMMAND,
+            source=source,
+            raw_message=raw_payload,
+            message_id=message_id,
+            reply_to_message_id=root_id or post_id,
+        )
+        await self.handle_message(event)
+        return aiohttp.web.json_response({"response_type": "ephemeral"}, status=200)
 
     # ------------------------------------------------------------------
     # File helpers

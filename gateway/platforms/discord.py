@@ -19,6 +19,7 @@ import subprocess
 import tempfile
 import threading
 import time
+from datetime import datetime, timezone
 from collections import defaultdict
 from typing import Callable, Dict, List, Optional, Any, Tuple
 
@@ -30,6 +31,8 @@ _DISCORD_COMMAND_SYNC_STATE_SUBDIR = "gateway"
 _DISCORD_COMMAND_SYNC_STATE_FILENAME = "discord_command_sync_state.json"
 _DISCORD_COMMAND_SYNC_MUTATION_INTERVAL_SECONDS = 4.5
 _DISCORD_COMMAND_SYNC_MAX_RATE_LIMIT_SLEEP_SECONDS = 30.0
+_DISCORD_WORKSPACE_CHANNELS_SUBDIR = "gateway"
+_DISCORD_WORKSPACE_CHANNELS_FILENAME = "discord_workspace_channels.json"
 
 try:
     import discord
@@ -51,6 +54,8 @@ from gateway.config import Platform, PlatformConfig
 import re
 
 from gateway.platforms.helpers import MessageDeduplicator, ThreadParticipationTracker
+from hermes_constants import get_hermes_home
+from hermes_time import now as _hermes_now
 from utils import atomic_json_write
 from gateway.platforms.base import (
     BasePlatformAdapter,
@@ -123,6 +128,54 @@ def _build_allowed_mentions():
         users=_b("DISCORD_ALLOW_MENTION_USERS", True),
         replied_user=_b("DISCORD_ALLOW_MENTION_REPLIED_USER", True),
     )
+
+
+def _discord_workspace_channels_path() -> _Path:
+    return get_hermes_home() / _DISCORD_WORKSPACE_CHANNELS_SUBDIR / _DISCORD_WORKSPACE_CHANNELS_FILENAME
+
+
+def _load_discord_workspace_channels() -> dict[str, dict[str, Any]]:
+    path = _discord_workspace_channels_path()
+    try:
+        data = json.loads(path.read_text())
+    except FileNotFoundError:
+        return {}
+    except Exception as exc:
+        logger.warning("Failed to read Discord workspace channel map from %s: %s", path, exc)
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _save_discord_workspace_channels(data: dict[str, dict[str, Any]]) -> None:
+    path = _discord_workspace_channels_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    atomic_json_write(path, data)
+
+
+def _slugify_channel_fragment(text: str, *, fallback: str = "work") -> str:
+    cleaned = re.sub(r"[^a-z0-9]+", "-", (text or "").lower()).strip("-")
+    cleaned = re.sub(r"-+", "-", cleaned)
+    return cleaned or fallback
+
+
+def _derive_workspace_channel_name(prompt: str, *, now: Optional[datetime] = None) -> str:
+    prompt = (prompt or "").strip()
+    words = re.findall(r"[a-z0-9]+", prompt.lower())
+    stop_words = {
+        "a", "an", "and", "or", "the", "to", "for", "of", "in", "on", "with", "from",
+        "my", "our", "your", "get", "make", "build", "create", "work", "project", "new",
+        "into", "inside", "using", "use", "here", "how", "like", "should", "would",
+    }
+    meaningful = [w for w in words if w not in stop_words]
+    project = "-".join(meaningful[:2]) if meaningful else "project"
+    short_desc = "-".join(meaningful[2:6]) if len(meaningful) > 2 else "task"
+    stamp = (now or _hermes_now()).strftime("%Y-%m-%d")
+    name = f"{stamp} - {project} {short_desc}".strip()
+    return _slugify_channel_fragment(name, fallback=f"{stamp}-project-task")[:100]
+
+
+def _normalize_workspace_category_name(name: Any) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", str(name or "").lower()).strip()
 
 
 class VoiceReceiver:
@@ -2997,6 +3050,20 @@ class DiscordAdapter(BasePlatformAdapter):
         async def slash_deny(interaction: discord.Interaction, scope: str = ""):
             await self._run_simple_slash(interaction, f"/deny {scope}".strip())
 
+        @tree.command(name="goal", description="Set a standing goal Hermes works toward across turns")
+        @discord.app_commands.describe(prompt="Goal text, or use status/pause/resume/clear")
+        async def slash_goal(interaction: discord.Interaction, prompt: str):
+            await self._run_simple_slash(interaction, f"/goal {prompt}".strip())
+
+        @tree.command(name="workspace", description="Create a dedicated Discord work channel and kick off the job there")
+        @discord.app_commands.describe(prompt="What Jarvis should work on in the new channel")
+        async def slash_workspace(interaction: discord.Interaction, prompt: str):
+            await self._handle_workspace_goal_slash(interaction, prompt)
+
+        @tree.command(name="complete", description="Mark this Discord work channel complete and offer to delete it")
+        async def slash_complete(interaction: discord.Interaction):
+            await self._handle_workspace_complete_slash(interaction)
+
         @tree.command(name="thread", description="Create a new thread and start a Hermes session in it")
         @discord.app_commands.describe(
             name="Thread name",
@@ -3420,8 +3487,95 @@ class DiscordAdapter(BasePlatformAdapter):
         )
 
     # ------------------------------------------------------------------
-    # Thread creation helpers
+    # Workspace / thread creation helpers
     # ------------------------------------------------------------------
+
+    async def _handle_workspace_goal_slash(
+        self,
+        interaction: discord.Interaction,
+        prompt: str,
+    ) -> None:
+        prompt = (prompt or "").strip()
+        if not prompt:
+            await interaction.response.send_message("Please provide the work item prompt.", ephemeral=True)
+            return
+        if not await self._check_slash_authorization(interaction, "/goal"):
+            return
+        if not self._is_workspace_home_channel(getattr(interaction, "channel", None)):
+            await interaction.response.send_message(
+                "Use /goal from the Jarvis intake channel, sir.",
+                ephemeral=True,
+            )
+            return
+        await interaction.response.defer(ephemeral=True)
+        channel = getattr(interaction, "channel", None)
+        guild = getattr(interaction, "guild", None)
+        if guild is None or channel is None:
+            await interaction.followup.send("This only works in a Discord server channel.", ephemeral=True)
+            return
+        workspace_prompt, requested_category_name = self._split_workspace_prompt_category(prompt)
+        category = await self._resolve_workspace_category(
+            guild,
+            fallback_category=getattr(channel, "category", None),
+            prompt=workspace_prompt,
+            requested_category_name=requested_category_name,
+            requested_by=getattr(interaction.user, "display_name", None) or "unknown user",
+        )
+        channel_name = _derive_workspace_channel_name(workspace_prompt)
+        try:
+            new_channel = await guild.create_text_channel(
+                name=channel_name,
+                category=category,
+                topic=f"Jarvis workspace for: {workspace_prompt[:900]}",
+                reason=f"Jarvis workspace requested by {interaction.user.display_name}",
+            )
+        except Exception as exc:
+            await interaction.followup.send(f"Failed to create the work channel: {exc}", ephemeral=True)
+            return
+        self._register_workspace_channel(
+            new_channel,
+            prompt=workspace_prompt,
+            created_by=getattr(interaction.user, "id", None),
+            source_channel_id=getattr(channel, "id", None),
+        )
+        try:
+            await new_channel.send(
+                f"🛠️ **Workspace created**\n\n"
+                f"Original request:\n> {workspace_prompt.replace(chr(10), chr(10) + '> ')}"
+            )
+        except Exception:
+            pass
+        category_note = f" in **{getattr(category, 'name', '')}**" if category is not None else ""
+        await interaction.followup.send(f"Created workspace <#{new_channel.id}>{category_note}", ephemeral=True)
+        await self._dispatch_workspace_channel_session(interaction, new_channel, workspace_prompt)
+
+    async def _handle_workspace_complete_slash(self, interaction: discord.Interaction) -> None:
+        if not await self._check_slash_authorization(interaction, "/complete"):
+            return
+        channel = getattr(interaction, "channel", None)
+        channel_id = str(getattr(channel, "id", "") or "")
+        entry = self._get_workspace_channel_entry(channel_id)
+        if not entry:
+            await interaction.response.send_message(
+                "This channel is not registered as a Jarvis workspace.",
+                ephemeral=True,
+            )
+            return
+        if not DISCORD_AVAILABLE:
+            await interaction.response.send_message("Discord UI components are unavailable.", ephemeral=True)
+            return
+        embed = discord.Embed(
+            title="Complete this workspace?",
+            description="If you confirm, Jarvis will delete this channel and forget its saved prompt mapping.",
+            color=discord.Color.orange(),
+        )
+        view = WorkspaceChannelDeleteView(
+            adapter=self,
+            channel_id=channel_id,
+            allowed_user_ids=self._allowed_user_ids,
+            allowed_role_ids=self._allowed_role_ids,
+        )
+        await interaction.response.send_message(embed=embed, view=view)
 
     async def _handle_thread_create_slash(
         self,
@@ -3519,7 +3673,181 @@ class DiscordAdapter(BasePlatformAdapter):
     def _resolve_channel_prompt(self, channel_id: str, parent_id: str | None = None) -> str | None:
         """Resolve a Discord per-channel prompt, preferring the exact channel over its parent."""
         from gateway.platforms.base import resolve_channel_prompt
-        return resolve_channel_prompt(self.config.extra, channel_id, parent_id)
+        prompt = resolve_channel_prompt(self.config.extra, channel_id, parent_id)
+        if prompt:
+            return prompt
+        workspace_map = _load_discord_workspace_channels()
+        for key in (str(channel_id or ""), str(parent_id or "")):
+            if not key:
+                continue
+            entry = workspace_map.get(key)
+            if not isinstance(entry, dict):
+                continue
+            prompt_text = str(entry.get("prompt") or "").strip()
+            if prompt_text:
+                return (
+                    "## Discord Workspace Channel Prompt\n"
+                    "This Discord channel was created for the following work item. "
+                    "Treat it as the standing request for this channel unless the user changes direction.\n\n"
+                    f"{prompt_text}"
+                )
+        return None
+
+    def _discord_workspace_home_channel_names(self) -> set[str]:
+        raw = self.config.extra.get("workspace_home_channels")
+        if raw is None:
+            raw = os.getenv("DISCORD_WORKSPACE_HOME_CHANNELS", "jarvis")
+        if isinstance(raw, str):
+            values = raw.split(",")
+        elif isinstance(raw, list):
+            values = raw
+        else:
+            values = [raw]
+        return {str(v).strip().lower() for v in values if str(v).strip()}
+
+    def _discord_workspace_category_names(self) -> list[str]:
+        raw = self.config.extra.get("workspace_categories")
+        if raw is None:
+            raw = os.getenv("DISCORD_WORKSPACE_CATEGORIES", "")
+        if isinstance(raw, str):
+            values = [part.strip() for part in raw.split(",") if part.strip()]
+        elif isinstance(raw, list):
+            values = [str(part).strip() for part in raw if str(part).strip()]
+        else:
+            value = str(raw).strip()
+            values = [value] if value else []
+        return values
+
+    def _split_workspace_prompt_category(self, prompt: str) -> tuple[str, str | None]:
+        text = str(prompt or "").strip()
+        if not text:
+            return ("", None)
+        categories = self._discord_workspace_category_names()
+        if not categories:
+            return (text, None)
+        normalized_map = {
+            _normalize_workspace_category_name(name): name
+            for name in categories
+            if _normalize_workspace_category_name(name)
+        }
+        for sep in (":", "-", "|", "/"):
+            left, marker, right = text.partition(sep)
+            if not marker:
+                continue
+            match = normalized_map.get(_normalize_workspace_category_name(left))
+            if match and right.strip():
+                return (right.strip(), match)
+        return (text, None)
+
+    def _pick_workspace_category_name(
+        self,
+        prompt: str,
+        *,
+        requested_category_name: str | None = None,
+    ) -> str | None:
+        categories = self._discord_workspace_category_names()
+        if not categories:
+            return None
+        if requested_category_name:
+            requested_norm = _normalize_workspace_category_name(requested_category_name)
+            for name in categories:
+                if _normalize_workspace_category_name(name) == requested_norm:
+                    return name
+        prompt_words = set(re.findall(r"[a-z0-9]+", str(prompt or "").lower()))
+        best_name = categories[0]
+        best_score = -1
+        for name in categories:
+            category_words = set(re.findall(r"[a-z0-9]+", name.lower()))
+            score = len(prompt_words & category_words)
+            if score > best_score:
+                best_name = name
+                best_score = score
+        return best_name
+
+    async def _resolve_workspace_category(
+        self,
+        guild: Any,
+        *,
+        fallback_category: Any = None,
+        prompt: str,
+        requested_category_name: str | None = None,
+        requested_by: str = "unknown user",
+    ) -> Any:
+        category_name = self._pick_workspace_category_name(
+            prompt,
+            requested_category_name=requested_category_name,
+        )
+        if not category_name:
+            return fallback_category
+        normalized = _normalize_workspace_category_name(category_name)
+        for existing in list(getattr(guild, "categories", []) or []):
+            if _normalize_workspace_category_name(getattr(existing, "name", "")) == normalized:
+                return existing
+        try:
+            return await guild.create_category(
+                name=category_name,
+                reason=f"Jarvis workspace category requested by {requested_by}",
+            )
+        except Exception as exc:
+            logger.warning("[%s] Failed to create workspace category %r: %s", self.name, category_name, exc)
+            return fallback_category
+
+    def _is_workspace_home_channel(self, channel: Any) -> bool:
+        if isinstance(channel, discord.DMChannel) or isinstance(channel, discord.Thread):
+            return False
+        name = str(getattr(channel, "name", "") or "").strip().lower()
+        return bool(name) and name in self._discord_workspace_home_channel_names()
+
+    def _get_workspace_channel_entry(self, channel_id: str) -> Optional[dict[str, Any]]:
+        entry = _load_discord_workspace_channels().get(str(channel_id))
+        return entry if isinstance(entry, dict) else None
+
+    def _register_workspace_channel(self, channel: Any, *, prompt: str, created_by: Any = None, source_channel_id: Any = None) -> None:
+        workspace_map = _load_discord_workspace_channels()
+        channel_id = str(getattr(channel, "id", "") or "")
+        if not channel_id:
+            return
+        workspace_map[channel_id] = {
+            "prompt": str(prompt or "").strip(),
+            "channel_name": str(getattr(channel, "name", "") or ""),
+            "guild_id": str(getattr(getattr(channel, "guild", None), "id", "") or ""),
+            "source_channel_id": str(source_channel_id or ""),
+            "created_by": str(created_by or ""),
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+        _save_discord_workspace_channels(workspace_map)
+
+    def _remove_workspace_channel(self, channel_id: str) -> None:
+        workspace_map = _load_discord_workspace_channels()
+        if workspace_map.pop(str(channel_id), None) is not None:
+            _save_discord_workspace_channels(workspace_map)
+
+    async def _dispatch_workspace_channel_session(
+        self,
+        interaction: discord.Interaction,
+        channel: Any,
+        text: str,
+    ) -> None:
+        guild_name = getattr(getattr(channel, "guild", None), "name", "") or ""
+        channel_name = getattr(channel, "name", None) or str(getattr(channel, "id", "channel"))
+        chat_name = f"{guild_name} / #{channel_name}" if guild_name else f"#{channel_name}"
+        source = self.build_source(
+            chat_id=str(channel.id),
+            chat_name=chat_name,
+            chat_type="group",
+            user_id=str(interaction.user.id),
+            user_name=interaction.user.display_name,
+            chat_topic=getattr(channel, "topic", None),
+            guild_id=str(getattr(getattr(channel, "guild", None), "id", "") or "") or None,
+        )
+        event = MessageEvent(
+            text=text,
+            message_type=MessageType.TEXT,
+            source=source,
+            raw_message=interaction,
+            channel_prompt=self._resolve_channel_prompt(str(channel.id), None),
+        )
+        await self.handle_message(event)
 
     def _discord_require_mention(self) -> bool:
         """Return whether Discord channel messages require a bot mention."""
@@ -4760,6 +5088,86 @@ if DISCORD_AVAILABLE:
             self, interaction: discord.Interaction, button: discord.ui.Button,
         ):
             await self._resolve(interaction, "cancel", discord.Color.greyple(), "Cancelled")
+
+        async def on_timeout(self):
+            self.resolved = True
+            for child in self.children:
+                child.disabled = True
+
+    class WorkspaceChannelDeleteView(discord.ui.View):
+        """Two-button confirmation for deleting a Jarvis workspace channel."""
+
+        def __init__(
+            self,
+            adapter: "DiscordAdapter",
+            channel_id: str,
+            allowed_user_ids: set,
+            allowed_role_ids: Optional[set] = None,
+        ):
+            super().__init__(timeout=300)
+            self.adapter = adapter
+            self.channel_id = str(channel_id)
+            self.allowed_user_ids = allowed_user_ids
+            self.allowed_role_ids = allowed_role_ids or set()
+            self.resolved = False
+
+        def _check_auth(self, interaction: discord.Interaction) -> bool:
+            return _component_check_auth(
+                interaction, self.allowed_user_ids, self.allowed_role_ids,
+            )
+
+        async def _finish(
+            self,
+            interaction: discord.Interaction,
+            *,
+            delete_channel: bool,
+            label: str,
+            color: discord.Color,
+        ) -> None:
+            if self.resolved:
+                await interaction.response.send_message("This confirmation has already been handled.", ephemeral=True)
+                return
+            if not self._check_auth(interaction):
+                await interaction.response.send_message("You're not authorized to manage this workspace.", ephemeral=True)
+                return
+            self.resolved = True
+            embed = interaction.message.embeds[0] if interaction.message.embeds else None
+            if embed:
+                embed.color = color
+                embed.set_footer(text=f"{label} by {interaction.user.display_name}")
+            for child in self.children:
+                child.disabled = True
+            await interaction.response.edit_message(embed=embed, view=self)
+            if not delete_channel:
+                return
+            channel = getattr(interaction, "channel", None)
+            try:
+                self.adapter._remove_workspace_channel(self.channel_id)
+            finally:
+                if channel is not None:
+                    await channel.delete(reason=f"Jarvis workspace completed by {interaction.user.display_name}")
+
+        @discord.ui.button(label="Delete channel", style=discord.ButtonStyle.red)
+        async def confirm_delete(
+            self, interaction: discord.Interaction, button: discord.ui.Button,
+        ):
+            await self._finish(
+                interaction,
+                delete_channel=True,
+                label="Workspace deleted",
+                color=discord.Color.red(),
+            )
+
+        @discord.ui.button(label="Keep channel", style=discord.ButtonStyle.grey)
+        async def keep_channel(
+            self, interaction: discord.Interaction, button: discord.ui.Button,
+        ):
+            await self._finish(
+                interaction,
+                delete_channel=False,
+                label="Workspace kept",
+                color=discord.Color.blue(),
+            )
 
         async def on_timeout(self):
             self.resolved = True

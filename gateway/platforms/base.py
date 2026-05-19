@@ -83,6 +83,9 @@ def _reply_anchor_for_event(event) -> str | None:
         return None
     if platform == "feishu" and thread_id and getattr(event, "reply_to_message_id", None):
         return getattr(event, "reply_to_message_id", None)
+    if platform == "mattermost" and thread_id:
+        # Mattermost expects thread responses keyed by the thread root ID.
+        return str(thread_id)
     return getattr(event, "message_id", None)
 
 

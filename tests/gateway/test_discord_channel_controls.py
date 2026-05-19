@@ -342,3 +342,87 @@ def test_config_env_var_takes_precedence(monkeypatch, tmp_path):
     import os
     # Env var should NOT be overwritten
     assert os.getenv("DISCORD_IGNORED_CHANNELS") == "999"
+
+
+def test_workspace_prompt_map_round_trip(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    channel = SimpleNamespace(id=321, name="2026-05-13-discord-task", guild=SimpleNamespace(id=999))
+
+    adapter_config = PlatformConfig(enabled=True, token="fake-token")
+    workspace_adapter = DiscordAdapter(adapter_config)
+    workspace_adapter._register_workspace_channel(channel, prompt="Fix Discord workflow", created_by=42, source_channel_id=7)
+
+    prompt = workspace_adapter._resolve_channel_prompt("321")
+    assert prompt is not None
+    assert "Fix Discord workflow" in prompt
+
+
+def test_workspace_channel_name_uses_hermes_local_day(monkeypatch):
+    monkeypatch.setattr(
+        discord_platform,
+        "_hermes_now",
+        lambda: datetime(2026, 5, 15, 17, 33, tzinfo=timezone.utc),
+    )
+
+    channel_name = discord_platform._derive_workspace_channel_name("Next MixesDB issue")
+
+    assert channel_name.startswith("2026-05-15-")
+
+
+@pytest.mark.asyncio
+async def test_workspace_goal_creates_channel_and_dispatches(adapter, monkeypatch, tmp_path):
+    monkeypatch.setenv("DISCORD_WORKSPACE_HOME_CHANNELS", "jarvis")
+    monkeypatch.setenv("DISCORD_WORKSPACE_CATEGORIES", "Hermes Agent,BuyWander")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    created_category = SimpleNamespace(name="Hermes Agent")
+    created_channel = SimpleNamespace(
+        id=654,
+        name="2026-05-13-discord-no-threads-workflow",
+        guild=SimpleNamespace(id=777, name="Hermes Server"),
+        topic="",
+        send=AsyncMock(),
+    )
+    guild = SimpleNamespace(
+        categories=[],
+        create_category=AsyncMock(return_value=created_category),
+        create_text_channel=AsyncMock(return_value=created_channel),
+    )
+    interaction = SimpleNamespace(
+        channel=SimpleNamespace(name="jarvis", id=111, category=None),
+        guild=guild,
+        user=SimpleNamespace(id=42, display_name="Matt"),
+        response=SimpleNamespace(defer=AsyncMock(), send_message=AsyncMock()),
+        followup=SimpleNamespace(send=AsyncMock()),
+    )
+    adapter._check_slash_authorization = AsyncMock(return_value=True)
+    adapter.handle_message.reset_mock()
+
+    await adapter._handle_workspace_goal_slash(interaction, "Get rid of Discord threads for project work in Hermes Agent")
+
+    guild.create_category.assert_awaited_once_with(
+        name="Hermes Agent",
+        reason="Jarvis workspace category requested by Matt",
+    )
+    guild.create_text_channel.assert_awaited_once()
+    assert guild.create_text_channel.await_args.kwargs["category"] is created_category
+    interaction.followup.send.assert_awaited_once()
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.text == "Get rid of Discord threads for project work in Hermes Agent"
+    assert event.source.chat_id == "654"
+    assert event.channel_prompt and "Get rid of Discord threads" in event.channel_prompt
+
+
+@pytest.mark.asyncio
+async def test_workspace_complete_rejects_non_workspace_channel(adapter):
+    interaction = SimpleNamespace(
+        channel=SimpleNamespace(id=999, name="general"),
+        response=SimpleNamespace(send_message=AsyncMock()),
+    )
+    adapter._check_slash_authorization = AsyncMock(return_value=True)
+
+    await adapter._handle_workspace_complete_slash(interaction)
+
+    interaction.response.send_message.assert_awaited_once()
+    assert "not registered" in interaction.response.send_message.await_args.args[0]
