@@ -304,6 +304,110 @@ class TestFeishuUpdatePrompt:
 
 
 # ===========================================================================
+# send_slash_confirm — generic slash confirmation card
+# ===========================================================================
+
+class TestFeishuSlashConfirm:
+    """Test send_slash_confirm sends an interactive card."""
+
+    @pytest.mark.asyncio
+    async def test_sends_interactive_card(self):
+        adapter = _make_adapter()
+
+        mock_response = SimpleNamespace(
+            success=lambda: True,
+            data=SimpleNamespace(message_id="msg_sc_001"),
+        )
+        with patch.object(
+            adapter, "_feishu_send_with_retry", new_callable=AsyncMock,
+            return_value=mock_response,
+        ) as mock_send:
+            result = await adapter.send_slash_confirm(
+                chat_id="oc_12345",
+                title="Reload MCP",
+                message="This will reload MCP tools.",
+                session_key="agent:main:feishu:group:oc_12345",
+                confirm_id="confirm-1",
+                metadata={"thread_id": "th_1"},
+            )
+
+        assert result.success is True
+        assert result.message_id == "msg_sc_001"
+
+        kwargs = mock_send.call_args[1]
+        assert kwargs["chat_id"] == "oc_12345"
+        assert kwargs["msg_type"] == "interactive"
+        assert kwargs["metadata"] == {"thread_id": "th_1"}
+
+        card = json.loads(kwargs["payload"])
+        assert card["header"]["template"] == "orange"
+        assert card["header"]["title"]["content"] == "Reload MCP"
+        assert "This will reload MCP tools." in card["elements"][0]["content"]
+        actions = card["elements"][1]["actions"]
+        assert [a["value"]["hermes_slash_confirm_action"] for a in actions] == [
+            "once",
+            "always",
+            "cancel",
+        ]
+        assert [a["value"]["confirm_id"] for a in actions] == ["confirm-1"] * 3
+
+    @pytest.mark.asyncio
+    async def test_stores_confirm_state(self):
+        adapter = _make_adapter()
+
+        mock_response = SimpleNamespace(
+            success=lambda: True,
+            data=SimpleNamespace(message_id="msg_sc_002"),
+        )
+        with patch.object(
+            adapter, "_feishu_send_with_retry", new_callable=AsyncMock,
+            return_value=mock_response,
+        ):
+            await adapter.send_slash_confirm(
+                chat_id="oc_12345",
+                title="Confirm",
+                message="Proceed?",
+                session_key="my-session-key",
+                confirm_id="confirm-2",
+            )
+
+        assert adapter._slash_confirm_state["confirm-2"]["session_key"] == "my-session-key"
+        assert adapter._slash_confirm_state["confirm-2"]["message_id"] == "msg_sc_002"
+        assert adapter._slash_confirm_state["confirm-2"]["chat_id"] == "oc_12345"
+
+    @pytest.mark.asyncio
+    async def test_not_connected(self):
+        adapter = _make_adapter()
+        adapter._client = None
+        result = await adapter.send_slash_confirm(
+            chat_id="oc_12345",
+            title="Confirm",
+            message="Proceed?",
+            session_key="s",
+            confirm_id="confirm-3",
+        )
+        assert result.success is False
+
+    @pytest.mark.asyncio
+    async def test_send_failure_returns_error(self):
+        adapter = _make_adapter()
+        with patch.object(
+            adapter, "_feishu_send_with_retry", new_callable=AsyncMock,
+            side_effect=TimeoutError("timed out"),
+        ):
+            result = await adapter.send_slash_confirm(
+                chat_id="oc_12345",
+                title="Confirm",
+                message="Proceed?",
+                session_key="s",
+                confirm_id="confirm-4",
+            )
+
+        assert result.success is False
+        assert "timed out" in (result.error or "")
+
+
+# ===========================================================================
 # _resolve_approval — approval state pop + gateway resolution
 # ===========================================================================
 
@@ -654,6 +758,94 @@ class TestCardActionCallbackResponse:
         assert response.card is None
         mock_submit.assert_not_called()
 
+    def test_returns_card_for_slash_confirm_once(self, _patch_callback_card_types):
+        adapter = _make_adapter()
+        adapter._loop = MagicMock()
+        adapter._loop.is_closed = MagicMock(return_value=False)
+        adapter._slash_confirm_state["confirm-1"] = {
+            "session_key": "sess-sc-1",
+            "message_id": "msg_sc_003",
+            "chat_id": "oc_12345",
+            "title": "Reload MCP",
+        }
+        data = _make_card_action_data(
+            {"hermes_slash_confirm_action": "once", "confirm_id": "confirm-1"},
+            open_id="ou_bob",
+        )
+        adapter._sender_name_cache["ou_bob"] = ("Bob", 9999999999)
+
+        with patch("asyncio.run_coroutine_threadsafe", side_effect=_close_submitted_coro):
+            response = adapter._on_card_action_trigger(data)
+
+        assert response is not None
+        assert response.card is not None
+        card = response.card.data
+        assert card["header"]["template"] == "green"
+        assert "Approved" in card["header"]["title"]["content"]
+        assert "Reload MCP" in card["elements"][0]["content"]
+        assert "Bob" in card["elements"][0]["content"]
+
+    def test_slash_confirm_cancel_uses_red_card(self, _patch_callback_card_types):
+        adapter = _make_adapter()
+        adapter._loop = MagicMock()
+        adapter._loop.is_closed = MagicMock(return_value=False)
+        adapter._slash_confirm_state["confirm-2"] = {
+            "session_key": "sess-sc-2",
+            "message_id": "msg_sc_004",
+            "chat_id": "oc_12345",
+            "title": "Reload MCP",
+        }
+        data = _make_card_action_data(
+            {"hermes_slash_confirm_action": "cancel", "confirm_id": "confirm-2"},
+        )
+
+        with patch("asyncio.run_coroutine_threadsafe", side_effect=_close_submitted_coro):
+            response = adapter._on_card_action_trigger(data)
+
+        assert response is not None
+        assert response.card is not None
+        card = response.card.data
+        assert card["header"]["template"] == "red"
+        assert "Cancelled" in card["header"]["title"]["content"]
+
+    def test_slash_confirm_unknown_id_returns_no_card(self, _patch_callback_card_types):
+        adapter = _make_adapter()
+        adapter._loop = MagicMock()
+        adapter._loop.is_closed = MagicMock(return_value=False)
+        data = _make_card_action_data(
+            {"hermes_slash_confirm_action": "once", "confirm_id": "missing"},
+        )
+
+        with patch("asyncio.run_coroutine_threadsafe") as mock_submit:
+            response = adapter._on_card_action_trigger(data)
+
+        assert response is not None
+        assert response.card is None
+        mock_submit.assert_not_called()
+
+    def test_slash_confirm_unauthorized_operator_returns_no_card(self, _patch_callback_card_types):
+        adapter = _make_adapter()
+        adapter._loop = MagicMock()
+        adapter._loop.is_closed = MagicMock(return_value=False)
+        adapter._slash_confirm_state["confirm-3"] = {
+            "session_key": "sess-sc-3",
+            "message_id": "msg_sc_005",
+            "chat_id": "oc_12345",
+            "title": "Reload MCP",
+        }
+        adapter._allowed_group_users = {"ou_allowed"}
+        data = _make_card_action_data(
+            {"hermes_slash_confirm_action": "always", "confirm_id": "confirm-3"},
+            open_id="ou_intruder",
+        )
+
+        with patch("asyncio.run_coroutine_threadsafe") as mock_submit:
+            response = adapter._on_card_action_trigger(data)
+
+        assert response is not None
+        assert response.card is None
+        mock_submit.assert_not_called()
+
 
 class TestResolveUpdatePrompt:
     """Test update prompt resolution persists the response file."""
@@ -700,3 +892,32 @@ class TestResolveUpdatePrompt:
         await adapter._resolve_update_prompt(99, "n", "Nobody")
 
         assert not (tmp_path / ".hermes" / ".update_response").exists()
+
+
+class TestResolveSlashConfirm:
+    """Test slash-confirm resolution calls the generic primitive."""
+
+    @pytest.mark.asyncio
+    async def test_resolves_once(self):
+        adapter = _make_adapter()
+        adapter._slash_confirm_state["confirm-1"] = {
+            "session_key": "sess-sc-1",
+            "message_id": "msg_sc_003",
+            "chat_id": "oc_12345",
+            "title": "Reload MCP",
+        }
+
+        with patch("tools.slash_confirm.resolve", new_callable=AsyncMock, return_value="done") as mock_resolve:
+            await adapter._resolve_slash_confirm("confirm-1", "once", "Alice")
+
+        mock_resolve.assert_awaited_once_with("sess-sc-1", "confirm-1", "once")
+        assert "confirm-1" not in adapter._slash_confirm_state
+
+    @pytest.mark.asyncio
+    async def test_unknown_confirm_id_drops_silently(self):
+        adapter = _make_adapter()
+
+        with patch("tools.slash_confirm.resolve", new_callable=AsyncMock) as mock_resolve:
+            await adapter._resolve_slash_confirm("missing", "cancel", "Nobody")
+
+        mock_resolve.assert_not_called()
