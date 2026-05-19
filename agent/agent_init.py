@@ -1079,6 +1079,15 @@ def init_agent(
         _agent_section = {}
     agent._tool_use_enforcement = _agent_section.get("tool_use_enforcement", "auto")
 
+    try:
+        _raw_max_vision = _agent_section.get("max_vision_images_in_context", 4)
+        _max_vision = int(_raw_max_vision)
+        if _max_vision < 0:
+            raise ValueError
+    except (TypeError, ValueError):
+        _max_vision = 4
+    agent.max_vision_images_in_context = _max_vision
+
     # App-level API retry count (wraps each model API call).  Default 3,
     # overridable via agent.api_max_retries in config.yaml.  See #11616.
     try:

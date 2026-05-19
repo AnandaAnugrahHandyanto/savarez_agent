@@ -585,6 +585,12 @@ DEFAULT_CONFIG = {
         # remains available as a tool regardless of this setting — the routing
         # only controls how inbound user images are presented.
         "image_input_mode": "auto",
+        # Max native image_url / image / input_image parts kept in the live
+        # conversation history (tool results, user attachments, etc.). Older
+        # images are replaced with a text placeholder before each API call so
+        # vision_analyze / computer_use screenshots do not fill the context
+        # window. Set to 0 to disable the cap.
+        "max_vision_images_in_context": 4,
         "disabled_toolsets": [],
     },
     

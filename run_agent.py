@@ -182,6 +182,7 @@ from agent.message_sanitization import (
     _sanitize_messages_non_ascii,
     _sanitize_tools_non_ascii,
     _strip_images_from_messages,
+    cap_vision_images_in_messages,
     _sanitize_structure_non_ascii,
 )
 from agent.tool_dispatch_helpers import (
@@ -3100,6 +3101,11 @@ class AIAgent:
             if isinstance(part, dict) and part.get("type") in {"image_url", "input_image"}:
                 return True
         return False
+
+    def _cap_vision_images_in_context(self, messages: list) -> int:
+        """Trim oldest native image parts when history exceeds the configured cap."""
+        limit = getattr(self, "max_vision_images_in_context", 4)
+        return cap_vision_images_in_messages(messages, limit)
 
     @staticmethod
     def _materialize_data_url_for_vision(image_url: str) -> tuple[str, Optional[Path]]:
