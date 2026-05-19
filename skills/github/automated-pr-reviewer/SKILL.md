@@ -31,7 +31,8 @@ Use the built-in `cronjob` tool to schedule this workflow. For example, to run i
 cronjob("create", {
     "name": "jules-github-pr-reviewer",
     "schedule": "0 * * * *",
-    "command": "hermes run automated-pr-reviewer"
+    "prompt": "Check for PRs to review using the automated-pr-reviewer skill.",
+    "skills": ["automated-pr-reviewer"]
 })
 ```
 
