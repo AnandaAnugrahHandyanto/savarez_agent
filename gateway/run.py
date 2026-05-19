@@ -26,6 +26,7 @@ except ModuleNotFoundError:
 
 import asyncio
 import dataclasses
+import hashlib
 import inspect
 import json
 import logging
@@ -203,6 +204,47 @@ def _is_fresh_gateway_interruption(
         return True
     current = time.time() if now is None else now
     return current - timestamp <= window
+
+
+def _gateway_tool_tail_recovery_key(agent_history: List[Dict[str, Any]]) -> Optional[str]:
+    """Return a stable key for the trailing consecutive gateway tool batch."""
+    if not agent_history:
+        return None
+
+    tail: List[Dict[str, Any]] = []
+    for msg in reversed(agent_history):
+        if not isinstance(msg, dict) or msg.get("role") != "tool":
+            break
+        tail.append(msg)
+    if not tail:
+        return None
+
+    parts: List[str] = []
+    for msg in reversed(tail):
+        content = msg.get("content", "")
+        if not isinstance(content, str):
+            try:
+                content = json.dumps(content, sort_keys=True, ensure_ascii=False)
+            except Exception:
+                content = repr(content)
+        digest = hashlib.sha256(content.encode("utf-8", "replace")).hexdigest()[:16]
+        parts.append(
+            "|".join(
+                [
+                    str(msg.get("tool_call_id") or ""),
+                    str(msg.get("name") or msg.get("tool_name") or ""),
+                    digest,
+                ]
+            )
+        )
+    return hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()
+
+
+def _gateway_tool_tail_recovery_ack_matches(entry: Any, tail_key: Optional[str]) -> bool:
+    """Return True when this exact trailing tool batch was already recovered."""
+    if not entry or not tail_key:
+        return False
+    return getattr(entry, "auto_continue_tool_tail_key", None) == tail_key
 
 
 # Assistant-message fields that must survive transcript replay so multi-turn
@@ -15963,6 +16005,10 @@ class GatewayRunner:
                 except Exception as _e:
                     logger.error("Failed to send approval request: %s", _e)
 
+            # Keep synthetic gateway notes API-only; persisted transcripts should
+            # contain the user's original inbound text.
+            _clean_user_message_for_persistence = message
+
             # Prepend pending model switch note so the model knows about the switch
             _pending_notes = getattr(self, '_pending_model_notes', {})
             _msn = _pending_notes.pop(session_key, None) if session_key else None
@@ -16008,11 +16054,16 @@ class GatewayRunner:
                 and getattr(_resume_entry, "resume_pending", False)
                 and _interruption_is_fresh
             )
+            _tool_tail_recovery_key = _gateway_tool_tail_recovery_key(agent_history)
             _has_fresh_tool_tail = bool(
-                agent_history
-                and agent_history[-1].get("role") == "tool"
+                _tool_tail_recovery_key
                 and _interruption_is_fresh
+                and not _gateway_tool_tail_recovery_ack_matches(
+                    _resume_entry,
+                    _tool_tail_recovery_key,
+                )
             )
+            _persist_user_message = _clean_user_message_for_persistence
 
             if _is_resume_pending:
                 _reason = getattr(_resume_entry, "resume_reason", None) or "restart_timeout"
@@ -16087,7 +16138,12 @@ class GatewayRunner:
                 else:
                     _run_message = message
 
-                result = agent.run_conversation(_run_message, conversation_history=agent_history, task_id=session_id)
+                result = agent.run_conversation(
+                    _run_message,
+                    conversation_history=agent_history,
+                    task_id=session_id,
+                    persist_user_message=_persist_user_message,
+                )
             finally:
                 unregister_gateway_notify(_approval_session_key)
                 # Cancel any pending clarify entries so blocked agent
@@ -16121,6 +16177,43 @@ class GatewayRunner:
                 _context_length = getattr(_agent.context_compressor, "context_length", 0) or 0
             _resolved_model = getattr(_agent, "model", None) if _agent else None
 
+            # Sync session_id before any early return: preflight compression can
+            # rotate sessions even if the turn exits interrupted with no final
+            # response.
+            agent = agent_holder[0]
+            _session_was_split = False
+            if agent and session_key and hasattr(agent, 'session_id') and agent.session_id != session_id:
+                _session_was_split = True
+                logger.info(
+                    "Session split detected: %s → %s (compression)",
+                    session_id, agent.session_id,
+                )
+                entry = self.session_store._entries.get(session_key)
+                if entry:
+                    entry.session_id = agent.session_id
+                    self.session_store._save()
+
+            effective_session_id = getattr(agent, 'session_id', session_id) if agent else session_id
+            _effective_history_offset = 0 if _session_was_split else len(agent_history)
+
+            if (
+                _has_fresh_tool_tail
+                and _tool_tail_recovery_key
+                and int(result.get("api_calls", 0) or 0) > 0
+                and session_key
+            ):
+                try:
+                    self.session_store.mark_auto_continue_tool_tail_ack(
+                        session_key,
+                        _tool_tail_recovery_key,
+                    )
+                except Exception as _ack_err:
+                    logger.debug(
+                        "mark_auto_continue_tool_tail_ack failed for %s: %s",
+                        session_key,
+                        _ack_err,
+                    )
+
             if not final_response:
                 error_msg = f"⚠️ {result['error']}" if result.get("error") else ""
                 return {
@@ -16135,7 +16228,8 @@ class GatewayRunner:
                     "error": result.get("error"),
                     "compression_exhausted": result.get("compression_exhausted", False),
                     "tools": tools_holder[0] or [],
-                    "history_offset": len(agent_history),
+                    "history_offset": _effective_history_offset,
+                    "session_id": effective_session_id,
                     "last_prompt_tokens": _last_prompt_toks,
                     "input_tokens": _input_toks,
                     "output_tokens": _output_toks,
@@ -16185,32 +16279,6 @@ class GatewayRunner:
                         unique_tags.insert(0, "[[audio_as_voice]]")
                     final_response = final_response + "\n" + "\n".join(unique_tags)
             
-            # Sync session_id: the agent may have created a new session during
-            # mid-run context compression (_compress_context splits sessions).
-            # If so, update the session store entry so the NEXT message loads
-            # the compressed transcript, not the stale pre-compression one.
-            agent = agent_holder[0]
-            _session_was_split = False
-            if agent and session_key and hasattr(agent, 'session_id') and agent.session_id != session_id:
-                _session_was_split = True
-                logger.info(
-                    "Session split detected: %s → %s (compression)",
-                    session_id, agent.session_id,
-                )
-                entry = self.session_store._entries.get(session_key)
-                if entry:
-                    entry.session_id = agent.session_id
-                    self.session_store._save()
-
-            effective_session_id = getattr(agent, 'session_id', session_id) if agent else session_id
-
-            # When compression created a new session, the messages list was
-            # shortened.  Using the original history offset would produce an
-            # empty new_messages slice, causing the gateway to write only a
-            # user/assistant pair — losing the compressed summary and tail.
-            # Reset to 0 so the gateway writes ALL compressed messages.
-            _effective_history_offset = 0 if _session_was_split else len(agent_history)
-
             # Auto-generate session title after first exchange (non-blocking)
             if final_response and self._session_db:
                 try:
