@@ -1011,80 +1011,102 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
     needs_save = False
 
     for job in jobs:
-        if not job.get("enabled", True):
-            continue
-
-        next_run = job.get("next_run_at")
-        if not next_run:
-            schedule = job.get("schedule", {})
-            kind = schedule.get("kind")
-
-            # One-shot jobs use a small grace window via the dedicated helper.
-            recovered_next = _recoverable_oneshot_run_at(
-                schedule,
-                now,
-                last_run_at=job.get("last_run_at"),
-            )
-            recovery_kind = "one-shot" if recovered_next else None
-
-            # Recurring jobs reach here only when something — typically a
-            # direct jobs.json edit that bypassed add_job() — left
-            # next_run_at unset.  Without this branch, such jobs are
-            # silently skipped forever; recompute next_run_at from the
-            # schedule so they pick up at their next scheduled tick.
-            if not recovered_next and kind in {"cron", "interval"}:
-                recovered_next = compute_next_run(schedule, now.isoformat())
-                if recovered_next:
-                    recovery_kind = kind
-
-            if not recovered_next:
+        # SIE Phase 5 Part B (2026-05-16): per-job exception isolation.
+        # A single malformed job (e.g. `schedule` as a raw string) used to
+        # raise inside the loop body and abort the entire tick, freezing
+        # the whole fleet. Wrap the per-job body so one bad row marks
+        # itself state=error and the queue continues processing.
+        try:
+            if not job.get("enabled", True):
                 continue
 
-            job["next_run_at"] = recovered_next
-            next_run = recovered_next
-            logger.info(
-                "Job '%s' had no next_run_at; recovering %s run at %s",
-                job.get("name", job["id"]),
-                recovery_kind,
-                recovered_next,
+            next_run = job.get("next_run_at")
+            if not next_run:
+                schedule = job.get("schedule", {})
+                kind = schedule.get("kind")
+
+                # One-shot jobs use a small grace window via the dedicated helper.
+                recovered_next = _recoverable_oneshot_run_at(
+                    schedule,
+                    now,
+                    last_run_at=job.get("last_run_at"),
+                )
+                recovery_kind = "one-shot" if recovered_next else None
+
+                # Recurring jobs reach here only when something, typically a
+                # direct jobs.json edit that bypassed add_job(), left
+                # next_run_at unset.  Without this branch, such jobs are
+                # silently skipped forever; recompute next_run_at from the
+                # schedule so they pick up at their next scheduled tick.
+                if not recovered_next and kind in {"cron", "interval"}:
+                    recovered_next = compute_next_run(schedule, now.isoformat())
+                    if recovered_next:
+                        recovery_kind = kind
+
+                if not recovered_next:
+                    continue
+
+                job["next_run_at"] = recovered_next
+                next_run = recovered_next
+                logger.info(
+                    "Job '%s' had no next_run_at; recovering %s run at %s",
+                    job.get("name", job["id"]),
+                    recovery_kind,
+                    recovered_next,
+                )
+                for rj in raw_jobs:
+                    if rj["id"] == job["id"]:
+                        rj["next_run_at"] = recovered_next
+                        needs_save = True
+                        break
+
+            next_run_dt = _ensure_aware(datetime.fromisoformat(next_run))
+            if next_run_dt <= now:
+                schedule = job.get("schedule", {})
+                kind = schedule.get("kind")
+
+                # For recurring jobs, check if the scheduled time is stale
+                # (gateway was down and missed the window). Fast-forward to
+                # the next future occurrence instead of firing a stale run.
+                grace = _compute_grace_seconds(schedule)
+                if kind in {"cron", "interval"} and (now - next_run_dt).total_seconds() > grace:
+                    # Job is past its catch-up grace window: this is a stale missed run.
+                    # Grace scales with schedule period: daily=2h, hourly=30m, 10min=5m.
+                    new_next = compute_next_run(schedule, now.isoformat())
+                    if new_next:
+                        logger.info(
+                            "Job '%s' missed its scheduled time (%s, grace=%ds). "
+                            "Fast-forwarding to next run: %s",
+                            job.get("name", job["id"]),
+                            next_run,
+                            grace,
+                            new_next,
+                        )
+                        # Update the job in storage
+                        for rj in raw_jobs:
+                            if rj["id"] == job["id"]:
+                                rj["next_run_at"] = new_next
+                                needs_save = True
+                                break
+                        continue  # Skip this run
+
+                due.append(job)
+        except Exception as exc:
+            logger.error(
+                "Cron tick: job '%s' (%s) raised %s during due-collection; "
+                "marking state=error and continuing",
+                job.get("name", job.get("id", "?")),
+                job.get("id", "?"),
+                exc,
+                exc_info=True,
             )
             for rj in raw_jobs:
-                if rj["id"] == job["id"]:
-                    rj["next_run_at"] = recovered_next
+                if rj.get("id") == job.get("id"):
+                    rj["state"] = "error"
+                    rj["last_error"] = f"tick-time exception (due-collection): {exc}"
                     needs_save = True
                     break
-
-        next_run_dt = _ensure_aware(datetime.fromisoformat(next_run))
-        if next_run_dt <= now:
-            schedule = job.get("schedule", {})
-            kind = schedule.get("kind")
-
-            # For recurring jobs, check if the scheduled time is stale
-            # (gateway was down and missed the window). Fast-forward to
-            # the next future occurrence instead of firing a stale run.
-            grace = _compute_grace_seconds(schedule)
-            if kind in {"cron", "interval"} and (now - next_run_dt).total_seconds() > grace:
-                # Job is past its catch-up grace window — this is a stale missed run.
-                # Grace scales with schedule period: daily=2h, hourly=30m, 10min=5m.
-                new_next = compute_next_run(schedule, now.isoformat())
-                if new_next:
-                    logger.info(
-                        "Job '%s' missed its scheduled time (%s, grace=%ds). "
-                        "Fast-forwarding to next run: %s",
-                        job.get("name", job["id"]),
-                        next_run,
-                        grace,
-                        new_next,
-                    )
-                    # Update the job in storage
-                    for rj in raw_jobs:
-                        if rj["id"] == job["id"]:
-                            rj["next_run_at"] = new_next
-                            needs_save = True
-                            break
-                    continue  # Skip this run
-
-            due.append(job)
+            continue
 
     if needs_save:
         save_jobs(raw_jobs)

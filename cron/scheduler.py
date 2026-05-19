@@ -1884,8 +1884,39 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
 
         # Advance next_run_at for all recurring jobs FIRST, under the file lock,
         # before any execution begins.  This preserves at-most-once semantics.
+        #
+        # SIE Phase 5 Part B (2026-05-16): per-job exception isolation here too.
+        # advance_next_run() calls compute_next_run() which can raise on a
+        # malformed schedule that survived due-collection (e.g. valid kind but
+        # invalid cron expression). Without isolation, one bad job aborts the
+        # entire tick at this gate AFTER due-collection succeeded, moving the
+        # class-of-bug rather than fixing it. Wrap per-job: on exception, mark
+        # state=error, REMOVE from due list (do NOT execute), continue.
+        advanced_due = []
         for job in due_jobs:
-            advance_next_run(job["id"])
+            try:
+                advance_next_run(job["id"])
+                advanced_due.append(job)
+            except Exception as exc:
+                logger.error(
+                    "Cron tick: advance_next_run failed for job '%s' (%s): %s; "
+                    "marking state=error, skipping execution this tick",
+                    job.get("name", job.get("id", "?")),
+                    job.get("id", "?"),
+                    exc,
+                    exc_info=True,
+                )
+                try:
+                    mark_job_run(job["id"], False, f"advance_next_run exception: {exc}")
+                except Exception as me:
+                    logger.error(
+                        "Cron tick: also failed to mark_job_run for '%s': %s",
+                        job.get("id", "?"),
+                        me,
+                    )
+                # NOTE: do NOT append to advanced_due. Job will not execute this tick.
+                continue
+        due_jobs = advanced_due
 
         # Resolve max parallel workers: env var > config.yaml > unbounded.
         # Set HERMES_CRON_MAX_PARALLEL=1 to restore old serial behaviour.
