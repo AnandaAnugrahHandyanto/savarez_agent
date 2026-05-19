@@ -83,9 +83,29 @@ def _detect_api_mode_for_url(base_url: str) -> Optional[str]:
         return "codex_responses"
     if normalized.endswith("/anthropic"):
         return "anthropic_messages"
-    if hostname == "api.kimi.com" and "/coding" in normalized:
+    if hostname == "api.kimi.com" and re.search(r"/coding(?:/|$)", normalized):
         return "anthropic_messages"
     return None
+
+
+def _normalize_anthropic_sdk_base_url(provider: Optional[str], base_url: str, api_mode: str) -> str:
+    """Normalize base URLs for Anthropic SDK transports.
+
+    The Anthropic SDK prepends its own /v1/messages path. Providers that expose
+    OpenAI-compatible health/model URLs under a trailing /v1 must be stripped
+    when the resolved runtime uses anthropic_messages, otherwise requests hit a
+    double-/v1 path such as /coding/v1/v1/messages.
+    """
+    normalized = (base_url or "").strip().rstrip("/")
+    if api_mode != "anthropic_messages":
+        return normalized
+    pathish = normalized.lower()
+    if (
+        (provider or "") in {"opencode-zen", "opencode-go"}
+        or (base_url_host_matches(normalized, "api.kimi.com") and re.search(r"/coding(?:/|$)", pathish))
+    ):
+        return re.sub(r"/v1/?$", "", normalized)
+    return normalized
 
 
 def _auto_detect_local_model(base_url: str) -> str:
@@ -330,12 +350,8 @@ def _resolve_runtime_from_pool_entry(
             if detected:
                 api_mode = detected
 
-    # OpenCode base URLs end with /v1 for OpenAI-compatible models, but the
-    # Anthropic SDK prepends its own /v1/messages to the base_url.  Strip the
-    # trailing /v1 so the SDK constructs the correct path (e.g.
-    # https://opencode.ai/zen/go/v1/messages instead of .../v1/v1/messages).
-    if api_mode == "anthropic_messages" and provider in {"opencode-zen", "opencode-go"}:
-        base_url = re.sub(r"/v1/?$", "", base_url)
+    # Normalize Anthropic SDK base URLs after provider-specific api_mode detection.
+    base_url = _normalize_anthropic_sdk_base_url(provider, base_url, api_mode)
 
     # Optional opt-in: route OpenAI/Codex turns through `codex app-server`.
     # Inert when `model.openai_runtime` is unset or "auto".
@@ -393,9 +409,11 @@ def _try_resolve_from_custom_pool(
         pool_api_key = getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "")
         if not pool_api_key:
             return None
+        api_mode = api_mode_override or _detect_api_mode_for_url(base_url) or "chat_completions"
+        base_url = _normalize_anthropic_sdk_base_url(provider_label, base_url, api_mode)
         return {
             "provider": provider_label,
-            "api_mode": api_mode_override or _detect_api_mode_for_url(base_url) or "chat_completions",
+            "api_mode": api_mode,
             "base_url": base_url,
             "api_key": pool_api_key,
             "source": f"pool:{pool_key}",
@@ -566,9 +584,11 @@ def _resolve_named_custom_runtime(
             (c for c in api_key_candidates if has_usable_secret(c)),
             "",
         ) or "no-key-required"
+        api_mode = _detect_api_mode_for_url(base_url) or "chat_completions"
+        base_url = _normalize_anthropic_sdk_base_url("custom", base_url, api_mode)
         return {
             "provider": "custom",
-            "api_mode": _detect_api_mode_for_url(base_url) or "chat_completions",
+            "api_mode": api_mode,
             "base_url": base_url,
             "api_key": api_key,
             "source": "direct-alias",
@@ -605,11 +625,11 @@ def _resolve_named_custom_runtime(
     ]
     api_key = next((candidate for candidate in api_key_candidates if has_usable_secret(candidate)), "")
 
+    api_mode = custom_provider.get("api_mode") or _detect_api_mode_for_url(base_url) or "chat_completions"
+    base_url = _normalize_anthropic_sdk_base_url("custom", base_url, api_mode)
     result = {
         "provider": "custom",
-        "api_mode": custom_provider.get("api_mode")
-        or _detect_api_mode_for_url(base_url)
-        or "chat_completions",
+        "api_mode": api_mode,
         "base_url": base_url,
         "api_key": api_key or "no-key-required",
         "source": f"custom_provider:{custom_provider.get('name', requested_provider)}",
@@ -718,11 +738,11 @@ def _resolve_openrouter_runtime(
     if effective_provider == "custom" and not api_key and not _is_openrouter_url:
         api_key = "no-key-required"
 
+    api_mode = _parse_api_mode(model_cfg.get("api_mode")) or _detect_api_mode_for_url(base_url) or "chat_completions"
+    base_url = _normalize_anthropic_sdk_base_url(effective_provider, base_url, api_mode)
     return {
         "provider": effective_provider,
-        "api_mode": _parse_api_mode(model_cfg.get("api_mode"))
-        or _detect_api_mode_for_url(base_url)
-        or "chat_completions",
+        "api_mode": api_mode,
         "base_url": base_url,
         "api_key": api_key,
         "source": source,
@@ -1032,10 +1052,11 @@ def _resolve_explicit_runtime(
                 if detected:
                     api_mode = detected
 
+        base_url = _normalize_anthropic_sdk_base_url(provider, base_url, api_mode)
         return {
             "provider": provider,
             "api_mode": api_mode,
-            "base_url": base_url.rstrip("/"),
+            "base_url": base_url,
             "api_key": api_key,
             "source": "explicit",
             "requested_provider": requested_provider,
@@ -1488,9 +1509,7 @@ def resolve_runtime_provider(
                 detected = _detect_api_mode_for_url(base_url)
                 if detected:
                     api_mode = detected
-        # Strip trailing /v1 for OpenCode Anthropic models (see comment above).
-        if api_mode == "anthropic_messages" and provider in {"opencode-zen", "opencode-go"}:
-            base_url = re.sub(r"/v1/?$", "", base_url)
+        base_url = _normalize_anthropic_sdk_base_url(provider, base_url, api_mode)
         return {
             "provider": provider,
             "api_mode": api_mode,
