@@ -497,7 +497,7 @@ def _transcribe_local_command(file_path: str, model_name: str) -> Dict[str, Any]
 
             # Mitigate command injection by tokenizing the template first,
             # then substituting variables without shlex.quote since we pass a list
-            tokens = shlex.split(command_template)
+            tokens = shlex.split(command_template.replace('\n', ' ; ').replace('{', ' { ').replace('}', ' } '), posix=(os.name == 'posix'))
             command_args = [
                 token.format(
                     input_path=prepared_input,
