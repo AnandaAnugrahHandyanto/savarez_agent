@@ -118,7 +118,7 @@ Good defaults:
 | **Custom Endpoint** | VLLM, SGLang, Ollama, or any OpenAI-compatible API | Set base URL + API key |
 
 :::note OpenAI Codex context limits
-`openai-codex` uses ChatGPT OAuth on the Codex backend. Some GPT-5 models have a smaller effective context window there than they do on the direct OpenAI Platform API. If maximum OpenAI context matters more than subscription auth, use provider `openai` with an API key.
+`openai-codex` uses ChatGPT OAuth on the Codex backend, and the effective limit is model-specific. Today, `gpt-5.4` is the high-context ChatGPT OAuth choice (~1M total context), while `gpt-5.5` still behaves like a much smaller-window Codex model. If you want the largest ChatGPT-subscription context inside Hermes, pick `gpt-5.4` on `openai-codex`.
 :::
 
 For most first-time users: choose a provider, accept the defaults unless you know why you're changing them. The full provider catalog with env vars and setup steps lives on the [Providers](../integrations/providers.md) page.

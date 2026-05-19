@@ -1238,9 +1238,14 @@ def _query_anthropic_context_length(model: str, base_url: str, api_key: str) -> 
 
 # Known ChatGPT Codex OAuth context windows (observed via live
 # chatgpt.com/backend-api/codex/models probe, Apr 2026). These are the
-# `context_window` values, which are what Codex actually enforces — the
-# direct OpenAI API has larger limits for the same slugs, but Codex OAuth
-# caps lower (e.g. gpt-5.5 is 1.05M on the API, 272K on Codex).
+# `context_window` values returned by Codex's /models endpoint.
+#
+# Important exception: gpt-5.4's live /responses path currently accepts far
+# larger prompts (~900k input tokens; empirical ceiling aligns with the public
+# API's ~922k input / 1.05M total budget) even though /models still reports
+# 272k. Hermes treats that route-specific gpt-5.4 behavior as authoritative
+# so long-context ChatGPT OAuth users are not artificially compressed down to
+# the stale /models value.
 #
 # Used as a fallback when the live probe fails (no token, network error).
 # Longest keys first so substring match picks the most specific entry.
@@ -1257,9 +1262,16 @@ _CODEX_OAUTH_CONTEXT_FALLBACK: Dict[str, int] = {
     "gpt-5.2-codex": 272_000,
     "gpt-5.4-mini": 272_000,
     "gpt-5.5": 272_000,
-    "gpt-5.4": 272_000,
+    "gpt-5.4": 1_050_000,
     "gpt-5.2": 272_000,
     "gpt-5": 272_000,
+}
+
+# Route-specific empirical overrides for ChatGPT OAuth on the Codex Responses
+# endpoint.  These intentionally override the lower /models-reported
+# `context_window` values when the live inference path proves otherwise.
+_CODEX_RESPONSES_CONTEXT_OVERRIDES: Dict[str, int] = {
+    "gpt-5.4": 1_050_000,
 }
 
 
@@ -1330,6 +1342,10 @@ def _resolve_codex_oauth_context_length(
     model_bare = _strip_provider_prefix(model).strip()
     if not model_bare:
         return None
+
+    override = _CODEX_RESPONSES_CONTEXT_OVERRIDES.get(model_bare.lower())
+    if isinstance(override, int) and override > 0:
+        return override
 
     if access_token:
         live = _fetch_codex_oauth_context_lengths(access_token)

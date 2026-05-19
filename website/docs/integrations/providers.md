@@ -142,7 +142,7 @@ The OpenAI Codex provider authenticates via device code (open a URL, enter a cod
 
 If a token refresh fails with a terminal error (HTTP 4xx, `invalid_grant`, revoked grant, etc.), Hermes marks the refresh token as dead and stops replaying it so you don't see a flood of identical auth failures. The next request surfaces a typed re-auth message instead. Run `hermes auth add codex-oauth` (or `hermes model` → OpenAI Codex) to start a fresh device-code login; the quarantine clears on the next successful exchange.
 
-ChatGPT OAuth on this provider uses the Codex backend, not the direct OpenAI Platform API. That means the same GPT-5 slug can have a smaller effective context window here than it does on `provider: openai`. If you need the maximum OpenAI context window, use the `openai` provider with an API key instead.
+ChatGPT OAuth on this provider uses the Codex backend, not the direct OpenAI Platform API, and the effective limit is model-specific. In current live testing, `gpt-5.4` is the large-context ChatGPT OAuth option (~1M total context), while `gpt-5.5` still behaves like a smaller-window Codex model. If you want the largest ChatGPT-subscription context inside Hermes, choose `gpt-5.4` on `openai-codex`.
 :::
 
 :::warning

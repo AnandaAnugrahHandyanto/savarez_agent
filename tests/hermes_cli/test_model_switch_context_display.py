@@ -41,6 +41,25 @@ class TestResolveDisplayContextLength:
             "Codex OAuth's 272K cap must win over models.dev's 1.05M for gpt-5.5"
         )
 
+    def test_codex_oauth_gpt_5_4_keeps_high_context(self):
+        """gpt-5.4 on openai-codex is a route-specific exception: the live
+        ChatGPT OAuth /responses path accepts ~1.05M total context even though
+        Codex /models still reports 272k. /model must show the higher value.
+        """
+        fake_mi = _FakeModelInfo(1_050_000)
+        with patch(
+            "agent.model_metadata.get_model_context_length",
+            return_value=1_050_000,
+        ):
+            ctx = resolve_display_context_length(
+                "gpt-5.4",
+                "openai-codex",
+                base_url="https://chatgpt.com/backend-api/codex",
+                api_key="",
+                model_info=fake_mi,
+            )
+        assert ctx == 1_050_000
+
     def test_falls_back_to_model_info_when_resolver_returns_none(self):
         fake_mi = _FakeModelInfo(1_048_576)
         with patch(
