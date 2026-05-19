@@ -49,6 +49,8 @@ DEFAULTS: Dict[str, Any] = {
     "litellm_port": int(_env("HERMES_DGX_LITELLM_PORT") or "4000"),
     "active_endpoint": "ollama",
     "default_model": "qwen2.5-coder:latest",
+    # vLLM servers started via "hermes dgx models add <hf-model>"
+    "vllm_servers": [],
     # multi-node
     "active_node": "default",
     "nodes": {},
