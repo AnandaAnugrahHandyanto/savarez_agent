@@ -1211,6 +1211,17 @@ class TestModelSpecificExecutionGuidance:
         prompt = agent._build_system_prompt()
         assert OPENAI_MODEL_EXECUTION_GUIDANCE not in prompt
 
+    def test_glm_receives_openai_execution_guidance(self):
+        """GLM (Zhipu) exhibits the same narration-without-tool_use failure
+        mode as grok under base enforcement alone — it is in
+        TOOL_USE_ENFORCEMENT_MODELS but was missing from the OpenAI gate.
+        """
+        from agent.prompt_builder import OPENAI_MODEL_EXECUTION_GUIDANCE
+
+        agent = self._make_agent(model="zai/glm-4.6")
+        prompt = agent._build_system_prompt()
+        assert OPENAI_MODEL_EXECUTION_GUIDANCE in prompt
+
 
 class TestInvalidateSystemPrompt:
     def test_clears_cache(self, agent):
