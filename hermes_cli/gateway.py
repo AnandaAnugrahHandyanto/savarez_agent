@@ -674,9 +674,6 @@ def launch_detached_profile_gateway_restart(profile: str, old_pid: int) -> bool:
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             env=_profile_gateway_restart_env(profile),
-            [sys.executable, "-c", watcher, str(old_pid), *_gateway_run_args_for_profile(profile)],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
             **windows_detach_popen_kwargs(),
         )
     except OSError:
