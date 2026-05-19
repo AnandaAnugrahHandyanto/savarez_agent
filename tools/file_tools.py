@@ -118,7 +118,9 @@ def _get_live_tracking_cwd(task_id: str = "default") -> str | None:
 
 def _resolve_path_for_task(filepath: str, task_id: str = "default") -> Path:
     """Resolve *filepath* against the task's live terminal cwd when possible."""
-    p = Path(filepath).expanduser()
+    # Use _expanduser_safe to avoid profile-sandbox HOME overriding ~.
+    # See _expanduser_safe() docstring for details.
+    p = Path(_expanduser_safe(filepath))
     if not p.is_absolute():
         base = _get_live_tracking_cwd(task_id) or os.environ.get(
             "TERMINAL_CWD", os.getcwd()
@@ -135,7 +137,7 @@ def _is_blocked_device(filepath: str) -> bool:
     through (e.g. /dev/stdin → /proc/self/fd/0 → /dev/pts/0), defeating
     the check.
     """
-    normalized = os.path.expanduser(filepath)
+    normalized = _expanduser_safe(filepath)
     if normalized in _BLOCKED_DEVICE_PATHS:
         return True
     # /proc/self/fd/0-2 and /proc/<pid>/fd/0-2 are Linux aliases for stdio
@@ -144,6 +146,23 @@ def _is_blocked_device(filepath: str) -> bool:
     ):
         return True
     return False
+
+
+def _expanduser_safe(filepath: str) -> str:
+    """Expand ~ in *filepath* to the real user home directory.
+
+    In sandboxed profiles, ``os.environ["HOME"]`` may be overridden to a
+    profile-specific directory (e.g. by local.py or code_execution_tool.py).
+    ``Path.expanduser()`` / ``os.path.expanduser()`` then resolves ``~`` to
+    the profile home instead of the real user home.
+
+    ``Path.home()`` consults the password database directly and is immune to
+    HOME overrides, so use it to replace any leading ``~`` before expanding.
+    See: hermes_constants.get_subprocess_home() design contract.
+    """
+    if filepath.startswith("~"):
+        return filepath.replace("~", str(Path.home()), 1)
+    return os.path.expanduser(filepath)
 
 
 # Paths that file tools should refuse to write to without going through the
@@ -161,7 +180,7 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
         resolved = str(_resolve_path_for_task(filepath, task_id))
     except (OSError, ValueError):
         resolved = filepath
-    normalized = os.path.normpath(os.path.expanduser(filepath))
+    normalized = os.path.normpath(_expanduser_safe(filepath))
     _err = (
         f"Refusing to write to sensitive system path: {filepath}\n"
         "Use the terminal tool with sudo if you need to modify system files."
