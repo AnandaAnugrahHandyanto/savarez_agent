@@ -68,6 +68,9 @@ def query(sql: str, limit: int = 50) -> dict[str, Any]:
     with _connect() as conn:
         cursor = conn.execute(sql.strip())
         columns = [column[0] for column in cursor.description or []]
+    with _connect() as conn:
+        cursor = conn.execute(sql.strip())
+        columns = [column[0] for column in cursor.description or []]
         rows = [dict(zip(columns, row)) for row in cursor.fetchmany(safe_limit)]
     return {"limit": safe_limit, "columns": columns, "rows": rows}
 
