@@ -920,6 +920,7 @@ def test_packets_endpoint_adds_linked_task_status_when_task_id_is_available(tmp_
 def test_packets_endpoint_returns_malformed_packet_for_invalid_artifact_without_crashing(tmp_path, monkeypatch):
     module = _load_plugin_module()
     monkeypatch.setattr(module, "ARTIFACT_ROOT", tmp_path.resolve())
+    monkeypatch.setattr(module, "APPROVAL_DB_PATH", tmp_path / "approval.sqlite")
     (tmp_path / "pending-approval-t_c50747c6.json").write_text(
         json.dumps(
             {
