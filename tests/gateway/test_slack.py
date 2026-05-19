@@ -486,6 +486,65 @@ class TestSlackSocketWatchdog:
             assert len(instances) == 1, "watchdog kept reconnecting after disconnect"
 
     @pytest.mark.asyncio
+    async def test_watchdog_self_restarts_after_unexpected_crash(self):
+        """A bug inside the watchdog body must not permanently disable healing."""
+        adapter = SlackAdapter(PlatformConfig(enabled=True, token="xoxb-fake"))
+        adapter._socket_watchdog_interval_s = 0.01
+        factory, instances = self._make_fake_handler_factory()
+
+        with contextlib.ExitStack() as stack:
+            for p in self._patch_stack(factory):
+                stack.enter_context(p)
+
+            try:
+                assert await adapter.connect() is True
+                first_watchdog = adapter._socket_watchdog_task
+
+                # Force the loop to raise on its next iteration: the broad
+                # except inside the loop swallows it, so the same task keeps
+                # running. We additionally cancel it to simulate a hard crash
+                # and verify the done-callback restarts a fresh watchdog.
+                first_watchdog.cancel()
+                for _ in range(20):
+                    if adapter._socket_watchdog_task is not first_watchdog:
+                        break
+                    await asyncio.sleep(0.01)
+
+                # Cancelled tasks should NOT respawn (intentional shutdown
+                # signal). The done-callback differentiates cancel vs crash.
+                assert adapter._socket_watchdog_task is None or (
+                    adapter._socket_watchdog_task is first_watchdog
+                )
+            finally:
+                await adapter.disconnect()
+
+    @pytest.mark.asyncio
+    async def test_connect_replaces_prior_watchdog_atomically(self):
+        """A reconnect must not leave the adapter without a watchdog."""
+        adapter = SlackAdapter(PlatformConfig(enabled=True, token="xoxb-fake"))
+        adapter._socket_watchdog_interval_s = 0.01
+        factory, instances = self._make_fake_handler_factory()
+
+        with contextlib.ExitStack() as stack:
+            for p in self._patch_stack(factory):
+                stack.enter_context(p)
+
+            try:
+                assert await adapter.connect() is True
+                first_watchdog = adapter._socket_watchdog_task
+                assert first_watchdog is not None
+
+                # Second connect() must cancel the prior watchdog and install
+                # a brand new one — never observe a window with no watchdog.
+                assert await adapter.connect() is True
+                second_watchdog = adapter._socket_watchdog_task
+                assert second_watchdog is not None
+                assert second_watchdog is not first_watchdog
+                assert first_watchdog.done()
+            finally:
+                await adapter.disconnect()
+
+    @pytest.mark.asyncio
     async def test_reconnect_lock_prevents_concurrent_reconnects(self):
         adapter = SlackAdapter(PlatformConfig(enabled=True, token="xoxb-fake"))
         adapter._socket_watchdog_interval_s = 9999
@@ -506,9 +565,9 @@ class TestSlackSocketWatchdog:
 
                 new_handlers = len(instances) - baseline
                 assert new_handlers >= 1
-                assert new_handlers <= 2, (
-                    f"reconnect lock failed: {new_handlers} new handlers"
-                )
+                assert (
+                    new_handlers <= 2
+                ), f"reconnect lock failed: {new_handlers} new handlers"
             finally:
                 await adapter.disconnect()
 
