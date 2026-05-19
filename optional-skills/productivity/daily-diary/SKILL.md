@@ -19,66 +19,81 @@ metadata:
 
 # Daily Diary — Markdown Journal
 
-## Overview
+> **This skill is read by the AI agent (Hermes), not by the human user.**
+> Write instructions in the imperative, targeting the agent.
 
-`#diary-start` / `#diary-end` 命令驱动的日记系统。按 ISO 周分目录存储为 markdown 文件，可设置 cron 定时提醒（写过当天日记则不提醒）。
+## When This Skill Activates
 
-兼容 Obsidian、VS Code 等任何 markdown 编辑器。
+When the user says **any** of these, load this skill and respond accordingly:
 
-## When to Use
-
-| 用户说… | 做什么 |
+| User says (examples) | Your task |
 |---|---|
-| `#diary-start` | 开始记录。收集文字和图片，写入当天文件。 |
-| `#diary-end` | 结束记录。确认保存。 |
-| `#view-diary` | 读取最近日记。 |
-| "帮我设置日记" / "设定日记" | 运行引导初始化（**先检查 memory 是否已有配置**）。 |
-| "改日记设置" / "改提醒时间" | 调出重配流程。 |
-| "删除日记系统" | 移除 cronjob + 清配置。 |
+| `#diary-start` | Begin recording a diary entry. |
+| `#diary-end` | Stop recording, confirm save. |
+| `#view-diary` | Read back today's entry. |
+| "set up my diary" / "帮我设置日记" / "init diary" | Run the first-time setup wizard. |
+| "change diary" / "reconfigure diary" / "改提醒" | Run reconfiguration workflow. |
+| "remove diary" / "delete diary" / "移除日记" | Remove cron job + clear config from memory. |
 
-## Core Flow
+If the user says `#diary-start` but memory has no `diary_storage_dir`, run the
+setup wizard first instead of trying to write.
+
+## How to Load Reference Files
+
+When a scenario requires detail beyond this core file, load the reference:
 
 ```
-skill_view('daily-diary') on load
-  → 检查 memory 是否有 diary_storage_dir
-    ├─ 有 → 进入日常模式
-    │     #diary-start → 写日记（references/writing.md）
-    │     #view-diary   → 读取日记
-    └─ 无 → 进入初始化模式
-          user: "设置日记" → 加载 references/setup.md 走引导流程
+skill_view('daily-diary', file_path='references/setup.md')
 ```
 
-## Quick Reference (日常模式)
+Available references:
 
-### 写日记 (#diary-start)
-
-1. 从 memory 读取 `diary_storage_dir`
-2. 确定 ISO 周：`date +%V` → `YYYY-Www`
-3. 构建路径：
-   - `{storage_dir}/{YYYY-Www}/{YYYY-MM-DD}.md`
-   - `{storage_dir}/{YYYY-Www}/images/`
-4. 如果当天已有内容 → 追加 `## HH:MM` 段
-5. 如果新一天 → 写完整头（H1 + 天气）
-6. 标记为"记录中"
-
-收到文字 → 追加到文件。收到图片 → 存 `images/` 并引用。
-
-### 结束 (#diary-end)
-
-确认文件路径和条目数，关闭会话。
-
-### 查看 (#view-diary)
-
-读取当天 md 文件返回。
-
----
-
-**细节参考 →** 以下场景需要时通过 `skill_view('daily-diary', file_path='references/...')` 加载：
-
-| 场景 | 加载文件 |
+| Scenario | Load this |
 |---|---|
-| 首次设置 | `references/setup.md` |
-| 改配置 / 重新配 / 移除 | `references/reconfiguration.md` |
-| 日记格式规范、天气、图片排列 | `references/format.md` |
-| cronjob 行为细节 | `references/cron-reminder.md` |
-| 坑和验证清单 | `references/pitfalls.md` |
+| User wants first-time setup (no config in memory) | `references/setup.md` |
+| User wants to change path, time, or remove diary | `references/reconfiguration.md` |
+| You need to know the exact markdown format or image layout | `references/format.md` |
+| You need the cron job's smart-skip logic details | `references/cron-reminder.md` |
+| You hit an error — check common pitfalls | `references/pitfalls.md` |
+
+## Daily Mode (diary_storage_dir is set in memory)
+
+### Starting an entry (`#diary-start`)
+
+1. Read `diary_storage_dir` from your memory block (format: `diary_storage_dir=/path/to/dir`)
+2. Determine today's ISO week: run `date +%V` → yields `Www` (e.g. `W21`)
+3. Build directory: `{diary_storage_dir}/{YYYY-Www}/`
+4. Build file: `{diary_storage_dir}/{YYYY-Www}/{YYYY-MM-DD}.md`
+5. If this date already has a `# YYYY-MM-DD` heading in the file → append a new `## HH:MM` section
+6. If new day → write the full header (`# YYYY-MM-DD DayOfWeek`, weather blockquote, `## HH:MM`)
+7. Optionally fetch weather via `curl -s wttr.in/{location}?format=3` (default: Beijing, configurable via memory `diary_default_location`)
+8. Save images to `{diary_storage_dir}/{YYYY-Www}/images/` with filename `{YYYY-MM-DD}-NNN.jpg`
+9. Tell the user: "Diary started. Send me your entry."
+
+### Receiving content during an entry
+
+- **Text** → append under the current `## HH:MM` section
+- **Image** → save to `images/` dir, reference as `![caption](images/YYYY-MM-DD-NNN.jpg)` in markdown
+- **No vision model** → save the image file but note: "Image saved — I can't see its contents with this model."
+
+### Ending an entry (`#diary-end`)
+
+Confirm the file path and entry count, then close the recording session.
+
+### Viewing entries (`#view-diary`)
+
+Read `{diary_storage_dir}/{YYYY-Www}/{YYYY-MM-DD}.md` and return its content.
+
+## Memory Format
+
+All diary config is stored in your persistent memory block as key-value pairs
+separated by semicolons:
+
+```
+diary_storage_dir=/path/to/dir; diary_reminder_time=21:00;
+diary_reminder_job_id=abc123; diary_start_command=#diary-start;
+diary_end_command=#diary-end; diary_initialized=true;
+diary_default_location=Beijing
+```
+
+When reading, split by `;` then by `=`. When writing, use the `=;` format.
