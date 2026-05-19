@@ -18,6 +18,14 @@ approval:
 gateway:
   approval_expired: "⚠️ 批准已过期（代理不再等待）。请让代理重试。"
   draining:         "⏳ 正在等待 {count} 个活跃代理结束后重启..."
+  working_status:   "⏳ 正在处理...（已耗时 {_elapsed_mins} 分钟{_status_detail}）"
+  interrupting_task: "⚡ 正在打断当前任务{_status_detail}。稍后会回复你的消息。"
+  gateway_queued: "⏳ Gateway 正在{action}——排队等待下一轮处理。"
+  gateway_busy: "⏳ Gateway 正在{action}，暂时不接受新请求。"
+  agent_starting: "代理正在启动——/steer 已排队等待下一轮。"
+  no_active_agent: "没有活跃代理——/steer 已排队等待下一轮。"
+  request_failed: "请求失败：{error}\n请重试或使用 /reset 开始新会话。"
+  processing_stopped: "⚠️ 处理中断：{error}。请重试。"
 
   # Gateway exec approval prompts (sent when dangerous commands need approval)
   approval:
