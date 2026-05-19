@@ -176,6 +176,10 @@ def _stored_system_prompt_stale_for_soul(agent: Any, stored_prompt: str) -> bool
         current_soul = run_agent.load_soul_md()
         default_identity = getattr(run_agent, "DEFAULT_AGENT_IDENTITY", "")
         guidance = getattr(run_agent, "HERMES_AGENT_HELP_GUIDANCE", "")
+        if not guidance:
+            from agent.prompt_builder import HERMES_AGENT_HELP_GUIDANCE
+
+            guidance = HERMES_AGENT_HELP_GUIDANCE
     except Exception as exc:
         logger.debug(
             "Could not load SOUL.md while validating stored system prompt: %s",
@@ -187,7 +191,10 @@ def _stored_system_prompt_stale_for_soul(agent: Any, stored_prompt: str) -> bool
     if not expected_identity:
         return False
 
-    marker = f"\n\n{guidance}" if guidance else ""
+    marker = f"\n\n{guidance}" if guidance else None
+    if not marker:
+        return True
+
     identity_block, sep, _ = stored_prompt.partition(marker)
     if not sep:
         return True
