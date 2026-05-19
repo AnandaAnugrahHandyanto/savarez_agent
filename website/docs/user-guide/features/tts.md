@@ -75,7 +75,7 @@ tts:
     locale: "en-US"
     region: "DEFAULT"           # DEFAULT, GLOBAL, US_EAST, US_WEST, IN, EU_CENTRAL, etc.
     style: "Conversational"
-    speed: 0                    # -50 to 50
+    rate: 0                    # -50 to 50
     pitch: 0                    # -50 to 50
   xai:
     voice_id: "eve"             # or a custom voice ID — see docs below

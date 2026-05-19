@@ -1375,7 +1375,7 @@ def _generate_murf_tts(text: str, output_path: str, tts_config: Dict[str, Any]) 
     output_format = format_map.get(ext, "MP3")
    
 
-    rate = murf_config.get("rate", murf_config.get("speed"))
+    rate = murf_config.get("rate", murf_config.get("rate"))
     sample_rate = murf_config.get("sample_rate", murf_config.get("sampleRate"))
 
     shared_kwargs: Dict[str, Any] = {
