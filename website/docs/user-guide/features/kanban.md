@@ -134,6 +134,51 @@ chars, must start with alphanumeric. Uppercase input is auto-downcased.
 Anything else (slashes, spaces, dots, `..`) is rejected at the CLI layer
 so path-traversal tricks can't name a board.
 
+### Project registry and Slack/channel routing
+
+For multi-project Slack workflows, keep channel-to-project defaults in
+`~/.hermes/projects.yaml` instead of profile prompts or global memory. The
+registry maps a durable project slug (and optionally a Slack channel ID/name)
+to a Kanban board, default workspace, repo path, and default assignee.
+
+```bash
+hermes project add cotm \
+    --board cotm \
+    --name "COTM" \
+    --repo /Users/spencer/code/cotm2 \
+    --workspace worktree \
+    --slack-channel C0B1XPB2W20 \
+    --slack-name project-cotm \
+    --assignee orchestrator
+
+# Route a request by Slack channel ID. Creates the board if needed,
+# creates the task on that board, and subscribes the originating chat
+# when --platform/--chat-id are present.
+hermes project route --platform slack --chat-id C0B1XPB2W20 \
+    "Fix flaky auth tests"
+
+# In the gateway, `/project route Fix flaky auth tests` injects the
+# originating platform/chat/thread automatically.
+```
+
+Example `projects.yaml`:
+
+```yaml
+version: 1
+projects:
+  cotm:
+    name: COTM
+    board: cotm
+    repo: /Users/spencer/code/cotm2
+    default_workspace: worktree
+    default_assignee: orchestrator
+    slack:
+      channel_id: C0B1XPB2W20
+      channel_name: project-cotm
+    context:
+      - "No database schema changes unless explicitly authorized."
+```
+
 ### Managing boards from the dashboard
 
 `hermes dashboard` → Kanban tab shows a board switcher at the top as soon
