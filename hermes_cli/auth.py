@@ -1575,6 +1575,17 @@ def _openai_oauth_access_token_is_expiring(expires_at_ms: Any, skew_seconds: int
     return expires_ms <= int((time.time() + max(0, int(skew_seconds))) * 1000)
 
 
+_OPENAI_CODEX_CONTEXT_NOTE = (
+    "  Note: ChatGPT OAuth runs through Codex backend limits. For the same GPT-5 "
+    "slug, the direct OpenAI API can expose a larger context window. Use provider "
+    "`openai` with an API key when you need maximum OpenAI context."
+)
+
+
+def _print_openai_codex_context_note() -> None:
+    print(_OPENAI_CODEX_CONTEXT_NOTE)
+
+
 def _read_openai_oauth_tokens() -> Dict[str, Any]:
     """Read OpenCode/OpenAI OAuth tokens from the local auth store."""
     auth_path = _openai_oauth_auth_path()
@@ -4740,6 +4751,7 @@ def _login_openai_codex(
                     print()
                     print("Login successful!")
                     print(f"  Config updated: {config_path} (model.provider=openai-codex)")
+                    _print_openai_codex_context_note()
                     return
             else:
                 print("Existing Codex credentials are expired. Starting fresh login...")
@@ -4764,6 +4776,7 @@ def _login_openai_codex(
                 print("Credentials imported. Note: if Codex CLI refreshes its token,")
                 print("Hermes will keep working independently with its own session.")
                 print(f"  Config updated: {config_path} (model.provider=openai-codex)")
+                _print_openai_codex_context_note()
                 return
 
     # Run a fresh device code flow — Hermes gets its own OAuth session
@@ -4782,6 +4795,7 @@ def _login_openai_codex(
     from hermes_constants import display_hermes_home as _dhh
     print(f"  Auth state: {_dhh()}/auth.json")
     print(f"  Config updated: {config_path} (model.provider=openai-codex)")
+    _print_openai_codex_context_note()
 
 
 def _codex_device_code_login() -> Dict[str, Any]:
