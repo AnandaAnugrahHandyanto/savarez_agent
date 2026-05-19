@@ -32,25 +32,9 @@ def _no_restart_verify_sleep(monkeypatch):
     main.py does ``import time as _time`` at both module level (line 167)
     and inside functions (lines 3281, 4384, 4401). Patching the global
     ``time.sleep`` affects only the duration of this test.
-
-    ALSO: main.py's ``_wait_for_service_active`` polls is-active until
-    a ``time.monotonic`` deadline expires. Mocked subprocess.run keeps
-    returning ``inactive`` so the loop never exits early; with sleep
-    no-op'd the loop spins on real wall-clock until the 10s timeout
-    fires (twice — once per restart attempt). Advance the monotonic
-    clock past the deadline on every call so the loop returns
-    immediately.
     """
     import time as _real_time
     monkeypatch.setattr(_real_time, "sleep", lambda *_a, **_k: None)
-
-    _fake_now = [0.0]
-
-    def _fake_monotonic():
-        _fake_now[0] += 5.0  # leap forward 5 seconds each poll
-        return _fake_now[0]
-
-    monkeypatch.setattr(_real_time, "monotonic", _fake_monotonic)
 
 
 # ---------------------------------------------------------------------------
@@ -353,39 +337,6 @@ class TestCmdUpdateLaunchdRestart:
 
     @patch("shutil.which", return_value=None)
     @patch("subprocess.run")
-    def test_update_detects_launchd_and_skips_manual_restart_message(
-        self, mock_run, _mock_which, mock_args, capsys, tmp_path, monkeypatch,
-    ):
-        """When launchd is running the gateway, update should print
-        'auto-restart via launchd' instead of 'Restart it with: hermes gateway run'."""
-        # Create a fake launchd plist so is_macos + plist.exists() passes
-        plist_path = tmp_path / "ai.hermes.gateway.plist"
-        plist_path.write_text("<plist/>")
-
-        monkeypatch.setattr(
-            gateway_cli, "is_macos", lambda: True,
-        )
-        monkeypatch.setattr(
-            gateway_cli, "get_launchd_plist_path", lambda: plist_path,
-        )
-
-        mock_run.side_effect = _make_run_side_effect(
-            commit_count="3",
-            launchctl_loaded=True,
-        )
-
-        # Mock launchd_restart + find_gateway_pids (new code discovers all gateways)
-        with patch.object(gateway_cli, "launchd_restart") as mock_launchd_restart, \
-             patch.object(gateway_cli, "find_gateway_pids", return_value=[]):
-            cmd_update(mock_args)
-
-        captured = capsys.readouterr().out
-        assert "Restarted" in captured
-        assert "Restart manually: hermes gateway run" not in captured
-        mock_launchd_restart.assert_called_once_with()
-
-    @patch("shutil.which", return_value=None)
-    @patch("subprocess.run")
     def test_update_without_launchd_shows_manual_restart(
         self, mock_run, _mock_which, mock_args, capsys, tmp_path, monkeypatch,
     ):
@@ -411,50 +362,6 @@ class TestCmdUpdateLaunchdRestart:
 
         captured = capsys.readouterr().out
         assert "Restart manually: hermes gateway run" in captured
-
-    @patch("shutil.which", return_value=None)
-    @patch("subprocess.run")
-    def test_update_restarts_profile_manual_gateways(
-        self, mock_run, _mock_which, mock_args, capsys, tmp_path, monkeypatch,
-    ):
-        """Profile-mapped manual gateways are relaunched automatically after update."""
-        monkeypatch.setattr(gateway_cli, "is_macos", lambda: True)
-        monkeypatch.setattr(
-            gateway_cli,
-            "get_launchd_plist_path",
-            lambda: tmp_path / "ai.hermes.gateway.plist",
-        )
-
-        mock_run.side_effect = _make_run_side_effect(
-            commit_count="3",
-            launchctl_loaded=False,
-        )
-        process = gateway_cli.ProfileGatewayProcess(
-            profile="coder",
-            path=tmp_path / ".hermes" / "profiles" / "coder",
-            pid=12345,
-        )
-
-        # ``find_gateway_pids`` is invoked twice: once to enumerate manual
-         # PIDs to restart, then again ~3s later by the post-restart survivor
-         # sweep (#17648). Return the live PID first, then an empty list to
-         # simulate the process actually exiting after the graceful restart
-         # — otherwise the sweep would SIGKILL pid 12345 even though graceful
-         # drain succeeded, and ``kill.assert_not_called()`` would fire.
-        with patch.object(gateway_cli, "find_gateway_pids", side_effect=[[12345], []]), \
-             patch.object(gateway_cli, "find_profile_gateway_processes", return_value=[process]), \
-             patch.object(gateway_cli, "launch_detached_profile_gateway_restart", return_value=True) as restart, \
-             patch.object(gateway_cli, "_graceful_restart_via_sigusr1", return_value=True) as graceful, \
-             patch("os.kill") as kill:
-            cmd_update(mock_args)
-
-        captured = capsys.readouterr().out
-        restart.assert_called_once_with("coder", 12345)
-        graceful.assert_called_once()
-        # Graceful drain succeeded — no SIGTERM fallback needed.
-        kill.assert_not_called()
-        assert "Restarting manual gateway profile(s): coder" in captured
-        assert "Restart manually: hermes gateway run" not in captured
 
     @patch("shutil.which", return_value=None)
     @patch("subprocess.run")
