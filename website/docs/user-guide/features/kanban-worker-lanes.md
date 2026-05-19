@@ -56,15 +56,21 @@ Every claim must end in exactly one of:
 
 The kanban kernel enforces that exactly one of these terminates each run. A worker that calls neither and exits normally is treated as crashed.
 
-## Outputs and the review-required convention
+## Outputs and code-review routing
 
-For most code-changing tasks, the work isn't truly *done* the moment the worker finishes — it needs a human reviewer. The kanban kernel doesn't enforce this distinction (a "code-changing task" is fuzzy and forcing block-instead-of-complete on every code worker would break flows where no review is wanted). It's a convention layered on top:
+Coding workers are expected to self-verify with automated checks/tests and then
+complete with a structured handoff. Routine technical code review should stay
+inside the agent system rather than becoming a human-facing block:
 
-- **Block instead of complete**, with `reason` prefixed `review-required: ` so the dashboard / `hermes kanban show` surfaces the row as awaiting review.
-- **Drop structured metadata into a `kanban_comment` first** since `kanban_block` only carries the human-readable `reason`. Comments are the durable annotation channel — every audit-relevant field (changed_files, tests_run, diff_path or PR url, decisions) belongs there.
-- **Reviewer either approves and unblocks**, which respawns the worker with the comment thread for follow-ups; or asks for changes via another comment, which the next worker run sees as part of `kanban_show`'s context.
+- **Complete the implementation task** with `kanban_complete(summary=..., metadata=...)`, including audit fields such as `changed_files`, `tests_run`, `diff_path` or PR url, decisions, and residual risk.
+- **Create a reviewer-agent child card** with `kanban_create(..., assignee=<reviewer_profile>, parents=[...])` when independent review is required by policy or useful for confidence.
+- **Reserve `kanban_block` for human product/business/requirements ambiguity.** Permission choices use configured defaults unless the task explicitly instructs the worker to ask.
 
-The [`kanban-worker`](https://github.com/NousResearch/hermes-agent/blob/main/skills/devops/kanban-worker/SKILL.md) skill has worked examples for both `kanban_complete` (truly terminal tasks — typo fixes, docs changes, research writeups) and the `review-required` block pattern.
+The legacy `review-required:` human-block convention is only for deployments that
+explicitly set `kanban.code_review.mode: human_review` and
+`kanban.code_review.human_blocks_for_code_review: true`.
+
+The [`kanban-worker`](https://github.com/NousResearch/hermes-agent/blob/main/skills/devops/kanban-worker/SKILL.md) skill has worked examples for implementation handoffs and review-agent child cards.
 
 ## Logs and audit trail
 

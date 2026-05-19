@@ -190,7 +190,33 @@ up on the next tick (60s by default).
 kanban:
   dispatch_in_gateway: true        # default
   dispatch_interval_seconds: 60    # default
+  code_review:
+    mode: ai_reviewer              # ai_reviewer | self_verify | human_review
+    reviewer_profile: reviewer     # profile assigned child review cards
+    require_for_coding_tasks: true
+    human_blocks_for_code_review: false
+    permission_mode: default       # use configured defaults unless instructed
 ```
+
+By default, coding workers do not block the human operator for routine technical
+code review. They run the relevant checks/tests themselves and, when independent
+review is required, create a child review task assigned to `reviewer_profile`.
+Human-facing `kanban_block` calls should be reserved for product intent,
+business-priority, or requirements decisions that cannot be inferred. Permission
+choices follow the configured defaults unless the task explicitly instructs the
+worker to ask.
+
+The dispatcher also serializes this policy into worker subprocesses so assignee
+profiles see the same board-level behavior. Operator env overrides take
+precedence over config and are useful for temporary experiments:
+
+| Env var | Config field |
+|---|---|
+| `HERMES_KANBAN_CODE_REVIEW_MODE` | `kanban.code_review.mode` |
+| `HERMES_KANBAN_REVIEWER_PROFILE` | `kanban.code_review.reviewer_profile` |
+| `HERMES_KANBAN_REQUIRE_CODE_REVIEW` | `kanban.code_review.require_for_coding_tasks` |
+| `HERMES_KANBAN_HUMAN_CODE_REVIEW_BLOCKS` | `kanban.code_review.human_blocks_for_code_review` |
+| `HERMES_KANBAN_PERMISSION_MODE` | `kanban.code_review.permission_mode` |
 
 Override the config flag at runtime via `HERMES_KANBAN_DISPATCH_IN_GATEWAY=0`
 for debugging. Standard gateway supervision applies: run `hermes gateway

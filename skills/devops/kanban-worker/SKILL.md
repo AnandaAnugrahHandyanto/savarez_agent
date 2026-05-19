@@ -36,39 +36,35 @@ The `kanban_complete(summary=..., metadata=...)` handoff is how downstream worke
 
 **Coding task:**
 ```python
+import os
+
+review = kanban_create(
+    title="Review rate limiter implementation",
+    assignee="reviewer",
+    parents=[os.environ["HERMES_KANBAN_TASK"]],
+    body="Please review changed files, tests, and residual risks from the implementation handoff.",
+)
+
 kanban_complete(
-    summary="shipped rate limiter — token bucket, keys on user_id with IP fallback, 14 tests pass",
+    summary="shipped rate limiter — token bucket, keys on user_id with IP fallback, 14 tests pass; review task created",
     metadata={
         "changed_files": ["rate_limiter.py", "tests/test_rate_limiter.py"],
         "tests_run": 14,
         "tests_passed": 14,
         "decisions": ["user_id primary, IP fallback for unauthenticated requests"],
+        "review_task_id": review["task_id"],
     },
+    created_cards=[review["task_id"]],
 )
 ```
 
-**Coding task that needs human review (review-required):**
-
-For most code-changing tasks, the work isn't truly *done* until a human reviewer has eyes on it. Block instead of complete, with `reason` prefixed `review-required: ` so the dashboard surfaces the row as needing review. Drop the structured metadata (changed files, test counts, diff/PR url) into a comment first, since `kanban_block` only carries the human-readable reason — comments are the durable annotation channel. Reviewer either approves and runs `hermes kanban unblock <id>` (which re-spawns you with the comment thread for any follow-ups) or asks for changes via another comment.
-
-```python
-import json
-
-kanban_comment(
-    body="review-required handoff:\n" + json.dumps({
-        "changed_files": ["rate_limiter.py", "tests/test_rate_limiter.py"],
-        "tests_run": 14,
-        "tests_passed": 14,
-        "diff_path": "/path/to/worktree",  # or PR url if pushed
-        "decisions": ["user_id primary, IP fallback for unauthenticated requests"],
-    }, indent=2),
-)
-kanban_block(
-    reason="review-required: rate limiter shipped, 14/14 tests pass — needs eyes on the user_id/IP fallback choice before merging",
-)
-```
-
-Use `kanban_complete` only when the task is genuinely terminal — e.g. a one-line typo fix, a docs change with no functional consequences, or a research task where the artifact IS the writeup itself.
+Coding workers own technical self-verification: run the relevant checks/tests,
+record changed files and residual risk, and create a reviewer-agent child card
+when independent review is needed or required by policy. Do not block the human
+operator for ordinary code review. Use `kanban_block` only for product intent,
+business-priority, or requirements decisions that cannot be inferred. Permission
+choices follow configured defaults unless the task explicitly instructs the
+worker to ask.
 
 **Research task:**
 ```python

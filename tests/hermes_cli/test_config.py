@@ -71,6 +71,60 @@ class TestLoadConfigDefaults:
             assert config["terminal"]["backend"] == "local"
             assert config["display"]["interim_assistant_messages"] is True
 
+    def test_kanban_code_review_policy_defaults_to_ai_reviewer(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            policy = load_config()["kanban"]["code_review"]
+            assert policy["mode"] == "ai_reviewer"
+            assert policy["reviewer_profile"] == "reviewer"
+            assert policy["require_for_coding_tasks"] is True
+            assert policy["human_blocks_for_code_review"] is False
+            assert policy["permission_mode"] == "default"
+
+    def test_kanban_policy_env_overrides_worker_profile_config(self):
+        from hermes_cli.kanban_policy import policy_from_env
+
+        base_config = {
+            "kanban": {
+                "code_review": {
+                    "mode": "human_review",
+                    "reviewer_profile": "profile-reviewer",
+                    "require_for_coding_tasks": False,
+                    "human_blocks_for_code_review": True,
+                    "permission_mode": "ask",
+                }
+            }
+        }
+        policy = policy_from_env(
+            {
+                "HERMES_KANBAN_CODE_REVIEW_MODE": "ai_reviewer",
+                "HERMES_KANBAN_REVIEWER_PROFILE": "board-reviewer",
+                "HERMES_KANBAN_REQUIRE_CODE_REVIEW": "true",
+                "HERMES_KANBAN_HUMAN_CODE_REVIEW_BLOCKS": "false",
+                "HERMES_KANBAN_PERMISSION_MODE": "default",
+            },
+            base_policy=base_config["kanban"]["code_review"],
+        )
+        assert policy.mode == "ai_reviewer"
+        assert policy.reviewer_profile == "board-reviewer"
+        assert policy.require_for_coding_tasks is True
+        assert policy.human_blocks_for_code_review is False
+        assert policy.permission_mode == "default"
+
+    def test_kanban_policy_env_malformed_values_fall_back_to_safe_defaults(self):
+        from hermes_cli.kanban_policy import policy_from_env
+
+        policy = policy_from_env(
+            {
+                "HERMES_KANBAN_CODE_REVIEW_MODE": "not-a-mode",
+                "HERMES_KANBAN_REQUIRE_CODE_REVIEW": "not-bool",
+                "HERMES_KANBAN_PERMISSION_MODE": "not-a-permission-mode",
+            },
+            base_policy={"mode": "self_verify", "require_for_coding_tasks": False},
+        )
+        assert policy.mode == "ai_reviewer"
+        assert policy.require_for_coding_tasks is True
+        assert policy.permission_mode == "default"
+
     def test_legacy_root_level_max_turns_migrates_to_agent_config(self, tmp_path):
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
             config_path = tmp_path / "config.yaml"

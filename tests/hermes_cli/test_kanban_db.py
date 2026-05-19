@@ -1309,6 +1309,59 @@ class TestSharedBoardPaths:
             default_home / "kanban" / "workspaces"
         )
         assert env["HERMES_KANBAN_TASK"] == "t_dispatch_env"
+        assert env["HERMES_KANBAN_CODE_REVIEW_MODE"] == "ai_reviewer"
+        assert env["HERMES_KANBAN_REVIEWER_PROFILE"] == "reviewer"
+        assert env["HERMES_KANBAN_REQUIRE_CODE_REVIEW"] == "true"
+        assert env["HERMES_KANBAN_HUMAN_CODE_REVIEW_BLOCKS"] == "false"
+        assert env["HERMES_KANBAN_PERMISSION_MODE"] == "default"
+
+    def test_dispatcher_spawn_preserves_operator_kanban_policy_env(
+        self, tmp_path, monkeypatch
+    ):
+        default_home = tmp_path / ".hermes"
+        default_home.mkdir()
+        self._set_home(monkeypatch, tmp_path, default_home)
+        monkeypatch.setenv("HERMES_KANBAN_CODE_REVIEW_MODE", "human_review")
+        monkeypatch.setenv("HERMES_KANBAN_REVIEWER_PROFILE", "security-reviewer")
+        monkeypatch.setenv("HERMES_KANBAN_REQUIRE_CODE_REVIEW", "false")
+        monkeypatch.setenv("HERMES_KANBAN_HUMAN_CODE_REVIEW_BLOCKS", "true")
+        monkeypatch.setenv("HERMES_KANBAN_PERMISSION_MODE", "ask")
+
+        captured = {}
+
+        class _FakePopen:
+            def __init__(self, cmd, **kwargs):
+                captured["cmd"] = cmd
+                captured["env"] = kwargs.get("env", {})
+                self.pid = 4243
+
+        monkeypatch.setattr("subprocess.Popen", _FakePopen)
+
+        task = kb.Task(
+            id="t_dispatch_policy_env",
+            title="x",
+            body=None,
+            assignee="coder",
+            status="ready",
+            priority=0,
+            created_by=None,
+            created_at=0,
+            started_at=None,
+            completed_at=None,
+            workspace_kind="scratch",
+            workspace_path=None,
+            claim_lock=None,
+            claim_expires=None,
+            tenant=None,
+        )
+        kb._default_spawn(task, str(tmp_path / "ws"))
+
+        env = captured["env"]
+        assert env["HERMES_KANBAN_CODE_REVIEW_MODE"] == "human_review"
+        assert env["HERMES_KANBAN_REVIEWER_PROFILE"] == "security-reviewer"
+        assert env["HERMES_KANBAN_REQUIRE_CODE_REVIEW"] == "false"
+        assert env["HERMES_KANBAN_HUMAN_CODE_REVIEW_BLOCKS"] == "true"
+        assert env["HERMES_KANBAN_PERMISSION_MODE"] == "ask"
 
 
 # ---------------------------------------------------------------------------

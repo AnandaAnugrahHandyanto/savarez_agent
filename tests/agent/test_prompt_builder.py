@@ -4,6 +4,7 @@ import builtins
 import importlib
 import logging
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -24,6 +25,8 @@ from agent.prompt_builder import (
     TOOL_USE_ENFORCEMENT_GUIDANCE,
     TOOL_USE_ENFORCEMENT_MODELS,
     OPENAI_MODEL_EXECUTION_GUIDANCE,
+    KANBAN_GUIDANCE,
+    build_kanban_guidance,
     MEMORY_GUIDANCE,
     SESSION_SEARCH_GUIDANCE,
     PLATFORM_HINTS,
@@ -48,6 +51,67 @@ class TestGuidanceConstants:
     def test_session_search_guidance_is_simple_cross_session_recall(self):
         assert "relevant cross-session context exists" in SESSION_SEARCH_GUIDANCE
         assert "recent turns of the current session" not in SESSION_SEARCH_GUIDANCE
+
+    def test_default_kanban_guidance_routes_code_review_to_agent(self):
+        assert "technical review belongs to agents" in KANBAN_GUIDANCE
+        assert "reviewer" in KANBAN_GUIDANCE
+        assert "kanban_create" in KANBAN_GUIDANCE
+        assert "review-required:" not in KANBAN_GUIDANCE
+        assert "needs human review" not in KANBAN_GUIDANCE.lower()
+
+    def test_kanban_guidance_uses_permission_defaults_not_human_permission_blocks(self):
+        guidance = build_kanban_guidance({"permission_mode": "default"})
+        lowered = guidance.lower()
+        assert "permission defaults" in lowered
+        assert "ask for permission" not in lowered
+        assert "block on permissions" not in lowered
+
+    def test_kanban_guidance_is_policy_driven_and_modular(self):
+        guidance = build_kanban_guidance(
+            {
+                "mode": "ai_reviewer",
+                "reviewer_profile": "review-bot",
+                "require_for_coding_tasks": True,
+                "human_blocks_for_code_review": False,
+            }
+        )
+        assert "review-bot" in guidance
+        assert "create a child review task" in guidance
+        assert "technical code-review block" in guidance
+        assert "parents=[$HERMES_KANBAN_TASK]" not in guidance
+
+    def test_kanban_guidance_supports_explicit_human_review_policy(self):
+        guidance = build_kanban_guidance(
+            {
+                "mode": "human_review",
+                "human_blocks_for_code_review": True,
+                "permission_mode": "ask",
+            }
+        )
+        assert "Human code review is explicitly enabled by policy" in guidance
+        assert "Human code-review blocks are allowed by the active policy" in guidance
+        assert "Block only on human product/business ambiguity" not in guidance
+        assert "ask only when the active policy explicitly requires asking" in guidance
+
+    def test_kanban_guidance_supports_self_verify_policy(self):
+        guidance = build_kanban_guidance(
+            {
+                "mode": "self_verify",
+                "require_for_coding_tasks": False,
+                "permission_mode": "deny",
+            }
+        )
+        assert "self-verify with automated checks/tests" in guidance
+        assert "default to deny/skip" in guidance
+
+    def test_auto_loaded_kanban_worker_skill_matches_agent_review_default(self):
+        skill = Path("skills/devops/kanban-worker/SKILL.md").read_text(
+            encoding="utf-8"
+        )
+        assert "reviewer-agent child card" in skill
+        assert "Do not block the human" in skill
+        assert "review-required:" not in skill
+        assert "For most code-changing tasks" not in skill
 
 
 # =========================================================================
