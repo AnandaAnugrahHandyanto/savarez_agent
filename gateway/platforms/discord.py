@@ -1611,12 +1611,75 @@ class DiscordAdapter(BasePlatformAdapter):
             msg = await channel.fetch_message(int(message_id))
             formatted = self.format_message(content)
             if len(formatted) > self.MAX_MESSAGE_LENGTH:
-                formatted = formatted[:self.MAX_MESSAGE_LENGTH - 3] + "..."
+                return await self._edit_overflow_split(
+                    channel, msg, formatted, message_id
+                )
             await msg.edit(content=formatted)
             return SendResult(success=True, message_id=message_id)
         except Exception as e:  # pragma: no cover - defensive logging
             logger.error("[%s] Failed to edit Discord message %s: %s", self.name, message_id, e, exc_info=True)
             return SendResult(success=False, error=str(e))
+
+    async def _edit_overflow_split(
+        self,
+        channel: Any,
+        msg: Any,
+        content: str,
+        message_id: str,
+    ) -> SendResult:
+        """Split an oversized edit across the existing message + new continuations.
+
+        Edits the original message with the first chunk, then sends the
+        remaining chunks as replies to each preceding chunk so the user sees
+        a contiguous block.  Returns ``SendResult(success=True,
+        message_id=<last-chunk-id>, continuation_message_ids=(...))`` so
+        ``stream_consumer`` can keep editing the most recent visible message.
+        """
+        chunks = self.truncate_message(content, self.MAX_MESSAGE_LENGTH)
+        if len(chunks) <= 1:
+            chunks = [content]
+
+        # Edit the existing message with the first chunk.
+        try:
+            await msg.edit(content=chunks[0])
+        except Exception as e:
+            if "not modified" not in str(e).lower():
+                logger.error(
+                    "[%s] Overflow split: first-chunk edit failed: %s",
+                    self.name, e, exc_info=True,
+                )
+                return SendResult(success=False, error=str(e))
+
+        # Send remaining chunks as threaded continuations.
+        continuation_ids: List[str] = []
+        prev_msg = msg
+        for chunk in chunks[1:]:
+            try:
+                reference = (
+                    prev_msg.to_reference(fail_if_not_exists=False)
+                    if hasattr(prev_msg, "to_reference")
+                    else prev_msg
+                )
+                sent = await channel.send(content=chunk, reference=reference)
+            except Exception as send_err:
+                logger.warning(
+                    "[%s] Overflow split: continuation send failed: %s",
+                    self.name, send_err,
+                )
+                break
+            continuation_ids.append(str(sent.id))
+            prev_msg = sent
+
+        last_id = continuation_ids[-1] if continuation_ids else message_id
+        logger.debug(
+            "[%s] edit_message overflow split: %d/%d chunks delivered; last_id=%s",
+            self.name, 1 + len(continuation_ids), len(chunks), last_id,
+        )
+        return SendResult(
+            success=True,
+            message_id=last_id,
+            continuation_message_ids=tuple(continuation_ids),
+        )
 
     async def _send_file_attachment(
         self,
