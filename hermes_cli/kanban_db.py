@@ -4679,6 +4679,18 @@ def _default_spawn(
     # attributed correctly regardless of how the child loads config.
     env["HERMES_PROFILE"] = profile_arg
 
+    from hermes_cli.kanban_policy import (
+        kanban_policy_env,
+        load_kanban_code_review_policy,
+        policy_from_env,
+    )
+
+    env.update(
+        kanban_policy_env(
+            policy_from_env(env, base_policy=load_kanban_code_review_policy())
+        )
+    )
+
     cmd = [
         *_resolve_hermes_argv(),
         "-p", profile_arg,
@@ -5082,11 +5094,20 @@ def _to_epoch(val) -> Optional[int]:
         pass
     # ISO-8601 fallback (e.g. '2026-05-10T15:00:00Z')
     try:
-        from datetime import datetime, timezone
+        from datetime import datetime
         dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
         return int(dt.timestamp())
     except (ValueError, OSError):
         return None
+
+
+def _safe_int(val) -> Optional[int]:
+    """Best-effort integer conversion used by timestamp callers.
+
+    Kept as a narrow compatibility helper for tests and callers that only need
+    an int-or-None guard around corrupt SQLite values.
+    """
+    return _to_epoch(val)
 
 
 def task_age(task: Task) -> dict:

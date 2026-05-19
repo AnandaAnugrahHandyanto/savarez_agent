@@ -887,6 +887,25 @@ delegation:
   #                                           # Supported: openrouter, nous, zai, kimi-coding, minimax
 
 # =============================================================================
+# Kanban Multi-Agent Coordination
+# =============================================================================
+kanban:
+  # Run the dispatcher inside the gateway process.
+  dispatch_in_gateway: true
+  dispatch_interval_seconds: 60
+  failure_limit: 2
+
+  # Coding-task review policy for dispatched workers.
+  # Default keeps routine technical review inside the agent system: implementers
+  # run checks/tests and create reviewer-agent child cards when review is needed.
+  code_review:
+    mode: "ai_reviewer"              # ai_reviewer | self_verify | human_review
+    reviewer_profile: "reviewer"
+    require_for_coding_tasks: true
+    human_blocks_for_code_review: false
+    permission_mode: "default"       # default | ask | deny
+
+# =============================================================================
 # Honcho Integration (Cross-Session User Modeling)
 # =============================================================================
 # AI-native persistent memory via Honcho (https://honcho.dev/).

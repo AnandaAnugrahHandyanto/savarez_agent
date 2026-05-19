@@ -24,6 +24,10 @@ from agent.skill_utils import (
     parse_frontmatter,
     skill_matches_platform,
 )
+from hermes_cli.kanban_policy import (
+    KanbanCodeReviewPolicy,
+    normalize_kanban_code_review_policy,
+)
 from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
@@ -185,71 +189,116 @@ SKILLS_GUIDANCE = (
     "Skills that aren't maintained become liabilities."
 )
 
-KANBAN_GUIDANCE = (
-    "# Kanban task execution protocol\n"
-    "You have been assigned ONE task from "
-    "the shared board at `~/.hermes/kanban.db`. Your task id is in "
-    "`$HERMES_KANBAN_TASK`; your workspace is `$HERMES_KANBAN_WORKSPACE`. "
-    "The `kanban_*` tools in your schema are your primary coordination surface — "
-    "they write directly to the shared SQLite DB and work regardless of terminal "
-    "backend (local/docker/modal/ssh).\n"
-    "\n"
-    "## Lifecycle\n"
-    "\n"
-    "1. **Orient.** Call `kanban_show()` first (no args — it defaults to your "
-    "task). The response includes title, body, parent-task handoffs (summary + "
-    "metadata), any prior attempts on this task if you're a retry, the full "
-    "comment thread, and a pre-formatted `worker_context` you can treat as "
-    "ground truth.\n"
-    "2. **Work inside the workspace.** `cd $HERMES_KANBAN_WORKSPACE` before "
-    "any file operations. The workspace is yours for this run. Don't modify "
-    "files outside it unless the task explicitly asks.\n"
-    "3. **Heartbeat on long operations.** Call `kanban_heartbeat(note=...)` "
-    "every few minutes during long subprocesses (training, encoding, crawling). "
-    "Skip heartbeats for short tasks.\n"
-    "4. **Block on genuine ambiguity.** If you need a human decision you cannot "
-    "infer (missing credentials, UX choice, paywalled source, peer output you "
-    "need first), call `kanban_block(reason=\"...\")` and stop. Don't guess. "
-    "The user will unblock with context and the dispatcher will respawn you.\n"
-    "5. **Complete with structured handoff.** Call `kanban_complete(summary=..., "
-    "metadata=...)`. `summary` is 1–3 human-readable sentences naming concrete "
-    "artifacts. `metadata` is machine-readable facts "
-    "(`{changed_files: [...], tests_run: N, decisions: [...]}`). Downstream "
-    "workers read both via their own `kanban_show`. Never put secrets / "
-    "tokens / raw PII in either field — run rows are durable forever. "
-    "Exception: if your output is a code change that needs human review "
-    "before counting as merged/done (most coding tasks), drop the "
-    "structured metadata (changed_files / tests_run / diff_path) into a "
-    "`kanban_comment` first, then end with "
-    "`kanban_block(reason=\"review-required: <one-line summary>\")` so a "
-    "reviewer can approve+unblock or request changes. Reviewing-then-"
-    "completing is more honest than auto-completing work that still needs "
-    "eyes on it.\n"
-    "6. **If follow-up work appears, create it; don't do it.** Use "
-    "`kanban_create(title=..., assignee=<right-profile>, parents=[your-task-id])` "
-    "to spawn a child task for the appropriate specialist profile instead of "
-    "scope-creeping into the next thing.\n"
-    "\n"
-    "## Orchestrator mode\n"
-    "\n"
-    "If your task is itself a decomposition task (e.g. a planner profile given "
-    "a high-level goal), use `kanban_create` to fan out into child tasks — one "
-    "per specialist, each with an explicit `assignee` and `parents=[...]` to "
-    "express dependencies. Then `kanban_complete` your own task with a summary "
-    "of the decomposition. Do NOT execute the work yourself; your job is "
-    "routing, not implementation.\n"
-    "\n"
-    "## Do NOT\n"
-    "\n"
-    "- Do not shell out to `hermes kanban <verb>` for board operations. Use "
-    "the `kanban_*` tools — they work across all terminal backends.\n"
-    "- Do not complete a task you didn't actually finish. Block it.\n"
-    "- Do not assign follow-up work to yourself. Assign it to the right "
-    "specialist profile.\n"
-    "- Do not call `delegate_task` as a board substitute. `delegate_task` is "
-    "for short reasoning subtasks inside your own run; board tasks are for "
-    "cross-agent handoffs that outlive one API loop."
-)
+def build_kanban_guidance(
+    policy: KanbanCodeReviewPolicy | dict | None = None,
+) -> str:
+    """Build Kanban worker guidance from a normalized code-review policy."""
+
+    p = normalize_kanban_code_review_policy(policy)
+    review_lines: list[str]
+    if p.mode == "ai_reviewer" and p.require_for_coding_tasks:
+        review_lines = [
+            f"technical review belongs to agents, not the human user. For code changes, run the relevant automated checks/tests yourself, then create a child review task assigned to `{p.reviewer_profile}` when independent review is needed or required by policy; use the current task id from `kanban_show()`/`$HERMES_KANBAN_TASK` as the parent.",
+            "Complete your implementation task with a structured handoff that names changed files, tests run, and the review task id in `created_cards`; the reviewer agent owns code-review approval or follow-up findings.",
+        ]
+    elif p.mode == "human_review" and p.human_blocks_for_code_review:
+        review_lines = [
+            "Human code review is explicitly enabled by policy. Leave structured metadata in a comment before blocking for review.",
+        ]
+    else:
+        review_lines = [
+            "Technical review belongs to agents when requested; otherwise self-verify with automated checks/tests and complete with a structured handoff.",
+        ]
+
+    if not p.human_blocks_for_code_review:
+        review_lines.append(
+            "Do not create a human-facing technical code-review block for ordinary coding tasks."
+        )
+
+    if p.permission_mode == "default":
+        permission_line = (
+            "For permissions, use configured permission defaults unless the task explicitly instructs otherwise; do not request permission or pause for permissions."
+        )
+    elif p.permission_mode == "deny":
+        permission_line = (
+            "For permissions, default to deny/skip unless the task explicitly authorizes the action; document the skipped action in your handoff."
+        )
+    else:
+        permission_line = (
+            "For permissions, ask only when the active policy explicitly requires asking."
+        )
+
+    if p.mode == "human_review" and p.human_blocks_for_code_review:
+        block_line = (
+            "4. **Block only on policy-approved human decisions/review.** Human code-review blocks are allowed by the active policy: leave structured metadata in a comment, call `kanban_block(reason=\"review-required: ...\")`, and stop. Otherwise, block only for product intent or business-priority decisions you cannot infer. Routine permissions are "
+            f"not a human block condition: {permission_line}\n"
+        )
+    else:
+        block_line = (
+            "4. **Block only on human product/business ambiguity.** If you need a "
+            "product intent or business-priority decision you cannot infer, call "
+            "`kanban_block(reason=\"...\")` and stop. Routine permissions are "
+            f"not a human block condition: {permission_line}\n"
+        )
+
+    return (
+        "# Kanban task execution protocol\n"
+        "You have been assigned ONE task from "
+        "the shared board at `~/.hermes/kanban.db`. Your task id is in "
+        "`$HERMES_KANBAN_TASK`; your workspace is `$HERMES_KANBAN_WORKSPACE`. "
+        "The `kanban_*` tools in your schema are your primary coordination surface — "
+        "they write directly to the shared SQLite DB and work regardless of terminal "
+        "backend (local/docker/modal/ssh).\n"
+        "\n"
+        "## Lifecycle\n"
+        "\n"
+        "1. **Orient.** Call `kanban_show()` first (no args — it defaults to your "
+        "task). The response includes title, body, parent-task handoffs (summary + "
+        "metadata), any prior attempts on this task if you're a retry, the full "
+        "comment thread, and a pre-formatted `worker_context` you can treat as "
+        "ground truth.\n"
+        "2. **Work inside the workspace.** `cd $HERMES_KANBAN_WORKSPACE` before "
+        "any file operations. The workspace is yours for this run. Don't modify "
+        "files outside it unless the task explicitly asks.\n"
+        "3. **Heartbeat on long operations.** Call `kanban_heartbeat(note=...)` "
+        "every few minutes during long subprocesses (training, encoding, crawling). "
+        "Skip heartbeats for short tasks.\n"
+        + block_line
+        + "5. **Complete with structured handoff.** Call `kanban_complete(summary=..., "
+        "metadata=...)`. `summary` is 1–3 human-readable sentences naming concrete "
+        "artifacts. `metadata` is machine-readable facts "
+        "(`{changed_files: [...], tests_run: N, decisions: [...]}`). Downstream "
+        "workers read both via their own `kanban_show`. Never put secrets / "
+        "tokens / raw PII in either field — run rows are durable forever. "
+        f"{' '.join(review_lines)}\n"
+        "6. **If follow-up work appears, create it; don't do it.** Use "
+        "`kanban_create(title=..., assignee=<right-profile>, parents=[your-task-id])` "
+        "to spawn a child task for the appropriate specialist profile instead of "
+        "scope-creeping into the next thing.\n"
+        "\n"
+        "## Orchestrator mode\n"
+        "\n"
+        "If your task is itself a decomposition task (e.g. a planner profile given "
+        "a high-level goal), use `kanban_create` to fan out into child tasks — one "
+        "per specialist, each with an explicit `assignee` and `parents=[...]` to "
+        "express dependencies. Then `kanban_complete` your own task with a summary "
+        "of the decomposition. Do NOT execute the work yourself; your job is "
+        "routing, not implementation.\n"
+        "\n"
+        "## Do NOT\n"
+        "\n"
+        "- Do not shell out to `hermes kanban <verb>` for board operations. Use "
+        "the `kanban_*` tools — they work across all terminal backends.\n"
+        "- Do not complete a task you didn't actually finish. Block it.\n"
+        "- Do not assign follow-up work to yourself. Assign it to the right "
+        "specialist profile.\n"
+        "- Do not call `delegate_task` as a board substitute. `delegate_task` is "
+        "for short reasoning subtasks inside your own run; board tasks are for "
+        "cross-agent handoffs that outlive one API loop."
+    )
+
+
+KANBAN_GUIDANCE = build_kanban_guidance()
 
 TOOL_USE_ENFORCEMENT_GUIDANCE = (
     "# Tool-use enforcement\n"

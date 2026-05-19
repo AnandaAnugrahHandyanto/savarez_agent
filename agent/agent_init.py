@@ -839,13 +839,9 @@ def init_agent(
     # Kanban worker/orchestrator lifecycle guidance is session-static:
     # the dispatcher decides at spawn time whether this process is a kanban
     # worker (kanban_show tool is present iff HERMES_KANBAN_TASK is set).
-    # Resolving the ~835-token block once here avoids re-running the
-    # membership test + reference on every system-prompt rebuild
-    # (init + each context compression).
-    from agent.prompt_builder import KANBAN_GUIDANCE
-    agent._kanban_worker_guidance = (
-        KANBAN_GUIDANCE if "kanban_show" in agent.valid_tool_names else ""
-    )
+    # The concrete guidance is built after config/env policy is loaded.
+    agent._kanban_code_review_policy = None
+    agent._kanban_worker_guidance = ""
 
     # Check tool requirements
     if agent.tools and not agent.quiet_mode:
@@ -949,6 +945,24 @@ def init_agent(
         )
     except Exception as _tlg_err:
         _ra().logger.warning("Tool loop guardrail config ignored: %s", _tlg_err)
+    try:
+        from hermes_cli.kanban_policy import (
+            policy_from_config as _kanban_policy_from_config,
+            policy_from_env as _kanban_policy_from_env,
+        )
+
+        agent._kanban_code_review_policy = _kanban_policy_from_env(
+            os.environ,
+            base_policy=_kanban_policy_from_config(_agent_cfg),
+        )
+    except Exception:
+        agent._kanban_code_review_policy = None
+    if "kanban_show" in agent.valid_tool_names:
+        from agent.prompt_builder import build_kanban_guidance
+
+        agent._kanban_worker_guidance = build_kanban_guidance(
+            agent._kanban_code_review_policy
+        )
     # Cache only the derived auxiliary compression context override that is
     # needed later by the startup feasibility check.  Avoid exposing a
     # broad pseudo-public config object on the agent instance.

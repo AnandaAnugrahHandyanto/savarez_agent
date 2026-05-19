@@ -1554,6 +1554,19 @@ DEFAULT_CONFIG = {
         # large bulk-load of triage tasks from spending a burst of aux
         # LLM calls in one tick. Excess tasks defer to the next tick.
         "auto_decompose_per_tick": 3,
+        # Coding review policy for dispatched workers. Default behavior keeps
+        # routine technical review inside the agent system: coding workers run
+        # checks/tests, create reviewer-agent tasks when independent review is
+        # needed, and only block humans for product/business ambiguity.
+        "code_review": {
+            "mode": "ai_reviewer",  # ai_reviewer | self_verify | human_review
+            "reviewer_profile": "reviewer",
+            "require_for_coding_tasks": True,
+            "human_blocks_for_code_review": False,
+            # Permissions are not human decisions by default; workers follow
+            # the configured permission/approval defaults unless instructed.
+            "permission_mode": "default",  # default | ask | deny
+        },
     },
 
     # execute_code settings — controls the tool used for programmatic tool calls.
