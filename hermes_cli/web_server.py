@@ -659,6 +659,25 @@ async def get_harness_context_hygiene():
         }
 
 
+@app.get("/api/harness/skill-lifecycle")
+async def get_harness_skill_lifecycle():
+    """Return metadata-only skill lifecycle audit status."""
+    try:
+        return _control_plane_or_unavailable().skill_lifecycle()
+    except Exception as exc:
+        return {
+            "schema_version": 1,
+            "content_policy": "metadata_only",
+            "mode": "audit_only_no_delete",
+            "degraded": True,
+            "error_type": type(exc).__name__,
+            "skill_count": 0,
+            "promotion": {},
+            "issues": [],
+            "issue_count": 0,
+        }
+
+
 @app.get("/api/harness/core")
 async def get_core_harness_status():
     """Return the first-class seven-case Hermes core harness status."""

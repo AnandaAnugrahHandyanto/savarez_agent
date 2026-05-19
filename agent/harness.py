@@ -127,6 +127,11 @@ class ControlPlaneHarness:
 
         return context_hygiene.audit_context_hygiene()
 
+    def skill_lifecycle(self) -> Dict[str, Any]:
+        from agent import skill_lifecycle
+
+        return skill_lifecycle.audit_skill_lifecycle()
+
     def learning_health_unavailable(self, error: Optional[str] = None) -> Dict[str, Any]:
         from agent import harness_control_plane
 

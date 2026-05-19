@@ -107,3 +107,18 @@ def test_control_plane_harness_exposes_context_hygiene(monkeypatch):
         "content_policy": "metadata_only",
         "layers": {},
     }
+
+
+def test_control_plane_harness_exposes_skill_lifecycle(monkeypatch):
+    from agent import skill_lifecycle
+
+    monkeypatch.setattr(
+        skill_lifecycle,
+        "audit_skill_lifecycle",
+        lambda: {"content_policy": "metadata_only", "skill_count": 0},
+    )
+
+    assert HermesHarness().control_plane.skill_lifecycle() == {
+        "content_policy": "metadata_only",
+        "skill_count": 0,
+    }

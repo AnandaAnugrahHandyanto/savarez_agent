@@ -237,6 +237,16 @@ class TestWebServerEndpoints:
                     "issues": [],
                 }
 
+            def skill_lifecycle(self):
+                return {
+                    "schema_version": 1,
+                    "content_policy": "metadata_only",
+                    "mode": "audit_only_no_delete",
+                    "skill_count": 2,
+                    "promotion": {"promoted_without_gate_count": 0},
+                    "issues": [],
+                }
+
         class _Harness:
             @property
             def control_plane(self):
@@ -248,21 +258,25 @@ class TestWebServerEndpoints:
         replay = self.client.get("/api/harness/replay-corpus")
         gates = self.client.get("/api/harness/promotion-gates")
         hygiene = self.client.get("/api/harness/context-hygiene")
+        lifecycle = self.client.get("/api/harness/skill-lifecycle")
 
         assert snapshot.status_code == 200
         assert replay.status_code == 200
         assert gates.status_code == 200
         assert hygiene.status_code == 200
+        assert lifecycle.status_code == 200
         assert snapshot.json()["content_policy"] == "metadata_only"
         assert replay.json()["by_failure_kind"] == {"runtime_error": 1}
         assert gates.json()["blocked"] == 1
         assert hygiene.json()["content_policy"] == "metadata_only"
+        assert lifecycle.json()["mode"] == "audit_only_no_delete"
         raw = json.dumps(
             {
                 "snapshot": snapshot.json(),
                 "replay": replay.json(),
                 "gates": gates.json(),
                 "hygiene": hygiene.json(),
+                "lifecycle": lifecycle.json(),
             },
             sort_keys=True,
         )
