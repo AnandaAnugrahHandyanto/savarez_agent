@@ -27,6 +27,7 @@ import ipaddress
 import logging
 import os
 import socket
+import threading
 from urllib.parse import urlparse
 
 from utils import is_truthy_value
@@ -168,6 +169,57 @@ def _is_blocked_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
     return False
 
 
+_DNS_RESOLVE_TIMEOUT = 5.0
+
+
+class _DNSResolutionTimeout(Exception):
+    """Raised when socket.getaddrinfo does not return within the bound."""
+
+
+def _resolve_hostname(hostname: str, timeout: float | None = None) -> list:
+    """Resolve ``hostname`` with a hard timeout that cannot hang the caller.
+
+    Uses a daemon thread + ``Thread.join(timeout)`` instead of
+    ``ThreadPoolExecutor``: on ``TimeoutError``,
+    ``ThreadPoolExecutor.__exit__`` (``shutdown(wait=True)``) would still
+    block until the hung ``socket.getaddrinfo()`` worker finishes,
+    defeating the timeout. A daemon thread never blocks this function's
+    return, nor interpreter shutdown.
+
+    ``timeout`` defaults to ``_DNS_RESOLVE_TIMEOUT``, read at call time
+    (not bound as a default argument) so tests can adjust it via
+    ``monkeypatch``.
+
+    Raises:
+        socket.gaierror: resolution failed normally.
+        _DNSResolutionTimeout: resolution did not complete in time.
+    """
+    if timeout is None:
+        timeout = _DNS_RESOLVE_TIMEOUT
+
+    outcome: dict = {}
+
+    def _resolve() -> None:
+        try:
+            outcome["value"] = socket.getaddrinfo(
+                hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM
+            )
+        except socket.gaierror as exc:
+            outcome["error"] = exc
+
+    thread = threading.Thread(target=_resolve, daemon=True)
+    thread.start()
+    thread.join(timeout)
+
+    if thread.is_alive():
+        raise _DNSResolutionTimeout(
+            f"DNS resolution for {hostname!r} timed out after {timeout}s"
+        )
+    if "error" in outcome:
+        raise outcome["error"]
+    return outcome["value"]
+
+
 def is_always_blocked_url(url: str) -> bool:
     """Return True when the URL targets an always-blocked endpoint.
 
@@ -232,10 +284,8 @@ def is_always_blocked_url(url: str) -> bool:
         # Hostname → resolve and check every answer.  DNS failure is NOT
         # always-blocked (caller's ordinary path handles that).
         try:
-            addr_info = socket.getaddrinfo(
-                hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM
-            )
-        except socket.gaierror:
+            addr_info = _resolve_hostname(hostname)
+        except (socket.gaierror, _DNSResolutionTimeout):
             return False
 
         for _family, _, _, _, sockaddr in addr_info:
@@ -302,11 +352,14 @@ def is_safe_url(url: str) -> bool:
 
         # Try to resolve and check IP
         try:
-            addr_info = socket.getaddrinfo(hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
+            addr_info = _resolve_hostname(hostname)
         except socket.gaierror:
             # DNS resolution failed — fail closed. If DNS can't resolve it,
             # the HTTP client will also fail, so blocking loses nothing.
             logger.warning("Blocked request — DNS resolution failed for: %s", hostname)
+            return False
+        except _DNSResolutionTimeout:
+            logger.warning("Blocked request — DNS resolution timed out for: %s", hostname)
             return False
 
         for family, _, _, _, sockaddr in addr_info:

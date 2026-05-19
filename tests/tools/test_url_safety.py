@@ -80,6 +80,25 @@ class TestIsSafeUrl:
         with patch("socket.getaddrinfo", side_effect=socket.gaierror("Name resolution failed")):
             assert is_safe_url("https://nonexistent.example.com") is False
 
+    def test_dns_hang_fails_closed_within_timeout(self, monkeypatch):
+        """A hung resolver must not block the caller past the bound timeout."""
+        import time
+
+        from tools import url_safety
+
+        monkeypatch.setattr(url_safety, "_DNS_RESOLVE_TIMEOUT", 0.2)
+
+        def hanging_getaddrinfo(*args, **kwargs):
+            time.sleep(5)
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0))]
+
+        with patch("socket.getaddrinfo", side_effect=hanging_getaddrinfo):
+            start = time.monotonic()
+            assert is_safe_url("https://example.com") is False
+            elapsed = time.monotonic() - start
+
+        assert elapsed < 1.0
+
     def test_empty_url_blocked(self):
         assert is_safe_url("") is False
 
@@ -469,6 +488,25 @@ class TestIsAlwaysBlockedUrl:
         """
         with patch("socket.getaddrinfo", side_effect=socket.gaierror("fail")):
             assert is_always_blocked_url("http://nonexistent.example.com/") is False
+
+    def test_dns_hang_not_in_floor_within_timeout(self, monkeypatch):
+        """A hung resolver returns (not always-blocked) within the bound timeout."""
+        import time
+
+        from tools import url_safety
+
+        monkeypatch.setattr(url_safety, "_DNS_RESOLVE_TIMEOUT", 0.2)
+
+        def hanging_getaddrinfo(*args, **kwargs):
+            time.sleep(5)
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0))]
+
+        with patch("socket.getaddrinfo", side_effect=hanging_getaddrinfo):
+            start = time.monotonic()
+            assert is_always_blocked_url("http://example.com/") is False
+            elapsed = time.monotonic() - start
+
+        assert elapsed < 1.0
 
     def test_empty_url_not_in_floor(self):
         """Empty URL falls through — caller decides what to do with a malformed URL."""
