@@ -25,6 +25,7 @@ import "@xterm/xterm/css/xterm.css";
 import { Badge } from "@nous-research/ui/ui/components/badge";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Typography } from "@/components/NouiTypography";
+import { HERMES_BASE_PATH } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { CircleStop, Copy, FileUp, Loader2, MessageSquarePlus, PanelRight, SendHorizontal, X } from "lucide-react";
 import { type DragEvent, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
@@ -53,7 +54,7 @@ function buildWsUrl(
   const qs = new URLSearchParams({ token, channel });
   if (resume) qs.set("resume", resume);
   if (!resume && projectId) qs.set("project", projectId);
-  return `${proto}//${window.location.host}/api/pty?${qs.toString()}`;
+  return `${proto}//${window.location.host}${HERMES_BASE_PATH}/api/pty?${qs.toString()}`;
 }
 
 // Channel id ties this chat tab's PTY child (publisher) to its sidebar
@@ -960,8 +961,19 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       fontWeight: "400",
       fontWeightBold: "700",
       macOptionIsMeta: true,
-      // The dashboard PTY runs the TUI in inline mode so xterm.js can provide
-      // browser-native mouse-wheel scrollback and click-drag text selection.
+      // Hold Option (Alt on Linux/Windows) to force native text selection
+      // even when the inner Hermes TUI has enabled xterm mouse-events
+      // mode (CSI ?1000h family). Without this, click-and-drag in the
+      // chat canvas selects nothing and Cmd+C falls back to copying the
+      // entire visible buffer, which is rarely what the user wants.
+      // See #25720.
+      macOptionClickForcesSelection: true,
+      // Right-click selects the word under the pointer. xterm.js default
+      // is false; enabling it gives users a single-action selection
+      // path on top of the modifier-based bypass above.
+      rightClickSelectsWord: true,
+      // Browser-embedded chat runs the TUI in inline mode. Keep transcript
+      // history in xterm.js so the browser wheel can scroll it directly.
       scrollback: 10000,
       theme: TERMINAL_THEME,
     });
@@ -1070,9 +1082,8 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     term.loadAddon(fit);
 
     // Plain wheel uses xterm.js's native scrollback so the chat feels like a
-    // browser page and keeps drag-to-select available. Modifier-held wheel is
-    // still routed to the inner TUI as an expert fallback for transcript scroll.
-    // protocol emulation — that can vary by terminal mode and parser path.
+    // browser page and keeps drag-to-select available. Modifier-held wheel still
+    // routes to the inner TUI as an expert fallback for transcript scroll.
     term.attachCustomWheelEventHandler((ev) => {
       if (!ev.altKey && !ev.ctrlKey && !ev.metaKey && !ev.shiftKey) {
         return true;
@@ -1087,15 +1098,8 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         return true;
       }
 
-      // Shift+Up / Shift+Down: the TUI maps these to line-by-line
-      // transcript scrolling, which feels much closer to wheel behavior
-      // than PageUp/PageDown's half-page jumps.
       const step = Math.max(1, Math.round(Math.abs(delta) / 50));
-      const seq = delta > 0 ? "\x1b[1;2B" : "\x1b[1;2A";
-
-      for (let i = 0; i < step; i++) {
-        wsRef.current.send(seq);
-      }
+      term.scrollLines(delta > 0 ? step : -step);
 
       ev.preventDefault();
       ev.stopPropagation();

@@ -13,6 +13,7 @@ import { useCallback, useEffect, useState } from "react";
 import { ChatSessionNavigator } from "@/components/ChatSessionNavigator";
 import type { EventsState } from "@/components/chat-events-status";
 import { Card } from "@/components/ui/card";
+import { HERMES_BASE_PATH } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 interface ChatSidebarProps {
@@ -46,7 +47,7 @@ export function ChatSidebar({
     const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
     const qs = new URLSearchParams({ token, channel });
     const ws = new WebSocket(
-      `${proto}//${window.location.host}/api/events?${qs.toString()}`,
+      `${proto}//${window.location.host}${HERMES_BASE_PATH}/api/events?${qs.toString()}`,
     );
 
     const DISCONNECTED = "events feed disconnected";
