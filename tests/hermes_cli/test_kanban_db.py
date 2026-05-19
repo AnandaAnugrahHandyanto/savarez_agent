@@ -2207,8 +2207,10 @@ def test_resolve_hermes_argv_module_actually_runs():
 # and turn ``GET /api/plugins/kanban/board`` into a 500 because the dashboard
 # calls ``task_age`` unguarded for every task in the response.
 #
-# After the fix, ``_safe_int`` returns ``None`` on bad input and ``task_age``
-# degrades gracefully (per-field ``None`` rather than a hard crash).
+# After the fix, ``_to_epoch`` returns ``None`` on bad input and ``task_age``
+# degrades gracefully (per-field ``None`` rather than a hard crash). The helper
+# was renamed from ``_safe_int`` and extended to accept ISO-8601 timestamps in
+# ``d8ad431de`` ("fix(kanban): task_age() tolerates ISO-8601 timestamps").
 # ---------------------------------------------------------------------------
 
 
@@ -2235,26 +2237,35 @@ def _make_task(**overrides) -> "kb.Task":
     return kb.Task(**defaults)
 
 
-def test_safe_int_accepts_int_and_int_string():
+def test_to_epoch_accepts_int_and_int_string():
     """Sanity: well-typed values pass through."""
-    assert kb._safe_int(0) == 0
-    assert kb._safe_int(1700000000) == 1700000000
-    assert kb._safe_int("1700000000") == 1700000000
+    assert kb._to_epoch(0) == 0
+    assert kb._to_epoch(1700000000) == 1700000000
+    assert kb._to_epoch("1700000000") == 1700000000
 
 
-def test_safe_int_returns_none_on_corrupt_inputs():
+def test_to_epoch_accepts_iso8601_string():
+    """ISO-8601 timestamps normalize to unix epoch seconds (d8ad431de)."""
+    # 2026-05-10T15:00:00Z == 1778425200 (UTC)
+    assert kb._to_epoch("2026-05-10T15:00:00Z") == 1778425200
+    # Offset suffix accepted (datetime.fromisoformat handles +HH:MM directly)
+    assert kb._to_epoch("2026-05-10T15:00:00+00:00") == 1778425200
+
+
+def test_to_epoch_returns_none_on_corrupt_inputs():
     """All the failure modes that used to crash task_age."""
     # None — common when the column was never written
-    assert kb._safe_int(None) is None
-    # Unsubstituted format string — the literal case the PR title cites
-    assert kb._safe_int("%s") is None
-    # Arbitrary non-numeric strings
-    assert kb._safe_int("abc") is None
-    assert kb._safe_int("") is None
-    # Float-ish strings: int("1.5") raises ValueError too — caller wants None.
-    assert kb._safe_int("1.5") is None
-    # Random object — covered by TypeError branch
-    assert kb._safe_int(object()) is None
+    assert kb._to_epoch(None) is None
+    # Unsubstituted format string — the literal case the original PR cited
+    assert kb._to_epoch("%s") is None
+    # Arbitrary non-numeric / non-ISO strings
+    assert kb._to_epoch("abc") is None
+    assert kb._to_epoch("") is None
+    # Float-ish strings: int("1.5") raises ValueError and fromisoformat rejects
+    # it too — caller wants None.
+    assert kb._to_epoch("1.5") is None
+    # Random object — str(object()) is non-numeric and non-ISO → None
+    assert kb._to_epoch(object()) is None
 
 
 def test_task_age_handles_corrupt_created_at():
@@ -2267,7 +2278,7 @@ def test_task_age_handles_corrupt_created_at():
 
 
 def test_task_age_handles_corrupt_started_and_completed():
-    """All three timestamp fields share the same _safe_int treatment."""
+    """All three timestamp fields share the same _to_epoch treatment."""
     t = _make_task(
         created_at=1700000000,
         started_at="garbage",
