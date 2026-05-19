@@ -165,6 +165,10 @@ def _is_accepted_host(host_header: str, bound_host: str) -> bool:
     Accepts:
     - Exact bound host (with or without port suffix)
     - Loopback aliases when bound to loopback
+    - Any host listed in the ``HERMES_DASHBOARD_ALLOWED_HOSTS`` env var
+      (comma-separated, case-insensitive) — opt-in extension for
+      reverse-proxy or VPN-fronted access where the proxied request
+      arrives on loopback but the browser sends a public hostname
     - Any host when bound to 0.0.0.0 (explicit opt-in to non-loopback,
       no protection possible at this layer)
     """
@@ -187,6 +191,20 @@ def _is_accepted_host(host_header: str, bound_host: str) -> bool:
     else:
         host_only = h.rsplit(":", 1)[0] if ":" in h else h
     host_only = host_only.lower()
+
+    # Env-var allowlist for reverse-proxied or VPN-fronted access. When the
+    # dashboard is bound to loopback but reached via a reverse proxy (Caddy,
+    # nginx, Tailscale Serve, ngrok, etc.), the proxied request arrives on
+    # the loopback interface but the browser sends Host: <public hostname>.
+    # Without an opt-in allowlist the only escape is --insecure, which
+    # disables the DNS-rebinding defence entirely. This env hook keeps the
+    # defence on by default while letting operators name the proxy hosts
+    # they trust.
+    _extra = os.environ.get("HERMES_DASHBOARD_ALLOWED_HOSTS", "")
+    if _extra:
+        _allow = {h.strip().lower() for h in _extra.split(",") if h.strip()}
+        if host_only in _allow:
+            return True
 
     # 0.0.0.0 bind means operator explicitly opted into all-interfaces
     # (requires --insecure per web_server.start_server). No Host-layer
