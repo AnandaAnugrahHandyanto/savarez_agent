@@ -496,7 +496,7 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       return actions.die()
     }
 
-    if (isAction(key, ch, 'd')) {
+    if (isCtrl(key, ch, 'd') || isAction(key, ch, 'd')) {
       return actions.die()
     }
 
