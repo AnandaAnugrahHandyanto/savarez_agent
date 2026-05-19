@@ -82,7 +82,7 @@ CONFIGURABLE_TOOLSETS = [
 # Toolsets that are OFF by default for new installs.
 # They're still in _HERMES_CORE_TOOLS (available at runtime if enabled),
 # but the setup checklist won't pre-select them for first-time users.
-_DEFAULT_OFF_TOOLSETS = {"moa", "homeassistant", "rl", "spotify", "discord", "discord_admin", "video", "computer_use"}
+_DEFAULT_OFF_TOOLSETS = {"moa", "homeassistant", "rl", "spotify", "discord", "discord_admin", "video"}
 
 # Platform-scoped toolsets: only appear in the `hermes tools` checklist for
 # these platforms, and only resolve/save for these platforms.  A toolset
@@ -104,6 +104,18 @@ def _toolset_allowed_for_platform(ts_key: str, platform: str) -> bool:
     """
     allowed = _TOOLSET_PLATFORM_RESTRICTIONS.get(ts_key)
     return allowed is None or platform in allowed
+
+
+def _implicit_default_off_toolsets(platform: str) -> Set[str]:
+    """Toolsets treated as opt-in when inferring enabled sets.
+
+    ``homeassistant`` is the only default-off toolset that remains on by
+    default for its own dedicated platform.
+    """
+    default_off = set(_DEFAULT_OFF_TOOLSETS)
+    if platform == "homeassistant":
+        default_off.discard("homeassistant")
+    return default_off
 
 
 def _get_effective_configurable_toolsets():
