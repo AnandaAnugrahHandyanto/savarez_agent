@@ -11850,6 +11850,11 @@ def main():
         "--fix", action="store_true", help="Attempt to fix issues automatically"
     )
     doctor_parser.add_argument(
+        "--operator",
+        action="store_true",
+        help="Check autonomous-operator readiness (gateway, cron, Kanban, and speed tuning)",
+    )
+    doctor_parser.add_argument(
         "--ack",
         metavar="ADVISORY_ID",
         default=None,
