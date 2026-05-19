@@ -1,12 +1,26 @@
-ARG BUILD_FROM=ghcr.io/home-assistant/amd64-base-python:3.13-trixie
+ARG BUILD_FROM=ghcr.io/home-assistant/amd64-base-python:3.13-alpine3.21
 FROM ${BUILD_FROM}
 
 # Install system dependencies
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
-    build-essential curl nodejs npm python3-pip python3-dev \
-    ripgrep ffmpeg gcc libffi-dev libssl-dev pkg-config procps git openssh-client docker-cli tini && \
-    rm -rf /var/lib/apt/lists/*
+RUN apk add --no-cache \
+    build-base \
+    curl \
+    nodejs \
+    npm \
+    python3-dev \
+    ripgrep \
+    ffmpeg \
+    gcc \
+    libffi-dev \
+    openssl-dev \
+    pkgconfig \
+    procps \
+    git \
+    openssh-client \
+    docker-cli \
+    tini \
+    coreutils \
+    chromium
 
 # Install uv
 COPY --from=ghcr.io/astral-sh/uv:0.11.6 /usr/local/bin/uv /usr/local/bin/uvx /usr/local/bin/
@@ -14,6 +28,8 @@ COPY --from=ghcr.io/astral-sh/uv:0.11.6 /usr/local/bin/uv /usr/local/bin/uvx /us
 ENV PYTHONUNBUFFERED=1
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/hermes/.playwright
 ENV HERMES_WEB_DIST=/opt/hermes/hermes_cli/web_dist
+ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
+ENV PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium-browser
 
 WORKDIR /opt/hermes
 
@@ -26,7 +42,6 @@ COPY ui-tui/packages/hermes-ink/ ui-tui/packages/hermes-ink/
 ENV npm_config_install_links=false
 
 RUN npm install --prefer-offline --no-audit && \
-    npx playwright install --with-deps chromium --only-shell && \
     (cd web && npm install --prefer-offline --no-audit) && \
     (cd ui-tui && npm install --prefer-offline --no-audit) && \
     npm cache clean --force
