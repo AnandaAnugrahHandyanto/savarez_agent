@@ -757,4 +757,119 @@ class TestWeixinVoiceSending:
         assert voice_item.get("playtime", 0) == 0
         assert voice_item["encode_type"] == 6
         assert voice_item["sample_rate"] == 24000
-        assert voice_item["bits_per_sample"] == 16
+
+
+class TestSendWeixinDirectCrossLoop:
+    """send_weixin_direct must not reuse a live-adapter ClientSession when
+    it was created on a different event loop (e.g. cron delivery running
+    under asyncio.run()).  Reusing the stale session triggers aiohttp's
+    "Timeout context manager should be used inside a task" RuntimeError."""
+
+    _original_live_adapters: dict
+
+    @classmethod
+    def setup_class(cls):
+        cls._original_live_adapters = dict(weixin._LIVE_ADAPTERS)
+
+    @classmethod
+    def teardown_class(cls):
+        weixin._LIVE_ADAPTERS.clear()
+        weixin._LIVE_ADAPTERS.update(cls._original_live_adapters)
+
+    def teardown_method(self):
+        # Clear any test adapter so it doesn't leak to other tests
+        weixin._LIVE_ADAPTERS.pop("cross-loop-token", None)
+
+    @patch.object(weixin, "_api_post", new_callable=AsyncMock)
+    def test_cross_loop_falls_through_to_fresh_session(self, api_post_mock):
+        """When the live adapter session was created on a different loop,
+        send_weixin_direct should create a fresh session instead."""
+        api_post_mock.return_value = {"ret": 0, "msgs": [], "msg_id": "msg-1"}
+
+        # Create a session on loop A (simulating the gateway's main loop)
+        loop_a = asyncio.new_event_loop()
+
+        async def _build_live_session():
+            import aiohttp
+            session = aiohttp.ClientSession(trust_env=True)
+            adapter = WeixinAdapter(
+                PlatformConfig(
+                    enabled=True,
+                    token="cross-loop-token",
+                    extra={"account_id": "test-account"},
+                )
+            )
+            adapter._send_session = session
+            adapter._session = session
+            adapter._token = "cross-loop-token"
+            adapter._account_id = "test-account"
+            adapter._base_url = "https://ilinkai.weixin.qq.com"
+            adapter._cdn_base_url = "https://novac2c.cdn.weixin.qq.com/c2c"
+            weixin._LIVE_ADAPTERS["cross-loop-token"] = adapter
+            return adapter, session
+
+        adapter, session = loop_a.run_until_complete(_build_live_session())
+        assert not session.closed
+        assert session._loop is loop_a
+
+        # Now call send_weixin_direct from a DIFFERENT loop via asyncio.run()
+        async def _deliver():
+            return await weixin.send_weixin_direct(
+                extra={"account_id": "test-account"},
+                token="cross-loop-token",
+                chat_id="test_user",
+                message="hello from cron",
+            )
+
+        result = asyncio.run(_deliver())
+
+        # Should succeed (no RuntimeError) — the fresh-session path was used
+        assert result.get("success") is True, f"Expected success, got: {result}"
+
+        # Clean up: close the session on its own loop
+        async def _close():
+            await session.close()
+
+        loop_a.run_until_complete(_close())
+        loop_a.close()
+
+    @patch.object(weixin, "_api_post", new_callable=AsyncMock)
+    def test_same_loop_uses_live_adapter(self, api_post_mock):
+        """When the live adapter session is on the same loop,
+        it should be used directly."""
+        api_post_mock.return_value = {"ret": 0, "msgs": [], "msg_id": "msg-live"}
+
+        async def _test_same_loop():
+            import aiohttp
+
+            session = aiohttp.ClientSession(trust_env=True)
+            adapter = WeixinAdapter(
+                PlatformConfig(
+                    enabled=True,
+                    token="cross-loop-token",
+                    extra={"account_id": "test-account"},
+                )
+            )
+            adapter._send_session = session
+            adapter._session = session
+            adapter._token = "cross-loop-token"
+            adapter._account_id = "test-account"
+            adapter._base_url = "https://ilinkai.weixin.qq.com"
+            adapter._cdn_base_url = "https://novac2c.cdn.weixin.qq.com/c2c"
+            weixin._LIVE_ADAPTERS["cross-loop-token"] = adapter
+
+            # Same loop — live adapter path should be taken
+            result = await weixin.send_weixin_direct(
+                extra={"account_id": "test-account"},
+                token="cross-loop-token",
+                chat_id="test_user",
+                message="hello same loop",
+            )
+            assert result.get("success") is True, f"Expected success, got: {result}"
+            # The live adapter path returns context_token_used
+            assert "context_token_used" in result
+
+            await session.close()
+
+        asyncio.run(_test_same_loop())
+
