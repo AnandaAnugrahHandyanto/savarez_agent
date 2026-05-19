@@ -846,7 +846,13 @@ async def test_clean_drain_does_not_mark_resume_pending():
     ):
         await runner.stop()
 
-    session_store.mark_resume_pending.assert_not_called()
+    # Sessions are pre-marked before the drain so a service-manager SIGKILL
+    # during the drain is recoverable, then cleared when the drain completes
+    # gracefully.
+    session_store.mark_resume_pending.assert_called_once_with(
+        "agent:main:telegram:dm:A", "shutdown_timeout"
+    )
+    session_store.clear_resume_pending.assert_called_once_with("agent:main:telegram:dm:A")
     running_agent.interrupt.assert_not_called()
 
 
@@ -890,8 +896,12 @@ async def test_drain_timeout_only_marks_still_running_sessions():
 
     calls = session_store.mark_resume_pending.call_args_list
     marked = {args[0][0] for args in calls}
-    # Only the session still running at timeout is marked; the finisher is not.
-    assert marked == {session_key_stuck}
+    # Both sessions are pre-marked at drain start for crash recovery. The
+    # finisher is then cleared; only the stuck session is re-marked at timeout
+    # and remains resume-pending.
+    assert marked == {session_key_finisher, session_key_stuck}
+    session_store.clear_resume_pending.assert_called_once_with(session_key_finisher)
+    assert calls[-1].args[0] == session_key_stuck
 
 
 @pytest.mark.asyncio

@@ -5079,8 +5079,12 @@ def _gateway_command_inner(args):
                 print_info("  Consider running in foreground instead: hermes gateway run")
                 print_info("  Or use tmux/screen for persistence: tmux new -s hermes 'hermes gateway run'")
                 print()
-            start_now = prompt_yes_no("Start the gateway now after installing the service?", True)
-            start_on_login = prompt_yes_no("Start the gateway automatically on login/boot with systemd?", True)
+            start_now = getattr(args, 'start_now', None)
+            if start_now is None:
+                start_now = False if not sys.stdin.isatty() else prompt_yes_no("Start the gateway now after installing the service?", True)
+            start_on_login = getattr(args, 'start_on_login', None)
+            if start_on_login is None:
+                start_on_login = True if not sys.stdin.isatty() else prompt_yes_no("Start the gateway automatically on login/boot with systemd?", True)
             systemd_install(
                 force=force,
                 system=system,

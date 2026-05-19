@@ -670,6 +670,36 @@ class ShellFileOperations(FileOperations):
             tofile=f"b/{filename}"
         )
         return ''.join(diff)
+
+    def _check_git_baseline(self, path: str) -> Optional[str]:
+        """Return a warning when writing into a dirty git worktree.
+
+        This is deliberately best-effort. File tools must keep working in
+        minimal shells, non-git directories, and remote/container backends, so
+        any git lookup failure degrades to no warning.
+        """
+        if not self._has_command("git"):
+            return None
+
+        workdir = os.path.dirname(path) or "."
+        if not os.path.isabs(workdir):
+            workdir = os.path.join(getattr(self.env, "cwd", None) or self.cwd, workdir)
+
+        inside = self._exec("git rev-parse --is-inside-work-tree 2>/dev/null", cwd=workdir)
+        if inside.exit_code != 0 or inside.stdout.strip().lower() != "true":
+            return None
+
+        branch_result = self._exec("git rev-parse --abbrev-ref HEAD 2>/dev/null", cwd=workdir)
+        branch = branch_result.stdout.strip() if branch_result.exit_code == 0 else "unknown"
+
+        status = self._exec("git status --porcelain 2>/dev/null", cwd=workdir)
+        if status.exit_code != 0 or not status.stdout.strip():
+            return None
+
+        return (
+            f"Git working tree is dirty on branch {branch}; this write may mix "
+            "with uncommitted changes. Review git diff/status before committing."
+        )
     
     # =========================================================================
     # READ Implementation
@@ -937,6 +967,8 @@ class ShellFileOperations(FileOperations):
             if read_result.exit_code == 0 and read_result.stdout:
                 pre_content = read_result.stdout
 
+        git_warning = self._check_git_baseline(path)
+
         # Snapshot LSP diagnostics for this file (best-effort) so the
         # post-write LSP layer can return only diagnostics introduced
         # by this specific edit.  Mirrors claude-code's
@@ -993,6 +1025,7 @@ class ShellFileOperations(FileOperations):
             dirs_created=dirs_created,
             lint=lint_result.to_dict() if lint_result else None,
             lsp_diagnostics=lsp_diagnostics,
+            warning=git_warning,
         )
     
     # =========================================================================
