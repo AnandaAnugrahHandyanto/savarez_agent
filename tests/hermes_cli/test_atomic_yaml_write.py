@@ -42,3 +42,14 @@ class TestAtomicYamlWrite:
         text = target.read_text(encoding="utf-8")
         assert "key: value" in text
         assert "# comment" in text
+
+    def test_preserves_readable_unicode(self, tmp_path):
+        target = tmp_path / "data.yaml"
+        data = {"telegram": {"channel_prompts": {"6842": "Ты — тёплая помощница. Пиши по-русски."}}}
+
+        atomic_yaml_write(target, data)
+
+        text = target.read_text(encoding="utf-8")
+        assert yaml.safe_load(text) == data
+        assert "Ты — тёплая помощница. Пиши по-русски." in text
+        assert "\\u0422" not in text
