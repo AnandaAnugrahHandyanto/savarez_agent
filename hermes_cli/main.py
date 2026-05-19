@@ -12711,6 +12711,7 @@ Examples:
                 model=getattr(args, "model", None),
                 provider=getattr(args, "provider", None),
                 toolsets=getattr(args, "toolsets", None),
+                ignore_rules=getattr(args, "ignore_rules", False),
             )
         )
 
