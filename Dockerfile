@@ -121,6 +121,7 @@ ENV npm_config_install_links=false
 
 RUN npm install --prefer-offline --no-audit && \
     npx playwright install --with-deps chromium --only-shell && \
+    ln -sf "$(find /opt/hermes/.playwright -name chrome -path '*/chrome-linux/chrome' | head -1)" /usr/local/bin/chromium-hermes && \
     (cd web && npm install --prefer-offline --no-audit) && \
     (cd ui-tui && npm install --prefer-offline --no-audit) && \
     npm cache clean --force
