@@ -112,3 +112,13 @@ def test_current_main_runtime_includes_effective_default_headers():
         "X-Provider": "provider",
         "X-Relay": "secret",
     }
+
+
+def test_current_main_runtime_omits_empty_default_headers():
+    agent = _make_agent_with_compressor(config_context_length=None)
+    agent._client_kwargs = {}
+    agent._default_headers = None
+
+    runtime = agent._current_main_runtime()
+
+    assert "default_headers" not in runtime

@@ -4014,8 +4014,9 @@ def resolve_vision_provider_client(
         main_runtime = {
             "provider": main_provider,
             "model": main_model,
-            "default_headers": _RUNTIME_MAIN_DEFAULT_HEADERS or {},
         }
+        if isinstance(_RUNTIME_MAIN_DEFAULT_HEADERS, dict) and _RUNTIME_MAIN_DEFAULT_HEADERS:
+            main_runtime["default_headers"] = _RUNTIME_MAIN_DEFAULT_HEADERS
         if main_provider and main_provider not in {"auto", ""}:
             vision_model = _PROVIDER_VISION_MODELS.get(main_provider, main_model)
             if main_provider == "nous":

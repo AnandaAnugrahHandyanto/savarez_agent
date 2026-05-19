@@ -818,14 +818,16 @@ class AIAgent:
             )
         except Exception:
             headers = getattr(self, "_default_headers", None)
-        return {
+        runtime = {
             "model": getattr(self, "model", "") or "",
             "provider": getattr(self, "provider", "") or "",
             "base_url": getattr(self, "base_url", "") or "",
             "api_key": getattr(self, "api_key", "") or "",
             "api_mode": getattr(self, "api_mode", "") or "",
-            "default_headers": headers if isinstance(headers, dict) and headers else {},
         }
+        if isinstance(headers, dict) and headers:
+            runtime["default_headers"] = headers
+        return runtime
 
     def _check_compression_model_feasibility(self) -> None:
         """Forwarder — see ``agent.conversation_compression.check_compression_model_feasibility``."""
