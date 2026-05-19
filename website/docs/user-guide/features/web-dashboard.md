@@ -185,6 +185,18 @@ Browse, search, and toggle skills and toolsets. Skills are loaded from `~/.herme
 The web dashboard reads and writes your `.env` file, which contains API keys and secrets. It binds to `127.0.0.1` by default — only accessible from your local machine. If you bind to `0.0.0.0`, anyone on your network can view and modify your credentials. The dashboard has no authentication of its own.
 :::
 
+### Reverse-proxy / VPN host allowlist
+
+The dashboard validates the incoming `Host` header against the bound interface to block DNS-rebinding attacks. When you front it with a reverse proxy (Caddy, nginx, Tailscale Serve, ngrok, etc.) the proxied request arrives on loopback but the browser sends a public hostname, which the validator rejects with HTTP 400.
+
+Set `HERMES_DASHBOARD_ALLOWED_HOSTS` to a comma-separated list of hostnames to allow alongside the bound interface. The DNS-rebinding defence stays on for all other hosts.
+
+```bash
+HERMES_DASHBOARD_ALLOWED_HOSTS=dashboard.example.com,dashboard.internal hermes web
+```
+
+Leave it unset (default) for direct-browser-to-loopback use.
+
 ## `/reload` Slash Command
 
 The dashboard PR also adds a `/reload` slash command to the interactive CLI. After changing API keys via the web dashboard (or by editing `.env` directly), use `/reload` in an active CLI session to pick up the changes without restarting:
