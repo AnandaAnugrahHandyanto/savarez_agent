@@ -297,10 +297,23 @@ def camofox_soft_cleanup(task_id: Optional[str] = None) -> bool:
 # HTTP helpers
 # ---------------------------------------------------------------------------
 
+def _camofox_headers() -> dict:
+    """Return auth headers for camofox requests.
+
+    When CAMOFOX_ACCESS_KEY is set (production container with auth enabled),
+    every route except /health requires Authorization: Bearer ***
+    Falls back to CAMOFOX_API_KEY if ACCESS_KEY is absent.
+    """
+    key = os.getenv("CAMOFOX_ACCESS_KEY", "").strip() or os.getenv("CAMOFOX_API_KEY", "").strip()
+    if key:
+        return {"Authorization": f"Bearer {key}"}
+    return {}
+
+
 def _post(path: str, body: dict, timeout: int = _DEFAULT_TIMEOUT) -> dict:
     """POST JSON to camofox and return parsed response."""
     url = f"{get_camofox_url()}{path}"
-    resp = requests.post(url, json=body, timeout=timeout)
+    resp = requests.post(url, json=body, headers=_camofox_headers(), timeout=timeout)
     resp.raise_for_status()
     return resp.json()
 
@@ -308,7 +321,7 @@ def _post(path: str, body: dict, timeout: int = _DEFAULT_TIMEOUT) -> dict:
 def _get(path: str, params: dict = None, timeout: int = _DEFAULT_TIMEOUT) -> dict:
     """GET from camofox and return parsed response."""
     url = f"{get_camofox_url()}{path}"
-    resp = requests.get(url, params=params, timeout=timeout)
+    resp = requests.get(url, params=params, headers=_camofox_headers(), timeout=timeout)
     resp.raise_for_status()
     return resp.json()
 
@@ -316,7 +329,7 @@ def _get(path: str, params: dict = None, timeout: int = _DEFAULT_TIMEOUT) -> dic
 def _get_raw(path: str, params: dict = None, timeout: int = _DEFAULT_TIMEOUT) -> requests.Response:
     """GET from camofox and return raw response (for binary data)."""
     url = f"{get_camofox_url()}{path}"
-    resp = requests.get(url, params=params, timeout=timeout)
+    resp = requests.get(url, params=params, headers=_camofox_headers(), timeout=timeout)
     resp.raise_for_status()
     return resp
 
@@ -324,7 +337,7 @@ def _get_raw(path: str, params: dict = None, timeout: int = _DEFAULT_TIMEOUT) ->
 def _delete(path: str, body: dict = None, timeout: int = _DEFAULT_TIMEOUT) -> dict:
     """DELETE to camofox and return parsed response."""
     url = f"{get_camofox_url()}{path}"
-    resp = requests.delete(url, json=body, timeout=timeout)
+    resp = requests.delete(url, json=body, headers=_camofox_headers(), timeout=timeout)
     resp.raise_for_status()
     return resp.json()
 
