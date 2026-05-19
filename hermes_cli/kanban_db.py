@@ -103,10 +103,12 @@ _IS_WINDOWS = sys.platform == "win32"
 _KANBAN_LIFECYCLE_HOOK = "on_kanban_event"
 _KANBAN_EVENT_SCHEMA_VERSION = 1
 _KANBAN_EVENT_PREVIEW_CHARS = 300
-# sqlite3.Connection is not weak-referenceable on CPython, so keep the
-# short-lived association keyed by the connection object itself and clean it up
-# in write_txn's finally block instead of relying on id(conn) reuse safety.
+# sqlite3.Connection is not weak-referenceable on CPython. Transaction-local
+# pending events are cleaned up in write_txn's finally block; board identity is
+# remembered per open connection so explicit connect(board=...) calls do not
+# fall back to the ambient current-board setting during hook emission.
 _KANBAN_TXN_PENDING_EVENTS: dict[sqlite3.Connection, list[dict[str, Any]]] = {}
+_KANBAN_CONNECTION_BOARDS: dict[sqlite3.Connection, str] = {}
 _KANBAN_EVENT_TYPES = {
     "created": "kanban.task_created",
     "assigned": "kanban.task_assigned",
@@ -923,6 +925,34 @@ CREATE INDEX IF NOT EXISTS idx_notify_task           ON kanban_notify_subs(task_
 _INITIALIZED_PATHS: set[str] = set()
 
 
+def _board_for_db_path(db_path: Path) -> str:
+    """Best-effort board slug for an explicit kanban DB path."""
+    try:
+        resolved = db_path.expanduser().resolve()
+        if resolved == (kanban_home() / "kanban.db").resolve():
+            return DEFAULT_BOARD
+        root = boards_root().resolve()
+        relative = resolved.relative_to(root)
+        if len(relative.parts) >= 2 and relative.parts[1] == "kanban.db":
+            return _normalize_board_slug(relative.parts[0]) or DEFAULT_BOARD
+    except (OSError, ValueError):
+        pass
+    return get_current_board()
+
+
+def _board_for_connection(conn: sqlite3.Connection) -> str:
+    board = _KANBAN_CONNECTION_BOARDS.get(conn)
+    if board:
+        return board
+    try:
+        row = conn.execute("PRAGMA database_list").fetchone()
+        if row and row[2]:
+            return _board_for_db_path(Path(row[2]))
+    except sqlite3.Error:
+        pass
+    return get_current_board()
+
+
 def connect(
     db_path: Optional[Path] = None,
     *,
@@ -948,12 +978,17 @@ def connect(
     """
     if db_path is not None:
         path = db_path
+        resolved_board = _board_for_db_path(path)
     else:
-        path = kanban_db_path(board=board)
+        resolved_board = _normalize_board_slug(board)
+        if resolved_board is None:
+            resolved_board = get_current_board()
+        path = kanban_db_path(board=resolved_board)
     path.parent.mkdir(parents=True, exist_ok=True)
     resolved = str(path.resolve())
     needs_init = resolved not in _INITIALIZED_PATHS
     conn = sqlite3.connect(str(path), isolation_level=None, timeout=30)
+    _KANBAN_CONNECTION_BOARDS[conn] = resolved_board
     conn.row_factory = sqlite3.Row
     # WAL doesn't work on network filesystems (NFS/SMB/FUSE).  Shared helper
     # falls back to DELETE with one WARNING so kanban stays usable there.
@@ -1906,7 +1941,7 @@ def _build_kanban_lifecycle_event(
         "event_id": event_id,
         "event_type": event_type,
         "emitted_at": created_at,
-        "board": get_current_board(),
+        "board": _board_for_connection(conn),
         "tenant": tenant,
         "task_id": task_id,
         "run_id": run_id,

@@ -85,6 +85,18 @@ def test_create_task_emits_after_commit_and_uses_task_event_id(kanban_home, monk
     assert "raw task body" not in json.dumps(event)
 
 
+def test_lifecycle_event_uses_explicit_connection_board(kanban_home, captured_events):
+    kb.create_board("side-board")
+
+    with kb.connect(board="side-board") as conn:
+        tid = kb.create_task(conn, title="side board task")
+
+    assert captured_events
+    event = captured_events[-1]
+    assert event["task_id"] == tid
+    assert event["board"] == "side-board"
+
+
 def test_hook_failure_does_not_break_lifecycle_operations(kanban_home, monkeypatch, caplog):
     calls: list[str] = []
 
