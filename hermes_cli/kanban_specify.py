@@ -39,6 +39,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from hermes_cli import kanban_db as kb
+from hermes_cli.config import load_config
 
 logger = logging.getLogger(__name__)
 
@@ -132,6 +133,30 @@ def _profile_author() -> str:
     )
 
 
+def _specifier_uses_lmstudio() -> bool:
+    """Return True when the triage specifier routes to LM Studio.
+
+    ``get_text_auxiliary_client("triage_specifier")`` resolves ``auto`` to the
+    main chat provider before returning the OpenAI-compatible client, so the
+    returned client alone does not tell us whether the configured provider was
+    LM Studio.  Check the same config knobs here so we can send LM Studio's
+    top-level ``reasoning_effort`` override only when it is safe to do so.
+    """
+    try:
+        cfg = load_config()
+    except Exception:
+        return False
+    aux = (cfg.get("auxiliary") or {}).get("triage_specifier") or {}
+    model_cfg = cfg.get("model") or {}
+    provider = str(aux.get("provider") or "auto").strip().lower()
+    if provider in {"", "auto", "main"}:
+        provider = str(model_cfg.get("provider") or "").strip().lower()
+    if provider == "lmstudio":
+        return True
+    base_url = str(aux.get("base_url") or model_cfg.get("base_url") or "").lower()
+    return "127.0.0.1:1234" in base_url or "localhost:1234" in base_url
+
+
 def specify_task(
     task_id: str,
     *,
@@ -177,18 +202,24 @@ def specify_task(
         body=_truncate(task.body or "(no body)", 4000),
     )
 
+    request_kwargs = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": _SYSTEM_PROMPT},
+            {"role": "user", "content": user_msg},
+        ],
+        "temperature": 0.3,
+        "timeout": timeout or 120,
+        "extra_body": get_auxiliary_extra_body() or None,
+    }
+    if _specifier_uses_lmstudio():
+        # LM Studio thinking models can spend the whole completion budget in
+        # reasoning_content and leave message.content empty. Specify needs the
+        # final JSON in content, so disable reasoning for this formatting step.
+        request_kwargs["reasoning_effort"] = "none"
+
     try:
-        resp = client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": _SYSTEM_PROMPT},
-                {"role": "user", "content": user_msg},
-            ],
-            temperature=0.3,
-            max_tokens=1500,
-            timeout=timeout or 120,
-            extra_body=get_auxiliary_extra_body() or None,
-        )
+        resp = client.chat.completions.create(**request_kwargs)
     except Exception as exc:
         logger.info(
             "specify: API call failed for %s (%s) — skipping",
