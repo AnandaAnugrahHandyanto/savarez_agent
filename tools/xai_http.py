@@ -14,11 +14,13 @@ def get_env_value(name: str, default=None):
     """
     try:
         from hermes_cli.config import get_env_value as _hermes_get_env_value
-    except Exception:
-        return os.environ.get(name, default)
 
-    value = _hermes_get_env_value(name)
-    return default if value is None else value
+        value = _hermes_get_env_value(name)
+        if value is not None:
+            return value
+    except Exception:
+        pass
+    return os.environ.get(name, default)
 
 
 def hermes_xai_user_agent() -> str:
