@@ -1,0 +1,63 @@
+name: Sync Code and Upload to OSS
+
+on:
+  # schedule: 
+  #   - cron: '0 3 1,14 * *' # 注释掉定时任务，方便你手动调试
+  workflow_dispatch:       # 强制开启手动运行（方便你现在立刻测试）
+
+jobs:
+  sync-and-upload:
+    runs-on: ubuntu-latest
+    
+    steps:
+      # 1. 检出你当前 Fork 的仓库代码
+      - name: Checkout my repo
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0  # 获取完整历史记录，方便后续同步
+
+      # 2. 同步上游官方仓库的最新代码到你的 Fork 仓库中
+      - name: Sync from Upstream
+        id: sync
+        uses: aormsby/Fork-Sync-With-Upstream-action@v3.4
+        with:
+          upstream_sync_repo: https://github.com/NousResearch/hermes-agent.git
+          upstream_sync_branch: main
+          target_sync_branch: main
+          target_repo_token: ${{ secrets.GITHUB_TOKEN }}
+
+      # 3. 将最新的代码打包成压缩包（优化版：排除无用文件）
+      - name: Package code
+        run: |
+          # 创建一个干净的临时目录，只复制源码文件，排除 .git 和 .github 目录
+          mkdir /tmp/build-context
+          # 复制除 .git 和 .github 以外的所有文件
+          rsync -av --exclude='.git' --exclude='.github' ./ /tmp/build-context/
+          
+          # 进入临时目录打包，这样解压后不会多一层目录
+          cd /tmp/build-context
+          tar -czf /home/runner/work/hermes-agent/hermes-agent/latest.tar.gz .
+          
+          # 清理临时目录
+          rm -rf /tmp/build-context
+
+      # 4. 安装阿里云 ossutil 工具，并将压缩包上传到 OSS
+      - name: Upload to Aliyun OSS
+        run: |
+          # 下载并安装 ossutil (Linux 64位)
+          wget http://gosspublic.alicdn.com/ossutil/1.7.16/ossutil64
+          chmod 755 ossutil64
+          
+          # 配置 ossutil
+          # 注意：这里使用的是公网 Endpoint，因为 GitHub Actions 是在海外运行的
+          ./ossutil64 config -e oss-cn-hangzhou.aliyuncs.com \
+            -i ${{ secrets.OSS_ACCESS_KEY_ID }} \
+            -k ${{ secrets.OSS_ACCESS_KEY_SECRET }} \
+            -L CH
+            
+          # 强制覆盖上传到指定的 Bucket 根目录
+          ./ossutil64 cp latest.tar.gz oss://${{ secrets.OSS_BUCKET_NAME }}/latest.tar.gz -f
+          
+          # 打印出文件的公网访问地址，方便你复制去 OOS 里测试
+          echo "✅ 上传成功！临时下载地址为："
+          echo "https://${{ secrets.OSS_BUCKET_NAME }}.oss-cn-hangzhou.aliyuncs.com/latest.tar.gz"
