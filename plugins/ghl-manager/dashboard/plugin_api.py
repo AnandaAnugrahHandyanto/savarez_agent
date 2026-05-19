@@ -58,6 +58,11 @@ CANONICAL_APPROVAL_STATES = {
     "malformed",
 }
 CANONICAL_TERMINAL_STATES = {"handled_sent", "handled_elsewhere", "denied", "superseded", "expired", "malformed"}
+PROTECTED_SUPPRESSED_DISPLAY_STATUSES = {
+    "quarantined_test_artifact",
+    "stale_artifact_suppressed",
+    "duplicate_manual_review_artifact",
+}
 LOCAL_APPROVAL_STATUS_BY_EVENT = {
     "approve": "approved_not_sent",
     "deny": "denied",
@@ -319,6 +324,34 @@ def _packet_store_values(packet: dict[str, Any], now: str) -> dict[str, Any]:
     }
 
 
+def _existing_approval_index_state(conn: sqlite3.Connection, approval_id: str) -> dict[str, Any] | None:
+    row = conn.execute(
+        "SELECT current_status, index_json FROM approval_index WHERE approval_id = ?",
+        (approval_id,),
+    ).fetchone()
+    if not row:
+        return None
+    try:
+        index_doc = json.loads(row["index_json"] or "{}")
+    except json.JSONDecodeError:
+        index_doc = {}
+    return {
+        "current_status": _canonical_approval_status(row["current_status"]),
+        "display_status": str(index_doc.get("display_status") or ""),
+        "freshness": index_doc.get("freshness") if isinstance(index_doc.get("freshness"), dict) else {},
+    }
+
+
+def _should_preserve_existing_approval_index(existing: dict[str, Any] | None) -> bool:
+    if not existing:
+        return False
+    if existing["display_status"] in PROTECTED_SUPPRESSED_DISPLAY_STATUSES:
+        return True
+    if existing["current_status"] in CANONICAL_TERMINAL_STATES:
+        return True
+    return bool(existing["freshness"].get("cleanup_batch"))
+
+
 def _record_approval_packets(packets: list[dict[str, Any]]) -> dict[str, int]:
     """Upsert normalized packets into the local store without duplicating approvals."""
     _ensure_approval_store()
@@ -358,6 +391,9 @@ def _record_approval_packets(packets: list[dict[str, Any]]) -> dict[str, int]:
                 updated += 1
             else:
                 inserted += 1
+            existing_index = _existing_approval_index_state(conn, values["approval_id"])
+            if _should_preserve_existing_approval_index(existing_index):
+                continue
             identity = _canonical_identity(packet, draft_hash=values["draft_hash"])
             source_links = {"source_path": values.get("source_path"), "approval_id": values["approval_id"]}
             freshness = {

@@ -383,6 +383,59 @@ def test_approval_store_schema_imports_packets_idempotently_and_keeps_draft_hash
     assert json.loads(rows[0][2])["approval_id"] == "approval-1"
 
 
+def test_recording_packets_does_not_resurrect_terminal_or_cleanup_suppressed_index_rows(tmp_path, monkeypatch):
+    module = _load_plugin_module()
+    monkeypatch.setattr(module, "ARTIFACT_ROOT", tmp_path.resolve())
+    monkeypatch.setattr(module, "APPROVAL_DB_PATH", tmp_path / "approval.sqlite")
+    packet = module._finalize_packet(
+        module._base_packet(
+            approval_id="approval-suppressed",
+            source_type="unit_test",
+            source_path=tmp_path / "packet.json",
+        )
+    )
+    packet["draft"].update({"customer_facing": True, "draft_text": "Old draft"})
+    packet = module._finalize_packet(packet)
+    module._record_approval_packets([packet])
+
+    with sqlite3.connect(tmp_path / "approval.sqlite") as conn:
+        row = conn.execute(
+            "SELECT index_json FROM approval_index WHERE approval_id = ?",
+            ("approval-suppressed",),
+        ).fetchone()
+        index_doc = json.loads(row[0])
+        index_doc.update(
+            {
+                "current_status": "superseded",
+                "display_status": "stale_artifact_suppressed",
+                "handled_state": "archived_no_action",
+                "freshness": {
+                    "stale": True,
+                    "cleanup_batch": "test cleanup batch",
+                    "reason": "old approval artifact suppressed from primary queue",
+                },
+            }
+        )
+        conn.execute(
+            "UPDATE approval_index SET current_status = ?, handled_state = ?, index_json = ? WHERE approval_id = ?",
+            ("superseded", "archived_no_action", json.dumps(index_doc, sort_keys=True), "approval-suppressed"),
+        )
+
+    second = module._record_approval_packets([packet])
+
+    assert second == {"imported": 1, "inserted": 0, "updated": 1}
+    with sqlite3.connect(tmp_path / "approval.sqlite") as conn:
+        row = conn.execute(
+            "SELECT current_status, handled_state, index_json FROM approval_index WHERE approval_id = ?",
+            ("approval-suppressed",),
+        ).fetchone()
+    index_doc = json.loads(row[2])
+    assert row[0] == "superseded"
+    assert row[1] == "archived_no_action"
+    assert index_doc["display_status"] == "stale_artifact_suppressed"
+    assert index_doc["freshness"]["reason"] == "old approval artifact suppressed from primary queue"
+
+
 def test_importing_duplicate_packet_with_terminal_canonical_key_supersedes_new_operator_action(tmp_path, monkeypatch):
     module = _load_plugin_module()
     monkeypatch.setattr(module, "ARTIFACT_ROOT", tmp_path.resolve())
