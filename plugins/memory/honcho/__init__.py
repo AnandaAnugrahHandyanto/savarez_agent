@@ -601,6 +601,26 @@ class HonchoMemoryProvider(MemoryProvider):
         if base_context:
             parts.append(base_context)
 
+        # ----- Layer 1b: Query-scoped raw search -----
+        # peer.context()/representations can be broad and stale in large workspaces.
+        # Add a cheap, non-LLM search layer keyed to the current user message so
+        # point facts that exist in Honcho reach the model deterministically.
+        try:
+            if not self._manager:
+                search_result = ""
+            else:
+                search_tokens = int(getattr(self._config, "search_injection_tokens", 800) or 800)
+                search_result = self._manager.search_context(
+                    self._session_key,
+                    query,
+                    max_tokens=search_tokens,
+                    peer="user",
+                )
+            if search_result and search_result.strip():
+                parts.append(f"## Relevant Memory Search Results\n{search_result.strip()}")
+        except Exception as e:
+            logger.debug("Honcho query-scoped search injection failed: %s", e)
+
         # ----- Layer 2: Dialectic supplement -----
         # On the very first turn, no queue_prefetch() has run yet so the
         # dialectic result is empty.  Run with a bounded timeout so a slow

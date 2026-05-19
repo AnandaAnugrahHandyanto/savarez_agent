@@ -1022,6 +1022,103 @@ class HonchoSessionManager:
             logger.debug("Failed to fetch peer card from Honcho: %s", e)
             return []
 
+    def _raw_search_queries(self, query: str) -> list[str]:
+        """Generate high-signal Honcho search queries from a user message."""
+        cleaned = (query or "").strip()
+        if not cleaned:
+            return []
+
+        queries: list[str] = []
+
+        # Lab/prod IDs and exact field asks often appear inside a longer
+        # instruction sentence. Honcho semantic search performs much better on
+        # the compact entity+field query than on the whole prompt.
+        ids = re.findall(r"\b[A-Z][A-Z0-9_:-]{3,}\b", cleaned)
+        fields = re.findall(
+            r"(?:campo|field|chave|key)\s+([\w.-]+)",
+            cleaned,
+            flags=re.IGNORECASE,
+        )
+        for ns in ids[:3]:
+            for field in fields[:3]:
+                queries.append(f"{ns} {field}")
+
+        # Remove common instruction wrappers that are not useful retrieval
+        # terms and can cause search to return the current question itself.
+        compact = re.sub(r"\bNo namespace\b", "", cleaned, flags=re.IGNORECASE)
+        compact = re.sub(r"\bqual (?:é|e) o valor exato do campo\b", "", compact, flags=re.IGNORECASE)
+        compact = re.sub(r"\bresponda só o valor\b", "", compact, flags=re.IGNORECASE)
+        compact = re.sub(r"\bse não estiver.*$", "", compact, flags=re.IGNORECASE)
+        compact = re.sub(r"[?.,;:]+", " ", compact)
+        compact = " ".join(compact.split())
+        if compact:
+            queries.append(compact)
+
+        queries.append(cleaned)
+
+        deduped: list[str] = []
+        seen: set[str] = set()
+        for q in queries:
+            q = q.strip()
+            if q and q.lower() not in seen:
+                deduped.append(q)
+                seen.add(q.lower())
+        return deduped
+
+    def _raw_search_context(self, query: str, max_tokens: int = 800) -> str:
+        """Return raw Honcho search excerpts for query-scoped memory injection.
+
+        peer.context(search_query=...) may return a broad representation in large
+        workspaces. The top-level Honcho search API returns concrete matching
+        messages, which is better for point-fact recall.
+        """
+        if not query or not query.strip():
+            return ""
+
+        try:
+            matches = []
+            seen_ids: set[str] = set()
+            for search_query in self._raw_search_queries(query):
+                for match in self.honcho.search(search_query, limit=10):
+                    msg_id = str(getattr(match, "id", "") or getattr(match, "message_id", "") or "")
+                    content = (getattr(match, "content", None) or "").strip()
+                    dedupe_key = msg_id or content
+                    if not content or dedupe_key in seen_ids:
+                        continue
+                    matches.append(match)
+                    seen_ids.add(dedupe_key)
+                    if len(matches) >= 20:
+                        break
+                if len(matches) >= 20:
+                    break
+        except Exception as e:
+            logger.debug("Honcho raw search failed: %s", e)
+            return ""
+
+        if not matches:
+            return ""
+
+        budget_chars = max(1, max_tokens) * 4
+        parts: list[str] = []
+        used = 0
+        for match in matches:
+            content = (getattr(match, "content", None) or "").strip()
+            if not content:
+                continue
+            peer_id = getattr(match, "peer_id", None) or getattr(match, "peer", None) or "unknown"
+            excerpt = f"[{peer_id}] {content}"
+            if used + len(excerpt) > budget_chars:
+                remaining = budget_chars - used
+                if remaining < 80:
+                    break
+                excerpt = excerpt[:remaining].rstrip() + " …"
+            parts.append(excerpt)
+            used += len(excerpt) + 2
+            if used >= budget_chars:
+                break
+
+        return "\n".join(parts)
+
     def search_context(
         self,
         session_key: str,
@@ -1050,6 +1147,10 @@ class HonchoSessionManager:
             return ""
 
         try:
+            raw_result = self._raw_search_context(query, max_tokens=max_tokens)
+            if raw_result:
+                return raw_result
+
             observer_peer_id, target = self._resolve_observer_target(session, peer)
 
             ctx = self._fetch_peer_context(
