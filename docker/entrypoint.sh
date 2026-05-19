@@ -111,8 +111,9 @@ fi
 # pick up token rotations from the Railway env var without manual steps.
 if command -v gh >/dev/null 2>&1 && [ -n "${GITHUB_TOKEN:-}" ]; then
     mkdir -p "$HERMES_HOME/home/.config/gh"
-    gh_err=$(printf '%s' "$GITHUB_TOKEN" | HOME="$HERMES_HOME/home" gh auth login --with-token --hostname github.com 2>&1)
-    if [ $? -eq 0 ]; then
+    # Placing the assignment inside `if` keeps set -e from killing the
+    # script when gh exits non-zero — the if-test consumes the failure.
+    if gh_err=$(printf '%s' "$GITHUB_TOKEN" | HOME="$HERMES_HOME/home" gh auth login --with-token --hostname github.com 2>&1); then
         echo "gh: authenticated via GITHUB_TOKEN"
     else
         echo "gh: auth login failed: ${gh_err}"
