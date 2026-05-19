@@ -891,19 +891,6 @@ class OpenVikingMemoryProvider(MemoryProvider):
                 payload[key] = args[key]
 
         parsed_url = urlparse(url)
-        if (
-            parsed_url.scheme == "file"
-            or _is_windows_absolute_path(url)
-            or (not parsed_url.scheme and _is_local_path_reference(url))
-        ):
-            return tool_error(
-                "Local filesystem paths are not allowed for viking_add_resource; "
-                "provide a remote URL instead."
-            )
-
-        payload["path"] = url
-        resp = self._client.post("/api/v1/resources", payload)
-        result = resp.get("result") or {}
         if _is_remote_resource_source(url):
             source_path = None
         elif parsed_url.scheme == "file":
