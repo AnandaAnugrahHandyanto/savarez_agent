@@ -124,6 +124,41 @@ class TestWebServerEndpoints:
         assert "version" in data
         assert "hermes_home" in data
         assert "active_sessions" in data
+        assert "route_proof" in data
+        assert data["route_proof"]["surface"] == "dashboard"
+        assert "credential_value" not in data["route_proof"]
+
+    def test_dashboard_route_proof_parses_reasoning_and_service_tier(self, monkeypatch):
+        import hermes_cli.runtime_provider as runtime_provider
+        import hermes_cli.web_server as web_server
+
+        monkeypatch.setattr(
+            web_server,
+            "load_config",
+            lambda: {
+                "model": {"default": "gpt-5.5", "provider": "openai-codex"},
+                "agent": {"reasoning_effort": "high", "service_tier": "fast"},
+            },
+        )
+        monkeypatch.setattr(
+            runtime_provider,
+            "resolve_runtime_provider",
+            lambda target_model=None: {
+                "provider": "openai-codex",
+                "model": target_model,
+                "api_mode": "codex_responses",
+                "base_url": "https://chatgpt.com/backend-api/codex?token=must-not-leak",
+                "api_key": "eyJhbGciOiJSUzI1NiJ9.oauth-token-body",
+            },
+        )
+
+        proof = web_server._dashboard_route_proof()
+
+        assert proof["surface"] == "dashboard"
+        assert proof["reasoning_effort"] == "high"
+        assert proof["service_tier"] == "priority"
+        assert proof["contract"]["status"] == "ok"
+        assert "must-not-leak" not in json.dumps(proof, sort_keys=True)
 
     def test_harness_learning_health_endpoint(self):
         resp = self.client.get("/api/harness/learning-health")

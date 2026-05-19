@@ -625,6 +625,57 @@ async def run_core_harness_endpoint(payload: dict | None = None):
         }
 
 
+def _dashboard_route_proof() -> Dict[str, Any]:
+    """Return a content-safe proof for the dashboard-visible runtime route."""
+    try:
+        from hermes_cli.route_contracts import build_agent_route_proof, verify_agent_route_contract
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+
+        cfg = load_config()
+        model_cfg = cfg.get("model") or {}
+        model = ""
+        if isinstance(model_cfg, dict):
+            model = str(model_cfg.get("default") or model_cfg.get("model") or "").strip()
+        runtime = resolve_runtime_provider(target_model=model or None)
+        agent_cfg = cfg.get("agent") or {}
+        reasoning_config = None
+        reasoning_effort = str(agent_cfg.get("reasoning_effort", "") or "").strip()
+        if reasoning_effort:
+            from hermes_constants import parse_reasoning_effort
+
+            reasoning_config = parse_reasoning_effort(reasoning_effort) or reasoning_effort
+        service_tier = str(agent_cfg.get("service_tier", "") or "").strip().lower()
+        if service_tier in {"fast", "priority", "on"}:
+            service_tier = "priority"
+        elif service_tier in {"", "normal", "default", "standard", "off", "none"}:
+            service_tier = ""
+        return verify_agent_route_contract(
+            surface="dashboard",
+            platform="dashboard",
+            provider=runtime.get("provider"),
+            model=runtime.get("model") or model,
+            api_mode=runtime.get("api_mode"),
+            base_url=runtime.get("base_url"),
+            api_key=runtime.get("api_key"),
+            acp_command=runtime.get("command"),
+            acp_args=runtime.get("args"),
+            reasoning_config=reasoning_config,
+            service_tier=service_tier,
+            fallback_model=cfg.get("fallback_providers") or cfg.get("fallback_model"),
+            raise_on_error=False,
+        )
+    except Exception as exc:
+        try:
+            from hermes_cli.route_contracts import build_agent_route_proof
+
+            proof = build_agent_route_proof(surface="dashboard", platform="dashboard")
+        except Exception:
+            proof = {"schema_version": 1, "surface": "dashboard", "contract": {"status": "unavailable", "violations": []}}
+        proof["degraded"] = True
+        proof["error_type"] = type(exc).__name__
+        return proof
+
+
 @app.get("/api/status")
 async def get_status():
     current_ver, latest_ver = check_config_version()
@@ -728,6 +779,7 @@ async def get_status():
         "gateway_exit_reason": gateway_exit_reason,
         "gateway_updated_at": gateway_updated_at,
         "active_sessions": active_sessions,
+        "route_proof": _dashboard_route_proof(),
     }
 
 

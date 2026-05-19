@@ -1409,6 +1409,7 @@ def _session_info(agent) -> dict:
         "update_command": "",
         "usage": _get_usage(agent),
         "profile_name": _current_profile_name(),
+        "route_proof": getattr(agent, "_route_proof", None),
     }
     try:
         from hermes_cli import __version__, __release_date__
