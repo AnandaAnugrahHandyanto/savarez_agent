@@ -1,5 +1,5 @@
 ---
-name: giphy-multi
+name: gif-multi
 description: >-
   Search and send reaction GIFs from Giphy on Telegram, Discord, WhatsApp,
   Signal, Slack, and more. Auto-configures per-platform conversion (MP4,
@@ -13,11 +13,11 @@ prerequisites:
   env_vars: [GIPHY_API_KEY]
 metadata:
   hermes:
-    tags: [GIF, Giphy, media, multi-platform, reaction]
+    tags: [GIF, media, Giphy, multi-platform, reaction]
     related_skills: []
 ---
 
-# Giphy Multi — Cross-platform GIF skill
+# GIF Multi — Cross-platform GIF skill
 
 Search Giphy and convert animated GIFs optimized for your current messaging platform. Each platform gets its own conversion profile (MP4 for Telegram, baseline MP4 for WhatsApp, optimized GIF for Slack, etc.).
 
@@ -47,7 +47,7 @@ GIPHY_API_KEY=your_key_here
 ### 3. Verify
 
 ```bash
-python3 ~/.hermes/skills/media/giphy-multi/scripts/giphy_multi.py --check
+python3 ~/.hermes/skills/media/gif-multi/scripts/gif_multi.py --check
 ```
 
 Expected output:
@@ -64,7 +64,7 @@ Expected output:
 The agent calls `send_message(action='list')`, parses the available platforms, then configures the skill:
 
 ```bash
-python3 ~/.hermes/skills/media/giphy-multi/scripts/giphy_multi.py \
+python3 ~/.hermes/skills/media/gif-multi/scripts/gif_multi.py \
   --discover --platforms telegram,discord
 ```
 
@@ -96,7 +96,7 @@ The agent selects the target that matches where the conversation is happening.
 ### 2. Search and convert
 
 ```bash
-python3 ~/.hermes/skills/media/giphy-multi/scripts/giphy_multi.py \
+python3 ~/.hermes/skills/media/gif-multi/scripts/gif_multi.py \
   "<query>" --channel <platform>
 ```
 
@@ -109,7 +109,7 @@ Returns JSON with the converted file path:
   "title": "excited cat GIF",
   "channel": "telegram",
   "format": "mp4",
-  "path": "/home/…/.giphy_cache/giphy_telegram_12345.mp4"
+  "path": "/home/…/.gif_cache/gif_telegram_12345.mp4"
 }
 ```
 
@@ -137,7 +137,7 @@ Hermes delivers the text and the file as native media on the platform (text + fi
 
 ### 4. Cleanup
 
-The cache under `~/.hermes/.giphy_cache/` auto-purges files older than 10 minutes on each search.
+The cache under `~/.hermes/.gif_cache/` auto-purges files older than 10 minutes on each search.
 
 ## Usage Modes
 
@@ -149,7 +149,7 @@ The config's `"mode"` field controls when GIFs are sent:
 Change mode:
 
 ```bash
-python3 ~/.hermes/skills/media/giphy-multi/scripts/giphy_multi.py --mode on_request
+python3 ~/.hermes/skills/media/gif-multi/scripts/gif_multi.py --mode on_request
 ```
 
 The user can also say it in conversation:
@@ -174,7 +174,7 @@ The user can also say it in conversation:
 Default: `g`. Override with `--rating pg`, `--pg-13`, or `--r`:
 
 ```bash
-python3 ~/.hermes/skills/media/giphy-multi/scripts/giphy_multi.py \
+python3 ~/.hermes/skills/media/gif-multi/scripts/gif_multi.py \
   "funny fail" --channel telegram --rating pg-13
 ```
 
@@ -188,18 +188,14 @@ python3 ~/.hermes/skills/media/giphy-multi/scripts/giphy_multi.py \
 
 4. **Sending to the wrong topic on Telegram.** The `send_message` target must include the thread_id for topic chats. Check `send_message(action='list')` for available targets.
 
-5. **Cache files accumulating.** Auto-purge runs on every search (files >10 min removed). Run `rm -rf ~/.hermes/.giphy_cache/` to force-clean.
+5. **Cache files accumulating.** Auto-purge runs on every search (files >10 min removed). Run `rm -rf ~/.hermes/.gif_cache/` to force-clean.
 
-6. **Giphy rate limit (1,000/day).** If hit, the API returns an error. Wait until the next day or upgrade to a paid plan.
-
-## Reference files
-
-- `references/hermes-media-delivery.md` — how MEDIA: flows through the gateway and why caption doesn't carry through with `send_message`. Research from 18-May-2026.
+6. **API rate limit (Giphy: 1,000/day).** If hit, the API returns an error. Wait until the next day or upgrade to a paid plan.
 
 ## Verification Checklist
 
 - [ ] `GIPHY_API_KEY` is set in `~/.hermes/.env`
-- [ ] `python3 giphy_multi.py --check` shows all ✅
+- [ ] `python3 gif_multi.py --check` shows all ✅
 - [ ] `--discover --platforms` configured the skill for your platforms
 - [ ] A test search + MEDIA: send works on the target platform
 - [ ] The GIF plays correctly in the destination chat
@@ -209,7 +205,7 @@ python3 ~/.hermes/skills/media/giphy-multi/scripts/giphy_multi.py \
 1. **Setup (first time):**
    - Call `send_message(action='list')` to see available platforms and targets
    - Parse the output — extract platform names (e.g. `telegram`, `discord`)
-   - Run `giphy_multi.py --discover --platforms telegram,discord`
+   - Run `gif_multi.py --discover --platforms telegram,discord`
    - Confirm with user if desired
 
 2. **Sending (each time):**
@@ -217,9 +213,9 @@ python3 ~/.hermes/skills/media/giphy-multi/scripts/giphy_multi.py \
    - Check mode: `natural` (send spontaneously) or `on_request` (wait for explicit ask)
    - **Do not hardcode targets** — call `send_message(action='list')` to discover available targets if unsure
    - Pick a query based on the reaction needed
-   - Run the script: `giphy_multi.py "<query>" --channel <platform>`
+   - Run the script: `gif_multi.py "<query>" --channel <platform>`
    - Send via Hermes: `send_message(message="text MEDIA:<path>", target="<target from list>")`
 
 3. **Mode changes:**
-   - User says "stop sending without asking" → `giphy_multi.py --mode on_request`
-   - User says "feel free to send GIFs naturally" → `giphy_multi.py --mode natural`
+   - User says "stop sending without asking" → `gif_multi.py --mode on_request`
+   - User says "feel free to send GIFs naturally" → `gif_multi.py --mode natural`

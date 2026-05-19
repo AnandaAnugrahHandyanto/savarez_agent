@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""Giphy Multi — Search Giphy and convert GIFs per messaging platform.
+"""GIF Multi — Search Giphy and convert GIFs per messaging platform.
 
 Hermes Agent skill. Multi-platform: Telegram, WhatsApp, Discord, Signal, etc.
 
 Usage:
-  python3 giphy_multi.py --check                    # Verify setup
-  python3 giphy_multi.py --discover --platforms t,d  # Set up channels
-  python3 giphy_multi.py "<query>" --channel telegram # Search + convert
-  python3 giphy_multi.py --mode natural|on_request   # Change mode
+  python3 gif_multi.py --check                    # Verify setup
+  python3 gif_multi.py --discover --platforms t,d  # Set up channels
+  python3 gif_multi.py "<query>" --channel telegram # Search + convert
+  python3 gif_multi.py --mode natural|on_request   # Change mode
 
 Config auto-path: <skill_dir>/config.json
 """
@@ -69,7 +69,7 @@ def _config_path():
 
 def _cache_dir():
     hermes_home = os.path.expanduser("~/.hermes")
-    cache = os.path.join(hermes_home, ".giphy_cache")
+    cache = os.path.join(hermes_home, ".gif_cache")
     os.makedirs(cache, exist_ok=True)
     return cache
 
@@ -178,9 +178,9 @@ def discover_channels(platforms_str):
     return config, saved
 
 
-# ──── Giphy search ─────────────────────────────────────────────────────
+# ──── GIF search ─────────────────────────────────────────────────────
 
-def search_giphy(query, rating="g"):
+def search_gif(query, rating="g"):
     api_key = get_api_key()
     if not api_key:
         return {"error": "GIPHY_API_KEY not found", "help": SETUP_HELP}
@@ -189,7 +189,7 @@ def search_giphy(query, rating="g"):
     url = (f"https://api.giphy.com/v1/gifs/search"
            f"?api_key={api_key}&q={encoded}&limit=3&rating={rating}")
 
-    req = urllib.request.Request(url, headers={"User-Agent": "hermes-giphy-multi/1.0"})
+    req = urllib.request.Request(url, headers={"User-Agent": "hermes-gif-multi/1.0"})
     with urllib.request.urlopen(req) as resp:
         data = json.loads(resp.read().decode())
 
@@ -212,7 +212,7 @@ def convert(gif_path, channel, out_dir):
 
     safe_ch = channel.replace("/", "_").replace(" ", "_")
     ts = int(time.time() * 1000)
-    out_base = os.path.join(out_dir, f"giphy_{safe_ch}_{ts}")
+    out_base = os.path.join(out_dir, f"gif_{safe_ch}_{ts}")
 
     if fmt == "text_only":
         _cleanup_source(gif_path)
@@ -264,7 +264,7 @@ def convert(gif_path, channel, out_dir):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Giphy Multi — search and convert GIFs for any messaging platform"
+        description="GIF Multi — search and convert GIFs for any messaging platform"
     )
     parser.add_argument("query", nargs="?", default=None, help="Search term")
     parser.add_argument("--channel", default=None, help="Target channel (telegram, discord, …)")
@@ -330,7 +330,7 @@ def main():
             }))
             sys.exit(1)
 
-    result = search_giphy(args.query, args.rating)
+    result = search_gif(args.query, args.rating)
     if "error" in result:
         print(json.dumps(result))
         sys.exit(1)
