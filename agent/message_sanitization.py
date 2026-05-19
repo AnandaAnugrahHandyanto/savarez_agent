@@ -352,6 +352,64 @@ def _sanitize_tools_non_ascii(tools: list) -> bool:
     return _sanitize_structure_non_ascii(tools)
 
 
+_IMAGE_PART_TYPES = frozenset({"image", "image_url", "input_image"})
+
+
+def _vision_image_cap_placeholder(max_images: int) -> str:
+    return (
+        f"[screenshot removed — kept {max_images} most recent to save context]"
+    )
+
+
+def _is_vision_image_part(part: Any) -> bool:
+    return isinstance(part, dict) and part.get("type") in _IMAGE_PART_TYPES
+
+
+def _collect_vision_image_locations(messages: list) -> list[tuple[int, str, int]]:
+    """Return (msg_index, container, part_index) for each image part, oldest first."""
+    locations: list[tuple[int, str, int]] = []
+    for mi, msg in enumerate(messages):
+        if not isinstance(msg, dict):
+            continue
+        content = msg.get("content")
+        if isinstance(content, list):
+            for pi, part in enumerate(content):
+                if _is_vision_image_part(part):
+                    locations.append((mi, "content", pi))
+        elif isinstance(content, dict) and content.get("_multimodal"):
+            inner = content.get("content")
+            if isinstance(inner, list):
+                for pi, part in enumerate(inner):
+                    if _is_vision_image_part(part):
+                        locations.append((mi, "envelope", pi))
+    return locations
+
+
+def cap_vision_images_in_messages(messages: list, max_images: int) -> int:
+    """Drop oldest image parts when more than ``max_images`` are in context.
+
+  Mutates ``messages`` in place. Returns the number of image parts replaced.
+  ``max_images <= 0`` disables the cap.
+    """
+    if max_images is None or max_images <= 0:
+        return 0
+    locations = _collect_vision_image_locations(messages)
+    excess = len(locations) - max_images
+    if excess <= 0:
+        return 0
+    placeholder = _vision_image_cap_placeholder(max_images)
+    stripped = 0
+    for mi, container, pi in locations[:excess]:
+        msg = messages[mi]
+        if container == "content":
+            parts = msg["content"]
+        else:
+            parts = msg["content"]["content"]
+        parts[pi] = {"type": "text", "text": placeholder}
+        stripped += 1
+    return stripped
+
+
 def _strip_images_from_messages(messages: list) -> bool:
     """Remove image_url content parts from all messages in-place.
 
@@ -440,5 +498,6 @@ __all__ = [
     "_sanitize_messages_non_ascii",
     "_sanitize_tools_non_ascii",
     "_strip_images_from_messages",
+    "cap_vision_images_in_messages",
     "_sanitize_structure_non_ascii",
 ]

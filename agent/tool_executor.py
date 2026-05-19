@@ -450,6 +450,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             "tool_call_id": tc.id,
         }
         messages.append(tool_msg)
+        agent._cap_vision_images_in_context(messages)
 
         # ── Per-tool /steer drain ───────────────────────────────────
         # Same as the sequential path: drain between each collected
@@ -871,6 +872,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             "tool_call_id": tool_call.id
         }
         messages.append(tool_msg)
+        agent._cap_vision_images_in_context(messages)
 
         # ── Per-tool /steer drain ───────────────────────────────────
         # Drain pending steer BETWEEN individual tool calls so the
