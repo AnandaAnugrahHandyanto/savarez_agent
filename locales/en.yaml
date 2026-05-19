@@ -28,6 +28,18 @@ approval:
 gateway:
   # Messenger replies to slash commands and implicit state changes.
   approval_expired: "⚠️ Approval expired (agent is no longer waiting). Ask the agent to try again."
+
+  # Gateway exec approval prompts (sent when dangerous commands need approval)
+  approval:
+    header: "⚠️ **Dangerous command requires approval:**"
+    reason: "Reason: {desc}"
+    reply_hint: "Reply `/approve` to execute, `/approve session` to approve this pattern for the session, `/approve always` to approve permanently, or `/deny` to cancel."
+    command_label: "Command"
+    choose_number: "Please reply with a number to choose:"
+    option_once: "Approve once"
+    option_session: "Approve for this session"
+    option_always: "Approve permanently"
+    option_deny: "Deny (reply 0 or /deny)"
   draining:         "⏳ Draining {count} active agent(s) before restart..."
   goal_cleared:     "✓ Goal cleared."
   no_active_goal:   "No active goal."

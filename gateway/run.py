@@ -15694,11 +15694,10 @@ class GatewayRunner:
                 # Fallback: plain text approval prompt
                 cmd_preview = cmd[:200] + "..." if len(cmd) > 200 else cmd
                 msg = (
-                    f"⚠️ **Dangerous command requires approval:**\n"
+                    f"{t('gateway.approval.header')}\n"
                     f"```\n{cmd_preview}\n```\n"
-                    f"Reason: {desc}\n\n"
-                    f"Reply `/approve` to execute, `/approve session` to approve this pattern "
-                    f"for the session, `/approve always` to approve permanently, or `/deny` to cancel."
+                    f"{t('gateway.approval.reason', desc=desc)}\n\n"
+                    f"{t('gateway.approval.reply_hint')}"
                 )
                 try:
                     _approval_send_fut = safe_schedule_threadsafe(
