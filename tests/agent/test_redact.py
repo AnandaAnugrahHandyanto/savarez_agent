@@ -5,7 +5,12 @@ import os
 
 import pytest
 
-from agent.redact import redact_sensitive_text, RedactingFormatter
+from agent.redact import (
+    redact_diagnostic_text,
+    redact_diagnostic_value,
+    redact_sensitive_text,
+    RedactingFormatter,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -183,6 +188,51 @@ class TestPassthrough:
     def test_url_without_key_unchanged(self):
         text = "Connecting to https://api.openai.com/v1/chat/completions"
         assert redact_sensitive_text(text) == text
+
+
+class TestDiagnosticRedaction:
+    def test_diagnostic_text_does_not_preserve_token_fragments(self):
+        token = "sk-proj-abcdefghijklmnopqrstuvwxyz123456"
+        result = redact_diagnostic_text(f"Authorization: Bearer {token}")
+        assert token not in result
+        assert "sk-proj" not in result
+        assert "3456" not in result
+        assert "[REDACTED]" in result
+
+    def test_diagnostic_text_redacts_lowercase_sensitive_assignments(self):
+        result = redact_diagnostic_text(
+            "token=opaque123 password=hunter2 cookie=session=abc credential='hunter2' prompt_tokens=123"
+        )
+        assert "opaque123" not in result
+        assert "hunter2" not in result
+        assert "session=abc" not in result
+        assert "token=[REDACTED]" in result
+        assert "password=[REDACTED]" in result
+        assert "cookie=[REDACTED]" in result
+        assert "credential='[REDACTED]'" in result
+        assert "prompt_tokens=123" in result
+
+    def test_diagnostic_value_fingerprints_api_keys_but_not_passwords(self):
+        api_key = "sk-proj-abcdefghijklmnopqrstuvwxyz123456"
+        password = "hunter2"
+        result = redact_diagnostic_value(
+            {
+                "api_key": api_key,
+                "bearer": api_key,
+                "password": password,
+                "cookie": "session=abc",
+            }
+        )
+        assert isinstance(result, dict)
+        assert result["api_key"].startswith("configured (sha256:")
+        assert result["bearer"].startswith("configured (sha256:")
+        assert f"len={len(api_key)}" in result["api_key"]
+        assert result["password"] == "configured"
+        assert result["cookie"] == "configured"
+        assert password not in str(result)
+        assert "hunter" not in str(result)
+        assert "sha256" not in result["password"]
+        assert "sha256" not in result["cookie"]
 
 
 class TestRedactingFormatter:

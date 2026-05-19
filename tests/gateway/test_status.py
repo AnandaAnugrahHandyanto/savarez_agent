@@ -8,7 +8,44 @@ from types import SimpleNamespace
 from gateway import status
 
 
+def test_runtime_health_lines_redacts_secret_bearing_gateway_errors(monkeypatch):
+    from hermes_cli.gateway import _runtime_health_lines
+
+    secret = "tvly-runtime-secret-0123456789abcdef"
+    bearer_secret = "sk-" + "runtimeerror" + "0123456789abcdef"
+    monkeypatch.setattr(
+        status,
+        "read_runtime_status",
+        lambda: {
+            "gateway_state": "startup_failed",
+            "exit_reason": f"failed callback https://api.example.test/cb?api_key={secret}",
+            "platforms": {
+                "telegram": {
+                    "state": "fatal",
+                    "error_message": (
+                        f"unauthorized at https://api.example.test/send?token={secret}; "
+                        f"Authorization: Bearer {bearer_secret}"
+                    ),
+                }
+            },
+        },
+    )
+
+    lines = _runtime_health_lines()
+    output = "\n".join(lines)
+
+    assert "telegram" in output
+    assert "Last startup issue" in output
+    assert secret not in output
+    assert bearer_secret not in output
+    assert "runtimeerror" not in output
+    assert "api_key=***" in output
+    assert "token=***" in output
+    assert "Authorization: Bearer [REDACTED]" in output
+
+
 class TestGatewayPidState:
+
     def test_write_pid_file_records_gateway_metadata(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 

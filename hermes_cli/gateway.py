@@ -2657,6 +2657,18 @@ def systemd_restart(system: bool = False):
 
 
 
+def _print_redacted_subprocess_output(result: subprocess.CompletedProcess) -> None:
+    """Print captured subprocess output after diagnostic secret redaction."""
+    from agent.redact import redact_diagnostic_text
+
+    stdout = redact_diagnostic_text(getattr(result, "stdout", "") or "")
+    stderr = redact_diagnostic_text(getattr(result, "stderr", "") or "")
+    if stdout:
+        print(stdout, end="" if stdout.endswith("\n") else "\n")
+    if stderr:
+        print(stderr, end="" if stderr.endswith("\n") else "\n", file=sys.stderr)
+
+
 def systemd_status(deep: bool = False, system: bool = False, full: bool = False):
     system = _select_systemd_scope(system)
     unit_path = get_systemd_unit_path(system=system)
@@ -2686,12 +2698,14 @@ def systemd_status(deep: bool = False, system: bool = False, full: bool = False)
     if full:
         status_cmd.append("-l")
 
-    _run_systemctl(
+    status_result = _run_systemctl(
         status_cmd,
         system=system,
-        capture_output=False,
+        capture_output=True,
+        text=True,
         timeout=10,
     )
+    _print_redacted_subprocess_output(status_result)
 
     result = _run_systemctl(
         ["is-active", get_service_name()],
@@ -2755,7 +2769,8 @@ def systemd_status(deep: bool = False, system: bool = False, full: bool = False)
         log_cmd = _journalctl_cmd(system) + ["-u", get_service_name(), "-n", "20", "--no-pager"]
         if full:
             log_cmd.append("-l")
-        subprocess.run(log_cmd, timeout=10)
+        result = subprocess.run(log_cmd, timeout=10, capture_output=True, text=True)
+        _print_redacted_subprocess_output(result)
 
 
 # =============================================================================
@@ -3822,6 +3837,8 @@ def _runtime_health_lines() -> list[str]:
         return []
 
     lines: list[str] = []
+    from agent.redact import redact_diagnostic_text
+
     gateway_state = state.get("gateway_state")
     exit_reason = state.get("exit_reason")
     active_agents = state.get("active_agents")
@@ -3831,16 +3848,17 @@ def _runtime_health_lines() -> list[str]:
     for platform, pdata in platforms.items():
         if pdata.get("state") == "fatal":
             message = pdata.get("error_message") or "unknown error"
+            message = redact_diagnostic_text(message)
             lines.append(f"⚠ {platform}: {message}")
 
     if gateway_state == "startup_failed" and exit_reason:
-        lines.append(f"⚠ Last startup issue: {exit_reason}")
+        lines.append(f"⚠ Last startup issue: {redact_diagnostic_text(exit_reason)}")
     elif gateway_state == "draining":
         action = "restart" if restart_requested else "shutdown"
         count = int(active_agents or 0)
         lines.append(f"⏳ Gateway draining for {action} ({count} active agent(s))")
     elif gateway_state == "stopped" and exit_reason:
-        lines.append(f"⚠ Last shutdown reason: {exit_reason}")
+        lines.append(f"⚠ Last shutdown reason: {redact_diagnostic_text(exit_reason)}")
 
     return lines
 

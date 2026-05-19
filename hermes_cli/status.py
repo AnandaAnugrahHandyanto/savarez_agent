@@ -28,15 +28,15 @@ def check_mark(ok: bool) -> str:
     return color("✗", Colors.RED)
 
 def redact_key(key: str) -> str:
-    """Redact an API key for display.
+    """Format API-key state for shareable status output."""
+    from agent.redact import format_secret_status
+    return format_secret_status(key, empty=color("(not set)", Colors.DIM))
 
-    Thin wrapper over :func:`agent.redact.mask_secret`. Preserves the
-    "(not set)" placeholder in dim color to match ``hermes config``'s
-    output (previously this variant was missing the DIM color —
-    consolidated via PR that also introduced ``mask_secret``).
-    """
-    from agent.redact import mask_secret
-    return mask_secret(key, empty=color("(not set)", Colors.DIM))
+
+def redact_diagnostic_text(text) -> str:
+    """Redact free-form diagnostic text before printing status output."""
+    from agent.redact import redact_diagnostic_text as _redact_diagnostic_text
+    return _redact_diagnostic_text(text)
 
 
 def _format_iso_timestamp(value) -> str:
@@ -89,7 +89,6 @@ from hermes_constants import is_termux as _is_termux
 
 def show_status(args):
     """Show status of all Hermes Agent components."""
-    show_all = getattr(args, 'all', False)
     deep = getattr(args, 'deep', False)
 
     print()
@@ -163,12 +162,12 @@ def show_status(args):
             continue
         value = _resolve_env(env_ref)
         has_key = bool(value)
-        display = redact_key(value) if not show_all else value
+        display = redact_key(value)
         print(f"  {name:<12}  {check_mark(has_key)} {display}")
 
     from hermes_cli.auth import get_anthropic_key
     anthropic_value = get_anthropic_key()
-    anthropic_display = redact_key(anthropic_value) if not show_all else anthropic_value
+    anthropic_display = redact_key(anthropic_value)
     print(f"  {'Anthropic':<12}  {check_mark(bool(anthropic_value))} {anthropic_display}")
 
     # =========================================================================
@@ -201,7 +200,7 @@ def show_status(args):
         f"  {'Nous Portal':<12}  {check_mark(nous_logged_in)} "
         f"{nous_label}"
     )
-    portal_url = nous_status.get("portal_base_url") or "(unknown)"
+    portal_url = redact_diagnostic_text(nous_status.get("portal_base_url") or "(unknown)")
     access_exp = _format_iso_timestamp(nous_status.get("access_expires_at"))
     key_exp = _format_iso_timestamp(nous_status.get("agent_key_expires_at"))
     refresh_label = "yes" if nous_status.get("has_refresh_token") else "no"
@@ -214,7 +213,7 @@ def show_status(args):
     if nous_logged_in or nous_status.get("has_refresh_token"):
         print(f"    Refresh:    {refresh_label}")
     if nous_error and not nous_logged_in:
-        print(f"    Error:      {nous_error}")
+        print(f"    Error:      {redact_diagnostic_text(nous_error)}")
 
     codex_logged_in = bool(codex_status.get("logged_in"))
     print(
@@ -228,7 +227,7 @@ def show_status(args):
     if codex_status.get("last_refresh"):
         print(f"    Refreshed:  {codex_last_refresh}")
     if codex_status.get("error") and not codex_logged_in:
-        print(f"    Error:      {codex_status.get('error')}")
+        print(f"    Error:      {redact_diagnostic_text(codex_status.get('error'))}")
 
     qwen_logged_in = bool(qwen_status.get("logged_in"))
     print(
@@ -243,7 +242,7 @@ def show_status(args):
         from datetime import datetime, timezone
         print(f"    Access exp: {datetime.fromtimestamp(int(qwen_exp) / 1000, tz=timezone.utc).isoformat()}")
     if qwen_status.get("error") and not qwen_logged_in:
-        print(f"    Error:      {qwen_status.get('error')}")
+        print(f"    Error:      {redact_diagnostic_text(qwen_status.get('error'))}")
 
     minimax_logged_in = bool(minimax_status.get("logged_in"))
     print(
@@ -257,7 +256,7 @@ def show_status(args):
     if minimax_exp:
         print(f"    Access exp: {minimax_exp}")
     if minimax_status.get("error") and not minimax_logged_in:
-        print(f"    Error:      {minimax_status.get('error')}")
+        print(f"    Error:      {redact_diagnostic_text(minimax_status.get('error'))}")
 
     # xAI OAuth — separate try/except so an import failure here cannot
     # disrupt the already-printed Nous/Codex/Qwen/MiniMax rows above.
@@ -278,7 +277,7 @@ def show_status(args):
     if xai_oauth_status.get("last_refresh"):
         print(f"    Refreshed:  {_format_iso_timestamp(xai_oauth_status.get('last_refresh'))}")
     if xai_oauth_status.get("error") and not xai_oauth_logged_in:
-        print(f"    Error:      {xai_oauth_status.get('error')}")
+        print(f"    Error:      {redact_diagnostic_text(xai_oauth_status.get('error'))}")
 
     # =========================================================================
     # Nous Subscription Features
@@ -311,7 +310,7 @@ def show_status(args):
         print("  Your free-tier Nous account does not include Tool Gateway access.")
         print("  Upgrade your subscription to unlock managed web, image, TTS, and browser tools.")
         try:
-            portal_url = nous_status.get("portal_base_url", "").rstrip("/")
+            portal_url = redact_diagnostic_text(nous_status.get("portal_base_url", "")).rstrip("/")
             if portal_url:
                 print(f"  Upgrade: {portal_url}")
         except Exception:
