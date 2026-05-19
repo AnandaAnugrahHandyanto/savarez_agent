@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import os
+import logging
 from pathlib import Path
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 
 def _hermes_home_path() -> Path:
@@ -86,9 +89,18 @@ def is_write_denied(path: str, home: str | None = None, base_dir: str | None = N
     """
     home = os.path.realpath(os.path.expanduser(home or "~"))
     path_str = os.path.expanduser(str(path))
-    if base_dir and not os.path.isabs(path_str):
+    if os.path.isabs(path_str):
+        resolved = os.path.realpath(path_str)
+    elif base_dir:
         base = os.path.realpath(os.path.expanduser(str(base_dir)))
         resolved = os.path.realpath(os.path.join(base, path_str))
+        try:
+            if os.path.commonpath([base, resolved]) != base:
+                logger.debug("Denied write path outside base_dir: path=%r base_dir=%r", path, base_dir)
+                return True
+        except ValueError:
+            logger.debug("Denied write path with invalid base_dir comparison: path=%r base_dir=%r", path, base_dir)
+            return True
     else:
         resolved = os.path.realpath(path_str)
 
