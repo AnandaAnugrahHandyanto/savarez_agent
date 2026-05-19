@@ -221,12 +221,23 @@ def _is_backend_available(backend: str) -> bool:
     if backend == "brave-free":
         return _has_env("BRAVE_SEARCH_API_KEY")
     if backend == "ddgs":
-        try:
-            import ddgs  # noqa: F401
-            return True
-        except ImportError:
-            return False
+        return _ddgs_package_importable()
     return False
+
+
+def _ddgs_package_importable() -> bool:
+    """Return True when the ``ddgs`` Python package can be imported.
+
+    ddgs is the only backend whose availability is driven by a package
+    presence rather than an env var / config entry.  Wrapped in a helper
+    so auto-detect and ``_is_backend_available`` share the same check
+    (and tests can monkeypatch a single symbol).
+    """
+    try:
+        import ddgs  # noqa: F401
+        return True
+    except ImportError:
+        return False
 
 # ─── Firecrawl Client ────────────────────────────────────────────────────────
 
