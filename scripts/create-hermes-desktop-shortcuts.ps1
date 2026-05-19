@@ -1,22 +1,84 @@
-﻿# Create Hermes Agent desktop shortcuts (CLI, Gateway, Harness, Grok OAuth, config folder).
+﻿# Create / refresh Hermes Agent desktop shortcuts (single folder on Desktop).
+#
 # Usage:
 #   powershell -NoProfile -ExecutionPolicy Bypass -File scripts/create-hermes-desktop-shortcuts.ps1
 #   powershell ... -File scripts/create-hermes-desktop-shortcuts.ps1 -IncludePublicDesktop
+#   powershell ... -File scripts/create-hermes-desktop-shortcuts.ps1 -CreateVenv
 #
-# Hermes console shortcuts run via cmd.exe so a SyntaxError or missing venv leaves
-# the window open (``|| pause``) instead of flashing closed — which users often
-# describe as the shortcut "disappearing".
+# All Hermes shortcuts land in:  %USERPROFILE%\Desktop\Hermes Agent\
+# Legacy .lnk files on the Desktop root (and optional public desktop) are removed.
+#
+# Console shortcuts use cmd.exe /k with pause-on-error so tracebacks stay visible.
 
 [CmdletBinding()]
 param(
+    [string]$ShortcutFolderName = "Hermes Agent",
     [switch]$IncludePublicDesktop,
-    [switch]$RecreateSo8tLlamaShortcut
+    [switch]$CreateVenv,
+    [switch]$RecreateSo8tLlamaShortcut,
+    [switch]$KeepLegacyDesktopRootShortcuts
 )
 
 $ErrorActionPreference = "Stop"
 
+# Basenames we own (root + subfolder cleanup).
+$HermesShortcutNames = @(
+    "Hermes Agent CLI.lnk",
+    "Hermes Gateway.lnk",
+    "Hermes Harness.lnk",
+    "Hermes Grok OAuth.lnk",
+    "Hermes Doctor.lnk",
+    "Hermes Config (.hermes).lnk",
+    "Hermes Stack.lnk",
+    "Hermes Hypura Stack.lnk"
+)
+
 function Get-RepoRoot {
     return (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+}
+
+function Ensure-ProjectVenv {
+    param([string]$RepoRoot)
+
+    $venvHermes = Join-Path $RepoRoot ".venv\Scripts\hermes.exe"
+    if (Test-Path -LiteralPath $venvHermes) {
+        return [PSCustomObject]@{ Status = "ok"; Message = "Found $venvHermes" }
+    }
+
+    if (-not $CreateVenv) {
+        return [PSCustomObject]@{
+            Status  = "skipped"
+            Message = ".venv missing; pass -CreateVenv to run 'uv venv' + 'uv sync' in repo root"
+        }
+    }
+
+    $uv = Get-Command uv -ErrorAction SilentlyContinue
+    if (-not $uv) {
+        throw "CreateVenv requested but 'uv' is not on PATH. Install uv or create .venv manually."
+    }
+
+    Push-Location $RepoRoot
+    try {
+        & uv venv
+        if ($LASTEXITCODE -ne 0) { throw "uv venv failed with exit $LASTEXITCODE" }
+        if (Test-Path -LiteralPath "pyproject.toml") {
+            & uv sync
+            if ($LASTEXITCODE -ne 0) { throw "uv sync failed with exit $LASTEXITCODE" }
+        }
+        elseif (Test-Path -LiteralPath "requirements.txt") {
+            & uv pip install -r requirements.txt
+            if ($LASTEXITCODE -ne 0) { throw "uv pip install failed with exit $LASTEXITCODE" }
+        }
+    }
+    finally {
+        Pop-Location
+    }
+
+    if (-not (Test-Path -LiteralPath $venvHermes)) {
+        throw "venv created but hermes.exe still missing at $venvHermes"
+    }
+
+    return [PSCustomObject]@{ Status = "created"; Message = "Created venv and synced dependencies" }
 }
 
 function Resolve-HermesInvoke {
@@ -62,7 +124,7 @@ function Resolve-HermesInvoke {
         }
     }
 
-    throw "Could not resolve hermes launcher (install .venv or add hermes to PATH)."
+    throw "Could not resolve hermes launcher. Run with -CreateVenv or install .venv / hermes on PATH."
 }
 
 function Build-HermesCommandLine {
@@ -79,8 +141,7 @@ function Build-HermesCommandLine {
     else {
         $inner = if ($prefix) { "`"$exe`" $prefix $SubArgs" } else { "`"$exe`" $SubArgs" }
     }
-    # On failure, pause so the user can read tracebacks (instant-close looked like a vanished shortcut).
-    return "$inner || echo. & echo [Hermes exited with error — press any key] & pause >nul"
+    return "$inner || echo. & echo [Hermes exited with error - press any key] & pause >nul"
 }
 
 function New-HermesShortcut {
@@ -93,6 +154,11 @@ function New-HermesShortcut {
         [string]$IconLocation = "$env:SystemRoot\System32\cmd.exe,0",
         [int]$WindowStyle = 1
     )
+
+    $parent = Split-Path -Parent $LinkPath
+    if (-not (Test-Path -LiteralPath $parent)) {
+        New-Item -ItemType Directory -Path $parent -Force | Out-Null
+    }
 
     $WshShell = New-Object -ComObject WScript.Shell
     $Shortcut = $WshShell.CreateShortcut($LinkPath)
@@ -127,7 +193,8 @@ function New-HermesConsoleShortcut {
     $cmdArgs = "/k cd /d `"$RepoRoot`" && $cmdLine"
     $icon = if ($Invoke.IconPath -and (Test-Path -LiteralPath $Invoke.IconPath)) {
         "$($Invoke.IconPath),0"
-    } else {
+    }
+    else {
         "$env:SystemRoot\System32\cmd.exe,0"
     }
 
@@ -138,6 +205,52 @@ function New-HermesConsoleShortcut {
         -WorkingDirectory $RepoRoot `
         -Description $Description `
         -IconLocation $icon
+}
+
+function New-HermesStackShortcut {
+    param(
+        [string]$LinkPath,
+        [string]$RepoRoot,
+        [string]$StartScript
+    )
+
+    return New-HermesShortcut `
+        -LinkPath $LinkPath `
+        -TargetPath "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" `
+        -Arguments "-NoExit -NoProfile -ExecutionPolicy Bypass -File `"$StartScript`"" `
+        -WorkingDirectory $RepoRoot `
+        -Description "Hermes full stack (Gateway, Hypura, proxies, TUI, FastAPI, ngrok, ...)" `
+        -IconLocation "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe,0"
+}
+
+function Remove-StaleHermesShortcuts {
+    param(
+        [string[]]$SearchRoots,
+        [string]$ShortcutDir
+    )
+
+    $removed = @()
+    foreach ($root in $SearchRoots) {
+        if (-not (Test-Path -LiteralPath $root)) { continue }
+
+        foreach ($name in $HermesShortcutNames) {
+            $atRoot = Join-Path $root $name
+            if (Test-Path -LiteralPath $atRoot) {
+                Remove-Item -LiteralPath $atRoot -Force
+                $removed += $atRoot
+            }
+        }
+
+        if ($ShortcutDir -and (Test-Path -LiteralPath $ShortcutDir)) {
+            $hypuraDup = Join-Path $ShortcutDir "Hermes Hypura Stack.lnk"
+            if (Test-Path -LiteralPath $hypuraDup) {
+                Remove-Item -LiteralPath $hypuraDup -Force
+                $removed += $hypuraDup
+            }
+        }
+    }
+
+    return $removed
 }
 
 function Ensure-So8tLlamaShortcut {
@@ -184,11 +297,21 @@ function Ensure-So8tLlamaShortcut {
 }
 
 $RepoRoot = Get-RepoRoot
+$venvStatus = Ensure-ProjectVenv -RepoRoot $RepoRoot
 $invoke = Resolve-HermesInvoke -RepoRoot $RepoRoot
 
-$desktops = @([Environment]::GetFolderPath("Desktop"))
+$userDesktop = [Environment]::GetFolderPath("Desktop")
+$shortcutDir = Join-Path $userDesktop $ShortcutFolderName
+New-Item -ItemType Directory -Path $shortcutDir -Force | Out-Null
+
+$searchRoots = @($userDesktop)
 if ($IncludePublicDesktop) {
-    $desktops += [Environment]::GetFolderPath("CommonDesktopDirectory")
+    $searchRoots += [Environment]::GetFolderPath("CommonDesktopDirectory")
+}
+
+$removed = @()
+if (-not $KeepLegacyDesktopRootShortcuts) {
+    $removed = Remove-StaleHermesShortcuts -SearchRoots $searchRoots -ShortcutDir $shortcutDir
 }
 
 $definitions = @(
@@ -211,98 +334,145 @@ $definitions = @(
         Name        = "Hermes Grok OAuth.lnk"
         SubArgs     = "auth add xai-oauth"
         Description = "Browser login for xAI Grok OAuth (SuperGrok subscription)"
+    },
+    @{
+        Name        = "Hermes Doctor.lnk"
+        SubArgs     = "doctor"
+        Description = "Hermes health check (hermes doctor)"
     }
 )
 
-$hermesHome = Join-Path $env:USERPROFILE ".hermes"
+$hermesHome = if ($env:HERMES_HOME -and $env:HERMES_HOME.Trim()) {
+    $env:HERMES_HOME
+}
+else {
+    Join-Path $env:USERPROFILE ".hermes"
+}
 if (-not (Test-Path -LiteralPath $hermesHome)) {
     New-Item -ItemType Directory -Path $hermesHome -Force | Out-Null
 }
 
-$configDef = @{
-    Name        = "Hermes Config (.hermes).lnk"
-    TargetPath  = "$env:SystemRoot\explorer.exe"
-    Arguments   = $hermesHome
-    Description = "Open Hermes config folder (~/.hermes)"
-}
+$startStackScript = Join-Path $RepoRoot "scripts\windows\start-hermes-stack.ps1"
 
 $results = @()
-
-foreach ($desktop in $desktops | Select-Object -Unique) {
-    if (-not (Test-Path -LiteralPath $desktop)) {
-        $results += [PSCustomObject]@{ Path = $desktop; Status = "error"; Error = "Desktop folder missing" }
-        continue
+if ($removed.Count -gt 0) {
+    foreach ($r in $removed) {
+        $results += [PSCustomObject]@{ Path = $r; Status = "removed-stale" }
     }
+}
 
+if ($venvStatus) {
+    $results += [PSCustomObject]@{
+        Path   = ".venv"
+        Status = $venvStatus.Status
+        Error  = $venvStatus.Message
+    }
+}
+
+foreach ($def in $definitions) {
+    $lnk = Join-Path $shortcutDir $def.Name
+    try {
+        $row = New-HermesConsoleShortcut `
+            -LinkPath $lnk `
+            -RepoRoot $RepoRoot `
+            -Invoke $invoke `
+            -SubArgs $def.SubArgs `
+            -Description $def.Description
+        $results += [PSCustomObject]@{
+            Path             = $row.Path
+            Status           = "created"
+            TargetPath       = $row.TargetPath
+            Arguments        = $row.Arguments
+            WorkingDirectory = $row.WorkingDirectory
+            LauncherSource   = $invoke.Source
+        }
+    }
+    catch {
+        $results += [PSCustomObject]@{
+            Path   = $lnk
+            Status = "error"
+            Error  = $_.Exception.Message
+        }
+    }
+}
+
+$cfgLnk = Join-Path $shortcutDir "Hermes Config (.hermes).lnk"
+try {
+    $row = New-HermesShortcut `
+        -LinkPath $cfgLnk `
+        -TargetPath "$env:SystemRoot\explorer.exe" `
+        -Arguments $hermesHome `
+        -WorkingDirectory $env:USERPROFILE `
+        -Description "Open Hermes config folder (~/.hermes)" `
+        -IconLocation "$env:SystemRoot\System32\explorer.exe,0"
+    $results += [PSCustomObject]@{
+        Path             = $row.Path
+        Status           = "created"
+        TargetPath       = $row.TargetPath
+        Arguments        = $row.Arguments
+        WorkingDirectory = $row.WorkingDirectory
+        LauncherSource   = "explorer"
+    }
+}
+catch {
+    $results += [PSCustomObject]@{
+        Path   = $cfgLnk
+        Status = "error"
+        Error  = $_.Exception.Message
+    }
+}
+
+if (Test-Path -LiteralPath $startStackScript) {
+    $stackLnk = Join-Path $shortcutDir "Hermes Stack.lnk"
+    try {
+        $row = New-HermesStackShortcut -LinkPath $stackLnk -RepoRoot $RepoRoot -StartScript $startStackScript
+        $results += [PSCustomObject]@{
+            Path             = $row.Path
+            Status           = "created"
+            TargetPath       = $row.TargetPath
+            Arguments        = $row.Arguments
+            WorkingDirectory = $row.WorkingDirectory
+            LauncherSource   = "start-hermes-stack.ps1"
+        }
+    }
+    catch {
+        $results += [PSCustomObject]@{
+            Path   = $stackLnk
+            Status = "error"
+            Error  = $_.Exception.Message
+        }
+    }
+}
+else {
+    $results += [PSCustomObject]@{
+        Path   = $startStackScript
+        Status = "skipped-missing-stack-script"
+    }
+}
+
+if ($RecreateSo8tLlamaShortcut) {
+    $so8t = Ensure-So8tLlamaShortcut -Desktop $userDesktop -Force:$RecreateSo8tLlamaShortcut
+    $results += $so8t
+}
+
+if ($IncludePublicDesktop) {
+    Write-Warning "Public desktop shortcuts are not mirrored into subfolders; only stale names are removed there."
     foreach ($def in $definitions) {
-        $lnk = Join-Path $desktop $def.Name
-        try {
-            $row = New-HermesConsoleShortcut `
-                -LinkPath $lnk `
-                -RepoRoot $RepoRoot `
-                -Invoke $invoke `
-                -SubArgs $def.SubArgs `
-                -Description $def.Description
-            $results += [PSCustomObject]@{
-                Path             = $row.Path
-                Status           = "created"
-                TargetPath       = $row.TargetPath
-                Arguments        = $row.Arguments
-                WorkingDirectory = $row.WorkingDirectory
-                LauncherSource   = $invoke.Source
-            }
-        }
-        catch {
-            $results += [PSCustomObject]@{
-                Path   = $lnk
-                Status = "error"
-                Error  = $_.Exception.Message
-            }
-        }
-    }
-
-    if ($desktop -eq [Environment]::GetFolderPath("Desktop")) {
-        $cfgLnk = Join-Path $desktop $configDef.Name
-        try {
-            $row = New-HermesShortcut `
-                -LinkPath $cfgLnk `
-                -TargetPath $configDef.TargetPath `
-                -Arguments $configDef.Arguments `
-                -WorkingDirectory $env:USERPROFILE `
-                -Description $configDef.Description `
-                -IconLocation "$env:SystemRoot\explorer.exe,0"
-            $results += [PSCustomObject]@{
-                Path             = $row.Path
-                Status           = "created"
-                TargetPath       = $row.TargetPath
-                Arguments        = $row.Arguments
-                WorkingDirectory = $row.WorkingDirectory
-                LauncherSource   = "explorer"
-            }
-        }
-        catch {
-            $results += [PSCustomObject]@{
-                Path   = $cfgLnk
-                Status = "error"
-                Error  = $_.Exception.Message
-            }
-        }
-
-        $so8t = Ensure-So8tLlamaShortcut -Desktop $desktop -Force:$RecreateSo8tLlamaShortcut
-        $results += $so8t
+        Write-Host "Skipping public create for $($def.Name) — use user Desktop\Hermes Agent\" -ForegroundColor DarkGray
     }
 }
 
 Write-Host ""
 Write-Host "Hermes launcher: $($invoke.Source) -> $($invoke.HermesPath)" -ForegroundColor Cyan
 Write-Host "Repo root: $RepoRoot"
-Write-Host "Console shortcuts use cmd.exe /k with pause-on-error." -ForegroundColor DarkGray
+Write-Host "Shortcut folder: $shortcutDir" -ForegroundColor Green
+Write-Host "Console shortcuts: cmd.exe /k with pause-on-error." -ForegroundColor DarkGray
 Write-Host ""
 $results | Format-Table -AutoSize Path, Status, TargetPath, Arguments
 
-$errors = $results | Where-Object { $_.Status -eq "error" -or $_.Status -like "skipped*" }
+$errors = $results | Where-Object { $_.Status -eq "error" }
 if ($errors) {
-    Write-Warning "Some shortcuts were not created; see table above."
+    Write-Warning "Some shortcuts failed; see table above."
     exit 1
 }
 
