@@ -153,6 +153,7 @@ AUTHOR_MAP = {
     "2093036+exiao@users.noreply.github.com": "exiao",
     "20nik.nosov21@gmail.com": "nik1t7n",
     "ch.ploujoux@gmail.com": "cploujoux",
+    "mstolarz@blaxel.ai": "mstolarzblaxelai",
     "thunderggnn@gmail.com": "ggnnggez",
     "haozhe4547@gmail.com": "ehz0ah",
     "eloklam2002@gmail.com": "eloklam",
