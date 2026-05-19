@@ -1713,7 +1713,15 @@ class APIServerAdapter(BasePlatformAdapter):
                 call_id = payload.get("tool_call_id") or f"call_{response_id[5:]}_{call_counter}"
                 args = payload.get("arguments", {})
                 if isinstance(args, dict):
-                    arguments_str = json.dumps(args)
+                    # ``ensure_ascii=False`` keeps non-ASCII characters
+                    # (CJK, accented Latin, emoji, …) as native Unicode in
+                    # the ``arguments`` JSON string that OpenAI-compatible
+                    # clients display verbatim.  Without this, ``echo "无
+                    # kanban 目录"`` round-trips through Python's default
+                    # ``json.dumps`` as ``echo "\u65e0 kanban \u76ee\u5f55"``
+                    # — exactly the mojibake reported in #28646 by web UIs
+                    # that don't second-parse the arguments string.
+                    arguments_str = json.dumps(args, ensure_ascii=False)
                 else:
                     arguments_str = str(args)
                 item = {
@@ -1779,7 +1787,11 @@ class APIServerAdapter(BasePlatformAdapter):
                 })
 
                 # function_call_output added (result)
-                result_str = result if isinstance(result, str) else json.dumps(result)
+                # ``ensure_ascii=False`` so non-ASCII tool output (CJK,
+                # accented Latin, emoji, …) reaches the client as native
+                # Unicode instead of ``\uXXXX`` escape sequences — same
+                # mojibake class as the arguments path (#28646).
+                result_str = result if isinstance(result, str) else json.dumps(result, ensure_ascii=False)
                 output_parts = [{"type": "input_text", "text": result_str}]
                 output_item = {
                     "id": f"fco_{uuid.uuid4().hex[:24]}",
@@ -1959,7 +1971,11 @@ class APIServerAdapter(BasePlatformAdapter):
                             for _k in ("content", "query", "pattern", "old_string", "new_string"):
                                 if isinstance(_args.get(_k), str) and len(_args[_k]) > 500:
                                     _args[_k] = "[" + str(len(_args[_k])) + " chars — truncated for response.completed]"
-                            _item["arguments"] = json.dumps(_args)
+                            # Match the encoding used by ``_emit_tool_started``
+                            # so the trimmed copy in ``response.completed``
+                            # doesn't reintroduce the ``\uXXXX`` mojibake
+                            # fixed for the streaming path (#28646).
+                            _item["arguments"] = json.dumps(_args, ensure_ascii=False)
                     except Exception:
                         pass
                 elif _item.get("type") == "function_call_output":
