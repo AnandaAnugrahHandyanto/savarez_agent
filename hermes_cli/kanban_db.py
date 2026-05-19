@@ -4320,6 +4320,13 @@ def _default_spawn(
                 cmd.extend(["--skills", sk])
     cmd.extend([
         "chat",
+        # Keep dispatcher-spawned workers lean enough for local models.
+        # Kanban workers need terminal/file for implementation work and
+        # kanban to report completion/blocking. Loading the default CLI
+        # toolset includes the full skills catalogue and many extra tool
+        # schemas, which pushed tiny local-coder smoke tasks to ~25k input
+        # tokens on llama.cpp.
+        "-t", "terminal,file,kanban",
         "-q", prompt,
     ])
     # Redirect output to a per-task log under <board-root>/logs/.

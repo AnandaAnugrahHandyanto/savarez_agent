@@ -2699,6 +2699,11 @@ def test_default_spawn_auto_loads_kanban_worker_skill(kanban_home, monkeypatch):
     assert cmd[idx + 1] == "kanban-worker", (
         f"expected 'kanban-worker', got {cmd[idx + 1]!r}"
     )
+    # Worker toolsets are restricted so local model dispatches do not load
+    # the full default CLI context / skills catalogue for every card.
+    assert "-t" in cmd, f"spawn argv missing restricted toolsets: {cmd}"
+    toolset_idx = cmd.index("-t")
+    assert cmd[toolset_idx + 1] == "terminal,file,kanban"
     # Assignee + task env are still present
     assert "some-profile" in cmd
     env = captured["env"]
