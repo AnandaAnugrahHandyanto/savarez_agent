@@ -100,6 +100,7 @@ _reveal_timestamps: List[float] = []
 _REVEAL_MAX_PER_WINDOW = 5
 _REVEAL_WINDOW_SECONDS = 30
 _DASHBOARD_UPLOAD_MAX_BYTES = 2 * 1024 * 1024 * 1024  # 2 GiB
+_DASHBOARD_PASTE_MAX_BYTES = 5 * 1024 * 1024  # 5 MiB
 _DASHBOARD_UPLOAD_VIDEO_EXTENSIONS: frozenset[str] = frozenset({
     ".mp4",
     ".mov",
@@ -180,8 +181,10 @@ def _empty_session_organization() -> Dict[str, Any]:
     return {
         "version": 1,
         "updated_at": now,
+        "attention_baseline_at": now,
         "projects": [],
         "assignments": {},
+        "sessions": {},
     }
 
 
@@ -199,12 +202,16 @@ def _load_session_organization() -> Dict[str, Any]:
         return _empty_session_organization()
     raw.setdefault("version", 1)
     raw.setdefault("updated_at", time.time())
+    raw.setdefault("attention_baseline_at", raw.get("updated_at") or time.time())
     raw.setdefault("projects", [])
     raw.setdefault("assignments", {})
+    raw.setdefault("sessions", {})
     if not isinstance(raw["projects"], list):
         raw["projects"] = []
     if not isinstance(raw["assignments"], dict):
         raw["assignments"] = {}
+    if not isinstance(raw["sessions"], dict):
+        raw["sessions"] = {}
     return raw
 
 
@@ -254,6 +261,37 @@ def _project_ids(data: Dict[str, Any]) -> set[str]:
 
 
 def _normalize_session_organization(data: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        data["attention_baseline_at"] = float(
+            data.get("attention_baseline_at") or data.get("updated_at") or time.time()
+        )
+    except (TypeError, ValueError):
+        data["attention_baseline_at"] = time.time()
+
+    project_ids = _project_ids(data)
+    projects: list[dict[str, Any]] = []
+    for project in data.get("projects", []):
+        if not isinstance(project, dict) or not project.get("id"):
+            continue
+        project.setdefault("name", str(project.get("id")))
+        project.setdefault("description", "")
+        project.setdefault("default_model", None)
+        project.setdefault("default_skills", [])
+        project.setdefault("workspace_path", None)
+        project.setdefault("created_at", float(data.get("updated_at") or 0))
+        project.setdefault("updated_at", float(data.get("updated_at") or 0))
+        if project.get("pinned_at") is not None:
+            try:
+                project["pinned_at"] = float(project["pinned_at"])
+            except (TypeError, ValueError):
+                project.pop("pinned_at", None)
+        if project.get("archived_at") is not None:
+            try:
+                project["archived_at"] = float(project["archived_at"])
+            except (TypeError, ValueError):
+                project.pop("archived_at", None)
+        projects.append(project)
+    data["projects"] = projects
     project_ids = _project_ids(data)
     assignments = {}
     for sid, assignment in data.get("assignments", {}).items():
@@ -267,7 +305,36 @@ def _normalize_session_organization(data: Dict[str, Any]) -> Dict[str, Any]:
             "updated_at": float(assignment.get("updated_at") or data.get("updated_at") or 0),
         }
     data["assignments"] = assignments
+    session_meta = {}
+    for sid, meta in data.get("sessions", {}).items():
+        if not isinstance(sid, str) or not isinstance(meta, dict):
+            continue
+        clean_meta: dict[str, Any] = {}
+        for key in ("pinned_at", "archived_at", "seen_at"):
+            if meta.get(key) is None:
+                continue
+            try:
+                clean_meta[key] = float(meta[key])
+            except (TypeError, ValueError):
+                continue
+        if clean_meta:
+            session_meta[sid] = clean_meta
+    data["sessions"] = session_meta
     return data
+
+
+def _project_explorer_path(raw_path: Optional[str]) -> str:
+    cleaned = _clean_optional_text(raw_path, max_len=1000)
+    if not cleaned:
+        raise HTTPException(status_code=400, detail="Project has no workspace path")
+
+    path_text = cleaned.replace("\x00", "").strip()
+    normalized = path_text.replace("\\", "/")
+    parts = normalized.split("/")
+    if len(parts) >= 4 and parts[0] == "" and parts[1] == "mnt" and len(parts[2]) == 1:
+        drive = parts[2].upper()
+        return f"{drive}:\\" + "\\".join(parts[3:])
+    return path_text
 
 
 def _session_assignment_for(data: Dict[str, Any], session_id: str) -> Dict[str, Any] | None:
@@ -278,6 +345,11 @@ def _session_assignment_for(data: Dict[str, Any], session_id: str) -> Dict[str, 
     if not project_id or project_id not in _project_ids(data):
         return None
     return assignment
+
+
+def _session_meta_for(data: Dict[str, Any], session_id: str) -> Dict[str, Any]:
+    meta = data.get("sessions", {}).get(session_id)
+    return meta if isinstance(meta, dict) else {}
 
 
 def _default_codex_home() -> Path:
@@ -892,6 +964,8 @@ class SessionProjectCreate(BaseModel):
     default_model: Optional[str] = None
     default_skills: List[str] = []
     workspace_path: Optional[str] = None
+    pinned: bool = False
+    archived: bool = False
 
 
 class SessionProjectUpdate(BaseModel):
@@ -900,10 +974,26 @@ class SessionProjectUpdate(BaseModel):
     default_model: Optional[str] = None
     default_skills: Optional[List[str]] = None
     workspace_path: Optional[str] = None
+    pinned: Optional[bool] = None
+    archived: Optional[bool] = None
 
 
 class SessionProjectAssignment(BaseModel):
     project_id: Optional[str] = None
+
+
+class SessionOrganizationSessionUpdate(BaseModel):
+    pinned: Optional[bool] = None
+    archived: Optional[bool] = None
+    seen: Optional[bool] = None
+
+
+class SessionTitleUpdate(BaseModel):
+    title: str
+
+
+class DashboardPasteCreate(BaseModel):
+    text: str
 
 
 class CodexSessionImportRequest(BaseModel):
@@ -1246,6 +1336,10 @@ def _dashboard_upload_root() -> Path:
     return get_hermes_home() / "media" / "dashboard-uploads"
 
 
+def _dashboard_paste_root() -> Path:
+    return get_hermes_home() / "pastes" / "dashboard-long-prompts"
+
+
 def _dashboard_upload_target(filename: str) -> Path:
     safe_name = _sanitize_dashboard_upload_filename(filename)
     suffix = Path(safe_name).suffix.lower()
@@ -1288,6 +1382,16 @@ def _dashboard_file_analysis_prompt(path: Path) -> str:
         "如果是压缩包，请先列出目录和文件清单，不要执行里面的脚本或程序。"
         "最后用中文总结内容、关键发现、可执行建议、明显风险和需要我确认的地方。"
         "不要移动、删除或执行原文件。"
+    )
+
+
+def _dashboard_long_text_prompt(path: Path, line_count: int) -> str:
+    return (
+        "我刚才在 Hermes 面板输入了一段较长内容。"
+        f"为了避免浏览器聊天连接因为长文本粘贴而断开，内容已保存到：{path}\n"
+        f"这段内容约 {line_count} 行。\n\n"
+        "请先使用 read_file 读取这个文件，然后按文件里的原始要求继续处理。"
+        "如果内容是任务说明，请直接执行或给出下一步；如果内容是资料，请用中文总结要点、风险和需要我确认的事项。"
     )
 
 
@@ -1339,6 +1443,51 @@ async def upload_dashboard_file(request: Request):
     }
 
 
+@app.post("/api/chat/paste")
+async def create_dashboard_paste(request: Request, body: DashboardPasteCreate):
+    """Persist a long dashboard prompt and return a short agent-readable prompt."""
+    _require_token(request)
+    text = (body.text or "").replace("\x00", "")
+    if not text.strip():
+        raise HTTPException(status_code=400, detail="Paste text is empty.")
+
+    encoded = text.encode("utf-8")
+    if len(encoded) > _DASHBOARD_PASTE_MAX_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=(
+                "Pasted text is too large. "
+                f"Maximum size is {_DASHBOARD_PASTE_MAX_BYTES // (1024 * 1024)} MB."
+            ),
+        )
+
+    root = _dashboard_paste_root()
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+        timestamp = time.strftime("%Y%m%d-%H%M%S")
+        target = (root / f"{timestamp}-{uuid.uuid4().hex[:8]}.txt").resolve()
+        if not target.is_relative_to(root.resolve()):
+            raise HTTPException(status_code=400, detail="Invalid paste target.")
+        target.write_text(text, encoding="utf-8")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _log.exception("POST /api/chat/paste failed")
+        raise HTTPException(status_code=500, detail="Failed to save pasted text.") from exc
+
+    line_count = max(1, text.count("\n") + 1)
+    path_text = str(target)
+    return {
+        "ok": True,
+        "filename": target.name,
+        "size": len(encoded),
+        "line_count": line_count,
+        "stored_path": path_text,
+        "agent_path": path_text,
+        "suggested_prompt": _dashboard_long_text_prompt(target, line_count),
+    }
+
+
 @app.get("/api/sessions")
 async def get_sessions(limit: int = 20, offset: int = 0, project_id: Optional[str] = None):
     try:
@@ -1355,7 +1504,39 @@ async def get_sessions(limit: int = 20, offset: int = 0, project_id: Optional[st
                 )
                 assignment = _session_assignment_for(organization, s.get("id", ""))
                 s["project_id"] = assignment.get("project_id") if assignment else None
+                meta = _session_meta_for(organization, s.get("id", ""))
+                pinned_at = meta.get("pinned_at")
+                archived_at = meta.get("archived_at")
+                seen_at = meta.get("seen_at")
+                last_active = float(s.get("last_active") or s.get("started_at") or 0)
+                message_count = int(s.get("message_count") or 0)
+                attention_baseline = float(
+                    organization.get("attention_baseline_at") or organization.get("updated_at") or 0
+                )
+                s["pinned_at"] = pinned_at
+                s["archived_at"] = archived_at
+                s["seen_at"] = seen_at
+                s["needs_attention"] = bool(
+                    not archived_at
+                    and (
+                        (seen_at and last_active > float(seen_at) + 1)
+                        or (
+                            not seen_at
+                            and message_count >= 2
+                            and last_active > attention_baseline + 1
+                        )
+                    )
+                )
                 return s
+
+            def sort_sessions(sessions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+                return sorted(
+                    sessions,
+                    key=lambda s: (
+                        0 if s.get("pinned_at") else 1,
+                        -float(s.get("pinned_at") or s.get("last_active") or 0),
+                    ),
+                )
 
             if project_id:
                 all_sessions = [
@@ -1367,10 +1548,16 @@ async def get_sessions(limit: int = 20, offset: int = 0, project_id: Optional[st
                         s
                         for s in all_sessions
                         if not s.get("project_id")
+                        and not s.get("archived_at")
                         and s.get("source") not in {"codex", "tool"}
                     ]
                 else:
-                    filtered = [s for s in all_sessions if s.get("project_id") == project_id]
+                    filtered = [
+                        s
+                        for s in all_sessions
+                        if s.get("project_id") == project_id and not s.get("archived_at")
+                    ]
+                filtered = sort_sessions(filtered)
                 total = len(filtered)
                 sessions = filtered[offset: offset + limit]
             else:
@@ -1425,6 +1612,10 @@ async def create_session_project(body: SessionProjectCreate):
             "created_at": now,
             "updated_at": now,
         }
+        if body.pinned:
+            project["pinned_at"] = now
+        if body.archived:
+            project["archived_at"] = now
         data["projects"].append(project)
         _save_session_organization(data)
     return {"project": project}
@@ -1457,10 +1648,44 @@ async def update_session_project(project_id: str, body: SessionProjectUpdate):
                 ]
             if body.workspace_path is not None:
                 project["workspace_path"] = _clean_optional_text(body.workspace_path, max_len=500)
+            if body.pinned is not None:
+                if body.pinned:
+                    project["pinned_at"] = project.get("pinned_at") or time.time()
+                else:
+                    project.pop("pinned_at", None)
+            if body.archived is not None:
+                if body.archived:
+                    project["archived_at"] = project.get("archived_at") or time.time()
+                else:
+                    project.pop("archived_at", None)
             project["updated_at"] = time.time()
             _save_session_organization(data)
             return {"project": project}
     raise HTTPException(status_code=404, detail="Project not found")
+
+
+@app.post("/api/session-organization/projects/{project_id}/open")
+async def open_session_project_folder(project_id: str):
+    with _session_organization_lock:
+        data = _normalize_session_organization(_load_session_organization())
+        project = next(
+            (
+                p
+                for p in data.get("projects", [])
+                if isinstance(p, dict) and p.get("id") == project_id
+            ),
+            None,
+        )
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    explorer_path = _project_explorer_path(project.get("workspace_path"))
+    try:
+        subprocess.Popen(["explorer.exe", explorer_path])
+    except Exception as exc:
+        _log.exception("Failed to open project folder: %s", explorer_path)
+        raise HTTPException(status_code=500, detail="Failed to open project folder") from exc
+    return {"ok": True, "path": explorer_path}
 
 
 @app.delete("/api/session-organization/projects/{project_id}")
@@ -1508,6 +1733,50 @@ async def assign_session_project(session_id: str, body: SessionProjectAssignment
         data.setdefault("assignments", {})[sid] = assignment
         _save_session_organization(data)
     return {"assignment": assignment}
+
+
+@app.patch("/api/session-organization/sessions/{session_id}/meta")
+async def update_session_organization_meta(
+    session_id: str,
+    body: SessionOrganizationSessionUpdate,
+):
+    from hermes_state import SessionDB
+
+    db = SessionDB()
+    try:
+        sid = db.resolve_session_id(session_id)
+        session = db.get_session(sid) if sid else None
+        if not sid or not session:
+            raise HTTPException(status_code=404, detail="Session not found")
+    finally:
+        db.close()
+
+    with _session_organization_lock:
+        data = _normalize_session_organization(_load_session_organization())
+        sessions_meta = data.setdefault("sessions", {})
+        meta = dict(sessions_meta.get(sid) or {})
+        now = time.time()
+
+        if body.pinned is not None:
+            if body.pinned:
+                meta["pinned_at"] = meta.get("pinned_at") or now
+            else:
+                meta.pop("pinned_at", None)
+        if body.archived is not None:
+            if body.archived:
+                meta["archived_at"] = meta.get("archived_at") or now
+            else:
+                meta.pop("archived_at", None)
+        if body.seen:
+            meta["seen_at"] = max(now, float(session.get("last_active") or 0))
+
+        if meta:
+            sessions_meta[sid] = meta
+        else:
+            sessions_meta.pop(sid, None)
+        _save_session_organization(data)
+
+    return {"meta": meta or None}
 
 
 @app.post("/api/codex-sessions/import")
@@ -3312,6 +3581,27 @@ async def get_session_detail(session_id: str):
         db.close()
 
 
+@app.patch("/api/sessions/{session_id}")
+async def update_session_detail(session_id: str, body: SessionTitleUpdate):
+    from hermes_state import SessionDB
+
+    title = _clean_optional_text(body.title, max_len=160)
+    if not title:
+        raise HTTPException(status_code=400, detail="Title cannot be empty")
+
+    db = SessionDB()
+    try:
+        sid = db.resolve_session_id(session_id)
+        if not sid or not db.get_session(sid):
+            raise HTTPException(status_code=404, detail="Session not found")
+        if not db.set_session_title(sid, title):
+            raise HTTPException(status_code=500, detail="Failed to update session title")
+        session = db.get_session(sid)
+        return {"ok": True, "session": session}
+    finally:
+        db.close()
+
+
 
 @app.get("/api/sessions/{session_id}/latest-descendant")
 async def get_session_latest_descendant(session_id: str):
@@ -4114,15 +4404,123 @@ def _resolve_chat_argv(
     env.setdefault("HERMES_TUI_INLINE", "1")
 
     if resume:
-        latest_resume, _latest_path = _session_latest_descendant(resume)
-        if latest_resume:
-            resume = latest_resume
+        resume = _dashboard_resumable_session_id(resume)
+    if resume:
         env["HERMES_TUI_RESUME"] = resume
 
     if sidecar_url:
         env["HERMES_TUI_SIDECAR_URL"] = sidecar_url
 
     return list(argv), str(cwd) if cwd else None, env
+
+
+_DASHBOARD_NON_RESUMABLE_SESSION_SOURCES = frozenset({"codex", "tool"})
+
+
+def _dashboard_session_can_resume(session: Optional[Dict[str, Any]]) -> bool:
+    """Only resume sessions that were created by a real Hermes conversation."""
+    if not session:
+        return False
+    source = str(session.get("source") or "").strip().lower()
+    if source in _DASHBOARD_NON_RESUMABLE_SESSION_SOURCES:
+        return False
+    end_reason = str(session.get("end_reason") or "").strip().lower()
+    if end_reason == "codex_mirror":
+        return False
+    try:
+        message_count = int(session.get("message_count") or 0)
+    except (TypeError, ValueError):
+        message_count = 0
+    return message_count >= 2
+
+
+def _dashboard_resumable_session_id(session_id: str) -> Optional[str]:
+    """Resolve a requested dashboard resume id, ignoring imported mirrors."""
+    from hermes_state import SessionDB
+
+    db = SessionDB()
+    try:
+        sid = db.resolve_session_id(session_id)
+        session = db.get_session(sid) if sid else None
+        if not _dashboard_session_can_resume(session):
+            return None
+
+        latest_sid, _latest_path = _session_latest_descendant(sid)
+        if latest_sid and latest_sid != sid:
+            latest = db.get_session(latest_sid)
+            if _dashboard_session_can_resume(latest):
+                return latest_sid
+        return sid
+    finally:
+        db.close()
+
+
+def _dashboard_project_exists(project_id: str) -> bool:
+    with _session_organization_lock:
+        data = _normalize_session_organization(_load_session_organization())
+        return project_id in _project_ids(data)
+
+
+def _dashboard_recent_session_ids(limit: int = 200) -> set[str]:
+    from hermes_state import SessionDB
+
+    db = SessionDB()
+    try:
+        return {
+            str(s.get("id"))
+            for s in db.list_sessions_rich(limit=limit, offset=0)
+            if s.get("id")
+        }
+    finally:
+        db.close()
+
+
+def _assign_session_to_project_id(session_id: str, project_id: str) -> bool:
+    with _session_organization_lock:
+        data = _normalize_session_organization(_load_session_organization())
+        if project_id not in _project_ids(data):
+            return False
+        data.setdefault("assignments", {})[session_id] = {
+            "project_id": project_id,
+            "updated_at": time.time(),
+        }
+        _save_session_organization(data)
+    return True
+
+
+def _dashboard_assign_next_session_to_project(
+    project_id: str,
+    started_after: float,
+    known_session_ids: set[str],
+) -> None:
+    """Best-effort project assignment for a fresh /chat?project=... session."""
+    from hermes_state import SessionDB
+
+    deadline = time.time() + 90
+    while time.time() < deadline:
+        try:
+            db = SessionDB()
+            try:
+                sessions = db.list_sessions_rich(limit=30, offset=0)
+            finally:
+                db.close()
+
+            for session in sessions:
+                sid = str(session.get("id") or "")
+                if not sid or sid in known_session_ids:
+                    continue
+                source = str(session.get("source") or "").strip().lower()
+                if source in _DASHBOARD_NON_RESUMABLE_SESSION_SOURCES:
+                    continue
+                started_at = float(session.get("started_at") or 0)
+                last_active = float(session.get("last_active") or started_at)
+                if max(started_at, last_active) < started_after - 3:
+                    continue
+                if _assign_session_to_project_id(sid, project_id):
+                    return
+        except Exception:
+            _log.debug("best-effort project assignment failed", exc_info=True)
+        time.sleep(1)
 
 
 def _build_sidecar_url(channel: str) -> Optional[str]:
@@ -4195,6 +4593,20 @@ async def pty_ws(ws: WebSocket) -> None:
     resume = ws.query_params.get("resume") or None
     channel = _channel_or_close_code(ws)
     sidecar_url = _build_sidecar_url(channel) if channel else None
+    project_id: Optional[str] = None
+    project_started_after = time.time()
+    project_known_sessions: set[str] = set()
+    if not resume:
+        try:
+            requested_project_id = _clean_optional_text(
+                ws.query_params.get("project") or None,
+                max_len=80,
+            )
+        except HTTPException:
+            requested_project_id = None
+        if requested_project_id and _dashboard_project_exists(requested_project_id):
+            project_id = requested_project_id
+            project_known_sessions = _dashboard_recent_session_ids()
 
     try:
         argv, cwd, env = _resolve_chat_argv(resume=resume, sidecar_url=sidecar_url)
@@ -4215,6 +4627,13 @@ async def pty_ws(ws: WebSocket) -> None:
         await ws.send_text(f"\r\n\x1b[31mChat failed to start: {exc}\x1b[0m\r\n")
         await ws.close(code=1011)
         return
+
+    if project_id:
+        threading.Thread(
+            target=_dashboard_assign_next_session_to_project,
+            args=(project_id, project_started_after, project_known_sessions),
+            daemon=True,
+        ).start()
 
     loop = asyncio.get_running_loop()
 
