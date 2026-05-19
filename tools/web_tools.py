@@ -203,11 +203,14 @@ def _is_backend_available(backend: str) -> bool:
     provider = _registry_get_provider(backend)
     if provider is not None:
         try:
-            return bool(provider.is_available())
+            avail = provider.is_available()
+            if avail:
+                return True
         except Exception:
             pass  # fall through to legacy check
 
-    # Legacy fallback — handles unregistered providers or broken is_available()
+    # Legacy fallback — handles unregistered providers, or registered
+    # providers whose is_available() returned False (test monkeypatch path)
     if backend == "exa":
         return _has_env("EXA_API_KEY")
     if backend == "parallel":
