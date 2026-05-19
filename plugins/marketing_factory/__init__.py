@@ -2,7 +2,8 @@
 
 MVP is dry-run-only: it registers one agent tool and one CLI command for
 isolated brand profiles, campaign planning, approval queues, scheduling,
-dry-run publishing, analytics feedback, and audit logs.
+dry-run publishing, analytics feedback, and audit logs. Any real channel
+integration must remain behind explicit approval and dry-run gates.
 """
 
 from __future__ import annotations
