@@ -16,7 +16,9 @@ Environment variables:
 """
 
 import asyncio
+import base64
 import email as email_lib
+import json
 import imaplib
 import logging
 import os
@@ -25,6 +27,7 @@ import smtplib
 import ssl
 import uuid
 from email.header import decode_header
+from email.utils import getaddresses
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.base import MIMEBase
@@ -46,9 +49,19 @@ from gateway.config import Platform, PlatformConfig
 logger = logging.getLogger(__name__)
 # Automated sender patterns — emails from these are silently ignored
 _NOREPLY_PATTERNS = (
-    "noreply", "no-reply", "no_reply", "donotreply", "do-not-reply",
-    "mailer-daemon", "postmaster", "bounce", "notifications@",
-    "automated@", "auto-confirm", "auto-reply", "automailer",
+    "noreply",
+    "no-reply",
+    "no_reply",
+    "donotreply",
+    "do-not-reply",
+    "mailer-daemon",
+    "postmaster",
+    "bounce",
+    "notifications@",
+    "automated@",
+    "auto-confirm",
+    "auto-reply",
+    "automailer",
 )
 
 # RFC headers that indicate bulk/automated mail
@@ -64,6 +77,7 @@ MAX_MESSAGE_LENGTH = 50_000
 
 # Supported image extensions for inline detection
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
+
 
 def _send_imap_id(imap: "imaplib.IMAP4") -> None:
     """Send RFC 2971 IMAP ID command identifying this client.
@@ -98,14 +112,25 @@ def _is_automated_sender(address: str, headers: dict) -> bool:
         if value and check(value):
             return True
     return False
-    
+
+
 def check_email_requirements() -> bool:
     """Check if email platform dependencies are available."""
     addr = os.getenv("EMAIL_ADDRESS")
     pwd = os.getenv("EMAIL_PASSWORD")
     imap = os.getenv("EMAIL_IMAP_HOST")
     smtp = os.getenv("EMAIL_SMTP_HOST")
-    if not all([addr, pwd, imap, smtp]):
+    auth_mode = os.getenv("EMAIL_AUTH_MODE", "password").strip().lower()
+    if not all([addr, imap, smtp]):
+        return False
+    if auth_mode == "google_oauth":
+        try:
+            from hermes_constants import get_hermes_home
+
+            return (get_hermes_home() / "google_token.json").exists()
+        except Exception:
+            return False
+    if not pwd:
         return False
     return True
 
@@ -182,6 +207,52 @@ def _extract_email_address(raw: str) -> str:
     return raw.strip().lower()
 
 
+def _extract_email_addresses(raw: str) -> List[str]:
+    """Extract all bare email addresses from an RFC 5322 address header."""
+    if not raw:
+        return []
+    return [addr.strip().lower() for _name, addr in getaddresses([raw]) if addr.strip()]
+
+
+def _parse_bool(value: Any, default: bool = False) -> bool:
+    """Parse common bool-ish config/env values."""
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _google_oauth_access_token() -> str:
+    """Return a fresh Google OAuth access token from Hermes' Workspace token."""
+    try:
+        from hermes_constants import get_hermes_home
+        from google.auth.transport.requests import Request
+        from google.oauth2.credentials import Credentials
+    except Exception as e:  # noqa: BLE001 — auth dependency may not be installed
+        raise RuntimeError(f"Google OAuth dependencies unavailable: {e}") from e
+
+    token_path = get_hermes_home() / "google_token.json"
+    if not token_path.exists():
+        raise RuntimeError(f"Google OAuth token not found at {token_path}")
+
+    token_data = json.loads(token_path.read_text())
+    scopes = token_data.get("scopes") or None
+    creds = Credentials.from_authorized_user_file(str(token_path), scopes=scopes)
+    if not creds.valid:
+        if creds.expired and creds.refresh_token:
+            creds.refresh(Request())
+            token_path.write_text(creds.to_json())
+        else:
+            raise RuntimeError("Google OAuth token is invalid and cannot be refreshed")
+    return creds.token
+
+
+def _xoauth2_string(address: str, access_token: str) -> str:
+    """Build the SASL XOAUTH2 auth string used by Gmail IMAP/SMTP."""
+    return f"user={address}\x01auth=Bearer {access_token}\x01\x01"
+
+
 def _extract_attachments(
     msg: email_lib.message.Message,
     skip_attachments: bool = False,
@@ -197,13 +268,18 @@ def _extract_attachments(
 
     for part in msg.walk():
         disposition = str(part.get("Content-Disposition", ""))
-        if skip_attachments and ("attachment" in disposition or "inline" in disposition):
+        if skip_attachments and (
+            "attachment" in disposition or "inline" in disposition
+        ):
             continue
         if "attachment" not in disposition and "inline" not in disposition:
             continue
         # Skip text/plain and text/html body parts
         content_type = part.get_content_type()
-        if content_type in {"text/plain", "text/html"} and "attachment" not in disposition:
+        if (
+            content_type in {"text/plain", "text/html"}
+            and "attachment" not in disposition
+        ):
             continue
 
         filename = part.get_filename()
@@ -222,7 +298,9 @@ def _extract_attachments(
             try:
                 cached_path = cache_image_from_bytes(payload, ext)
             except ValueError:
-                logger.debug("Skipping non-image attachment %s (invalid magic bytes)", filename)
+                logger.debug(
+                    "Skipping non-image attachment %s (invalid magic bytes)", filename
+                )
                 continue
             attachments.append({
                 "path": cached_path,
@@ -250,6 +328,7 @@ class EmailAdapter(BasePlatformAdapter):
 
         self._address = os.getenv("EMAIL_ADDRESS", "")
         self._password = os.getenv("EMAIL_PASSWORD", "")
+        self._auth_mode = os.getenv("EMAIL_AUTH_MODE", "password").strip().lower()
         self._imap_host = os.getenv("EMAIL_IMAP_HOST", "")
         self._imap_port = int(os.getenv("EMAIL_IMAP_PORT", "993"))
         self._smtp_host = os.getenv("EMAIL_SMTP_HOST", "")
@@ -262,16 +341,108 @@ class EmailAdapter(BasePlatformAdapter):
         #       skip_attachments: true
         extra = config.extra or {}
         self._skip_attachments = extra.get("skip_attachments", False)
+        self._assistant_mode = _parse_bool(
+            os.getenv("EMAIL_ASSISTANT_MODE", extra.get("assistant_mode")),
+            default=False,
+        )
+        self._require_mention_when_not_direct = _parse_bool(
+            os.getenv(
+                "EMAIL_REQUIRE_MENTION_WHEN_NOT_DIRECT",
+                extra.get("require_mention_when_not_direct"),
+            ),
+            default=True,
+        )
+        wake_raw = os.getenv("EMAIL_WAKE_PHRASES") or extra.get("wake_phrases")
+        if isinstance(wake_raw, list):
+            wake_phrases = wake_raw
+        elif wake_raw:
+            wake_phrases = [p.strip() for p in str(wake_raw).split(",")]
+        else:
+            wake_phrases = ["lila,", "@lila", "lila please", "lila:", "[lila]"]
+        self._wake_phrases = [p.lower() for p in wake_phrases if p]
 
         # Track message IDs we've already processed to avoid duplicates
         self._seen_uids: set = set()
-        self._seen_uids_max: int = 2000   # cap to prevent unbounded memory growth
+        self._seen_uids_max: int = 2000  # cap to prevent unbounded memory growth
         self._poll_task: Optional[asyncio.Task] = None
 
         # Map chat_id (sender email) -> last subject + message-id for threading
         self._thread_context: Dict[str, Dict[str, str]] = {}
 
         logger.info("[Email] Adapter initialized for %s", self._address)
+
+    def _is_explicitly_invoked(self, subject: str, body: str) -> bool:
+        """Return True when the message explicitly invokes the assistant."""
+        text = f"{subject}\n{body}".lower()
+        if any(phrase in text for phrase in self._wake_phrases):
+            return True
+
+        # Common assistant-name invocations should work even when wake phrases
+        # came from a comma-delimited env var that cannot faithfully encode
+        # punctuation-bearing phrases like "lila,".
+        if re.search(r"\blila\s*[:,]", text) or re.search(
+            r"\blila\s*,?\s+please\b", text
+        ):
+            return True
+
+        local_part = self._address.split("@", 1)[0].lower()
+        if local_part:
+            patterns = (
+                rf"(^|\b){re.escape(local_part)}\s*[:,]",
+                rf"@{re.escape(local_part)}\b",
+                rf"\[{re.escape(local_part)}\]",
+            )
+            return any(re.search(pattern, text) for pattern in patterns)
+
+        return False
+
+    def _should_dispatch_assistant_message(self, msg_data: Dict[str, Any]) -> bool:
+        """Apply assistant-address rules before routing an email into Hermes."""
+        if not self._assistant_mode:
+            return True
+
+        subject = msg_data.get("subject", "")
+        body = msg_data.get("body", "")
+        if self._is_explicitly_invoked(subject, body):
+            return True
+
+        if not self._require_mention_when_not_direct:
+            return True
+
+        agent_addr = self._address.lower()
+        to_addrs = [addr.lower() for addr in msg_data.get("to_addrs", [])]
+        cc_addrs = [addr.lower() for addr in msg_data.get("cc_addrs", [])]
+        all_recipients = set(to_addrs + cc_addrs)
+
+        # Backwards compatibility for tests/odd providers: if we do not have
+        # recipient headers, treat the message like a direct DM.
+        if not all_recipients:
+            return True
+
+        # A one-to-one email directly to the assistant is intentional. Being
+        # cc'd or addressed alongside others is passive unless explicitly asked.
+        return to_addrs == [agent_addr] and not cc_addrs
+
+    def _imap_authenticate(self, imap: "imaplib.IMAP4") -> None:
+        """Authenticate to IMAP using password or Gmail XOAUTH2."""
+        if self._auth_mode == "google_oauth":
+            token = _google_oauth_access_token()
+            auth_string = _xoauth2_string(self._address, token)
+            imap.authenticate("XOAUTH2", lambda _challenge: auth_string.encode("utf-8"))
+            return
+        imap.login(self._address, self._password)
+
+    def _smtp_authenticate(self, smtp: "smtplib.SMTP") -> None:
+        """Authenticate to SMTP using password or Gmail XOAUTH2."""
+        if self._auth_mode == "google_oauth":
+            token = _google_oauth_access_token()
+            auth_string = _xoauth2_string(self._address, token)
+            encoded = base64.b64encode(auth_string.encode("utf-8")).decode("ascii")
+            code, response = smtp.docmd("AUTH", "XOAUTH2 " + encoded)
+            if code != 235:
+                raise smtplib.SMTPAuthenticationError(code, response)
+            return
+        smtp.login(self._address, self._password)
 
     def _trim_seen_uids(self) -> None:
         """Keep only the most recent UIDs to prevent unbounded memory growth.
@@ -288,17 +459,19 @@ class EmailAdapter(BasePlatformAdapter):
             sorted_uids = sorted(self._seen_uids, key=lambda u: int(u))
             keep = self._seen_uids_max // 2
             self._seen_uids = set(sorted_uids[-keep:])
-            logger.debug("[Email] Trimmed seen UIDs to %d entries", len(self._seen_uids))
+            logger.debug(
+                "[Email] Trimmed seen UIDs to %d entries", len(self._seen_uids)
+            )
         except (ValueError, TypeError):
             # Fallback: just clear old entries if sort fails
-            self._seen_uids = set(list(self._seen_uids)[-self._seen_uids_max // 2:])
+            self._seen_uids = set(list(self._seen_uids)[-self._seen_uids_max // 2 :])
 
     async def connect(self) -> bool:
         """Connect to the IMAP server and start polling for new messages."""
         try:
             # Test IMAP connection
             imap = imaplib.IMAP4_SSL(self._imap_host, self._imap_port, timeout=30)
-            imap.login(self._address, self._password)
+            self._imap_authenticate(imap)
             _send_imap_id(imap)
             # Mark all existing messages as seen so we only process new ones
             imap.select("INBOX")
@@ -309,7 +482,10 @@ class EmailAdapter(BasePlatformAdapter):
             # Keep only the most recent UIDs to prevent unbounded growth
             self._trim_seen_uids()
             imap.logout()
-            logger.info("[Email] IMAP connection test passed. %d existing messages skipped.", len(self._seen_uids))
+            logger.info(
+                "[Email] IMAP connection test passed. %d existing messages skipped.",
+                len(self._seen_uids),
+            )
         except Exception as e:
             logger.error("[Email] IMAP connection failed: %s", e)
             return False
@@ -318,7 +494,7 @@ class EmailAdapter(BasePlatformAdapter):
             # Test SMTP connection
             smtp = smtplib.SMTP(self._smtp_host, self._smtp_port, timeout=30)
             smtp.starttls(context=ssl.create_default_context())
-            smtp.login(self._address, self._password)
+            self._smtp_authenticate(smtp)
             smtp.quit()
             logger.info("[Email] SMTP connection test passed.")
         except Exception as e:
@@ -367,7 +543,7 @@ class EmailAdapter(BasePlatformAdapter):
         try:
             imap = imaplib.IMAP4_SSL(self._imap_host, self._imap_port, timeout=30)
             try:
-                imap.login(self._address, self._password)
+                self._imap_authenticate(imap)
                 _send_imap_id(imap)
                 imap.select("INBOX")
 
@@ -398,21 +574,29 @@ class EmailAdapter(BasePlatformAdapter):
                         sender_name = sender_name.split("<")[0].strip().strip('"')
 
                     subject = _decode_header_value(msg.get("Subject", "(no subject)"))
+                    to_addrs = _extract_email_addresses(msg.get("To", ""))
+                    cc_addrs = _extract_email_addresses(msg.get("Cc", ""))
                     message_id = msg.get("Message-ID", "")
                     in_reply_to = msg.get("In-Reply-To", "")
                     # Skip automated/noreply senders before any processing
                     msg_headers = dict(msg.items())
                     if _is_automated_sender(sender_addr, msg_headers):
-                        logger.debug("[Email] Skipping automated sender: %s", sender_addr)
+                        logger.debug(
+                            "[Email] Skipping automated sender: %s", sender_addr
+                        )
                         continue
                     body = _extract_text_body(msg)
-                    attachments = _extract_attachments(msg, skip_attachments=self._skip_attachments)
+                    attachments = _extract_attachments(
+                        msg, skip_attachments=self._skip_attachments
+                    )
 
                     results.append({
                         "uid": uid,
                         "sender_addr": sender_addr,
                         "sender_name": sender_name,
                         "subject": subject,
+                        "to_addrs": to_addrs,
+                        "cc_addrs": cc_addrs,
                         "message_id": message_id,
                         "in_reply_to": in_reply_to,
                         "body": body,
@@ -438,7 +622,9 @@ class EmailAdapter(BasePlatformAdapter):
 
         # Never reply to automated senders
         if _is_automated_sender(sender_addr, {}):
-            logger.debug("[Email] Dropping automated sender at dispatch: %s", sender_addr)
+            logger.debug(
+                "[Email] Dropping automated sender at dispatch: %s", sender_addr
+            )
             return
 
         # Skip senders not in EMAIL_ALLOWED_USERS — prevents the adapter
@@ -448,10 +634,23 @@ class EmailAdapter(BasePlatformAdapter):
         # sending a reply even though the handler returned None.
         allowed_raw = os.getenv("EMAIL_ALLOWED_USERS", "").strip()
         if allowed_raw:
-            allowed = {addr.strip().lower() for addr in allowed_raw.split(",") if addr.strip()}
+            allowed = {
+                addr.strip().lower() for addr in allowed_raw.split(",") if addr.strip()
+            }
             if sender_addr.lower() not in allowed:
-                logger.debug("[Email] Dropping non-allowlisted sender at dispatch: %s", sender_addr)
+                logger.debug(
+                    "[Email] Dropping non-allowlisted sender at dispatch: %s",
+                    sender_addr,
+                )
                 return
+
+        if not self._should_dispatch_assistant_message(msg_data):
+            logger.info(
+                "[Email] Assistant mode ignored passive email from %s: %s",
+                sender_addr,
+                msg_data.get("subject", ""),
+            )
+            return
 
         subject = msg_data["subject"]
         body = msg_data["body"].strip()
@@ -551,7 +750,7 @@ class EmailAdapter(BasePlatformAdapter):
         smtp = smtplib.SMTP(self._smtp_host, self._smtp_port, timeout=30)
         try:
             smtp.starttls(context=ssl.create_default_context())
-            smtp.login(self._address, self._password)
+            self._smtp_authenticate(smtp)
             smtp.send_message(msg)
         finally:
             try:
@@ -562,7 +761,9 @@ class EmailAdapter(BasePlatformAdapter):
         logger.info("[Email] Sent reply to %s (subject: %s)", to_addr, subject)
         return msg_id
 
-    async def send_typing(self, chat_id: str, metadata: Optional[Dict[str, Any]] = None) -> None:
+    async def send_typing(
+        self, chat_id: str, metadata: Optional[Dict[str, Any]] = None
+    ) -> None:
         """Email has no typing indicator — no-op."""
 
     async def send_image(
@@ -626,7 +827,9 @@ class EmailAdapter(BasePlatformAdapter):
                 local_paths,
             )
         except Exception as e:
-            logger.error("[Email] Multi-image send failed, falling back: %s", e, exc_info=True)
+            logger.error(
+                "[Email] Multi-image send failed, falling back: %s", e, exc_info=True
+            )
             await super().send_multiple_images(chat_id, images, metadata, human_delay)
 
     def _send_email_with_attachments(
@@ -665,7 +868,9 @@ class EmailAdapter(BasePlatformAdapter):
                     part = MIMEBase("application", "octet-stream")
                     part.set_payload(f.read())
                     encoders.encode_base64(part)
-                    part.add_header("Content-Disposition", f"attachment; filename={p.name}")
+                    part.add_header(
+                        "Content-Disposition", f"attachment; filename={p.name}"
+                    )
                     msg.attach(part)
             except Exception as e:
                 logger.warning("[Email] Failed to attach %s: %s", file_path, e)
@@ -673,7 +878,7 @@ class EmailAdapter(BasePlatformAdapter):
         smtp = smtplib.SMTP(self._smtp_host, self._smtp_port, timeout=30)
         try:
             smtp.starttls(context=ssl.create_default_context())
-            smtp.login(self._address, self._password)
+            self._smtp_authenticate(smtp)
             smtp.send_message(msg)
         finally:
             try:
@@ -681,7 +886,11 @@ class EmailAdapter(BasePlatformAdapter):
             except Exception:
                 smtp.close()
 
-        logger.info("[Email] Sent multi-attachment email to %s (%d files)", to_addr, len(file_paths))
+        logger.info(
+            "[Email] Sent multi-attachment email to %s (%d files)",
+            to_addr,
+            len(file_paths),
+        )
         return msg_id
 
     async def send_document(
@@ -752,7 +961,7 @@ class EmailAdapter(BasePlatformAdapter):
         smtp = smtplib.SMTP(self._smtp_host, self._smtp_port, timeout=30)
         try:
             smtp.starttls(context=ssl.create_default_context())
-            smtp.login(self._address, self._password)
+            self._smtp_authenticate(smtp)
             smtp.send_message(msg)
         finally:
             try:

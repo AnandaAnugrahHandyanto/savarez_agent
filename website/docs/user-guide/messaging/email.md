@@ -72,6 +72,11 @@ EMAIL_IMAP_PORT=993                    # Default: 993 (IMAP SSL)
 EMAIL_SMTP_PORT=587                    # Default: 587 (SMTP STARTTLS)
 EMAIL_POLL_INTERVAL=15                 # Seconds between inbox checks (default: 15)
 EMAIL_HOME_ADDRESS=your@email.com      # Default delivery target for cron jobs
+
+# Assistant address mode: useful when the agent is cc'd on normal email threads
+EMAIL_ASSISTANT_MODE=true
+EMAIL_REQUIRE_MENTION_WHEN_NOT_DIRECT=true
+EMAIL_WAKE_PHRASES=@lila,lila please,lila:,[lila]
 ```
 
 ---
@@ -105,6 +110,20 @@ The adapter polls the IMAP inbox for UNSEEN messages at a configurable interval 
 - **HTML-only emails** have tags stripped for plain text extraction
 - **Self-messages** are filtered out to prevent reply loops
 - **Automated/noreply senders** are silently ignored — `noreply@`, `mailer-daemon@`, `bounce@`, `no-reply@`, and emails with `Auto-Submitted`, `Precedence: bulk`, or `List-Unsubscribe` headers
+
+### Assistant Address Mode
+
+When `EMAIL_ASSISTANT_MODE=true`, the email adapter can safely use an assistant address that gets cc'd on normal threads:
+
+- One-to-one emails directly to the assistant are processed.
+- Emails where the assistant is cc'd, or included alongside other recipients, are ignored unless explicitly invoked.
+- Explicit invocation is detected in the subject or body with wake phrases such as `Lila,`, `@lila`, `Lila please`, `Lila:`, or `[Lila]`.
+
+This is useful for workflows like:
+
+> Lila, please coordinate a time with everyone on this thread and send a calendar invite.
+
+Configure wake phrases with `EMAIL_WAKE_PHRASES` as a comma-separated list. Keep `EMAIL_ALLOWED_USERS` restricted while testing.
 
 ### Sending Replies
 
@@ -188,3 +207,6 @@ Email access follows the same pattern as all other Hermes platforms:
 | `EMAIL_ALLOWED_USERS` | No | — | Comma-separated allowed sender addresses |
 | `EMAIL_HOME_ADDRESS` | No | — | Default delivery target for cron jobs |
 | `EMAIL_ALLOW_ALL_USERS` | No | `false` | Allow all senders (not recommended) |
+| `EMAIL_ASSISTANT_MODE` | No | `false` | Ignore passive cc/group emails unless explicitly invoked |
+| `EMAIL_REQUIRE_MENTION_WHEN_NOT_DIRECT` | No | `true` | In assistant mode, require a wake phrase unless the email is one-to-one directly to the agent |
+| `EMAIL_WAKE_PHRASES` | No | `@lila,lila please,lila:,[lila]` | Comma-separated invocation phrases; `Lila,` / `Lila:` style local-part mentions are also detected automatically |
