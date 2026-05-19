@@ -5876,6 +5876,67 @@ def _clear_bytecode_cache(root: Path) -> int:
     return removed
 
 
+# Critical files that every ``hermes`` invocation imports at startup. If any
+# of these fail to parse after a pull, the CLI is bricked — the user can't
+# even run ``hermes update`` again to roll forward. The post-pull syntax
+# guard validates these and auto-rolls-back on failure.
+_UPDATE_CRITICAL_FILES = (
+    "hermes_cli/main.py",
+    "hermes_cli/config.py",
+    "hermes_cli/__init__.py",
+    "cli.py",
+    "run_agent.py",
+    "model_tools.py",
+    "toolsets.py",
+    "hermes_constants.py",
+)
+
+
+def _capture_head_sha(git_cmd, cwd) -> str | None:
+    """Return the current HEAD SHA, or None if it can't be resolved."""
+    try:
+        result = subprocess.run(
+            git_cmd + ["rev-parse", "HEAD"],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        return result.stdout.strip() or None
+    except (subprocess.CalledProcessError, OSError):
+        return None
+
+
+def _validate_critical_files_syntax(root) -> tuple[bool, str | None, str | None]:
+    """Compile each file in ``_UPDATE_CRITICAL_FILES`` to catch SyntaxErrors.
+
+    These are the files imported on every ``hermes`` startup; if any of them
+    has a syntax error (orphan merge-conflict markers, bad ref to a name
+    that no longer exists, etc.) the CLI can't bootstrap at all. We validate
+    them after a successful ``git pull`` so we can auto-roll-back instead of
+    leaving the user with a bricked install.
+
+    Returns ``(ok, failing_path, error_message)``. ``ok=True`` means every
+    file parsed cleanly.
+    """
+    import py_compile
+
+    root = Path(root)
+    for relpath in _UPDATE_CRITICAL_FILES:
+        path = root / relpath
+        if not path.exists():
+            # Missing file is suspicious but not necessarily fatal — a future
+            # refactor may legitimately remove one of these. Skip and move on.
+            continue
+        try:
+            py_compile.compile(str(path), doraise=True)
+        except py_compile.PyCompileError as exc:
+            return False, str(path), str(exc)
+        except OSError as exc:
+            return False, str(path), f"could not read: {exc}"
+    return True, None, None
+
+
 def _gateway_prompt(prompt_text: str, default: str = "", timeout: float = 300.0) -> str:
     """File-based IPC prompt for gateway mode.
 
@@ -7138,7 +7199,95 @@ def _hermes_exe_shims(scripts_dir: Path) -> list[Path]:
     ]
 
 
-def _quarantine_running_hermes_exe(scripts_dir: Path) -> list[tuple[Path, Path]]:
+def _detect_concurrent_hermes_instances(
+    scripts_dir: Path, *, exclude_pid: int | None = None
+) -> list[tuple[int, str]]:
+    """Find other live processes whose .exe is one of our entry-point shims.
+
+    Windows blocks DELETE/REPLACE on a running .exe — and even RENAME on the
+    same .exe when another process opened it without ``FILE_SHARE_DELETE``.
+    The Hermes Desktop Electron app spawns ``hermes.EXE`` as a backend child,
+    so during ``hermes update`` the user-invoked process and the desktop's
+    child both hold the same file. The quarantine rename then fails with
+    ``[WinError 32]`` and uv inherits the lock.
+
+    This helper enumerates processes whose ``exe`` matches one of the venv's
+    shims (``hermes.exe`` / ``hermes-gateway.exe``) and returns ``(pid,
+    process_name)`` pairs. The caller's own PID is excluded so the running
+    ``hermes update`` invocation never reports itself.
+
+    Returns an empty list off-Windows, on missing psutil, or when no other
+    instances exist. Never raises — process enumeration is best-effort.
+    """
+    if not _is_windows():
+        return []
+
+    try:
+        import psutil
+    except Exception:
+        return []
+
+    if exclude_pid is None:
+        exclude_pid = os.getpid()
+
+    # Resolve every shim path to its canonical form once for cheap comparison.
+    shim_paths: set[str] = set()
+    for shim in _hermes_exe_shims(scripts_dir):
+        try:
+            shim_paths.add(str(shim.resolve()).lower())
+        except OSError:
+            shim_paths.add(str(shim).lower())
+    if not shim_paths:
+        return []
+
+    matches: list[tuple[int, str]] = []
+    try:
+        proc_iter = psutil.process_iter(["pid", "exe", "name"])
+    except Exception:
+        return []
+
+    for proc in proc_iter:
+        try:
+            info = proc.info
+        except Exception:
+            continue
+        pid = info.get("pid")
+        exe = info.get("exe")
+        if not exe or pid is None or pid == exclude_pid:
+            continue
+        try:
+            exe_norm = str(Path(exe).resolve()).lower()
+        except (OSError, ValueError):
+            exe_norm = str(exe).lower()
+        if exe_norm in shim_paths:
+            name = info.get("name") or Path(exe).name
+            matches.append((int(pid), str(name)))
+
+    return matches
+
+
+def _format_concurrent_instances_message(
+    matches: list[tuple[int, str]], scripts_dir: Path
+) -> str:
+    """Build a human-readable explanation + remediation hint for the user."""
+    shim = scripts_dir / "hermes.exe"
+    lines = ["✗ Another hermes.exe is running:"]
+    for pid, name in matches:
+        lines.append(f"    PID {pid}  {name}")
+    lines.append("")
+    lines.append(f"  Updating now would fail to overwrite {shim} because")
+    lines.append("  Windows blocks REPLACE on a running executable.")
+    lines.append("")
+    lines.append("  Close Hermes Desktop, exit any open `hermes` REPLs, and")
+    lines.append("  stop the gateway (`hermes gateway stop`) before retrying.")
+    lines.append("  Override with `hermes update --force` if you've already")
+    lines.append("  confirmed those processes will not write to the venv.")
+    return "\n".join(lines)
+
+
+def _quarantine_running_hermes_exe(
+    scripts_dir: Path, *, max_attempts: int = 4
+) -> list[tuple[Path, Path]]:
     """Pre-empt Windows file lock on the running ``hermes.exe``.
 
     Windows allows RENAMING a mapped/running executable (the kernel tracks the
@@ -7151,27 +7300,127 @@ def _quarantine_running_hermes_exe(scripts_dir: Path) -> list[tuple[Path, Path]]
     fresh shims at the original paths. The ``.old`` files are cleaned up on
     the next hermes invocation by ``_cleanup_quarantined_exes``.
 
+    Rename can still fail when *another* process has opened the .exe without
+    ``FILE_SHARE_DELETE`` — typically AV real-time scanners with transient
+    handles (recovers in <1s), or the Hermes Desktop backend child process
+    (won't recover until the user closes it). We mitigate:
+
+    1. Retry up to ``max_attempts`` times with exponential backoff
+       (100/250/500/1000 ms). Handles the AV-scanner case.
+    2. If all retries fail, schedule the .exe for replacement on next
+       reboot via ``MoveFileExW(MOVEFILE_DELAY_UNTIL_REBOOT)``. This still
+       lets uv create a fresh shim at the original path (Windows will keep
+       the old file's content under a new name until the reboot), so the
+       update can complete; the user just needs to reboot to fully unload
+       the stale image.
+    3. Print a clear warning naming the most likely culprit (running
+       Hermes Desktop / gateway / REPL) and pointing to ``--force``.
+
     Returns the list of (original, quarantined) pairs so the caller can roll
-    back if the install itself fails before uv writes a replacement.
+    back if the install itself fails before uv writes a replacement. Pairs
+    where we used ``MOVEFILE_DELAY_UNTIL_REBOOT`` are NOT returned — they
+    are already deferred and roll-back is meaningless.
     """
     moved: list[tuple[Path, Path]] = []
     if not _is_windows():
         return moved
 
     import time
+
     stamp = int(time.time() * 1000)
+    # Backoff schedule: first attempt is immediate, subsequent ones sleep.
+    # 100ms / 250ms / 500ms covers the typical AV scanner re-scan window.
+    backoff_ms = [0, 100, 250, 500, 1000]
+    attempts = max(1, min(max_attempts, len(backoff_ms)))
+
     for shim in _hermes_exe_shims(scripts_dir):
         if not shim.exists():
             continue
         target = shim.with_suffix(shim.suffix + f".old.{stamp}")
-        try:
-            shim.rename(target)
-            moved.append((shim, target))
-        except OSError as e:
-            # Best-effort: keep going. uv's failure later will surface the
-            # real error; this is a heuristic, not a hard guarantee.
-            print(f"  ⚠ Could not quarantine {shim.name}: {e}")
+
+        last_exc: OSError | None = None
+        for attempt in range(attempts):
+            delay = backoff_ms[attempt] / 1000.0
+            if delay:
+                time.sleep(delay)
+            try:
+                shim.rename(target)
+                moved.append((shim, target))
+                last_exc = None
+                break
+            except OSError as e:
+                last_exc = e
+                continue
+
+        if last_exc is None:
+            continue
+
+        # All in-process renames failed. Try MoveFileEx with
+        # MOVEFILE_DELAY_UNTIL_REBOOT as a last resort. This succeeds in the
+        # exact case where the inline rename failed (another process holds
+        # the handle without share-delete), at the cost of requiring a
+        # reboot to fully reclaim the old .exe.
+        scheduled = _schedule_replace_on_reboot(shim, target)
+        if scheduled:
+            print(
+                f"  ⚠ {shim.name} is locked by another process; scheduled "
+                f"replacement on next reboot."
+            )
+            print(
+                "    The new shim was written at the same path, but a "
+                "reboot is needed to fully unload the old one."
+            )
+            # Do NOT append to ``moved``: we don't want roll-back to undo a
+            # reboot-deferred operation.
+            continue
+
+        # Truly couldn't budge the .exe. Print an actionable warning and let
+        # uv try its luck — sometimes uv's own retry handling pulls through.
+        print(
+            f"  ⚠ Could not quarantine {shim.name} ({last_exc.__class__.__name__}: "
+            f"another process is holding it open)."
+        )
+        print(
+            "    Close Hermes Desktop, exit other `hermes` REPLs, stop the "
+            "gateway, or pause AV scanning, then re-run `hermes update`."
+        )
+
     return moved
+
+
+def _schedule_replace_on_reboot(shim: Path, quarantine_target: Path) -> bool:
+    """Schedule ``shim`` -> ``quarantine_target`` via PendingFileRenameOperations.
+
+    Uses Win32 ``MoveFileExW`` with ``MOVEFILE_REPLACE_EXISTING |
+    MOVEFILE_DELAY_UNTIL_REBOOT``. The OS persists the rename in
+    ``HKLM\\System\\CurrentControlSet\\Control\\Session Manager\\
+    PendingFileRenameOperations`` and applies it before any user-mode code
+    runs on next boot — at which point no process can hold the .exe.
+
+    Returns ``True`` if the schedule call succeeded, ``False`` otherwise
+    (non-Windows, ctypes failure, lack of privilege, etc.). Never raises.
+    """
+    if not _is_windows():
+        return False
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        MOVEFILE_REPLACE_EXISTING = 0x1
+        MOVEFILE_DELAY_UNTIL_REBOOT = 0x4
+
+        MoveFileExW = ctypes.windll.kernel32.MoveFileExW
+        MoveFileExW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.DWORD]
+        MoveFileExW.restype = wintypes.BOOL
+
+        ok = MoveFileExW(
+            str(shim),
+            str(quarantine_target),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_DELAY_UNTIL_REBOOT,
+        )
+        return bool(ok)
+    except Exception:
+        return False
 
 
 def _restore_quarantined_exes(moved: list[tuple[Path, Path]]) -> None:
@@ -7959,6 +8208,18 @@ def _cmd_update_impl(args, gateway_mode: bool):
     print("⚕ Updating Hermes Agent...")
     print()
 
+    # On Windows, abort early if another hermes.exe is holding the venv shim
+    # open. Continuing would result in a string of WinError 32 warnings and
+    # then either a deferred-rename leftover or a failed git-pull fast path
+    # that silently falls back to the slower ZIP route. See issue #26670.
+    if _is_windows() and not getattr(args, "force", False):
+        scripts_dir = _venv_scripts_dir()
+        if scripts_dir is not None:
+            concurrent = _detect_concurrent_hermes_instances(scripts_dir)
+            if concurrent:
+                print(_format_concurrent_instances_message(concurrent, scripts_dir))
+                sys.exit(2)
+
     # Pre-update backup — runs before any git/file mutation so users can
     # always roll back to the exact state they had before this update.
     _run_pre_update_backup(args)
@@ -8137,6 +8398,12 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
         print("→ Pulling updates...")
         update_succeeded = False
+        # Capture the pre-pull SHA so we can auto-roll-back if the new code
+        # has a syntax error in a critical-path file (PR #28452 incident:
+        # orphan merge-conflict markers in hermes_cli/config.py bricked
+        # every user who ran ``hermes update`` for the 7 minutes between
+        # the bad commit and the fix landing).
+        pre_pull_sha = _capture_head_sha(git_cmd, PROJECT_ROOT)
         try:
             pull_result = subprocess.run(
                 git_cmd + ["pull", "--ff-only", "origin", branch],
@@ -8165,6 +8432,48 @@ def _cmd_update_impl(args, gateway_mode: bool):
                         "  Try manually: git fetch origin && git reset --hard origin/main"
                     )
                     sys.exit(1)
+
+            # Post-pull syntax guard: validate critical-path files actually
+            # parse before declaring the update successful. If a bad commit
+            # made it through CI (e.g. admin-merge bypass of a failing
+            # ruff check), this catches it on the user side and rolls back
+            # so the CLI stays bootable. The user can then retry ``hermes
+            # update`` later once a fix lands upstream.
+            syntax_ok, failing_path, syntax_error = _validate_critical_files_syntax(
+                PROJECT_ROOT
+            )
+            if not syntax_ok:
+                print()
+                print("✗ Pulled code has a syntax error in a critical file:")
+                print(f"  {failing_path}")
+                if syntax_error:
+                    # py_compile errors can be multi-line; show the first
+                    # ~6 lines so the user sees the actual SyntaxError text.
+                    for line in str(syntax_error).splitlines()[:6]:
+                        print(f"    {line}")
+                if pre_pull_sha:
+                    print()
+                    print(f"→ Rolling back to {pre_pull_sha[:10]}...")
+                    rollback_result = subprocess.run(
+                        git_cmd + ["reset", "--hard", pre_pull_sha],
+                        cwd=PROJECT_ROOT,
+                        capture_output=True,
+                        text=True,
+                    )
+                    if rollback_result.returncode == 0:
+                        print("  ✓ Rollback complete — your install is unchanged.")
+                        print("  Try ``hermes update`` again later once a fix lands.")
+                    else:
+                        print("  ✗ Rollback failed. Recover manually with:")
+                        print(f"    cd {PROJECT_ROOT} && git reset --hard {pre_pull_sha}")
+                        if rollback_result.stderr.strip():
+                            print(f"    ({rollback_result.stderr.strip().splitlines()[0]})")
+                else:
+                    print()
+                    print("  Could not capture pre-pull SHA — recover manually with:")
+                    print(f"    cd {PROJECT_ROOT} && git reflog && git reset --hard <prev-sha>")
+                sys.exit(1)
+
             update_succeeded = True
         finally:
             if auto_stash_ref is not None:
@@ -10244,6 +10553,38 @@ def main():
         dest="run_as_user",
         help="User account the Linux system service should run as",
     )
+    gateway_install.add_argument(
+        "--start-now",
+        dest="start_now",
+        action="store_true",
+        default=None,
+        help=argparse.SUPPRESS,
+    )
+    gateway_install.add_argument(
+        "--no-start-now",
+        dest="start_now",
+        action="store_false",
+        help=argparse.SUPPRESS,
+    )
+    gateway_install.add_argument(
+        "--start-on-login",
+        dest="start_on_login",
+        action="store_true",
+        default=None,
+        help=argparse.SUPPRESS,
+    )
+    gateway_install.add_argument(
+        "--no-start-on-login",
+        dest="start_on_login",
+        action="store_false",
+        help=argparse.SUPPRESS,
+    )
+    gateway_install.add_argument(
+        "--elevated-handoff",
+        dest="elevated_handoff",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
 
     # gateway uninstall
     gateway_uninstall = gateway_subparsers.add_parser(
@@ -11193,6 +11534,7 @@ Examples:
             "github",
             "clawhub",
             "lobehub",
+            "browse-sh",
         ],
         help="Filter by source (default: all)",
     )
@@ -11212,6 +11554,7 @@ Examples:
             "github",
             "clawhub",
             "lobehub",
+            "browse-sh",
         ],
     )
     skills_search.add_argument("--limit", type=int, default=10, help="Max results")
@@ -12241,6 +12584,12 @@ Examples:
         action="store_true",
         default=False,
         help="Assume yes for interactive prompts (config migration, stash restore). API-key entry is skipped; run 'hermes config migrate' separately for those.",
+    )
+    update_parser.add_argument(
+        "--force",
+        action="store_true",
+        default=False,
+        help="Windows: proceed with the update even when another hermes.exe is detected. The concurrent process will likely cause WinError 32 warnings and may leave a reboot-deferred .exe replacement.",
     )
     update_parser.set_defaults(func=cmd_update)
 
