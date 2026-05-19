@@ -379,6 +379,58 @@ class TestQueuedMessageAlreadyStreamed:
 
         assert _already_streamed is False
 
+    @pytest.mark.asyncio
+    async def test_queued_path_reconciles_partial_stream_before_resend(self):
+        """Editable streamed partials should be finalized before resend."""
+        _sc = SimpleNamespace(
+            final_response_sent=False,
+            final_content_delivered=False,
+            try_finalize_with_text=AsyncMock(return_value=True),
+        )
+        response = {"final_response": "complete answer", "response_previewed": False}
+
+        first_response = response.get("final_response", "")
+        _reconciled_stream = False
+        if _sc and first_response:
+            _reconcile = getattr(_sc, "try_finalize_with_text", None)
+            if callable(_reconcile):
+                _reconciled_stream = bool(await _reconcile(first_response))
+        _already_streamed = bool(
+            _reconciled_stream
+            or (_sc and getattr(_sc, "final_response_sent", False))
+            or bool(response.get("response_previewed"))
+            or (_sc and getattr(_sc, "final_content_delivered", False))
+        )
+
+        _sc.try_finalize_with_text.assert_awaited_once_with("complete answer")
+        assert _already_streamed is True
+
+    @pytest.mark.asyncio
+    async def test_queued_path_resends_when_reconcile_fails(self):
+        """Failed reconcile must leave the normal first-response send active."""
+        _sc = SimpleNamespace(
+            final_response_sent=False,
+            final_content_delivered=False,
+            try_finalize_with_text=AsyncMock(return_value=False),
+        )
+        response = {"final_response": "complete answer", "response_previewed": False}
+
+        first_response = response.get("final_response", "")
+        _reconciled_stream = False
+        if _sc and first_response:
+            _reconcile = getattr(_sc, "try_finalize_with_text", None)
+            if callable(_reconcile):
+                _reconciled_stream = bool(await _reconcile(first_response))
+        _already_streamed = bool(
+            _reconciled_stream
+            or (_sc and getattr(_sc, "final_response_sent", False))
+            or bool(response.get("response_previewed"))
+            or (_sc and getattr(_sc, "final_content_delivered", False))
+        )
+
+        _sc.try_finalize_with_text.assert_awaited_once_with("complete answer")
+        assert _already_streamed is False
+
 
 # ===================================================================
 # Test 4: stream_consumer.py — cancellation handler delivery confirmation

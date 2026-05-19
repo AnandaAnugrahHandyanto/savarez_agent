@@ -133,6 +133,75 @@ class TestFinalizeCapabilityGate:
         assert picky.edit_message.call_args[1]["finalize"] is True
 
 
+class TestFinalResponseReconcileEdit:
+    """Final send reconciliation should edit existing streamed messages first."""
+
+    @pytest.mark.asyncio
+    async def test_reconcile_edits_partial_stream_to_final_response(self):
+        adapter = MagicMock()
+        adapter.send = AsyncMock(return_value=SimpleNamespace(
+            success=True, message_id="msg_1",
+        ))
+        adapter.edit_message = AsyncMock(return_value=SimpleNamespace(
+            success=True, message_id="msg_1",
+        ))
+        adapter.MAX_MESSAGE_LENGTH = 4096
+
+        consumer = GatewayStreamConsumer(adapter, "chat_123")
+        await consumer._send_or_edit("partial")
+
+        ok = await consumer.try_finalize_with_text("partial plus final")
+
+        assert ok is True
+        adapter.edit_message.assert_called_once_with(
+            chat_id="chat_123",
+            message_id="msg_1",
+            content="partial plus final",
+            finalize=True,
+        )
+        assert consumer.final_response_sent is True
+        assert consumer.final_content_delivered is True
+        assert consumer.already_sent is True
+
+    @pytest.mark.asyncio
+    async def test_reconcile_failure_leaves_gateway_fallback_available(self):
+        adapter = MagicMock()
+        adapter.send = AsyncMock(return_value=SimpleNamespace(
+            success=True, message_id="msg_1",
+        ))
+        adapter.edit_message = AsyncMock(return_value=SimpleNamespace(
+            success=False, error="edit failed",
+        ))
+        adapter.MAX_MESSAGE_LENGTH = 4096
+
+        consumer = GatewayStreamConsumer(adapter, "chat_123")
+        await consumer._send_or_edit("partial")
+
+        ok = await consumer.try_finalize_with_text("complete final")
+
+        assert ok is False
+        assert consumer.final_response_sent is False
+        assert consumer.final_content_delivered is False
+
+    @pytest.mark.asyncio
+    async def test_reconcile_ignores_non_editable_stream_messages(self):
+        adapter = MagicMock()
+        adapter.send = AsyncMock(return_value=SimpleNamespace(
+            success=True, message_id=None,
+        ))
+        adapter.edit_message = AsyncMock()
+        adapter.MAX_MESSAGE_LENGTH = 4096
+
+        consumer = GatewayStreamConsumer(adapter, "chat_123")
+        await consumer._send_or_edit("partial")
+
+        ok = await consumer.try_finalize_with_text("complete final")
+
+        assert ok is False
+        adapter.edit_message.assert_not_called()
+        assert consumer.final_response_sent is False
+
+
 class TestEditMessageFinalizeSignature:
     """Every concrete platform adapter must accept the ``finalize`` kwarg.
 
@@ -1780,4 +1849,3 @@ class TestUtf16OverflowDetection:
         # auto-attr mock. Verified indirectly by all the other tests in
         # this file passing — they all use MagicMock adapters.
         assert consumer is not None
-
