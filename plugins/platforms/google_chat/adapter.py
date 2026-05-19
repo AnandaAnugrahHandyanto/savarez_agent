@@ -2290,7 +2290,8 @@ class GoogleChatAdapter(BasePlatformAdapter):
         thread_id = self._resolve_thread_id(
             reply_to=None, metadata=metadata, chat_id=chat_id,
         )
-        body: Dict[str, Any] = {"text": "Hermes is thinking…"}
+        agent_name = self.config.extra.get("agent_name", "Hermes")
+        body: Dict[str, Any] = {"text": f"{agent_name} is thinking…"}
         if thread_id:
             body["thread"] = {"name": thread_id}
 
