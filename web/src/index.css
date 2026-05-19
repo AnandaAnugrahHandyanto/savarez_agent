@@ -118,14 +118,7 @@ code, kbd, pre, samp, .font-mono, .font-mono-ui {
 }
 
 @media (max-width: 768px) {
-  html {
-    min-height: 100dvh;
-    height: auto;
-    max-height: none;
-    overflow-x: hidden;
-    overflow-y: auto;
-  }
-
+  html,
   body,
   #root {
     min-height: 100dvh;
