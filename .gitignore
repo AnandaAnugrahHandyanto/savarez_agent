@@ -77,3 +77,6 @@ website/static/api/skills-index.json
 # Claude Code project files
 .claude/
 models-dev-upstream/
+hermes_cli/tui_dist/*
+hermes_cli/scripts/
+docs/superpowers/*
