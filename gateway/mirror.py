@@ -14,6 +14,8 @@ import logging
 from datetime import datetime
 from typing import Optional
 
+from gateway.config import Platform, load_gateway_config
+from gateway.session import SessionSource, SessionStore
 from hermes_cli.config import get_hermes_home
 
 logger = logging.getLogger(__name__)
@@ -29,6 +31,9 @@ def mirror_to_session(
     source_label: str = "cli",
     thread_id: Optional[str] = None,
     user_id: Optional[str] = None,
+    extra_fields: Optional[dict] = None,
+    create_session_if_missing: bool = False,
+    source_overrides: Optional[dict] = None,
 ) -> bool:
     """
     Append a delivery-mirror message to the target session's transcript.
@@ -47,14 +52,23 @@ def mirror_to_session(
             user_id=user_id,
         )
         if not session_id:
-            logger.debug(
-                "Mirror: no session found for %s:%s:%s:%s",
-                platform,
-                chat_id,
-                thread_id,
-                user_id,
-            )
-            return False
+            if create_session_if_missing:
+                session_id = _ensure_session_for_delivery(
+                    platform,
+                    str(chat_id),
+                    thread_id=thread_id,
+                    user_id=user_id,
+                    source_overrides=source_overrides,
+                )
+            if not session_id:
+                logger.debug(
+                    "Mirror: no session found for %s:%s:%s:%s",
+                    platform,
+                    chat_id,
+                    thread_id,
+                    user_id,
+                )
+                return False
 
         mirror_msg = {
             "role": "assistant",
@@ -63,6 +77,8 @@ def mirror_to_session(
             "mirror": True,
             "mirror_source": source_label,
         }
+        if extra_fields:
+            mirror_msg.update(extra_fields)
 
         _append_to_jsonl(session_id, mirror_msg)
         _append_to_sqlite(session_id, mirror_msg)
@@ -80,6 +96,36 @@ def mirror_to_session(
             e,
         )
         return False
+
+
+def _ensure_session_for_delivery(
+    platform: str,
+    chat_id: str,
+    *,
+    thread_id: Optional[str] = None,
+    user_id: Optional[str] = None,
+    source_overrides: Optional[dict] = None,
+) -> Optional[str]:
+    """Create a gateway session for a delivered message when none exists yet."""
+    try:
+        platform_enum = Platform(platform.lower())
+        overrides = source_overrides or {}
+        source = SessionSource(
+            platform=platform_enum,
+            chat_id=str(chat_id),
+            chat_name=overrides.get("chat_name"),
+            chat_type=overrides.get("chat_type") or ("thread" if thread_id else "channel"),
+            user_id=user_id,
+            thread_id=str(thread_id) if thread_id else None,
+            parent_chat_id=overrides.get("parent_chat_id"),
+            message_id=overrides.get("message_id"),
+        )
+        store = SessionStore(load_gateway_config().session)
+        entry = store.get_or_create_session(source)
+        return entry.session_id
+    except Exception as e:
+        logger.debug("Mirror: failed to create delivery session for %s:%s:%s: %s", platform, chat_id, thread_id, e)
+        return None
 
 
 def _find_session_id(
@@ -166,10 +212,16 @@ def _append_to_sqlite(session_id: str, message: dict) -> None:
     try:
         from hermes_state import SessionDB
         db = SessionDB()
+        metadata = {
+            k: v
+            for k, v in message.items()
+            if k not in {"role", "content", "timestamp"}
+        }
         db.append_message(
             session_id=session_id,
             role=message.get("role", "assistant"),
             content=message.get("content"),
+            reasoning_details=metadata or None,
         )
     except Exception as e:
         logger.debug("Mirror SQLite write failed: %s", e)

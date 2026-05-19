@@ -267,6 +267,41 @@ class TestMirrorToSession:
 
         assert result is False
 
+    def test_create_session_if_missing_writes_thread_transcript(self, tmp_path):
+        sessions_dir, index_file = _setup_sessions(tmp_path, {})
+
+        fake_entry = MagicMock(session_id="sess_thread")
+        fake_store = MagicMock()
+        fake_store.get_or_create_session.return_value = fake_entry
+
+        with patch.object(mirror_mod, "_SESSIONS_DIR", sessions_dir), \
+             patch.object(mirror_mod, "_SESSIONS_INDEX", index_file), \
+             patch("gateway.mirror._append_to_sqlite"), \
+             patch("gateway.mirror.load_gateway_config", return_value=MagicMock(session=MagicMock())), \
+             patch("gateway.mirror.SessionStore", return_value=fake_store):
+            result = mirror_to_session(
+                "discord",
+                "thread-123",
+                "Seed starter",
+                source_label="cron-thread-seed",
+                thread_id="thread-123",
+                extra_fields={"cron_job_id": "job-1", "thread_seed": True},
+                create_session_if_missing=True,
+                source_overrides={"chat_type": "thread", "chat_name": "Cron Smoke"},
+            )
+
+        assert result is True
+        source = fake_store.get_or_create_session.call_args.args[0]
+        assert source.chat_id == "thread-123"
+        assert source.thread_id == "thread-123"
+        assert source.chat_type == "thread"
+        assert source.chat_name == "Cron Smoke"
+        msg = json.loads((sessions_dir / "sess_thread.jsonl").read_text().strip())
+        assert msg["content"] == "Seed starter"
+        assert msg["mirror_source"] == "cron-thread-seed"
+        assert msg["cron_job_id"] == "job-1"
+        assert msg["thread_seed"] is True
+
     def test_error_returns_false(self, tmp_path):
         with patch("gateway.mirror._find_session_id", side_effect=Exception("boom")):
             result = mirror_to_session("telegram", "123", "msg")
