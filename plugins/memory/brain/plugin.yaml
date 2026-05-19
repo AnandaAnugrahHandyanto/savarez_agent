@@ -1,0 +1,3 @@
+name: brain
+version: 1.0.0
+description: "Hermes Brain — local SQLite/FTS5 source-isolated facts and document chunks for brain-first memory."

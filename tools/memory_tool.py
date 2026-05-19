@@ -299,6 +299,7 @@ class MemoryStore:
                 # All identical -- safe to replace just the first
 
             idx = matches[0][0]
+            replaced_entry = matches[0][1]
             limit = self._char_limit(target)
 
             # Check that replacement doesn't blow the budget
@@ -319,7 +320,9 @@ class MemoryStore:
             self._set_entries(target, entries)
             self.save_to_disk(target)
 
-        return self._success_response(target, "Entry replaced.")
+        response = self._success_response(target, "Entry replaced.")
+        response["replaced_entry"] = replaced_entry
+        return response
 
     def remove(self, target: str, old_text: str) -> Dict[str, Any]:
         """Remove the entry containing old_text substring."""

@@ -139,6 +139,7 @@ class TestMemoryStoreReplace:
         assert result["success"] is True
         assert "Python 3.12 project" in result["entries"]
         assert "Python 3.11 project" not in result["entries"]
+        assert result["replaced_entry"] == "Python 3.11 project"
 
     def test_replace_no_match(self, store):
         store.add("memory", "fact A")

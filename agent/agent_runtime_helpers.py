@@ -40,6 +40,7 @@ from agent.message_sanitization import (
     _sanitize_surrogates,
 )
 from agent.tool_dispatch_helpers import _trajectory_normalize_msg
+from agent.memory_bridge import mirror_builtin_memory_write
 from agent.trajectory import convert_scratchpad_to_think
 from agent.error_classifier import classify_api_error, FailoverReason
 from utils import base_url_host_matches, base_url_hostname, env_var_enabled, atomic_json_write
@@ -1526,20 +1527,17 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
             old_text=function_args.get("old_text"),
             store=agent._memory_store,
         )
-        # Bridge: notify external memory provider of built-in memory writes
-        if agent._memory_manager and function_args.get("action") in {"add", "replace"}:
-            try:
-                agent._memory_manager.on_memory_write(
-                    function_args.get("action", ""),
-                    target,
-                    function_args.get("content", ""),
-                    metadata=agent._build_memory_write_metadata(
-                        task_id=effective_task_id,
-                        tool_call_id=tool_call_id,
-                    ),
-                )
-            except Exception:
-                pass
+        # Bridge: notify external memory providers only after the built-in write succeeds.
+        mirror_builtin_memory_write(
+            agent,
+            action=function_args.get("action", ""),
+            target=target,
+            content=function_args.get("content", ""),
+            function_result=result,
+            task_id=effective_task_id,
+            tool_call_id=tool_call_id,
+            old_text=function_args.get("old_text"),
+        )
         return result
     elif agent._memory_manager and agent._memory_manager.has_tool(function_name):
         return agent._memory_manager.handle_tool_call(function_name, function_args)
