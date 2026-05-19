@@ -1957,6 +1957,27 @@ class GatewayRunner:
             depth += 1
         return depth
 
+    def get_queue_depth(self, session_key: str) -> int:
+        """Return the total queued-message depth for one gateway session.
+
+        This exposes the existing /queue state to callers that only know the
+        session key without requiring them to reach into adapter internals.
+        """
+        adapter = None
+        parts = str(session_key or "").split(":")
+        platform_name = ""
+        if len(parts) >= 3 and parts[0] == "agent" and parts[1] == "main":
+            platform_name = parts[2]
+        elif parts:
+            platform_name = parts[0]
+
+        for platform, candidate in getattr(self, "adapters", {}).items():
+            if getattr(platform, "value", platform) == platform_name:
+                adapter = candidate
+                break
+
+        return self._queue_depth(session_key, adapter=adapter)
+
     @staticmethod
     def _is_goal_continuation_event(event_or_text: Any) -> bool:
         """Return True for synthetic /goal continuation turns.

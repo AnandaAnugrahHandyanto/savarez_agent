@@ -178,8 +178,9 @@ class TestQueueConsumptionAfterCompletion:
         from gateway.run import GatewayRunner
 
         runner = GatewayRunner.__new__(GatewayRunner)
+        runner.adapters = {Platform.TELEGRAM: _StubAdapter()}
         runner._queued_events = {}
-        adapter = _StubAdapter()
+        adapter = runner.adapters[Platform.TELEGRAM]
         session_key = "telegram:user:123"
 
         events = [
@@ -333,6 +334,40 @@ class TestQueueConsumptionAfterCompletion:
                 adapter,
             )
         assert runner._queue_depth(session_key, adapter=adapter) == 3
+
+    def test_get_queue_depth_resolves_gateway_session_key(self):
+        from gateway.run import GatewayRunner
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.adapters = {Platform.TELEGRAM: _StubAdapter()}
+        runner._queued_events = {}
+        adapter = runner.adapters[Platform.TELEGRAM]
+        session_key = "agent:main:telegram:dm:depth"
+
+        for text in ("one", "two", "three"):
+            runner._enqueue_fifo(
+                session_key,
+                MessageEvent(
+                    text=text,
+                    message_type=MessageType.TEXT,
+                    source=MagicMock(chat_id="depth", platform=Platform.TELEGRAM),
+                    message_id=f"q-{text}",
+                ),
+                adapter,
+            )
+
+        assert runner.get_queue_depth(session_key) == 3
+
+    def test_get_queue_depth_without_matching_adapter_counts_overflow_only(self):
+        from gateway.run import GatewayRunner
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.adapters = {}
+        runner._queued_events = {
+            "agent:main:telegram:dm:depth": [MagicMock(), MagicMock()]
+        }
+
+        assert runner.get_queue_depth("agent:main:telegram:dm:depth") == 2
 
     def test_enqueue_preserves_text_no_merging(self):
         """Each /queue item keeps its own text — never merged with neighbors."""
