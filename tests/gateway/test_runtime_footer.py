@@ -137,6 +137,19 @@ def test_format_footer_custom_field_order():
     assert out == "50% · gpt-5.4"
 
 
+def test_format_footer_renders_token_fields_when_requested():
+    out = format_runtime_footer(
+        model="openai/gpt-5.4",
+        context_tokens=0,
+        context_length=None,
+        input_tokens=12345,
+        output_tokens=678,
+        cwd="",
+        fields=("model", "input_tokens", "output_tokens"),
+    )
+    assert out == "gpt-5.4 · in 12,345 · out 678"
+
+
 def test_format_footer_unknown_field_silently_ignored():
     out = format_runtime_footer(
         model="openai/gpt-5.4",
@@ -229,6 +242,27 @@ def test_build_footer_returns_rendered_when_enabled(monkeypatch, tmp_path):
     (tmp_path / "proj").mkdir(exist_ok=True)
     assert "gpt-5.4" in out
     assert "25%" in out
+
+
+def test_build_footer_can_render_tokens_only():
+    out = build_footer_line(
+        user_config={
+            "display": {
+                "runtime_footer": {
+                    "enabled": True,
+                    "fields": ["model", "input_tokens", "output_tokens"],
+                }
+            }
+        },
+        platform_key="discord",
+        model="openai/gpt-5.4",
+        context_tokens=0,
+        context_length=None,
+        input_tokens=4321,
+        output_tokens=210,
+        cwd="",
+    )
+    assert out == "gpt-5.4 · in 4,321 · out 210"
 
 
 def test_build_footer_per_platform_off_suppresses():

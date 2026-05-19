@@ -7642,6 +7642,8 @@ class GatewayRunner:
                     model=agent_result.get("model"),
                     context_tokens=agent_result.get("last_prompt_tokens", 0) or 0,
                     context_length=agent_result.get("context_length") or None,
+                    input_tokens=agent_result.get("turn_input_tokens"),
+                    output_tokens=agent_result.get("turn_output_tokens"),
                     cwd=os.environ.get("TERMINAL_CWD", ""),
                 )
             except Exception as _footer_err:
@@ -15225,6 +15227,8 @@ class GatewayRunner:
                 else:
                     _run_message = message
 
+                _start_input_toks = getattr(agent, "session_input_tokens", 0) or 0
+                _start_output_toks = getattr(agent, "session_output_tokens", 0) or 0
                 result = agent.run_conversation(_run_message, conversation_history=agent_history, task_id=session_id)
             finally:
                 unregister_gateway_notify(_approval_session_key)
@@ -15249,6 +15253,14 @@ class GatewayRunner:
                 _input_toks = getattr(_agent, "session_prompt_tokens", 0)
                 _output_toks = getattr(_agent, "session_completion_tokens", 0)
                 _context_length = getattr(_agent.context_compressor, "context_length", 0) or 0
+            _turn_input_toks = max(
+                0,
+                (getattr(_agent, "session_input_tokens", 0) or 0) - (_start_input_toks or 0),
+            ) if _agent else 0
+            _turn_output_toks = max(
+                0,
+                (getattr(_agent, "session_output_tokens", 0) or 0) - (_start_output_toks or 0),
+            ) if _agent else 0
             _resolved_model = getattr(_agent, "model", None) if _agent else None
 
             if not final_response:
@@ -15269,6 +15281,8 @@ class GatewayRunner:
                     "last_prompt_tokens": _last_prompt_toks,
                     "input_tokens": _input_toks,
                     "output_tokens": _output_toks,
+                    "turn_input_tokens": _turn_input_toks,
+                    "turn_output_tokens": _turn_output_toks,
                     "model": _resolved_model,
                     "context_length": _context_length,
                 }
@@ -15388,6 +15402,8 @@ class GatewayRunner:
                 "last_prompt_tokens": _last_prompt_toks,
                 "input_tokens": _input_toks,
                 "output_tokens": _output_toks,
+                "turn_input_tokens": _turn_input_toks,
+                "turn_output_tokens": _turn_output_toks,
                 "model": _resolved_model,
                 "context_length": _context_length,
                 "session_id": effective_session_id,

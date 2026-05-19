@@ -1,6 +1,6 @@
 """Gateway runtime-metadata footer.
 
-Renders a compact footer showing runtime state (model, context %, cwd) and
+Renders a compact footer showing runtime state (model, token in/out, context %, cwd) and
 appends it to the FINAL message of an agent turn when enabled.  Off by default
 to keep replies minimal.
 
@@ -9,7 +9,7 @@ Config (``~/.hermes/config.yaml``)::
     display:
       runtime_footer:
         enabled: true                       # off by default
-        fields: [model, context_pct, cwd]   # order shown; drop any to hide
+        fields: [model, input_tokens, output_tokens, context_pct, cwd]   # order shown; drop any to hide
 
 Per-platform overrides live under ``display.platforms.<platform>.runtime_footer``.
 Users can toggle the global setting with ``/footer on|off`` from both the CLI
@@ -31,6 +31,13 @@ from typing import Any, Iterable, Optional
 
 _DEFAULT_FIELDS: tuple[str, ...] = ("model", "context_pct", "cwd")
 _SEP = " · "
+
+
+def _token_count_label(prefix: str, count: Optional[int]) -> str:
+    """Return a compact token label like ``in 12,345`` or ``""`` when empty."""
+    if count is None or count < 0:
+        return ""
+    return f"{prefix} {count:,}"
 
 
 def _home_relative_cwd(cwd: str) -> str:
@@ -94,6 +101,8 @@ def format_runtime_footer(
     model: Optional[str],
     context_tokens: int,
     context_length: Optional[int],
+    input_tokens: Optional[int] = None,
+    output_tokens: Optional[int] = None,
     cwd: Optional[str] = None,
     fields: Iterable[str] = _DEFAULT_FIELDS,
 ) -> str:
@@ -108,6 +117,14 @@ def format_runtime_footer(
             m = _model_short(model)
             if m:
                 parts.append(m)
+        elif field == "input_tokens":
+            label = _token_count_label("in", input_tokens)
+            if label:
+                parts.append(label)
+        elif field == "output_tokens":
+            label = _token_count_label("out", output_tokens)
+            if label:
+                parts.append(label)
         elif field == "context_pct":
             if context_length and context_length > 0 and context_tokens >= 0:
                 pct = max(0, min(100, round((context_tokens / context_length) * 100)))
@@ -130,6 +147,8 @@ def build_footer_line(
     model: Optional[str],
     context_tokens: int,
     context_length: Optional[int],
+    input_tokens: Optional[int] = None,
+    output_tokens: Optional[int] = None,
     cwd: Optional[str] = None,
 ) -> str:
     """Top-level entry point used by gateway/run.py.
@@ -145,6 +164,8 @@ def build_footer_line(
         model=model,
         context_tokens=context_tokens,
         context_length=context_length,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
         cwd=cwd,
         fields=cfg.get("fields") or _DEFAULT_FIELDS,
     )
