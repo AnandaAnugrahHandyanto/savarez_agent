@@ -1150,9 +1150,6 @@ class TestFindGatewayPidsExclude:
 
 
 # ---------------------------------------------------------------------------
-<<<<<<< HEAD
-
-
 class TestDetachedProfileGatewayRestartEnv:
     def test_default_profile_run_args_are_explicit(self, monkeypatch):
         """Default restarts must not depend on inherited profile state."""
@@ -1231,8 +1228,6 @@ class TestDetachedProfileGatewayRestartEnv:
         assert "env=os.environ.copy()" in cmd[2]
 
 
-=======
->>>>>>> fff93d5380c0ca5c30f611c1a8a151015ad5aff2
 # Gateway mode writes exit code before restart (#8300)
 # ---------------------------------------------------------------------------
 
