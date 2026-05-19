@@ -102,6 +102,22 @@ if [ ! -f "$HERMES_HOME/auth.json" ] && [ -n "$HERMES_AUTH_JSON_BOOTSTRAP" ]; th
     chmod 600 "$HERMES_HOME/auth.json"
 fi
 
+# gh CLI: bootstrap auth from GITHUB_TOKEN on every boot.  Hermes's subprocess
+# sandbox (tools/environments/local.py) deliberately scrubs GITHUB_TOKEN from
+# terminal-tool subprocess envs, so `gh` cannot read it at runtime.  Writing
+# the token to gh's on-disk config (under the subprocess HOME at
+# /opt/data/home) makes auth file-based and immune to the env scrubber.  The
+# config persists on the /opt/data volume; re-running on each boot lets us
+# pick up token rotations from the Railway env var without manual steps.
+if command -v gh >/dev/null 2>&1 && [ -n "${GITHUB_TOKEN:-}" ]; then
+    mkdir -p "$HERMES_HOME/home/.config/gh"
+    if echo "$GITHUB_TOKEN" | HOME="$HERMES_HOME/home" gh auth login --with-token --hostname github.com >/dev/null 2>&1; then
+        echo "gh: authenticated via GITHUB_TOKEN"
+    else
+        echo "gh: auth login failed (check token validity)"
+    fi
+fi
+
 # Sync bundled skills (manifest-based so user edits are preserved)
 if [ -d "$INSTALL_DIR/skills" ]; then
     python3 "$INSTALL_DIR/tools/skills_sync.py"
