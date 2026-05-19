@@ -15,6 +15,7 @@ from hermes_constants import get_hermes_home
 from typing import Dict, List, Optional
 
 from rich.console import Console
+from rich.markup import escape
 from rich.panel import Panel
 from rich.table import Table
 
@@ -451,6 +452,7 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
                          tools: List[dict] = None,
                          enabled_toolsets: List[str] = None,
                          session_id: str = None,
+                         session_title: str = None,
                          get_toolset_for_tool=None,
                          context_length: int = None):
     """Build and print a welcome banner with caduceus on left and info on right.
@@ -462,6 +464,7 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
         tools: List of tool definitions.
         enabled_toolsets: List of enabled toolset names.
         session_id: Session identifier.
+        session_title: Human-readable session title, when known.
         get_toolset_for_tool: Callable to map tool name -> toolset name.
         context_length: Model's context window size in tokens.
     """
@@ -521,7 +524,17 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
         left_lines.append(f"[dim {session_color}]Session: {session_id}[/]")
     left_content = "\n".join(left_lines)
 
-    right_lines = [f"[bold {accent}]Available Tools[/]"]
+    right_lines = []
+    if session_title:
+        title = session_title.strip()
+        if len(title) > 72:
+            title = title[:69].rstrip() + "..."
+        right_lines.extend([
+            f"[bold {accent}]Session:[/] [{text}]{escape(title)}[/]",
+            "",
+        ])
+
+    right_lines.append(f"[bold {accent}]Available Tools[/]")
     toolsets_dict: Dict[str, list] = {}
 
     for tool in tools:

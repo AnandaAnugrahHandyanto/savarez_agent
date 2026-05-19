@@ -4569,6 +4569,17 @@ class HermesCLI:
             # logged at DEBUG by the advisory module.
             pass
 
+    def _current_session_title_for_banner(self) -> Optional[str]:
+        """Return the current session title for startup/banner display."""
+        if not self._session_db or not self.session_id:
+            return None
+        try:
+            title = self._session_db.get_session_title(self.session_id)
+        except Exception:
+            return None
+        title = (title or "").strip()
+        return title or None
+
     def show_banner(self):
         """Display the welcome banner in Claude Code style."""
         self.console.clear()
@@ -4599,6 +4610,7 @@ class HermesCLI:
                 tools=tools,
                 enabled_toolsets=self.enabled_toolsets,
                 session_id=self.session_id,
+                session_title=self._current_session_title_for_banner(),
                 context_length=ctx_len,
             )
         
@@ -7770,6 +7782,7 @@ class HermesCLI:
                         tools=tools,
                         enabled_toolsets=self.enabled_toolsets,
                         session_id=self.session_id,
+                        session_title=self._current_session_title_for_banner(),
                         context_length=ctx_len,
                     )
                 _cprint("  ✨ (◕‿◕)✨ Fresh start! Screen cleared and conversation reset.\n")

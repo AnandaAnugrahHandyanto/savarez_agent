@@ -47,6 +47,41 @@ const fmtElapsed = (ms: number) => {
   return sec < 10 ? `${sec.toFixed(1)}s` : `${Math.round(sec)}s`
 }
 
+const conciseToolProcessLabel = (raw: string) => {
+  const label = raw.replace(/\s*\([^)]*\)\s*$/g, '').trim()
+  const lower = label.toLowerCase()
+
+  if (lower.includes('read file') || lower.includes('read_file') || lower.includes('path')) {
+    return '读取相关文件'
+  }
+  if (lower.includes('search') || lower.includes('rg') || lower.includes('find')) {
+    return '搜索项目内容'
+  }
+  if (lower.includes('write file') || lower.includes('write_file') || lower.includes('patch')) {
+    return '写入或修改文件'
+  }
+  if (lower.includes('execute') || lower.includes('command') || lower.includes('code')) {
+    return '运行命令并检查结果'
+  }
+  if (lower.includes('browser') || lower.includes('click') || lower.includes('console')) {
+    return '操作浏览器并观察页面'
+  }
+  if (lower.includes('delegate') || lower.includes('agent')) {
+    return '委托子代理并汇总结果'
+  }
+  if (lower.includes('image')) {
+    return '处理图像生成或分析'
+  }
+  if (lower.includes('cron') || lower.includes('schedule')) {
+    return '处理定时任务'
+  }
+  if (lower.includes('memory')) {
+    return '读取或更新记忆'
+  }
+
+  return label ? `处理：${label}` : '处理当前步骤'
+}
+
 type TreeBranch = 'mid' | 'last'
 type TreeRails = readonly boolean[]
 
@@ -729,7 +764,6 @@ export const ToolTrail = memo(function ToolTrail({
     [commandOverride, detailsMode, sections]
   )
 
-  const [now, setNow] = useState(() => Date.now())
   // Local toggles own the open state once mounted.  Init from the resolved
   // section visibility so default-expanded sections (thinking/tools) render
   // open on first paint; the useEffect below re-syncs when the user mutates
@@ -742,16 +776,6 @@ export const ToolTrail = memo(function ToolTrail({
   const [openSubagents, setOpenSubagents] = useState(visible.subagents === 'expanded')
   const [deepSubagents, setDeepSubagents] = useState(visible.subagents === 'expanded')
   const [openMeta, setOpenMeta] = useState(visible.activity === 'expanded')
-
-  useEffect(() => {
-    if (!tools.length || (visible.tools !== 'expanded' && !openTools)) {
-      return
-    }
-
-    const id = setInterval(() => setNow(Date.now()), 500)
-
-    return () => clearInterval(id)
-  }, [openTools, tools.length, visible.tools])
 
   useEffect(() => {
     setOpenThinking(visible.thinking === 'expanded')
@@ -836,10 +860,10 @@ export const ToolTrail = memo(function ToolTrail({
         key: `tr-${i}`,
         content: groups.length ? (
           <>
-            <Spinner color={t.color.accent} variant="think" /> {line}
+            <Spinner color={t.color.accent} variant="think" /> 正在分析工具结果
           </>
         ) : (
-          line
+          '正在分析工具结果'
         )
       })
 
@@ -851,6 +875,7 @@ export const ToolTrail = memo(function ToolTrail({
 
   for (const tool of tools) {
     const label = formatToolCall(tool.name, tool.context || '')
+    const processLabel = conciseToolProcessLabel(label)
 
     groups.push({
       color: t.color.text,
@@ -859,8 +884,7 @@ export const ToolTrail = memo(function ToolTrail({
       details: [],
       content: (
         <>
-          <Spinner color={t.color.accent} variant="tool" /> {label}
-          {tool.startedAt ? ` (${fmtElapsed(now - tool.startedAt)})` : ''}
+          <Spinner color={t.color.accent} variant="tool" /> 正在{processLabel}
         </>
       )
     })
@@ -894,18 +918,12 @@ export const ToolTrail = memo(function ToolTrail({
   const inlineDelegateKey = hasSubagents && delegateGroups.length === 1 ? delegateGroups[0]!.key : null
 
   const toolLabel = (group: Group) => {
-    const { duration, label } = splitToolDuration(String(group.content))
+    if (typeof group.content !== 'string') {
+      return group.content
+    }
 
-    return duration ? (
-      <>
-        {label}
-        <Text color={t.color.statusFg} dim>
-          {duration}
-        </Text>
-      </>
-    ) : (
-      group.content
-    )
+    const { label } = splitToolDuration(group.content)
+    return conciseToolProcessLabel(label)
   }
 
   // ── Backstop: floating alerts when every panel is hidden ─────────
@@ -1053,7 +1071,7 @@ export const ToolTrail = memo(function ToolTrail({
           open={openTools}
           suffix={toolTokensLabel}
           t={t}
-          title="Tool calls"
+          title="处理过程"
         />
       ),
       key: 'tools',

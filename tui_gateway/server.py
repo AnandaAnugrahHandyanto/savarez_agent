@@ -1397,6 +1397,15 @@ def _session_info(agent) -> dict:
     except Exception:
         pass
     try:
+        session_key = str(getattr(agent, "session_id", "") or "").strip()
+        if session_key:
+            db = _get_db()
+            title = (db.get_session_title(session_key) if db is not None else "") or ""
+            if title.strip():
+                info["title"] = title.strip()
+    except Exception:
+        pass
+    try:
         from model_tools import get_toolset_for_tool
 
         for t in getattr(agent, "tools", []) or []:

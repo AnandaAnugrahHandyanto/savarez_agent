@@ -111,10 +111,12 @@ const TranscriptPane = memo(function TranscriptPane({
               )}
 
               {row.msg.kind === 'intro' ? (
-                <Box flexDirection="column" paddingTop={1}>
-                  <Banner t={ui.theme} />
+                <Box flexDirection="column" paddingTop={INLINE_MODE ? 0 : 1}>
+                  {!INLINE_MODE && <Banner t={ui.theme} />}
 
-                  {row.msg.info && <SessionPanel info={row.msg.info} sid={ui.sid} t={ui.theme} />}
+                  {row.msg.info && (
+                    <SessionPanel hideHero={INLINE_MODE} info={row.msg.info} sid={ui.sid} t={ui.theme} />
+                  )}
                 </Box>
               ) : row.msg.kind === 'panel' && row.msg.panelData ? (
                 <Panel sections={row.msg.panelData.sections} t={ui.theme} title={row.msg.panelData.title} />
@@ -249,70 +251,70 @@ const ComposerPane = memo(function ComposerPane({
       <StatusRulePane at="top" composer={composer} status={status} />
 
       <Box flexDirection="column" marginTop={ui.statusBar === 'top' ? 0 : 1} position="relative">
-        <FloatingOverlays
-          cols={composer.cols}
-          compIdx={composer.compIdx}
-          completions={composer.completions}
-          onModelSelect={actions.onModelSelect}
-          onPickerSelect={actions.resumeById}
-          pagerPageSize={composer.pagerPageSize}
-        />
+          <FloatingOverlays
+            cols={composer.cols}
+            compIdx={composer.compIdx}
+            completions={composer.completions}
+            onModelSelect={actions.onModelSelect}
+            onPickerSelect={actions.resumeById}
+            pagerPageSize={composer.pagerPageSize}
+          />
 
-        {composer.input === '?' && !composer.inputBuf.length && <HelpHint t={ui.theme} />}
+          {composer.input === '?' && !composer.inputBuf.length && <HelpHint t={ui.theme} />}
 
-        {!isBlocked && (
-          <>
-            {composer.inputBuf.map((line, i) => (
-              <Box key={i}>
+          {!isBlocked && (
+            <>
+              {composer.inputBuf.map((line, i) => (
+                <Box key={i}>
+                  <Box width={promptWidth}>
+                    {i === 0 ? (
+                      <PromptPrefix color={ui.theme.color.muted} promptText={promptText} width={promptWidth} />
+                    ) : (
+                      <Text color={ui.theme.color.muted}>{promptBlank}</Text>
+                    )}
+                  </Box>
+
+                  <Text color={ui.theme.color.text}>{line || ' '}</Text>
+                </Box>
+              ))}
+
+              <Box
+                onMouseDown={captureInputDrag}
+                onMouseDrag={dragFromPromptRow}
+                onMouseUp={endInputDrag}
+                position="relative"
+                width={Math.max(1, composer.cols - 2)}
+              >
                 <Box width={promptWidth}>
-                  {i === 0 ? (
-                    <PromptPrefix color={ui.theme.color.muted} promptText={promptText} width={promptWidth} />
+                  {sh ? (
+                    <PromptPrefix color={ui.theme.color.shellDollar} promptText={promptText} width={promptWidth} />
+                  ) : composer.inputBuf.length ? (
+                    <Text color={ui.theme.color.prompt}>{promptBlank}</Text>
                   ) : (
-                    <Text color={ui.theme.color.muted}>{promptBlank}</Text>
+                    <PromptPrefix bold color={ui.theme.color.prompt} promptText={promptText} width={promptWidth} />
                   )}
                 </Box>
 
-                <Text color={ui.theme.color.text}>{line || ' '}</Text>
-              </Box>
-            ))}
+                <Box flexGrow={0} flexShrink={0} height={inputHeight} width={inputColumns}>
+                  {/* Reserve the transcript scrollbar gutter too so typing never rewraps when the scrollbar column repaints. */}
+                  <TextInput
+                    columns={inputColumns}
+                    mouseApiRef={inputMouseRef}
+                    onChange={composer.updateInput}
+                    onPaste={composer.handleTextPaste}
+                    onSubmit={composer.submit}
+                    placeholder={composer.empty ? PLACEHOLDER : ui.busy ? 'Ctrl+C to interrupt…' : ''}
+                    value={composer.input}
+                    voiceRecordKey={composer.voiceRecordKey}
+                  />
+                </Box>
 
-            <Box
-              onMouseDown={captureInputDrag}
-              onMouseDrag={dragFromPromptRow}
-              onMouseUp={endInputDrag}
-              position="relative"
-              width={Math.max(1, composer.cols - 2)}
-            >
-              <Box width={promptWidth}>
-                {sh ? (
-                  <PromptPrefix color={ui.theme.color.shellDollar} promptText={promptText} width={promptWidth} />
-                ) : composer.inputBuf.length ? (
-                  <Text color={ui.theme.color.prompt}>{promptBlank}</Text>
-                ) : (
-                  <PromptPrefix bold color={ui.theme.color.prompt} promptText={promptText} width={promptWidth} />
-                )}
+                <Box position="absolute" right={0}>
+                  <GoodVibesHeart t={ui.theme} tick={status.goodVibesTick} />
+                </Box>
               </Box>
-
-              <Box flexGrow={0} flexShrink={0} height={inputHeight} width={inputColumns}>
-                {/* Reserve the transcript scrollbar gutter too so typing never rewraps when the scrollbar column repaints. */}
-                <TextInput
-                  columns={inputColumns}
-                  mouseApiRef={inputMouseRef}
-                  onChange={composer.updateInput}
-                  onPaste={composer.handleTextPaste}
-                  onSubmit={composer.submit}
-                  placeholder={composer.empty ? PLACEHOLDER : ui.busy ? 'Ctrl+C to interrupt…' : ''}
-                  value={composer.input}
-                  voiceRecordKey={composer.voiceRecordKey}
-                />
-              </Box>
-
-              <Box position="absolute" right={0}>
-                <GoodVibesHeart t={ui.theme} tick={status.goodVibesTick} />
-              </Box>
-            </Box>
-          </>
-        )}
+            </>
+          )}
       </Box>
 
       {!composer.empty && !ui.sid && <Text color={ui.theme.color.muted}>⚕ {ui.status}</Text>}

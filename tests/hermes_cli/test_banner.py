@@ -70,6 +70,37 @@ def test_build_welcome_banner_uses_normalized_toolset_names():
     assert "web_tools:" not in output
 
 
+def test_build_welcome_banner_shows_session_title_when_known():
+    """A resumed session should expose its human-readable title in the banner."""
+    with (
+        patch.object(
+            model_tools,
+            "check_tool_availability",
+            return_value=(["file"], []),
+        ),
+        patch.object(banner, "get_available_skills", return_value={}),
+        patch.object(banner, "get_update_result", return_value=None),
+        patch.object(tools.mcp_tool, "get_mcp_status", return_value=[]),
+        patch.object(banner, "get_latest_release_tag", return_value=None),
+    ):
+        console = Console(
+            record=True, force_terminal=False, color_system=None, width=160
+        )
+        banner.build_welcome_banner(
+            console=console,
+            model="openai/gpt-5.5",
+            cwd="/tmp/project",
+            tools=[{"function": {"name": "read_file"}}],
+            session_id="abc123",
+            session_title="Evaluate Qlib model",
+            get_toolset_for_tool=lambda name: "file",
+        )
+
+    output = console.export_text()
+    assert "Session:" in output
+    assert "Evaluate Qlib model" in output
+
+
 def test_build_welcome_banner_title_is_hyperlinked_to_release():
     """Panel title (version label) is wrapped in an OSC-8 hyperlink to the GitHub release."""
     import io
