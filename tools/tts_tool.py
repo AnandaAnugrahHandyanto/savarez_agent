@@ -1679,6 +1679,11 @@ def text_to_speech_tool(
             file_path = _configured_command_tts_output_path(
                 file_path, command_provider_config
             )
+        elif want_opus and provider in {"openai", "elevenlabs", "mistral", "gemini"}:
+            # Caller may have passed a .mp3 path (e.g. auto-TTS in run.py), but
+            # these providers can produce native Opus — override the extension so
+            # the provider generates OGG directly instead of MP3.
+            file_path = file_path.with_suffix(".ogg")
     else:
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         out_dir = Path(DEFAULT_OUTPUT_DIR)
