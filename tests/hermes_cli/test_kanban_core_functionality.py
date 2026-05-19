@@ -863,6 +863,37 @@ def test_cli_archive_bulk(kanban_home):
         conn.close()
 
 
+def test_cli_archive_rm_deletes_archived_tasks(kanban_home):
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="gone")
+        assert kb.archive_task(conn, tid)
+    finally:
+        conn.close()
+    out = run_slash(f"archive --rm {tid}")
+    assert f"Deleted {tid}" in out
+    conn = kb.connect()
+    try:
+        assert kb.get_task(conn, tid) is None
+    finally:
+        conn.close()
+
+
+def test_cli_archive_rm_rejects_live_tasks(kanban_home):
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="still-live")
+    finally:
+        conn.close()
+    out = run_slash(f"archive --rm {tid}")
+    assert "cannot delete" in out.lower()
+    conn = kb.connect()
+    try:
+        assert kb.get_task(conn, tid) is not None
+    finally:
+        conn.close()
+
+
 def test_cli_unblock_bulk(kanban_home):
     conn = kb.connect()
     try:
@@ -2800,6 +2831,10 @@ def test_default_spawn_auto_loads_kanban_worker_skill(kanban_home, monkeypatch):
     idx = cmd.index("--skills")
     assert cmd[idx + 1] == "kanban-worker", (
         f"expected 'kanban-worker', got {cmd[idx + 1]!r}"
+    )
+    assert "--accept-hooks" in cmd, f"spawn argv missing --accept-hooks: {cmd}"
+    assert cmd.index("--accept-hooks") < cmd.index("chat"), (
+        f"--accept-hooks must come before 'chat' in argv: {cmd}"
     )
     # Assignee + task env are still present
     assert "some-profile" in cmd

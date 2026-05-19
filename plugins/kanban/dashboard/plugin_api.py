@@ -129,8 +129,14 @@ def _conn(board: Optional[str] = None):
 
 # Columns shown by the dashboard, in left-to-right order. "archived" is
 # available via a filter toggle rather than a visible column.
+#
+# Keep this in sync with kanban_db.VALID_STATUSES.  In particular,
+# ``scheduled`` is a first-class waiting column used for time-based follow-ups;
+# if it is omitted here, the board-level fallback below mis-buckets scheduled
+# tasks into ``todo`` and makes the dashboard look like the Scheduled column
+# disappeared.
 BOARD_COLUMNS: list[str] = [
-    "triage", "todo", "ready", "running", "blocked", "done",
+    "triage", "todo", "scheduled", "ready", "running", "blocked", "done",
 ]
 
 
@@ -722,6 +728,10 @@ def _set_status_direct(
                 return False
 
         was_running = prev["status"] == "running"
+        reopening_satisfied_parent = (
+            prev["status"] in {"done", "archived"}
+            and new_status not in {"done", "archived"}
+        )
 
         cur = conn.execute(
             "UPDATE tasks SET status = ?, "
@@ -745,6 +755,37 @@ def _set_status_direct(
             "VALUES (?, ?, 'status', ?, ?)",
             (task_id, run_id, json.dumps({"status": new_status}), int(time.time())),
         )
+        if reopening_satisfied_parent:
+            # A parent leaving done/archived invalidates any direct child that
+            # was sitting in ready solely because that parent used to satisfy
+            # the dependency gate. Demote those children immediately so the
+            # dashboard does not keep advertising stale-ready work.
+            for row in conn.execute(
+                "SELECT child_id FROM task_links WHERE parent_id = ? ORDER BY child_id",
+                (task_id,),
+            ).fetchall():
+                child_id = row["child_id"]
+                demoted = conn.execute(
+                    "UPDATE tasks SET status = 'todo' "
+                    "WHERE id = ? AND status = 'ready'",
+                    (child_id,),
+                )
+                if demoted.rowcount == 1:
+                    conn.execute(
+                        "INSERT INTO task_events (task_id, kind, payload, created_at) "
+                        "VALUES (?, 'status', ?, ?)",
+                        (
+                            child_id,
+                            json.dumps(
+                                {
+                                    "status": "todo",
+                                    "reason": "parent_reopened",
+                                    "parent": task_id,
+                                }
+                            ),
+                            int(time.time()),
+                        ),
+                    )
     # If we re-opened something, children may have gone stale.
     if new_status in {"done", "ready"}:
         kanban_db.recompute_ready(conn)
@@ -872,7 +913,17 @@ def bulk_update(payload: BulkTaskBody, board: Optional[str] = Query(None)):
                             ok = kanban_db.unblock_task(conn, tid)
                         else:
                             ok = _set_status_direct(conn, tid, "ready")
-                    elif s in {"todo", "running", "triage"}:
+                    elif s == "running":
+                        entry.update(
+                            ok=False,
+                            error=(
+                                "Cannot set status to 'running' directly; "
+                                "use the dispatcher/claim path"
+                            ),
+                        )
+                        results.append(entry)
+                        continue
+                    elif s in {"todo", "triage"}:
                         ok = _set_status_direct(conn, tid, s)
                     else:
                         entry.update(ok=False, error=f"unknown status {s!r}")
@@ -1207,6 +1258,15 @@ def _configured_home_channels() -> list[dict]:
     return result
 
 
+def _active_profile_name() -> str:
+    """Return the current Hermes profile name for notify-sub ownership."""
+    try:
+        from hermes_cli.profiles import get_active_profile_name
+        return get_active_profile_name() or "default"
+    except Exception:
+        return "default"
+
+
 def _home_sub_matches(sub: dict, home: dict) -> bool:
     """True if a notify_subs row corresponds to the given home channel."""
     return (
@@ -1278,6 +1338,7 @@ def subscribe_home(task_id: str, platform: str, board: Optional[str] = Query(Non
             platform=platform,
             chat_id=home["chat_id"],
             thread_id=home["thread_id"] or None,
+            notifier_profile=_active_profile_name(),
         )
         return {"ok": True, "task_id": task_id, "home_channel": home}
     finally:
@@ -1706,6 +1767,7 @@ class OrchestrationSettingsBody(BaseModel):
     orchestrator_profile: Optional[str] = None
     default_assignee: Optional[str] = None
     auto_decompose: Optional[bool] = None
+    auto_promote_children: Optional[bool] = None
 
 
 @router.get("/orchestration")
@@ -1721,6 +1783,7 @@ def get_orchestration_settings():
     explicit_orch = (kanban_cfg.get("orchestrator_profile") or "").strip()
     explicit_default = (kanban_cfg.get("default_assignee") or "").strip()
     auto_decompose = bool(kanban_cfg.get("auto_decompose", True))
+    auto_promote_children = bool(kanban_cfg.get("auto_promote_children", True))
 
     # Resolve fallbacks the same way the decomposer does.
     resolved_orch = explicit_orch
@@ -1743,6 +1806,7 @@ def get_orchestration_settings():
         "orchestrator_profile": explicit_orch,
         "default_assignee": explicit_default,
         "auto_decompose": auto_decompose,
+        "auto_promote_children": auto_promote_children,
         "resolved_orchestrator_profile": resolved_orch,
         "resolved_default_assignee": resolved_default,
         "active_profile": active_default,
@@ -1807,6 +1871,9 @@ def set_orchestration_settings(payload: OrchestrationSettingsBody):
 
     if payload.auto_decompose is not None:
         kanban_section["auto_decompose"] = bool(payload.auto_decompose)
+
+    if payload.auto_promote_children is not None:
+        kanban_section["auto_promote_children"] = bool(payload.auto_promote_children)
 
     try:
         save_config(cfg)

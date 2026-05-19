@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from hermes_cli import kanban_db as kb
+from hermes_cli.profiles import get_active_profile_name, get_profile_dir, seed_profile_skills
 
 
 # ---------------------------------------------------------------------------
@@ -229,6 +230,8 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                           help="Optional hex color (e.g. '#8b5cf6') for the dashboard")
     b_create.add_argument("--switch", action="store_true",
                           help="Switch to the new board after creating it")
+    b_create.add_argument("--default-workdir", default=None,
+                          help="Default workspace path for tasks created on this board")
 
     b_rm = boards_sub.add_parser(
         "rm", aliases=["remove", "delete"],
@@ -256,6 +259,14 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     )
     b_rename.add_argument("slug")
     b_rename.add_argument("name", help="New display name")
+
+    b_set_wd = boards_sub.add_parser(
+        "set-default-workdir",
+        help="Set the default workspace path for tasks on a board",
+    )
+    b_set_wd.add_argument("slug")
+    b_set_wd.add_argument("path", nargs="?", default=None,
+                          help="Absolute path to use as default workdir. Omit to clear.")
 
     # --- create ---
     p_create = sub.add_parser("create", help="Create a new task")
@@ -294,6 +305,12 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                                "two retries. Omit to use the dispatcher's "
                                "kanban.failure_limit config "
                                f"(default {kb.DEFAULT_FAILURE_LIMIT}).")
+    p_create.add_argument("--initial-status",
+                          choices=sorted(kb.VALID_INITIAL_STATUSES),
+                          default="running",
+                          help="Initial card status. Use 'blocked' for cards "
+                               "that require immediate human ops (R3 gate) "
+                               "to skip the brief running-to-blocked transition.")
     p_create.add_argument("--json", action="store_true", help="Emit JSON output")
 
     # --- list ---
@@ -392,6 +409,8 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_comment.add_argument("text", nargs="+", help="Comment body")
     p_comment.add_argument("--author", default=None,
                            help="Author name (default: $HERMES_PROFILE or 'user')")
+    p_comment.add_argument("--max-len", type=int, default=None,
+                           help="Trim the stored comment body to this many characters")
 
     p_complete = sub.add_parser("complete", help="Mark one or more tasks done")
     p_complete.add_argument("task_ids", nargs="+",
@@ -435,7 +454,15 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_unblock.add_argument("task_ids", nargs="+")
 
     p_archive = sub.add_parser("archive", help="Archive one or more tasks")
-    p_archive.add_argument("task_ids", nargs="+")
+    p_archive.add_argument("task_ids", nargs="*",
+                           help="Task ids to archive (default mode)")
+    p_archive.add_argument(
+        "--rm",
+        dest="purge_ids",
+        nargs="+",
+        default=None,
+        help="Permanently delete already-archived task ids from the board",
+    )
 
     # --- tail ---
     p_tail = sub.add_parser("tail", help="Follow a task's event stream")
@@ -688,6 +715,14 @@ def kanban_command(args: argparse.Namespace) -> int:
             )
         return 0
 
+    # Board-management commands operate on board metadata and the persisted
+    # current-board pointer itself. They must ignore the shared `--board`
+    # task-routing override; otherwise `/kanban --board beta boards show`
+    # reports beta as the current board even when the on-disk pointer is
+    # alpha.
+    if action == "boards":
+        return _dispatch_boards(args)
+
     # `--board <slug>` applies to every subcommand below by way of an
     # env-var pin for the duration of this call. Using HERMES_KANBAN_BOARD
     # (rather than threading `board=` through 50+ kb.connect() sites)
@@ -724,15 +759,6 @@ def kanban_command(args: argparse.Namespace) -> int:
             return 1
         os.environ["HERMES_KANBAN_BOARD"] = normed
         restore_board_env = True
-
-    # Boards management doesn't touch the DB at all — dispatch early so
-    # fresh installs that haven't initialized any DB can still use
-    # `hermes kanban boards create …`.
-    if action == "boards":
-        try:
-            return _dispatch_boards(args)
-        finally:
-            _restore_board_env()
 
     # Auto-initialize the DB before dispatching any subcommand. init_db
     # is idempotent, so running it every invocation is cheap (one
@@ -843,6 +869,8 @@ def _dispatch_boards(args: argparse.Namespace) -> int:
         return _cmd_boards_show(args)
     if sub == "rename":
         return _cmd_boards_rename(args)
+    if sub == "set-default-workdir":
+        return _cmd_boards_set_default_workdir(args)
     print(f"kanban boards: unknown action {sub!r}", file=sys.stderr)
     return 2
 
@@ -913,6 +941,7 @@ def _cmd_boards_create(args: argparse.Namespace) -> int:
         description=args.description,
         icon=args.icon,
         color=args.color,
+        default_workdir=args.default_workdir,
     )
     verb = "already exists" if already else "created"
     print(f"Board {meta['slug']!r} {verb}.")
@@ -993,6 +1022,25 @@ def _cmd_boards_rename(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_boards_set_default_workdir(args: argparse.Namespace) -> int:
+    try:
+        normed = kb._normalize_board_slug(args.slug)
+    except ValueError as exc:
+        print(f"kanban boards set-default-workdir: {exc}", file=sys.stderr)
+        return 2
+    if not normed or not kb.board_exists(normed):
+        print(f"kanban boards set-default-workdir: board {args.slug!r} does not exist",
+              file=sys.stderr)
+        return 1
+    meta = kb.write_board_metadata(normed, default_workdir=args.path)
+    new_val = meta.get("default_workdir")
+    if new_val:
+        print(f"Board {normed!r} default workdir set to {new_val!r}.")
+    else:
+        print(f"Board {normed!r} default workdir cleared.")
+    return 0
+
+
 # ---------------------------------------------------------------------------
 
 
@@ -1024,6 +1072,22 @@ def _parse_duration(val) -> Optional[int]:
 def _cmd_init(args: argparse.Namespace) -> int:
     path = kb.init_db()
     print(f"Kanban DB initialized at {path}")
+
+    # Seed bundled skills (e.g. kanban-worker) into the active profile so
+    # the kanban dispatcher can use them without a separate `hermes profile
+    # create` step.  This is best-effort — a missing or broken profile is
+    # not fatal to `kanban init`.
+    try:
+        profile_name = get_active_profile_name() or "default"
+        profile_dir = get_profile_dir(profile_name)
+        result = seed_profile_skills(profile_dir, quiet=True)
+        if result:
+            copied = result.get("copied", [])
+            if copied:
+                print(f"Seeded skill(s) into profile {profile_name}: {', '.join(copied)}")
+    except Exception:
+        pass  # best-effort
+
     print()
     # Enumerate profiles on disk so the user knows what assignees are
     # already addressable. Multica does this auto-detection on its
@@ -1120,6 +1184,7 @@ def _cmd_create(args: argparse.Namespace) -> int:
             max_runtime_seconds=max_runtime,
             skills=getattr(args, "skills", None) or None,
             max_retries=max_retries,
+            initial_status=getattr(args, "initial_status", "running"),
         )
         task = kb.get_task(conn, task_id)
     if getattr(args, "json", False):
@@ -1565,6 +1630,13 @@ def _cmd_claim(args: argparse.Namespace) -> int:
 
 def _cmd_comment(args: argparse.Namespace) -> int:
     body = " ".join(args.text).strip()
+    if args.max_len is not None:
+        if args.max_len < 1:
+            print("kanban: --max-len must be positive", file=sys.stderr)
+            return 2
+        if len(body) > args.max_len:
+            suffix = f"\n\n[trimmed to {args.max_len} chars by --max-len]"
+            body = body[: max(0, args.max_len - len(suffix))].rstrip() + suffix
     author = args.author or _profile_author()
     with kb.connect() as conn:
         kb.add_comment(conn, args.task_id, author, body)
@@ -1697,11 +1769,23 @@ def _cmd_unblock(args: argparse.Namespace) -> int:
 
 def _cmd_archive(args: argparse.Namespace) -> int:
     ids = list(args.task_ids or [])
-    if not ids:
+    purge_ids = list(getattr(args, "purge_ids", None) or [])
+    if ids and purge_ids:
+        print("choose either task_ids to archive or --rm archived task_ids", file=sys.stderr)
+        return 1
+    if not ids and not purge_ids:
         print("at least one task_id is required", file=sys.stderr)
         return 1
     failed: list[str] = []
     with kb.connect() as conn:
+        if purge_ids:
+            for tid in purge_ids:
+                if not kb.delete_archived_task(conn, tid):
+                    failed.append(tid)
+                    print(f"cannot delete {tid} (must already be archived)", file=sys.stderr)
+                else:
+                    print(f"Deleted {tid}")
+            return 0 if not failed else 1
         for tid in ids:
             if not kb.archive_task(conn, tid):
                 failed.append(tid)

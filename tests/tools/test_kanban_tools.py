@@ -61,6 +61,32 @@ def test_kanban_tools_visible_with_env_var(monkeypatch, tmp_path):
     assert kanban == expected, f"expected {expected}, got {kanban}"
 
 
+def test_kanban_worker_env_overrides_profile_toolset_filter(monkeypatch, tmp_path):
+    """Dispatcher-spawned workers must get lifecycle tools even when the
+    assignee profile restricts enabled toolsets and does not list kanban.
+    """
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_fake")
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    import tools.kanban_tools  # ensure registered
+    from model_tools import _clear_tool_defs_cache, get_tool_definitions
+    from tools.registry import invalidate_check_fn_cache
+
+    invalidate_check_fn_cache()
+    _clear_tool_defs_cache()
+    schema = get_tool_definitions(
+        enabled_toolsets=["terminal"],
+        quiet_mode=True,
+    )
+    names = {s["function"].get("name") for s in schema if "function" in s}
+    assert "kanban_show" in names
+    assert "kanban_complete" in names
+    assert "kanban_block" in names
+    assert "kanban_list" not in names
+
+
 def test_worker_with_kanban_toolset_still_hides_board_routing(monkeypatch, tmp_path):
     """Task scope wins over profile config for board-routing tools.
 
@@ -128,6 +154,7 @@ def worker_env(monkeypatch, tmp_path):
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setenv("HERMES_PROFILE", "test-worker")
+    monkeypatch.delenv("HERMES_SESSION_ID", raising=False)
     from pathlib import Path as _Path
     monkeypatch.setattr(_Path, "home", lambda: tmp_path)
 
@@ -308,6 +335,58 @@ def test_complete_metadata_round_trips_through_show(worker_env):
     assert shown["task"]["status"] == "done"
     assert shown["runs"][-1]["summary"] == "finished with structured evidence"
     assert shown["runs"][-1]["metadata"] == handoff
+
+
+def test_complete_stamps_worker_session_id_from_env(monkeypatch, worker_env):
+    from tools import kanban_tools as kt
+
+    monkeypatch.setenv("HERMES_SESSION_ID", "session-trusted")
+    metadata = {"files": 2, "worker_session_id": "user-spoof"}
+
+    out = kt._handle_complete({
+        "summary": "done by scoped worker",
+        "metadata": metadata,
+    })
+    assert json.loads(out)["ok"] is True
+    assert metadata["worker_session_id"] == "user-spoof"
+
+    from hermes_cli import kanban_db as kb
+    conn = kb.connect()
+    try:
+        run = kb.latest_run(conn, worker_env)
+        assert run.metadata == {
+            "files": 2,
+            "worker_session_id": "session-trusted",
+        }
+    finally:
+        conn.close()
+
+
+def test_complete_does_not_stamp_worker_session_id_without_scoped_task(
+    monkeypatch, worker_env
+):
+    from tools import kanban_tools as kt
+
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    monkeypatch.setenv("HERMES_SESSION_ID", "session-trusted")
+
+    out = kt._handle_complete({
+        "task_id": worker_env,
+        "summary": "done outside worker scope",
+        "metadata": {"files": 2, "worker_session_id": "user-provided"},
+    })
+    assert json.loads(out)["ok"] is True
+
+    from hermes_cli import kanban_db as kb
+    conn = kb.connect()
+    try:
+        run = kb.latest_run(conn, worker_env)
+        assert run.metadata == {
+            "files": 2,
+            "worker_session_id": "user-provided",
+        }
+    finally:
+        conn.close()
 
 
 def test_complete_with_result_only(worker_env):

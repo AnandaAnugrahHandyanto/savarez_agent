@@ -413,7 +413,7 @@
 
   function KanbanPage() {
     const { t } = useI18n();
-    const [board, setBoard] = useState(() => readSelectedBoard() || "default");
+    const [board, setBoard] = useState(() => readSelectedBoard() || null);
     const [boardList, setBoardList] = useState([]);      // [{slug, name, counts, ...}]
     const [showNewBoard, setShowNewBoard] = useState(false);
 
@@ -494,11 +494,16 @@
       return SDK.fetchJSON(withBoard(`${API}/boards`, board))
         .then(function (data) {
           const boards = (data && data.boards) || [];
+          const storedBoard = readSelectedBoard();
           setBoardList(boards);
+          if (!storedBoard && !board && data && data.current) {
+            setBoard(data.current);
+            return;
+          }
           // If the stored slug isn't in the list any longer (board was
           // deleted in the CLI while dashboard was open), fall back to
           // default so the UI doesn't hang on a 404.
-          if (board !== "default" && !boards.find(function (b) { return b.slug === board; })) {
+          if (board && board !== "default" && !boards.find(function (b) { return b.slug === board; })) {
             setBoard("default");
             writeSelectedBoard("default");
           }
@@ -1548,14 +1553,12 @@
           h("div", { className: "flex flex-col gap-1" },
             h(Label, { className: "text-xs text-muted-foreground" },
               "Orchestrator profile"),
-            h(Select, {
+            h(Select, Object.assign({
               value: settings.orchestrator_profile || "",
               className: "h-8",
-              onChange: function (e) {
-                const v = (e && e.target ? e.target.value : e) || "";
-                saveSettings({ orchestrator_profile: v });
-              },
-            },
+            }, selectChangeHandler(function (v) {
+              saveSettings({ orchestrator_profile: v });
+            })),
               h(SelectOption, { value: "" },
                 "(default: " + (settings.active_profile || "default") + ")"),
               profileOptions,
@@ -1566,14 +1569,12 @@
           h("div", { className: "flex flex-col gap-1" },
             h(Label, { className: "text-xs text-muted-foreground" },
               "Default assignee"),
-            h(Select, {
+            h(Select, Object.assign({
               value: settings.default_assignee || "",
               className: "h-8",
-              onChange: function (e) {
-                const v = (e && e.target ? e.target.value : e) || "";
-                saveSettings({ default_assignee: v });
-              },
-            },
+            }, selectChangeHandler(function (v) {
+              saveSettings({ default_assignee: v });
+            })),
               h(SelectOption, { value: "" },
                 "(default: " + (settings.active_profile || "default") + ")"),
               profileOptions,
@@ -1592,10 +1593,12 @@
                   saveSettings({ auto_decompose: !!e.target.checked });
                 },
               }),
-              settings.auto_decompose ? "Auto (default)" : "Manual",
+              "Auto-decompose triage tasks",
             ),
             h("div", { className: "text-[10px] text-muted-foreground" },
-              "When on, the dispatcher decomposes new triage tasks automatically."),
+              settings.auto_decompose
+                ? "The dispatcher decomposes new triage tasks automatically."
+                : "Triage tasks stay in triage until you click ⚗ Decompose."),
           ),
         ) : h("div", { className: "text-xs text-muted-foreground" },
           "Loading…"),

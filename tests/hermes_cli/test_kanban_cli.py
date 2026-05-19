@@ -96,9 +96,19 @@ def test_run_slash_show_includes_comments(kanban_home):
     out = kc.run_slash("create 'x'")
     import re
     tid = re.search(r"(t_[a-f0-9]+)", out).group(1)
-    kc.run_slash(f"comment {tid} 'source is paywalled'")
+    kc.run_slash(f"comment {tid} 'remember to include performance section'")
     show = kc.run_slash(f"show {tid}")
-    assert "source is paywalled" in show
+    assert "performance section" in show
+
+
+def test_run_slash_comment_max_len_trims_long_body(kanban_home):
+    out = kc.run_slash("create 'x'")
+    import re
+    tid = re.search(r"(t_[a-f0-9]+)", out).group(1)
+    kc.run_slash(f"comment {tid} '{'x' * 30}' --max-len 20")
+    show = kc.run_slash(f"show {tid}")
+    assert "trimmed to 20 chars by --max-len" in show
+    assert "x" * 30 not in show
 
 
 def test_run_slash_block_unblock_cycle(kanban_home):
@@ -199,6 +209,24 @@ def test_kanban_in_autocomplete_table():
     subs = SUBCOMMANDS.get("/kanban") or []
     assert "create" in subs
     assert "dispatch" in subs
+
+
+def test_kanban_autocomplete_includes_live_subcommands():
+    from prompt_toolkit.document import Document
+
+    from hermes_cli.commands import SlashCommandCompleter
+
+    completer = SlashCommandCompleter()
+    doc = Document("/kanban sp", cursor_position=len("/kanban sp"))
+    texts = {c.text for c in completer.get_completions(doc, None)}
+
+    assert "specify" in texts
+
+    doc = Document("/kanban re", cursor_position=len("/kanban re"))
+    texts = {c.text for c in completer.get_completions(doc, None)}
+
+    assert "reclaim" in texts
+    assert "reassign" in texts
 
 
 def test_kanban_not_gateway_only():
@@ -402,3 +430,13 @@ def test_run_slash_board_override_restores_prior_env(kanban_home, monkeypatch):
     kc.run_slash("--board alpha list")
 
     assert os.environ.get("HERMES_KANBAN_BOARD") == "beta"
+
+
+def test_run_slash_board_override_does_not_change_boards_show_current(kanban_home):
+    kb.create_board("alpha")
+    kb.create_board("beta")
+    kb.set_current_board("alpha")
+
+    out = kc.run_slash("--board beta boards show")
+
+    assert "Current board: alpha" in out

@@ -1288,9 +1288,15 @@ def _truncate_token(value: Optional[str], visible: int = 6) -> str:
     OAuth access token. JWT prefixes (the part before the first dot) are
     stripped first when present so the visible suffix is always part of
     the signing region rather than a meaningless header chunk.
+
+    Returns the Entra-ID placeholder when handed a callable (Azure Foundry
+    bearer provider) — the callable is NEVER invoked here.
     """
     if not value:
         return ""
+    if callable(value) and not isinstance(value, str):
+        # Entra ID bearer provider — never reveal a minted token in the UI.
+        return "<entra-id-bearer>"
     s = str(value)
     if "." in s and s.count(".") >= 2:
         # Looks like a JWT — show the trailing piece of the signature only.
@@ -4340,7 +4346,11 @@ async def serve_plugin_asset(plugin_name: str, file_path: str):
         ".woff": "font/woff",
     }
     media_type = content_types.get(suffix, "application/octet-stream")
-    return FileResponse(target, media_type=media_type)
+    return FileResponse(
+        target,
+        media_type=media_type,
+        headers={"Cache-Control": "no-store, no-cache, must-revalidate"},
+    )
 
 
 def _mount_plugin_api_routes():
