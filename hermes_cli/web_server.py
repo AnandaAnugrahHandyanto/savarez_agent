@@ -3731,7 +3731,7 @@ def mount_spa(application: FastAPI):
             vary_values.append("x-forwarded-prefix")
         if _accepts_gzip_static(accept_encoding):
             content = css.encode("utf-8")
-            compressed = gzip.compress(content, compresslevel=6)
+            compressed = gzip.compress(content, compresslevel=_GZIP_COMPRESS_LEVEL)
             if len(compressed) < len(content):
                 headers = {
                     "content-encoding": "gzip",
@@ -3748,6 +3748,9 @@ def mount_spa(application: FastAPI):
             fallback_headers["vary"] = ", ".join(vary_values)
         return Response(content=css, media_type="text/css", headers=fallback_headers)
 
+    # Compression level for gzip: 6 balances speed (higher is slower) vs ratio
+    _GZIP_COMPRESS_LEVEL = 6
+
     def _accepts_gzip_static(accept_encoding: str) -> bool:
         """Parse Accept-Encoding header and return True if gzip is accepted (q > 0).
 
@@ -3755,6 +3758,7 @@ def mount_spa(application: FastAPI):
         - Basic encodings: gzip, x-gzip (RFC 2616 alias)
         - Quality values: gzip;q=0.5, gzip;q=0 (including spaced: gzip; q=0)
         - Multiple parameters: gzip;q=0.5;ext=foo
+        - Wildcard: * (RFC 7231 §5.3.4 — accept any content-coding)
         - Case insensitive matching
 
         Shared between serve_css and _OptimizedStaticFiles.
@@ -3765,6 +3769,9 @@ def mount_spa(application: FastAPI):
             encoding = encoding.strip()
             if not encoding:
                 continue
+            # Wildcard: client accepts any content-coding (RFC 7231 §5.3.4)
+            if encoding == "*":
+                return True
             # Match gzip or x-gzip at start (case insensitive, word boundary)
             match = re.match(r"^(gzip|x-gzip)\b", encoding, re.IGNORECASE)
             if not match:
@@ -3804,7 +3811,7 @@ def mount_spa(application: FastAPI):
                         if file_size > 1024:
                             with open(file_path, "rb") as f:
                                 content = f.read()
-                            compressed = gzip.compress(content, compresslevel=6)
+                            compressed = gzip.compress(content, compresslevel=_GZIP_COMPRESS_LEVEL)
                             if len(compressed) < len(content):
                                 # Merge Vary header if already present
                                 vary_values = ["accept-encoding"]
