@@ -441,10 +441,10 @@ class TestRoutingIntents:
 
 
 class TestDeliverResultWrapping:
-    """Verify that cron deliveries are wrapped with header/footer and no longer mirrored."""
+    """Verify cron deliveries use the friendly user-facing template."""
 
-    def test_delivery_wraps_content_with_header_and_footer(self):
-        """Delivered content should include task name header and agent-invisible note."""
+    def test_delivery_wraps_content_with_friendly_card(self):
+        """Delivered content should use the compact Chinese card contract."""
         from gateway.config import Platform
 
         pconfig = MagicMock()
@@ -464,11 +464,15 @@ class TestDeliverResultWrapping:
 
         send_mock.assert_called_once()
         sent_content = send_mock.call_args.kwargs.get("content") or send_mock.call_args[0][-1]
-        assert "Cronjob Response: daily-report" in sent_content
-        assert "(job_id: test-job)" in sent_content
-        assert "-------------" in sent_content
+        assert "🌿 定时任务已完成｜daily-report" in sent_content
+        assert "【状态】" in sent_content
+        assert "动作｜已完成本轮自动执行并发送结果" in sent_content
+        assert "结果｜Here is today's summary." in sent_content
         assert "Here is today's summary." in sent_content
-        assert "To stop or manage this job" in sent_content
+        assert "【下一步】" in sent_content
+        assert "Cronjob Response" not in sent_content
+        assert "job_id" not in sent_content
+        assert "To stop or manage this job" not in sent_content
 
     def test_delivery_uses_job_id_when_no_name(self):
         """When a job has no name, the wrapper should fall back to job id."""
@@ -489,7 +493,9 @@ class TestDeliverResultWrapping:
             _deliver_result(job, "Output.")
 
         sent_content = send_mock.call_args.kwargs.get("content") or send_mock.call_args[0][-1]
-        assert "Cronjob Response: abc-123" in sent_content
+        assert "🌿 定时任务已完成｜abc-123" in sent_content
+        assert "Cronjob Response" not in sent_content
+        assert "job_id" not in sent_content
 
     def test_delivery_skips_wrapping_when_config_disabled(self):
         """When cron.wrap_response is false, deliver raw content without header/footer."""
@@ -515,7 +521,7 @@ class TestDeliverResultWrapping:
         sent_content = send_mock.call_args.kwargs.get("content") or send_mock.call_args[0][-1]
         assert sent_content == "Clean output only."
         assert "Cronjob Response" not in sent_content
-        assert "The agent cannot see" not in sent_content
+        assert "定时任务已完成" not in sent_content
 
     def test_delivery_extracts_media_tags_before_send(self):
         """Cron delivery should pass MEDIA attachments separately to the send helper."""
@@ -633,10 +639,14 @@ class TestDeliverResultWrapping:
 
         assert "【状态】" in card
         assert "【下一步】" in card
+        assert "⚠️ 这轮任务没跑完｜daily" in card
+        assert "动作｜已记录失败并停止本轮自动补发" in card
         assert "RuntimeError" not in card
         assert "HTTP 502" not in card
         assert "ret=-2" not in card
         assert "Traceback" not in card
+        assert "Cronjob Response" not in card
+        assert "To stop or manage this job" not in card
 
     def test_live_adapter_routes_image_to_send_image_file(self):
         """Image MEDIA files should be routed to send_image_file, not send_voice."""

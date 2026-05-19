@@ -29,6 +29,7 @@ _IS_WINDOWS = platform.system() == "Windows"
 from pathlib import Path
 from typing import Dict, Optional, Any
 
+from gateway.friendly_messages import get_persona
 from hermes_constants import get_hermes_dir
 
 logger = logging.getLogger(__name__)
@@ -242,7 +243,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
     # WhatsApp message limits — practical UX limit, not protocol max.
     # WhatsApp allows ~65K but long messages are unreadable on mobile.
     MAX_MESSAGE_LENGTH = 4096
-    DEFAULT_REPLY_PREFIX = "⚕ *Hermes Agent*\n────────────\n"
+    DEFAULT_REPLY_PREFIX = None
     
     # Default bridge location relative to the hermes-agent install
     _DEFAULT_BRIDGE_DIR = Path(__file__).resolve().parents[2] / "scripts" / "whatsapp-bridge"
@@ -288,7 +289,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
         env_prefix = os.getenv("WHATSAPP_REPLY_PREFIX")
         if env_prefix is not None:
             return env_prefix.replace("\\n", "\n")
-        return self.DEFAULT_REPLY_PREFIX
+        return f"⚕ *{get_persona().display_name}*\n────────────\n"
 
     def _outgoing_chunk_limit(self) -> int:
         """Reserve room for the bridge-side prefix so final WhatsApp text fits."""

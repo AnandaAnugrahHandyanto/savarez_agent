@@ -411,6 +411,27 @@ class TestWeixinChunkDelivery:
         assert first_try["text"] == retry["text"]
         assert first_try["client_id"] == retry["client_id"]
 
+    @patch("gateway.platforms.weixin._send_message", new_callable=AsyncMock)
+    def test_send_exec_approval_uses_friendly_text_card(self, send_message_mock):
+        adapter = self._connected_adapter()
+
+        result = asyncio.run(
+            adapter.send_exec_approval(
+                "wxid_test123",
+                "python3 -c \"print('hello')\"",
+                "agent:main:weixin:dm:wxid_test123",
+                "script execution via -e/-c flag",
+            )
+        )
+
+        assert result.success is True
+        sent_text = send_message_mock.await_args.kwargs["text"]
+        assert "命令需要审批" in sent_text
+        assert "【可选操作】" in sent_text
+        assert "批准本次" in sent_text
+        assert "永久允许" in sent_text
+        assert "Dangerous command requires approval" not in sent_text
+
 
 class TestWeixinOutboundMedia:
     def test_send_image_file_accepts_keyword_image_path(self):

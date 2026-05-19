@@ -78,6 +78,7 @@ from gateway.platforms.base import (
     SUPPORTED_DOCUMENT_TYPES,
     utf16_len,
 )
+from gateway.friendly_messages import approval_summary
 from gateway.platforms.telegram_network import (
     TelegramFallbackTransport,
     discover_fallback_ips,
@@ -2119,11 +2120,14 @@ class TelegramAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
 
         try:
-            cmd_preview = command[:3800] + "..." if len(command) > 3800 else command
+            summary = approval_summary(command, session_key, description)
             text = (
-                f"⚠️ <b>Command Approval Required</b>\n\n"
-                f"<pre>{_html.escape(cmd_preview)}</pre>\n\n"
-                f"Reason: {_html.escape(description)}"
+                f"🧯 <b>命令需要审批</b>｜{_html.escape(summary['risk_pill'])}\n\n"
+                "我已暂停执行。确认前，这条命令不会运行。\n\n"
+                f"<b>风险</b>｜{_html.escape(summary['risk'])}\n"
+                f"<b>范围</b>｜{_html.escape(summary['scope'])}\n"
+                f"<b>命令</b>｜\n<pre>{_html.escape(summary['command'])}</pre>\n"
+                f"<b>审批 ID</b>｜{_html.escape(summary['approval_id'])}"
             )
 
             # Resolve thread context for thread replies
@@ -2139,12 +2143,12 @@ class TelegramAdapter(BasePlatformAdapter):
 
             keyboard = InlineKeyboardMarkup([
                 [
-                    InlineKeyboardButton("✅ Allow Once", callback_data=f"ea:once:{approval_id}"),
-                    InlineKeyboardButton("✅ Session", callback_data=f"ea:session:{approval_id}"),
+                    InlineKeyboardButton("🟢 批准本次", callback_data=f"ea:once:{approval_id}"),
+                    InlineKeyboardButton("🕒 本会话允许", callback_data=f"ea:session:{approval_id}"),
                 ],
                 [
-                    InlineKeyboardButton("✅ Always", callback_data=f"ea:always:{approval_id}"),
-                    InlineKeyboardButton("❌ Deny", callback_data=f"ea:deny:{approval_id}"),
+                    InlineKeyboardButton("📌 永久允许", callback_data=f"ea:always:{approval_id}"),
+                    InlineKeyboardButton("🔕 拒绝", callback_data=f"ea:deny:{approval_id}"),
                 ],
             ])
 

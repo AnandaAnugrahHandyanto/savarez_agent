@@ -101,7 +101,7 @@ async def test_unknown_slash_command_returns_guidance(monkeypatch):
     result = await runner._handle_message(_make_event("/definitely-not-a-command"))
 
     assert result is not None
-    assert "Unknown command" in result
+    assert "没找到这个命令" in result
     assert "/definitely-not-a-command" in result
     assert "/commands" in result
     runner._run_agent.assert_not_called()
@@ -127,8 +127,71 @@ async def test_unknown_slash_command_underscored_form_also_guarded(monkeypatch):
     result = await runner._handle_message(_make_event("/made_up_thing"))
 
     assert result is not None
-    assert "Unknown command" in result
+    assert "没找到这个命令" in result
     assert "/made_up_thing" in result
+    runner._run_agent.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_persona_greeting_query_short_circuits_agent(monkeypatch):
+    import gateway.run as gateway_run
+
+    runner = _make_runner()
+    runner._run_agent = AsyncMock(
+        side_effect=AssertionError("greeting query leaked through to the agent")
+    )
+
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+
+    result = await runner._handle_message(_make_event("你好"))
+
+    assert result is not None
+    assert "我在，Hermes在线 😊～" in result
+    assert "告诉我就行 ✨" in result
+    runner._run_agent.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_persona_identity_query_short_circuits_agent(monkeypatch):
+    import gateway.run as gateway_run
+
+    runner = _make_runner()
+    runner._run_agent = AsyncMock(
+        side_effect=AssertionError("persona query leaked through to the agent")
+    )
+
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+
+    result = await runner._handle_message(_make_event("你是谁？"))
+
+    assert result is not None
+    assert "我是「Hermes」，你的随身执行伙伴 😊～" in result
+    assert "Hermes Agent" not in result
+    runner._run_agent.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_persona_capability_query_short_circuits_agent(monkeypatch):
+    import gateway.run as gateway_run
+
+    runner = _make_runner()
+    runner._run_agent = AsyncMock(
+        side_effect=AssertionError("capability query leaked through to the agent")
+    )
+
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+
+    result = await runner._handle_message(_make_event("你能干嘛"))
+
+    assert result is not None
+    assert "我可以帮你做这些" in result
+    assert "查天气" in result
     runner._run_agent.assert_not_called()
 
 

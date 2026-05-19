@@ -38,6 +38,10 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from hermes_constants import get_hermes_home
 from hermes_cli.config import load_config, _expand_env_vars
 from hermes_time import now as _hermes_now
+from gateway.friendly_messages import (
+    render_cron_failure,
+    render_cron_result,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -132,70 +136,14 @@ SILENT_MARKER = "[SILENT]"
 # Backward-compatible module override used by tests and emergency monkeypatches.
 _hermes_home: Path | None = None
 
-_RAW_USER_VISIBLE_ERROR_MARKERS = (
-    "traceback",
-    "runtimeerror",
-    "httperror",
-    "http 5",
-    "http 429",
-    "ret=-2",
-    "errcode=-2",
-)
-
-
 def _get_hermes_home() -> Path:
     """Resolve Hermes home dynamically while preserving test monkeypatch hooks."""
     return _hermes_home or get_hermes_home()
 
 
-def _friendly_card(
-    title: str,
-    *,
-    action: str,
-    result: str,
-    impact: str,
-    boundary: str,
-    next_step: str,
-) -> str:
-    lines = [
-        title,
-        "",
-        "【状态】",
-        f"动作｜{_sanitize_user_visible(action)}",
-        f"结果｜{_sanitize_user_visible(result)}",
-        f"影响｜{_sanitize_user_visible(impact)}",
-        f"边界｜{_sanitize_user_visible(boundary)}",
-        "",
-        "【下一步】",
-        _sanitize_user_visible(next_step),
-    ]
-    return "\n".join(lines)
-
-
-def _sanitize_user_visible(text: str) -> str:
-    value = str(text or "")
-    lowered = value.lower()
-    if any(marker in lowered for marker in _RAW_USER_VISIBLE_ERROR_MARKERS):
-        return "任务运行或上游服务暂时不可用；原始技术细节已写入本地任务输出。"
-    return value
-
-
 def _format_cron_failure_card(job: dict, error: str | None) -> str:
     job_name = str(job.get("name") or job.get("id") or "未命名任务")
-    error_text = str(error or "任务未返回可展示结果")
-    safe_result = "任务没有完成，已停止继续重试。"
-    if "blocked" in error_text.lower() or "injection" in error_text.lower():
-        safe_result = "任务触发安全保护，已停止执行。"
-    elif "timeout" in error_text.lower() or "timed out" in error_text.lower():
-        safe_result = "任务执行超时，已保留现场。"
-    return _friendly_card(
-        f"⚠️ 定时任务未完成｜{job_name}",
-        action="已记录失败并停止本轮自动补发",
-        result=safe_result,
-        impact="不会把原始异常直接发到聊天里，也不会因为告警刷屏延长限流。",
-        boundary="详细堆栈、HTTP 状态和命令输出只保存在本地输出文件。",
-        next_step="我会在下一次调度周期重新执行；如果连续失败，请打开本地任务输出查看详情。",
-    )
+    return render_cron_failure(job_name, error)
 
 
 def _get_lock_paths() -> tuple[Path, Path]:
@@ -580,14 +528,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
 
     if wrap_response:
         task_name = job.get("name", job["id"])
-        job_id = job.get("id", "")
-        delivery_content = (
-            f"Cronjob Response: {task_name}\n"
-            f"(job_id: {job_id})\n"
-            f"-------------\n\n"
-            f"{content}\n\n"
-            f"To stop or manage this job, send me a new message (e.g. \"stop reminder {task_name}\")."
-        )
+        delivery_content = render_cron_result(str(task_name), content)
     else:
         delivery_content = content
 

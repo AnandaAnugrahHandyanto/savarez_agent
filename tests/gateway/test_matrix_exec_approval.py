@@ -29,7 +29,7 @@ class TestMatrixExecApprovalReactions:
         assert adapter._approval_prompts_by_event["$evt1"].session_key == "sess-1"
         assert adapter._send_reaction.await_count == 2
         emojis = [call.args[2] for call in adapter._send_reaction.await_args_list]
-        assert emojis == ["✅", "❎"]
+        assert emojis == ["🟢", "🔕"]
 
     @pytest.mark.asyncio
     async def test_reaction_resolves_pending_approval(self, monkeypatch):
@@ -44,7 +44,7 @@ class TestMatrixExecApprovalReactions:
         )
         adapter._approval_prompt_by_session["sess-1"] = "$target"
 
-        content = {"m.relates_to": {"event_id": "$target", "key": "✅"}}
+        content = {"m.relates_to": {"event_id": "$target", "key": "🟢"}}
         event = types.SimpleNamespace(
             sender="@liizfq:liizfq.top",
             event_id="$react1",

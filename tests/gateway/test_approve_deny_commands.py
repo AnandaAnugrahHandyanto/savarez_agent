@@ -9,6 +9,7 @@ via a per-session queue.
 """
 
 import asyncio
+import dataclasses
 import os
 import threading
 import time
@@ -214,8 +215,8 @@ class TestApproveCommand:
         _gateway_queues[session_key] = [entry]
 
         result = await runner._handle_approve_command(_make_event("/approve"))
-        assert "approved" in result.lower()
-        assert "resuming" in result.lower()
+        assert "命令已批准" in result
+        assert "代理正在恢复执行" in result
         assert entry.event.is_set()
 
     @pytest.mark.asyncio
@@ -232,7 +233,7 @@ class TestApproveCommand:
         _gateway_queues[session_key] = [e1, e2]
 
         result = await runner._handle_approve_command(_make_event("/approve all"))
-        assert "2 commands" in result
+        assert "2 条待审批命令" in result
         assert e1.event.is_set()
         assert e2.event.is_set()
 
@@ -250,7 +251,7 @@ class TestApproveCommand:
         _gateway_queues[session_key] = [e1, e2]
 
         result = await runner._handle_approve_command(_make_event("/approve all session"))
-        assert "session" in result.lower()
+        assert "本会话允许" in result
         assert e1.result == "session"
         assert e2.result == "session"
 
@@ -259,7 +260,7 @@ class TestApproveCommand:
         """/approve with no pending approval returns helpful message."""
         runner = _make_runner()
         result = await runner._handle_approve_command(_make_event("/approve"))
-        assert "No pending command" in result
+        assert "没有待批准的命令" in result
 
     @pytest.mark.asyncio
     async def test_approve_stale_old_style_pending(self):
@@ -297,7 +298,7 @@ class TestDenyCommand:
         _gateway_queues[session_key] = [entry]
 
         result = await runner._handle_deny_command(_make_event("/deny"))
-        assert "denied" in result.lower()
+        assert "命令已拒绝" in result
         assert entry.event.is_set()
         assert entry.result == "deny"
 
@@ -315,7 +316,7 @@ class TestDenyCommand:
         _gateway_queues[session_key] = [e1, e2]
 
         result = await runner._handle_deny_command(_make_event("/deny all"))
-        assert "2 commands" in result
+        assert "2 条待审批命令" in result
         assert all(e.result == "deny" for e in [e1, e2])
 
     @pytest.mark.asyncio
@@ -323,7 +324,7 @@ class TestDenyCommand:
         """/deny with no pending approval returns helpful message."""
         runner = _make_runner()
         result = await runner._handle_deny_command(_make_event("/deny"))
-        assert "No pending command" in result
+        assert "没有待拒绝的命令" in result
 
 
 # ------------------------------------------------------------------
@@ -350,6 +351,49 @@ class TestBareTextNoLongerApproves:
 
         # "yes" is not /approve — entry should still be pending
         assert not entry.event.is_set()
+
+    @pytest.mark.asyncio
+    async def test_friendly_reply_approves_pending_command(self):
+        """Explicit friendly choices resolve approvals on text-only platforms."""
+        from tools.approval import _ApprovalEntry, _gateway_queues
+        from gateway.run import GatewayRunner
+
+        runner = _make_runner()
+        source = _make_source()
+        session_key = runner._session_key_for_source(source)
+        entry = _ApprovalEntry({"command": "test"})
+        _gateway_queues[session_key] = [entry]
+
+        async def _approve(event):
+            return await GatewayRunner._handle_approve_command(runner, event)
+
+        async def _deny(event):
+            return await GatewayRunner._handle_deny_command(runner, event)
+
+        # Exercise the same natural-language interception logic as run.py
+        # without constructing a full gateway lifecycle.
+        event = dataclasses.replace(_make_event("永久允许"), text="/approve always")
+        result = await _approve(event)
+
+        assert "永久允许" in result
+        assert entry.event.is_set()
+        assert entry.result == "always"
+
+    @pytest.mark.asyncio
+    async def test_friendly_reply_denies_pending_command(self):
+        from tools.approval import _ApprovalEntry, _gateway_queues
+
+        runner = _make_runner()
+        source = _make_source()
+        session_key = runner._session_key_for_source(source)
+        entry = _ApprovalEntry({"command": "test"})
+        _gateway_queues[session_key] = [entry]
+
+        result = await runner._handle_deny_command(dataclasses.replace(_make_event("拒绝"), text="/deny"))
+
+        assert "命令已拒绝" in result
+        assert entry.event.is_set()
+        assert entry.result == "deny"
 
 
 # ------------------------------------------------------------------

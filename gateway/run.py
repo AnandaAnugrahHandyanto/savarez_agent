@@ -52,6 +52,27 @@ from typing import Dict, Optional, Any, List, Union
 from agent.account_usage import fetch_account_usage, render_account_usage_lines
 from agent.async_utils import safe_schedule_threadsafe
 from agent.i18n import t
+from gateway.friendly_messages import (
+    parse_approval_reply,
+    render_approval_denied,
+    render_approval_request,
+    render_approval_resolved,
+    render_busy_ack,
+    render_inactivity_timeout,
+    render_inactivity_warning,
+    render_no_pending_approval,
+    render_background_failure,
+    render_background_result,
+    render_pairing_code,
+    render_pairing_rate_limited,
+    render_persona_reply,
+    render_task_progress,
+    render_telegram_topic_new_header,
+    render_telegram_topic_root_lobby,
+    render_telegram_topic_root_new,
+    render_unknown_command,
+    render_update_result,
+)
 from hermes_cli.config import cfg_get
 
 # --- Agent cache tuning ---------------------------------------------------
@@ -1769,32 +1790,15 @@ class GatewayRunner:
         return True
 
     def _telegram_topic_root_lobby_message(self) -> str:
-        return (
-            "This main chat is reserved for system commands.\n\n"
-            "To start a new Hermes chat, open the All Messages topic at the top "
-            "of this bot interface and send any message there. Telegram will "
-            "create a new topic for that message; each topic works as an "
-            "independent Hermes session."
-        )
+        return render_telegram_topic_root_lobby()
 
     def _telegram_topic_root_new_message(self) -> str:
-        return (
-            "To start a new parallel Hermes chat, open the All Messages topic "
-            "at the top of this bot interface and send any message there. "
-            "Telegram will create a new topic for it.\n\n"
-            "Each topic is an independent Hermes session. Use /new inside an "
-            "existing topic only if you want to replace that topic's current session."
-        )
+        return render_telegram_topic_root_new()
 
     def _telegram_topic_new_header(self, source: SessionSource) -> Optional[str]:
         if not self._is_telegram_topic_lane(source):
             return None
-        return (
-            "Started a new Hermes session in this topic.\n\n"
-            "Tip: for parallel work, open All Messages and send a message there "
-            "to create a separate topic instead of using /new here. /new replaces "
-            "the session attached to the current topic."
-        )
+        return render_telegram_topic_new_header()
 
     def _record_telegram_topic_binding(
         self,
@@ -2695,56 +2699,30 @@ class GatewayRunner:
 
         self._busy_ack_ts[session_key] = now
 
-        # Build a status-rich acknowledgment
-        status_parts = []
+        # Build a user-friendly acknowledgment.  Keep detailed iteration/tool
+        # diagnostics in logs only; user-facing text should not leak loop state.
+        activity_summary = None
+        elapsed_min = None
         if running_agent and running_agent is not _AGENT_PENDING_SENTINEL:
             try:
-                summary = running_agent.get_activity_summary()
-                iteration = summary.get("api_call_count", 0)
-                max_iter = summary.get("max_iterations", 0)
-                current_tool = summary.get("current_tool")
+                activity_summary = running_agent.get_activity_summary()
                 start_ts = self._running_agents_ts.get(session_key, 0)
                 if start_ts:
                     elapsed_min = int((now - start_ts) / 60)
-                    if elapsed_min > 0:
-                        status_parts.append(f"{elapsed_min} min elapsed")
-                if max_iter:
-                    status_parts.append(f"iteration {iteration}/{max_iter}")
-                if current_tool:
-                    status_parts.append(f"running: {current_tool}")
             except Exception:
                 pass
 
-        status_detail = f" ({', '.join(status_parts)})" if status_parts else ""
         if is_steer_mode:
-            message = (
-                f"⏩ 已接入当前任务｜消息会在下一次工具调用后生效\n\n"
-                "【状态】\n"
-                f"动作｜已尝试追加到当前运行{status_detail}\n"
-                "结果｜当前任务继续执行\n"
-                "影响｜不会开启第二个并发任务\n"
-                "边界｜如果工具调用长期无返回，仍会进入超时保护\n\n"
-                "【下一步】\n请等待当前任务继续输出。"
+            message = render_busy_ack(
+                "steer", activity_summary, elapsed_mins=elapsed_min
             )
         elif is_queue_mode:
-            message = (
-                f"⏳ 已排到下一轮｜当前任务完成后处理\n\n"
-                "【状态】\n"
-                f"动作｜已保存你的后续消息{status_detail}\n"
-                "结果｜当前任务完成后会自动继续\n"
-                "影响｜不会打断正在执行的任务\n"
-                "边界｜短时间多条消息会合并，避免刷屏\n\n"
-                "【下一步】\n请等待当前任务结束，我会继续处理。"
+            message = render_busy_ack(
+                "queue", activity_summary, elapsed_mins=elapsed_min
             )
         else:
-            message = (
-                f"⚡ 正在切换到你的新消息｜当前任务会被中断\n\n"
-                "【状态】\n"
-                f"动作｜已请求中断当前任务{status_detail}\n"
-                "结果｜会尽快处理你的新消息\n"
-                "影响｜当前任务可能不会继续输出\n"
-                "边界｜只发送一次中断确认\n\n"
-                "【下一步】\n请稍等，我会回复新的请求。"
+            message = render_busy_ack(
+                "interrupt", activity_summary, elapsed_mins=elapsed_min
             )
 
         # First-touch onboarding: the very first time a user sends a message
@@ -5895,18 +5873,14 @@ class GatewayRunner:
                     if adapter:
                         await adapter.send(
                             source.chat_id,
-                            f"Hi~ I don't recognize you yet!\n\n"
-                            f"Here's your pairing code: `{code}`\n\n"
-                            f"Ask the bot owner to run:\n"
-                            f"`hermes pairing approve {platform_name} {code}`"
+                            render_pairing_code(platform_name, code),
                         )
                 else:
                     adapter = self.adapters.get(source.platform)
                     if adapter:
                         await adapter.send(
                             source.chat_id,
-                            "Too many pairing requests right now~ "
-                            "Please try again later!"
+                            render_pairing_rate_limited(),
                         )
                     # Record rate limit so subsequent messages are silently ignored
                     self.pairing_store._record_rate_limit(platform_name, source.user_id)
@@ -6018,6 +5992,36 @@ class GatewayRunner:
                     # the agent's response don't double-post.  The agent
                     # itself will produce the next user-facing message.
                     return ""
+
+        # Intercept friendly natural-language replies to dangerous-command
+        # approvals.  Slash commands are still handled by the normal command
+        # dispatcher below, but text platforms such as Weixin can now reply
+        # with "批准本次" / "本会话允许" / "永久允许" / "拒绝".
+        try:
+            from tools.approval import has_blocking_approval as _has_tool_approval
+            _friendly_tool_approval_live = _has_tool_approval(_quick_key)
+        except Exception:
+            _friendly_tool_approval_live = False
+        if _friendly_tool_approval_live:
+            _friendly_choice = parse_approval_reply(event.text or "")
+            if _friendly_choice is not None:
+                if _friendly_choice == "deny":
+                    return await self._handle_deny_command(
+                        dataclasses.replace(event, text="/deny")
+                    )
+                _suffix = {
+                    "once": "",
+                    "session": " session",
+                    "always": " always",
+                }[_friendly_choice]
+                return await self._handle_approve_command(
+                    dataclasses.replace(event, text=f"/approve{_suffix}")
+                )
+
+        if not event.get_command():
+            _persona_reply = render_persona_reply(event.text or "")
+            if _persona_reply is not None:
+                return _persona_reply
 
         # Intercept messages that are responses to a pending /reload-mcp
         # (or future) slash-confirm prompt.  Recognized confirm replies are
@@ -6824,10 +6828,7 @@ class GatewayRunner:
                             source.platform.value if source.platform else "?",
                         )
                         return (
-                            f"Unknown command `/{command}`. "
-                            f"Type /commands to see what's available, "
-                            f"or resend without the leading slash to send "
-                            f"as a regular message."
+                            render_unknown_command(command)
                         )
             except Exception as e:
                 logger.debug("Skill command check failed (non-fatal): %s", e)
@@ -10642,7 +10643,7 @@ class GatewayRunner:
             if not runtime_kwargs.get("api_key"):
                 await adapter.send(
                     source.chat_id,
-                    f"❌ Background task {task_id} failed: no provider credentials configured.",
+                    render_background_failure(task_id, "no provider credentials configured"),
                     metadata=_thread_metadata,
                 )
                 return
@@ -10727,18 +10728,17 @@ class GatewayRunner:
                 images, text_content = adapter.extract_images(response)
 
                 preview = prompt[:60] + ("..." if len(prompt) > 60 else "")
-                header = f'✅ Background task complete\nPrompt: "{preview}"\n\n'
 
                 if text_content:
                     await adapter.send(
                         chat_id=source.chat_id,
-                        content=header + text_content,
+                        content=render_background_result(preview, text_content),
                         metadata=_thread_metadata,
                     )
                 elif not images and not media_files:
                     await adapter.send(
                         chat_id=source.chat_id,
-                        content=header + "(No response generated)",
+                        content=render_background_result(preview, None),
                         metadata=_thread_metadata,
                     )
 
@@ -10768,7 +10768,7 @@ class GatewayRunner:
                 preview = prompt[:60] + ("..." if len(prompt) > 60 else "")
                 await adapter.send(
                     chat_id=source.chat_id,
-                    content=f'✅ Background task complete\nPrompt: "{preview}"\n\n(No response generated)',
+                    content=render_background_result(preview, None),
                     metadata=_thread_metadata,
                 )
 
@@ -10777,7 +10777,7 @@ class GatewayRunner:
             try:
                 await adapter.send(
                     chat_id=source.chat_id,
-                    content=f"❌ Background task {task_id} failed: {e}",
+                    content=render_background_failure(task_id, str(e)),
                     metadata=_thread_metadata,
                 )
             except Exception:
@@ -12613,7 +12613,7 @@ class GatewayRunner:
             if session_key in self._pending_approvals:
                 self._pending_approvals.pop(session_key)
                 return t("gateway.approval_expired")
-            return t("gateway.approve.no_pending")
+            return render_no_pending_approval("approve")
 
         # Parse args: support "all", "all session", "all always", "session", "always"
         args = event.get_command_args().strip().lower().split()
@@ -12629,7 +12629,7 @@ class GatewayRunner:
 
         count = resolve_gateway_approval(session_key, choice, resolve_all=resolve_all)
         if not count:
-            return t("gateway.approve.no_pending")
+            return render_no_pending_approval("approve")
 
         # Resume typing indicator — agent is about to continue processing.
         _adapter = self.adapters.get(source.platform)
@@ -12637,8 +12637,7 @@ class GatewayRunner:
             _adapter.resume_typing_for_chat(source.chat_id)
 
         logger.info("User approved %d dangerous command(s) via /approve (%s)", count, choice)
-        plural = "plural" if count > 1 else "singular"
-        return t(f"gateway.approve.{choice}_{plural}", count=count)
+        return render_approval_resolved(choice, count=count)
 
     async def _handle_deny_command(self, event: MessageEvent) -> str:
         """Handle /deny command — reject pending dangerous command(s).
@@ -12659,14 +12658,14 @@ class GatewayRunner:
             if session_key in self._pending_approvals:
                 self._pending_approvals.pop(session_key)
                 return t("gateway.deny.stale")
-            return t("gateway.deny.no_pending")
+            return render_no_pending_approval("deny")
 
         args = event.get_command_args().strip().lower()
         resolve_all = "all" in args
 
         count = resolve_gateway_approval(session_key, "deny", resolve_all=resolve_all)
         if not count:
-            return t("gateway.deny.no_pending")
+            return render_no_pending_approval("deny")
 
         # Resume typing indicator — agent continues (with BLOCKED result).
         _adapter = self.adapters.get(source.platform)
@@ -12674,9 +12673,7 @@ class GatewayRunner:
             _adapter.resume_typing_for_chat(source.chat_id)
 
         logger.info("User denied %d dangerous command(s) via /deny", count)
-        if count > 1:
-            return t("gateway.deny.denied_plural", count=count)
-        return t("gateway.deny.denied_singular")
+        return render_approval_denied(count=count)
 
     # Platforms where /update is allowed.  ACP, API server, and webhooks are
     # programmatic interfaces that should not trigger system updates.
@@ -12996,14 +12993,11 @@ class GatewayRunner:
                 try:
                     exit_code_raw = exit_code_path.read_text().strip() or "1"
                     exit_code = int(exit_code_raw)
-                    if exit_code == 0:
-                        await adapter.send(chat_id, "✅ Hermes update finished.", metadata=metadata)
-                    else:
-                        await adapter.send(
-                            chat_id,
-                            "❌ Hermes update failed (exit code {}).".format(exit_code),
-                            metadata=metadata,
-                        )
+                    await adapter.send(
+                        chat_id,
+                        render_update_result(exit_code == 0, exit_code=exit_code),
+                        metadata=metadata,
+                    )
                     logger.info("Update finished (exit=%s), notified %s", exit_code, session_key)
                 except Exception as e:
                     logger.warning("Update final notification failed: %s", e)
@@ -13161,14 +13155,11 @@ class GatewayRunner:
                 if output:
                     if len(output) > 3500:
                         output = "…" + output[-3500:]
-                    if exit_code == 0:
-                        msg = f"✅ Hermes update finished.\n\n```\n{output}\n```"
-                    else:
-                        msg = f"❌ Hermes update failed.\n\n```\n{output}\n```"
+                    msg = render_update_result(exit_code == 0, output, exit_code=exit_code)
                 elif exit_code == 0:
-                    msg = "✅ Hermes update finished successfully."
+                    msg = render_update_result(True, exit_code=exit_code)
                 else:
-                    msg = "❌ Hermes update failed. Check the gateway logs or run `hermes update` manually for details."
+                    msg = render_update_result(False, exit_code=exit_code)
                 await adapter.send(chat_id, msg, metadata=metadata)
                 logger.info(
                     "Sent post-update notification to %s:%s (exit=%s)",
@@ -15603,14 +15594,13 @@ class GatewayRunner:
                             "Button-based approval failed, falling back to text: %s", _e
                         )
 
-                # Fallback: plain text approval prompt
-                cmd_preview = cmd[:200] + "..." if len(cmd) > 200 else cmd
-                msg = (
-                    f"⚠️ **Dangerous command requires approval:**\n"
-                    f"```\n{cmd_preview}\n```\n"
-                    f"Reason: {desc}\n\n"
-                    f"Reply `/approve` to execute, `/approve session` to approve this pattern "
-                    f"for the session, `/approve always` to approve permanently, or `/deny` to cancel."
+                # Fallback: friendly text approval prompt.  Text-only platforms
+                # can reply with the Chinese choices; slash commands remain
+                # accepted but are no longer the primary UX.
+                msg = render_approval_request(
+                    cmd,
+                    session_key=_approval_session_key,
+                    description=desc,
                 )
                 try:
                     _approval_send_fut = safe_schedule_threadsafe(
@@ -16043,30 +16033,16 @@ class GatewayRunner:
                 _elapsed_mins = int((time.time() - _notify_start) // 60)
                 # Include agent activity context if available.
                 _agent_ref = agent_holder[0]
-                _status_detail = ""
+                _activity_summary = None
                 if _agent_ref and hasattr(_agent_ref, "get_activity_summary"):
                     try:
-                        _a = _agent_ref.get_activity_summary()
-                        _parts = [f"iteration {_a['api_call_count']}/{_a['max_iterations']}"]
-                        if _a.get("current_tool"):
-                            _parts.append(f"running: {_a['current_tool']}")
-                        else:
-                            _parts.append(_a.get("last_activity_desc", ""))
-                        _status_detail = " — " + ", ".join(_parts)
+                        _activity_summary = _agent_ref.get_activity_summary()
                     except Exception:
                         pass
                 try:
                     _notify_res = await _notify_adapter.send(
                         source.chat_id,
-                        (
-                            f"⏳ 任务仍在处理中｜已运行约 {_elapsed_mins} 分钟\n\n"
-                            "【状态】\n"
-                            f"动作｜继续等待后台任务{_status_detail}\n"
-                            "结果｜尚未完成，但仍有活动迹象\n"
-                            "影响｜我不会重复刷屏，只保留这一次进度提示\n"
-                            "边界｜如果后续无活动，会进入超时保护\n\n"
-                            "【下一步】\n你可以继续等待，或发送 /reset 取消当前会话。"
-                        ),
+                        render_task_progress(_elapsed_mins, _activity_summary),
                         metadata=_status_thread_metadata,
                     )
                     if (
@@ -16163,14 +16139,9 @@ class GatewayRunner:
                             try:
                                 await _warn_adapter.send(
                                     source.chat_id,
-                                    (
-                                        f"⚠️ 会话活动变慢｜约 {_elapsed_warn} 分钟没有新进展\n\n"
-                                        "【状态】\n"
-                                        "动作｜已启动超时保护观察\n"
-                                        f"结果｜如果仍无活动，约 {_remaining_mins} 分钟后会自动停止\n"
-                                        "影响｜避免后台任务无限占用会话\n"
-                                        "边界｜不会重复发送原始错误或内部堆栈\n\n"
-                                        "【下一步】\n你可以继续等待，或发送 /reset 立即重置。"
+                                    render_inactivity_warning(
+                                        _elapsed_warn,
+                                        _remaining_mins,
                                     ),
                                     metadata=_status_thread_metadata,
                                 )
@@ -16228,31 +16199,11 @@ class GatewayRunner:
 
                 _timeout_mins = int(_agent_timeout // 60) or 1
 
-                # Construct a user-facing message with diagnostic context.
-                _diag_lines = [
-                    f"⏱️ Agent inactive for {_timeout_mins} min — no tool calls "
-                    f"or API responses."
-                ]
-                if _cur_tool:
-                    _diag_lines.append(
-                        f"The agent appears stuck on tool `{_cur_tool}` "
-                        f"({_secs_ago:.0f}s since last activity, "
-                        f"iteration {_iter_n}/{_iter_max})."
-                    )
-                else:
-                    _diag_lines.append(
-                        f"Last activity: {_last_desc} ({_secs_ago:.0f}s ago, "
-                        f"iteration {_iter_n}/{_iter_max}). "
-                        "The agent may have been waiting on an API response."
-                    )
-                _diag_lines.append(
-                    "To increase the limit, set agent.gateway_timeout in config.yaml "
-                    "(value in seconds, 0 = no limit) and restart the gateway.\n"
-                    "Try again, or use /reset to start fresh."
-                )
-
                 response = {
-                    "final_response": "\n".join(_diag_lines),
+                    "final_response": render_inactivity_timeout(
+                        _timeout_mins,
+                        _activity,
+                    ),
                     "messages": result_holder[0].get("messages", []) if result_holder[0] else [],
                     "api_calls": _iter_n,
                     "tools": tools_holder[0] or [],

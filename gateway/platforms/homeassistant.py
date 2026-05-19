@@ -29,6 +29,7 @@ except ImportError:
     aiohttp = None  # type: ignore[assignment]
 
 from gateway.config import Platform, PlatformConfig
+from gateway.friendly_messages import get_persona
 from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
@@ -401,7 +402,7 @@ class HomeAssistantAdapter(BasePlatformAdapter):
             "Content-Type": "application/json",
         }
         payload = {
-            "title": "Hermes Agent",
+            "title": get_persona().display_name,
             "message": content[:self.MAX_MESSAGE_LENGTH],
         }
 

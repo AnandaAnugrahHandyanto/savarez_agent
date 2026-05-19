@@ -48,6 +48,7 @@ from gateway.platforms.base import (
     safe_url_for_log,
     cache_document_from_bytes,
 )
+from gateway.friendly_messages import approval_summary
 
 
 logger = logging.getLogger(__name__)
@@ -2253,7 +2254,7 @@ class SlackAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
 
         try:
-            cmd_preview = command[:2900] + "..." if len(command) > 2900 else command
+            summary = approval_summary(command, session_key, description)
             thread_ts = self._resolve_thread_ts(None, metadata)
 
             blocks = [
@@ -2262,9 +2263,12 @@ class SlackAdapter(BasePlatformAdapter):
                     "text": {
                         "type": "mrkdwn",
                         "text": (
-                            f":warning: *Command Approval Required*\n"
-                            f"```{cmd_preview}```\n"
-                            f"Reason: {description}"
+                            f":fire_extinguisher: *命令需要审批*｜{summary['risk_pill']}\n"
+                            "我已暂停执行。确认前，这条命令不会运行。\n\n"
+                            f"*风险*｜{summary['risk']}\n"
+                            f"*范围*｜{summary['scope']}\n"
+                            f"*命令*｜```{summary['command']}```\n"
+                            f"*审批 ID*｜`{summary['approval_id']}`"
                         ),
                     },
                 },
@@ -2273,26 +2277,26 @@ class SlackAdapter(BasePlatformAdapter):
                     "elements": [
                         {
                             "type": "button",
-                            "text": {"type": "plain_text", "text": "Allow Once"},
+                            "text": {"type": "plain_text", "text": "批准本次"},
                             "style": "primary",
                             "action_id": "hermes_approve_once",
                             "value": session_key,
                         },
                         {
                             "type": "button",
-                            "text": {"type": "plain_text", "text": "Allow Session"},
+                            "text": {"type": "plain_text", "text": "本会话允许"},
                             "action_id": "hermes_approve_session",
                             "value": session_key,
                         },
                         {
                             "type": "button",
-                            "text": {"type": "plain_text", "text": "Always Allow"},
+                            "text": {"type": "plain_text", "text": "永久允许"},
                             "action_id": "hermes_approve_always",
                             "value": session_key,
                         },
                         {
                             "type": "button",
-                            "text": {"type": "plain_text", "text": "Deny"},
+                            "text": {"type": "plain_text", "text": "拒绝"},
                             "style": "danger",
                             "action_id": "hermes_deny",
                             "value": session_key,
@@ -2303,7 +2307,7 @@ class SlackAdapter(BasePlatformAdapter):
 
             kwargs: Dict[str, Any] = {
                 "channel": chat_id,
-                "text": f"⚠️ Command approval required: {cmd_preview[:100]}",
+                "text": f"🧯 命令需要审批：{summary['command'][:100]}",
                 "blocks": blocks,
             }
             if thread_ts:

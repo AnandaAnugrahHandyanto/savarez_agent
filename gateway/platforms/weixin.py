@@ -66,6 +66,7 @@ from gateway.platforms.base import (
     cache_document_from_bytes,
     cache_image_from_bytes,
 )
+from gateway.friendly_messages import render_approval_request
 from hermes_constants import get_hermes_home
 from utils import atomic_json_write
 
@@ -1731,6 +1732,27 @@ class WeixinAdapter(BasePlatformAdapter):
         except Exception as exc:
             logger.error("[%s] send failed to=%s: %s", self.name, _safe_id(chat_id), exc)
             return SendResult(success=False, error=str(exc))
+
+    async def send_exec_approval(
+        self,
+        chat_id: str,
+        command: str,
+        session_key: str,
+        description: str = "dangerous command",
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send a Weixin-friendly text approval card.
+
+        Weixin does not expose universal bot-side interactive buttons here, so
+        the card uses explicit numbered/text choices.  gateway/run.py parses
+        those replies and resolves the same blocking approval queue as /approve.
+        """
+
+        return await self.send(
+            chat_id,
+            render_approval_request(command, session_key, description),
+            metadata=metadata,
+        )
 
     async def send_typing(self, chat_id: str, metadata: Optional[Dict[str, Any]] = None) -> None:
         if not self._send_session or not self._token:

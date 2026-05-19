@@ -173,7 +173,8 @@ async def test_root_telegram_dm_prompt_is_system_lobby_when_topic_mode_enabled(m
 
     result = await runner._handle_message(_make_event("hello from root"))
 
-    assert "main chat is reserved for system commands" in result
+    assert "Telegram 主入口" in result
+    assert "当前只处理系统命令" in result
     assert "All Messages" in result
     runner._run_agent.assert_not_called()
     runner.session_store.get_or_create_session.assert_not_called()
@@ -195,9 +196,9 @@ async def test_root_telegram_dm_new_shows_create_topic_instruction(monkeypatch):
 
     result = await runner._handle_message(_make_event("/new"))
 
-    assert "create a new topic" in result
+    assert "开启并行会话" in result
     assert "All Messages" in result
-    assert "Use /new inside" in result
+    assert "/new 在已有话题内只会重置当前话题" in result
     runner._run_agent.assert_not_called()
     runner.session_store.reset_session.assert_not_called()
     runner.session_store.get_or_create_session.assert_not_called()
@@ -339,8 +340,8 @@ async def test_group_new_keeps_existing_reset_semantics_when_dm_topic_mode_enabl
 
     result = await runner._handle_message(_make_group_event("/new", thread_id="555"))
 
-    assert "Started a new Hermes session in this topic" not in result
-    assert "parallel work" not in result
+    assert "已在当前话题开启新会话" not in result
+    assert "All Messages" not in result
     runner.session_store.reset_session.assert_called_once_with(group_key)
 
 
@@ -380,8 +381,8 @@ async def test_new_inside_telegram_topic_resets_current_topic_with_parallel_tip(
 
     result = await runner._handle_message(_make_event("/new", thread_id="17585"))
 
-    assert "Started a new Hermes session in this topic" in result
-    assert "parallel work" in result
+    assert "已在当前话题开启新会话" in result
+    assert "并行处理另一件事" in result
     assert "All Messages" in result
     runner.session_store.reset_session.assert_called_once_with(topic_key)
 
@@ -473,7 +474,8 @@ async def test_topic_root_command_explicitly_migrates_and_enables_topic_mode(tmp
 
     lobby_result = await runner._handle_message(_make_event("hello after activation"))
 
-    assert "main chat is reserved for system commands" in lobby_result
+    assert "Telegram 主入口" in lobby_result
+    assert "当前只处理系统命令" in lobby_result
     runner._run_agent.assert_not_called()
 
 

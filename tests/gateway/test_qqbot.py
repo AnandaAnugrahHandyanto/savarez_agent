@@ -1105,7 +1105,7 @@ class TestBuildApprovalText:
             timeout_sec=60,
         )
         text = build_approval_text(req)
-        assert "命令执行审批" in text
+        assert "命令需要审批" in text
         assert "rm -rf /tmp/demo" in text
         assert "/home/user" in text
         assert "60" in text

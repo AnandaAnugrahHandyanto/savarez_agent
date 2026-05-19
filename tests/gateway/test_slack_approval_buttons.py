@@ -90,7 +90,8 @@ class TestSlackExecApproval:
         assert len(blocks) == 2
         assert blocks[0]["type"] == "section"
         assert "rm -rf /important" in blocks[0]["text"]["text"]
-        assert "dangerous deletion" in blocks[0]["text"]["text"]
+        assert "命令需要审批" in blocks[0]["text"]["text"]
+        assert "风险" in blocks[0]["text"]["text"]
         assert blocks[1]["type"] == "actions"
         elements = blocks[1]["elements"]
         assert len(elements) == 4

@@ -34,6 +34,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
+from gateway.friendly_messages import approval_summary
+
 logger = logging.getLogger(__name__)
 
 # ── button_data prefixes + patterns ──────────────────────────────────
@@ -305,18 +307,19 @@ def build_approval_text(req: ApprovalRequest) -> str:
 
 
 def _build_exec_text(req: ApprovalRequest) -> str:
-    lines: List[str] = ["🔐 **命令执行审批**", ""]
-    if req.command_preview:
-        preview = req.command_preview[:300]
-        lines.append(f"```\n{preview}\n```")
-    if req.cwd:
-        lines.append(f"📁 目录: {req.cwd}")
-    if req.title and req.title != req.command_preview:
-        lines.append(f"📋 {req.title}")
-    if req.description:
-        lines.append(f"📝 {req.description}")
+    summary = approval_summary(req.command_preview, req.session_key, req.description)
+    lines: List[str] = [f"🧯 **命令需要审批｜{summary['risk_pill']}**", ""]
+    lines.append("我已暂停执行。确认前，这条命令不会运行。")
     lines.append("")
-    lines.append(f"⏱️ 超时: {req.timeout_sec} 秒")
+    lines.append(f"⚠️ 风险｜{summary['risk']}")
+    lines.append(f"📍 范围｜{summary['scope']}")
+    if req.cwd:
+        lines.append(f"📁 目录｜{req.cwd}")
+    if req.command_preview:
+        lines.append(f"💻 命令｜\n```\n{summary['command'][:300]}\n```")
+    lines.append(f"🔖 审批 ID｜`{summary['approval_id']}`")
+    lines.append("")
+    lines.append(f"⏱️ 超时｜{req.timeout_sec} 秒")
     return "\n".join(lines)
 
 

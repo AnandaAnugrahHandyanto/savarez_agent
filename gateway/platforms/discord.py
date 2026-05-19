@@ -65,6 +65,7 @@ from gateway.platforms.base import (
     cache_document_from_bytes,
     SUPPORTED_DOCUMENT_TYPES,
 )
+from gateway.friendly_messages import approval_summary, command_preview
 from tools.url_safety import is_safe_url
 
 
@@ -3974,15 +3975,17 @@ class DiscordAdapter(BasePlatformAdapter):
             if not channel:
                 channel = await self._client.fetch_channel(int(target_id))
 
-            # Discord embed description limit is 4096; show full command up to that
-            max_desc = 4088
-            cmd_display = command if len(command) <= max_desc else command[: max_desc - 3] + "..."
+            summary = approval_summary(command, session_key, description)
+            cmd_display = command_preview(command, 1000)
             embed = discord.Embed(
-                title="⚠️ Command Approval Required",
-                description=f"```\n{cmd_display}\n```",
+                title=f"🧯 命令需要审批｜{summary['risk_pill']}",
+                description="我已暂停执行。确认前，这条命令不会运行。",
                 color=discord.Color.orange(),
             )
-            embed.add_field(name="Reason", value=description, inline=False)
+            embed.add_field(name="⚠️ 风险", value=summary["risk"], inline=False)
+            embed.add_field(name="📍 范围", value=summary["scope"], inline=False)
+            embed.add_field(name="💻 命令", value=f"```\n{cmd_display}\n```", inline=False)
+            embed.add_field(name="🔖 审批 ID", value=f"`{summary['approval_id']}`", inline=False)
 
             view = ExecApprovalView(
                 session_key=session_key,
@@ -4887,7 +4890,7 @@ if DISCORD_AVAILABLE:
         """
         Interactive button view for exec approval of dangerous commands.
 
-        Shows four buttons: Allow Once, Allow Session, Always Allow, Deny.
+        Shows four buttons: 批准本次, 本会话允许, 永久允许, 拒绝.
         Clicking a button calls ``resolve_gateway_approval()`` to unblock the
         waiting agent thread — the same mechanism as the text ``/approve`` flow.
         Only users in the allowed list can click.  Times out after 5 minutes.
@@ -4953,25 +4956,25 @@ if DISCORD_AVAILABLE:
             except Exception as exc:
                 logger.error("Failed to resolve gateway approval from button: %s", exc)
 
-        @discord.ui.button(label="Allow Once", style=discord.ButtonStyle.green)
+        @discord.ui.button(label="批准本次", style=discord.ButtonStyle.green)
         async def allow_once(
             self, interaction: discord.Interaction, button: discord.ui.Button
         ):
             await self._resolve(interaction, "once", discord.Color.green(), "Approved once")
 
-        @discord.ui.button(label="Allow Session", style=discord.ButtonStyle.grey)
+        @discord.ui.button(label="本会话允许", style=discord.ButtonStyle.grey)
         async def allow_session(
             self, interaction: discord.Interaction, button: discord.ui.Button
         ):
             await self._resolve(interaction, "session", discord.Color.blue(), "Approved for session")
 
-        @discord.ui.button(label="Always Allow", style=discord.ButtonStyle.blurple)
+        @discord.ui.button(label="永久允许", style=discord.ButtonStyle.blurple)
         async def allow_always(
             self, interaction: discord.Interaction, button: discord.ui.Button
         ):
             await self._resolve(interaction, "always", discord.Color.purple(), "Approved permanently")
 
-        @discord.ui.button(label="Deny", style=discord.ButtonStyle.red)
+        @discord.ui.button(label="拒绝", style=discord.ButtonStyle.red)
         async def deny(
             self, interaction: discord.Interaction, button: discord.ui.Button
         ):

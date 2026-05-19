@@ -117,8 +117,9 @@ class TestFeishuExecApproval:
         # Verify card payload contains the command and buttons
         card = json.loads(kwargs["payload"])
         assert card["header"]["template"] == "orange"
+        assert "命令需要审批" in card["header"]["title"]["content"]
         assert "rm -rf /important" in card["elements"][0]["content"]
-        assert "dangerous deletion" in card["elements"][0]["content"]
+        assert "风险" in card["elements"][0]["content"]
 
         # Check buttons
         actions = card["elements"][1]["actions"]

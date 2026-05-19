@@ -139,6 +139,7 @@ from gateway.platforms.base import (
     cache_audio_from_bytes,
     cache_image_from_bytes,
 )
+from gateway.friendly_messages import approval_summary
 from gateway.status import acquire_scoped_lock, release_scoped_lock
 from hermes_constants import get_hermes_home
 from utils import atomic_json_write
@@ -1862,7 +1863,7 @@ class FeishuAdapter(BasePlatformAdapter):
 
         try:
             approval_id = next(self._approval_counter)
-            cmd_preview = command[:3000] + "..." if len(command) > 3000 else command
+            summary = approval_summary(command, session_key, description)
 
             def _btn(label: str, action_name: str, btn_type: str = "default") -> dict:
                 return {
@@ -1875,21 +1876,27 @@ class FeishuAdapter(BasePlatformAdapter):
             card = {
                 "config": {"wide_screen_mode": True},
                 "header": {
-                    "title": {"content": "⚠️ Command Approval Required", "tag": "plain_text"},
+                    "title": {"content": f"🧯 命令需要审批｜{summary['risk_pill']}", "tag": "plain_text"},
                     "template": "orange",
                 },
                 "elements": [
                     {
                         "tag": "markdown",
-                        "content": f"```\n{cmd_preview}\n```\n**Reason:** {description}",
+                        "content": (
+                            "我已暂停执行。确认前，这条命令不会运行。\n\n"
+                            f"**风险｜** {summary['risk']}\n"
+                            f"**范围｜** {summary['scope']}\n"
+                            f"**命令｜**\n```\n{summary['command']}\n```\n"
+                            f"**审批 ID｜** `{summary['approval_id']}`"
+                        ),
                     },
                     {
                         "tag": "action",
                         "actions": [
-                            _btn("✅ Allow Once", "approve_once", "primary"),
-                            _btn("✅ Session", "approve_session"),
-                            _btn("✅ Always", "approve_always"),
-                            _btn("❌ Deny", "deny", "danger"),
+                            _btn("🟢 批准本次", "approve_once", "primary"),
+                            _btn("🕒 本会话允许", "approve_session"),
+                            _btn("📌 永久允许", "approve_always"),
+                            _btn("🔕 拒绝", "deny", "danger"),
                         ],
                     },
                 ],

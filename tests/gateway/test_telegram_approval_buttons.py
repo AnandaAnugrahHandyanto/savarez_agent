@@ -103,7 +103,8 @@ class TestTelegramExecApproval:
         kwargs = adapter._bot.send_message.call_args[1]
         assert kwargs["chat_id"] == 12345
         assert "rm -rf /important" in kwargs["text"]
-        assert "dangerous deletion" in kwargs["text"]
+        assert "命令需要审批" in kwargs["text"]
+        assert "风险" in kwargs["text"]
         assert kwargs["reply_markup"] is not None  # InlineKeyboardMarkup
 
     @pytest.mark.asyncio
