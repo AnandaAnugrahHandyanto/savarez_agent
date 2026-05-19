@@ -4,12 +4,19 @@ Cron job scheduler - executes due jobs.
 Provides tick() which checks for due jobs and runs them. The gateway
 calls this every 60 seconds from a background thread.
 
-Uses a file-based lock (~/.hermes/cron/.tick.lock) so only one tick
-runs at a time if multiple processes overlap.
+Uses a file-based lock (~/.hermes/cron/.tick.lock) for **dispatch
+single-flight only** — held across :func:`get_due_jobs` +
+:func:`advance_next_run` so two overlapping ticks (gateway-in-process
+ticker + standalone daemon + manual ``python -m cron.scheduler``)
+cannot pick up the same job twice, but released **before** any job
+runs so a long-running LLM job inside one tick cannot block
+subsequent ticks. See ``docs/incidents/2026-05-19-scheduler-
+wedge.md`` for the wedge mechanism this scope change repairs.
 """
 
 import asyncio
 import concurrent.futures
+import contextlib
 import contextvars
 import json
 import logging
@@ -128,6 +135,68 @@ def _get_lock_paths() -> tuple[Path, Path]:
     hermes_home = _get_hermes_home()
     lock_dir = hermes_home / "cron"
     return lock_dir, lock_dir / ".tick.lock"
+
+
+@contextlib.contextmanager
+def _dispatch_lock():
+    """Acquire the dispatch single-flight lock for the lifetime of the block.
+
+    Yields ``True`` when the lock was acquired (caller proceeds with
+    dispatch), ``False`` when another tick already holds it (caller
+    should bail out immediately as a no-op).
+
+    Cleanup is wrapped in a bare ``except BaseException`` so the lock
+    is released on every exit path — normal return, raised
+    ``Exception``, ``asyncio.CancelledError`` propagating up through a
+    threaded caller, ``KeyboardInterrupt``, ``SystemExit``. The
+    pre-fix code released only in a typed ``finally:`` that worked in
+    practice for ``Exception`` but left no guarantee for the
+    base-exception family. See
+    ``docs/incidents/2026-05-19-scheduler-wedge.md`` (fix C).
+    """
+    lock_dir, lock_file = _get_lock_paths()
+    lock_dir.mkdir(parents=True, exist_ok=True)
+    lock_fd = None
+    acquired = False
+    try:
+        try:
+            lock_fd = open(lock_file, "w")
+            if fcntl:
+                fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            elif msvcrt:
+                msvcrt.locking(lock_fd.fileno(), msvcrt.LK_NBLCK, 1)
+            acquired = True
+        except (OSError, IOError):
+            # Another tick currently holds the lock — yield False so the
+            # caller treats this as a clean no-op rather than a failure.
+            logger.debug("Tick skipped — another instance holds the lock")
+            if lock_fd is not None:
+                try:
+                    lock_fd.close()
+                except Exception:
+                    pass
+                lock_fd = None
+        yield acquired
+    finally:
+        # Best-effort release on every exit path. ``BaseException`` here
+        # is intentional — we never want a CancelledError or
+        # KeyboardInterrupt to bypass the release and leave the lock
+        # stuck for the next tick (the 2026-05-19 wedge mode).
+        if acquired and lock_fd is not None:
+            try:
+                if fcntl:
+                    fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                elif msvcrt:
+                    try:
+                        msvcrt.locking(lock_fd.fileno(), msvcrt.LK_UNLCK, 1)
+                    except (OSError, IOError):
+                        pass
+            except BaseException:  # noqa: BLE001 — release at all costs
+                logger.exception("Cron dispatch lock release failed")
+            try:
+                lock_fd.close()
+            except BaseException:  # noqa: BLE001 — release at all costs
+                logger.exception("Cron dispatch lock fd close failed")
 
 
 def _resolve_origin(job: dict) -> Optional[dict]:
@@ -1432,36 +1501,32 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
 def tick(verbose: bool = True, adapters=None, loop=None) -> int:
     """
     Check and run all due jobs.
-    
-    Uses a file lock so only one tick runs at a time, even if the gateway's
-    in-process ticker and a standalone daemon or manual tick overlap.
-    
+
+    The dispatch lock is held only across :func:`get_due_jobs` +
+    :func:`advance_next_run` — long enough to guarantee
+    at-most-once dispatch when two ticks race, short enough that
+    a long-running LLM job inside one tick cannot wedge subsequent
+    ticks (the 2026-05-19 wedge mode). Job execution itself runs
+    outside the lock; the next tick at the 60 s boundary sees an
+    empty due list (already advanced) and becomes a fast no-op.
+
     Args:
         verbose: Whether to print status messages
         adapters: Optional dict mapping Platform → live adapter (from gateway)
         loop: Optional asyncio event loop (from gateway) for live adapter sends
-    
+
     Returns:
-        Number of jobs executed (0 if another tick is already running)
+        Number of jobs executed (0 if another tick is already running
+        the dispatch step, or if no jobs were due).
     """
-    lock_dir, lock_file = _get_lock_paths()
-    lock_dir.mkdir(parents=True, exist_ok=True)
+    # --- DISPATCH PHASE (under lock) ---------------------------------
+    # Acquire single-flight lock; if another tick already holds it,
+    # bail immediately. Inside the lock: read due jobs, advance their
+    # next_run_at. Release the lock before doing any actual work.
+    with _dispatch_lock() as acquired:
+        if not acquired:
+            return 0
 
-    # Cross-platform file locking: fcntl on Unix, msvcrt on Windows
-    lock_fd = None
-    try:
-        lock_fd = open(lock_file, "w")
-        if fcntl:
-            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        elif msvcrt:
-            msvcrt.locking(lock_fd.fileno(), msvcrt.LK_NBLCK, 1)
-    except (OSError, IOError):
-        logger.debug("Tick skipped — another instance holds the lock")
-        if lock_fd is not None:
-            lock_fd.close()
-        return 0
-
-    try:
         due_jobs = get_due_jobs()
 
         if verbose and not due_jobs:
@@ -1471,123 +1536,119 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
         if verbose:
             logger.info("%s - %s job(s) due", _hermes_now().strftime('%H:%M:%S'), len(due_jobs))
 
-        # Advance next_run_at for all recurring jobs FIRST, under the file lock,
-        # before any execution begins.  This preserves at-most-once semantics.
+        # Advance next_run_at for all recurring jobs FIRST so a concurrent
+        # tick can never re-pick the same job once we release the lock.
         for job in due_jobs:
             advance_next_run(job["id"])
 
-        # Resolve max parallel workers: env var > config.yaml > unbounded.
-        # Set HERMES_CRON_MAX_PARALLEL=1 to restore old serial behaviour.
-        _max_workers: Optional[int] = None
+    # --- EXECUTION PHASE (lock released) -----------------------------
+    # From here down, the lock is no longer held. The next 60s tick
+    # can acquire and proceed independently — it will see an empty
+    # due-job list because we advanced them all above.
+
+    # Resolve max parallel workers: env var > config.yaml > unbounded.
+    # Set HERMES_CRON_MAX_PARALLEL=1 to restore old serial behaviour.
+    _max_workers: Optional[int] = None
+    try:
+        _env_par = os.getenv("HERMES_CRON_MAX_PARALLEL", "").strip()
+        if _env_par:
+            _max_workers = int(_env_par) or None
+    except (ValueError, TypeError):
+        logger.warning("Invalid HERMES_CRON_MAX_PARALLEL value; defaulting to unbounded")
+    if _max_workers is None:
         try:
-            _env_par = os.getenv("HERMES_CRON_MAX_PARALLEL", "").strip()
-            if _env_par:
-                _max_workers = int(_env_par) or None
-        except (ValueError, TypeError):
-            logger.warning("Invalid HERMES_CRON_MAX_PARALLEL value; defaulting to unbounded")
-        if _max_workers is None:
-            try:
-                _ucfg = load_config() or {}
-                _cfg_par = (
-                    _ucfg.get("cron", {}) if isinstance(_ucfg, dict) else {}
-                ).get("max_parallel_jobs")
-                if _cfg_par is not None:
-                    _max_workers = int(_cfg_par) or None
-            except Exception:
-                pass
+            _ucfg = load_config() or {}
+            _cfg_par = (
+                _ucfg.get("cron", {}) if isinstance(_ucfg, dict) else {}
+            ).get("max_parallel_jobs")
+            if _cfg_par is not None:
+                _max_workers = int(_cfg_par) or None
+        except Exception:
+            pass
 
-        if verbose:
-            logger.info(
-                "Running %d job(s) in parallel (max_workers=%s)",
-                len(due_jobs),
-                _max_workers if _max_workers else "unbounded",
-            )
+    if verbose:
+        logger.info(
+            "Running %d job(s) in parallel (max_workers=%s)",
+            len(due_jobs),
+            _max_workers if _max_workers else "unbounded",
+        )
 
-        def _process_job(job: dict) -> bool:
-            """Run one due job end-to-end: execute, save, deliver, mark."""
-            try:
-                success, output, final_response, error = run_job(job)
-
-                output_file = save_job_output(job["id"], output)
-                if verbose:
-                    logger.info("Output saved to: %s", output_file)
-
-                # Deliver the final response to the origin/target chat.
-                # If the agent responded with [SILENT], skip delivery (but
-                # output is already saved above).  Failed jobs always deliver.
-                deliver_content = final_response if success else f"⚠️ Cron job '{job.get('name', job['id'])}' failed:\n{error}"
-                should_deliver = bool(deliver_content)
-                if should_deliver and success and SILENT_MARKER in deliver_content.strip().upper():
-                    logger.info("Job '%s': agent returned %s — skipping delivery", job["id"], SILENT_MARKER)
-                    should_deliver = False
-
-                delivery_error = None
-                if should_deliver:
-                    try:
-                        delivery_error = _deliver_result(job, deliver_content, adapters=adapters, loop=loop)
-                    except Exception as de:
-                        delivery_error = str(de)
-                        logger.error("Delivery failed for job %s: %s", job["id"], de)
-
-                # Treat empty final_response as a soft failure so last_status
-                # is not "ok" — the agent ran but produced nothing useful.
-                # (issue #8585)
-                if success and not final_response:
-                    success = False
-                    error = "Agent completed but produced empty response (model error, timeout, or misconfiguration)"
-
-                mark_job_run(job["id"], success, error, delivery_error=delivery_error)
-                return True
-
-            except Exception as e:
-                logger.error("Error processing job %s: %s", job['id'], e)
-                mark_job_run(job["id"], False, str(e))
-                return False
-
-        # Partition due jobs: those with a per-job workdir mutate
-        # os.environ["TERMINAL_CWD"] inside run_job, which is process-global —
-        # so they MUST run sequentially to avoid corrupting each other.  Jobs
-        # without a workdir leave env untouched and stay parallel-safe.
-        workdir_jobs = [j for j in due_jobs if (j.get("workdir") or "").strip()]
-        parallel_jobs = [j for j in due_jobs if not (j.get("workdir") or "").strip()]
-
-        _results: list = []
-
-        # Sequential pass for workdir jobs.
-        for job in workdir_jobs:
-            _ctx = contextvars.copy_context()
-            _results.append(_ctx.run(_process_job, job))
-
-        # Parallel pass for the rest — same behaviour as before.
-        if parallel_jobs:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=_max_workers) as _tick_pool:
-                _futures = []
-                for job in parallel_jobs:
-                    _ctx = contextvars.copy_context()
-                    _futures.append(_tick_pool.submit(_ctx.run, _process_job, job))
-                _results.extend(f.result() for f in _futures)
-
-        # Best-effort sweep of MCP stdio subprocesses that survived their
-        # session teardown during this tick.  Runs AFTER every job has
-        # finished so active sessions (including live user chats) are
-        # never touched — only PIDs explicitly detected as orphans in
-        # tools.mcp_tool._run_stdio's finally block are reaped.
+    def _process_job(job: dict) -> bool:
+        """Run one due job end-to-end: execute, save, deliver, mark."""
         try:
-            from tools.mcp_tool import _kill_orphaned_mcp_children
-            _kill_orphaned_mcp_children()
-        except Exception as _e:
-            logger.debug("Post-tick MCP orphan cleanup failed: %s", _e)
+            success, output, final_response, error = run_job(job)
 
-        return sum(_results)
-    finally:
-        if fcntl:
-            fcntl.flock(lock_fd, fcntl.LOCK_UN)
-        elif msvcrt:
-            try:
-                msvcrt.locking(lock_fd.fileno(), msvcrt.LK_UNLCK, 1)
-            except (OSError, IOError):
-                pass
-        lock_fd.close()
+            output_file = save_job_output(job["id"], output)
+            if verbose:
+                logger.info("Output saved to: %s", output_file)
+
+            # Deliver the final response to the origin/target chat.
+            # If the agent responded with [SILENT], skip delivery (but
+            # output is already saved above).  Failed jobs always deliver.
+            deliver_content = final_response if success else f"⚠️ Cron job '{job.get('name', job['id'])}' failed:\n{error}"
+            should_deliver = bool(deliver_content)
+            if should_deliver and success and SILENT_MARKER in deliver_content.strip().upper():
+                logger.info("Job '%s': agent returned %s — skipping delivery", job["id"], SILENT_MARKER)
+                should_deliver = False
+
+            delivery_error = None
+            if should_deliver:
+                try:
+                    delivery_error = _deliver_result(job, deliver_content, adapters=adapters, loop=loop)
+                except Exception as de:
+                    delivery_error = str(de)
+                    logger.error("Delivery failed for job %s: %s", job["id"], de)
+
+            # Treat empty final_response as a soft failure so last_status
+            # is not "ok" — the agent ran but produced nothing useful.
+            # (issue #8585)
+            if success and not final_response:
+                success = False
+                error = "Agent completed but produced empty response (model error, timeout, or misconfiguration)"
+
+            mark_job_run(job["id"], success, error, delivery_error=delivery_error)
+            return True
+
+        except Exception as e:
+            logger.error("Error processing job %s: %s", job['id'], e)
+            mark_job_run(job["id"], False, str(e))
+            return False
+
+    # Partition due jobs: those with a per-job workdir mutate
+    # os.environ["TERMINAL_CWD"] inside run_job, which is process-global —
+    # so they MUST run sequentially to avoid corrupting each other.  Jobs
+    # without a workdir leave env untouched and stay parallel-safe.
+    workdir_jobs = [j for j in due_jobs if (j.get("workdir") or "").strip()]
+    parallel_jobs = [j for j in due_jobs if not (j.get("workdir") or "").strip()]
+
+    _results: list = []
+
+    # Sequential pass for workdir jobs.
+    for job in workdir_jobs:
+        _ctx = contextvars.copy_context()
+        _results.append(_ctx.run(_process_job, job))
+
+    # Parallel pass for the rest — same behaviour as before.
+    if parallel_jobs:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=_max_workers) as _tick_pool:
+            _futures = []
+            for job in parallel_jobs:
+                _ctx = contextvars.copy_context()
+                _futures.append(_tick_pool.submit(_ctx.run, _process_job, job))
+            _results.extend(f.result() for f in _futures)
+
+    # Best-effort sweep of MCP stdio subprocesses that survived their
+    # session teardown during this tick.  Runs AFTER every job has
+    # finished so active sessions (including live user chats) are
+    # never touched — only PIDs explicitly detected as orphans in
+    # tools.mcp_tool._run_stdio's finally block are reaped.
+    try:
+        from tools.mcp_tool import _kill_orphaned_mcp_children
+        _kill_orphaned_mcp_children()
+    except Exception as _e:
+        logger.debug("Post-tick MCP orphan cleanup failed: %s", _e)
+
+    return sum(_results)
 
 
 if __name__ == "__main__":

@@ -663,8 +663,25 @@ Hardening invariants:
   cannot monopolize the scheduler.
 - Catchup window: half the job's period, clamped to 120s–2h.
 - Grace window: 120s for one-shot jobs whose fire time was missed.
-- File lock at `~/.hermes/cron/.tick.lock` prevents duplicate ticks
-  across processes.
+- **Dispatch single-flight lock** at `~/.hermes/cron/.tick.lock`
+  prevents two ticks from picking up the same due job. The lock is
+  held **only across the dispatch step** (`get_due_jobs` →
+  `advance_next_run`) — job execution runs *outside* the lock so a
+  long-running LLM job in one tick cannot wedge subsequent ticks.
+  Release is guaranteed across `Exception`, `BaseException`,
+  `KeyboardInterrupt`, and `asyncio.CancelledError` (see
+  `docs/incidents/2026-05-19-scheduler-wedge.md`).
+- **LLM stream deadlines.** Every chat-completion stream is bounded
+  by two env-var-tunable budgets:
+  - `HERMES_LLM_STREAM_TIMEOUT_SECONDS` — total wall-clock budget
+    (default 300s). A stream that runs longer is closed and the
+    iteration raises `run_agent.StreamTimeoutError(which="total")`.
+  - `HERMES_LLM_STREAM_CHUNK_TIMEOUT_SECONDS` — max gap between
+    chunks (default 60s). A stream silent longer is closed and the
+    iteration raises `run_agent.StreamTimeoutError(which="chunk")`.
+  Both are enforced by a daemon watchdog thread alongside the
+  existing per-request httpx timeouts and the cron-side inactivity
+  cap. Set either to `0` to disable that specific deadline.
 - Cron sessions pass `skip_memory=True` by default; memory providers
   intentionally do not run during cron.
 

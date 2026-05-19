@@ -269,6 +269,77 @@ def _install_safe_stdio() -> None:
             setattr(sys, stream_name, _SafeWriter(stream))
 
 
+class StreamTimeoutError(TimeoutError):
+    """Raised when an LLM chat-completion stream exceeds its budget.
+
+    Two deadlines protect every stream (see
+    ``docs/incidents/2026-05-19-scheduler-wedge.md``):
+
+    * Total wall-clock — ``HERMES_LLM_STREAM_TIMEOUT_SECONDS`` (default
+      300 s). Capped end-to-end so a slowly-progressing stream cannot
+      run for hours and indirectly block the cron tick.
+    * Per-chunk gap — ``HERMES_LLM_STREAM_CHUNK_TIMEOUT_SECONDS``
+      (default 60 s). The hard ceiling on silence between chunks; one
+      breach closes the stream and raises this error. Tighter than the
+      existing ``HERMES_STREAM_READ_TIMEOUT`` / ``_STALE_TIMEOUT``
+      knobs because those are advisory inside the SDK and don't
+      guarantee a terminating raise on breach.
+
+    Subclasses ``TimeoutError`` so existing ``except TimeoutError``
+    handlers downstream of the agent loop still catch it; ``isinstance``
+    checks on this class let new code distinguish stream-timeout from
+    other timeouts.
+
+    ``which`` is ``"total"`` or ``"chunk"``; ``elapsed_seconds`` and
+    ``budget_seconds`` are populated by the chunk loop so the log line
+    and any operator-facing error surface the relevant numbers.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        which: str,
+        elapsed_seconds: float,
+        budget_seconds: float,
+    ) -> None:
+        super().__init__(message)
+        self.which = which
+        self.elapsed_seconds = elapsed_seconds
+        self.budget_seconds = budget_seconds
+
+
+_DEFAULT_LLM_STREAM_TOTAL_TIMEOUT_SECONDS = 300.0
+_DEFAULT_LLM_STREAM_CHUNK_TIMEOUT_SECONDS = 60.0
+
+
+def _resolve_stream_timeout_seconds(env_var: str, default: float) -> float:
+    """Read a float seconds value from ``env_var`` with a safe default.
+
+    Empty / unset / unparseable / non-positive values fall back to
+    ``default``; negative values are explicitly rejected so an
+    operator can't accidentally disable the cap by passing ``-1``.
+    A value of ``0`` is treated as "disabled" (no deadline enforced)
+    so tests and explicit operator overrides can opt out.
+    """
+    raw = os.getenv(env_var, "").strip()
+    if not raw:
+        return default
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        logger.warning(
+            "Invalid %s=%r — using default %.1fs", env_var, raw, default,
+        )
+        return default
+    if value < 0:
+        logger.warning(
+            "Negative %s=%r — using default %.1fs", env_var, raw, default,
+        )
+        return default
+    return value
+
+
 class IterationBudget:
     """Thread-safe iteration counter for an agent.
 
@@ -6914,6 +6985,102 @@ class AIAgent:
             # Log OpenRouter response cache status when present.
             self._check_openrouter_cache_status(getattr(stream, "response", None))
 
+            # --- Stream deadline watchdog (Fix A) ----------------------
+            # Two hard deadlines protect every stream so a degraded
+            # provider cannot park the chunk loop for hours:
+            #   * total wall-clock budget (default 300 s)
+            #   * per-chunk silence budget (default 60 s)
+            # The watchdog runs in a daemon thread; on breach it closes
+            # the stream (which makes the blocking ``for chunk in stream``
+            # raise) and records why. The main thread translates that
+            # into a typed ``StreamTimeoutError``.
+            _stream_total_budget = _resolve_stream_timeout_seconds(
+                "HERMES_LLM_STREAM_TIMEOUT_SECONDS",
+                _DEFAULT_LLM_STREAM_TOTAL_TIMEOUT_SECONDS,
+            )
+            _stream_chunk_budget = _resolve_stream_timeout_seconds(
+                "HERMES_LLM_STREAM_CHUNK_TIMEOUT_SECONDS",
+                _DEFAULT_LLM_STREAM_CHUNK_TIMEOUT_SECONDS,
+            )
+            _stream_started_at = time.time()
+            _stream_watchdog_breach: dict = {}
+            _stream_watchdog_stop = threading.Event()
+
+            def _stream_watchdog() -> None:
+                # Lightweight poll loop — 0.5 s granularity is fine for
+                # 60 s / 300 s budgets and keeps the thread effectively
+                # invisible in CPU profiles.
+                #
+                # Lifetime: the watchdog self-terminates as soon as it
+                # detects either budget breach (records breach, closes
+                # the stream, returns) or the success-path stop event
+                # set after the chunk loop exits cleanly. On exception
+                # paths in the caller where the stop event is never
+                # set, the watchdog still self-terminates within
+                # chunk_budget + poll seconds — because the stream
+                # stops producing chunks the moment the caller raises,
+                # the chunk-gap timer trips, breach fires, return. No
+                # thread leak.
+                _poll = 0.5
+                while not _stream_watchdog_stop.wait(_poll):
+                    now = time.time()
+                    elapsed = now - _stream_started_at
+                    chunk_gap = now - last_chunk_time["t"]
+                    if _stream_total_budget > 0 and elapsed > _stream_total_budget:
+                        _stream_watchdog_breach.update(
+                            which="total",
+                            elapsed=elapsed,
+                            budget=_stream_total_budget,
+                        )
+                    elif _stream_chunk_budget > 0 and chunk_gap > _stream_chunk_budget:
+                        _stream_watchdog_breach.update(
+                            which="chunk",
+                            elapsed=chunk_gap,
+                            budget=_stream_chunk_budget,
+                        )
+                    if _stream_watchdog_breach:
+                        # Close the underlying stream so the main
+                        # thread's blocking iteration unwinds. Errors
+                        # here are best-effort; the main thread will
+                        # also raise on the next iteration check below.
+                        try:
+                            stream.close()
+                        except Exception:
+                            pass
+                        return
+
+            _watchdog_thread = threading.Thread(
+                target=_stream_watchdog,
+                name="hermes-stream-watchdog",
+                daemon=True,
+            )
+            _watchdog_thread.start()
+
+            def _raise_if_watchdog_fired() -> None:
+                """Convert a watchdog breach into a typed StreamTimeoutError."""
+                if not _stream_watchdog_breach:
+                    return
+                which = _stream_watchdog_breach.get("which", "unknown")
+                elapsed = float(_stream_watchdog_breach.get("elapsed", 0.0))
+                budget = float(_stream_watchdog_breach.get("budget", 0.0))
+                if which == "total":
+                    msg = (
+                        f"LLM stream exceeded total budget "
+                        f"{budget:.1f}s (elapsed {elapsed:.1f}s) — "
+                        "aborting"
+                    )
+                else:
+                    msg = (
+                        f"LLM stream chunk gap exceeded "
+                        f"{budget:.1f}s (gap {elapsed:.1f}s) — "
+                        "aborting"
+                    )
+                logger.warning(msg)
+                raise StreamTimeoutError(
+                    msg, which=which,
+                    elapsed_seconds=elapsed, budget_seconds=budget,
+                )
+
             content_parts: list = []
             tool_calls_acc: dict = {}
             tool_gen_notified: set = set()
@@ -6931,6 +7098,11 @@ class AIAgent:
             for chunk in stream:
                 last_chunk_time["t"] = time.time()
                 self._touch_activity("receiving stream response")
+
+                # Watchdog promotion point. If the watchdog fired
+                # between chunks, surface it as a typed exception
+                # before processing further data.
+                _raise_if_watchdog_fired()
 
                 if self._interrupt_requested:
                     break
@@ -7094,6 +7266,16 @@ class AIAgent:
             effective_finish_reason = finish_reason or "stop"
             if has_truncated_tool_args:
                 effective_finish_reason = "length"
+
+            # Watchdog teardown — happens both on the success path
+            # here and on the exception path via the wrapping
+            # try/finally at the call site (see _call_chat_completions
+            # invocation below). ``_raise_if_watchdog_fired`` promotes
+            # a watchdog breach into ``StreamTimeoutError`` when the
+            # SDK raised a generic close-induced exception instead of
+            # leaving our typed error visible.
+            _stream_watchdog_stop.set()
+            _raise_if_watchdog_fired()
 
             full_reasoning = "".join(reasoning_parts) or None
             mock_message = SimpleNamespace(
