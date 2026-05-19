@@ -26,6 +26,13 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends gh && \
     rm -rf /var/lib/apt/lists/*
 
+# Railway CLI — lets the agent shell out to `railway` commands at runtime
+# (status, logs, deployment list, variables) via the terminal tool.
+# Auth is via the RAILWAY_TOKEN env var injected on the service; no
+# interactive `railway login` happens inside the container.
+RUN npm install -g @railway/cli && \
+    npm cache clean --force
+
 # Non-root user for runtime; UID can be overridden via HERMES_UID at runtime
 RUN useradd -u 10000 -m -d /opt/data hermes
 
