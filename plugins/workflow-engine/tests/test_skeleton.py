@@ -50,26 +50,6 @@ def test_health():
     assert "version" in body
 
 
-# ---------------------------------------------------------------------------
-# All stub endpoints must return 501
-# ---------------------------------------------------------------------------
-
-
-_STUB_ROUTES = [
-    ("GET",  "/api/plugins/workflow-engine/definitions"),
-    ("POST", "/api/plugins/workflow-engine/definitions"),
-    ("GET",  "/api/plugins/workflow-engine/definitions/test-id"),
-    ("GET",  "/api/plugins/workflow-engine/definitions/test-id/parsed"),
-    ("GET",  "/api/plugins/workflow-engine/runs"),
-    ("POST", "/api/plugins/workflow-engine/runs"),
-    ("GET",  "/api/plugins/workflow-engine/runs/test-run"),
-    ("POST", "/api/plugins/workflow-engine/runs/test-run/approve"),
-    ("GET",  "/api/plugins/workflow-engine/events"),
-]
-
-
-@pytest.mark.parametrize("method,path", _STUB_ROUTES)
-def test_stub_returns_501(method: str, path: str):
-    client = _make_client()
-    resp = client.request(method, path)
-    assert resp.status_code == 501, f"{method} {path} should be 501, got {resp.status_code}"
+# Phase 3 implemented all 9 endpoints — stub-returns-501 test removed.
+# Real endpoint coverage lives in test_api_definitions.py / test_api_runs.py /
+# test_api_approve.py / test_api_events_sse.py.
