@@ -481,6 +481,26 @@ def _plugin_config_has_enabled_exporter(config: dict[str, Any]) -> bool:
     return False
 
 
+def _ensure_plugin_output_directories(config: dict[str, Any]) -> None:
+    components = config.get("components")
+    if not isinstance(components, list):
+        return
+
+    for component in components:
+        if not isinstance(component, dict) or component.get("kind") != "observability":
+            continue
+        component_config = component.get("config")
+        if not isinstance(component_config, dict):
+            continue
+        for exporter_name in ("atof", "atif"):
+            exporter_config = component_config.get(exporter_name)
+            if not isinstance(exporter_config, dict):
+                continue
+            output_directory = exporter_config.get("output_directory")
+            if isinstance(output_directory, str) and output_directory.strip():
+                Path(output_directory).expanduser().mkdir(parents=True, exist_ok=True)
+
+
 def _run_async(coro: Any) -> Any:
     result: dict[str, Any] = {}
 
@@ -581,6 +601,7 @@ class _Runtime:
                 return _PluginInitResult(initialized=False, owns_exporters=False)
 
         try:
+            _ensure_plugin_output_directories(plugins_toml.value)
             _run_async(plugin_module.initialize(plugins_toml.value))
         except Exception as exc:
             logger.debug(

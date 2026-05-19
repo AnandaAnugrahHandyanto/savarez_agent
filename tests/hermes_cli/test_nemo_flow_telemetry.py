@@ -462,6 +462,7 @@ filename_template = "trajectory-{{session_id}}.json"
     assert config["components"][0]["config"]["atif"]["filename_template"] == (
         "trajectory-{session_id}.json"
     )
+    assert output_dir.is_dir()
     assert fake_nemo.atof_exporters == []
     assert fake_nemo.atif_exporters == []
 
