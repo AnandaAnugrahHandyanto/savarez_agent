@@ -113,3 +113,47 @@ def test_autonomous_loop_audit_empty_state_is_structural(tmp_path):
     assert summary["cron"]["job_count"] == 0
     assert summary["goals"]["total_goal_rows"] == 0
     assert summary["issues"] == []
+
+
+def test_autonomous_loop_audit_buckets_untrusted_enum_values(tmp_path):
+    hermes_home = tmp_path / "hermes"
+    cron_dir = hermes_home / "cron"
+    cron_dir.mkdir(parents=True)
+    (cron_dir / "jobs.json").write_text(json.dumps({
+        "jobs": [
+            {
+                "id": "job-hostile-kind",
+                "prompt": "No new items means stay silent.",
+                "schedule": {"kind": "sk-schedule-secret-should-not-leak"},
+                "enabled": True,
+                "no_agent": True,
+                "script": "watchdog.sh",
+            }
+        ],
+    }))
+
+    db_path = hermes_home / "state.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute("CREATE TABLE state_meta (key TEXT PRIMARY KEY, value TEXT)")
+    conn.execute(
+        "INSERT INTO state_meta (key, value) VALUES (?, ?)",
+        (
+            "goal:hostile-status",
+            json.dumps({
+                "status": "sk-goal-secret-should-not-leak",
+                "turns_used": 1,
+                "max_turns": 50,
+                "subgoals": [],
+            }),
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+    summary = audit_autonomous_loops(hermes_home=hermes_home)
+
+    assert summary["cron"]["schedule_counts"] == {"custom": 1}
+    assert summary["goals"]["status_counts"] == {"custom": 1}
+    raw = json.dumps(summary, sort_keys=True)
+    assert "sk-schedule-secret" not in raw
+    assert "sk-goal-secret" not in raw

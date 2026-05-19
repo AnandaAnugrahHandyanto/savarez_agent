@@ -54,6 +54,10 @@ APPROVAL_MARKERS = (
 TERMINAL_GOAL_STATUSES = {"done", "cleared"}
 PAUSED_GOAL_STATUSES = {"paused"}
 ACTIVE_GOAL_STATUSES = {"active"}
+KNOWN_SCHEDULE_KINDS = {"cron", "interval", "legacy", "once", "unknown"}
+KNOWN_GOAL_STATUSES = (
+    TERMINAL_GOAL_STATUSES | PAUSED_GOAL_STATUSES | ACTIVE_GOAL_STATUSES | {"unknown"}
+)
 
 
 def _sha256_text(value: str) -> str:
@@ -65,6 +69,12 @@ def _issue(code: str, *, severity: str = "warning", count: int = 1, job_id: Opti
     if job_id:
         item["job_id_sha256"] = _sha256_text(job_id)
     return item
+
+
+def _bounded_label(value: Any, allowed: Iterable[str], *, default: str = "unknown") -> str:
+    """Return a metadata-safe enum label for persisted/user-controlled values."""
+    label = str(value or default).strip().lower()
+    return label if label in set(allowed) else "custom"
 
 
 def _read_jobs(hermes_home: Path) -> List[Dict[str, Any]]:
@@ -84,7 +94,7 @@ def _read_jobs(hermes_home: Path) -> List[Dict[str, Any]]:
 def _schedule_kind(job: Dict[str, Any]) -> str:
     schedule = job.get("schedule")
     if isinstance(schedule, dict):
-        return str(schedule.get("kind") or "unknown")
+        return _bounded_label(schedule.get("kind"), KNOWN_SCHEDULE_KINDS)
     if schedule is None:
         return "unknown"
     return "legacy"
@@ -185,7 +195,7 @@ def _read_goal_rows(hermes_home: Path) -> List[Dict[str, Any]]:
             payload = {}
         parsed.append({
             "key_hash": _sha256_text(str(key)),
-            "status": str(payload.get("status") or "unknown"),
+            "status": _bounded_label(payload.get("status"), KNOWN_GOAL_STATUSES),
             "turns_used": int(payload.get("turns_used") or 0),
             "max_turns": int(payload.get("max_turns") or 0),
             "subgoal_count": len(payload.get("subgoals") or []),
