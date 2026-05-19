@@ -1268,6 +1268,7 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             "crashed": res.crashed,
             "timed_out": res.timed_out,
             "auto_blocked": res.auto_blocked,
+            "preflight_blocked": res.preflight_blocked,
             "promoted": res.promoted,
             "spawned": [
                 {"task_id": tid, "assignee": who, "workspace": ws}
@@ -1286,6 +1287,9 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
     print(f"Auto-blocked: {len(res.auto_blocked)}")
     if res.auto_blocked:
         print(f"  {', '.join(res.auto_blocked)}")
+    print(f"Preflight-blocked: {len(res.preflight_blocked)}")
+    if res.preflight_blocked:
+        print(f"  {', '.join(res.preflight_blocked)}")
     print(f"Promoted:     {res.promoted}")
     print(f"Spawned:      {len(res.spawned)}")
     for tid, who, ws in res.spawned:
@@ -1391,13 +1395,14 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
             return
         did_work = (
             res.reclaimed or res.crashed or res.timed_out or res.promoted
-            or res.spawned or res.auto_blocked
+            or res.spawned or res.auto_blocked or res.preflight_blocked
         )
         if did_work:
             print(
                 f"[{_fmt_ts(int(time.time()))}] "
                 f"reclaimed={res.reclaimed} crashed={len(res.crashed)} "
                 f"timed_out={len(res.timed_out)} "
+                f"preflight_blocked={len(res.preflight_blocked)} "
                 f"promoted={res.promoted} spawned={len(res.spawned)} "
                 f"auto_blocked={len(res.auto_blocked)}",
                 flush=True,
