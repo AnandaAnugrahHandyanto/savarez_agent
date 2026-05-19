@@ -163,14 +163,6 @@ def _get_plugin_toolset_keys() -> set:
         return set()
 
 
-def _implicit_default_off_toolsets(platform: str) -> Set[str]:
-    """Return the default-off toolsets that remain implicitly disabled."""
-    default_off = set(_DEFAULT_OFF_TOOLSETS)
-    if platform in default_off and platform not in _TOOLSET_PLATFORM_RESTRICTIONS:
-        default_off.remove(platform)
-    return default_off
-
-
 # Platform display config — derived from the canonical registry so every
 # module shares the same data.  Kept as dict-of-dicts for backward
 # compatibility with existing ``PLATFORMS[key]["label"]`` access patterns.
