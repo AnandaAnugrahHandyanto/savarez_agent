@@ -1934,6 +1934,54 @@ def _work_verdict_for_ack(kind: Optional[str] = None) -> Any:
     }.get(kind or "", WorkVerdict.PENDING)
 
 
+# A worker can finish (`completed`) yet still hand back a non-GO work
+# verdict in its final summary, e.g. `Verdict: NEED_MORE`. Delivery status
+# (ack SENT/FAILED/SKIPPED) is orthogonal and must never overwrite this.
+_EXPLICIT_VERDICT_RE = re.compile(
+    r"(?im)^\s*Verdict:\s*(GO|BLOCK|NEED_MORE|NO_GO)\b"
+)
+
+
+def _parse_explicit_verdict(text: Optional[str]) -> Any:
+    """Return an explicit ``Verdict: <V>`` declared in prose, or ``None``."""
+    if not text:
+        return None
+    m = _EXPLICIT_VERDICT_RE.search(str(text))
+    if not m:
+        return None
+    from hermes_cli.control_plane_contracts import WorkVerdict
+
+    try:
+        return WorkVerdict(m.group(1).upper())
+    except ValueError:
+        return None
+
+
+def _completed_event_verdict(
+    conn: sqlite3.Connection, task_id: str,
+) -> Any:
+    """Return the explicit verdict from a task's latest ``completed`` event.
+
+    The ``completed`` event payload carries the first-line handoff summary;
+    when that summary opens with ``Verdict: NEED_MORE``/``BLOCK`` the ACK
+    projection must preserve it rather than defaulting ``completed`` to GO.
+    """
+    row = conn.execute(
+        "SELECT payload FROM task_events WHERE task_id = ? AND kind = 'completed' "
+        "ORDER BY created_at DESC, id DESC LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    if not row or not row["payload"]:
+        return None
+    try:
+        payload = json.loads(row["payload"])
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    return _parse_explicit_verdict(payload.get("summary"))
+
+
 def _ack_event_kind(ack_status: str) -> str:
     if ack_status == "SENT":
         return "ack_delivered"
@@ -1967,7 +2015,15 @@ def _append_ack_outcome_event(
         ack = DeliveryAckState.skipped(_safe_ack_text(reason) or "unspecified")
     else:
         ack = DeliveryAckState.pending()
-    envelope = DeliveryEnvelope(task_id, _work_verdict_for_ack(work_event_kind), ack)
+    work_verdict = _work_verdict_for_ack(work_event_kind)
+    # `completed` defaults to GO, but a final summary may explicitly hand
+    # back NEED_MORE/BLOCK — preserve that so delivery status stays orthogonal
+    # to the work verdict. `blocked` keeps its BLOCK default.
+    if work_event_kind == "completed":
+        explicit = _completed_event_verdict(conn, task_id)
+        if explicit is not None:
+            work_verdict = explicit
+    envelope = DeliveryEnvelope(task_id, work_verdict, ack)
     payload = envelope.project()
     if target:
         payload["target"] = _safe_ack_text(target, limit=200)
@@ -2017,6 +2073,50 @@ def _has_notify_subscription(conn: sqlite3.Connection, task_id: str) -> bool:
         "SELECT 1 FROM kanban_notify_subs WHERE task_id = ? LIMIT 1",
         (task_id,),
     ).fetchone() is not None
+
+
+def _ack_required_without_subscription(conn: sqlite3.Connection, task_id: str) -> bool:
+    """Return True when task prose declares an origin ACK but no sub exists.
+
+    Resolvable ``Origin/return_to`` contracts are materialized into
+    ``kanban_notify_subs`` during ``create_task``. If the directive is present
+    but unresolvable, final ACK delivery is still control-plane-required; record
+    that as ACK_FAILED/no_subscription rather than downgrading work verdicts or
+    treating the absence as an optional skip.
+    """
+    row = conn.execute("SELECT body FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    body = (row["body"] if row else None) or ""
+    # Detect the directive with the same canonical regex `create_task` uses to
+    # materialize the subscription, so a directive `create_task` would honour
+    # is never misclassified here as an optional skip.
+    return _ORIGIN_RETURN_TO_RE.search(str(body)) is not None
+
+
+def _append_no_subscription_ack_outcome(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    work_event_kind: str,
+) -> None:
+    ack_required = _ack_required_without_subscription(conn, task_id)
+    if ack_required:
+        _append_ack_outcome_event(
+            conn,
+            task_id,
+            ack_status="FAILED",
+            error="no_subscription",
+            work_event_kind=work_event_kind,
+            extra={"ack_required": True},
+        )
+    else:
+        _append_ack_outcome_event(
+            conn,
+            task_id,
+            ack_status="SKIPPED_WITH_REASON",
+            reason="no_subscription",
+            work_event_kind=work_event_kind,
+            extra={"ack_required": False},
+        )
 
 
 def list_comments(conn: sqlite3.Connection, task_id: str) -> list[Comment]:
@@ -2963,13 +3063,10 @@ def complete_task(
             run_id=run_id,
         )
         if not _has_notify_subscription(conn, task_id):
-            _append_ack_outcome_event(
+            _append_no_subscription_ack_outcome(
                 conn,
                 task_id,
-                ack_status="SKIPPED_WITH_REASON",
-                reason="no_subscription",
                 work_event_kind="completed",
-                extra={"ack_required": False},
             )
     # Prose-scan the summary + result for t_<hex> references that do
     # not resolve. Advisory — does not block the completion. Runs in
@@ -3186,13 +3283,10 @@ def block_task(
             )
         _append_event(conn, task_id, "blocked", {"reason": reason}, run_id=run_id)
         if not _has_notify_subscription(conn, task_id):
-            _append_ack_outcome_event(
+            _append_no_subscription_ack_outcome(
                 conn,
                 task_id,
-                ack_status="SKIPPED_WITH_REASON",
-                reason="no_subscription",
                 work_event_kind="blocked",
-                extra={"ack_required": False},
             )
         return True
 

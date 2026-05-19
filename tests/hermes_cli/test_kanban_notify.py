@@ -890,6 +890,35 @@ def test_completion_without_subscription_records_ack_skipped(kanban_home):
     assert ack_ev.payload["ack_required"] is False
 
 
+def test_completion_with_unresolved_required_return_to_records_ack_failed(kanban_home):
+    """If an Origin/return_to directive makes ACK delivery required but cannot
+    be materialized into a subscription, record ACK_FAILED separately from the
+    GO work verdict instead of turning the work verdict into NEED_MORE."""
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(
+            conn,
+            title="required ack without target",
+            assignee="w",
+            body="Origin/return_to: #hermes-main Discord\nfinal report required",
+        )
+        assert kb.complete_task(conn, tid, result="GO") is True
+        task = kb.get_task(conn, tid)
+        events = list(kb.list_events(conn, tid))
+    finally:
+        conn.close()
+
+    assert task is not None
+    assert task.status == "done"
+    ack_ev = next(e for e in events if e.kind == "ack_failed")
+    assert ack_ev.payload is not None
+    assert ack_ev.payload["work"]["verdict"] == "GO"
+    assert ack_ev.payload["ack"]["status"] == "FAILED"
+    assert ack_ev.payload["ack"]["error"] == "no_subscription"
+    assert ack_ev.payload["ack_required"] is True
+    assert "NEED_MORE" not in str(ack_ev.payload)
+
+
 def test_block_without_subscription_records_ack_skipped(kanban_home):
     """A task can finish BLOCK without an origin subscription; that missing
     ACK must also be durable and typed, separate from the work verdict."""
@@ -909,6 +938,76 @@ def test_block_without_subscription_records_ack_skipped(kanban_home):
     assert ack_ev.payload["ack"]["status"] == "SKIPPED_WITH_REASON"
     assert ack_ev.payload["ack"]["reason"] == "no_subscription"
     assert ack_ev.payload["ack_required"] is False
+
+
+@pytest.mark.parametrize("verdict", ["NEED_MORE", "BLOCK"])
+def test_ack_delivered_preserves_non_go_completion_verdict(kanban_home, verdict):
+    """A task can finish (`completed`) yet hand back a non-GO verdict in its
+    final summary. The ack_delivered projection must surface that verdict
+    instead of defaulting `completed` to GO — delivery status stays orthogonal.
+    """
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="final report", assignee="w")
+        kb.add_notify_sub(conn, task_id=tid, platform="discord", chat_id="chatX")
+        kb.complete_task(
+            conn, tid, result=f"Verdict: {verdict}\nfollow-up needed before merge",
+        )
+        kb.record_ack_outcome(
+            conn, tid, ack_status="SENT", work_event_kind="completed",
+        )
+        events = list(kb.list_events(conn, tid))
+    finally:
+        conn.close()
+
+    ack_ev = next(e for e in events if e.kind == "ack_delivered")
+    assert ack_ev.payload["work"]["verdict"] == verdict
+    # Delivery succeeded — its status is a separate facet from the verdict.
+    assert ack_ev.payload["ack"]["status"] == "SENT"
+
+
+def test_ack_delivered_keeps_go_for_plain_completion(kanban_home):
+    """A plain `completed` with no explicit `Verdict:` line still projects GO."""
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="final report", assignee="w")
+        kb.add_notify_sub(conn, task_id=tid, platform="discord", chat_id="chatX")
+        kb.complete_task(conn, tid, result="GO")
+        kb.record_ack_outcome(
+            conn, tid, ack_status="SENT", work_event_kind="completed",
+        )
+        events = list(kb.list_events(conn, tid))
+    finally:
+        conn.close()
+
+    ack_ev = next(e for e in events if e.kind == "ack_delivered")
+    assert ack_ev.payload["work"]["verdict"] == "GO"
+    assert ack_ev.payload["ack"]["status"] == "SENT"
+
+
+def test_ack_delivery_failure_does_not_change_completion_verdict(kanban_home):
+    """A failed final ACK is recorded as ack.status FAILED with its error; it
+    must never downgrade a GO completion nor upgrade a non-GO completion."""
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="final report", assignee="w")
+        kb.add_notify_sub(conn, task_id=tid, platform="discord", chat_id="chatX")
+        kb.complete_task(
+            conn, tid, result="Verdict: NEED_MORE\nstill needs reviewer sign-off",
+        )
+        kb.record_ack_outcome(
+            conn, tid, ack_status="FAILED", error="send_failed",
+            work_event_kind="completed",
+        )
+        events = list(kb.list_events(conn, tid))
+    finally:
+        conn.close()
+
+    ack_ev = next(e for e in events if e.kind == "ack_failed")
+    # Verdict preserved from the summary; delivery failure stays orthogonal.
+    assert ack_ev.payload["work"]["verdict"] == "NEED_MORE"
+    assert ack_ev.payload["ack"]["status"] == "FAILED"
+    assert ack_ev.payload["ack"]["error"] == "send_failed"
 
 
 # --------------------------------------------------------------------------
