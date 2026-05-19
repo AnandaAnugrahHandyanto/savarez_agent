@@ -40,7 +40,7 @@ PYPROJECT_FILE = REPO_ROOT / "pyproject.toml"
 ACP_REGISTRY_MANIFEST = REPO_ROOT / "acp_registry" / "agent.json"
 
 # Home Assistant Add-on config
-HASSIO_CONFIG = REPO_ROOT / "hassio" / "hermes" / "config.yaml"
+HASSIO_CONFIG = REPO_ROOT / "config.yaml"
 HASSIO_DOCKERFILE = REPO_ROOT / "hassio" / "hermes" / "Dockerfile"
 
 # ──────────────────────────────────────────────────────────────────────
