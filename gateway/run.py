@@ -67,9 +67,9 @@ _TELEGRAM_COMMAND_MENTION_RE = re.compile(r"(?<![\w:/])/([A-Za-z0-9][A-Za-z0-9_-
 
 
 _ACTION_STALL_MAX_RETRIES_DEFAULT = 2
-_ACTION_STALL_EVENT_PREFIX = "[System corrective continuation: tool execution required]"
+from agent.action_stall import ACTION_STALL_EVENT_PREFIX as _ACTION_STALL_EVENT_PREFIX
 _ACTION_STALL_ATTEMPT_RE = re.compile(
-    r"^\[System corrective continuation: tool execution required\]\s*\nAttempt:\s*(\d+)\s*/\s*(\d+)",
+    r"^" + re.escape(_ACTION_STALL_EVENT_PREFIX) + r"\s*\nAttempt:\s*(\d+)\s*/\s*(\d+)",
     re.IGNORECASE,
 )
 _ACTION_STALL_PROGRESS_RE = re.compile(

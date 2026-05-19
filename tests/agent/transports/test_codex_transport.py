@@ -341,6 +341,103 @@ class TestCodexBuildKwargs:
         assert "reasoning" not in kw
 
 
+def _tool_def(name="terminal"):
+    """Minimal tool def accepted by ResponsesApiTransport.convert_tools."""
+    return {
+        "type": "function",
+        "function": {
+            "name": name,
+            "description": f"{name} tool",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    }
+
+
+class TestCodexBuildKwargsActionStallForcing:
+    """When the gateway's action-stall guard re-enters the agent loop with a
+    corrective-continuation user message, the transport must force
+    ``tool_choice=required`` for that turn so Grok cannot narrate its way
+    through the retry.  xAI documents ``tool_choice=required`` as the
+    supported lever for compelling tool emission on a given turn.
+    """
+
+    def test_stall_continuation_forces_tool_choice_required(self, transport):
+        from agent.action_stall import ACTION_STALL_EVENT_PREFIX
+
+        messages = [
+            {"role": "system", "content": "You are helpful."},
+            {"role": "user", "content": "send the report"},
+            {"role": "assistant", "content": "I will now send the report."},
+            {
+                "role": "user",
+                "content": (
+                    f"{ACTION_STALL_EVENT_PREFIX}\n"
+                    "Attempt: 1/2\n\n"
+                    "The turn completed with zero tool calls/tool results."
+                ),
+            },
+        ]
+        kw = transport.build_kwargs(
+            model="grok-4.3",
+            messages=messages,
+            tools=[_tool_def("terminal")],
+            is_xai_responses=True,
+        )
+        assert kw.get("tool_choice") == "required"
+
+    def test_normal_user_message_keeps_tool_choice_auto(self, transport):
+        messages = [
+            {"role": "system", "content": "You are helpful."},
+            {"role": "user", "content": "send the report"},
+        ]
+        kw = transport.build_kwargs(
+            model="grok-4.3",
+            messages=messages,
+            tools=[_tool_def("terminal")],
+            is_xai_responses=True,
+        )
+        assert kw.get("tool_choice") == "auto"
+
+    def test_stall_continuation_without_tools_omits_tool_choice(self, transport):
+        """No tools registered → nothing to force; tool_choice is not set at all."""
+        from agent.action_stall import ACTION_STALL_EVENT_PREFIX
+
+        messages = [
+            {"role": "user", "content": "send the report"},
+            {"role": "assistant", "content": "I will now send the report."},
+            {"role": "user", "content": f"{ACTION_STALL_EVENT_PREFIX}\nAttempt: 1/2"},
+        ]
+        kw = transport.build_kwargs(
+            model="grok-4.3",
+            messages=messages,
+            tools=[],
+            is_xai_responses=True,
+        )
+        assert "tool_choice" not in kw
+
+    def test_caller_request_overrides_tool_choice_wins(self, transport):
+        """Explicit request_overrides beats the auto-forced ``required``.
+
+        Lets callers (tests, internal flows) deliberately opt back to ``auto``
+        or pin a specific function on a corrective turn if they need to.
+        """
+        from agent.action_stall import ACTION_STALL_EVENT_PREFIX
+
+        messages = [
+            {"role": "user", "content": "send"},
+            {"role": "assistant", "content": "I will now send."},
+            {"role": "user", "content": f"{ACTION_STALL_EVENT_PREFIX}\nAttempt: 1/2"},
+        ]
+        kw = transport.build_kwargs(
+            model="grok-4.3",
+            messages=messages,
+            tools=[_tool_def("terminal")],
+            is_xai_responses=True,
+            request_overrides={"tool_choice": "auto"},
+        )
+        assert kw.get("tool_choice") == "auto"
+
+
 class TestCodexValidateResponse:
 
     def test_none_response(self, transport):

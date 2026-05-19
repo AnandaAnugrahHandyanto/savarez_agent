@@ -63,6 +63,7 @@ class ResponsesApiTransport(ProviderTransport):
             _chat_messages_to_responses_input,
             _responses_tools,
         )
+        from agent.action_stall import latest_user_message_is_stall_continuation
 
         from run_agent import DEFAULT_AGENT_IDENTITY
 
@@ -104,7 +105,13 @@ class ResponsesApiTransport(ProviderTransport):
             "store": False,
         }
         if response_tools:
-            kwargs["tool_choice"] = "auto"
+            # Action-stall re-entry forces a tool call this turn — xAI's
+            # documented lever.  Caller request_overrides still wins below.
+            kwargs["tool_choice"] = (
+                "required"
+                if latest_user_message_is_stall_continuation(messages)
+                else "auto"
+            )
             kwargs["parallel_tool_calls"] = True
 
         session_id = params.get("session_id")
