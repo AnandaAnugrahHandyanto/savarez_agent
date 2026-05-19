@@ -7,11 +7,13 @@ from unittest.mock import MagicMock, patch
 from hermes_cli.telegram_managed_bot import (
     DEFAULT_MANAGER_BOT,
     TELEGRAM_ONBOARDING_URL_ENV,
+    TelegramBotSetupResult,
     TelegramPairing,
     create_pairing,
     generate_bot_username,
     generate_deep_link,
     generate_pairing_nonce,
+    poll_for_setup_result,
     poll_for_token,
     print_qr_code,
     render_qr_terminal,
@@ -170,7 +172,12 @@ class TestPollForToken:
     def test_immediate_success(self):
         mock_resp = MagicMock()
         mock_resp.status_code = 200
-        mock_resp.json.return_value = {"status": "ready", "token": "123:ABCdef"}
+        mock_resp.json.return_value = {
+            "bot_username": "hermes_abcdefghijklmnop_bot",
+            "owner_user_id": 42,
+            "status": "ready",
+            "token": "123:ABCdef",
+        }
 
         with patch("hermes_cli.telegram_managed_bot.httpx.get", return_value=mock_resp) as get:
             with patch("hermes_cli.telegram_managed_bot.time.sleep"):
@@ -179,6 +186,26 @@ class TestPollForToken:
         assert token == "123:ABCdef"
         assert get.call_args.args[0] == "https://api.example.com/v1/telegram/pairings/abcdefghijklmnop"
         assert get.call_args.kwargs["headers"] == {"Authorization": "Bearer secret-token"}
+
+    def test_setup_result_includes_owner_user_id(self):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {
+            "bot_username": "hermes_abcdefghijklmnop_bot",
+            "owner_user_id": 42,
+            "status": "ready",
+            "token": "123:ABCdef",
+        }
+
+        with patch("hermes_cli.telegram_managed_bot.httpx.get", return_value=mock_resp):
+            with patch("hermes_cli.telegram_managed_bot.time.sleep"):
+                result = poll_for_setup_result("https://api.example.com", self.pairing(), timeout=5)
+
+        assert result == TelegramBotSetupResult(
+            token="123:ABCdef",
+            bot_username="hermes_abcdefghijklmnop_bot",
+            owner_user_id=42,
+        )
 
     def test_timeout_returns_none(self):
         mock_resp = MagicMock()

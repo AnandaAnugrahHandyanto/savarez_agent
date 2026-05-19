@@ -2117,6 +2117,7 @@ def _setup_standard_platform(platform: dict):
             return
 
     auto_token_saved = False
+    auto_owner_user_id = None
     if platform.get("key") == "telegram":
         print()
         print_info("  Telegram can be configured automatically with a managed bot:")
@@ -2125,15 +2126,16 @@ def _setup_standard_platform(platform: dict):
         choice = prompt("  Choice [1/2]", default="1")
         if choice.strip() == "1":
             try:
-                from hermes_cli.telegram_managed_bot import auto_setup_telegram_bot
+                from hermes_cli.telegram_managed_bot import auto_setup_telegram_bot_result
             except ImportError:
                 print_warning("  Automatic setup is unavailable in this install.")
             else:
-                token = auto_setup_telegram_bot()
-                if token:
-                    save_env_value(token_var, token)
+                result = auto_setup_telegram_bot_result()
+                if result:
+                    save_env_value(token_var, result.token)
                     print_success("  Saved TELEGRAM_BOT_TOKEN")
                     auto_token_saved = True
+                    auto_owner_user_id = result.owner_user_id
                 else:
                     print()
                     print_info("  Falling back to manual setup...")
@@ -2153,6 +2155,24 @@ def _setup_standard_platform(platform: dict):
 
         # Allowlist fields get special handling for the deny-by-default security model
         if var.get("is_allowlist"):
+            if "TELEGRAM" in var["name"] and auto_owner_user_id:
+                detected_id = str(auto_owner_user_id)
+                print_success(f"  Detected your Telegram user ID: {detected_id}")
+                if prompt_yes_no("  Allow this Telegram account to use the bot?", True):
+                    extra = prompt(
+                        "  Additional allowed user IDs (comma-separated, optional)",
+                        password=False,
+                    )
+                    ids = [detected_id]
+                    for uid in extra.replace(" ", "").split(","):
+                        if uid and uid not in ids:
+                            ids.append(uid)
+                    cleaned = ",".join(ids)
+                    save_env_value(var["name"], cleaned)
+                    print_success("  Saved — only these users can interact with the bot.")
+                    allowed_val_set = cleaned
+                    continue
+
             print_info("  The gateway DENIES all users by default for security.")
             print_info("  Enter user IDs to create an allowlist, or leave empty")
             print_info("  and you'll be asked about open access next.")

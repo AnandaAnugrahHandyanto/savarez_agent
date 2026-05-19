@@ -45,6 +45,15 @@ class TelegramPairing:
     expires_at: str | None = None
 
 
+@dataclass(frozen=True)
+class TelegramBotSetupResult:
+    """Successful Telegram onboarding result returned by the setup service."""
+
+    token: str
+    bot_username: str | None = None
+    owner_user_id: int | None = None
+
+
 def _api_url(api_url: str | None = None) -> str:
     """Resolve the onboarding API URL, honoring the PoC env override."""
     return (api_url or os.environ.get(TELEGRAM_ONBOARDING_URL_ENV) or DEFAULT_API_URL).rstrip("/")
@@ -176,12 +185,12 @@ def create_pairing(
     )
 
 
-def poll_pairing_once(
+def poll_pairing_result_once(
     api_url: str | None,
     pairing: TelegramPairing,
     timeout: float = 10.0,
-) -> str | None:
-    """Poll the onboarding service once. Returns the token when ready."""
+) -> TelegramBotSetupResult | None:
+    """Poll the onboarding service once. Returns setup metadata when ready."""
     resp = httpx.get(
         f"{_api_url(api_url)}/v1/telegram/pairings/{pairing.pairing_id}",
         headers={"Authorization": f"Bearer {pairing.poll_token}"},
@@ -194,7 +203,47 @@ def poll_pairing_once(
     if data.get("status") != "ready":
         return None
     token = data.get("token")
-    return token if isinstance(token, str) and token else None
+    if not isinstance(token, str) or not token:
+        return None
+
+    bot_username = data.get("bot_username")
+    owner_user_id = data.get("owner_user_id")
+    return TelegramBotSetupResult(
+        token=token,
+        bot_username=bot_username if isinstance(bot_username, str) and bot_username else None,
+        owner_user_id=owner_user_id
+        if isinstance(owner_user_id, int) and not isinstance(owner_user_id, bool) and owner_user_id > 0
+        else None,
+    )
+
+
+def poll_pairing_once(
+    api_url: str | None,
+    pairing: TelegramPairing,
+    timeout: float = 10.0,
+) -> str | None:
+    """Poll the onboarding service once. Returns the token when ready."""
+    result = poll_pairing_result_once(api_url, pairing, timeout=timeout)
+    return result.token if result else None
+
+
+def poll_for_setup_result(
+    api_url: str | None,
+    pairing: TelegramPairing,
+    timeout: float = DEFAULT_POLL_TIMEOUT,
+    interval: float = POLL_INTERVAL,
+) -> Optional[TelegramBotSetupResult]:
+    """Poll the pairing API until setup metadata is available or timeout."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            result = poll_pairing_result_once(api_url, pairing)
+            if result:
+                return result
+        except (httpx.HTTPError, ValueError):
+            pass
+        time.sleep(interval)
+    return None
 
 
 def poll_for_token(
@@ -204,24 +253,16 @@ def poll_for_token(
     interval: float = POLL_INTERVAL,
 ) -> Optional[str]:
     """Poll the pairing API until the bot token is available or timeout."""
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        try:
-            token = poll_pairing_once(api_url, pairing)
-            if token:
-                return token
-        except (httpx.HTTPError, ValueError):
-            pass
-        time.sleep(interval)
-    return None
+    result = poll_for_setup_result(api_url, pairing, timeout=timeout, interval=interval)
+    return result.token if result else None
 
 
-def auto_setup_telegram_bot(
+def auto_setup_telegram_bot_result(
     api_url: str | None = None,
     manager_bot: str = DEFAULT_MANAGER_BOT,
     profile_name: Optional[str] = None,
     poll_timeout: float = DEFAULT_POLL_TIMEOUT,
-) -> Optional[str]:
+) -> Optional[TelegramBotSetupResult]:
     """Run the full automatic Telegram bot creation flow."""
     _ = manager_bot, profile_name
     resolved_api_url = _api_url(api_url)
@@ -262,11 +303,11 @@ def auto_setup_telegram_bot(
         idx += 1
 
         try:
-            token = poll_pairing_once(resolved_api_url, pairing)
-            if token:
+            result = poll_pairing_result_once(resolved_api_url, pairing)
+            if result:
                 sys.stdout.write("\r  ✓ Bot created successfully!                              \n")
                 sys.stdout.flush()
-                return token
+                return result
         except (httpx.HTTPError, ValueError):
             pass
         time.sleep(POLL_INTERVAL)
@@ -276,3 +317,19 @@ def auto_setup_telegram_bot(
     print("    The bot may still be created — check Telegram.")
     print("    You can paste the token manually below, or re-run setup.")
     return None
+
+
+def auto_setup_telegram_bot(
+    api_url: str | None = None,
+    manager_bot: str = DEFAULT_MANAGER_BOT,
+    profile_name: Optional[str] = None,
+    poll_timeout: float = DEFAULT_POLL_TIMEOUT,
+) -> Optional[str]:
+    """Run automatic Telegram bot creation and return only the bot token."""
+    result = auto_setup_telegram_bot_result(
+        api_url=api_url,
+        manager_bot=manager_bot,
+        profile_name=profile_name,
+        poll_timeout=poll_timeout,
+    )
+    return result.token if result else None
