@@ -857,6 +857,38 @@ _NOX_PROJECT_ALIASES: Dict[str, tuple[str, ...]] = {
     ),
 }
 
+# Cross-project / agent-platform work belongs to the Nox OS employee lane when
+# no concrete product project is named.  Keep these out of _NOX_PROJECT_ALIASES:
+# broad words like "skills" or "agents" must not create a multi-project conflict
+# when the same message explicitly says "MetaAuto" or "Ryadom".
+_NOX_SYSTEM_SCOPE_MARKERS: tuple[str, ...] = (
+    "all projects",
+    "cross project",
+    "cross-project",
+    "все проекты",
+    "всех проектов",
+    "по всем проектам",
+    "всем проектам",
+    "all agents",
+    "agent platform",
+    "agents",
+    "агенты",
+    "агентов",
+    "все агенты",
+    "всех агентов",
+    "сами агенты",
+    "самих агентов",
+    "любой агент",
+    "любого агента",
+    "skills",
+    "skill",
+    "skill hub",
+    "hermes skills",
+    "скиллы",
+    "скилл",
+    "навыки",
+)
+
 # Soft, project-specific vocabulary used only when Башня receives a substantial
 # follow-up without an explicit project name.  This keeps long project work out
 # of the control tower while avoiding broad aliases like "приложение" that would
@@ -935,6 +967,14 @@ _NOX_PROJECT_HEAVY_MARKERS: tuple[str, ...] = (
     "implement",
     "реализ",
     "сделай",
+    "поставь",
+    "поставить",
+    "установи",
+    "установить",
+    "инсталл",
+    "install",
+    "внедри",
+    "внедр",
     "доделай",
     "почини",
     "исправ",
@@ -2437,6 +2477,12 @@ class GatewayRunner:
                 "reason": "multiple_projects",
             }
 
+        system_scope_hits = [
+            marker
+            for marker in _NOX_SYSTEM_SCOPE_MARKERS
+            if self._nox_bashnya_has_phrase(normalized, marker)
+        ]
+
         has_blocker = any(
             self._nox_bashnya_has_phrase(normalized, marker)
             for marker in _NOX_PROJECT_BLOCKER_MARKERS
@@ -2461,6 +2507,14 @@ class GatewayRunner:
         project_key = unique_matches[0] if unique_matches else None
         inference: Optional[Dict[str, Any]] = None
         active_projects: list[str] = []
+        if not project_key and system_scope_hits and substantial:
+            project_key = "nox-system"
+            inference = {
+                "project": "nox-system",
+                "reason": "system_scope_marker",
+                "score": len(system_scope_hits),
+                "hits": system_scope_hits[:5],
+            }
         if not project_key and substantial:
             inference, active_runs = self._nox_infer_project_from_active_context(normalized, source)
             active_projects = list(

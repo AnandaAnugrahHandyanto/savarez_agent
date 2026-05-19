@@ -111,6 +111,13 @@ def bashnya_routes_path(tmp_path, monkeypatch):
                         "chat_id": BASHNYA_CHAT_ID,
                         "message_thread_id": "32",
                     },
+                    "nox-system": {
+                        "project": "nox-system",
+                        "display": "Nox OS",
+                        "topic_name": "Nox OS · Сотрудник",
+                        "chat_id": BASHNYA_CHAT_ID,
+                        "message_thread_id": "33",
+                    },
                 }
             }
         ),
@@ -221,6 +228,68 @@ async def test_bashnya_project_task_routes_to_employee_lane_before_agent(monkeyp
     assert "Project: MetaAuto" in packet["content"]
     assert "Mode: RUN" in packet["content"]
     assert "почини metaauto coordinator routing" in packet["content"]
+
+
+@pytest.mark.asyncio
+async def test_bashnya_cross_project_skill_task_routes_to_nox_system_lane_before_agent(bashnya_routes_path):
+    """Cross-project skills/agents work belongs to Nox OS, not the main Башня session."""
+    event = _make_bashnya_event(
+        "внедри UI/design skills для всех проектов и самих агентов, "
+        "чтобы любой агент мог ими пользоваться"
+    )
+    adapter = CaptureAdapter()
+    runner = _make_runner(event.source, adapter)
+
+    async def fail_if_agent_runs(**_kwargs):  # pragma: no cover - should not be called
+        raise AssertionError("cross-project agent task must be routed before _run_agent")
+
+    runner._run_agent = fail_if_agent_runs
+
+    ack = await runner._handle_message_with_agent(
+        event,
+        event.source,
+        build_session_key(event.source),
+        run_generation=1,
+    )
+
+    assert "Статус: взял в работу" in ack
+    assert "Куда ушло: Nox OS · Сотрудник" in ack
+    assert "run_id:" in ack
+
+    assert len(adapter.sent) == 1
+    packet = adapter.sent[0]
+    assert packet["chat_id"] == BASHNYA_CHAT_ID
+    assert packet["metadata"] == {"thread_id": "33"}
+    assert "PROJECT EMPLOYEE TASK" in packet["content"]
+    assert "Project: Nox OS" in packet["content"]
+    assert "Mode: PROJECT" in packet["content"]
+    assert "UI/design skills" in packet["content"]
+
+
+@pytest.mark.asyncio
+async def test_bashnya_explicit_project_wins_over_system_skill_markers(bashnya_routes_path):
+    """System-scope vocabulary must not steal an explicitly named product project."""
+    event = _make_bashnya_event("внедри skills в metaauto агенте и прогони тесты")
+    adapter = CaptureAdapter()
+    runner = _make_runner(event.source, adapter)
+
+    async def fail_if_agent_runs(**_kwargs):  # pragma: no cover - should not be called
+        raise AssertionError("explicit project task must be routed before _run_agent")
+
+    runner._run_agent = fail_if_agent_runs
+
+    ack = await runner._handle_message_with_agent(
+        event,
+        event.source,
+        build_session_key(event.source),
+        run_generation=1,
+    )
+
+    assert "Статус: взял в работу" in ack
+    assert "Куда ушло: MetaAuto · Сотрудник" in ack
+    assert len(adapter.sent) == 1
+    assert adapter.sent[0]["metadata"] == {"thread_id": "31"}
+    assert "Project: MetaAuto" in adapter.sent[0]["content"]
 
 
 @pytest.mark.asyncio
