@@ -93,7 +93,7 @@ The adapter is a subclass of `BasePlatformAdapter` from `gateway/platforms/base.
 | `send_video(chat_id, path, caption)` | Send a video |
 | `send_animation(chat_id, path, caption)` | Send a GIF/animation |
 | `send_image_file(chat_id, path, caption)` | Send image from local file |
-| `request_interaction(chat_id, prompt, *, kind, timeout)` | Ask the caller mid-stream and return their reply. Used for dangerous-command approval over transports that have a native request/reply query channel (e.g. NATS `stream.ask`). Default raises `NotImplementedError`; the gateway's `_approval_notify_sync` detects capability via `type(adapter).request_interaction is not BasePlatformAdapter.request_interaction` and falls back to the legacy text-reply flow for adapters that don't override. Canonical implementation: `gateway/platforms/nats.py::NatsAdapter.request_interaction`. |
+| `request_interaction(chat_id, prompt, *, kind, timeout)` | Ask the caller mid-stream and return their reply. Used for dangerous-command approval over transports that have a native request/reply query channel (e.g. NATS `stream.ask`). Default raises `NotImplementedError`; the gateway's `_approval_notify_sync` detects capability via `type(adapter).request_interaction is not BasePlatformAdapter.request_interaction` and falls back to the legacy text-reply flow for adapters that don't override. Canonical implementation: `plugins/platforms/nats/adapter.py::NatsAdapter.request_interaction` (bundled plugin). |
 
 ### Required function
 
@@ -121,7 +121,7 @@ The default path runs text prompts through `GatewayStreamConsumer`, which buffer
 If your transport is in the second category:
 
 - Set `SUPPORTS_MESSAGE_EDITING = False` as a class attribute — `gateway/run.py` short-circuits `GatewayStreamConsumer` construction when this is False.
-- Own `AIAgent` construction inside the adapter. `gateway/platforms/api_server.py` is the reference; `gateway/platforms/nats.py::_run_text_prompt` + `_run_agent_sync` are the most recent example.
+- Own `AIAgent` construction inside the adapter. `gateway/platforms/api_server.py` is the reference; `plugins/platforms/nats/adapter.py::_run_text_prompt` + `_run_agent_sync` are the most recent example.
 - Register a per-handler `stream_delta_callback` that feeds an `asyncio.Queue`, and drain the queue with a pump task that publishes each delta.
 - Attachment enrichment runs in `_handle_message` on the default path. If you're bypassing `handle_message()` for text prompts, replicate the enrichment inline on the adapter hot path — see `NatsAdapter._enrich_event_with_media` (inline `vision_analyze` + bracketed document/audio notes; matches the `GatewayRunner._enrich_message_with_vision` template byte-for-byte). If you skip this, the agent will never see uploaded media — images/docs attached to the envelope silently vanish after caching.
 
@@ -225,12 +225,17 @@ signatures for webhooks, HASS_TOKEN for Home Assistant, NATS accounts / NKey /
 JWT / TLS for NATS). These platforms **skip the allowlist check** entirely —
 add them to the `(Platform.HOMEASSISTANT, Platform.WEBHOOK, Platform.NATS)`
 tuple in the early-return branch of `_is_user_authorized` instead of wiring
-them into `platform_env_map` / `platform_allow_all_map`.
+them into `platform_env_map` / `platform_allow_all_map`. The set lives in
+`gateway/run.py::_is_user_authorized()`. NATS is a bundled platform plugin: it
+has no `Platform.NATS` attribute (the enum entry was removed when NATS
+migrated to a plugin); use `Platform("nats")` dynamic resolution if you need
+the pseudo-member, and rely on `PlatformEntry.transport_authed` (Core PR) when
+it lands.
 
 Failing to add a transport-authed platform to the early-return tuple causes a
 subtle bug: inbound messages are treated as anonymous / un-paired users and
 the bot replies with a pairing code instead of executing the command.
-Regression test pattern: `tests/gateway/test_unauthorized_dm_behavior.py::test_nats_is_authorized_without_user_allowlist`.
+Regression test pattern: `tests/gateway/test_unauthorized_dm_behavior.py::test_nats_is_authorized_without_user_allowlist` *(skipif-gated post-Stage-3 — auto-enables once the Core PR adds NATS / `transport_authed` to `_is_user_authorized`)*.
 
 ---
 

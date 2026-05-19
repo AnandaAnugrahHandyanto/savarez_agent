@@ -1,6 +1,6 @@
 """Phase 6 (T6.4): mid-stream query & approval round-trip for the NATS adapter.
 
-Covers, per docs/nats-gateway-design.md §7:
+Covers:
 
 * :meth:`NatsAdapter.request_interaction` — resolves the active
   :class:`PromptStream` via the T5.0 contextvar-first lookup, forwards

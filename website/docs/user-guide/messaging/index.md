@@ -443,7 +443,7 @@ Each platform has its own toolset:
 | QQBot | `hermes-qqbot` | Full tools including terminal |
 | Yuanbao | `hermes-yuanbao` | Full tools including terminal |
 | Microsoft Teams | `hermes-teams` | Full tools including terminal |
-| NATS | `hermes-nats` | Full tools including terminal (programmatic agent protocol, no interactive UI tools) |
+| NATS | _(none — plugin-registered)_ | Full tools including terminal (programmatic agent protocol, no interactive UI tools) |
 | API Server | `hermes-api-server` | Full tools (drops `clarify`, `send_message`, `text_to_speech` — programmatic access doesn't have an interactive user) |
 | Webhooks | `hermes-webhook` | Full tools including terminal |
 

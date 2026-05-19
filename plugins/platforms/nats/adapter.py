@@ -7,7 +7,6 @@ pipeline. Streams responses back chunk-by-chunk over the reply subject;
 the SDK owns terminator + heartbeat + status-endpoint emission.
 
 Protocol spec: ``../nats-agent-sdk-docs/core-protocol.md`` (v0.3).
-Hermes architectural reference: ``docs/nats-gateway-design.md``.
 
 Single session per service: v0.3 collapses ``name`` and ``session`` into
 a single ``session_name`` token (the 5th subject token). Multi-session
@@ -60,7 +59,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-# Defaults per docs/nats-gateway-design.md §4.
 DEFAULT_AGENT = "hermes"
 DEFAULT_HEARTBEAT_INTERVAL_S = 30
 DEFAULT_ATTACHMENTS_OK = True
@@ -1779,12 +1777,12 @@ def _final_response_text(result: Any) -> str:
 # ---------------------------------------------------------------------------
 # Plugin glue (Stage 1 of the built-in → plugin restructure)
 #
-# Everything above this banner is a verbatim copy of
-# ``gateway/platforms/nats.py``.  The helpers below adapt the adapter to the
-# generic platform-plugin interface (``PluginContext.register_platform``)
-# without changing any of the adapter's runtime behaviour.  Stage 3 deletes
-# the original built-in file; Stage 2 hardens this glue (vendored approval
-# helper, ``transport_authed`` feature detection, AST scan test).
+# Everything above this banner is the NATS adapter implementation.  The
+# helpers below adapt it to the generic platform-plugin interface
+# (``PluginContext.register_platform``) without changing any of the
+# adapter's runtime behaviour.  A vendored approval helper and
+# ``transport_authed`` feature-detection keep the plugin loadable on a
+# stock checkout that hasn't yet absorbed the gateway-side core changes.
 # ---------------------------------------------------------------------------
 
 
@@ -1919,7 +1917,7 @@ def _find_nats_profile_collisions(
     """Return metadata for OTHER profiles whose NATS triple collides with ours.
 
     The NATS adapter takes a scoped lock on ``{agent}:{owner}:{session_name}``
-    (see :class:`NatsAdapter` and ``docs/nats-gateway-design.md`` §5), so two
+    (see :class:`NatsAdapter`), so two
     profiles sharing a triple cannot run their gateways simultaneously — one
     will fail to acquire the lock at startup.  The wizard catches that at
     config time instead of leaving the user to debug a startup crash.

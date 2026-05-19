@@ -17,7 +17,7 @@ Use the NATS gateway when you want to reach Hermes programmatically from other s
 ## Prerequisites
 
 - A running NATS server (local or remote). For local testing: `brew install nats-server` then `nats-server -p 4222 -a 127.0.0.1`.
-- The `synadia-ai-agents` and `synadia-ai-agent-service` SDKs (host-side imports `synadia_ai.agents` and `synadia_ai.agent_service`). Both are pulled in automatically by the `[nats]` extra: `pip install 'hermes-agent[nats]'` (or `uv sync --extra nats`). Without them, the gateway logs `NATS: synadia-ai-agents / synadia-ai-agent-service not installed` at startup and does not register the adapter.
+- The `synadia-ai-agents` and `synadia-ai-agent-service` SDKs (host-side imports `synadia_ai.agents` and `synadia_ai.agent_service`). The plugin ships in-tree but the runtime SDKs do not; install them directly: `pip install synadia-ai-agents synadia-ai-agent-service nkeys`. Without them, the gateway logs `NATS: synadia-ai-agents / synadia-ai-agent-service not installed` at startup and does not register the adapter.
 - An LLM provider key in `~/.hermes/.env` (e.g. `OPENROUTER_API_KEY`, `ANTHROPIC_API_KEY`). The `/help` and `/status` commands work without one, but actual prompts need a model.
 
 ## Step 1: Configure the Gateway
@@ -46,7 +46,7 @@ HERMES_NATS_OWNER=yourname
 HERMES_NATS_SESSION_NAME=default
 ```
 
-`HERMES_NATS_AGENT` defaults to `hermes`; set it only if you want a different service family name. Any NATS env var sets `enabled=true` automatically.
+`HERMES_NATS_AGENT` defaults to `hermes`; set it only if you want a different service family name.
 
 ### Advanced: structured overrides via `config.yaml`
 
@@ -236,7 +236,7 @@ Cross-machine collisions are allowed — the NATS protocol explicitly permits mu
 ## Troubleshooting
 
 **Gateway startup: `NATS: synadia-ai-agents / synadia-ai-agent-service not installed`**
-Install the `[nats]` extra: `pip install 'hermes-agent[nats]'` (or `uv sync --extra nats`).
+Install the runtime SDKs directly: `pip install synadia-ai-agents synadia-ai-agent-service nkeys`.
 
 **`ModuleNotFoundError: No module named 'synadia_ai'`**
 Same as above. Make sure you installed into the gateway's venv, not a global Python.
@@ -273,6 +273,4 @@ Each is a candidate for a future phase, not a bug.
 - **Client SDK (caller side):** [`synadia-ai-agents`](https://pypi.org/project/synadia-ai-agents/) on PyPI (import root `synadia_ai.agents`)
 - **Agent SDK (gateway side):** [`synadia-ai-agent-service`](https://pypi.org/project/synadia-ai-agent-service/) on PyPI (import root `synadia_ai.agent_service`)
 - **SDK source:** [`synadia-ai/synadia-agents`](https://github.com/synadia-ai/synadia-agents) monorepo (`client-sdk/python`, `agent-sdk/python`, plus `examples/`)
-- **Hermes adapter:** `gateway/platforms/nats.py`
-- **Design doc:** `docs/nats-gateway-design.md` — architectural reference, protocol↔adapter mapping, streaming model, failure modes
-- **Lessons learned:** `docs/nats-gateway-design.md` §17 — retrospective on surprises during Phases 1–8
+- **Hermes adapter:** `plugins/platforms/nats/adapter.py`

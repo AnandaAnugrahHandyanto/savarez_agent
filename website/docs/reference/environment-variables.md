@@ -404,7 +404,7 @@ For cloud sandbox backends, persistence is filesystem-oriented. `TERMINAL_LIFETI
 | `MATRIX_RECOVERY_KEY` | Recovery key for cross-signing verification after device key rotation. Recommended for E2EE setups with cross-signing enabled. |
 | `HASS_TOKEN` | Home Assistant Long-Lived Access Token (enables HA platform + tools) |
 | `HASS_URL` | Home Assistant URL (default: `http://homeassistant.local:8123`) |
-| `NATS_URL` | NATS server URL for the gateway adapter (e.g. `nats://127.0.0.1:4222`). Setting any NATS env var auto-enables the platform. |
+| `NATS_URL` | NATS server URL for the gateway adapter (e.g. `nats://127.0.0.1:4222`). Required when NATS is enabled and `NATS_CONTEXT` is unset (the two are mutually exclusive). |
 | `NATS_CONTEXT` | NATS context name (from `$NATS_CONFIG_HOME/context/<name>.json`) — alternative to `NATS_URL` for credentialed connections |
 | `HERMES_NATS_AGENT` | NATS agent family token in the subject `agents.prompt.<agent>.<owner>.<session_name>` (default: `hermes`) |
 | `HERMES_NATS_OWNER` | NATS owner token (required when NATS is enabled) |
