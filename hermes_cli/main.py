@@ -6587,12 +6587,16 @@ def _update_via_zip(args):
 
     pip_cmd = [sys.executable, "-m", "pip"]
     uv_bin = shutil.which("uv") or _ensure_uv_for_termux(pip_cmd)
+    cutoff = _exclude_newer_date(_get_min_release_age_days())
+    _print_release_age_status(uv_available=bool(uv_bin))
     if uv_bin:
         uv_env = {**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")}
         if _is_termux_env(uv_env):
             uv_env.pop("PYTHONPATH", None)
             uv_env.pop("PYTHONHOME", None)
-        _install_python_dependencies_with_optional_fallback([uv_bin, "pip"], env=uv_env)
+        _install_python_dependencies_with_optional_fallback(
+            [uv_bin, "pip"], env=uv_env, exclude_newer=cutoff
+        )
     else:
         # Use sys.executable to explicitly call the venv's pip module,
         # avoiding PEP 668 'externally-managed-environment' errors on Debian/Ubuntu.
@@ -6611,7 +6615,7 @@ def _update_via_zip(args):
                 cwd=PROJECT_ROOT,
                 check=True,
             )
-        _install_python_dependencies_with_optional_fallback(pip_cmd)
+        _install_python_dependencies_with_optional_fallback(pip_cmd, exclude_newer=cutoff)
 
     _update_node_dependencies()
     _build_web_ui(PROJECT_ROOT / "web")
@@ -7336,16 +7340,102 @@ def _refresh_active_lazy_features() -> None:
         print("  `hermes update` once the upstream issue is resolved.")
 
 
+def _get_min_release_age_days() -> int:
+    """Read ``security.minimum_release_age_days`` from the active config.
+
+    Returns 0 (disabled) on any error — the gate is additive, so failing
+    closed here would block all updates, which is the wrong default for a
+    config-read error. Persistent misconfiguration (e.g. a typo'd key) is
+    surfaced via a one-line debug log rather than silent fallthrough so an
+    operator who *thinks* the gate is on can see why it isn't firing.
+    Returns int >= 0.
+    """
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config() or {}
+        sec = cfg.get("security", {}) if isinstance(cfg, dict) else {}
+        val = sec.get("minimum_release_age_days", 0)
+        if val is None:
+            return 0
+        try:
+            return max(0, int(val))
+        except (TypeError, ValueError):
+            logger.warning(
+                "security.minimum_release_age_days has non-integer value %r; "
+                "treating as 0 (gate disabled)",
+                val,
+            )
+            return 0
+    except Exception as exc:
+        logger.debug("release-age gate config read failed: %s", exc)
+        return 0
+
+
+def _exclude_newer_date(min_age_days: int, *, _now_utc=None) -> str | None:
+    """Compute the ISO date string to pass to ``uv pip install --exclude-newer``.
+
+    Returns ``today (UTC) - min_age_days`` as ``YYYY-MM-DD``, or ``None`` when
+    the gate is disabled (``min_age_days <= 0``). uv interprets the date as
+    "exclude any artifact whose upload time is *after* this date" — so a
+    package published today is refused until ``min_age_days`` have elapsed.
+
+    ``_now_utc`` is a test-only seam — pass a ``datetime`` to fix "now" for
+    deterministic regression tests against known incident dates.
+    """
+    if min_age_days <= 0:
+        return None
+    from datetime import datetime, timedelta, timezone
+
+    now = _now_utc if _now_utc is not None else datetime.now(timezone.utc)
+    return (now.date() - timedelta(days=min_age_days)).isoformat()
+
+
+def _print_release_age_status(uv_available: bool, *, gateway_mode: bool = False) -> None:
+    """Surface the release-age gate's state to the operator during update.
+
+    Silent when the gate is off (matches the wider "silent-when-clean"
+    pattern in ``security_advisories.py``); discoverability lives in
+    ``cli-config.yaml.example``. When the gate is on, prints either a
+    confirmation with the active cutoff (uv available) or a warning that
+    uv is required (and the gate is being skipped). Suppressed entirely
+    in gateway mode (no human terminal).
+    """
+    if gateway_mode:
+        return
+    days = _get_min_release_age_days()
+    if days <= 0:
+        return
+    if uv_available:
+        cutoff = _exclude_newer_date(days)
+        print(
+            f"  ↳ release-age gate active: refusing PyPI versions newer than "
+            f"{cutoff} (minimum_release_age_days={days})"
+        )
+    else:
+        print(
+            f"  ⚠ release-age gate configured (minimum_release_age_days={days}) "
+            f"but requires `uv`; falling through without gating"
+        )
+
+
 def _install_python_dependencies_with_optional_fallback(
     install_cmd_prefix: list[str],
     *,
     env: dict[str, str] | None = None,
     group: str = "all",
+    exclude_newer: str | None = None,
 ) -> None:
     """Install base deps plus as many optional extras as the environment supports.
 
     By default this targets ``.[all]``; Termux callers can pass
     ``group='termux-all'`` to use the curated Android-compatible profile.
+
+    When ``exclude_newer`` is a non-empty ISO date string and the install
+    command is a uv invocation (``["uv", "pip"]``-style), the date is
+    appended as ``--exclude-newer <date>`` to refuse PyPI artifacts
+    uploaded after that date. Plain ``pip`` invocations ignore the flag
+    (logged once by the caller via ``_print_release_age_status``).
 
     On Windows, pre-renames live ``hermes.exe`` / ``hermes-gateway.exe`` shims
     in the venv Scripts dir before each install attempt so uv can write fresh
@@ -7353,13 +7443,21 @@ def _install_python_dependencies_with_optional_fallback(
     ``_quarantine_running_hermes_exe`` for the rationale.
     """
     scripts_dir = _venv_scripts_dir() if _is_windows() else None
+    # uv accepts --exclude-newer; plain pip does not. Exact-match the binary
+    # name (with optional .exe suffix on Windows) — substring matching would
+    # false-positive on `pyuv`, `uvloop`-named wrappers, etc.
+    extra_args: list[str] = []
+    if exclude_newer and install_cmd_prefix:
+        head = os.path.basename(install_cmd_prefix[0]).lower()
+        if head in {"uv", "uv.exe"}:
+            extra_args = ["--exclude-newer", exclude_newer]
 
     def _install(args: list[str]) -> None:
         moved: list[tuple[Path, Path]] = []
         if scripts_dir is not None:
             moved = _quarantine_running_hermes_exe(scripts_dir)
         try:
-            _run_install_with_heartbeat(install_cmd_prefix + args, env=env)
+            _run_install_with_heartbeat(install_cmd_prefix + args + extra_args, env=env)
         except BaseException:
             # Restore shims if uv didn't write replacements (e.g. install
             # failed before the entry-points step). Don't swallow the error.
@@ -7992,10 +8090,14 @@ def _cmd_update_pip(args):
     print("→ Checking PyPI for updates...")
 
     uv = shutil.which("uv")
+    cutoff = _exclude_newer_date(_get_min_release_age_days())
     if uv:
         cmd = [uv, "pip", "install", "--upgrade", "hermes-agent"]
+        if cutoff:
+            cmd.extend(["--exclude-newer", cutoff])
     else:
         cmd = [sys.executable, "-m", "pip", "install", "--upgrade", "hermes-agent"]
+    _print_release_age_status(uv_available=bool(uv))
 
     print(f"→ Running: {' '.join(cmd)}")
     result = subprocess.run(cmd)
@@ -8315,6 +8417,8 @@ def _cmd_update_impl(args, gateway_mode: bool):
         pip_cmd = [sys.executable, "-m", "pip"]
         uv_bin = shutil.which("uv") or _ensure_uv_for_termux(pip_cmd)
         install_group = "all"
+        cutoff = _exclude_newer_date(_get_min_release_age_days())
+        _print_release_age_status(uv_available=bool(uv_bin), gateway_mode=gateway_mode)
 
         if uv_bin:
             uv_env = {**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")}
@@ -8327,7 +8431,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 print("  → Termux/Android detected: prebuilding psutil with Linux source path compatibility...")
                 _install_psutil_android_compat([uv_bin, "pip"], env=uv_env)
             _install_python_dependencies_with_optional_fallback(
-                [uv_bin, "pip"], env=uv_env, group=install_group
+                [uv_bin, "pip"], env=uv_env, group=install_group, exclude_newer=cutoff
             )
         else:
             # Use sys.executable to explicitly call the venv's pip module,
@@ -8354,7 +8458,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
             if _is_termux_env() and _is_android_python():
                 print("  → Termux/Android detected: prebuilding psutil with Linux source path compatibility...")
                 _install_psutil_android_compat(pip_cmd)
-            _install_python_dependencies_with_optional_fallback(pip_cmd, group=install_group)
+            _install_python_dependencies_with_optional_fallback(pip_cmd, group=install_group, exclude_newer=cutoff)
 
         _refresh_active_lazy_features()
 
