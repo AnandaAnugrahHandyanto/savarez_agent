@@ -54,6 +54,7 @@ export const ko: Translations = {
     brandShort: "HA",
     closeNavigation: "내비게이션 닫기",
     closeModelTools: "모델 및 도구 닫기",
+    loadingChat: "Loading chat…",
     footer: {
       org: "Nous Research",
     },
@@ -174,6 +175,16 @@ export const ko: Translations = {
     perDayAvg: "/일 평균",
     acrossModels: "{count}개 모델 전반",
     inOut: "입력 {input} / 출력 {output}",
+    tokenAnalyticsHiddenTitle: "Token analytics hidden",
+    tokenAnalyticsHiddenIntroBeforeUsage:
+      "The token, cost, and per-day analytics on this page are a local debug estimate. They only count successful main-agent responses with a usable",
+    tokenAnalyticsHiddenIntroAfterUsage:
+      "block, and silently exclude auxiliary calls (context compression, title generation, vision, session search, web extract, smart approvals, MCP routing, plugin LLM access) plus provider-side retries and fallback attempts. Cache writes are missing entirely.",
+    tokenAnalyticsHiddenWarning:
+      "On models with heavy auxiliary traffic (Kimi K2.6, MiniMax M2.7) the local total can be 10x-100x lower than what your provider bills. Hiding these numbers is safer than letting them look authoritative.",
+    tokenAnalyticsHiddenConfigBeforeSetting:
+      "Check your provider dashboard (OpenRouter, Anthropic, etc.) for actual usage and billing. To re-enable the local debug estimate anyway, set",
+    tokenAnalyticsHiddenConfigAfterSetting: "in {configLink}.",
   },
 
   models: {
@@ -186,6 +197,61 @@ export const ko: Translations = {
     toolCalls: "도구 호출",
     noModelsData: "이 기간에 대한 모델 사용 데이터가 없습니다",
     startSession: "세션을 시작하면 여기에 모델 데이터가 표시됩니다",
+    capabilityTools: "Tools",
+    capabilityVision: "Vision",
+    capabilityReasoning: "Reasoning",
+    cacheRead: "Cache Read",
+    useAs: "Use as",
+    main: "Main",
+    current: "current",
+    missingProviderModel: "Missing provider/model",
+    settingsTitle: "Model Settings",
+    settingsAppliesToNewSessions: "applies to new sessions",
+    mainModel: "Main model",
+    unset: "(unset)",
+    change: "Change",
+    auxiliaryTasks: "Auxiliary tasks",
+    overrideCount: "{count} override{plural}",
+    autoCount: "{count} auto",
+    taskCount: "{count} tasks",
+    allAuto: "all auto",
+    configure: "Configure",
+    setMainModel: "Set Main Model",
+    auxiliaryModels: "Auxiliary Models",
+    auxiliaryModelsSubtitle:
+      "Auxiliary tasks handle side-jobs like vision, session search, and compression. auto means \"use the main model\". Override per-task when you want a cheap/fast model for a specific job.",
+    autoUsesMainModel: "auto (use main model)",
+    providerDefault: "(provider default)",
+    setAuxiliary: "Set Auxiliary: {task}",
+    resetAuxiliaryModels: "Reset auxiliary models",
+    resetAuxiliaryDescription:
+      "Reset every auxiliary task to 'auto'? This overrides any per-task overrides you've set.",
+    resetAllToAuto: "Reset all to auto",
+    resetAll: "Reset all",
+    tokenAnalyticsHidden:
+      "Token & cost analytics are hidden because the local counts exclude auxiliary calls (compression, vision, web extract, …) and provider retries, so they diverge from your provider bill. Enable {setting} in {configLink} to show the local debug estimate anyway.",
+    auxiliaryTaskLabels: {
+      vision: "Vision",
+      webExtract: "Web Extract",
+      compression: "Compression",
+      sessionSearch: "Session Search",
+      skillsHub: "Skills Hub",
+      approval: "Approval",
+      mcp: "MCP",
+      titleGeneration: "Title Gen",
+      curator: "Curator",
+    },
+    auxiliaryTaskHints: {
+      vision: "Image analysis",
+      webExtract: "Page summarization",
+      compression: "Context compaction",
+      sessionSearch: "Recall queries",
+      skillsHub: "Skill search",
+      approval: "Smart auto-approve",
+      mcp: "MCP tool routing",
+      titleGeneration: "Session titles",
+      curator: "Skill-usage review",
+    },
   },
 
   logs: {
@@ -217,6 +283,17 @@ export const ko: Translations = {
     pause: "일시 정지",
     resume: "재개",
     triggerNow: "지금 실행",
+    requiredFields: "{fields} required",
+    fallbackJobTitle: "Cron job",
+    states: {
+          "enabled": "enabled",
+          "scheduled": "scheduled",
+          "paused": "paused",
+          "disabled": "disabled",
+          "running": "running",
+          "active": "active",
+          "inactive": "inactive"
+    },
     delivery: {
       local: "로컬",
       telegram: "Telegram",
@@ -265,8 +342,7 @@ export const ko: Translations = {
     enableAfterInstall: "설치 후 활성화",
     enableRuntime: "활성화",
     forceReinstall: "강제 재설치 (기존 폴더를 먼저 삭제)",
-    headline:
-      "Hermes 플러그인을 검색, 설치, 활성화 및 업데이트합니다 (`hermes plugins` 동등).",
+    headline: "Hermes 플러그인을 검색, 설치, 활성화 및 업데이트합니다 (`hermes plugins` 동등).",
     identifierLabel: "Git URL 또는 owner/repo",
     inactive: "비활성",
     installBtn: "Git에서 설치",
@@ -280,10 +356,10 @@ export const ko: Translations = {
     pluginListHeading: "설치된 플러그인",
     providerDefaults: "내장 / 기본",
     providersHeading: "런타임 제공자 플러그인",
-    providersHint:
-      "memory.provider (비어 있으면 = 내장)와 context.engine을 config.yaml에 기록합니다. 다음 세션부터 적용됩니다.",
+    providersHint: "memory.provider (비어 있으면 = 내장)와 context.engine을 config.yaml에 기록합니다. 다음 세션부터 적용됩니다.",
     refreshDashboard: "대시보드 확장 재스캔",
     removeConfirm: "~/.hermes/plugins/에서 이 플러그인을 제거하시겠습니까?",
+    removeDescription: "This will remove the \"{name}\" plugin from your agent.",
     removeHint: "~/.hermes/plugins 아래에 사용자가 설치한 플러그인만 제거할 수 있습니다.",
     rescanHeading: "SPA 플러그인 레지스트리",
     rescanHint: "디스크에 파일을 추가한 후 재스캔하여 대시보드 사이드바가 새 매니페스트를 인식하도록 합니다.",
@@ -297,6 +373,18 @@ export const ko: Translations = {
     versionBadge: "버전",
     showInSidebar: "사이드바에 표시",
     hideFromSidebar: "사이드바에서 숨기기",
+    runtimeStatus: {
+      "enabled": "enabled",
+      "disabled": "disabled",
+      "inactive": "inactive",
+    },
+    sourceLabels: {
+      "bundled": "bundled",
+      "user": "user",
+      "local": "local",
+      "git": "git",
+    },
+    descriptions: {},
   },
 
   skills: {
@@ -317,6 +405,8 @@ export const ko: Translations = {
     setupNeeded: "설정 필요",
     disabledForCli: "CLI에서 비활성화됨",
     more: "+{count}개 더",
+    descriptions: {},
+    toolsetDescriptions: {},
   },
 
   config: {
@@ -328,6 +418,7 @@ export const ko: Translations = {
     resetDefaults: "기본값으로 재설정",
     resetScopeTooltip: "{scope}을(를) 기본값으로 재설정",
     confirmResetScope: "모든 {scope} 설정을 기본값으로 재설정하시겠습니까? 이 작업은 양식만 업데이트하며, 저장을 누르기 전까지는 변경 사항이 config.yaml에 기록되지 않습니다.",
+    resetScopeDescription: "This will reset {count} field(s) to their default values.",
     resetScopeToast: "{scope}이(가) 기본값으로 재설정되었습니다 — 검토 후 저장하여 적용하세요",
     rawYaml: "원본 YAML 설정",
     searchResults: "검색 결과",
@@ -356,7 +447,24 @@ export const ko: Translations = {
       logging: "로깅",
       discord: "Discord",
       auxiliary: "보조",
+      web: "Web",
+      tool_output: "Tool Output",
+      tool_loop_guardrails: "Tool Loop Guardrails",
+      openrouter: "OpenRouter",
+      bedrock: "Bedrock",
+      curator: "Curator",
+      slack: "Slack",
+      mattermost: "Mattermost",
+      matrix: "Matrix",
+      kanban: "Kanban",
+      model_catalog: "Model Catalog",
+      sessions: "Sessions",
+      updates: "Updates",
+      lsp: "LSP",
+      x_search: "X Search",
     },
+    fieldLabels: {},
+    fieldDescriptions: {},
   },
 
   env: {
@@ -375,9 +483,18 @@ export const ko: Translations = {
     keysCount: "{count}개 키",
     enterValue: "값 입력...",
     replaceCurrentValue: "현재 값 교체 ({preview})",
+    savedKey: "{key} saved",
     showValue: "실제 값 표시",
+    showValueFor: "Reveal {key}",
     hideValue: "값 숨기기",
-  },
+    hideValueFor: "Hide {key}",
+    jumpToSection: "Jump to section",
+    oauth: "OAuth",
+    providers: "Providers",
+    tools: "Tools",
+    settings: "Settings",
+      descriptions: {},
+},
 
   oauth: {
     title: "제공자 로그인 (OAuth)",
@@ -395,6 +512,10 @@ export const ko: Translations = {
     cli: "CLI",
     copyCliCommand: "CLI 명령 복사 (외부 / 대체용)",
     connect: "연결",
+    openDocs: "Open {provider} docs",
+    disconnectDescription:
+      "This will remove the stored OAuth tokens for {provider}. You will need to re-authenticate to use it again.",
+    tokenExchangeFailed: "Token exchange failed",
     sessionExpires: "세션이 {time} 후 만료됩니다",
     initiatingLogin: "로그인 흐름 시작 중…",
     exchangingCode: "코드를 토큰으로 교환 중…",
@@ -418,6 +539,89 @@ export const ko: Translations = {
     expiresIn: "{time} 후 만료",
   },
 
+  time: {
+    justNow: "now",
+    minutesAgo: "{count}m ago",
+    hoursAgo: "{count}h ago",
+    yesterday: "yesterday",
+    daysAgo: "{count}d ago",
+    unknown: "unknown",
+  },
+
+  autoField: {
+    noneOption: "(none)",
+    commaSeparatedValues: "comma-separated values",
+  },
+
+  modelInfo: {
+    loading: "Loading model info…",
+    contextWindow: "Context Window",
+    overrideAuto: "(override — auto: {value})",
+    autoDetected: "auto-detected",
+    maxOutput: "Max Output",
+    tools: "Tools",
+    vision: "Vision",
+    reasoning: "Reasoning",
+  },
+
+  modelPicker: {
+    switchModel: "Switch Model",
+    close: "Close",
+    current: "current",
+    unknown: "(unknown)",
+    filterPlaceholder: "Filter providers and models…",
+    savesToConfig: "Saves to config.yaml — applies to new sessions.",
+    persistGlobally: "Persist globally (otherwise this session only)",
+    cancel: "Cancel",
+    switch: "Switch",
+    loading: "loading…",
+    noMatches: "no matches",
+    noAuthenticatedProviders: "no authenticated providers",
+    modelsCount: "{count} models",
+    pickProvider: "pick a provider →",
+    noModelsMatch: "no models match your filter",
+    noModelsForProvider: "no models listed for this provider",
+    currentTag: "current",
+  },
+
+  chat: {
+    sessionTokenUnavailable:
+      "Session token unavailable. Open this page through `hermes dashboard`, not directly.",
+    authFailedReload: "Auth failed. Reload the page to refresh the session token.",
+    localhostOnly: "Chat is only reachable from localhost.",
+    copyLastAssistantMarkdown: "Copy last assistant response as raw markdown",
+    copyLastAssistant: "Copy last assistant response",
+    copyLastResponse: "copy last response",
+    copied: "copied",
+    sidebar: {
+      model: "model",
+      tools: "tools",
+      reconnect: "reconnect",
+      noToolCallsYet: "no tool calls yet",
+      switchModel: "switch model",
+      eventsDisconnected: "events feed disconnected -- tool calls may not appear",
+      eventsRejected: "events feed rejected ({code}) -- reload the page",
+      states: {
+        idle: "idle",
+        connecting: "connecting",
+        live: "live",
+        closed: "closed",
+        error: "error",
+      },
+    },
+  },
+
+  toolCall: {
+    tool: "tool",
+    running: "running",
+    done: "done",
+    error: "error",
+    context: "context",
+    streaming: "streaming",
+    diff: "diff",
+    result: "result",
+  },
+
   language: {
     switchTo: "영어로 전환",
   },
@@ -425,6 +629,36 @@ export const ko: Translations = {
   theme: {
     title: "테마",
     switchTheme: "테마 전환",
+    presets: {
+      default: {
+        label: "Hermes Teal",
+        description: "Classic dark teal -- the canonical Hermes look",
+      },
+      midnight: {
+        label: "Midnight",
+        description: "Deep blue-violet with cool accents",
+      },
+      ember: {
+        label: "Ember",
+        description: "Warm crimson and bronze -- forge vibes",
+      },
+      mono: {
+        label: "Mono",
+        description: "Clean grayscale -- minimal and focused",
+      },
+      cyberpunk: {
+        label: "Cyberpunk",
+        description: "Neon green on black -- matrix terminal",
+      },
+      rose: {
+        label: "Rose",
+        description: "Soft pink and warm ivory -- easy on the eyes",
+      },
+      "default-large": {
+        label: "Hermes Teal (Large)",
+        description: "Hermes Teal with bigger fonts and roomier spacing",
+      },
+    },
   },
 
   achievements: {

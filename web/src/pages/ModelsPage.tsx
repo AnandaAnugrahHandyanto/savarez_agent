@@ -40,16 +40,16 @@ const PERIODS = [
 ] as const;
 
 // Must match _AUX_TASK_SLOTS in hermes_cli/web_server.py.
-const AUX_TASKS: readonly { key: string; label: string; hint: string }[] = [
-  { key: "vision", label: "Vision", hint: "Image analysis" },
-  { key: "web_extract", label: "Web Extract", hint: "Page summarization" },
-  { key: "compression", label: "Compression", hint: "Context compaction" },
-  { key: "session_search", label: "Session Search", hint: "Recall queries" },
-  { key: "skills_hub", label: "Skills Hub", hint: "Skill search" },
-  { key: "approval", label: "Approval", hint: "Smart auto-approve" },
-  { key: "mcp", label: "MCP", hint: "MCP tool routing" },
-  { key: "title_generation", label: "Title Gen", hint: "Session titles" },
-  { key: "curator", label: "Curator", hint: "Skill-usage review" },
+const AUX_TASKS = [
+  { key: "vision", labelKey: "vision", hintKey: "vision" },
+  { key: "web_extract", labelKey: "webExtract", hintKey: "webExtract" },
+  { key: "compression", labelKey: "compression", hintKey: "compression" },
+  { key: "session_search", labelKey: "sessionSearch", hintKey: "sessionSearch" },
+  { key: "skills_hub", labelKey: "skillsHub", hintKey: "skillsHub" },
+  { key: "approval", labelKey: "approval", hintKey: "approval" },
+  { key: "mcp", labelKey: "mcp", hintKey: "mcp" },
+  { key: "title_generation", labelKey: "titleGeneration", hintKey: "titleGeneration" },
+  { key: "curator", labelKey: "curator", hintKey: "curator" },
 ] as const;
 
 function formatTokens(n: number): string {
@@ -79,6 +79,33 @@ function modelVendor(model: string, fallback?: string): string {
   return fallback || "";
 }
 
+function TokenAnalyticsHiddenNotice({
+  message,
+  configLabel,
+}: {
+  message: string;
+  configLabel: string;
+}) {
+  const setting = "dashboard.show_token_analytics";
+  if (!message.includes("{setting}") || !message.includes("{configLink}")) {
+    return <>{message}</>;
+  }
+  const [beforeSetting, afterSetting = ""] = message.split("{setting}");
+  const [betweenConfig, afterConfig = ""] = afterSetting.split("{configLink}");
+
+  return (
+    <>
+      {beforeSetting}
+      <span className="font-mono">{setting}</span>
+      {betweenConfig}
+      <a href="/config" className="underline">
+        {configLabel}
+      </a>
+      {afterConfig}
+    </>
+  );
+}
+
 function TokenBar({
   input,
   output,
@@ -90,14 +117,15 @@ function TokenBar({
   cacheRead: number;
   reasoning: number;
 }) {
+  const { t } = useI18n();
   const total = input + output + cacheRead + reasoning;
   if (total === 0) return null;
 
   const segments = [
-    { value: cacheRead, color: "bg-blue-400/60", dotColor: "bg-blue-400", label: "Cache Read" },
-    { value: reasoning, color: "bg-purple-400/60", dotColor: "bg-purple-400", label: "Reasoning" },
-    { value: input, color: "bg-[#ffe6cb]/70", dotColor: "bg-[#ffe6cb]", label: "Input" },
-    { value: output, color: "bg-emerald-500/70", dotColor: "bg-emerald-500", label: "Output" },
+    { value: cacheRead, color: "bg-blue-400/60", dotColor: "bg-blue-400", label: t.models.cacheRead },
+    { value: reasoning, color: "bg-purple-400/60", dotColor: "bg-purple-400", label: t.models.capabilityReasoning },
+    { value: input, color: "bg-[#ffe6cb]/70", dotColor: "bg-[#ffe6cb]", label: t.analytics.input },
+    { value: output, color: "bg-emerald-500/70", dotColor: "bg-emerald-500", label: t.analytics.output },
   ].filter((s) => s.value > 0);
 
   return (
@@ -140,6 +168,7 @@ function CapabilityBadges({
 }: {
   capabilities: ModelsAnalyticsModelEntry["capabilities"];
 }) {
+  const { t } = useI18n();
   const hasAny =
     capabilities.supports_tools ||
     capabilities.supports_vision ||
@@ -151,17 +180,17 @@ function CapabilityBadges({
     <div className="flex flex-wrap items-center gap-1.5">
       {capabilities.supports_tools && (
         <span className="inline-flex items-center gap-1 bg-emerald-500/10 px-1.5 py-0.5 text-[10px] font-medium text-emerald-600 dark:text-emerald-400">
-          <Wrench className="h-2.5 w-2.5" /> Tools
+          <Wrench className="h-2.5 w-2.5" /> {t.models.capabilityTools}
         </span>
       )}
       {capabilities.supports_vision && (
         <span className="inline-flex items-center gap-1 bg-blue-500/10 px-1.5 py-0.5 text-[10px] font-medium text-blue-600 dark:text-blue-400">
-          <Eye className="h-2.5 w-2.5" /> Vision
+          <Eye className="h-2.5 w-2.5" /> {t.models.capabilityVision}
         </span>
       )}
       {capabilities.supports_reasoning && (
         <span className="inline-flex items-center gap-1 bg-purple-500/10 px-1.5 py-0.5 text-[10px] font-medium text-purple-600 dark:text-purple-400">
-          <Brain className="h-2.5 w-2.5" /> Reasoning
+          <Brain className="h-2.5 w-2.5" /> {t.models.capabilityReasoning}
         </span>
       )}
       {capabilities.model_family && (
@@ -192,6 +221,7 @@ function UseAsMenu({
   mainAuxTask: string | null;
   onAssigned(): void;
 }) {
+  const { t } = useI18n();
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -201,7 +231,7 @@ function UseAsMenu({
     task: string,
   ) => {
     if (!provider || !model) {
-      setError("Missing provider/model");
+      setError(t.models.missingProviderModel);
       return;
     }
     setBusy(true);
@@ -238,7 +268,7 @@ function UseAsMenu({
         className="text-[10px] h-6 px-2"
         prefix={busy ? <Spinner /> : null}
       >
-        Use as <ChevronDown className="h-3 w-3" />
+        {t.models.useAs} <ChevronDown className="h-3 w-3" />
       </Button>
       {open && (
         <div className="absolute right-0 top-full mt-1 z-50 min-w-[220px] border border-border bg-card shadow-lg">
@@ -250,17 +280,17 @@ function UseAsMenu({
           >
             <span className="flex items-center gap-2">
               <Star className="h-3 w-3" />
-              Main model
+              {t.models.mainModel}
             </span>
             {isMain && (
               <span className="text-[9px] uppercase tracking-wider text-primary/80">
-                current
+                {t.models.current}
               </span>
             )}
           </button>
 
           <div className="border-t border-border/50 px-3 py-1.5 text-[9px] uppercase tracking-wider text-muted-foreground">
-            Auxiliary task
+            {t.models.auxiliaryTasks}
           </div>
 
           <button
@@ -269,21 +299,21 @@ function UseAsMenu({
             disabled={busy}
             className="flex w-full items-center justify-between px-3 py-1.5 text-xs hover:bg-muted/50 disabled:opacity-40"
           >
-            <span>All auxiliary tasks</span>
+            <span>{t.models.auxiliaryTasks}</span>
           </button>
 
-          {AUX_TASKS.map((t) => (
+          {AUX_TASKS.map((task) => (
             <button
-              key={t.key}
+              key={task.key}
               type="button"
-              onClick={() => assign("auxiliary", t.key)}
+              onClick={() => assign("auxiliary", task.key)}
               disabled={busy}
               className="flex w-full items-center justify-between px-3 py-1.5 text-xs hover:bg-muted/50 disabled:opacity-40"
             >
-              <span>{t.label}</span>
-              {mainAuxTask === t.key && (
+              <span>{t.models.auxiliaryTaskLabels[task.labelKey]}</span>
+              {mainAuxTask === task.key && (
                 <span className="text-[9px] uppercase tracking-wider text-primary/80">
-                  current
+                  {t.models.current}
                 </span>
               )}
             </button>
@@ -351,7 +381,7 @@ function ModelCard({
               </CardTitle>
               {isMain && (
                 <span className="inline-flex items-center gap-0.5 bg-primary/15 px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wider text-primary">
-                  <Star className="h-2.5 w-2.5" /> main
+                  <Star className="h-2.5 w-2.5" /> {t.models.main}
                 </span>
               )}
               {mainAuxTask && (
@@ -463,7 +493,7 @@ function ModelCard({
             )}
           </div>
           {entry.last_used_at > 0 && (
-            <span>{timeAgo(entry.last_used_at)}</span>
+            <span>{timeAgo(entry.last_used_at, t.time)}</span>
           )}
         </div>
 
@@ -492,10 +522,15 @@ function AuxiliaryTasksModal({
   onSaved(): void;
   onClose(): void;
 }) {
+  const { t } = useI18n();
   const [picker, setPicker] = useState<PickerTarget | null>(null);
   const [resetBusy, setResetBusy] = useState(false);
   const [confirmReset, setConfirmReset] = useState(false);
   const modalRef = useModalBehavior({ open: true, onClose });
+  const auxiliaryTaskLabel = (taskKey: string) => {
+    const task = AUX_TASKS.find((item) => item.key === taskKey);
+    return task ? t.models.auxiliaryTaskLabels[task.labelKey] : taskKey;
+  };
 
   const resetAllAux = async () => {
     setConfirmReset(false);
@@ -528,7 +563,7 @@ function AuxiliaryTasksModal({
           size="icon"
           onClick={onClose}
           className="absolute right-2 top-2 text-muted-foreground hover:text-foreground"
-          aria-label="Close"
+          aria-label={t.common.close}
         >
           <X />
         </Button>
@@ -539,7 +574,7 @@ function AuxiliaryTasksModal({
               id="aux-modal-title"
               className="font-display text-base tracking-wider uppercase"
             >
-              Auxiliary Tasks
+              {t.models.auxiliaryTasks}
             </h2>
             <Button
               size="sm"
@@ -549,47 +584,46 @@ function AuxiliaryTasksModal({
               className="text-[10px] h-6"
               prefix={resetBusy ? <Spinner /> : null}
             >
-              Reset all to auto
+              {t.models.resetAllToAuto}
             </Button>
           </div>
           <p className="text-[10px] text-muted-foreground/80 mt-2">
-            Auxiliary tasks handle side-jobs like vision, session search, and
-            compression. <span className="font-mono">auto</span> means
-            &quot;use the main model&quot;. Override per-task when you want a
-            cheap/fast model for a specific job.
+            {t.models.auxiliaryModelsSubtitle}
           </p>
         </header>
 
         <div className="flex-1 overflow-y-auto p-5 space-y-1">
-          {AUX_TASKS.map((t) => {
-            const cur = aux?.tasks.find((a) => a.task === t.key);
+          {AUX_TASKS.map((task) => {
+            const cur = aux?.tasks.find((a) => a.task === task.key);
             const isAuto =
               !cur || cur.provider === "auto" || !cur.provider;
+            const label = t.models.auxiliaryTaskLabels[task.labelKey];
+            const hint = t.models.auxiliaryTaskHints[task.hintKey];
             return (
               <div
-                key={t.key}
+                key={task.key}
                 className="flex items-center justify-between gap-3 px-3 py-2 border border-border/30 bg-card/50 hover:bg-muted/20 transition-colors"
               >
                 <div className="min-w-0 flex-1">
                   <div className="flex items-baseline gap-2">
-                    <span className="text-xs font-medium">{t.label}</span>
+                    <span className="text-xs font-medium">{label}</span>
                     <span className="text-[10px] text-muted-foreground/60">
-                      {t.hint}
+                      {hint}
                     </span>
                   </div>
                   <div className="text-[10px] font-mono text-muted-foreground truncate">
                     {isAuto
-                      ? "auto (use main model)"
-                      : `${cur?.provider} · ${cur?.model || "(provider default)"}`}
+                      ? t.models.autoUsesMainModel
+                      : `${cur?.provider} · ${cur?.model || t.models.providerDefault}`}
                   </div>
                 </div>
                 <Button
                   size="sm"
                   outlined
-                  onClick={() => setPicker({ kind: "aux", task: t.key })}
+                  onClick={() => setPicker({ kind: "aux", task: task.key })}
                   className="text-[10px] h-6"
                 >
-                  Change
+                  {t.models.change}
                 </Button>
               </div>
             );
@@ -601,10 +635,10 @@ function AuxiliaryTasksModal({
             key={`picker-${refreshKey}`}
             loader={api.getModelOptions}
             alwaysGlobal
-            title={`Set Auxiliary: ${
-              AUX_TASKS.find((t) => t.key === picker.task)?.label ??
-              picker.task
-            }`}
+            title={t.models.setAuxiliary.replace(
+              "{task}",
+              auxiliaryTaskLabel(picker.task),
+            )}
             onApply={async ({ provider, model }) => {
               await api.setModelAssignment({
                 scope: "auxiliary",
@@ -621,10 +655,10 @@ function AuxiliaryTasksModal({
           open={confirmReset}
           onCancel={() => setConfirmReset(false)}
           onConfirm={() => void resetAllAux()}
-          title="Reset auxiliary models"
-          description="Reset every auxiliary task to 'auto'? This overrides any per-task overrides you've set."
+          title={t.models.resetAuxiliaryModels}
+          description={t.models.resetAuxiliaryDescription}
           destructive
-          confirmLabel="Reset all"
+          confirmLabel={t.models.resetAll}
           loading={resetBusy}
         />
       </div>
@@ -641,6 +675,7 @@ function ModelSettingsPanel({
   refreshKey: number;
   onSaved(): void;
 }) {
+  const { t } = useI18n();
   const [auxModalOpen, setAuxModalOpen] = useState(false);
   const [picker, setPicker] = useState<PickerTarget | null>(null);
 
@@ -666,15 +701,28 @@ function ModelSettingsPanel({
   const auxOverrideCount = aux?.tasks.filter(
     (a) => a.provider && a.provider !== "auto",
   ).length ?? 0;
+  const autoTaskCount = AUX_TASKS.length - auxOverrideCount;
+  const auxSummary =
+    auxOverrideCount > 0
+      ? `${t.models.overrideCount
+          .replace("{count}", String(auxOverrideCount))
+          .replace("{plural}", auxOverrideCount > 1 ? "s" : "")} · ${t.models.autoCount.replace(
+          "{count}",
+          String(autoTaskCount),
+        )}`
+      : `${t.models.taskCount.replace(
+          "{count}",
+          String(AUX_TASKS.length),
+        )} · ${t.models.allAuto}`;
 
   return (
     <Card className="min-w-0 max-w-full overflow-hidden">
       <CardHeader className="min-w-0 pb-3">
         <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
           <Settings2 className="h-4 w-4 shrink-0 text-muted-foreground" />
-          <CardTitle className="text-sm">Model Settings</CardTitle>
+          <CardTitle className="text-sm">{t.models.settingsTitle}</CardTitle>
           <span className="max-w-full min-w-0 text-[10px] text-muted-foreground [overflow-wrap:anywhere]">
-            applies to new sessions
+            {t.models.settingsAppliesToNewSessions}
           </span>
         </div>
       </CardHeader>
@@ -686,13 +734,13 @@ function ModelSettingsPanel({
             <div className="flex items-center gap-2 mb-0.5">
               <Star className="h-3 w-3 text-primary" />
               <span className="text-xs font-medium uppercase tracking-wider">
-                Main model
+                {t.models.mainModel}
               </span>
             </div>
             <div className="text-xs font-mono text-muted-foreground truncate">
-              {mainProv || "(unset)"}
+              {mainProv || t.models.unset}
               {mainProv && mainModel && " · "}
-              {mainModel || "(unset)"}
+              {mainModel || t.models.unset}
             </div>
           </div>
           <Button
@@ -700,7 +748,7 @@ function ModelSettingsPanel({
             onClick={() => setPicker({ kind: "main" })}
             className="shrink-0 self-start text-xs sm:self-center"
           >
-            Change
+            {t.models.change}
           </Button>
         </div>
 
@@ -710,13 +758,11 @@ function ModelSettingsPanel({
             <div className="flex items-center gap-2 mb-0.5">
               <Cpu className="h-3 w-3 text-muted-foreground" />
               <span className="text-xs font-medium uppercase tracking-wider">
-                Auxiliary tasks
+                {t.models.auxiliaryTasks}
               </span>
             </div>
             <div className="text-xs font-mono text-muted-foreground truncate">
-              {auxOverrideCount > 0
-                ? `${auxOverrideCount} override${auxOverrideCount > 1 ? "s" : ""} · ${AUX_TASKS.length - auxOverrideCount} auto`
-                : `${AUX_TASKS.length} tasks · all auto`}
+              {auxSummary}
             </div>
           </div>
           <Button
@@ -725,7 +771,7 @@ function ModelSettingsPanel({
             onClick={() => setAuxModalOpen(true)}
             className="shrink-0 self-start text-xs sm:self-center"
           >
-            Configure
+            {t.models.configure}
           </Button>
         </div>
 
@@ -734,7 +780,7 @@ function ModelSettingsPanel({
             key={`picker-${refreshKey}`}
             loader={api.getModelOptions}
             alwaysGlobal
-            title="Set Main Model"
+            title={t.models.setMainModel}
             onApply={async ({ provider, model }) => {
               await applyAssignment({
                 scope: "main",
@@ -925,13 +971,10 @@ export default function ModelsPage() {
               </div>
               {!showTokens && (
                 <p className="mt-4 text-[10px] text-muted-foreground/70 leading-relaxed">
-                  Token & cost analytics are hidden because the local counts
-                  exclude auxiliary calls (compression, vision, web extract,
-                  …) and provider retries, so they diverge from your provider
-                  bill. Enable{" "}
-                  <span className="font-mono">dashboard.show_token_analytics</span>{" "}
-                  in <a href="/config" className="underline">Config</a> to
-                  show the local debug estimate anyway.
+                  <TokenAnalyticsHiddenNotice
+                    message={t.models.tokenAnalyticsHidden}
+                    configLabel={t.app.nav.config}
+                  />
                 </p>
               )}
             </CardContent>

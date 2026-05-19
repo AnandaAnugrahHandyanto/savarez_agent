@@ -380,7 +380,7 @@ function SkillTable({ skills }: { skills: AnalyticsSkillEntry[] }) {
                   </td>
                   <td className="text-right py-2 px-4">{skill.total_count}</td>
                   <td className="text-right py-2 pl-4 text-muted-foreground">
-                    {skill.last_used_at ? timeAgo(skill.last_used_at) : "—"}
+                    {skill.last_used_at ? timeAgo(skill.last_used_at, t.time) : "—"}
                   </td>
                 </tr>
               ))}
@@ -485,32 +485,24 @@ export default function AnalyticsPage() {
           <CardContent className="py-12">
             <div className="mx-auto flex max-w-2xl flex-col gap-3 text-sm text-muted-foreground">
               <h2 className="font-display text-base tracking-wider uppercase text-foreground">
-                Token analytics hidden
+                {t.analytics.tokenAnalyticsHiddenTitle}
               </h2>
               <p>
-                The token, cost, and per-day analytics on this page are a
-                local debug estimate. They only count successful main-agent
-                responses with a usable <span className="font-mono">usage</span>{" "}
-                block, and silently exclude auxiliary calls (context
-                compression, title generation, vision, session search, web
-                extract, smart approvals, MCP routing, plugin LLM access)
-                plus provider-side retries and fallback attempts. Cache
-                writes are missing entirely.
+                {t.analytics.tokenAnalyticsHiddenIntroBeforeUsage}{" "}
+                <span className="font-mono">usage</span>{" "}
+                {t.analytics.tokenAnalyticsHiddenIntroAfterUsage}
               </p>
+              <p>{t.analytics.tokenAnalyticsHiddenWarning}</p>
               <p>
-                On models with heavy auxiliary traffic (Kimi K2.6, MiniMax
-                M2.7) the local total can be 10x–100x lower than what your
-                provider bills. Hiding these numbers is safer than letting
-                them look authoritative.
-              </p>
-              <p>
-                Check your provider dashboard (OpenRouter, Anthropic, etc.)
-                for actual usage and billing. To re-enable the local debug
-                estimate anyway, set{" "}
+                {t.analytics.tokenAnalyticsHiddenConfigBeforeSetting}{" "}
                 <span className="font-mono">
                   dashboard.show_token_analytics: true
                 </span>{" "}
-                in <a href="/config" className="underline">Config</a>.
+                {t.analytics.tokenAnalyticsHiddenConfigAfterSetting
+                  .split("{configLink}")[0]}
+                <a href="/config" className="underline">{t.app.nav.config}</a>
+                {t.analytics.tokenAnalyticsHiddenConfigAfterSetting
+                  .split("{configLink}")[1] ?? ""}
               </p>
             </div>
           </CardContent>

@@ -17,12 +17,29 @@ import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/useToast";
 import { Toast } from "@/components/Toast";
 import { useI18n } from "@/i18n";
+import { en } from "@/i18n/en";
 import { PluginSlot } from "@/plugins";
 import { cn } from "@/lib/utils";
 import { usePageHeader } from "@/contexts/usePageHeader";
 
 /** Select value for built-in memory (`config` uses empty string). Never use `""` — UI Select maps empty value to an empty label. */
 const MEMORY_PROVIDER_BUILTIN = "__hermes_memory_builtin__";
+
+function getPluginDescription(
+  name: string,
+  description: string | null | undefined,
+  t: Translations,
+): string {
+  return t.pluginsPage.descriptions[name] ?? description ?? "";
+}
+
+function getPluginRuntimeStatusLabel(status: string, t: Translations): string {
+  return t.pluginsPage.runtimeStatus[status] ?? status;
+}
+
+function getPluginSourceLabel(source: string, t: Translations): string {
+  return t.pluginsPage.sourceLabels[source] ?? source;
+}
 
 export default function PluginsPage() {
   const [hub, setHub] = useState<PluginsHubResponse | null>(null);
@@ -89,14 +106,17 @@ export default function PluginsPage() {
         force: installForce,
         enable: installEnable,
       });
-      showToast(`${r.plugin_name ?? id} installed`, "success");
+      showToast(
+        (t.pluginsPage.installSuccess ?? en.pluginsPage.installSuccess!).replace("{name}", r.plugin_name ?? id),
+        "success",
+      );
       if ((r.warnings?.length ?? 0) > 0) showToast(r.warnings!.join(" "), "error");
       if ((r.missing_env?.length ?? 0) > 0)
         showToast(`${t.pluginsPage.missingEnvWarn} ${r.missing_env!.join(", ")}`, "error");
       setInstallId("");
       await loadHub();
     } catch (e) {
-      showToast(e instanceof Error ? e.message : "Install failed", "error");
+      showToast(e instanceof Error ? e.message : (t.pluginsPage.installFailed ?? en.pluginsPage.installFailed!), "error");
     } finally {
       setInstallBusy(false);
     }
@@ -112,7 +132,7 @@ export default function PluginsPage() {
       );
       await loadHub();
     } catch (e) {
-      showToast(e instanceof Error ? e.message : "Rescan failed", "error");
+      showToast(e instanceof Error ? e.message : (t.pluginsPage.rescanFailed ?? en.pluginsPage.rescanFailed!), "error");
     } finally {
       setRescanBusy(false);
     }
@@ -129,7 +149,7 @@ export default function PluginsPage() {
       showToast(t.pluginsPage.savedProviders, "success");
       await loadHub();
     } catch (e) {
-      showToast(e instanceof Error ? e.message : "Save failed", "error");
+      showToast(e instanceof Error ? e.message : (t.pluginsPage.saveFailed ?? en.pluginsPage.saveFailed!), "error");
     } finally {
       setProviderBusy(false);
     }
@@ -141,7 +161,7 @@ export default function PluginsPage() {
       await fn();
       await loadHub();
     } catch (e) {
-      showToast(e instanceof Error ? e.message : "Failed", "error");
+      showToast(e instanceof Error ? e.message : (t.pluginsPage.actionFailed ?? en.pluginsPage.actionFailed!), "error");
     } finally {
       setRowBusy(null);
     }
@@ -242,7 +262,7 @@ export default function PluginsPage() {
               <Input
                 className="normal-case font-sans lowercase"
                 id="install-url"
-                placeholder="owner/repo or https://..."
+                placeholder={t.pluginsPage.identifierPlaceholder ?? en.pluginsPage.identifierPlaceholder}
                 spellCheck={false}
                 value={installId}
                 onChange={(e) => setInstallId(e.target.value)}
@@ -342,7 +362,7 @@ export default function PluginsPage() {
                 <li className="text-[0.7rem] normal-case opacity-85" key={m.name}>
 
 
-                  {m.label ?? m.name} — {m.description || m.tab?.path}
+                  {m.label ?? m.name} — {getPluginDescription(m.name, m.description || m.tab?.path, t)}
 
 
                   {!m.tab?.hidden ? (
@@ -420,12 +440,14 @@ function PluginRowCard(props: PluginRowCardProps) {
             <span className="truncate font-semibold">{row.name}</span>
 
             <Badge tone="outline">
-              {t.pluginsPage.sourceBadge}: {row.source}
+              {t.pluginsPage.sourceBadge}: {getPluginSourceLabel(row.source, t)}
             </Badge>
 
             <Badge tone="outline">v{row.version || "—"}</Badge>
 
-            <Badge tone={badgeTone}>{row.runtime_status}</Badge>
+            <Badge tone={badgeTone}>
+              {getPluginRuntimeStatusLabel(row.runtime_status, t)}
+            </Badge>
 
             {row.auth_required ? (
               <Badge tone="destructive">{t.pluginsPage.authRequired}</Badge>
@@ -536,7 +558,7 @@ function PluginRowCard(props: PluginRowCardProps) {
 
         {row.description ? (
           <p className="min-w-0 w-full text-[0.7rem] tracking-[0.06em] text-midforeground/75 normal-case break-words">
-            {row.description}
+            {getPluginDescription(row.name, row.description, t)}
           </p>
         ) : null}
 
@@ -570,11 +592,11 @@ function PluginRowCard(props: PluginRowCardProps) {
           setConfirmRemove(false);
           void setRuntimeLoading(row.name, async () => {
             await api.removeAgentPlugin(row.name);
-            showToast(`${row.name} removed`, "success");
+            showToast(`${row.name} ${t.common.removed}`, "success");
           });
         }}
         title={t.pluginsPage.removeConfirm}
-        description={`This will remove the "${row.name}" plugin from your agent.`}
+        description={t.pluginsPage.removeDescription.replace("{name}", row.name)}
         destructive
         confirmLabel={t.common.delete}
       />

@@ -197,7 +197,7 @@ function MessageBubble({
         )}
         {msg.timestamp && (
           <span className="text-[10px] text-muted-foreground">
-            {timeAgo(msg.timestamp)}
+            {timeAgo(msg.timestamp, t.time)}
           </span>
         )}
       </div>
@@ -345,7 +345,7 @@ function SessionRow({
                 </>
               )}
               <span className="text-border">&#183;</span>
-              <span className="shrink-0">{timeAgo(session.last_active)}</span>
+              <span className="shrink-0">{timeAgo(session.last_active, t.time)}</span>
             </div>
           </div>
           {snippet && <SnippetHighlight snippet={snippet} />}
@@ -757,7 +757,7 @@ export default function SessionsPage() {
                       {(s.model ?? t.common.unknown).split("/").pop()}
                     </span>{" "}
                     · {s.message_count} {t.common.msgs} ·{" "}
-                    {timeAgo(s.last_active)}
+                    {timeAgo(s.last_active, t.time)}
                   </span>
 
                   {s.preview && (
