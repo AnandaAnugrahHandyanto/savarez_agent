@@ -3585,6 +3585,15 @@ class TelegramAdapter(BasePlatformAdapter):
             )
             return
 
+        # --- Task tree browser callbacks ---
+        if data.startswith("task:"):
+            caller_id = str(getattr(query.from_user, "id", ""))
+            if not self._is_callback_user_authorized(caller_id):
+                await query.answer(text="⛔ You are not authorized to browse tasks.", show_alert=True)
+                return
+            await self._handle_task_browser_callback(query, data)
+            return
+
         # --- Exec approval callbacks (ea:choice:id) ---
         if data.startswith("ea:"):
             parts = data.split(":", 2)
@@ -5501,6 +5510,85 @@ class TelegramAdapter(BasePlatformAdapter):
         consuming channel posts without ever building a gateway event.
         """
         return getattr(update, "effective_message", None) or getattr(update, "message", None)
+
+    async def send_task_browser_view(
+        self,
+        chat_id: str,
+        view: Any,
+        *,
+        reply_to: Optional[str] = None,
+        thread_id: Optional[str] = None,
+    ) -> SendResult:
+        """Send a /task TaskView with Telegram inline navigation buttons."""
+        if not self._bot:
+            return SendResult(success=False, error="Not connected")
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton(button.label, callback_data=button.callback_data) for button in row]
+            for row in (getattr(view, "buttons", None) or [])
+        ])
+        kwargs: Dict[str, Any] = {
+            "chat_id": int(chat_id),
+            "text": self.format_message(getattr(view, "text", "")),
+            "parse_mode": ParseMode.MARKDOWN_V2,
+            "reply_markup": keyboard,
+            "reply_to_message_id": int(reply_to) if reply_to else None,
+            **self._link_preview_kwargs(),
+        }
+        if thread_id:
+            kwargs["message_thread_id"] = self._message_thread_id_for_send(str(thread_id))
+        try:
+            msg = await self._bot.send_message(**kwargs)
+            return SendResult(success=True, message_id=str(getattr(msg, "message_id", "") or ""))
+        except Exception as md_error:
+            logger.warning("[%s] Task browser MarkdownV2 send failed, falling back to plain text: %s", self.name, md_error)
+            kwargs["text"] = _strip_mdv2(kwargs["text"])
+            kwargs["parse_mode"] = None
+            msg = await self._bot.send_message(**kwargs)
+            return SendResult(success=True, message_id=str(getattr(msg, "message_id", "") or ""))
+
+    async def _send_task_browser_view(self, message: Message, view: Any) -> None:
+        await self.send_task_browser_view(
+            str(message.chat_id),
+            view,
+            reply_to=str(getattr(message, "message_id", "") or "") or None,
+            thread_id=str(getattr(message, "message_thread_id", "") or "") or None,
+        )
+
+    async def _handle_task_browser_callback(self, query: Any, data: str) -> None:
+        """Edit an inline /task browser message after a button click."""
+        try:
+            from task_tree import build_task_callback_view
+
+            view = build_task_callback_view(data)
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton(button.label, callback_data=button.callback_data) for button in row]
+                for row in (view.buttons or [])
+            ])
+            formatted = self.format_message(view.text)
+            try:
+                await query.edit_message_text(
+                    text=formatted,
+                    parse_mode=ParseMode.MARKDOWN_V2,
+                    reply_markup=keyboard,
+                    **self._link_preview_kwargs(),
+                )
+            except Exception as md_error:
+                if "not modified" in str(md_error).lower():
+                    await query.answer(text="Already current")
+                    return
+                await query.edit_message_text(
+                    text=_strip_mdv2(formatted),
+                    parse_mode=None,
+                    reply_markup=keyboard,
+                    **self._link_preview_kwargs(),
+                )
+            await query.answer()
+        except Exception as exc:
+            logger.error("[%s] Task browser callback failed: %s", self.name, exc, exc_info=True)
+            try:
+                await query.answer(text="Task browser failed")
+            except Exception:
+                pass
 
     async def _handle_text_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming text messages.

@@ -7683,6 +7683,10 @@ class GatewayRunner:
             if _cmd_def_inner and _cmd_def_inner.name == "agents":
                 return await self._handle_agents_command(event)
 
+            # /task should be query-only and never interrupt.
+            if _cmd_def_inner and _cmd_def_inner.name == "task":
+                return await self._handle_task_command(event)
+
             # /background must bypass the running-agent guard — it starts a
             # parallel task and must never interrupt the active conversation.
             # /btw is an alias of /background and resolves to the same canonical
@@ -8005,6 +8009,9 @@ class GatewayRunner:
 
         if canonical == "today":
             return await self._handle_today_command(event)
+
+        if canonical == "task":
+            return await self._handle_task_command(event)
 
         if canonical == "agents":
             return await self._handle_agents_command(event)
@@ -10301,6 +10308,24 @@ class GatewayRunner:
         ])
 
         return "\n".join(lines)
+
+    async def _handle_task_command(self, event: MessageEvent) -> str:
+        """Handle /task — deterministic task-tree browser over todo-state.json."""
+        from task_tree import build_task_command_view
+
+        view = build_task_command_view(event.get_command_args())
+        adapter = (getattr(self, "adapters", {}) or {}).get(event.source.platform)
+        send_task_view = getattr(adapter, "send_task_browser_view", None)
+        if callable(send_task_view) and event.source.chat_id:
+            result = await send_task_view(
+                event.source.chat_id,
+                view,
+                reply_to=event.message_id,
+                thread_id=event.source.thread_id,
+            )
+            if getattr(result, "success", False):
+                return ""
+        return view.text
 
     async def _handle_agents_command(self, event: MessageEvent) -> str:
         """Handle /agents command - list active agents and running tasks."""
