@@ -654,7 +654,6 @@ export const tr: Translations = {
     columnLabels: {
       triage: "Triyaj",
       todo: "Yapılacak",
-      scheduled: "Zamanlandı",
       ready: "Hazır",
       running: "Sürüyor",
       blocked: "Engellendi",
@@ -664,7 +663,6 @@ export const tr: Translations = {
     columnHelp: {
       triage: "Ham fikirler — bir specifier şartnameyi detaylandıracak",
       todo: "Bağımlılıklar bekleniyor veya atanmamış",
-      scheduled: "Bilinen bir zaman gecikmesi veya zamanlanmış takip bekleniyor",
       ready: "Bağımlılıklar karşılandı; dispatch için bir profil atayın",
       running: "Bir worker tarafından alındı — yürütülüyor",
       blocked: "Worker insan girdisi istedi",
