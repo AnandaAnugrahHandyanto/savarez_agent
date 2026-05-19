@@ -36,12 +36,14 @@ interface ChatModelControlProps {
   className?: string;
   buttonClassName?: string;
   onSlashCommand?: (slashCommand: string) => void;
+  showStateBadge?: boolean;
 }
 
 export function ChatModelControl({
   className,
   buttonClassName,
   onSlashCommand,
+  showStateBadge = true,
 }: ChatModelControlProps) {
   const [version, setVersion] = useState(0);
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -166,12 +168,14 @@ export function ChatModelControl({
         </span>
       </Button>
 
-      <Badge
-        tone={STATE_TONE[state]}
-        className="hidden shrink-0 px-1.5 py-0 text-[9px] min-[760px]:inline-flex"
-      >
-        {STATE_LABEL[state]}
-      </Badge>
+      {showStateBadge && (
+        <Badge
+          tone={STATE_TONE[state]}
+          className="hidden shrink-0 px-1.5 py-0 text-[9px] min-[760px]:inline-flex"
+        >
+          {STATE_LABEL[state]}
+        </Badge>
+      )}
 
       {error && (
         <Button

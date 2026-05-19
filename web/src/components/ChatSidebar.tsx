@@ -1,9 +1,9 @@
 /**
  * ChatSidebar sits next to the embedded Hermes terminal.
  *
- * The main user-facing job is now navigation: projects, ordinary chats, and
- * concrete sessions. Tool telemetry remains here as a compact health panel so
- * advanced users can still see what the current agent turn is doing.
+ * The main user-facing job is navigation: projects, ordinary chats, and
+ * concrete sessions. Tool telemetry is intentionally hidden from the primary
+ * layout so the sidebar can behave more like Codex's conversation rail.
  */
 
 import { Button } from "@nous-research/ui/ui/components/button";
@@ -11,17 +11,9 @@ import { AlertCircle, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 
 import { ChatSessionNavigator } from "@/components/ChatSessionNavigator";
-import { ToolCall, type ToolEntry } from "@/components/ToolCall";
 import type { EventsState } from "@/components/chat-events-status";
 import { Card } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
-
-interface RpcEnvelope {
-  method?: string;
-  params?: { type?: string; payload?: unknown };
-}
-
-const TOOL_LIMIT = 20;
 
 interface ChatSidebarProps {
   channel: string;
@@ -38,7 +30,6 @@ export function ChatSidebar({
 }: ChatSidebarProps) {
   const [version, setVersion] = useState(0);
   const [eventsState, setEventsState] = useState<EventsState>("connecting");
-  const [tools, setTools] = useState<ToolEntry[]>([]);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -58,7 +49,7 @@ export function ChatSidebar({
       `${proto}//${window.location.host}/api/events?${qs.toString()}`,
     );
 
-    const DISCONNECTED = "events feed disconnected; tool calls may not appear";
+    const DISCONNECTED = "events feed disconnected";
     let unmounting = false;
     const surface = (msg: string, nextState: EventsState = "error") => {
       if (unmounting) return;
@@ -85,92 +76,6 @@ export function ChatSidebar({
       }
     });
 
-    ws.addEventListener("message", (ev) => {
-      let frame: RpcEnvelope;
-
-      try {
-        frame = JSON.parse(ev.data);
-      } catch {
-        return;
-      }
-
-      if (frame.method !== "event" || !frame.params) {
-        return;
-      }
-
-      const { type, payload } = frame.params;
-
-      if (type === "tool.start") {
-        const p = payload as
-          | { tool_id?: string; name?: string; context?: string }
-          | undefined;
-        const toolId = p?.tool_id;
-
-        if (!toolId) {
-          return;
-        }
-
-        setTools((prev) =>
-          [
-            ...prev,
-            {
-              kind: "tool" as const,
-              id: `tool-${toolId}-${prev.length}`,
-              tool_id: toolId,
-              name: p?.name ?? "tool",
-              context: p?.context,
-              status: "running" as const,
-              startedAt: Date.now(),
-            },
-          ].slice(-TOOL_LIMIT),
-        );
-      } else if (type === "tool.progress") {
-        const p = payload as
-          | { name?: string; preview?: string }
-          | undefined;
-
-        if (!p?.name || !p.preview) {
-          return;
-        }
-
-        setTools((prev) =>
-          prev.map((t) =>
-            t.status === "running" && t.name === p.name
-              ? { ...t, preview: p.preview }
-              : t,
-          ),
-        );
-      } else if (type === "tool.complete") {
-        const p = payload as
-          | {
-              tool_id?: string;
-              summary?: string;
-              error?: string;
-              inline_diff?: string;
-            }
-          | undefined;
-
-        if (!p?.tool_id) {
-          return;
-        }
-
-        setTools((prev) =>
-          prev.map((t) =>
-            t.tool_id === p.tool_id
-              ? {
-                  ...t,
-                  status: p.error ? "error" : "done",
-                  summary: p.summary,
-                  error: p.error,
-                  inline_diff: p.inline_diff,
-                  completedAt: Date.now(),
-                }
-              : t,
-          ),
-        );
-      }
-    });
-
     return () => {
       unmounting = true;
       ws.close();
@@ -179,7 +84,6 @@ export function ChatSidebar({
 
   const reconnect = useCallback(() => {
     setError(null);
-    setTools([]);
     setEventsState("connecting");
     setVersion((v) => v + 1);
   }, []);
@@ -187,13 +91,13 @@ export function ChatSidebar({
   return (
     <aside
       className={cn(
-        "flex h-full w-full min-w-0 shrink-0 flex-col gap-3 overflow-y-auto overflow-x-hidden pr-1 normal-case lg:w-[23rem] xl:w-[25rem]",
+        "flex h-full w-full min-w-0 shrink-0 flex-col gap-3 overflow-y-auto overflow-x-hidden pr-1 normal-case lg:w-[28rem] xl:w-[30rem]",
         className,
       )}
     >
       <ChatSessionNavigator
         activeSessionId={activeSessionId}
-        className="min-h-[28rem]"
+        className="min-h-0 flex-1"
       />
 
       {error && (
@@ -215,24 +119,6 @@ export function ChatSidebar({
           </div>
         </Card>
       )}
-
-      <Card className="flex max-h-44 min-h-0 flex-none flex-col px-3 py-3">
-        <div className="flex items-center justify-between gap-2 px-1 pb-2">
-          <div className="text-xs uppercase tracking-wider text-muted-foreground">
-            tools
-          </div>
-        </div>
-
-        <div className="flex min-h-0 flex-col gap-1.5">
-          {tools.length === 0 ? (
-            <div className="px-2 py-4 text-center text-xs text-muted-foreground">
-              no tool calls yet
-            </div>
-          ) : (
-            tools.map((t) => <ToolCall key={t.id} tool={t} />)
-          )}
-        </div>
-      </Card>
     </aside>
   );
 }
