@@ -21,6 +21,13 @@ def _no_fallback_wait(monkeypatch):
     import time as _time
     monkeypatch.setattr(_time, "sleep", lambda *_a, **_k: None)
     monkeypatch.setattr(run_agent, "jittered_backoff", lambda *a, **k: 0.0)
+    # The retry loop was extracted out of run_agent.py into
+    # agent.conversation_loop, which holds its own ``from agent.retry_utils
+    # import jittered_backoff`` reference. Patching ``run_agent.jittered_backoff``
+    # alone leaves the live call site untouched and the ``test_key_env_*``
+    # variant blew the suite timeout by burning real wall-clock retry waits.
+    from agent import conversation_loop as _conv_loop
+    monkeypatch.setattr(_conv_loop, "jittered_backoff", lambda *a, **k: 0.0)
 
 
 def _make_tool_defs(*names: str) -> list:

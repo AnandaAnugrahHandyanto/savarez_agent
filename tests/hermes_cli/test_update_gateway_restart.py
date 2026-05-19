@@ -32,9 +32,25 @@ def _no_restart_verify_sleep(monkeypatch):
     main.py does ``import time as _time`` at both module level (line 167)
     and inside functions (lines 3281, 4384, 4401). Patching the global
     ``time.sleep`` affects only the duration of this test.
+
+    ALSO: main.py's ``_wait_for_service_active`` polls is-active until
+    a ``time.monotonic`` deadline expires. Mocked subprocess.run keeps
+    returning ``inactive`` so the loop never exits early; with sleep
+    no-op'd the loop spins on real wall-clock until the 10s timeout
+    fires (twice — once per restart attempt). Advance the monotonic
+    clock past the deadline on every call so the loop returns
+    immediately.
     """
     import time as _real_time
     monkeypatch.setattr(_real_time, "sleep", lambda *_a, **_k: None)
+
+    _fake_now = [0.0]
+
+    def _fake_monotonic():
+        _fake_now[0] += 5.0  # leap forward 5 seconds each poll
+        return _fake_now[0]
+
+    monkeypatch.setattr(_real_time, "monotonic", _fake_monotonic)
 
 
 # ---------------------------------------------------------------------------
