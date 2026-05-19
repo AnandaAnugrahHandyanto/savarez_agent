@@ -129,6 +129,18 @@ def _ensure_discord_mock() -> None:
             return self
     discord_mod.Embed = _FakeEmbed
 
+    # AllowedMentions: store kwargs as real attributes so tests can assert
+    # on .replied_user / .users etc. A bare MagicMock makes every attribute
+    # a truthy MagicMock, which silently passes `is False` assertions.
+    class _FakeAllowedMentions:
+        def __init__(self, *, everyone=False, roles=False, users=True,
+                     replied_user=True):
+            self.everyone = everyone
+            self.roles = roles
+            self.users = users
+            self.replied_user = replied_user
+    discord_mod.AllowedMentions = _FakeAllowedMentions
+
     # ui.View / ui.Select / ui.Button: real classes (not MagicMock) so
     # tests that subclass ModelPickerView / iterate .children / clear
     # items work.

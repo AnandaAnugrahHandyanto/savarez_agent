@@ -460,3 +460,56 @@ class TestYamlConfigLoading:
         load_gateway_config()
 
         assert os.environ.get("DISCORD_REPLY_TO_MODE") == "all"
+
+
+class TestRepliedUserMention:
+    """Tests for the implicit reply-ping (allowed_mentions.replied_user).
+
+    A Discord reply pings the author of the replied-to message unless
+    allowed_mentions.replied_user is False. The send() path suppresses this
+    by default to avoid agent-to-agent loops in shared threads; callers can
+    opt back in with mention_replied_user=True.
+    """
+
+    @pytest.mark.asyncio
+    async def test_reply_does_not_ping_replied_user_by_default(self):
+        adapter, channel, ref_msg = _make_discord_adapter("first")
+        adapter.truncate_message = lambda content, max_len, **kw: ["chunk1", "chunk2"]
+
+        await adapter.send("12345", "test content", reply_to="999")
+
+        calls = channel.send.call_args_list
+        assert len(calls) == 2
+        for call in calls:
+            am = call.kwargs.get("allowed_mentions")
+            assert am is not None, "reply send must pass explicit allowed_mentions"
+            assert am.replied_user is False
+
+    @pytest.mark.asyncio
+    async def test_reply_pings_replied_user_when_opted_in(self):
+        adapter, channel, ref_msg = _make_discord_adapter("first")
+        adapter.truncate_message = lambda content, max_len, **kw: ["chunk1", "chunk2"]
+
+        await adapter.send(
+            "12345", "test content", reply_to="999", mention_replied_user=True
+        )
+
+        calls = channel.send.call_args_list
+        assert len(calls) == 2
+        for call in calls:
+            am = call.kwargs.get("allowed_mentions")
+            assert am is not None
+            assert am.replied_user is True
+
+    @pytest.mark.asyncio
+    async def test_replied_user_default_false_overrides_env(self, monkeypatch):
+        """The mention_replied_user default wins over DISCORD_ALLOW_MENTION_REPLIED_USER."""
+        monkeypatch.setenv("DISCORD_ALLOW_MENTION_REPLIED_USER", "true")
+        adapter, channel, ref_msg = _make_discord_adapter("first")
+        adapter.truncate_message = lambda content, max_len, **kw: ["chunk1"]
+
+        await adapter.send("12345", "test content", reply_to="999")
+
+        am = channel.send.call_args_list[0].kwargs.get("allowed_mentions")
+        assert am is not None
+        assert am.replied_user is False
