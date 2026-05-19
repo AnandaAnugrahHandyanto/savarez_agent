@@ -364,6 +364,7 @@ gateway:
     session_db_unavailable_prefix: "Session database not available"
     session_not_found:           "Session not found in database."
     warn_passthrough:            "⚠️ {error}"
+  approval_text_prompt: "⚠️ **Dangerous command requires approval:**\n```\n{command}\n```\nReason: {reason}\n\nReply `/approve` to execute, `/approve session` to approve this pattern for the session, `/approve always` to approve permanently, or `/deny` to cancel."
   queued_next_turn: ⏳ Queued for the next turn{status_detail}. I'll respond once the current task finishes.
   interrupting_current_task: ⚡ Interrupting current task{status_detail}. I'll respond to your message shortly.
   model_no_response: ⚠️ The model returned no response after processing tool results. This can happen with some models — try again or rephrase your question.

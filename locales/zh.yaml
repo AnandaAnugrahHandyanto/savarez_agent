@@ -349,6 +349,7 @@ gateway:
     session_db_unavailable_prefix: "会话数据库不可用"
     session_not_found:           "数据库中未找到该会话。"
     warn_passthrough:            "⚠️ {error}"
+  approval_text_prompt: "⚠️ **危险命令需要批准：**\n```\n{command}\n```\n原因：{reason}\n\n回复 `/approve` 执行，`/approve session` 本次会话批准此模式，`/approve always` 永久批准，或 `/deny` 取消。"
   queued_next_turn: ⏳ 已排队等待下一轮{status_detail}。当前任务完成后我会回复。
   interrupting_current_task: ⚡ 正在中断当前任务{status_detail}。我会尽快回复你的消息。
   model_no_response: ⚠️ 模型在处理工具结果后未返回响应。某些模型可能出现此情况 — 请重试或换个方式提问。
