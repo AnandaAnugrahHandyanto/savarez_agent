@@ -45,6 +45,7 @@ def test_telegram_dm_topic_fallback_metadata_preserved():
     assert md == {
         "thread_id": "topic-42",
         "telegram_dm_topic_reply_fallback": True,
+        "direct_messages_topic_id": "topic-42",
         "telegram_reply_to_message_id": "msg-event",
     }
 
@@ -62,6 +63,7 @@ def test_telegram_dm_topic_fallback_uses_source_message_when_event_missing():
     assert md == {
         "thread_id": "topic-42",
         "telegram_dm_topic_reply_fallback": True,
+        "direct_messages_topic_id": "topic-42",
         "telegram_reply_to_message_id": "msg-source",
     }
 

@@ -687,6 +687,9 @@ def _build_status_thread_metadata(
         and getattr(source, "chat_type", None) == "dm"
     ):
         metadata["telegram_dm_topic_reply_fallback"] = True
+        tid = str(progress_thread_id)
+        if tid and tid not in {"", "1"}:
+            metadata["direct_messages_topic_id"] = tid
         anchor = event_message_id or getattr(source, "message_id", None)
         if anchor is not None:
             metadata["telegram_reply_to_message_id"] = str(anchor)
