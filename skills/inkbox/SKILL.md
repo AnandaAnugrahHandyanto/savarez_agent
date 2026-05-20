@@ -90,7 +90,7 @@ AgentIdentity (your own identity — everything you need at runtime)
 └── text methods             (requires assigned phone number)
 ```
 
-Admin-only resources also exist on the client (`mailboxes`, `phone_numbers`, `tunnels`, `api_keys`, `whoami`, `create_signing_key`, `list_identities`, `create_identity`) but the agent's identity-scoped key returns 403 on their mutating surfaces. Stick to the resources above.
+Admin-only resources also exist on the client (`mailboxes`, `phone_numbers`, `tunnels`, `domains`, `sms_opt_ins`, `api_keys`, `create_signing_key`, `list_identities`, `create_identity`) but the agent's identity-scoped key returns 403 on their mutating surfaces. `inkbox.whoami()` is callable on any key (no scope required) and is the cheapest way to confirm what scope the running key actually has. Stick to the resources above.
 
 **1:1:1 invariant.** Every live identity has exactly one mailbox and exactly one tunnel, created and deleted atomically with it. There are no longer standalone `mailboxes.create`/`delete` or `tunnels.create`/`delete`/`rotate_secret`/`restore` endpoints. Phone numbers remain optional and lifecycle-independent.
 
@@ -105,12 +105,27 @@ identity = inkbox.get_identity(os.environ["INKBOX_IDENTITY"])
 
 # Your reachable channels — always populated for live identities.
 print(identity.mailbox.email_address)   # e.g. "sales-agent@inkboxmail.com"
+print(identity.mailbox.sending_domain)  # bare domain the mailbox sends from
+                                        # — platform default ("inkboxmail.com")
+                                        # or a verified custom domain.
 print(identity.tunnel.public_host)      # e.g. "sales-agent.inkboxwire.com"
 print(identity.phone_number.number if identity.phone_number else None)
 
-identity.refresh()                      # re-fetch from API; updates cached channels
-identity.update(display_name="Sales Bot v2")  # rename your own display name
-identity.update(status="paused")              # or "active" — pauses inbound routing
+identity.refresh()                      # re-fetch from API; clears credentials
+                                        # cache + updates cached channels
+identity.update(display_name="Sales Bot v2")        # rename your own display name
+identity.update(description="Outbound sales bot")   # set / change description
+identity.update(description=None)                   # clear description
+identity.update(status="paused")                    # or "active" — pauses inbound routing
+```
+
+Quick scope check — useful when an operation 403s and you want to confirm the API key the agent is running with:
+
+```python
+info = inkbox.whoami()
+print(info.auth_type, getattr(info, "auth_subtype", None))
+# api_key api_key.agent_scoped.claimed (typical Hermes runtime)
+# api_key api_key.admin_scoped (admin operations available)
 ```
 
 **Handles are immutable in practice.** Any identity with a platform-domain (`@inkboxmail.com`) mailbox rejects `identity.update(new_handle=...)` with a 409 — the handle is load-bearing for the email address. Deleting and recreating identities is an admin operation; the agent never does it.
@@ -703,7 +718,7 @@ Or run without a global install:
 npx @inkbox/cli <command>
 ```
 
-Requires Node.js >= 18.
+Requires Node.js >= 22.
 
 Inside this repository, prefer running the local source instead of assuming a global install:
 
