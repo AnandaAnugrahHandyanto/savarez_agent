@@ -9238,12 +9238,12 @@ class GatewayRunner:
 
 
     async def _handle_dashboard_command(self, event: MessageEvent) -> Optional[str]:
-        """Handle /dashboard — list fleet dashboard URLs.
+        """Handle /dashboard — list agent dashboard URLs.
 
         On Telegram (DM or group), emits an InlineKeyboardMarkup with one
         button per host (url buttons). On other platforms, falls back to a
         plain text list of URLs. Hosts read from CLI config key
-        ``dashboard.fleet_hosts`` (RFD-0002 §11).
+        ``dashboard.agent_hosts`` (RFD-0002 §11).
         """
         from hermes_cli.config import load_config as _load_cli_config
         try:
@@ -9251,13 +9251,13 @@ class GatewayRunner:
         except Exception:
             _cfg = {}
         dash_cfg = (_cfg.get("dashboard") or {}) if isinstance(_cfg, dict) else {}
-        hosts_raw = dash_cfg.get("fleet_hosts") or []
+        hosts_raw = dash_cfg.get("agent_hosts") or []
         hosts: list[dict] = [h for h in hosts_raw if isinstance(h, dict) and h.get("url")]
 
         if not hosts:
             return (
-                "No fleet hosts configured. Add to ~/.hermes/config.yaml under "
-                "`dashboard.fleet_hosts` as a list of {name, url} entries."
+                "No agent hosts configured. Add to ~/.hermes/config.yaml under "
+                "`dashboard.agent_hosts` as a list of {name, url} entries."
             )
 
         source = event.source
@@ -9273,7 +9273,7 @@ class GatewayRunner:
                     try:
                         await bot.send_message(
                             chat_id=int(source.chat_id),
-                            text="🚀 Fleet Dashboards",
+                            text="🚀 Agents Dashboards",
                             reply_markup=keyboard,
                         )
                         return None  # already sent
@@ -9284,7 +9284,7 @@ class GatewayRunner:
                 pass
 
         # Text fallback (non-Telegram, or Telegram send failed)
-        lines = ["**Fleet Dashboards:**"]
+        lines = ["**Agents Dashboards:**"]
         for h in hosts:
             name = h.get("name") or h.get("url")
             lines.append(f"• {name}: {h.get('url')}")

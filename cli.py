@@ -7690,14 +7690,14 @@ class HermesCLI:
         handle_skills_slash(cmd, ChatConsole())
 
     def _handle_dashboard_command(self):
-        """List configured fleet dashboard URLs (RFD-0002 §11)."""
+        """List configured agent dashboard URLs (RFD-0002 §11)."""
         dash_cfg = (self.config.get("dashboard") or {}) if isinstance(self.config, dict) else {}
-        hosts = dash_cfg.get("fleet_hosts") or []
+        hosts = dash_cfg.get("agent_hosts") or []
         if not hosts:
-            print("  No fleet hosts configured. Add to ~/.hermes/config.yaml under dashboard.fleet_hosts.")
+            print("  No agent hosts configured. Add to ~/.hermes/config.yaml under dashboard.agent_hosts.")
             return
         print()
-        print("  Fleet Dashboards:")
+        print("  Agents Dashboards:")
         for host in hosts:
             name = host.get("name", "?") if isinstance(host, dict) else "?"
             url = host.get("url", "") if isinstance(host, dict) else ""
