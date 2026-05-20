@@ -1936,18 +1936,29 @@ class SlackAdapter(BasePlatformAdapter):
         is_dm = channel_type in {"im", "mpim"}  # Both 1:1 and group DMs
 
         # Build thread_ts for session keying.
-        # In channels: fall back to ts so each top-level @mention starts a
-        #   new thread/session (the bot always replies in a thread).
+        # In real Slack threads, use the real parent thread_ts so replies share
+        # one Hermes session.
+        #
+        # For top-level channel messages, only synthesize thread_ts=ts when the
+        # bot will also reply in-thread. If reply_in_thread=false, synthesizing
+        # a per-message thread id creates a brand-new Hermes session for every
+        # top-level channel message, which looks like Slack amnesia in listen-all
+        # channels. In that mode, leave thread_ts unset so normal group session
+        # rules apply (per-user by default via group_sessions_per_user=true).
+        #
         # In DMs: fall back to ts so each top-level DM reply thread gets
-        #   its own session key (matching channel behavior). Set
-        #   dm_top_level_threads_as_sessions: false in config to revert to
-        #   legacy single-session-per-DM-channel behavior.
+        # its own session key (matching channel-thread behavior). Set
+        # dm_top_level_threads_as_sessions: false in config to revert to
+        # legacy single-session-per-DM-channel behavior.
+        real_thread_ts = event.get("thread_ts") or assistant_meta.get("thread_ts")
         if is_dm:
-            thread_ts = event.get("thread_ts") or assistant_meta.get("thread_ts")
+            thread_ts = real_thread_ts
             if not thread_ts and self._dm_top_level_threads_as_sessions():
                 thread_ts = ts
         else:
-            thread_ts = event.get("thread_ts") or ts  # ts fallback for channels
+            thread_ts = real_thread_ts
+            if not thread_ts and self.config.extra.get("reply_in_thread", True):
+                thread_ts = ts
 
         # In channels, respond if:
         #   0. Channel is in free_response_channels, OR require_mention is
