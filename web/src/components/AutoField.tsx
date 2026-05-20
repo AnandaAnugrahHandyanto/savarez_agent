@@ -122,7 +122,7 @@ export function AutoField({
     return (
       <div className="grid gap-3 border border-border p-3">
         <Label className="text-xs font-medium">{label}</Label>
-        <FieldHint schema={schema} schemaKey={schemaKey} />
+        <FieldHint schema={schema} schemaKey={schemaKey} locale={locale} />
         <NestedValueEditor fieldKey={schemaKey} value={value} onChange={onChange} />
       </div>
     );
