@@ -224,3 +224,20 @@ def test_docker_env_is_bridged_everywhere():
     assert "docker_env" in _gateway_env_map_keys()
     assert "docker_env" in _save_config_env_sync_keys()
     assert "TERMINAL_DOCKER_ENV" in _terminal_tool_env_var_names()
+
+
+def test_docker_extra_args_is_bridged_everywhere():
+    """Regression pin for issue #28863.
+
+    ``terminal.docker_extra_args`` in config.yaml is the documented escape
+    hatch for extra ``docker run`` flags (--read-only, --security-opt, custom
+    --tmpfs overrides, etc.).  terminal_tool._get_env_config reads
+    TERMINAL_DOCKER_EXTRA_ARGS and DockerEnvironment appends the parsed list
+    to run_args, but the gateway and CLI bridges both omitted the key, so the
+    documented config path was silently a no-op.  Guard all four bridging
+    points so this cannot regress.
+    """
+    assert "docker_extra_args" in _cli_env_map_keys()
+    assert "docker_extra_args" in _gateway_env_map_keys()
+    assert "docker_extra_args" in _save_config_env_sync_keys()
+    assert "TERMINAL_DOCKER_EXTRA_ARGS" in _terminal_tool_env_var_names()
