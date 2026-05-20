@@ -123,6 +123,33 @@ def _validate_category_name(category: str) -> str:
     return _normalize_bundle_path(category, field_name="category", allow_nested=False)
 
 
+def _resolve_lock_install_path(path_value: str) -> Path:
+    """Resolve a lock-file install path without allowing escapes from SKILLS_DIR."""
+    rel_path = _normalize_bundle_path(
+        path_value,
+        field_name="lock install path",
+        allow_nested=True,
+    )
+    skills_root = SKILLS_DIR.resolve()
+    install_path = SKILLS_DIR / rel_path
+
+    current = SKILLS_DIR
+    for part in PurePosixPath(rel_path).parts:
+        current = current / part
+        if current.is_symlink():
+            raise ValueError(f"Unsafe lock install path: {path_value}")
+
+    resolved = install_path.resolve()
+    try:
+        resolved.relative_to(skills_root)
+    except ValueError:
+        raise ValueError(f"Unsafe lock install path: {path_value}") from None
+    if resolved == skills_root:
+        raise ValueError(f"Unsafe lock install path: {path_value}")
+
+    return install_path
+
+
 def _guarded_http_get(url: str, *, timeout: int = 20) -> Optional[httpx.Response]:
     """Fetch a URL with SSRF and redirect-target validation."""
     current_url = url
@@ -2995,7 +3022,11 @@ def uninstall_skill(skill_name: str) -> Tuple[bool, str]:
     if not entry:
         return False, f"'{skill_name}' is not a hub-installed skill (may be a builtin)"
 
-    install_path = SKILLS_DIR / entry["install_path"]
+    try:
+        install_path = _resolve_lock_install_path(entry.get("install_path", ""))
+    except ValueError as exc:
+        return False, str(exc)
+
     if install_path.exists():
         shutil.rmtree(install_path)
 
