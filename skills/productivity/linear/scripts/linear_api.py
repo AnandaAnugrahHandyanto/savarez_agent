@@ -22,10 +22,15 @@ Commands:
     --team KEY                            Required
     --description DESC
     --priority 0-4                        0=none, 1=urgent, 4=low
-    --label NAME
-    --assignee NAME
+    --label NAME[,NAME...]                Label name(s), comma-separated; resolved within team
+    --assignee NAME|EMAIL                 User name, displayName, or email; resolved to assigneeId
     --parent IDENTIFIER                   Parent issue ID for sub-issues
-  update-issue <IDENTIFIER> [options]     Update existing issue (same options as create)
+  update-issue <IDENTIFIER> [options]     Update existing issue
+    --title TITLE                         New title
+    --description DESC                    New description
+    --priority 0-4                        New priority
+    --label NAME[,NAME...]                Replace labels (comma-separated names, resolved per team)
+    --assignee NAME|EMAIL                 Reassign by name/displayName/email
   update-status <IDENTIFIER> <STATE>      Move issue to workflow state (by state name)
   add-comment <IDENTIFIER> <body>         Add comment to issue
 
@@ -131,6 +136,49 @@ def _resolve_team_id(key_or_name: str) -> str | None:
     return None
 
 
+def _resolve_label_ids(team_id: str, names: list[str]) -> list[str]:
+    """Map label names to UUIDs within a team. Labels are team-scoped in Linear."""
+    q = """query($id: String!) {
+      team(id: $id) { labels(first: 100) { nodes { id name } } }
+    }"""
+    nodes = (
+        (gql(q, {"id": team_id}).get("team") or {})
+        .get("labels", {})
+        .get("nodes", [])
+    )
+    by_name = {n["name"].lower(): n["id"] for n in nodes}
+    out: list[str] = []
+    for name in names:
+        lid = by_name.get(name.lower())
+        if not lid:
+            sys.stderr.write(
+                f"Label '{name}' not found in team. Available: "
+                f"{[n['name'] for n in nodes]}\n"
+            )
+            sys.exit(1)
+        out.append(lid)
+    return out
+
+
+def _resolve_user_id(name_or_email: str) -> str:
+    """Map a workspace user reference (name, displayName, or email) to UUID."""
+    q = "query { users(first: 100) { nodes { id name displayName email } } }"
+    users = gql(q).get("users", {}).get("nodes", [])
+    key = name_or_email.lower()
+    for u in users:
+        if (
+            (u.get("email") or "").lower() == key
+            or (u.get("name") or "").lower() == key
+            or (u.get("displayName") or "").lower() == key
+        ):
+            return u["id"]
+    sys.stderr.write(
+        f"User '{name_or_email}' not found. Available: "
+        f"{[u.get('name') for u in users]}\n"
+    )
+    sys.exit(1)
+
+
 def cmd_list_projects(args: argparse.Namespace) -> None:
     if args.team:
         tid = _resolve_team_id(args.team)
@@ -229,7 +277,12 @@ def cmd_create_issue(args: argparse.Namespace) -> None:
         inp["priority"] = args.priority
     if args.parent:
         inp["parentId"] = args.parent
-    # TODO: label + assignee name->id lookup (omitted for v1 brevity)
+    if args.label:
+        names = [n.strip() for n in args.label.split(",") if n.strip()]
+        if names:
+            inp["labelIds"] = _resolve_label_ids(tid, names)
+    if args.assignee:
+        inp["assigneeId"] = _resolve_user_id(args.assignee)
 
     q = """mutation($input: IssueCreateInput!) {
       issueCreate(input: $input) {
@@ -247,6 +300,18 @@ def cmd_update_issue(args: argparse.Namespace) -> None:
         inp["description"] = args.description
     if args.priority is not None:
         inp["priority"] = args.priority
+    if args.label or args.assignee:
+        team_q = "query($id: String!) { issue(id: $id) { team { id } } }"
+        issue = gql(team_q, {"id": args.identifier}).get("issue")
+        if not issue:
+            sys.stderr.write(f"Issue not found: {args.identifier}\n")
+            sys.exit(1)
+        if args.label:
+            names = [n.strip() for n in args.label.split(",") if n.strip()]
+            if names:
+                inp["labelIds"] = _resolve_label_ids(issue["team"]["id"], names)
+        if args.assignee:
+            inp["assigneeId"] = _resolve_user_id(args.assignee)
     if not inp:
         sys.stderr.write("No update fields provided.\n")
         sys.exit(1)
@@ -392,8 +457,8 @@ def build_parser() -> argparse.ArgumentParser:
     ci.add_argument("--team", required=True)
     ci.add_argument("--description")
     ci.add_argument("--priority", type=int, choices=[0, 1, 2, 3, 4])
-    ci.add_argument("--label")
-    ci.add_argument("--assignee")
+    ci.add_argument("--label", help="Label name(s), comma-separated. Resolved to labelIds within the team.")
+    ci.add_argument("--assignee", help="User name, displayName, or email. Resolved to assigneeId.")
     ci.add_argument("--parent")
     ci.set_defaults(func=cmd_create_issue)
 
@@ -402,6 +467,8 @@ def build_parser() -> argparse.ArgumentParser:
     ui.add_argument("--title")
     ui.add_argument("--description")
     ui.add_argument("--priority", type=int, choices=[0, 1, 2, 3, 4])
+    ui.add_argument("--label", help="Label name(s), comma-separated. Resolved within the issue's team.")
+    ui.add_argument("--assignee", help="User name, displayName, or email. Resolved to assigneeId.")
     ui.set_defaults(func=cmd_update_issue)
 
     us = sub.add_parser("update-status")

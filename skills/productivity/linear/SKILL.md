@@ -53,6 +53,13 @@ python3 "$SCRIPT" raw 'query { viewer { name } }'
 
 All subcommands: `whoami`, `list-teams`, `list-projects`, `list-states`, `list-issues`, `get-issue`, `search-issues`, `create-issue`, `update-issue`, `update-status`, `add-comment`, `list-documents`, `get-document`, `search-documents`, `raw`. Run with `--help` for flags.
 
+`create-issue` and `update-issue` accept `--label` and `--assignee` as human-readable names — no UUIDs required. Labels resolve case-insensitively within the team (comma-separated for multiple); the assignee accepts name, displayName, or email.
+
+```bash
+python3 "$SCRIPT" create-issue --team ENG --title "Fix login" --label "Bug,P1" --assignee alice@example.com
+python3 "$SCRIPT" update-issue ENG-42 --label "Investigating" --assignee "Alice Smith"
+```
+
 Use the script when: you want a quick answer without crafting GraphQL. Use curl when: you need a query the script doesn't wrap, or you want to compose filters inline.
 
 ## Workflow States
