@@ -195,6 +195,12 @@ def check_info(text: str):
     print(f"    {color('→', Colors.CYAN)} {text}")
 
 
+def _section(title: str) -> None:
+    """Print a doctor section banner: blank line + bold cyan ◆ title."""
+    print()
+    print(color(f"◆ {title}", Colors.CYAN, Colors.BOLD))
+
+
 def _check_gateway_service_linger(issues: list[str]) -> None:
     """Warn when a systemd user gateway service will stop after logout."""
     try:
