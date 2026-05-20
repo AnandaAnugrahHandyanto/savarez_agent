@@ -1131,6 +1131,83 @@ def test_config_reads_dashboard_kanban_section(tmp_path, monkeypatch, client):
 
 
 # ---------------------------------------------------------------------------
+# /cockpit endpoint
+# ---------------------------------------------------------------------------
+
+def test_cockpit_endpoint_summarizes_fleet_and_handshake(client):
+    triage = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "rough business idea", "triage": True},
+    ).json()["task"]
+    ready = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "ship dashboard change", "assignee": "fullstackdev"},
+    ).json()["task"]
+    blocked = client.post(
+        "/api/plugins/kanban/tasks",
+        json={
+            "title": "approval required before deleting duplicate folders",
+            "body": "Need human approval before deleting files in the project workspace.",
+            "assignee": "peer",
+        },
+    ).json()["task"]
+    client.patch(
+        f"/api/plugins/kanban/tasks/{blocked['id']}",
+        json={
+            "status": "blocked",
+            "block_reason": "Approval required before destructive delete.",
+        },
+    )
+
+    conn = kb.connect()
+    try:
+        claimed = kb.claim_task(conn, ready["id"], claimer="test-worker")
+        assert claimed is not None
+    finally:
+        conn.close()
+
+    response = client.get("/api/plugins/kanban/cockpit")
+
+    assert response.status_code == 200, response.text
+    data = response.json()
+    assert data["board"]["slug"] == "default"
+    assert data["board"]["counts"]["triage"] == 1
+    assert data["board"]["counts"]["running"] == 1
+    assert data["handshake"]["phase_counts"]["DISCOVERED"] == 1
+    assert data["handshake"]["phase_counts"]["IN_PROGRESS"] == 1
+    assert data["handshake"]["phase_counts"]["APPROVAL_PENDING"] == 1
+    task_ids = {row["task_id"] for row in data["handshake"]["tasks"]}
+    assert {triage["id"], ready["id"], blocked["id"]}.issubset(task_ids)
+    assert data["attention"]["approval_queue"][0]["task_id"] == blocked["id"]
+    assert "destructive" in data["attention"]["approval_queue"][0]["reason"].lower()
+    assert data["fleet"]["profiles"]
+    assert "orchestration" in data
+
+
+def test_cockpit_endpoint_honors_board_query_param(client):
+    client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "default-only"},
+    )
+    kb.create_board("client-vital-suite", name="Client Vital Suite")
+    client.post(
+        "/api/plugins/kanban/tasks?board=client-vital-suite",
+        json={"title": "client-only", "assignee": "vitesuite"},
+    )
+
+    default_snapshot = client.get("/api/plugins/kanban/cockpit?board=default")
+    client_snapshot = client.get("/api/plugins/kanban/cockpit?board=client-vital-suite")
+
+    assert default_snapshot.status_code == 200, default_snapshot.text
+    assert client_snapshot.status_code == 200, client_snapshot.text
+    assert default_snapshot.json()["board"]["slug"] == "default"
+    assert client_snapshot.json()["board"]["slug"] == "client-vital-suite"
+    assert default_snapshot.json()["board"]["total"] == 1
+    assert client_snapshot.json()["board"]["total"] == 1
+    assert client_snapshot.json()["handshake"]["tasks"][0]["assignee"] == "vitesuite"
+
+
+# ---------------------------------------------------------------------------
 # Runs surfacing (vulcan-artivus RFC feedback)
 # ---------------------------------------------------------------------------
 

@@ -219,6 +219,100 @@ _WARNING_EVENT_KINDS = (
 )
 
 
+_APPROVAL_TERMS = (
+    "approval",
+    "approve",
+    "permission",
+    "confirm",
+    "allowlist",
+    "human approval",
+    "destructive",
+    "delete",
+    "production",
+    "deploy",
+    "payment",
+    "spend",
+    "secret",
+    "credential",
+    "external write",
+)
+
+
+def _approval_reason(task: kanban_db.Task, latest_summary: Optional[str]) -> Optional[str]:
+    """Return a short approval reason when a task appears to need Milos.
+
+    The cockpit MVP intentionally avoids new schema. It treats blocked/review
+    cards as the durable approval lane, then scans task text for concrete
+    approval triggers so ordinary technical blockers do not flood the queue.
+    """
+    if task.status not in {"blocked", "review"}:
+        return None
+    hay = " ".join(
+        part
+        for part in [
+            task.title or "",
+            task.body or "",
+            task.result or "",
+            latest_summary or "",
+            task.last_failure_error or "",
+        ]
+        if part
+    ).lower()
+    matched = [term for term in _APPROVAL_TERMS if term in hay]
+    if matched:
+        quoted = ", ".join(f"'{term}'" for term in matched)
+        return f"{task.status}: matched approval triggers {quoted}"
+    if task.status == "review":
+        return "review: waiting for peer or owner review"
+    return None
+
+
+def _handshake_phase(task: kanban_db.Task, approval_reason: Optional[str]) -> str:
+    """Map the current Kanban task state to the Hermes handshake protocol."""
+    if approval_reason:
+        return "APPROVAL_PENDING"
+    if task.status == "triage":
+        return "DISCOVERED"
+    if task.status == "todo":
+        return "KANBAN_BOUND"
+    if task.status == "scheduled":
+        return "SCHEDULED"
+    if task.status == "ready":
+        return "ACCEPTED"
+    if task.status == "running":
+        return "IN_PROGRESS"
+    if task.status == "blocked":
+        return "BLOCKED"
+    if task.status == "review":
+        return "PEER_REVIEW_PENDING"
+    if task.status == "done":
+        return "COMPLETE"
+    if task.status == "archived":
+        return "ARCHIVED"
+    return "DISCOVERED"
+
+
+def _profile_roster_for_cockpit() -> tuple[list[dict], Optional[str]]:
+    """Return profile metadata for the cockpit without making HTTP calls."""
+    try:
+        from hermes_cli import profiles as profiles_mod
+
+        return [
+            {
+                "name": p.name,
+                "is_default": bool(p.is_default),
+                "model": p.model or "",
+                "provider": p.provider or "",
+                "description": p.description or "",
+                "description_auto": bool(p.description_auto),
+                "skill_count": int(p.skill_count or 0),
+            }
+            for p in profiles_mod.list_profiles()
+        ], None
+    except Exception as exc:
+        return [], str(exc)
+
+
 def _compute_task_diagnostics(
     conn: sqlite3.Connection,
     task_ids: Optional[list[str]] = None,
@@ -1647,6 +1741,136 @@ def get_stats(board: Optional[str] = Query(None)):
     conn = _conn(board=board)
     try:
         return kanban_db.board_stats(conn)
+    finally:
+        conn.close()
+
+
+@router.get("/cockpit")
+def get_cockpit(board: Optional[str] = Query(None)):
+    """Return one read-only visual-control snapshot for the Kanban cockpit.
+
+    The snapshot deliberately derives from existing Kanban state so the
+    cockpit cannot drift from CLI, gateway, or worker truth.
+    """
+    board = _resolve_board(board)
+    slug = board or kanban_db.get_current_board()
+    conn = _conn(board=board)
+    try:
+        tasks = kanban_db.list_tasks(conn, include_archived=False)
+        task_ids = [task.id for task in tasks]
+        latest_summary_by_task = (
+            kanban_db.latest_summaries(conn, task_ids) if task_ids else {}
+        )
+        diagnostics_per_task = _compute_task_diagnostics(conn, task_ids=None)
+        stats = kanban_db.board_stats(conn)
+        board_meta = kanban_db.read_board_metadata(slug)
+        board_counts = stats.get("by_status", {})
+
+        active_run_rows = conn.execute(
+            "SELECT * FROM task_runs WHERE ended_at IS NULL ORDER BY started_at ASC"
+        ).fetchall()
+        active_runs = [
+            _run_dict(kanban_db.Run.from_row(row)) for row in active_run_rows
+        ]
+
+        phase_counts: dict[str, int] = {}
+        handshake_tasks: list[dict] = []
+        approval_queue: list[dict] = []
+        blocked_tasks: list[dict] = []
+        stale_ready: list[dict] = []
+        now = int(time.time())
+
+        for task in tasks:
+            latest_summary = latest_summary_by_task.get(task.id)
+            approval_reason = _approval_reason(task, latest_summary)
+            phase = _handshake_phase(task, approval_reason)
+            phase_counts[phase] = phase_counts.get(phase, 0) + 1
+            diagnostics = diagnostics_per_task.get(task.id) or []
+            row = {
+                "task_id": task.id,
+                "title": task.title,
+                "status": task.status,
+                "phase": phase,
+                "assignee": task.assignee,
+                "tenant": task.tenant,
+                "priority": task.priority,
+                "workspace_kind": task.workspace_kind,
+                "workspace_path": task.workspace_path,
+                "age": kanban_db.task_age(task),
+                "diagnostic_count": len(diagnostics),
+                "approval_reason": approval_reason,
+            }
+            handshake_tasks.append(row)
+            if approval_reason:
+                approval_queue.append({
+                    "task_id": task.id,
+                    "title": task.title,
+                    "assignee": task.assignee,
+                    "status": task.status,
+                    "reason": approval_reason,
+                    "created_at": task.created_at,
+                })
+            if task.status == "blocked":
+                blocked_tasks.append(row)
+            if (
+                task.status == "ready"
+                and task.created_at
+                and now - int(task.created_at) > 1800
+            ):
+                stale_ready.append(row)
+
+        handshake_tasks.sort(
+            key=lambda row: (
+                -int(row.get("priority") or 0),
+                str(row.get("phase") or ""),
+                str(row.get("task_id") or ""),
+            )
+        )
+        approval_queue.sort(
+            key=lambda row: (-int(row.get("created_at") or 0), row["task_id"])
+        )
+        blocked_tasks.sort(key=lambda row: row["task_id"])
+        stale_ready.sort(
+            key=lambda row: -(row["age"].get("created_age_seconds") or 0)
+        )
+
+        profiles, profile_error = _profile_roster_for_cockpit()
+        profiles_by_name = {profile["name"]: profile for profile in profiles}
+        by_profile = stats.get("by_assignee", {})
+
+        return {
+            "board": {
+                "slug": board_meta.get("slug") or slug,
+                "name": board_meta.get("name") or slug,
+                "description": board_meta.get("description") or "",
+                "default_workdir": board_meta.get("default_workdir"),
+                "counts": board_counts,
+                "total": sum(int(v) for v in board_counts.values()),
+            },
+            "fleet": {
+                "profiles": profiles,
+                "profile_error": profile_error,
+                "by_profile": by_profile,
+                "known_profile_names": sorted(profiles_by_name.keys()),
+                "active_runs": active_runs,
+                "active_run_count": len(active_runs),
+            },
+            "attention": {
+                "approval_queue": approval_queue,
+                "approval_count": len(approval_queue),
+                "blocked_tasks": blocked_tasks,
+                "blocked_count": len(blocked_tasks),
+                "stale_ready": stale_ready,
+                "stale_ready_count": len(stale_ready),
+                "diagnostic_count": sum(len(v) for v in diagnostics_per_task.values()),
+            },
+            "handshake": {
+                "phase_counts": phase_counts,
+                "tasks": handshake_tasks,
+            },
+            "orchestration": get_orchestration_settings(),
+            "now": now,
+        }
     finally:
         conn.close()
 
