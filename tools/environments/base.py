@@ -525,7 +525,12 @@ class BaseEnvironment(ABC):
         decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
 
         def _drain():
-            fd = proc.stdout.fileno()
+            try:
+                fd = proc.stdout.fileno()
+            except (AttributeError, TypeError, ValueError, OSError):
+                return
+            if not isinstance(fd, int):
+                return
             # select.select does NOT work on pipe fds on Windows (only sockets).
             # Use blocking os.read in a daemon thread instead — safe because
             # EOF arrives promptly when bash exits.
@@ -551,7 +556,7 @@ class BaseEnvironment(ABC):
                 while True:
                     try:
                         ready, _, _ = select.select([fd], [], [], 0.1)
-                    except (ValueError, OSError):
+                    except (TypeError, ValueError, OSError):
                         break  # fd already closed
                     if ready:
                         try:
@@ -851,4 +856,3 @@ class BaseEnvironment(ABC):
         from tools.terminal_tool import _transform_sudo_command
 
         return _transform_sudo_command(command)
-

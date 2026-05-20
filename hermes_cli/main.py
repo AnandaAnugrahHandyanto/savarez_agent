@@ -6336,7 +6336,7 @@ def _capture_head_sha(git_cmd, cwd) -> str | None:
 
 
 def _validate_critical_files_syntax(root) -> tuple[bool, str | None, str | None]:
-    """Compile each file in ``_UPDATE_CRITICAL_FILES`` to catch SyntaxErrors.
+    """Parse each file in ``_UPDATE_CRITICAL_FILES`` to catch SyntaxErrors.
 
     These are the files imported on every ``hermes`` startup; if any of them
     has a syntax error (orphan merge-conflict markers, bad ref to a name
