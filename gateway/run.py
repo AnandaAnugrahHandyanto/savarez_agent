@@ -7024,7 +7024,14 @@ class GatewayRunner:
                 )
             if self._busy_input_mode == "queue":
                 logger.debug("PRIORITY queue follow-up for session %s", _quick_key)
-                self._queue_or_replace_pending_event(_quick_key, event)
+                # #28503: use FIFO enqueue so rapid follow-ups while busy are
+                # preserved.  _queue_or_replace_pending_event writes the single
+                # _pending_messages slot, which silently overwrites prior
+                # queued text events.  _enqueue_fifo puts the head in the slot
+                # and overflows the tail into _queued_events so every message
+                # is processed sequentially.
+                adapter = self.adapters.get(event.source.platform)
+                self._enqueue_fifo(_quick_key, event, adapter)
                 return None
             if self._busy_input_mode == "steer":
                 # Steer mode: inject text into the running agent mid-run via

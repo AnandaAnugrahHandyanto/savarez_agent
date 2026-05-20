@@ -119,6 +119,55 @@ class TestBusySessionAck:
         running_agent.interrupt.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_queue_mode_preserves_rapid_followups_fifo(self):
+        """#28503 regression: rapid follow-ups in queue mode must NOT overwrite each other.
+
+        Previously, busy_input_mode=queue routed through
+        _queue_or_replace_pending_event which only writes a single dict slot,
+        so messages 2..N were silently dropped while the agent was busy.
+        The fix routes through _enqueue_fifo, which puts the head in the slot
+        and overflows the tail into _queued_events.
+        """
+        from gateway.run import GatewayRunner
+
+        runner, _sentinel = _make_runner()
+        runner._queued_events = {}
+        adapter = _make_adapter()
+
+        first = _make_event(text="message 1")
+        sk = build_session_key(first.source)
+
+        running_agent = MagicMock()
+        runner._busy_input_mode = "queue"
+        runner._running_agents[sk] = running_agent
+        runner.adapters[first.source.platform] = adapter
+
+        # Send 4 rapid messages while the agent is "busy"
+        events = [first] + [
+            MessageEvent(
+                text=f"message {i}",
+                message_type=MessageType.TEXT,
+                source=first.source,
+                message_id=f"msg{i}",
+            )
+            for i in range(2, 5)
+        ]
+        for ev in events:
+            result = await GatewayRunner._handle_message(runner, ev)
+            assert result is None
+
+        # Head of the FIFO sits in the adapter slot, the rest in overflow.
+        assert adapter._pending_messages[sk] is events[0]
+        overflow = runner._queued_events.get(sk, [])
+        assert [e.text for e in overflow] == ["message 2", "message 3", "message 4"], (
+            "queue mode must preserve all rapid follow-ups in FIFO order, "
+            "not overwrite the single pending slot (#28503)"
+        )
+
+        # And it must not have interrupted the running agent.
+        running_agent.interrupt.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_sends_ack_when_agent_running(self):
         """First message during busy session should get a status ack."""
         runner, sentinel = _make_runner()
