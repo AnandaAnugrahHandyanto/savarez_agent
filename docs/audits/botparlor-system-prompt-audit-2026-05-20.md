@@ -320,3 +320,52 @@ Live canary metrics from BotParlor session `a87df0ca` / Hermes session
 - Reasoning chars: `0`.
 - Compactions: `0`.
 - Ria-side summed model-call latency: about `27.3s`, average `1.82s/call`.
+
+## Chatbot Context-File Trim
+
+Ria's live canary prompt still loaded the Hermes repo `AGENTS.md` because the
+standalone TUI bridge runs with `WorkingDirectory=%h/.hermes/hermes-agent`.
+That added `18,196` chars, roughly `4.5k` tokens, of Hermes development
+guidance to a normal BotParlor chat session.
+
+Measured Ria prompt slices from session `20260520_134210_ae837c`:
+
+| Slice | Chars | Approx tokens |
+| --- | ---: | ---: |
+| Persona / SOUL | 5,472 | 1,368 |
+| Hermes help pointer | 211 | 52 |
+| Memory guidance | 1,426 | 356 |
+| Tool-use enforcement | 824 | 206 |
+| Environment hint | 122 | 30 |
+| Hermes `AGENTS.md` project context | 18,196 | 4,549 |
+| Memory + user profile | 1,636 | 409 |
+| Timestamp/model/provider | 140 | 35 |
+
+Initial visible tool schemas for Ria's lazy-tool baseline:
+
+| Tool set | Tools | Schema chars | Approx tokens |
+| --- | ---: | ---: | ---: |
+| Initial visible tools (`set_mood`, `memory`, `load_tool_pack`) | 3 | 3,656 | 914 |
+| After avatar pack load | 8 | 7,702 | 1,925 |
+
+Implemented `HERMES_TUI_SKIP_CONTEXT_FILES=1` /
+`HERMES_SKIP_CONTEXT_FILES=1` for TUI sessions. This skips cwd project context
+files while keeping SOUL identity and memory enabled. `HERMES_IGNORE_RULES`
+keeps its previous broader behavior: skip context files, SOUL, and memory.
+
+Projected effect for Ria first-message sessions:
+
+- Remove about `18.2k` chars / `4.5k` rough tokens from the cached system
+  prompt.
+- Bring the system prompt from `28,041` chars to about `9,845` chars.
+- Bring system prompt + initial visible schemas from about `31,697` chars to
+  about `13,501` chars, before chat-message framing.
+- Since the observed first model call was `8,275` input tokens, fresh sessions
+  with context files skipped should land well inside the original `5k-8k`
+  target, likely around the low-to-mid `4k` range before conversation history.
+
+Verification:
+
+- `./scripts/run_tests.sh tests/tui_gateway/test_make_agent_provider.py`
+  - `8 passed in 1.72s`
+- `python3 -m py_compile tui_gateway/server.py`
