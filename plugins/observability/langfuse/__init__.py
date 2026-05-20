@@ -318,6 +318,14 @@ def _get_langfuse() -> Optional[Langfuse]:
     # #29332 for the silent-failure mode this closes.
     _spawn_auth_check_thread(_LANGFUSE_CLIENT)
 
+    # Normalize the rare race where the probe completed synchronously
+    # (e.g. tests using a fake SDK, or an unusually fast localhost
+    # auth endpoint) and already rejected the credentials.  Callers
+    # only ever expect ``Langfuse | None``; the sentinel must stay
+    # inside this module.
+    if _LANGFUSE_CLIENT is _INIT_FAILED:
+        return None
+
     return _LANGFUSE_CLIENT
 
 
