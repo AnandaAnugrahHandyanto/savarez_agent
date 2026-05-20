@@ -97,6 +97,18 @@ def test_x_search_rejects_conflicting_handle_filters(monkeypatch):
     assert result["error"] == "allowed_x_handles and excluded_x_handles cannot be used together"
 
 
+def test_x_search_schema_routes_account_actions_to_xurl():
+    from tools.x_search_tool import X_SEARCH_SCHEMA
+
+    description = X_SEARCH_SCHEMA["description"]
+
+    assert "Read-only discovery" in description
+    assert "public X" in description
+    assert "post, reply, like, DM, upload media, delete" in description
+    assert "authenticated X account" in description
+    assert "xurl skill" in description
+
+
 def test_x_search_extracts_inline_url_citations(monkeypatch):
     from tools.x_search_tool import x_search_tool
 
