@@ -1689,6 +1689,7 @@ class TestRunJobSkillBacked:
 
         kwargs = mock_agent_cls.call_args.kwargs
         assert "cronjob" in (kwargs["disabled_toolsets"] or [])
+        assert "memory" in (kwargs["disabled_toolsets"] or [])
 
         prompt_arg = mock_agent.run_conversation.call_args.args[0]
         assert "blogwatcher" in prompt_arg
