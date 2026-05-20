@@ -488,6 +488,18 @@ def _last_usable_transcript_row(
     return None
 
 
+_GATEWAY_RECOVERY_NOTE_PREFIXES: tuple[str, ...] = (
+    "[System note: Your previous turn in this session was interrupted",
+    "[System note: Your previous turn was interrupted before you could process",
+)
+
+
+_CLARIFY_NO_RESPONSE_PREFIXES: tuple[str, ...] = (
+    "[user did not respond",
+    "[clarify prompt could not be delivered",
+)
+
+
 def _transcript_tail_is_completed_assistant(
     history: Optional[List[Dict[str, Any]]],
 ) -> bool:
@@ -512,6 +524,89 @@ def _transcript_tail_is_completed_assistant(
     if isinstance(content, str):
         return bool(content.strip())
     return bool(content)
+
+
+def _content_is_empty_gateway_recovery_note(content: Any) -> bool:
+    """True when ``content`` is only a gateway-generated recovery note.
+
+    Startup auto-resume creates an empty internal event; if that run fails
+    before the model emits anything, the transcript tail can become just the
+    prepended ``[System note: ...]`` user row.  Treating that row as fresh user
+    work creates a restart loop in quiet DM topics.
+    """
+    if not isinstance(content, str):
+        return False
+    if not content.startswith(_GATEWAY_RECOVERY_NOTE_PREFIXES):
+        return False
+
+    marker = "]\n\n"
+    marker_index = content.find(marker)
+    if marker_index >= 0:
+        return not content[marker_index + len(marker) :].strip()
+    return content.strip().endswith("]")
+
+
+def _transcript_tail_is_empty_recovery_note(
+    history: Optional[List[Dict[str, Any]]],
+) -> bool:
+    msg = _last_usable_transcript_row(history)
+    return bool(
+        msg
+        and msg.get("role") == "user"
+        and _content_is_empty_gateway_recovery_note(msg.get("content"))
+    )
+
+
+def _transcript_tail_is_unanswered_clarify(
+    history: Optional[List[Dict[str, Any]]],
+) -> bool:
+    """True when the last tool result is a clarify prompt with no answer.
+
+    ``clarify`` is a user-interaction boundary.  If it times out (or the prompt
+    could not be delivered), auto-continuing on gateway startup just makes the
+    agent talk to itself in a topic where the user has not provided a decision.
+    A real non-sentinel ``user_response`` remains resumable.
+    """
+    msg = _last_usable_transcript_row(history)
+    if not msg or msg.get("role") != "tool":
+        return False
+    tool_name = msg.get("tool_name") or msg.get("name")
+    if tool_name != "clarify":
+        return False
+
+    content = msg.get("content")
+    payload: Any
+    if isinstance(content, dict):
+        payload = content
+    elif isinstance(content, str):
+        try:
+            payload = json.loads(content)
+        except (TypeError, ValueError):
+            return False
+    else:
+        return False
+    if not isinstance(payload, dict):
+        return False
+
+    response = payload.get("user_response")
+    if response is None:
+        return bool(payload.get("question") or payload.get("choices_offered"))
+    response_text = str(response).strip()
+    if not response_text:
+        return True
+    lowered = response_text.lower()
+    return lowered.startswith(_CLARIFY_NO_RESPONSE_PREFIXES)
+
+
+def _transcript_tail_blocks_auto_continue(
+    history: Optional[List[Dict[str, Any]]],
+) -> bool:
+    """True when recovery should stop/clear instead of synthesizing a turn."""
+    return (
+        _transcript_tail_is_completed_assistant(history)
+        or _transcript_tail_is_empty_recovery_note(history)
+        or _transcript_tail_is_unanswered_clarify(history)
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -3586,9 +3681,9 @@ class GatewayRunner:
                     exc,
                 )
 
-            if _transcript_tail_is_completed_assistant(history):
+            if _transcript_tail_blocks_auto_continue(history):
                 logger.info(
-                    "Skipping auto-resume for %s: transcript already ends with assistant response; clearing stale resume_pending",
+                    "Skipping auto-resume for %s: transcript tail is already terminal or user-waiting; clearing stale resume_pending",
                     entry.session_key,
                 )
                 try:
@@ -16751,17 +16846,18 @@ class GatewayRunner:
                     _resume_entry = self.session_store._entries.get(session_key)
                 except Exception:
                     _resume_entry = None
-            _resume_tail_completed = _transcript_tail_is_completed_assistant(history)
+            _resume_tail_blocks_auto_continue = _transcript_tail_blocks_auto_continue(history)
             _is_resume_pending = bool(
                 _resume_entry is not None
                 and getattr(_resume_entry, "resume_pending", False)
                 and _interruption_is_fresh
-                and not _resume_tail_completed
+                and not _resume_tail_blocks_auto_continue
             )
             _has_fresh_tool_tail = bool(
                 agent_history
                 and agent_history[-1].get("role") == "tool"
                 and _interruption_is_fresh
+                and not _resume_tail_blocks_auto_continue
             )
 
             if _is_resume_pending:

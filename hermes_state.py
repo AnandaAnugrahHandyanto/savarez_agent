@@ -1882,11 +1882,19 @@ class SessionDB:
         return session_id
 
     def get_messages_as_conversation(
-        self, session_id: str, include_ancestors: bool = False
+        self,
+        session_id: str,
+        include_ancestors: bool = False,
+        include_timestamps: bool = False,
     ) -> List[Dict[str, Any]]:
         """
         Load messages in the OpenAI conversation format (role + content dicts).
         Used by the gateway to restore conversation history.
+
+        ``include_timestamps`` keeps the normal provider-facing shape clean by
+        default, but lets gateway recovery freshness checks use the durable
+        SQLite message timestamps instead of treating DB-loaded transcripts as
+        legacy timestamp-less history.
         """
         session_ids = [session_id]
         if include_ancestors:
@@ -1896,7 +1904,7 @@ class SessionDB:
             placeholders = ",".join("?" for _ in session_ids)
             rows = self._conn.execute(
                 "SELECT role, content, tool_call_id, tool_calls, tool_name, "
-                "finish_reason, reasoning, reasoning_content, reasoning_details, "
+                "timestamp, finish_reason, reasoning, reasoning_content, reasoning_details, "
                 "codex_reasoning_items, codex_message_items "
                 f"FROM messages WHERE session_id IN ({placeholders}) ORDER BY id",
                 tuple(session_ids),
@@ -1908,6 +1916,8 @@ class SessionDB:
             if row["role"] in {"user", "assistant"} and isinstance(content, str):
                 content = sanitize_context(content).strip()
             msg = {"role": row["role"], "content": content}
+            if include_timestamps and row["timestamp"] is not None:
+                msg["timestamp"] = row["timestamp"]
             if row["tool_call_id"]:
                 msg["tool_call_id"] = row["tool_call_id"]
             if row["tool_name"]:

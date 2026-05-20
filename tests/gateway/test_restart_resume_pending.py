@@ -40,6 +40,7 @@ from gateway.run import (
     _is_fresh_gateway_interruption,
     _last_transcript_timestamp,
     _should_clear_resume_pending_after_turn,
+    _transcript_tail_blocks_auto_continue,
     _transcript_tail_is_completed_assistant,
 )
 from gateway.session import SessionEntry, SessionSource, SessionStore
@@ -133,16 +134,18 @@ def _simulate_note_injection(
     )
 
     message = user_message
+    tail_blocks_auto_continue = _transcript_tail_blocks_auto_continue(history)
     is_resume_pending = bool(
         resume_entry is not None
         and getattr(resume_entry, "resume_pending", False)
         and interruption_is_fresh
-        and not _transcript_tail_is_completed_assistant(history)
+        and not tail_blocks_auto_continue
     )
     has_fresh_tool_tail = bool(
         agent_history
         and agent_history[-1].get("role") == "tool"
         and interruption_is_fresh
+        and not tail_blocks_auto_continue
     )
 
     if is_resume_pending:
@@ -1073,6 +1076,59 @@ async def test_startup_auto_resume_uses_transcript_timestamp_over_fresh_marker()
 
 
 @pytest.mark.asyncio
+async def test_startup_auto_resume_uses_sqlite_transcript_timestamps(tmp_path):
+    """SQLite-backed transcripts must carry timestamps for the freshness gate.
+
+    Regression for DM topics replaying old work after restart: when SQLite and
+    JSONL had the same number of messages, ``SessionStore.load_transcript()``
+    preferred SQLite rows.  Those rows did not include ``timestamp``, so a stale
+    transcript looked like legacy timestamp-less history and auto-resumed.
+    """
+    from hermes_state import SessionDB
+
+    runner, adapter = make_restart_runner()
+    store = _make_store(tmp_path)
+    if store._db:
+        store._db.close()
+    store._db = SessionDB(tmp_path / "state.db")
+
+    source = make_restart_source(chat_id="sqlite-old-transcript")
+    entry = store.get_or_create_session(source)
+    assert store.mark_resume_pending(entry.session_key, "restart_timeout") is True
+    old_ts = time.time() - 7200
+    store.append_to_transcript(
+        entry.session_id,
+        {"role": "user", "content": "old task", "timestamp": old_ts},
+    )
+    store.append_to_transcript(
+        entry.session_id,
+        {
+            "role": "tool",
+            "content": "old result",
+            "tool_call_id": "call_1",
+            "tool_name": "terminal",
+            "timestamp": old_ts,
+        },
+    )
+    conn = store._db._conn
+    assert conn is not None
+    with store._db._lock:
+        conn.execute(
+            "UPDATE messages SET timestamp = ? WHERE session_id = ?",
+            (old_ts, entry.session_id),
+        )
+        conn.commit()
+
+    runner.session_store = store
+    adapter.handle_message = AsyncMock()
+
+    scheduled = runner._schedule_resume_pending_sessions()
+
+    assert scheduled == 0
+    adapter.handle_message.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_startup_auto_resume_clears_stale_marker_when_tail_already_answered():
     """Regression: do not synthesize an empty turn for an answered message."""
     runner, adapter = make_restart_runner()
@@ -1103,6 +1159,132 @@ async def test_startup_auto_resume_clears_stale_marker_when_tail_already_answere
     assert scheduled == 0
     adapter.handle_message.assert_not_called()
     runner.session_store.clear_resume_pending.assert_called_once_with(entry.session_key)
+
+
+@pytest.mark.asyncio
+async def test_startup_auto_resume_clears_marker_after_empty_recovery_note():
+    """Do not loop forever on a previous synthetic recovery turn.
+
+    Regression for Telegram DM topics that started again after each gateway
+    restart: the prior startup auto-resume persisted only the recovery system
+    note as a ``user`` row before the provider failed/rate-limited.  On the next
+    restart that note is not new user work, so startup must clear the marker
+    instead of synthesizing another empty turn.
+    """
+    runner, adapter = make_restart_runner()
+    source = make_restart_source(chat_id="recovery-note-chat")
+    now = datetime.now()
+    entry = SessionEntry(
+        session_key="agent:main:telegram:dm:recovery-note-chat",
+        session_id="sid-recovery-note",
+        created_at=now,
+        updated_at=now,
+        origin=source,
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        resume_pending=True,
+        resume_reason="restart_timeout",
+        last_resume_marked_at=now,
+    )
+    runner.session_store._entries = {entry.session_key: entry}
+    runner.session_store.load_transcript = MagicMock(return_value=[
+        {
+            "role": "user",
+            "content": (
+                "[System note: Your previous turn in this session was interrupted "
+                "by a gateway restart. The conversation history below is intact. "
+                "If it contains unfinished tool result(s), process them first and "
+                "summarize what was accomplished, then address the user's new "
+                "message below.]\n\n"
+            ),
+            "timestamp": time.time() - 20,
+        },
+    ])
+    runner.session_store.clear_resume_pending = MagicMock(return_value=True)
+    adapter.handle_message = AsyncMock()
+
+    scheduled = runner._schedule_resume_pending_sessions()
+
+    assert scheduled == 0
+    adapter.handle_message.assert_not_called()
+    runner.session_store.clear_resume_pending.assert_called_once_with(entry.session_key)
+
+
+@pytest.mark.asyncio
+async def test_startup_auto_resume_clears_marker_when_clarify_timed_out():
+    """A timed-out clarify prompt is a user-wait boundary, not unfinished work."""
+    runner, adapter = make_restart_runner()
+    source = make_restart_source(chat_id="clarify-timeout-chat")
+    now = datetime.now()
+    entry = SessionEntry(
+        session_key="agent:main:telegram:dm:clarify-timeout-chat",
+        session_id="sid-clarify-timeout",
+        created_at=now,
+        updated_at=now,
+        origin=source,
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        resume_pending=True,
+        resume_reason="restart_timeout",
+        last_resume_marked_at=now,
+    )
+    runner.session_store._entries = {entry.session_key: entry}
+    runner.session_store.load_transcript = MagicMock(return_value=[
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{"function": {"name": "clarify", "arguments": "{}"}}],
+            "finish_reason": "tool_calls",
+            "timestamp": time.time() - 40,
+        },
+        {
+            "role": "tool",
+            "tool_name": "clarify",
+            "tool_call_id": "call_clarify",
+            "content": (
+                '{"question":"Continue?","choices_offered":["Yes"],'
+                '"user_response":"[user did not respond within 10m]"}'
+            ),
+            "timestamp": time.time() - 20,
+        },
+    ])
+    runner.session_store.clear_resume_pending = MagicMock(return_value=True)
+    adapter.handle_message = AsyncMock()
+
+    scheduled = runner._schedule_resume_pending_sessions()
+
+    assert scheduled == 0
+    adapter.handle_message.assert_not_called()
+    runner.session_store.clear_resume_pending.assert_called_once_with(entry.session_key)
+
+
+def test_tool_tail_note_injection_ignores_timed_out_clarify_boundary():
+    """Next real user messages should not be prefixed after clarify timed out."""
+    message = _simulate_note_injection(
+        [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{"function": {"name": "clarify", "arguments": "{}"}}],
+                "finish_reason": "tool_calls",
+                "timestamp": time.time() - 40,
+            },
+            {
+                "role": "tool",
+                "tool_name": "clarify",
+                "tool_call_id": "call_clarify",
+                "content": (
+                    '{"question":"Continue?","choices_offered":["Yes"],'
+                    '"user_response":"[user did not respond within 10m]"}'
+                ),
+                "timestamp": time.time() - 20,
+            },
+        ],
+        "new request",
+        resume_entry=None,
+    )
+
+    assert message == "new request"
 
 
 @pytest.mark.asyncio
