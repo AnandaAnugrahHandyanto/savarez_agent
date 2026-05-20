@@ -2921,12 +2921,44 @@
         loading ? h("div", { className: "p-4 text-sm text-muted-foreground" },
           tx(t, "loadingDetail", "Loading…")) :
         err ? h("div", { className: "p-4 text-sm text-destructive" }, err) :
+        data && data.task && data.task.status === "blocked"
+          ? h("div", { className: "hermes-kanban-blocked-top" },
+              h("div", { className: "hermes-kanban-blocked-top-head" },
+                h("span", null, tx(t, "blockedNeedsInput", "Blocked — missing input needed")),
+                data.task.block && data.task.block.comment_prompt
+                  ? h("span", { className: "hermes-kanban-summary-muted" }, data.task.block.comment_prompt)
+                  : null,
+              ),
+              data.task.block && (data.task.block.missing_info || data.task.block.reason)
+                ? h("div", { className: "hermes-kanban-blocked-reason" },
+                    data.task.block.missing_info || data.task.block.reason)
+                : null,
+              h("div", { className: "hermes-kanban-drawer-comment-row hermes-kanban-drawer-comment-row--inline" },
+                h(Input, {
+                  value: newComment,
+                  onChange: function (e) { setNewComment(e.target.value); },
+                  onKeyDown: function (e) {
+                    if (e.key === "Enter" && !e.shiftKey) {
+                      e.preventDefault(); handleComment();
+                    }
+                  },
+                  placeholder: tx(t, "blockedCommentPlaceholder", "Add the missing info here… (Enter to submit)"),
+                  className: "h-8 text-sm flex-1",
+                }),
+                h(Button, {
+                  onClick: handleComment,
+                  size: "sm",
+                }, tx(t, "comment", "Comment")),
+              ),
+            )
+          : null,
         data ? h(TaskDetail, {
           data, editing, setEditing,
           renderMarkdown: props.renderMarkdown,
           allTasks: props.allTasks,
           assignees: props.assignees || [],
           boardSlug: boardSlug,
+          patchErr: patchErr,
           onPatch: doPatch,
           onSpecify: doSpecify,
           onDecompose: doDecompose,
@@ -2957,6 +2989,257 @@
           }, tx(t, "comment", "Comment")),
         ) : null,
       ),
+    );
+  }
+
+  function BlockedStatusPanel(props) {
+    const { t } = useI18n();
+    const block = props.block;
+    if (!block || !block.is_blocked) return null;
+    const reason = block.missing_info || block.reason;
+    return h("div", { className: "hermes-kanban-section hermes-kanban-blocked-status" },
+      h("div", { className: "hermes-kanban-section-head" },
+        tx(t, "blockedStatus", "Blocked status")),
+      h("div", { className: "hermes-kanban-blocked-reason" },
+        reason || tx(t, "blockedNoReason", "Blocked, but no reason was recorded.")),
+      block.latest_relevant_comment
+        ? h("div", { className: "hermes-kanban-blocked-latest" },
+            h("span", { className: "hermes-kanban-summary-muted" },
+              tx(t, "latestRelevantComment", "Latest relevant comment") + ": "),
+            h("span", null, (block.latest_relevant_comment.body || "").slice(0, 500)),
+          )
+        : null,
+      block.comment_prompt
+        ? h("div", { className: "hermes-kanban-summary-muted" }, block.comment_prompt)
+        : null,
+    );
+  }
+
+  // Selected task rollup: current task result/handoff plus descendant
+  // subtask summaries and artifact state, fetched lazily from the backend.
+  function TaskSummaryTreeSection(props) {
+    const { t } = useI18n();
+    const [state, setState] = useState({ loading: false, data: null, err: null });
+    const [expanded, setExpanded] = useState({});
+    const [openStatus, setOpenStatus] = useState({});
+
+    const load = useCallback(function () {
+      setState(function (prev) { return { loading: true, data: prev.data, err: null }; });
+      SDK.fetchJSON(withBoard(`${API}/tasks/${encodeURIComponent(props.taskId)}/summary-tree?comment_limit=3`, props.boardSlug))
+        .then(function (d) { setState({ loading: false, data: d, err: null }); })
+        .catch(function (e) { setState({ loading: false, data: null, err: parseApiErrorMessage(e) }); });
+    }, [props.taskId, props.boardSlug]);
+
+    useEffect(function () { load(); }, [load]);
+
+    const toggle = function (id) {
+      setExpanded(function (prev) {
+        const next = Object.assign({}, prev);
+        next[id] = !next[id];
+        return next;
+      });
+    };
+
+    const copyPath = function (artifact) {
+      const path = artifact.resolved_path || artifact.path;
+      if (!path) return;
+      try {
+        const p = navigator.clipboard && navigator.clipboard.writeText(path);
+        if (p && p.then) {
+          p.then(function () {
+            setOpenStatus(function (prev) { return Object.assign({}, prev, { [path]: "copied" }); });
+          });
+        } else {
+          window.prompt(tx(t, "copyPath", "Copy path"), path);
+        }
+      } catch (_e) {
+        window.prompt(tx(t, "copyPath", "Copy path"), path);
+      }
+    };
+
+    const openArtifact = function (artifact) {
+      const path = artifact.resolved_path || artifact.path;
+      if (!path) return;
+      setOpenStatus(function (prev) { return Object.assign({}, prev, { [path]: "opening" }); });
+      SDK.fetchJSON(withBoard(`${API}/tasks/${encodeURIComponent(props.taskId)}/artifacts/open`, props.boardSlug), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: path, mode: artifact.is_dir ? "open" : "reveal" }),
+      }).then(function (res) {
+        setOpenStatus(function (prev) {
+          return Object.assign({}, prev, { [path]: res && res.ok ? "opened" : ((res && res.reason) || "not opened") });
+        });
+      }).catch(function (e) {
+        setOpenStatus(function (prev) { return Object.assign({}, prev, { [path]: parseApiErrorMessage(e) }); });
+      });
+    };
+
+    const data = state.data;
+    const root = data && data.tasks ? data.tasks[data.root_id] : null;
+    const ids = data && data.order ? data.order.filter(function (id) { return id !== data.root_id; }) : [];
+    const stats = data && data.stats ? data.stats : {};
+    const doneChildren = ids.filter(function (id) {
+      return data.tasks[id] && data.tasks[id].status === "done";
+    }).length;
+
+    return h("div", { className: "hermes-kanban-section hermes-kanban-summary-tree" },
+      h("div", { className: "hermes-kanban-section-head-row" },
+        h("span", { className: "hermes-kanban-section-head" },
+          tx(t, "resultTree", "Result + subtasks"),
+          data ? ` (${doneChildren}/${ids.length} done)` : ""),
+        h("button", {
+          type: "button",
+          onClick: load,
+          className: "hermes-kanban-edit-link",
+          title: tx(t, "refresh", "Refresh"),
+        }, state.loading ? tx(t, "loading", "Loading…") : tx(t, "refresh", "refresh")),
+      ),
+      state.err ? h("div", { className: "text-xs text-destructive" }, state.err) : null,
+      !state.err && state.loading && !data
+        ? h("div", { className: "text-xs text-muted-foreground" }, tx(t, "loading", "Loading…"))
+        : null,
+      root ? h("div", { className: "hermes-kanban-summary-root" },
+        h("div", { className: "hermes-kanban-summary-root-head" },
+          h("span", { className: cn("hermes-kanban-dot", COLUMN_DOT[root.status]) }),
+          h("strong", null, root.title || root.id),
+          h("code", null, root.id),
+          root.assignee ? h("span", { className: "hermes-kanban-summary-muted" }, `@${root.assignee}`) : null,
+        ),
+        root.display_result
+          ? h(MarkdownBlock, { source: root.display_result, enabled: props.renderMarkdown })
+          : h("div", { className: "text-xs text-muted-foreground italic" },
+              tx(t, "noResultYet", "— no result or run summary yet —")),
+        h(ArtifactButtons, {
+          artifacts: root.artifacts || [],
+          onOpen: openArtifact,
+          onCopy: copyPath,
+          openStatus: openStatus,
+        }),
+      ) : null,
+      ids.length === 0 && root
+        ? h("div", { className: "text-xs text-muted-foreground" },
+            tx(t, "noSubtasks", "No linked subtasks."))
+        : null,
+      ids.length > 0 ? h("div", { className: "hermes-kanban-summary-table" },
+        h("div", { className: "hermes-kanban-summary-row hermes-kanban-summary-row--head" },
+          h("span", null, tx(t, "task", "Task")),
+          h("span", null, tx(t, "status", "Status")),
+          h("span", null, tx(t, "assignee", "Assignee")),
+          h("span", null, tx(t, "result", "Result / latest run")),
+          h("span", null, tx(t, "artifacts", "Artifacts")),
+        ),
+        ids.map(function (id) {
+          const node = data.tasks[id];
+          if (!node) return null;
+          const isOpen = expanded[id] || node.status === "blocked" || node.status === "done";
+          const outcome = node.latest_run && (node.latest_run.outcome || node.latest_run.status);
+          const result = node.display_result || "";
+          return h("div", {
+            key: id,
+            className: "hermes-kanban-summary-node",
+            style: { marginLeft: `${Math.min(node.depth || 0, 8) * 10}px` },
+          },
+            h("button", {
+              type: "button",
+              onClick: function () { toggle(id); },
+              className: "hermes-kanban-summary-row",
+            },
+              h("span", { className: "hermes-kanban-summary-task" },
+                h("span", { className: "hermes-kanban-summary-caret" }, isOpen ? "▾" : "▸"),
+                h("code", null, id),
+                h("span", null, node.title || tx(t, "untitled", "(untitled)")),
+              ),
+              h("span", null,
+                h("span", { className: cn("hermes-kanban-dot", COLUMN_DOT[node.status]) }),
+                " ", node.status,
+                outcome ? h("span", { className: "hermes-kanban-summary-muted" }, ` / ${outcome}`) : null,
+              ),
+              h("span", null, node.assignee ? `@${node.assignee}` : "—"),
+              h("span", { className: "hermes-kanban-summary-preview" },
+                result ? result.slice(0, 220) : tx(t, "noResultYet", "— no result or run summary yet —")),
+              h("span", null,
+                (node.artifacts && node.artifacts.length) ? `${node.artifacts.length}` : "—"),
+            ),
+            isOpen ? h("div", { className: "hermes-kanban-summary-expanded" },
+              node.block && node.block.is_blocked
+                ? h(BlockedStatusPanel, { block: node.block })
+                : null,
+              node.parents && node.parents.length
+                ? h("div", { className: "hermes-kanban-summary-muted" },
+                    `${tx(t, "parents", "Parents")}: ${node.parents.join(", ")}`)
+                : null,
+              result
+                ? h(MarkdownBlock, { source: result, enabled: props.renderMarkdown })
+                : null,
+              node.latest_run && node.latest_run.metadata
+                ? h("details", { className: "hermes-kanban-run-meta-block" },
+                    h("summary", { className: "hermes-kanban-run-meta-label" }, "Metadata"),
+                    h("code", { className: "hermes-kanban-run-meta" }, JSON.stringify(node.latest_run.metadata, null, 2)),
+                  )
+                : null,
+              node.important_comments && node.important_comments.length
+                ? h("div", { className: "hermes-kanban-summary-comments" },
+                    node.important_comments.map(function (c) {
+                      return h("div", { key: c.id, className: "hermes-kanban-summary-comment" },
+                        h("span", { className: "hermes-kanban-summary-muted" }, `${c.author || "anon"}: `),
+                        h("span", null, (c.body || "").slice(0, 500)),
+                      );
+                    }))
+                : null,
+              h(ArtifactButtons, {
+                artifacts: node.artifacts || [],
+                onOpen: openArtifact,
+                onCopy: copyPath,
+                openStatus: openStatus,
+              }),
+            ) : null,
+          );
+        }),
+      ) : null,
+      stats.truncated ? h("div", { className: "text-xs text-muted-foreground" },
+        tx(t, "summaryTreeTruncated", "Summary tree truncated by safety limits.")) : null,
+    );
+  }
+
+  function ArtifactButtons(props) {
+    const { t } = useI18n();
+    const artifacts = props.artifacts || [];
+    if (artifacts.length === 0) return null;
+    return h("div", { className: "hermes-kanban-artifacts" },
+      artifacts.slice(0, 8).map(function (a, idx) {
+        const path = a.resolved_path || a.path;
+        const label = a.label || a.kind || "artifact";
+        const availability = a.availability || (a.exists === false ? "missing" : (path ? "available" : "unavailable"));
+        const exists = availability === "available" ? (a.is_dir ? "folder" : "file") : availability;
+        const actionable = !!(path && a.user_actionable !== false && a.exists !== false && availability === "available");
+        const status = path ? props.openStatus[path] : null;
+        const reason = a.reason || (availability === "missing"
+          ? tx(t, "artifactMissing", "Artifact missing")
+          : availability === "scratch"
+            ? tx(t, "artifactScratch", "Temporary workspace artifact; no durable path")
+            : tx(t, "artifactUnavailable", "No durable artifact path available"));
+        return h("span", {
+          key: `${path || label || idx}-${idx}`,
+          className: cn("hermes-kanban-artifact-chip", actionable ? "" : "hermes-kanban-artifact-chip--empty"),
+        },
+          h("span", { className: "hermes-kanban-artifact-label", title: actionable ? path : reason }, `${label} · ${exists}`),
+          actionable ? h("button", {
+            type: "button",
+            className: "hermes-kanban-artifact-action",
+            onClick: function (e) { e.stopPropagation(); props.onCopy(a); },
+            title: path,
+          }, tx(t, "copy", "copy")) : null,
+          actionable && a.openable ? h("button", {
+            type: "button",
+            className: "hermes-kanban-artifact-action",
+            onClick: function (e) { e.stopPropagation(); props.onOpen(a); },
+            title: path,
+          }, a.is_dir ? tx(t, "open", "open") : tx(t, "reveal", "reveal")) : null,
+          !actionable ? h("span", { className: "hermes-kanban-artifact-empty" }, reason) : null,
+          status ? h("span", { className: "hermes-kanban-summary-muted" }, status) : null,
+        );
+      }),
+      artifacts.length > 8 ? h("span", { className: "hermes-kanban-summary-muted" }, `+${artifacts.length - 8}`) : null,
     );
   }
 
@@ -3005,6 +3288,10 @@
         onSpecify: props.onSpecify,
         onDecompose: props.onDecompose,
       }),
+      props.patchErr
+        ? h("div", { className: "hermes-kanban-msg-err" }, props.patchErr)
+        : null,
+      h(BlockedStatusPanel, { block: t.block }),
       h(DiagnosticsSection, {
         task: t,
         boardSlug: props.boardSlug,
@@ -3016,6 +3303,11 @@
         homeChannels: props.homeChannels || [],
         homeBusy: props.homeBusy || {},
         onToggle: props.onToggleHomeSub,
+      }),
+      h(TaskSummaryTreeSection, {
+        taskId: t.id,
+        boardSlug: props.boardSlug,
+        renderMarkdown: props.renderMarkdown,
       }),
       h(BodyEditor, {
         task: t,

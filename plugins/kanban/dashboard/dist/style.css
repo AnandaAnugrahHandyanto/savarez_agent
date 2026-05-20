@@ -536,6 +536,51 @@
   background: color-mix(in srgb, var(--color-card) 90%, transparent);
 }
 
+.hermes-kanban-drawer-comment-row--inline {
+  padding: 0;
+  border-top: 0;
+  background: transparent;
+}
+
+.hermes-kanban-blocked-top {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  margin: 0.75rem 0.75rem 0;
+  padding: 0.65rem;
+  border: 1px solid color-mix(in srgb, var(--color-destructive, var(--color-ring)) 35%, var(--color-border));
+  border-radius: var(--radius-sm, 0.25rem);
+  background: color-mix(in srgb, var(--color-destructive, var(--color-ring)) 8%, var(--color-card));
+}
+
+.hermes-kanban-blocked-top-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.65rem;
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.hermes-kanban-blocked-reason {
+  font-size: 0.78rem;
+  line-height: 1.45;
+  color: var(--color-foreground);
+  word-break: break-word;
+}
+
+.hermes-kanban-blocked-status {
+  border-color: color-mix(in srgb, var(--color-destructive, var(--color-ring)) 30%, var(--color-border));
+  background: color-mix(in srgb, var(--color-destructive, var(--color-ring)) 5%, transparent);
+}
+
+.hermes-kanban-blocked-latest {
+  font-size: 0.74rem;
+  line-height: 1.45;
+  padding-left: 0.45rem;
+  border-left: 2px solid color-mix(in srgb, var(--color-border) 75%, transparent);
+}
+
 .hermes-kanban-count {
   display: inline-flex;
   gap: 0.2rem;
@@ -653,6 +698,184 @@
   padding: 0 0.15rem;
 }
 .hermes-kanban-dep-chip-x:hover { color: var(--color-destructive, #d14a4a); }
+
+/* ---- Selected-task result/subtask rollup ---------------------------- */
+
+.hermes-kanban-summary-tree {
+  border: 1px solid color-mix(in srgb, var(--color-border) 85%, transparent);
+  border-radius: var(--radius-sm, 0.25rem);
+  padding: 0.5rem;
+  background: color-mix(in srgb, var(--color-card) 92%, var(--color-foreground) 2%);
+}
+
+.hermes-kanban-summary-root {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  padding: 0.45rem 0.5rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm, 0.25rem);
+  background: color-mix(in srgb, var(--color-background) 70%, transparent);
+}
+
+.hermes-kanban-summary-root-head {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.78rem;
+}
+
+.hermes-kanban-summary-muted {
+  color: var(--color-muted-foreground);
+  font-size: 0.7rem;
+}
+
+.hermes-kanban-summary-table {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm, 0.25rem);
+  overflow: hidden;
+}
+
+.hermes-kanban-summary-row {
+  appearance: none;
+  width: 100%;
+  display: grid;
+  grid-template-columns: minmax(210px, 1.4fr) 120px 96px minmax(180px, 1fr) 76px;
+  gap: 0.5rem;
+  align-items: start;
+  border: 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--color-border) 75%, transparent);
+  background: transparent;
+  color: var(--color-foreground);
+  padding: 0.35rem 0.45rem;
+  text-align: left;
+  font-size: 0.72rem;
+}
+
+button.hermes-kanban-summary-row { cursor: pointer; }
+button.hermes-kanban-summary-row:hover {
+  background: color-mix(in srgb, var(--color-foreground) 5%, transparent);
+}
+
+.hermes-kanban-summary-row--head {
+  background: color-mix(in srgb, var(--color-foreground) 5%, transparent);
+  color: var(--color-muted-foreground);
+  font-size: 0.66rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.hermes-kanban-summary-node:last-child > .hermes-kanban-summary-row { border-bottom: 0; }
+
+.hermes-kanban-summary-task {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.3rem;
+  min-width: 0;
+}
+
+.hermes-kanban-summary-task > span:last-child,
+.hermes-kanban-summary-preview {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+.hermes-kanban-summary-caret {
+  color: var(--color-muted-foreground);
+  width: 0.8rem;
+  flex: 0 0 auto;
+}
+
+.hermes-kanban-summary-expanded {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  padding: 0.45rem 0.65rem 0.55rem 1.25rem;
+  border-bottom: 1px solid color-mix(in srgb, var(--color-border) 75%, transparent);
+  background: color-mix(in srgb, var(--color-foreground) 2.5%, transparent);
+}
+
+.hermes-kanban-summary-comments {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.hermes-kanban-summary-comment {
+  font-size: 0.72rem;
+  border-left: 2px solid color-mix(in srgb, var(--color-ring) 35%, transparent);
+  padding-left: 0.4rem;
+}
+
+.hermes-kanban-artifacts {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+.hermes-kanban-artifact-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  min-width: 0;
+  max-width: 100%;
+  padding: 0.12rem 0.25rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm, 0.25rem);
+  background: color-mix(in srgb, var(--color-foreground) 4%, transparent);
+  font-size: 0.68rem;
+}
+
+.hermes-kanban-artifact-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 220px;
+}
+
+.hermes-kanban-artifact-action {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--color-ring);
+  cursor: pointer;
+  padding: 0 0.1rem;
+  font-size: 0.68rem;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.hermes-kanban-artifact-action:hover { color: var(--color-foreground); }
+
+.hermes-kanban-artifact-chip--empty {
+  color: var(--color-muted-foreground);
+  background: color-mix(in srgb, var(--color-muted-foreground) 5%, transparent);
+}
+
+.hermes-kanban-artifact-empty {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 260px;
+  color: var(--color-muted-foreground);
+}
+
+@media (max-width: 900px) {
+  .hermes-kanban-summary-row {
+    grid-template-columns: minmax(180px, 1fr) 90px 72px;
+  }
+  .hermes-kanban-summary-row > span:nth-child(4),
+  .hermes-kanban-summary-row > span:nth-child(5) {
+    display: none;
+  }
+}
 
 /* ---- Inline edit affordances --------------------------------------- */
 
