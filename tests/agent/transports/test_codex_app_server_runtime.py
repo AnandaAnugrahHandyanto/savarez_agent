@@ -201,6 +201,89 @@ class TestSpawnEnvIsolation:
             "subprocesses (gh, git, aws, npm) need the user's real HOME."
         )
 
+    def test_spawn_env_sets_home_when_launchd_env_is_sparse(self, monkeypatch):
+        """launchd can start Hermes with a sparse env. Codex still needs HOME
+        so nested CLIs such as Claude Code can find user auth state."""
+        import subprocess
+        from agent.transports import codex_app_server as cas
+
+        captured = {}
+
+        class FakePopen:
+            def __init__(self, cmd, *args, **kwargs):
+                captured["env"] = kwargs.get("env", {}).copy()
+                self.stdin = None
+                self.stdout = None
+                self.stderr = None
+                self.pid = 1
+                self.returncode = None
+
+            def poll(self):
+                return None
+
+            def terminate(self):
+                pass
+
+            def wait(self, timeout=None):
+                return 0
+
+            def kill(self):
+                pass
+
+        monkeypatch.setattr(subprocess, "Popen", FakePopen)
+        monkeypatch.delenv("HOME", raising=False)
+
+        client = cas.CodexAppServerClient(codex_bin="codex")
+        client._closed = True
+
+        assert captured["env"].get("HOME")
+
+    def test_spawn_env_strips_anthropic_vars_for_claude_cli(self, monkeypatch):
+        """Claude Code should use its own claude.ai/Max login when invoked by
+        Codex, not inherited Anthropic API credits from Hermes' provider env."""
+        import subprocess
+        from agent.transports import codex_app_server as cas
+
+        captured = {}
+
+        class FakePopen:
+            def __init__(self, cmd, *args, **kwargs):
+                captured["env"] = kwargs.get("env", {}).copy()
+                self.stdin = None
+                self.stdout = None
+                self.stderr = None
+                self.pid = 1
+                self.returncode = None
+
+            def poll(self):
+                return None
+
+            def terminate(self):
+                pass
+
+            def wait(self, timeout=None):
+                return 0
+
+            def kill(self):
+                pass
+
+        monkeypatch.setattr(subprocess, "Popen", FakePopen)
+        monkeypatch.setenv("HOME", "/users/alice")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-stale")
+        monkeypatch.setenv("ANTHROPIC_TOKEN", "sk-ant-oat-stale")
+        monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "cc-stale")
+
+        client = cas.CodexAppServerClient(
+            codex_bin="codex",
+            env={"ANTHROPIC_API_KEY": "sk-ant-api03-overlay"},
+        )
+        client._closed = True
+
+        assert "ANTHROPIC_API_KEY" not in captured["env"]
+        assert "ANTHROPIC_TOKEN" not in captured["env"]
+        assert "CLAUDE_CODE_OAUTH_TOKEN" not in captured["env"]
+        assert captured["env"].get("HOME") == "/users/alice"
+
     def test_spawn_env_sets_CODEX_HOME_when_provided(self, monkeypatch):
         """CODEX_HOME isolation must still work — that's the whole point
         of the codex_home arg."""
@@ -241,6 +324,45 @@ class TestSpawnEnvIsolation:
         assert captured["env"].get("CODEX_HOME") == "/tmp/profile/codex"
         # And HOME still passes through unchanged
         assert captured["env"].get("HOME") == "/users/alice"
+
+    def test_sandbox_mode_env_adds_codex_config_override(self, monkeypatch):
+        """Nested CLIs can opt into a less restricted Codex sandbox without
+        changing global Codex approvals/config."""
+        import subprocess
+        from agent.transports import codex_app_server as cas
+
+        captured = {}
+
+        class FakePopen:
+            def __init__(self, cmd, *args, **kwargs):
+                captured["cmd"] = list(cmd)
+                self.stdin = None
+                self.stdout = None
+                self.stderr = None
+                self.pid = 1
+                self.returncode = None
+
+            def poll(self):
+                return None
+
+            def terminate(self):
+                pass
+
+            def wait(self, timeout=None):
+                return 0
+
+            def kill(self):
+                pass
+
+        monkeypatch.setattr(subprocess, "Popen", FakePopen)
+        monkeypatch.setenv("HOME", "/users/alice")
+        monkeypatch.setenv("HERMES_CODEX_APP_SERVER_SANDBOX_MODE", "danger-full-access")
+
+        client = cas.CodexAppServerClient(codex_bin="codex")
+        client._closed = True
+
+        assert captured["cmd"][:2] == ["codex", "app-server"]
+        assert 'sandbox_mode="danger-full-access"' in captured["cmd"]
 
     def test_kanban_worker_adds_only_kanban_writable_root(self, monkeypatch):
         """Codex-runtime Kanban workers need to write board state outside

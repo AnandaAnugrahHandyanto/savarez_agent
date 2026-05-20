@@ -11,7 +11,7 @@ Codex emits items with a discriminator field `type`:
   - reasoning           → stashed in the assistant's "reasoning" field
   - commandExecution    → assistant tool_call(name="exec") + tool result
   - fileChange          → assistant tool_call(name="apply_patch") + tool result
-  - mcpToolCall         → assistant tool_call(name=f"mcp.{server}.{tool}") + tool result
+  - mcpToolCall         → assistant tool_call(name=f"mcp_{server}_{tool}") + tool result
   - dynamicToolCall     → assistant tool_call(name=tool) + tool result
   - plan/hookPrompt/collabAgentToolCall → recorded as opaque assistant notes
 
@@ -30,8 +30,19 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass, field
 from typing import Any, Optional
+
+
+_RESPONSES_NAME_RE = re.compile(r"[^A-Za-z0-9_-]+")
+_MAX_RESPONSES_CALL_ID_LEN = 64
+
+
+def _sanitize_responses_name(value: str, *, fallback: str = "unknown") -> str:
+    """Return a Responses-compatible function/name fragment."""
+    cleaned = _RESPONSES_NAME_RE.sub("_", str(value or "")).strip("_")
+    return cleaned or fallback
 
 
 def _deterministic_call_id(item_type: str, item_id: str) -> str:
@@ -41,10 +52,20 @@ def _deterministic_call_id(item_type: str, item_id: str) -> str:
     to a content hash so replay produces the same id across sessions and
     prefix caches stay valid. See AGENTS.md Pitfall #16 (deterministic IDs in
     tool call history)."""
+    safe_type = _sanitize_responses_name(item_type, fallback="item")
     if item_id:
-        return f"codex_{item_type}_{item_id}"
-    digest = hashlib.sha256(f"{item_type}".encode()).hexdigest()[:16]
-    return f"codex_{item_type}_{digest}"
+        safe_id = _sanitize_responses_name(item_id, fallback="")
+        candidate = f"codex_{safe_type}_{safe_id}" if safe_id else ""
+        if candidate and len(candidate) <= _MAX_RESPONSES_CALL_ID_LEN:
+            return candidate
+        seed = f"{item_type}:{item_id}"
+    else:
+        seed = item_type
+
+    digest = hashlib.sha256(seed.encode()).hexdigest()[:16]
+    max_type_len = _MAX_RESPONSES_CALL_ID_LEN - len("codex__") - len(digest)
+    compact_type = safe_type[:max(1, max_type_len)]
+    return f"codex_{compact_type}_{digest}"
 
 
 def _format_tool_args(d: dict) -> str:
@@ -218,6 +239,7 @@ class CodexEventProjector:
         server = item.get("server") or "mcp"
         tool = item.get("tool") or "unknown"
         call_id = _deterministic_call_id(f"mcp_{server}_{tool}", item_id)
+        tool_name = _sanitize_responses_name(f"mcp_{server}_{tool}")
         args = item.get("arguments") or {}
         if not isinstance(args, dict):
             args = {"arguments": args}
@@ -229,7 +251,7 @@ class CodexEventProjector:
                     "id": call_id,
                     "type": "function",
                     "function": {
-                        "name": f"mcp.{server}.{tool}",
+                        "name": tool_name,
                         "arguments": _format_tool_args(args),
                     },
                 }
@@ -260,6 +282,7 @@ class CodexEventProjector:
     ) -> ProjectionResult:
         tool = item.get("tool") or "unknown"
         call_id = _deterministic_call_id(f"dyn_{tool}", item_id)
+        tool_name = _sanitize_responses_name(str(tool))
         args = item.get("arguments") or {}
         if not isinstance(args, dict):
             args = {"arguments": args}
@@ -271,7 +294,7 @@ class CodexEventProjector:
                     "id": call_id,
                     "type": "function",
                     "function": {
-                        "name": tool,
+                        "name": tool_name,
                         "arguments": _format_tool_args(args),
                     },
                 }

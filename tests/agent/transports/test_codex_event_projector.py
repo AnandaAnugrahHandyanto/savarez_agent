@@ -14,6 +14,7 @@ from agent.transports.codex_event_projector import (
     ProjectionResult,
     _deterministic_call_id,
     _format_tool_args,
+    _sanitize_responses_name,
 )
 
 
@@ -210,8 +211,29 @@ class TestMcpToolCallProjection:
         msgs = CodexEventProjector().project(
             {"method": "item/completed", "params": {"item": item}}
         ).messages
-        assert msgs[0]["tool_calls"][0]["function"]["name"] == "mcp.obsidian.search_notes"
+        assert msgs[0]["tool_calls"][0]["function"]["name"] == "mcp_obsidian_search_notes"
         assert "found" in msgs[1]["content"]
+
+    def test_mcp_tool_call_uses_responses_safe_name_and_id(self) -> None:
+        item = {
+            "type": "mcpToolCall",
+            "id": "019e4536-very-long-tool-call-id-that-would-overflow-responses",
+            "server": "codex.apps/server",
+            "tool": "read.file.with.dots",
+            "status": "completed",
+            "arguments": {},
+            "result": {"ok": True},
+            "error": None,
+        }
+        msgs = CodexEventProjector().project(
+            {"method": "item/completed", "params": {"item": item}}
+        ).messages
+        tc = msgs[0]["tool_calls"][0]
+        assert tc["function"]["name"] == "mcp_codex_apps_server_read_file_with_dots"
+        assert "." not in tc["function"]["name"]
+        assert "/" not in tc["function"]["name"]
+        assert len(tc["id"]) <= 64
+        assert msgs[1]["tool_call_id"] == tc["id"]
 
     def test_mcp_error_surfaced(self) -> None:
         item = {
@@ -265,6 +287,20 @@ class TestHelpers:
         b = _deterministic_call_id("exec", "")
         assert a == b
         assert "exec" in a
+
+    def test_deterministic_call_id_bounds_long_ids(self) -> None:
+        cid = _deterministic_call_id(
+            "mcp_really_long_server_name_really_long_tool_name",
+            "019e4536-very-long-tool-call-id-that-would-overflow-responses",
+        )
+        assert len(cid) <= 64
+        assert cid == _deterministic_call_id(
+            "mcp_really_long_server_name_really_long_tool_name",
+            "019e4536-very-long-tool-call-id-that-would-overflow-responses",
+        )
+
+    def test_sanitize_responses_name(self) -> None:
+        assert _sanitize_responses_name("mcp.server/tool.name") == "mcp_server_tool_name"
 
     def test_format_tool_args_sorted_keys(self) -> None:
         # Sorted keys = deterministic across replays = prefix cache stays valid

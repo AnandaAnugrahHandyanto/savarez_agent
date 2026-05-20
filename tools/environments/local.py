@@ -393,7 +393,33 @@ def _resolve_shell_init_files() -> list[str]:
     return resolved
 
 
-def _prepend_shell_init(cmd_string: str, files: list[str]) -> str:
+def _snapshot_provider_unset_script(extra_env: dict | None = None) -> str:
+    """Return shell statements that scrub provider/tool secrets from snapshots.
+
+    ``_make_run_env`` strips these before bash starts, but login/profile files
+    can re-export them while we build the session snapshot. Scrub them again
+    immediately before ``export -p`` captures the snapshot. Force-prefixed vars
+    remain an explicit opt-in.
+    """
+    forced = {
+        key[len(_HERMES_PROVIDER_ENV_FORCE_PREFIX):]
+        for key in (extra_env or {})
+        if key.startswith(_HERMES_PROVIDER_ENV_FORCE_PREFIX)
+    }
+    names = [
+        name
+        for name in sorted(_HERMES_PROVIDER_ENV_BLOCKLIST)
+        if name not in forced and re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", name)
+    ]
+    return "\n".join(f"unset {name}" for name in names)
+
+
+def _prepend_shell_init(
+    cmd_string: str,
+    files: list[str],
+    *,
+    after_source: str = "",
+) -> str:
     """Prepend ``source <file>`` lines (guarded + silent) to a bash script.
 
     Each file is wrapped so a failing rc file doesn't abort the whole
@@ -410,6 +436,8 @@ def _prepend_shell_init(cmd_string: str, files: list[str]) -> str:
         # path.  Escape single quotes defensively anyway.
         safe = path.replace("'", "'\\''")
         prelude_parts.append(f"[ -r '{safe}' ] && . '{safe}' 2>/dev/null || true")
+    if after_source:
+        prelude_parts.append(after_source)
     prelude = "\n".join(prelude_parts) + "\n"
     return prelude + cmd_string
 
@@ -487,9 +515,16 @@ class LocalEnvironment(BaseEnvironment):
         # Non-login invocations are already sourcing the snapshot and
         # don't need this.
         if login:
+            snapshot_scrub = _snapshot_provider_unset_script(self.env)
             init_files = _resolve_shell_init_files()
             if init_files:
-                cmd_string = _prepend_shell_init(cmd_string, init_files)
+                cmd_string = _prepend_shell_init(
+                    cmd_string,
+                    init_files,
+                    after_source=snapshot_scrub,
+                )
+            elif snapshot_scrub:
+                cmd_string = snapshot_scrub + "\n" + cmd_string
         args = [bash, "-l", "-c", cmd_string] if login else [bash, "-c", cmd_string]
         run_env = _make_run_env(self.env)
 

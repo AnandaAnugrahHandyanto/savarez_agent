@@ -16,6 +16,7 @@ from tools.environments.local import (
     LocalEnvironment,
     _HERMES_PROVIDER_ENV_BLOCKLIST,
     _HERMES_PROVIDER_ENV_FORCE_PREFIX,
+    _snapshot_provider_unset_script,
 )
 
 
@@ -185,6 +186,24 @@ class TestForceEnvOptIn:
         )
 
         assert result_env["OPENAI_BASE_URL"] == "http://intended/v1"
+
+
+class TestSnapshotScrub:
+    """Login shell snapshots must not recapture provider vars from rc files."""
+
+    def test_snapshot_scrub_unsets_blocked_vars(self):
+        script = _snapshot_provider_unset_script()
+
+        assert "unset ANTHROPIC_API_KEY" in script
+        assert "unset CLAUDE_CODE_OAUTH_TOKEN" in script
+
+    def test_force_prefix_preserves_explicit_opt_in(self):
+        script = _snapshot_provider_unset_script({
+            f"{_HERMES_PROVIDER_ENV_FORCE_PREFIX}ANTHROPIC_API_KEY": "sk-explicit",
+        })
+
+        assert "unset ANTHROPIC_API_KEY" not in script
+        assert "unset ANTHROPIC_TOKEN" in script
 
 
 class TestBlocklistCoverage:

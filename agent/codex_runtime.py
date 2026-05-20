@@ -25,6 +25,64 @@ from typing import Any, Dict, List
 logger = logging.getLogger(__name__)
 
 
+def _build_codex_app_server_memory_preamble(agent, original_user_message: Any) -> str:
+    """Build Hermes memory context for Codex app-server turns.
+
+    The app-server path bypasses the normal Hermes API-call loop, so the usual
+    volatile system-prompt memory block and external-memory user-message
+    injection do not naturally reach Codex. Keep this scoped to memory/profile
+    context rather than replaying the full Hermes system prompt every turn.
+    """
+    blocks: list[str] = []
+
+    store = getattr(agent, "_memory_store", None)
+    if store:
+        try:
+            store.load_from_disk()
+        except Exception:
+            logger.debug("codex app-server memory reload failed", exc_info=True)
+        try:
+            if getattr(agent, "_memory_enabled", False):
+                mem_block = store.format_for_system_prompt("memory")
+                if mem_block:
+                    blocks.append(mem_block)
+            if getattr(agent, "_user_profile_enabled", False):
+                user_block = store.format_for_system_prompt("user")
+                if user_block:
+                    blocks.append(user_block)
+        except Exception:
+            logger.debug("codex app-server built-in memory formatting failed", exc_info=True)
+
+    manager = getattr(agent, "_memory_manager", None)
+    if manager:
+        try:
+            system_block = manager.build_system_prompt()
+            if system_block:
+                blocks.append(system_block)
+        except Exception:
+            logger.debug("codex app-server external memory prompt failed", exc_info=True)
+
+        try:
+            query = original_user_message if isinstance(original_user_message, str) else ""
+            recalled = manager.prefetch_all(query) or ""
+            if recalled:
+                from agent.memory_manager import build_memory_context_block
+
+                context_block = build_memory_context_block(recalled)
+                if context_block:
+                    blocks.append(context_block)
+        except Exception:
+            logger.debug("codex app-server external memory prefetch failed", exc_info=True)
+
+    if not blocks:
+        return ""
+    return (
+        "[System note: Hermes persistent memory and user profile context. "
+        "This is recalled background context, not a new user request.]\n\n"
+        + "\n\n".join(blocks)
+    )
+
+
 def run_codex_app_server_turn(
     agent,
     *,
@@ -65,8 +123,18 @@ def run_codex_app_server_turn(
     # standard run_conversation() flow (line ~11823) before the early
     # return reaches us. Do NOT append again — that would duplicate.
 
+    memory_preamble = _build_codex_app_server_memory_preamble(
+        agent,
+        original_user_message,
+    )
+    codex_user_input = (
+        f"{memory_preamble}\n\n[Current user message]\n{user_message}"
+        if memory_preamble
+        else user_message
+    )
+
     try:
-        turn = agent._codex_session.run_turn(user_input=user_message)
+        turn = agent._codex_session.run_turn(user_input=codex_user_input)
     except Exception as exc:
         logger.exception("codex app-server turn failed")
         # Crash → unconditionally drop the session so the next turn

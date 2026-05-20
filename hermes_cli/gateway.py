@@ -5,6 +5,7 @@ Handles: hermes gateway [run|start|stop|restart|status|install|uninstall|setup]
 """
 
 import asyncio
+import html
 import logging
 import os
 import shutil
@@ -12,6 +13,7 @@ import signal
 import subprocess
 import sys
 import textwrap
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -2136,6 +2138,14 @@ def _build_service_path_dirs(project_root: Path | None = None) -> list[str]:
     if _is_dir(hermes_nm):
         candidates.append(str(hermes_nm))
 
+    # User-managed stable wrappers for CLIs that may be installed under
+    # versioned/auto-updated paths. In particular, this lets Hermes prefer a
+    # durable local `claude` wrapper over Claude Code's mutable ~/.local/bin
+    # symlink when the operator has installed one.
+    ason_bin = Path.home() / ".ason" / "bin"
+    if _is_dir(ason_bin):
+        candidates.append(str(ason_bin))
+
     return candidates
 
 
@@ -2780,6 +2790,24 @@ def _launchd_domain() -> str:
     return f"gui/{os.getuid()}"  # windows-footgun: ok — POSIX launchd (macOS) helper, never invoked on Windows
 
 
+def _wait_for_launchd_unloaded(label: str, timeout: float = 10.0) -> bool:
+    """Wait briefly for launchd to finish removing a booted-out user job."""
+    target = f"{_launchd_domain()}/{label}"
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        result = subprocess.run(
+            ["launchctl", "print", target],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=5,
+        )
+        if result.returncode != 0:
+            return True
+        time.sleep(0.25)
+    return False
+
+
 def generate_launchd_plist() -> str:
     python_path = get_python_path()
     working_dir = str(PROJECT_ROOT)
@@ -2806,6 +2834,24 @@ def generate_launchd_plist() -> str:
     sane_path = ":".join(
         dict.fromkeys(priority_dirs + [p for p in os.environ.get("PATH", "").split(":") if p])
     )
+    extra_env_lines: list[str] = []
+    try:
+        raw_cfg = read_raw_config()
+        model_cfg = raw_cfg.get("model") if isinstance(raw_cfg, dict) else {}
+        if not isinstance(model_cfg, dict):
+            model_cfg = {}
+        codex_app_server_sandbox_mode = str(
+            model_cfg.get("codex_app_server_sandbox_mode")
+            or os.environ.get("HERMES_CODEX_APP_SERVER_SANDBOX_MODE", "")
+        ).strip()
+    except Exception:
+        codex_app_server_sandbox_mode = os.environ.get("HERMES_CODEX_APP_SERVER_SANDBOX_MODE", "").strip()
+    if codex_app_server_sandbox_mode:
+        extra_env_lines.extend([
+            "        <key>HERMES_CODEX_APP_SERVER_SANDBOX_MODE</key>",
+            f"        <string>{html.escape(codex_app_server_sandbox_mode, quote=True)}</string>",
+        ])
+    extra_env_xml = "\n".join(extra_env_lines)
 
     # Build ProgramArguments array, including --profile when using a named profile
     prog_args = [
@@ -2846,6 +2892,7 @@ def generate_launchd_plist() -> str:
         <string>{venv_dir}</string>
         <key>HERMES_HOME</key>
         <string>{hermes_home}</string>
+{extra_env_xml}
     </dict>
     
     <key>RunAtLoad</key>
@@ -2892,6 +2939,7 @@ def refresh_launchd_plist_if_needed() -> bool:
     label = get_launchd_label()
     # Bootout/bootstrap so launchd picks up the new definition
     subprocess.run(["launchctl", "bootout", f"{_launchd_domain()}/{label}"], check=False, timeout=90)
+    _wait_for_launchd_unloaded(label)
     subprocess.run(["launchctl", "bootstrap", _launchd_domain(), str(plist_path)], check=False, timeout=30)
     print("↻ Updated gateway launchd service definition to match the current Hermes install")
     return True

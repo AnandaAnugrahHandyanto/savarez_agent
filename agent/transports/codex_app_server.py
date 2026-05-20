@@ -17,17 +17,83 @@ runtime is not selected.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import queue
 import subprocess
 import threading
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Callable, Optional
 
 # Default minimum codex version we test against. The PR sets this from the
 # `codex --version` parsed at install time; bumping is a one-line change here.
 MIN_CODEX_VERSION = (0, 125, 0)
+
+
+logger = logging.getLogger(__name__)
+
+
+# Provider credentials should not leak into Codex' own shell environment.
+# Codex may legitimately invoke third-party CLIs (Claude Code, gh, npm, etc.),
+# and inherited provider vars can silently force those CLIs onto the wrong
+# auth path. In particular, Claude Code prefers ANTHROPIC_API_KEY over
+# claude.ai/Max auth when the variable is present.
+_CODEX_APP_SERVER_ENV_BLOCKLIST = frozenset(
+    {
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_TOKEN",
+        "CLAUDE_CODE_OAUTH_TOKEN",
+    }
+)
+
+
+_CODEX_SANDBOX_MODES = frozenset({"read-only", "workspace-write", "danger-full-access"})
+
+
+def _build_codex_app_server_env(
+    base_env: Optional[dict[str, str]] = None,
+    overlay_env: Optional[dict[str, str]] = None,
+    *,
+    codex_home: Optional[str] = None,
+) -> dict[str, str]:
+    """Return the subprocess environment for ``codex app-server``.
+
+    Keep normal user state like HOME so nested CLIs can find their auth/config,
+    but strip Anthropic provider variables so Claude Code uses its own logged-in
+    auth instead of stale API credits.
+    """
+    spawn_env = {
+        key: value
+        for key, value in (base_env or os.environ).items()
+        if key not in _CODEX_APP_SERVER_ENV_BLOCKLIST
+    }
+    if overlay_env:
+        for key, value in overlay_env.items():
+            if key not in _CODEX_APP_SERVER_ENV_BLOCKLIST:
+                spawn_env[key] = value
+
+    # launchd services can be sparse. Ensure tools launched by Codex have a
+    # stable user home for ~/.claude, ~/.codex, git config, npm cache, etc.
+    spawn_env.setdefault("HOME", str(Path.home()))
+    if codex_home:
+        spawn_env["CODEX_HOME"] = codex_home
+    return spawn_env
+
+
+def _codex_app_server_config_args(env: dict[str, str]) -> list[str]:
+    """Return explicit Codex config overrides for Hermes-owned app-server runs."""
+    sandbox_mode = (env.get("HERMES_CODEX_APP_SERVER_SANDBOX_MODE") or "").strip()
+    if not sandbox_mode:
+        return []
+    if sandbox_mode not in _CODEX_SANDBOX_MODES:
+        logger.warning(
+            "Ignoring invalid HERMES_CODEX_APP_SERVER_SANDBOX_MODE=%r",
+            sandbox_mode,
+        )
+        return []
+    return ["-c", f'sandbox_mode="{sandbox_mode}"']
 
 
 @dataclass
@@ -74,13 +140,10 @@ class CodexAppServerClient:
         env: Optional[dict[str, str]] = None,
     ) -> None:
         self._codex_bin = codex_bin
-        spawn_env = os.environ.copy()
-        if env:
-            spawn_env.update(env)
-        if codex_home:
-            spawn_env["CODEX_HOME"] = codex_home
+        spawn_env = _build_codex_app_server_env(os.environ, env, codex_home=codex_home)
 
-        app_server_args = list(extra_args or [])
+        app_server_args = _codex_app_server_config_args(spawn_env)
+        app_server_args.extend(extra_args or [])
         # Kanban workers must be able to write their handoff/status back to
         # the board DB, which lives outside the per-task workspace. Keep the
         # Codex sandbox on, but add the Kanban root as the only extra writable
