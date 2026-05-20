@@ -1451,6 +1451,20 @@ class BasePlatformAdapter(ABC):
             return
         self._write_runtime_status_safe("disconnected", platform_state="disconnected", error_code=None, error_message=None)
 
+    def _mark_retrying(self, code: str | None = None, message: str | None = None) -> None:
+        """Mark the adapter as in a transient retry state.
+
+        Distinct from ``connected`` (healthy) and ``fatal`` (gave up): used
+        while an adapter is actively retrying network errors so external
+        monitors can detect degraded connectivity before the retry budget is
+        exhausted. See issue #29005.
+        """
+        if self.has_fatal_error:
+            return
+        self._write_runtime_status_safe(
+            "retrying", platform_state="retrying", error_code=code, error_message=message,
+        )
+
     def _set_fatal_error(self, code: str, message: str, *, retryable: bool) -> None:
         self._running = False
         self._fatal_error_code = code

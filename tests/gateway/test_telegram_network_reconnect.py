@@ -473,3 +473,41 @@ async def test_reconnect_schedules_heartbeat_probe_on_success():
             await t
         except (asyncio.CancelledError, Exception):
             pass
+
+
+@pytest.mark.asyncio
+async def test_polling_network_error_writes_retrying_state(monkeypatch):
+    """Issue #29005: while retrying after a network error, runtime status must
+    reflect ``retrying`` rather than ``connected`` so external monitors can see
+    the degraded state before the retry budget is exhausted."""
+    adapter = _make_adapter()
+    adapter._polling_network_error_count = 0
+
+    mock_app, _ = _make_mock_app()
+    adapter._app = mock_app
+
+    writes = []
+
+    def fake_write(**kwargs):
+        writes.append(kwargs)
+
+    monkeypatch.setattr("gateway.status.write_runtime_status", fake_write)
+
+    with patch("asyncio.sleep", new_callable=AsyncMock):
+        await adapter._handle_polling_network_error(Exception("DNS fail"))
+
+    states = [w.get("platform_state") for w in writes]
+    assert "retrying" in states, f"expected 'retrying' in {states}"
+    # And after a successful reconnect, status must transition back to connected.
+    assert states.index("retrying") < states.index("connected"), (
+        f"connected should follow retrying, got {states}"
+    )
+
+    # Clean up the heartbeat-probe task scheduled after a successful reconnect.
+    pending = [t for t in adapter._background_tasks if not t.done()]
+    for t in pending:
+        t.cancel()
+        try:
+            await t
+        except (asyncio.CancelledError, Exception):
+            pass

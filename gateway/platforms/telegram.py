@@ -885,6 +885,12 @@ class TelegramAdapter(BasePlatformAdapter):
             "[%s] Telegram network error (attempt %d/%d), reconnecting in %ds. Error: %s",
             self.name, attempt, MAX_NETWORK_RETRIES, delay, error,
         )
+        # Surface the degraded state so external monitors don't see "connected"
+        # for the full retry window (issue #29005).
+        self._mark_retrying(
+            code="telegram_network_error",
+            message=f"network retry {attempt}/{MAX_NETWORK_RETRIES}: {error}",
+        )
         await asyncio.sleep(delay)
 
         try:
@@ -906,6 +912,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 self.name, attempt,
             )
             self._polling_network_error_count = 0
+            self._mark_connected()
             # start_polling() returning is necessary but not sufficient:
             # PTB's Updater can be left in a state where `running` is True
             # but the underlying long-poll task is wedged on a stale httpx
