@@ -62,6 +62,55 @@ class TestSupportsMediaInToolResults:
         assert _supports_media_in_tool_results("", "anything") is False
         assert _supports_media_in_tool_results(None, "anything") is False  # type: ignore[arg-type]
 
+    # ── custom (self-hosted OpenAI-compatible) provider ──────────────────
+    #
+    # Self-hosted endpoints (vLLM, LM Studio, llama.cpp, Ollama) speak the
+    # OpenAI Chat Completions spec, which mandates image_url inside tool
+    # messages. Three resolution layers, in priority order:
+    #   1. explicit config flag (inline or registered)
+    #   2. models.dev capability lookup
+    #   3. model-slug heuristic for well-known multimodal families
+
+    def test_custom_heuristic_vl_suffix_yes(self):
+        # No config, no models.dev entry — slug heuristic catches "-vl".
+        with patch("hermes_cli.config.load_config", return_value={}):
+            assert _supports_media_in_tool_results("custom", "qwen3-vl-7b") is True
+
+    def test_custom_heuristic_llava_yes(self):
+        with patch("hermes_cli.config.load_config", return_value={}):
+            assert _supports_media_in_tool_results("custom", "llava-v1.5-13b") is True
+
+    def test_custom_unknown_model_no(self):
+        # Plain text model on a custom endpoint stays conservative.
+        with patch("hermes_cli.config.load_config", return_value={}):
+            assert _supports_media_in_tool_results("custom", "deepseek-r1") is False
+
+    def test_custom_inline_config_explicit_true(self):
+        # User declares the flag inline on ``model.*``. Authoritative —
+        # wins over models.dev and heuristic.
+        cfg = {
+            "model": {
+                "provider": "custom",
+                "default": "my-private-model",
+                "supports_media_in_tool_results": True,
+            }
+        }
+        with patch("hermes_cli.config.load_config", return_value=cfg):
+            assert _supports_media_in_tool_results("custom", "my-private-model") is True
+
+    def test_custom_inline_config_explicit_false_overrides_heuristic(self):
+        # Even when the slug would trigger the heuristic, an explicit
+        # ``False`` in config must win — user knows their endpoint best.
+        cfg = {
+            "model": {
+                "provider": "custom",
+                "default": "qwen3-vl-7b",
+                "supports_media_in_tool_results": False,
+            }
+        }
+        with patch("hermes_cli.config.load_config", return_value=cfg):
+            assert _supports_media_in_tool_results("custom", "qwen3-vl-7b") is False
+
 
 # ─── _build_native_vision_tool_result ────────────────────────────────────────
 

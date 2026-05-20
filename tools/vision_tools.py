@@ -470,6 +470,81 @@ def _supports_media_in_tool_results(provider: str, model: str) -> bool:
             return True
         return False
 
+    # Self-hosted / custom OpenAI-compatible providers (vLLM, LM Studio,
+    # llama.cpp server, etc.). These speak the OpenAI Chat Completions
+    # spec, which mandates ``image_url`` content parts inside ``tool``
+    # role messages — any compliant server implements this. The only
+    # uncertainty is whether the *user's specific model* on that server
+    # is actually multimodal. We resolve that in three layers, in
+    # priority order:
+    #
+    #   1. Explicit config flag — the authoritative signal. Users can
+    #      declare ``supports_media_in_tool_results: true`` either at
+    #      ``model.<flag>`` (inline custom provider config) or at
+    #      ``custom_providers[].models.<model>.<flag>`` (registered
+    #      provider list).
+    #   2. models.dev capability lookup — works for providers we've
+    #      mapped via ``PROVIDER_TO_MODELS_DEV``.
+    #   3. Heuristic on the model slug — catches the common VL naming
+    #      patterns (``-vl``, ``vision``, ``llava``, ``internvl``, etc.)
+    #      so users who haven't declared the flag still get fast-path
+    #      for well-known multimodal models.
+    if p == "custom":
+        m_lower = (model or "").strip().lower()
+
+        # Layer 1a: inline ``model.*`` declaration
+        try:
+            from hermes_cli.config import load_config
+            _cfg = load_config() or {}
+            _inline = _cfg.get("model") or {}
+            if isinstance(_inline, dict):
+                _inline_default = str(_inline.get("default") or "").strip().lower()
+                if _inline_default == m_lower:
+                    _flag = _inline.get("supports_media_in_tool_results")
+                    if isinstance(_flag, bool):
+                        return _flag
+        except Exception:
+            pass
+
+        # Layer 1b: ``custom_providers[].models.<model>.*`` declaration
+        try:
+            from hermes_cli.config import (
+                get_compatible_custom_providers,
+                load_config,
+            )
+            _cps = get_compatible_custom_providers(load_config()) or []
+            for _cp in _cps:
+                _models = (_cp or {}).get("models") or {}
+                if not isinstance(_models, dict):
+                    continue
+                for _mname, _mdata in _models.items():
+                    if (
+                        str(_mname).strip().lower() == m_lower
+                        and isinstance(_mdata, dict)
+                    ):
+                        _flag = _mdata.get("supports_media_in_tool_results")
+                        if isinstance(_flag, bool):
+                            return _flag
+        except Exception:
+            pass
+
+        # Layer 2: models.dev capability lookup
+        try:
+            from agent.models_dev import get_model_capabilities
+            _caps = get_model_capabilities(provider, model)
+            if _caps and _caps.supports_vision:
+                return True
+        except Exception:
+            pass
+
+        # Layer 3: heuristic on the model slug
+        if any(tag in m_lower for tag in (
+            "-vl", "vl-", "vision", "multimodal",
+            "qwen-vl", "internvl", "llava", "minicpm-v",
+        )):
+            return True
+        return False
+
     # Other vision-capable provider stacks. Conservative default: False.
     # Add explicit entries here as we verify each provider's tool-result
     # multimodal support empirically.
