@@ -1,0 +1,2 @@
+{"schema_version":"contextops.contract.v0","lane":"observation","kind":"task_handoff_ack","sanitized_payload":{"completed":true,"delegated":true,"refs":["ref:abcdef012345"],"restore_count":2},"provenance":{"source":"adapter.test","version":"0.0.1"}}
+{"schema_version":"contextops.contract.v0","lane":"context_pack","kind":"preview_built","sanitized_payload":{"avoid_count":1,"restore_count":2},"provenance":{"source":"adapter.test"}}

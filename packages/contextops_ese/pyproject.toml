@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "contextops-ese"
+version = "0.0.1"
+description = "Harness-agnostic cognitive-state middleware: Event -> Thread/Tension/EpistemicMode -> StateDelta -> ContextPack. Not generic Memory/RAG/summary."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Proprietary" }
+keywords = ["contextops", "epistemic-state", "agent-middleware"]
+# Core has zero runtime dependencies and never imports any harness.
+dependencies = []
+
+[project.optional-dependencies]
+# Optional, fixture-only extras for adapter testing. A harness (Hermes,
+# Claude Code, Codex/OpenCode, Kanban workers, AgentFlow supervisors) is
+# NEVER a hard dependency of the core.
+dev = ["pytest>=7"]
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
