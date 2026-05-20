@@ -21,6 +21,7 @@ from urllib.parse import quote
 import httpx
 
 from gateway.config import Platform, PlatformConfig
+from gateway.credential_redaction import redact_credentials
 from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
@@ -674,7 +675,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         return info
 
     def format_message(self, content: str) -> str:
-        return strip_markdown(content)
+        return strip_markdown(redact_credentials(content))
 
     # ------------------------------------------------------------------
     # Inbound attachment downloading (from #4588)

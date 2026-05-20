@@ -61,6 +61,7 @@ except ImportError:
     httpx = None  # type: ignore[assignment]
 
 from gateway.config import Platform, PlatformConfig
+from gateway.credential_redaction import redact_credentials
 from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
@@ -2978,6 +2979,7 @@ class QQAdapter(BasePlatformAdapter):
         When markdown_support is enabled, content is sent as-is (QQ renders it).
         When disabled, strip markdown via shared helper (same as BlueBubbles/SMS).
         """
+        content = redact_credentials(content)
         if self._markdown_support:
             return content
         return strip_markdown(content)

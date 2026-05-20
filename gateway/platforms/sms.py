@@ -28,6 +28,7 @@ import urllib.parse
 from typing import Any, Dict, Optional
 
 from gateway.config import Platform, PlatformConfig
+from gateway.credential_redaction import redact_credentials
 from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
@@ -215,7 +216,7 @@ class SmsAdapter(BasePlatformAdapter):
 
     def format_message(self, content: str) -> str:
         """Strip markdown — SMS renders it as literal characters."""
-        return strip_markdown(content)
+        return strip_markdown(redact_credentials(content))
 
     # ------------------------------------------------------------------
     # Twilio signature validation

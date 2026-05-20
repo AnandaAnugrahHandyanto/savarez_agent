@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from gateway.config import Platform, PlatformConfig
+from gateway.credential_redaction import redact_credentials
 from gateway.platforms.helpers import MessageDeduplicator
 from gateway.platforms.base import (
     BasePlatformAdapter,
@@ -407,6 +408,7 @@ class MattermostAdapter(BasePlatformAdapter):
 
         Strip image markdown into plain links (files are uploaded separately).
         """
+        content = redact_credentials(content)
         # Convert ![alt](url) to just the URL — Mattermost renders
         # image URLs as inline previews automatically.
         content = re.sub(r"!\[([^\]]*)\]\(([^)]+)\)", r"\2", content)

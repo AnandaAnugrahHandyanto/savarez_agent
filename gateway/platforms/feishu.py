@@ -127,6 +127,7 @@ FEISHU_WEBSOCKET_AVAILABLE = websockets is not None
 FEISHU_WEBHOOK_AVAILABLE = aiohttp is not None
 
 from gateway.config import Platform, PlatformConfig
+from gateway.credential_redaction import redact_credentials
 from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
@@ -2249,7 +2250,7 @@ class FeishuAdapter(BasePlatformAdapter):
 
     def format_message(self, content: str) -> str:
         """Feishu text messages are plain text by default."""
-        return content.strip()
+        return redact_credentials(content).strip()
 
     # =========================================================================
     # Inbound event handlers

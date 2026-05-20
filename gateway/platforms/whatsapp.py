@@ -180,6 +180,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from gateway.config import Platform, PlatformConfig
+from gateway.credential_redaction import redact_credentials
 from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
@@ -820,6 +821,8 @@ class WhatsAppAdapter(BasePlatformAdapter):
         """
         if not content:
             return content
+
+        content = redact_credentials(content)
 
         # --- 1. Protect fenced code blocks from formatting changes ---
         _FENCE_PH = "\x00FENCE"
