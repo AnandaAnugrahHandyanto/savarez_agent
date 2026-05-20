@@ -281,7 +281,7 @@ Ria-only deployment completed on 2026-05-20:
 
 - Hermes checkout: `ria.st-el.com:/home/alex/.hermes/hermes-agent`
 - Branch: `ria/lazy-tool-canary`
-- Commit: `a7c1ff47f`
+- Commit: `8c8b68e19`
 - Service drop-in:
   - `HERMES_TUI_TOOLSETS=botparlor,memory,tool_loader`
   - `HERMES_TUI_VISIBLE_TOOLS=mcp_botparlor_set_mood,memory,load_tool_pack`
@@ -303,3 +303,20 @@ Ria verification:
   - `memory`
   - `load_tool_pack`
 - BotParlor MCP status in that session: connected, 12 registered tools.
+
+Live canary metrics from BotParlor session `a87df0ca` / Hermes session
+`20260520_134210_ae837c`:
+
+- Visible replies: 7.
+- Mood calls: 6 (`6/7` visible replies).
+- Avatar flow: `load_tool_pack(pack=avatar)`, then
+  `mcp_botparlor_get_outfits`, then `mcp_botparlor_create_avatar`.
+- First model call input: `8,275` tokens.
+- First user-visible reply after mood tool result: `8,361` input tokens.
+- Max live context after avatar pack/tool results: `10,955 / 104,448` tokens.
+- Session model calls: `15`.
+- Cumulative prompt tokens: `136,086`.
+- Cumulative generated tokens: `775`.
+- Reasoning chars: `0`.
+- Compactions: `0`.
+- Ria-side summed model-call latency: about `27.3s`, average `1.82s/call`.
