@@ -8084,7 +8084,10 @@ def _git_cmd_for_update() -> list[str]:
     plumbing. Resolve to an absolute executable up front so ``subprocess`` never
     tries to exec the literal bad token.
     """
-    git_exe = shutil.which("git") or "git"
+    git_exe = shutil.which("git")
+    if not git_exe and sys.platform == "darwin" and Path("/usr/bin/git").exists():
+        git_exe = "/usr/bin/git"
+    git_exe = git_exe or "git"
     git_exe = git_exe.strip().strip('"').strip("'")
     git_cmd = [git_exe]
     if sys.platform == "win32":

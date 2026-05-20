@@ -41,6 +41,15 @@ def test_git_cmd_for_update_resolves_and_strips_quoted_git(monkeypatch):
     assert _git_cmd_for_update()[0] == "/usr/bin/git"
 
 
+def test_git_cmd_for_update_uses_macos_system_git_when_path_lookup_fails(monkeypatch):
+    """Gateway/TUI envs can have a thin PATH; macOS still has /usr/bin/git."""
+    monkeypatch.setattr("shutil.which", lambda name: None)
+    monkeypatch.setattr("hermes_cli.main.sys.platform", "darwin")
+    monkeypatch.setattr("hermes_cli.main.Path.exists", lambda self: str(self) == "/usr/bin/git")
+
+    assert _git_cmd_for_update()[0] == "/usr/bin/git"
+
+
 @pytest.fixture
 def mock_args():
     return SimpleNamespace()
