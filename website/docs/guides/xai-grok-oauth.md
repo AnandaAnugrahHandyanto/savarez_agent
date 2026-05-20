@@ -12,7 +12,7 @@ When you sign in with an X account that has Premium+, xAI automatically links th
 
 The transport reuses the `codex_responses` adapter (xAI exposes a Responses-style endpoint), so reasoning, tool-calling, streaming, and prompt caching work without any adapter changes.
 
-The same OAuth bearer token is also reused by every direct-to-xAI surface in Hermes — TTS, image generation, video generation, and transcription — so a single login covers all four.
+The same OAuth bearer token is also reused by every direct-to-xAI surface in Hermes — TTS, image generation, video generation, transcription, web search, and X search — so a single login covers the supported xAI tool surface. See the [xAI capability matrix](./xai-capability-matrix.md) for the full support map.
 
 ## Overview
 
@@ -146,7 +146,7 @@ hermes --provider x-ai-oauth       # alias
 hermes --provider xai-grok-oauth   # alias
 ```
 
-## Direct-to-xAI Tools (TTS / Image / Video / Transcription / X Search)
+## Direct-to-xAI Tools (TTS / Image / Video / Transcription / Web Search / X Search)
 
 Once you're logged in via OAuth, every direct-to-xAI tool reuses the same bearer token automatically — there is **no separate setup** unless you'd rather use an API key.
 
@@ -157,6 +157,7 @@ hermes tools
 # → Text-to-Speech       → "xAI TTS"
 # → Image Generation     → "xAI Grok Imagine (image)"
 # → Video Generation     → "xAI Grok Imagine"
+# → Web Search           → "xAI Web Search (Grok)"
 # → X (Twitter) Search   → "xAI Grok OAuth (SuperGrok / X Premium+)"
 ```
 
