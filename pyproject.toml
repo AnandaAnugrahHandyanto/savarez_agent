@@ -71,6 +71,9 @@ anthropic = ["anthropic==0.86.0"]
 exa = ["exa-py==2.10.2"]
 firecrawl = ["firecrawl-py==4.17.0"]
 parallel-web = ["parallel-web==0.4.2"]
+# Jina — uses httpx which is already a core dependency; extra kept for
+# backwards compat with `hermes tools` and lazy-dep wiring.
+jina = []
 # Image generation backends
 fal = ["fal-client==0.13.1"]
 # Edge TTS — default TTS provider but still optional (users can pick

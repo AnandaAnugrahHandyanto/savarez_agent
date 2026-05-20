@@ -2,8 +2,8 @@
 
 Covers:
 
-- All seven bundled plugins (brave-free, ddgs, searxng, exa, parallel,
-  tavily, firecrawl) instantiate and self-report the expected
+- All eight bundled plugins (brave-free, ddgs, searxng, exa, parallel,
+  tavily, firecrawl, jina) instantiate and self-report the expected
   capabilities + ABC-derived defaults.
 - Each plugin's ``is_available()`` correctly reflects env-var presence.
 - The web_search_registry resolves an active provider in the documented
@@ -47,6 +47,7 @@ def _clear_web_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "FIRECRAWL_GATEWAY_URL",
         "TOOL_GATEWAY_DOMAIN",
         "TOOL_GATEWAY_USER_TOKEN",
+        "JINA_API_KEY",
     ):
         monkeypatch.delenv(k, raising=False)
 
@@ -82,9 +83,11 @@ class TestBundledPluginsRegister:
             "ddgs",
             "exa",
             "firecrawl",
+            "jina",
             "parallel",
             "searxng",
             "tavily",
+            "xai",
         ]
 
     @pytest.mark.parametrize(
@@ -100,6 +103,7 @@ class TestBundledPluginsRegister:
             # disabled in the migration (fell through to a legacy inline
             # path); the follow-up commit enabled it natively.
             ("firecrawl", True, True, True),
+            ("jina", True, True, False),
         ],
     )
     def test_capability_flags_match_spec(
@@ -120,7 +124,7 @@ class TestBundledPluginsRegister:
 
     @pytest.mark.parametrize(
         "plugin_name",
-        ["brave-free", "ddgs", "searxng", "exa", "parallel", "tavily", "firecrawl"],
+        ["brave-free", "ddgs", "searxng", "exa", "parallel", "tavily", "firecrawl", "jina"],
     )
     def test_each_plugin_has_name_and_display_name(self, plugin_name: str) -> None:
         _ensure_plugins_loaded()
@@ -133,7 +137,7 @@ class TestBundledPluginsRegister:
 
     @pytest.mark.parametrize(
         "plugin_name",
-        ["brave-free", "ddgs", "searxng", "exa", "parallel", "tavily", "firecrawl"],
+        ["brave-free", "ddgs", "searxng", "exa", "parallel", "tavily", "firecrawl", "jina"],
     )
     def test_each_plugin_has_setup_schema(self, plugin_name: str) -> None:
         """``get_setup_schema()`` returns a dict the picker can consume."""
@@ -221,6 +225,16 @@ class TestIsAvailable:
         assert p.is_available() is True
         monkeypatch.delenv("FIRECRAWL_API_KEY", raising=False)
         monkeypatch.setenv("FIRECRAWL_API_URL", "http://localhost:3002")
+        assert p.is_available() is True
+
+    def test_jina_requires_api_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _ensure_plugins_loaded()
+        from agent.web_search_registry import get_provider
+
+        p = get_provider("jina")
+        assert p is not None
+        assert p.is_available() is False
+        monkeypatch.setenv("JINA_API_KEY", "real")
         assert p.is_available() is True
 
     def test_ddgs_always_available_when_package_importable(self) -> None:
@@ -362,6 +376,14 @@ class TestAsyncExtractDispatch:
         assert p is not None
         assert inspect.iscoroutinefunction(p.extract) is False
 
+    def test_jina_extract_is_sync(self) -> None:
+        _ensure_plugins_loaded()
+        from agent.web_search_registry import get_provider
+
+        p = get_provider("jina")
+        assert p is not None
+        assert inspect.iscoroutinefunction(p.extract) is False
+
 
 # ---------------------------------------------------------------------------
 # Error response shape (preserved bit-for-bit from legacy)
@@ -473,3 +495,27 @@ class TestErrorResponseShapes:
         assert len(result["results"]) >= 1
         assert "error" in result["results"][0]
         assert result["results"][0]["url"] == "https://example.com"
+
+    def test_jina_search_returns_error_dict_when_unconfigured(self) -> None:
+        _ensure_plugins_loaded()
+        from agent.web_search_registry import get_provider
+
+        p = get_provider("jina")
+        assert p is not None
+        result = p.search("test", limit=5)
+        assert isinstance(result, dict)
+        assert result.get("success") is False
+        assert "error" in result
+
+    def test_jina_extract_returns_per_url_errors_when_unconfigured(self) -> None:
+        _ensure_plugins_loaded()
+        from agent.web_search_registry import get_provider
+
+        p = get_provider("jina")
+        assert p is not None
+        # jina extract is sync — no need for asyncio.run
+        result = p.extract(["https://example.com"])
+        assert isinstance(result, list)
+        assert len(result) == 1
+        assert "error" in result[0]
+        assert result[0]["url"] == "https://example.com"
