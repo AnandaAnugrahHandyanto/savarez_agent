@@ -1556,6 +1556,7 @@ class GatewayRunner:
     _stop_task: Optional[asyncio.Task] = None
     _session_model_overrides: Dict[str, Dict[str, str]] = {}
     _session_reasoning_overrides: Dict[str, Dict[str, Any]] = {}
+    _long_running_notify_tokens: Dict[str, object] = {}
 
     def __init__(self, config: Optional[GatewayConfig] = None):
         global _gateway_runner_ref
@@ -1643,6 +1644,10 @@ class GatewayRunner:
         # Per-session reasoning effort overrides from /reasoning.
         # Key: session_key, Value: parsed reasoning config dict.
         self._session_reasoning_overrides: Dict[str, Dict[str, Any]] = {}
+        # Ownership tokens for per-run "Still working..." tasks. A session can
+        # recurse into queued follow-ups; only the newest run for that session
+        # may send long-running status messages.
+        self._long_running_notify_tokens: Dict[str, object] = {}
         self._kanban_notifier_profile = self._active_profile_name()
         # Teams meeting pipeline runtime (bound later when msgraph_webhook adapter exists).
         self._teams_pipeline_runtime = None
@@ -5963,6 +5968,8 @@ class GatewayRunner:
             self.adapters.clear()
             self._running_agents.clear()
             self._running_agents_ts.clear()
+            if hasattr(self, "_long_running_notify_tokens"):
+                self._long_running_notify_tokens.clear()
             self._pending_messages.clear()
             self._pending_approvals.clear()
             if hasattr(self, '_busy_ack_ts'):
@@ -14978,6 +14985,9 @@ class GatewayRunner:
             return False
         self._running_agents.pop(session_key, None)
         self._running_agents_ts.pop(session_key, None)
+        notify_tokens = getattr(self, "_long_running_notify_tokens", None)
+        if isinstance(notify_tokens, dict):
+            notify_tokens.pop(session_key, None)
         if hasattr(self, "_busy_ack_ts"):
             self._busy_ack_ts.pop(session_key, None)
         return True
@@ -17253,6 +17263,22 @@ class GatewayRunner:
         _NOTIFY_INTERVAL_RAW = _float_env("HERMES_AGENT_NOTIFY_INTERVAL", 180)
         _NOTIFY_INTERVAL = _NOTIFY_INTERVAL_RAW if _NOTIFY_INTERVAL_RAW > 0 else None
         _notify_start = time.time()
+        _notify_token = object()
+        if session_key:
+            notify_tokens = getattr(self, "_long_running_notify_tokens", None)
+            if not isinstance(notify_tokens, dict):
+                notify_tokens = {}
+                self._long_running_notify_tokens = notify_tokens
+            notify_tokens[session_key] = _notify_token
+
+        def _notify_still_current() -> bool:
+            if not session_key:
+                return True
+            notify_tokens = getattr(self, "_long_running_notify_tokens", None)
+            return (
+                isinstance(notify_tokens, dict)
+                and notify_tokens.get(session_key) is _notify_token
+            )
 
         async def _notify_long_running():
             if _NOTIFY_INTERVAL is None:
@@ -17262,6 +17288,8 @@ class GatewayRunner:
                 return
             while True:
                 await asyncio.sleep(_NOTIFY_INTERVAL)
+                if not _notify_still_current():
+                    return
                 _elapsed_mins = int((time.time() - _notify_start) // 60)
                 # Include agent activity context if available.
                 _agent_ref = agent_holder[0]
@@ -17278,6 +17306,8 @@ class GatewayRunner:
                     except Exception:
                         pass
                 try:
+                    if not _notify_still_current():
+                        return
                     _notify_res = await _notify_adapter.send(
                         source.chat_id,
                         f"⏳ Still working... ({_elapsed_mins} min elapsed{_status_detail})",
@@ -17293,6 +17323,32 @@ class GatewayRunner:
                     logger.debug("Long-running notification error: %s", _ne)
 
         _notify_task = asyncio.create_task(_notify_long_running())
+        _auxiliary_tasks_cancelled = False
+
+        def _cancel_run_auxiliary_tasks() -> None:
+            """Stop per-invocation background tasks before this run hands off.
+
+            _run_agent can recurse into queued follow-ups. Without cancelling the
+            outer run's notifier first, each nested turn keeps its own
+            "Still working..." timer alive and the user sees a burst of status
+            messages with different elapsed clocks.
+            """
+            nonlocal _auxiliary_tasks_cancelled
+            if _auxiliary_tasks_cancelled:
+                return
+            _auxiliary_tasks_cancelled = True
+            if progress_task:
+                progress_task.cancel()
+            interrupt_monitor.cancel()
+            tracking_task.cancel()
+            _notify_task.cancel()
+            if session_key:
+                notify_tokens = getattr(self, "_long_running_notify_tokens", None)
+                if (
+                    isinstance(notify_tokens, dict)
+                    and notify_tokens.get(session_key) is _notify_token
+                ):
+                    notify_tokens.pop(session_key, None)
 
         try:
             # Run in thread pool to not block.  Use an *inactivity*-based
@@ -17690,6 +17746,7 @@ class GatewayRunner:
                     except Exception:
                         pass
 
+                _cancel_run_auxiliary_tasks()
                 followup_result = await self._run_agent(
                     message=next_message,
                     context_prompt=context_prompt,
@@ -17704,11 +17761,10 @@ class GatewayRunner:
                 )
                 return _preserve_queued_followup_history_offset(result, followup_result)
         finally:
-            # Stop progress sender, interrupt monitor, and notification task
-            if progress_task:
-                progress_task.cancel()
-            interrupt_monitor.cancel()
-            _notify_task.cancel()
+            # Stop progress sender, interrupt monitor, and notification task.
+            # This is idempotent because queued follow-up recursion cancels the
+            # outer run's helpers before starting the nested run.
+            _cancel_run_auxiliary_tasks()
 
             # Wait for stream consumer to finish its final edit
             if stream_task:
