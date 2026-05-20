@@ -5564,14 +5564,13 @@ class HermesCLI:
         model = getattr(self, "model", None) or "(unknown)"
         is_running = bool(getattr(self, "_agent_running", False))
 
-        lines = [
-            "Hermes CLI Status",
-            "",
-            f"Session ID: {self.session_id}",
-            f"Path: {display_hermes_home()}",
-        ]
+        from hermes_constants import format_status_location_lines
+
+        lines: list[str] = []
         if title:
             lines.append(f"Title: {title}")
+        lines.append(f"Session ID: {self.session_id}")
+        lines.extend(format_status_location_lines())
         lines.extend([
             f"Model: {model} ({provider})",
             f"Created: {created_at.strftime('%Y-%m-%d %H:%M')}",

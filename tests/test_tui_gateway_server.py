@@ -2202,6 +2202,27 @@ def test_commands_catalog_filters_gateway_only_commands_and_keeps_status_visible
     assert "/set-home" not in canon
 
 
+def test_session_status_omits_title_line_when_empty(monkeypatch):
+    server._sessions["sid"] = _session(agent=None, running=False)
+
+    class _DB:
+        def get_session(self, key):
+            return {"title": "", "started_at": 1_700_000_000}
+
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+    try:
+        resp = server.handle_request(
+            {"id": "1", "method": "session.status", "params": {"session_id": "sid"}}
+        )
+    finally:
+        server._sessions.pop("sid", None)
+
+    out = resp["result"]["output"]
+    assert "Title:" not in out
+    assert "Session ID:" in out
+    assert "Hermes TUI Status" not in out
+
+
 def test_session_status_reads_live_gateway_agent(monkeypatch):
     agent = types.SimpleNamespace(
         model="live-model",
@@ -2228,9 +2249,9 @@ def test_session_status_reads_live_gateway_agent(monkeypatch):
         server._sessions.pop("sid", None)
 
     out = resp["result"]["output"]
-    assert "Hermes TUI Status" in out
+    assert "Hermes TUI Status" not in out
+    assert out.index("Title: Live TUI") < out.index("Session ID: session-key")
     assert "Session ID: session-key" in out
-    assert "Title: Live TUI" in out
     assert "Model: live-model (live-provider)" in out
     assert "Tokens: 1,234" in out
     assert "Agent Running: Yes" in out
