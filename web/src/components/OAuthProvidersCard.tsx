@@ -154,7 +154,7 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
                       <span className="font-medium text-sm">{p.name}</span>
                       <Badge
                         tone="outline"
-                        className="text-[11px] uppercase tracking-wide"
+                        className="text-[11px] tracking-wide"
                       >
                         {t.oauth.flowLabels[p.flow]}
                       </Badge>

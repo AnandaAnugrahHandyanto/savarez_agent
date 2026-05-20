@@ -74,7 +74,7 @@ export function LanguageSwitcher({ dropUp = false }: LanguageSwitcherProps) {
           <LocaleFlagIcon countryCode={current.flagCountryCode} />
           <Typography
             mondwest
-            className="hidden sm:inline tracking-wide uppercase text-[0.65rem]"
+            className="hidden sm:inline tracking-wide text-[0.65rem]"
           >
             {locale === "en" ? "EN" : current.name}
           </Typography>

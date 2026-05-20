@@ -224,7 +224,7 @@ export function ModelPickerDialog(props: Props) {
         <header className="p-5 pb-3 border-b border-border">
           <h2
             id="model-picker-title"
-            className="font-display text-base tracking-wider uppercase"
+            className="font-display text-base tracking-wider"
           >
             {title}
           </h2>
@@ -453,7 +453,7 @@ function ModelColumn({
 
 function CurrentTag() {
   return (
-    <span className="text-[0.6rem] uppercase tracking-wider text-primary/80 shrink-0">
+    <span className="text-[0.6rem] tracking-wider text-primary/80 shrink-0">
       current
     </span>
   );

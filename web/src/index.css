@@ -49,8 +49,8 @@
   --foreground: color-mix(in srgb, #ffffff 0%, transparent);
   --foreground-base: #ffffff;
   --foreground-alpha: 0;
-  --midground: color-mix(in srgb, #ffe6cb 100%, transparent);
-  --midground-base: #ffe6cb;
+  --midground: color-mix(in srgb, #fff3e2 100%, transparent);
+  --midground-base: #fff3e2;
   --midground-alpha: 1;
   --background: color-mix(in srgb, #041c1c 100%, transparent);
   --background-base: #041c1c;
@@ -67,8 +67,8 @@
   --theme-font-mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo,
     Consolas, monospace;
   --theme-font-display: var(--theme-font-sans);
-  --theme-base-size: 15px;
-  --theme-line-height: 1.55;
+  --theme-base-size: 16px;
+  --theme-line-height: 1.6;
   --theme-letter-spacing: 0;
 
   /* Layout tokens. */
@@ -132,24 +132,24 @@ code { font-size: 0.875rem; }
      stay visible — in LENS_0, `--foreground` itself has alpha 0. */
   --color-foreground: var(--midground);
 
-  --color-card: color-mix(in srgb, var(--midground-base) 4%, var(--background-base));
+  --color-card: color-mix(in srgb, var(--midground-base) 8%, var(--background-base));
   --color-card-foreground: var(--midground);
   --color-primary: var(--midground);
   --color-primary-foreground: var(--background-base);
-  --color-secondary: color-mix(in srgb, var(--midground-base) 6%, var(--background-base));
+  --color-secondary: color-mix(in srgb, var(--midground-base) 10%, var(--background-base));
   --color-secondary-foreground: var(--midground);
-  --color-muted: color-mix(in srgb, var(--midground-base) 8%, var(--background-base));
-  --color-muted-foreground: color-mix(in srgb, var(--midground-base) 55%, transparent);
-  --color-accent: color-mix(in srgb, var(--midground-base) 10%, var(--background-base));
+  --color-muted: color-mix(in srgb, var(--midground-base) 12%, var(--background-base));
+  --color-muted-foreground: color-mix(in srgb, var(--midground-base) 78%, var(--background-base));
+  --color-accent: color-mix(in srgb, var(--midground-base) 14%, var(--background-base));
   --color-accent-foreground: var(--midground);
   --color-destructive: #fb2c36;
   --color-destructive-foreground: #ffffff;
   --color-success: #4ade80;
   --color-warning: #ffbd38;
-  --color-border: color-mix(in srgb, var(--midground-base) 15%, transparent);
-  --color-input: color-mix(in srgb, var(--midground-base) 15%, transparent);
+  --color-border: color-mix(in srgb, var(--midground-base) 32%, transparent);
+  --color-input: color-mix(in srgb, var(--midground-base) 36%, transparent);
   --color-ring: var(--midground);
-  --color-popover: color-mix(in srgb, var(--midground-base) 4%, var(--background-base));
+  --color-popover: color-mix(in srgb, var(--midground-base) 10%, var(--background-base));
   --color-popover-foreground: var(--midground);
 
   --radius-sm: calc(var(--theme-radius) - 4px);
@@ -202,6 +202,16 @@ code { font-size: 0.875rem; }
   font-family: var(--theme-font-mono);
 }
 
+
+/* The Nous display font is distinctive but hard to read in dense app chrome.
+   Route old display-font call sites through the active readable display stack
+   instead of the pixel/novelty face. */
+.font-mondwest,
+.font-display,
+.font-expanded {
+  font-family: var(--theme-font-display);
+}
+
 /* Subtle grain overlay for badges. */
 .grain {
   position: relative;
@@ -216,14 +226,9 @@ code { font-size: 0.875rem; }
     2px 2px;
 }
 
-/* When a theme provides `assets.bg`, the backdrop's <div> renders it as
-   a CSS background; the default filler <img> is hidden to prevent
-   double-compositing. Unset → initial → empty, so the :not() selector
-   matches and the default image stays visible. */
-:root:not([style*="--theme-asset-bg:"]) .theme-default-filler {
-  display: block;
-}
-:root[style*="--theme-asset-bg:"] .theme-default-filler {
+/* The dashboard backdrop is intentionally image-free for contrast. If a
+   third-party theme still declares `assets.bg`, ignore the filler element. */
+.theme-default-filler {
   display: none;
 }
 

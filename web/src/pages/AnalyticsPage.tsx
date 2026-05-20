@@ -484,7 +484,7 @@ export default function AnalyticsPage() {
         <Card>
           <CardContent className="py-12">
             <div className="mx-auto flex max-w-2xl flex-col gap-3 text-sm text-muted-foreground">
-              <h2 className="font-display text-base tracking-wider uppercase text-foreground">
+              <h2 className="font-display text-base tracking-wider text-foreground">
                 Token analytics hidden
               </h2>
               <p>

@@ -242,9 +242,8 @@ export default function ProfilesPage() {
   }
 
   return (
-    // Profile names, model slugs, and paths are case-sensitive; opt out of
-    // the app shell's global ``uppercase`` so they render as the user typed.
-    // Children that explicitly opt back in (Badges, etc.) keep their casing.
+    // Profile names, model slugs, and paths are case-sensitive; render them
+    // as the user typed.
     <div className="flex flex-col gap-6 normal-case">
       <Toast toast={toast} />
 
@@ -285,7 +284,7 @@ export default function ProfilesPage() {
             <header className="p-5 pb-3 border-b border-border">
               <h2
                 id="create-profile-title"
-                className="font-display text-base tracking-wider uppercase"
+                className="font-display text-base tracking-wider"
               >
                 {t.profiles.newProfile}
               </h2>
@@ -500,7 +499,7 @@ export default function ProfilesPage() {
                 <div className="border-t border-border px-4 pb-4 pt-3 flex flex-col gap-2">
                   <Label
                     htmlFor={`soul-editor-${p.name}`}
-                    className="flex items-center gap-2 text-xs uppercase tracking-wider text-muted-foreground"
+                    className="flex items-center gap-2 text-xs tracking-wider text-muted-foreground"
                   >
                     {t.profiles.soulSection}
                   </Label>

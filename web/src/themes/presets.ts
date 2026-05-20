@@ -24,8 +24,8 @@ const SYSTEM_MONO =
 const DEFAULT_TYPOGRAPHY: ThemeTypography = {
   fontSans: SYSTEM_SANS,
   fontMono: SYSTEM_MONO,
-  baseSize: "15px",
-  lineHeight: "1.55",
+  baseSize: "16px",
+  lineHeight: "1.6",
   letterSpacing: "0",
 };
 
@@ -44,7 +44,7 @@ export const defaultTheme: DashboardTheme = {
   description: "Classic dark teal — the canonical Hermes look",
   palette: {
     background: { hex: "#041c1c", alpha: 1 },
-    midground: { hex: "#ffe6cb", alpha: 1 },
+    midground: { hex: "#fff3e2", alpha: 1 },
     foreground: { hex: "#ffffff", alpha: 0 },
     warmGlow: "rgba(255, 189, 56, 0.35)",
     noiseOpacity: 1,

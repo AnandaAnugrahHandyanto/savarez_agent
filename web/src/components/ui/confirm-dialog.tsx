@@ -82,7 +82,7 @@ export function ConfirmDialog({
           <div className="flex-1 min-w-0 flex flex-col gap-1">
             <h2
               id="confirm-dialog-title"
-              className="font-expanded text-sm font-bold tracking-[0.08em] uppercase blend-lighter"
+              className="font-expanded text-sm font-bold tracking-[0.08em] blend-lighter"
             >
               {title}
             </h2>

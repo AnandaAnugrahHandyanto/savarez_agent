@@ -470,7 +470,7 @@ function PluginRowCard(props: PluginRowCardProps) {
                 className={cn(
                   "inline-flex items-center rounded-none px-3 py-1.5",
                   "border border-current/25 hover:bg-current/10",
-                  "font-mondwest text-[0.65rem] tracking-[0.1em] uppercase",
+                  "font-mondwest text-[0.65rem] tracking-[0.1em]",
                 )}
                 to={tabPath}
               >
