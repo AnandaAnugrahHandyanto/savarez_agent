@@ -54,7 +54,7 @@ function collectSidebarIds() {
   const ids = new Set();
   for (const match of source.matchAll(/['"]([^'"]+)['"]/gu)) {
     const value = match[1];
-    if (!value.includes("/") && !value.startsWith("user-stories")) continue;
+    if (value.startsWith("http") || value.startsWith(".")) continue;
     ids.add(value);
     if (value.endsWith("/index")) ids.add(value.slice(0, -"/index".length));
   }

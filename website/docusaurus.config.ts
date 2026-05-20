@@ -110,6 +110,12 @@ const config: Config = {
       },
       items: [
         {
+          type: 'doc',
+          docId: 'start',
+          label: 'Start Here',
+          position: 'left',
+        },
+        {
           type: 'docSidebar',
           sidebarId: 'docs',
           position: 'left',

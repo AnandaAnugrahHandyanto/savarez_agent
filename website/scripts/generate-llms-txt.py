@@ -38,6 +38,7 @@ SITE_BASE = "https://hermes-agent.nousresearch.com/docs"
 # `None` desc → pulled from frontmatter `description:` field.
 SECTIONS: list[tuple[str, list[tuple[str, str, str | None]]]] = [
     ("Getting Started", [
+        ("start", "Start Here", None),
         ("getting-started/installation", "Installation", None),
         ("getting-started/quickstart", "Quickstart", None),
         ("getting-started/learning-path", "Learning Path", None),
@@ -79,6 +80,7 @@ SECTIONS: list[tuple[str, list[tuple[str, str, str | None]]]] = [
         ("user-guide/features/code-execution", "Code Execution", None),
         ("user-guide/features/hooks", "Hooks", None),
         ("user-guide/features/batch-processing", "Batch Processing", None),
+        ("user-guide/features/rl-training", "RL Training", None),
     ]),
     ("Media & Web", [
         ("user-guide/features/voice-mode", "Voice Mode", None),
