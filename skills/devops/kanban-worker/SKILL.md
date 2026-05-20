@@ -199,6 +199,9 @@ If you open the task and `kanban_show` returns `runs: [...]` with one or more cl
 
 **Don't rely on the CLI when the guidance is available.** The `kanban_*` tools work across all terminal backends (Docker, Modal, SSH). `hermes kanban <verb>` from your terminal tool will fail in containerized backends because the CLI isn't installed there. When in doubt, use the tool.
 
+## GitHub Authentication
+Agents are pre-authenticated via symlinked configs in each profile home. Use \`gh pr create\` and other \`gh\` commands directly. Avoid attempting to read tokens from environment variables, as security policies may block this.
+
 ## CLI fallback (for scripting)
 
 Every tool has a CLI equivalent for human operators and scripts:
