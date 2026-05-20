@@ -1168,7 +1168,7 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
         # they were getting before the column existed).
         _add_column_if_missing(conn, "tasks", "max_retries", "max_retries INTEGER")
 
-if "model_override" not in cols:
+    if "model_override" not in cols:
         conn.execute("ALTER TABLE tasks ADD COLUMN model_override TEXT")
 
     if "session_id" not in cols:
@@ -1205,10 +1205,6 @@ if "model_override" not in cols:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_tasks_session_id ON tasks(session_id)"
     )
-        # the column existed).
-        _add_column_if_missing(
-            conn, "tasks", "handoff", "handoff INTEGER NOT NULL DEFAULT 0"
-        )
     # task_events gained a run_id column; back-fill it as NULL for
     # historical events (they predate runs and can't be attributed).
     ev_cols = {row["name"] for row in conn.execute("PRAGMA table_info(task_events)")}
