@@ -228,11 +228,77 @@ def display_hermes_home() -> str:
     ``~/.hermes``.  For code that needs a real ``Path``, use
     :func:`get_hermes_home` instead.
     """
-    home = get_hermes_home()
+    return display_path(get_hermes_home())
+
+
+def display_path(path: str | Path) -> str:
+    """Return a user-friendly ``~/…`` path when under the user home directory."""
     try:
-        return "~/" + str(home.relative_to(Path.home()))
+        resolved = Path(path).expanduser().resolve()
+    except (OSError, RuntimeError):
+        return str(path)
+    try:
+        return "~/" + str(resolved.relative_to(Path.home()))
     except ValueError:
-        return str(home)
+        return str(resolved)
+
+
+def format_status_location_lines() -> list[str]:
+    """Lines for CLI/TUI /status: profile, config home, and terminal working dir.
+
+    ``HERMES_HOME`` (shown as HERMES_HOME) is the profile data directory — not the
+    same as the project folder where ``bin/`` and terminal commands run.
+    """
+    lines: list[str] = []
+    try:
+        from hermes_cli.profiles import get_active_profile_name
+
+        lines.append(f"Profile: {get_active_profile_name()}")
+    except Exception:
+        pass
+
+    cwd = os.environ.get("TERMINAL_CWD", "").strip()
+    if not cwd or cwd in {".", "auto", "cwd"}:
+        try:
+            from hermes_cli.config import load_config
+
+            terminal = load_config().get("terminal") or {}
+            if isinstance(terminal, dict):
+                cwd = str(terminal.get("cwd", "") or "").strip()
+        except Exception:
+            pass
+    if not cwd or cwd in {".", "auto", "cwd"}:
+        try:
+            cwd = os.getcwd()
+        except OSError:
+            cwd = ""
+
+    # Dashboard/TUI processes often inherit hermes-agent/ as cwd; prefer the
+    # profile's project folder when it exists (e.g. ~/.hermes/projects/<profile>).
+    def _cwd_looks_like_hermes_agent(path: str) -> bool:
+        if not path:
+            return True
+        try:
+            return Path(path).expanduser().resolve().name == "hermes-agent"
+        except (OSError, RuntimeError):
+            return path.rstrip("/").endswith("hermes-agent")
+
+    if not cwd or _cwd_looks_like_hermes_agent(cwd):
+        try:
+            from hermes_cli.profiles import get_active_profile_name
+
+            profile = get_active_profile_name()
+            if profile not in ("default", "custom"):
+                project = get_default_hermes_root() / "projects" / profile
+                if project.is_dir():
+                    cwd = str(project)
+        except Exception:
+            pass
+
+    lines.append(f"Home Path: {display_hermes_home()}")
+    if cwd:
+        lines.append(f"Working Dir: {display_path(cwd)}")
+    return lines
 
 
 def get_subprocess_home() -> str | None:
