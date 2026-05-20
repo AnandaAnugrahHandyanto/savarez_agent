@@ -1272,10 +1272,19 @@ def _ensure_tui_node() -> None:
         # missing so node-bootstrap can put the managed Node on PATH.
         return (major == 20 and minor >= 19) or (major == 22 and minor >= 12) or major > 22
 
-    if _node_is_usable(shutil.which("node")) and shutil.which("npm"):
+    node_path = shutil.which("node")
+    npm_path = shutil.which("npm")
+    if _node_is_usable(node_path) and npm_path:
         return
     if os.environ.get("HERMES_SKIP_NODE_BOOTSTRAP"):
-        return
+        node_desc = node_path or "not found"
+        raise SystemExit(
+            "Hermes TUI requires Node >=20.19 or >=22.12 plus npm, but "
+            f"HERMES_SKIP_NODE_BOOTSTRAP is set and the current runtime is unusable "
+            f"(node={node_desc}, npm={'found' if npm_path else 'not found'}). "
+            "Unset HERMES_SKIP_NODE_BOOTSTRAP to let Hermes bootstrap a managed Node, "
+            "or put a supported node+npm pair on PATH."
+        )
 
     helper = PROJECT_ROOT / "scripts" / "lib" / "node-bootstrap.sh"
     if not helper.is_file():

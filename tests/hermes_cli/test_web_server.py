@@ -2087,6 +2087,8 @@ class TestPtyWebSocket:
         # its own fake argv via ``ws._resolve_chat_argv``.
         self.ws_module = ws
         monkeypatch.setattr(ws, "_DASHBOARD_EMBEDDED_CHAT_ENABLED", True)
+        monkeypatch.setattr(ws.app.state, "bound_host", "127.0.0.1", raising=False)
+        monkeypatch.setattr(ws.app.state, "allow_public", False, raising=False)
         self.token = ws._SESSION_TOKEN
         self.client = TestClient(ws.app)
 
@@ -2152,8 +2154,9 @@ class TestPtyWebSocket:
     def test_allows_pty_when_dashboard_bound_to_explicit_network_host(self, monkeypatch):
         """Explicit VPN/LAN binds are intentional network exposure.
 
-        The dashboard CLI requires ``--insecure`` for non-loopback hosts before
-        this server starts. Once it is running there, /api/pty must allow
+        The dashboard CLI requires ``--insecure`` for non-loopback hosts and
+        stores that operator opt-in as ``app.state.allow_public`` before this
+        server starts. Once it is running there, /api/pty must allow
         non-loopback websocket clients that have the session token; otherwise
         Sessions → Resume in Chat closes before accept and the browser can only
         show the generic "[session ended]" line.
@@ -2162,6 +2165,12 @@ class TestPtyWebSocket:
             self.ws_module.app.state,
             "bound_host",
             "192.0.2.10",
+            raising=False,
+        )
+        monkeypatch.setattr(
+            self.ws_module.app.state,
+            "allow_public",
+            True,
             raising=False,
         )
         monkeypatch.setattr(
@@ -2201,9 +2210,35 @@ class TestPtyWebSocket:
             "192.0.2.10",
             raising=False,
         )
+        monkeypatch.setattr(
+            self.ws_module.app.state,
+            "allow_public",
+            True,
+            raising=False,
+        )
         ws = SimpleNamespace(client=SimpleNamespace(host="198.51.100.23"))
 
         assert self.ws_module._ws_client_is_allowed(cast(Any, ws)) is True
+
+    def test_ws_client_guard_rejects_non_loopback_without_insecure_opt_in(self, monkeypatch):
+        """A specific network bind is only public if start_server recorded --insecure."""
+        from types import SimpleNamespace
+
+        monkeypatch.setattr(
+            self.ws_module.app.state,
+            "bound_host",
+            "192.0.2.10",
+            raising=False,
+        )
+        monkeypatch.setattr(
+            self.ws_module.app.state,
+            "allow_public",
+            False,
+            raising=False,
+        )
+        ws = SimpleNamespace(client=SimpleNamespace(host="198.51.100.23"))
+
+        assert self.ws_module._ws_client_is_allowed(cast(Any, ws)) is False
 
     def test_ws_client_guard_rejects_non_loopback_when_bound_to_loopback(self, monkeypatch):
         from types import SimpleNamespace

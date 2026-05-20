@@ -161,7 +161,9 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   // persistently so ordinary tab switches preserve the live PTY, which also
   // means a same-URL resume click would otherwise leave the stale terminal on
   // screen forever.  `resumeNonce` is a route-level "start a fresh PTY for this
-  // resume click" signal; it is not forwarded to the backend.
+  // resume click" signal. It is folded into the opaque dashboard event channel
+  // id that is sent to the backend; the backend never interprets it as resume
+  // state or forwards it to the TUI child.
   const resumeNonce = searchParams.get("resumeNonce");
   const channel = useMemo(
     () =>
