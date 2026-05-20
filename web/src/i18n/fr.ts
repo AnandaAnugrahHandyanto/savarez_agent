@@ -98,6 +98,7 @@ keys: "Clés",
     statusOverview: "Aperçu de l'état",
     system: "Système",
     webUi: "Web UI",
+loadingChat: "Loading chat…",
   },
 
   chatSidebar: {

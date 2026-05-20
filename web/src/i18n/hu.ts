@@ -98,6 +98,7 @@ keys: "Kulcsok",
     statusOverview: "Állapot áttekintése",
     system: "Rendszer",
     webUi: "Web UI",
+loadingChat: "Loading chat…",
   },
 
   chatSidebar: {

@@ -98,6 +98,7 @@ keys: "Sleutels",
     statusOverview: "Statusoorsig",
     system: "Stelsel",
     webUi: "Web UI",
+loadingChat: "Loading chat…",
   },
 
   chatSidebar: {

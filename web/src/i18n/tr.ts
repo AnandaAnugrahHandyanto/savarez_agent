@@ -98,6 +98,7 @@ keys: "Anahtarlar",
     statusOverview: "Durum özeti",
     system: "Sistem",
     webUi: "Web UI",
+loadingChat: "Loading chat…",
   },
 
   chatSidebar: {

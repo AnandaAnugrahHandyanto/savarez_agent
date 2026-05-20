@@ -98,6 +98,7 @@ keys: "キー",
     statusOverview: "ステータス概要",
     system: "システム",
     webUi: "Web UI",
+loadingChat: "Loading chat…",
   },
 
   chatSidebar: {

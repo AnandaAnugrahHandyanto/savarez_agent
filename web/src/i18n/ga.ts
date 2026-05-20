@@ -98,6 +98,7 @@ keys: "Eochracha",
     statusOverview: "Forbhreathnú stádais",
     system: "Córas",
     webUi: "Web UI",
+loadingChat: "Loading chat…",
   },
 
   chatSidebar: {

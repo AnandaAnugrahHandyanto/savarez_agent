@@ -98,6 +98,7 @@ keys: "키",
     statusOverview: "상태 개요",
     system: "시스템",
     webUi: "Web UI",
+loadingChat: "Loading chat…",
   },
 
   chatSidebar: {

@@ -98,6 +98,7 @@ keys: "Ключи",
     statusOverview: "Обзор статуса",
     system: "Система",
     webUi: "Web UI",
+loadingChat: "Loading chat…",
   },
 
   chatSidebar: {

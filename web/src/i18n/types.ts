@@ -110,6 +110,7 @@ export interface Translations {
     statusOverview: string;
     system: string;
     webUi: string;
+    loadingChat: string;
     copyLastResponse: string;
     copyLastResponseTitle: string;
     copyLastResponseAria: string;

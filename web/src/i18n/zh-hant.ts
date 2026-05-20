@@ -98,6 +98,7 @@ keys: "金鑰",
     statusOverview: "狀態總覽",
     system: "系統",
     webUi: "管理面板",
+loadingChat: "正在加载对话…",
   },
 
   chatSidebar: {
