@@ -1,0 +1,3 @@
+name: graphiti
+description: Local-first Graphiti temporal knowledge graph memory for Hermes using Kuzu, Ollama embeddings, and OpenRouter-compatible LLM extraction.
+version: 0.1.0

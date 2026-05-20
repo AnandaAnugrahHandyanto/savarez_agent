@@ -103,6 +103,7 @@ pty = [
   "pywinpty==2.0.15; sys_platform == 'win32'",
 ]
 honcho = ["honcho-ai==2.0.1"]
+graphiti = ["graphiti-core==0.29.0", "kuzu==0.11.3", "ollama==0.6.2"]
 mcp = ["mcp==1.26.0"]
 homeassistant = ["aiohttp==3.13.3"]
 sms = ["aiohttp==3.13.3"]

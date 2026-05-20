@@ -1,0 +1,4 @@
+graphiti-core>=0.29.0
+kuzu>=0.11.3
+ollama>=0.6.2
+openai>=2.0.0

@@ -118,6 +118,7 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     # ─── Memory providers ──────────────────────────────────────────────────
     "memory.honcho": ("honcho-ai==2.0.1",),
     "memory.hindsight": ("hindsight-client==0.6.1",),
+    "memory.graphiti": ("graphiti-core==0.29.0", "kuzu==0.11.3", "ollama==0.6.2"),
 
     # ─── Messaging platforms (lazy-installable on demand) ──────────────────
     "platform.telegram": ("python-telegram-bot[webhooks]==22.6",),
