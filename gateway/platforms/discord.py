@@ -31,6 +31,57 @@ _DISCORD_COMMAND_SYNC_STATE_FILENAME = "discord_command_sync_state.json"
 _DISCORD_COMMAND_SYNC_MUTATION_INTERVAL_SECONDS = 4.5
 _DISCORD_COMMAND_SYNC_MAX_RATE_LIMIT_SLEEP_SECONDS = 30.0
 
+DISCORD_QUICK_ACTION_COMMANDS: tuple[str, ...] = (
+    "status",
+    "usage",
+    "help",
+    "model",
+    "agents",
+    "profile",
+    "whoami",
+    "insights",
+    "new",
+    "retry",
+    "yolo",
+)
+DISCORD_QUICK_ACTION_CONFIRM_COMMANDS: frozenset[str] = frozenset({"new", "yolo"})
+
+_DISCORD_QUICK_ACTION_LABELS: dict[str, str] = {
+    "status": "Status",
+    "usage": "Usage",
+    "help": "Help",
+    "model": "Model",
+    "agents": "Agents",
+    "profile": "Profile",
+    "whoami": "Who Am I",
+    "insights": "Insights",
+    "new": "New",
+    "retry": "Retry",
+    "yolo": "YOLO",
+}
+
+
+def _quick_action_label(command_name: str) -> str:
+    """Return the Discord button label for a V1 quick action."""
+    return _DISCORD_QUICK_ACTION_LABELS.get(
+        command_name, command_name.replace("-", " ").title(),
+    )
+
+
+def _quick_action_row(command_name: str) -> int:
+    """Return the fixed V1 palette row for a quick-action command."""
+    try:
+        index = DISCORD_QUICK_ACTION_COMMANDS.index(command_name)
+    except ValueError:
+        return 0
+    if index < 3:
+        return 0
+    if index < 6:
+        return 1
+    if index < 8:
+        return 2
+    return 3
+
 try:
     import discord
     from discord import Message as DiscordMessage, Intents
@@ -2864,6 +2915,9 @@ class DiscordAdapter(BasePlatformAdapter):
         interaction: discord.Interaction,
         command_text: str,
         followup_msg: str | None = None,
+        *,
+        preconfirmed_destructive: bool = False,
+        cleanup_response: bool = True,
     ) -> None:
         """Common handler for simple slash commands that dispatch a command string.
 
@@ -2897,7 +2951,11 @@ class DiscordAdapter(BasePlatformAdapter):
 
         await interaction.response.defer(ephemeral=True)
         event = self._build_slash_event(interaction, command_text)
+        if preconfirmed_destructive:
+            setattr(event, "preconfirmed_destructive", True)
         await self.handle_message(event)
+        if not cleanup_response:
+            return
         try:
             if followup_msg:
                 await interaction.edit_original_response(content=followup_msg)
@@ -2905,6 +2963,42 @@ class DiscordAdapter(BasePlatformAdapter):
                 await interaction.delete_original_response()
         except Exception as e:
             logger.debug("Discord interaction cleanup failed: %s", e)
+
+    async def _run_commands_slash(
+        self,
+        interaction: Any,
+        page: str = "",
+    ) -> None:
+        """Render /commands output with the Discord quick-action palette attached."""
+        command_text = f"/commands {page}".strip()
+        if not await self._check_slash_authorization(interaction, command_text):
+            return
+
+        await interaction.response.defer(ephemeral=False)
+        event = self._build_slash_event(interaction, command_text)
+
+        text = "Hermes Quick Actions"
+        try:
+            if self._message_handler:
+                response = await self._message_handler(event)
+                response, _ephemeral_ttl = self._unwrap_ephemeral(response)
+                if response:
+                    text = str(response)
+        except Exception as exc:
+            logger.warning("Discord /commands quick-action render failed: %s", exc, exc_info=True)
+            text = "Hermes Quick Actions"
+
+        view = CommandQuickActionsView(self)
+        formatted = self.format_message(text)
+        chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+        if not chunks:
+            chunks = ["Hermes Quick Actions"]
+        try:
+            await interaction.edit_original_response(content=chunks[0], view=view)
+            for chunk in chunks[1:]:
+                await interaction.followup.send(chunk)
+        except Exception as exc:
+            logger.debug("Discord /commands quick-action response failed: %s", exc)
 
     def _register_slash_commands(self) -> None:
         """Register Discord slash commands on the command tree."""
@@ -2939,6 +3033,11 @@ class DiscordAdapter(BasePlatformAdapter):
         @tree.command(name="retry", description="Retry your last message")
         async def slash_retry(interaction: discord.Interaction):
             await self._run_simple_slash(interaction, "/retry", "Retrying~")
+
+        @tree.command(name="commands", description="Browse commands and show quick actions")
+        @discord.app_commands.describe(page="Optional command-list page number")
+        async def slash_commands(interaction: discord.Interaction, page: str = ""):
+            await self._run_commands_slash(interaction, page)
 
         @tree.command(name="undo", description="Remove the last exchange")
         async def slash_undo(interaction: discord.Interaction):
@@ -4982,6 +5081,126 @@ def _define_discord_view_classes() -> None:
     undefined, causing NameError on the first button interaction.
     """
     global ExecApprovalView, SlashConfirmView, UpdatePromptView, ModelPickerView, ClarifyChoiceView
+    global CommandQuickActionButton, CommandQuickActionsView, QuickActionConfirmView
+
+    def _quick_action_style(command_name: str):
+        if command_name == "yolo":
+            return discord.ButtonStyle.red
+        if command_name in {"new", "retry"}:
+            return discord.ButtonStyle.green
+        return discord.ButtonStyle.secondary
+
+    class QuickActionConfirmView(discord.ui.View):
+        """Confirm/cancel view for sensitive Discord quick actions."""
+
+        def __init__(self, platform: "DiscordAdapter", command_name: str):
+            super().__init__(timeout=300)
+            self.platform = platform
+            self.command_name = command_name
+            self.allowed_user_ids = platform._allowed_user_ids
+            self.allowed_role_ids = platform._allowed_role_ids
+            self.resolved = False
+
+        def _check_auth(self, interaction: discord.Interaction) -> bool:
+            return _component_check_auth(
+                interaction, self.allowed_user_ids, self.allowed_role_ids,
+            )
+
+        async def _disable(self, interaction: discord.Interaction, content: str) -> None:
+            self.resolved = True
+            for child in self.children:
+                child.disabled = True
+            await interaction.response.edit_message(content=content, view=self)
+
+        @discord.ui.button(label="Confirm", style=discord.ButtonStyle.red)
+        async def confirm(
+            self, interaction: discord.Interaction, button: discord.ui.Button,
+        ):
+            if self.resolved:
+                await interaction.response.send_message(
+                    "This prompt has already been resolved~", ephemeral=True,
+                )
+                return
+            if not self._check_auth(interaction):
+                await interaction.response.send_message(
+                    "You're not authorized to use this action~", ephemeral=True,
+                )
+                return
+            await self.platform._run_simple_slash(
+                interaction,
+                f"/{self.command_name}",
+                preconfirmed_destructive=True,
+            )
+
+        @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
+        async def cancel(
+            self, interaction: discord.Interaction, button: discord.ui.Button,
+        ):
+            if self.resolved:
+                await interaction.response.send_message(
+                    "This prompt has already been resolved~", ephemeral=True,
+                )
+                return
+            if not self._check_auth(interaction):
+                await interaction.response.send_message(
+                    "You're not authorized to use this action~", ephemeral=True,
+                )
+                return
+            await self._disable(interaction, "Quick action cancelled.")
+
+        async def on_timeout(self):
+            self.resolved = True
+            for child in self.children:
+                child.disabled = True
+
+    class CommandQuickActionButton(discord.ui.Button):
+        """A single fixed V1 command-palette button."""
+
+        def __init__(self, command_name: str):
+            super().__init__(
+                label=_quick_action_label(command_name),
+                style=_quick_action_style(command_name),
+                custom_id=f"hermes:quick-action:{command_name}",
+                row=_quick_action_row(command_name),
+            )
+            self.command_name = command_name
+
+        async def callback(self, interaction: discord.Interaction):
+            view = self.view
+            platform = getattr(view, "platform", None)
+            if platform is None:
+                await interaction.response.send_message(
+                    "Quick actions are unavailable right now.", ephemeral=True,
+                )
+                return
+
+            if self.command_name in DISCORD_QUICK_ACTION_CONFIRM_COMMANDS:
+                prompt = (
+                    "Start a fresh Hermes session for this Discord thread?"
+                    if self.command_name == "new"
+                    else "Enable YOLO mode for this session and skip dangerous-command approvals?"
+                )
+                await interaction.response.send_message(
+                    prompt,
+                    view=QuickActionConfirmView(platform, self.command_name),
+                    ephemeral=True,
+                )
+                return
+
+            await platform._run_simple_slash(
+                interaction,
+                f"/{self.command_name}",
+                cleanup_response=False,
+            )
+
+    class CommandQuickActionsView(discord.ui.View):
+        """Fixed Discord V1 quick-action command palette."""
+
+        def __init__(self, platform: "DiscordAdapter"):
+            super().__init__(timeout=300)
+            self.platform = platform
+            for command_name in DISCORD_QUICK_ACTION_COMMANDS:
+                self.add_item(CommandQuickActionButton(command_name))
 
     class ExecApprovalView(discord.ui.View):
         """

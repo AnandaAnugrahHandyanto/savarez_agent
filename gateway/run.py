@@ -7158,6 +7158,8 @@ class GatewayRunner:
                 return self._telegram_topic_root_new_message()
             async def _do_reset():
                 return await self._handle_reset_command(event)
+            if getattr(event, "preconfirmed_destructive", False):
+                return await _do_reset()
             return await self._maybe_confirm_destructive_slash(
                 event=event,
                 command="new",
