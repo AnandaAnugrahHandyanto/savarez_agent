@@ -322,7 +322,6 @@ LINTERS = {
     '.py': 'python -m py_compile {file} 2>&1',
     '.js': 'node --check {file} 2>&1',
     '.ts': 'npx tsc --noEmit {file} 2>&1',
-    '.tsx': 'npx tsc --noEmit {file} 2>&1',
     '.go': 'go vet {file} 2>&1',
     '.rs': 'rustfmt --check {file} 2>&1',
 }
@@ -330,14 +329,23 @@ LINTERS = {
 # Extensions where the per-file shell linter is structurally weaker than
 # a real LSP server AND produces phantom errors on real-world projects:
 #
-# - ``.ts`` / ``.tsx``: ``tsc --noEmit FILE.ts`` ignores ``tsconfig.json``
-#   and defaults to no-lib / ES5, so every ES2015+ stdlib reference
+# - ``.ts``: ``tsc --noEmit FILE.ts`` ignores ``tsconfig.json`` and
+#   defaults to no-lib / ES5, so every ES2015+ stdlib reference
 #   (``Promise``, ``Map``, ``Set``, ``ReadonlySet``, ``Iterable``,
 #   ``Math.imul``, ``Number.isFinite``, etc.) reports as missing.  This
 #   floods the agent's lint field with 20K+ tokens of false positives on
 #   every edit.  No supported tsc flag fixes the single-file invocation;
 #   the canonical replacement is ``tsserver`` via LSP, which respects
 #   tsconfig and gives true diagnostics.
+#
+#   ``.tsx`` is intentionally NOT in ``LINTERS`` (and therefore not
+#   here): it has no shell linter entry, so it falls through to the
+#   ``ext not in LINTERS`` skip case unchanged.  Pre-PR behavior:
+#   ``.tsx`` was implicitly ``skipped``.  Keeping it that way means
+#   ``.tsx`` edits with LSP disabled get no per-file syntax check
+#   (same as before this PR) instead of the broken ``tsc`` invocation
+#   that ``.ts`` used to get.  When LSP is enabled, ``.tsx`` is covered
+#   by the LSP tier via ``_maybe_lsp_diagnostics`` exactly as ``.ts``.
 #
 # - ``.go``: ``go vet FILE.go`` fails outside a module / GOPATH with
 #   "cannot find package" — already partially handled by
@@ -354,7 +362,7 @@ LINTERS = {
 # extensions — the ``lsp_diagnostics`` channel carries the real signal.
 # Everything else in ``LINTERS`` (Python ``py_compile``, ``node --check``)
 # is fast, file-local, and correct, so it runs unconditionally.
-_SHELL_LINTER_LSP_REDUNDANT = frozenset({'.ts', '.tsx', '.go', '.rs'})
+_SHELL_LINTER_LSP_REDUNDANT = frozenset({'.ts', '.go', '.rs'})
 
 
 # Patterns that indicate the linter base command exists on PATH but
