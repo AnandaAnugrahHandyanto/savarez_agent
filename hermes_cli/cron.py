@@ -38,6 +38,33 @@ def _cron_api(**kwargs):
     return json.loads(cronjob_tool(**kwargs))
 
 
+def _schedule_display(job) -> str:
+    display = str(job.get("schedule_display") or "").strip()
+    if display:
+        return display
+
+    schedule = job.get("schedule")
+    if isinstance(schedule, dict):
+        for key in ("display", "value", "expr", "run_at"):
+            text = str(schedule.get(key) or "").strip()
+            if text:
+                return text
+    elif schedule is not None:
+        return str(schedule)
+
+    return "?"
+
+
+def _repeat_display(job) -> str:
+    repeat_info = job.get("repeat")
+    if not isinstance(repeat_info, dict):
+        repeat_info = {}
+
+    repeat_times = repeat_info.get("times")
+    repeat_completed = repeat_info.get("completed", 0) or 0
+    return f"{repeat_completed}/{repeat_times}" if repeat_times else "∞"
+
+
 def cron_list(show_all: bool = False):
     """List all scheduled jobs."""
     from cron.jobs import list_jobs
@@ -58,14 +85,11 @@ def cron_list(show_all: bool = False):
     for job in jobs:
         job_id = job.get("id", "?")
         name = job.get("name", "(unnamed)")
-        schedule = job.get("schedule_display", job.get("schedule", {}).get("value", "?"))
+        schedule = _schedule_display(job)
         state = job.get("state", "scheduled" if job.get("enabled", True) else "paused")
         next_run = job.get("next_run_at", "?")
 
-        repeat_info = job.get("repeat", {})
-        repeat_times = repeat_info.get("times")
-        repeat_completed = repeat_info.get("completed", 0)
-        repeat_str = f"{repeat_completed}/{repeat_times}" if repeat_times else "∞"
+        repeat_str = _repeat_display(job)
 
         deliver = job.get("deliver", ["local"])
         if isinstance(deliver, str):

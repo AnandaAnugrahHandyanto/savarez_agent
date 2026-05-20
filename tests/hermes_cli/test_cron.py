@@ -111,3 +111,27 @@ class TestCronCommandLifecycle:
         assert jobs[0]["skills"] == ["blogwatcher", "maps"]
         assert jobs[0]["name"] == "Skill combo"
         assert jobs[0]["profile"] == "default"
+
+    def test_list_handles_legacy_schedule_and_nullable_repeat(self, monkeypatch, capsys):
+        monkeypatch.setattr(
+            "cron.jobs.list_jobs",
+            lambda include_disabled=False: [
+                {
+                    "id": "legacy-job",
+                    "name": "Legacy job",
+                    "schedule": "every 1h",
+                    "repeat": None,
+                    "deliver": "local",
+                    "enabled": True,
+                    "next_run_at": "2030-01-01T00:00:00+00:00",
+                }
+            ],
+        )
+        monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda: [1234])
+
+        cron_command(Namespace(cron_command="list", all=False))
+
+        out = capsys.readouterr().out
+        assert "Legacy job" in out
+        assert "Schedule:  every 1h" in out
+        assert "Repeat:    ∞" in out
