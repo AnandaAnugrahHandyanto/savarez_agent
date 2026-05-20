@@ -472,6 +472,48 @@ def _last_transcript_timestamp(history: Optional[List[Dict[str, Any]]]) -> Any:
     return None
 
 
+def _last_usable_transcript_row(
+    history: Optional[List[Dict[str, Any]]],
+) -> Optional[Dict[str, Any]]:
+    """Return the last transcript row that would be replayed to the agent."""
+    if not history:
+        return None
+    for msg in reversed(history):
+        if not isinstance(msg, dict):
+            continue
+        role = msg.get("role")
+        if not role or role in {"session_meta", "system"}:
+            continue
+        return msg
+    return None
+
+
+def _transcript_tail_is_completed_assistant(
+    history: Optional[List[Dict[str, Any]]],
+) -> bool:
+    """True when the transcript already ends with a final assistant answer.
+
+    A lingering ``resume_pending`` marker plus a ``finish_reason=stop``
+    assistant tail is a stale recovery signal: synthesizing another empty
+    auto-resume turn would make the agent react to an already answered
+    message.  Assistant rows that still carry ``tool_calls`` — or lack an
+    explicit stop/end marker — are *not* complete; those are the normal
+    interrupted-tool-loop shape and must remain resumable.
+    """
+    msg = _last_usable_transcript_row(history)
+    if not msg or msg.get("role") != "assistant":
+        return False
+    if msg.get("tool_calls") or msg.get("function_call"):
+        return False
+    finish_reason = msg.get("finish_reason")
+    if finish_reason not in {"stop", "end_turn", "complete", "completed"}:
+        return False
+    content = msg.get("content")
+    if isinstance(content, str):
+        return bool(content.strip())
+    return bool(content)
+
+
 # ---------------------------------------------------------------------------
 # SSL certificate auto-detection for NixOS and other non-standard systems.
 # Must run BEFORE any HTTP library (discord, aiohttp, etc.) is imported.
@@ -3532,9 +3574,51 @@ class GatewayRunner:
         now = datetime.now()
         scheduled = 0
         for entry in candidates:
-            marker = entry.last_resume_marked_at or entry.updated_at
-            if marker is not None and (now - marker).total_seconds() > window:
+            history = None
+            try:
+                history = self.session_store.load_transcript(entry.session_id)
+                if not isinstance(history, list):
+                    history = None
+            except Exception as exc:
+                logger.debug(
+                    "Failed to load transcript while checking auto-resume freshness for %s: %s",
+                    entry.session_key,
+                    exc,
+                )
+
+            if _transcript_tail_is_completed_assistant(history):
+                logger.info(
+                    "Skipping auto-resume for %s: transcript already ends with assistant response; clearing stale resume_pending",
+                    entry.session_key,
+                )
+                try:
+                    self.session_store.clear_resume_pending(entry.session_key)
+                except Exception as exc:
+                    logger.debug(
+                        "clear stale resume_pending failed for %s: %s",
+                        entry.session_key,
+                        exc,
+                    )
                 continue
+
+            # Prefer the transcript's own timestamp over the session-index
+            # marker: ``last_resume_marked_at`` can be refreshed by repeated
+            # gateway restarts, while the transcript tells us when the user/task
+            # last actually produced replayable context.  If no transcript rows
+            # are available, fall back to the marker so empty/corrupt sessions
+            # don't auto-resume forever.
+            transcript_ts = _last_transcript_timestamp(history)
+            if history:
+                if not _is_fresh_gateway_interruption(
+                    transcript_ts,
+                    now=now.timestamp(),
+                    window_secs=window,
+                ):
+                    continue
+            else:
+                marker = entry.last_resume_marked_at or entry.updated_at
+                if marker is not None and (now - marker).total_seconds() > window:
+                    continue
 
             source = entry.origin
             adapter = self.adapters.get(source.platform)
@@ -5637,19 +5721,31 @@ class GatewayRunner:
                 self._running_agent_count(),
             )
 
-            if not timed_out:
-                # Drain completed gracefully — all running sessions finished.
-                # Clear the pre-drain resume_pending markers so sessions that
-                # completed during the drain window don't carry a stale flag.
-                for _sk in _pre_drain_keys:
-                    if _sk not in self._running_agents:
-                        try:
-                            self.session_store.clear_resume_pending(_sk)
-                        except Exception as _e:
-                            logger.debug(
-                                "clear_resume_pending after drain failed for %s: %s",
-                                _sk, _e,
-                            )
+            _finished_pre_marked = [
+                _sk for _sk in _pre_drain_keys
+                if _sk not in self._running_agents
+            ]
+            if _finished_pre_marked:
+                # Some sessions can finish cleanly during the drain window even
+                # when another session keeps the gateway in a timed-out drain.
+                # Clear the early crash-safety markers for those completed
+                # sessions; otherwise startup auto-resume will replay an
+                # already answered turn.
+                cleared = 0
+                for _sk in _finished_pre_marked:
+                    try:
+                        if self.session_store.clear_resume_pending(_sk):
+                            cleared += 1
+                    except Exception as _e:
+                        logger.debug(
+                            "clear pre-drain resume_pending failed for %s: %s",
+                            _sk, _e,
+                        )
+                if cleared:
+                    logger.info(
+                        "Cleared %d pre-drain resume marker(s) for sessions that finished during drain",
+                        cleared,
+                    )
 
             if timed_out:
                 logger.warning(
@@ -16655,10 +16751,12 @@ class GatewayRunner:
                     _resume_entry = self.session_store._entries.get(session_key)
                 except Exception:
                     _resume_entry = None
+            _resume_tail_completed = _transcript_tail_is_completed_assistant(history)
             _is_resume_pending = bool(
                 _resume_entry is not None
                 and getattr(_resume_entry, "resume_pending", False)
                 and _interruption_is_fresh
+                and not _resume_tail_completed
             )
             _has_fresh_tool_tail = bool(
                 agent_history
