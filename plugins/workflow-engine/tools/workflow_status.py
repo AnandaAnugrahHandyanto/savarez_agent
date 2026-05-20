@@ -40,7 +40,8 @@ async def handler(args: Dict[str, Any], **kwargs: Any) -> Dict[str, Any]:  # noq
     try:
         events = await engine.list_events(run_id=run_id, limit=_MAX_EVENTS)
     except (AttributeError, Exception):
-        # Engine version without list_events — return empty events list
+        # Engine version without list_events, or transient error — events
+        # silently degrade to [].  Acceptable for v0.1; add logging if needed.
         pass
 
     return {

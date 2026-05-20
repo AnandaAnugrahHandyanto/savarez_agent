@@ -67,5 +67,10 @@ def register(ctx) -> None:  # noqa: ANN001
 
 
 def disable() -> None:
-    """Called by the plugin loader on hot-reload or shutdown."""
+    """Called by the plugin loader on hot-reload or shutdown.
+
+    No-op for now — the engine singleton (_shared._engine) is stateless between
+    runs.  If in-process run tracking is added in future, call engine.shutdown()
+    here to drain active runs before the loader unloads this module.
+    """
     logger.info("workflow-engine plugin disabled")
