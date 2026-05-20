@@ -44,11 +44,11 @@ def test_render_template_rejects_unknown_or_path_traversal_templates():
         scaffold.render_template("../fastmcp/scripts/scaffold_fastmcp", "Server")
 
 
-def test_rendered_database_server_template_enforces_sql_level_limit():
+def test_rendered_database_server_template_enforces_execution_budget():
     scaffold = load_scaffold_module()
 
     rendered = scaffold.render_template("database_server", "Server")
 
-    assert 'if "limit" not in normalized_sql.lower():' in rendered
-    assert 'if ";" in normalized_sql.rstrip(";"):' in rendered
-    assert 'normalized_sql = f"{normalized_sql.rstrip(\';\')} LIMIT ?"' in rendered
+    assert 'MAX_PROGRESS_CALLS = int(os.getenv("SQLITE_MAX_PROGRESS_CALLS", "1000"))' in rendered
+    assert 'conn.set_progress_handler(_progress_budget(MAX_PROGRESS_CALLS), PROGRESS_GRANULARITY)' in rendered
+    assert 'raise ValueError("Query exceeded the execution budget") from exc' in rendered
