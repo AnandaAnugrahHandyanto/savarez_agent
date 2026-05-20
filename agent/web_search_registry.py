@@ -127,6 +127,7 @@ _LEGACY_PREFERENCE = (
     "searxng",
     "brave-free",
     "ddgs",
+    "jina",
 )
 
 

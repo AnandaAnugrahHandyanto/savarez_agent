@@ -88,6 +88,12 @@ from plugins.web.parallel.provider import (  # noqa: F401 — backward-compat na
 )
 from plugins.web.exa.provider import _get_exa_client  # noqa: F401
 
+# Ensure Jina provider is registered even when plugin discovery hasn't
+# rescanned (e.g. new plugin added after process startup).
+from agent.web_search_registry import register_provider as _register_provider
+from plugins.web.jina.provider import JinaWebSearchProvider as _JinaWebSearchProvider
+_register_provider(_JinaWebSearchProvider())
+
 # Module-level cache slots for the per-vendor clients. The plugins read/write
 # these via tools.web_tools so unit tests that reset
 # ``tools.web_tools._<vendor>_client = None`` between cases keep working.
@@ -140,7 +146,7 @@ def _get_backend() -> str:
     keys manually without running setup.
     """
     configured = (_load_web_config().get("backend") or "").lower().strip()
-    if configured in {"parallel", "firecrawl", "tavily", "exa", "searxng", "brave-free", "ddgs"}:
+    if configured in {"parallel", "firecrawl", "tavily", "exa", "searxng", "brave-free", "ddgs", "jina"}:
         return configured
 
     # Fallback for manual / legacy config — pick the highest-priority
@@ -156,6 +162,7 @@ def _get_backend() -> str:
         ("searxng", _has_env("SEARXNG_URL")),
         ("brave-free", _has_env("BRAVE_SEARCH_API_KEY")),
         ("ddgs", _ddgs_package_importable()),
+        ("jina", True),
     )
     for backend, available in backend_candidates:
         if available:
@@ -218,6 +225,8 @@ def _is_backend_available(backend: str) -> bool:
         return _has_env("BRAVE_SEARCH_API_KEY")
     if backend == "ddgs":
         return _ddgs_package_importable()
+    if backend == "jina":
+        return True
     return False
 
 
@@ -946,7 +955,7 @@ async def web_extract_tool(
                                 f"{provider.display_name} is a search-only "
                                 "backend and cannot extract URL content. "
                                 "Set web.extract_backend to firecrawl, "
-                                "tavily, exa, or parallel."
+                                "tavily, exa, jina, or parallel."
                             ),
                         },
                         ensure_ascii=False,
@@ -959,7 +968,7 @@ async def web_extract_tool(
                             "error": (
                                 "No web extract provider configured. "
                                 "Set web.extract_backend to firecrawl, "
-                                "tavily, exa, or parallel."
+                                "tavily, exa, jina, or parallel."
                             ),
                         },
                         ensure_ascii=False,
@@ -1005,16 +1014,19 @@ async def web_extract_tool(
                 """Process a single result with LLM and return updated result with metrics."""
                 url = result.get('url', 'Unknown URL')
                 title = result.get('title', '')
+                # Use the provider's clean `content` for LLM processing;
+                # fall back to `raw_content` only when the former is empty.
+                clean_content = result.get('content', '') or result.get('raw_content', '')
                 raw_content = result.get('raw_content', '') or result.get('content', '')
                 
-                if not raw_content:
+                if not clean_content:
                     return result, None, "no_content"
                 
-                original_size = len(raw_content)
+                original_size = len(clean_content)
                 
                 # Process content with LLM
                 processed = await process_content_with_llm(
-                    raw_content, url, title, effective_model, min_length
+                    clean_content, url, title, effective_model, min_length
                 )
                 
                 if processed:
@@ -1357,11 +1369,11 @@ async def web_crawl_tool(
 def check_web_api_key() -> bool:
     """Check whether the configured web backend is available."""
     configured = _load_web_config().get("backend", "").lower().strip()
-    if configured in {"exa", "parallel", "firecrawl", "tavily", "searxng", "brave-free", "ddgs"}:
+    if configured in {"exa", "parallel", "firecrawl", "tavily", "searxng", "brave-free", "ddgs", "jina"}:
         return _is_backend_available(configured)
     return any(
         _is_backend_available(backend)
-        for backend in ("exa", "parallel", "firecrawl", "tavily", "searxng", "brave-free", "ddgs")
+        for backend in ("exa", "parallel", "firecrawl", "tavily", "searxng", "brave-free", "ddgs", "jina")
     )
 
 
