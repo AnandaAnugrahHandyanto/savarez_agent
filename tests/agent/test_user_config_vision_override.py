@@ -12,12 +12,12 @@ Covers:
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+from typing import Any
 from unittest.mock import MagicMock, patch
 
-import pytest
-
-from agent.models_dev import get_user_config_vision_override
 from agent.image_routing import _lookup_supports_vision, decide_image_input_mode
+from agent.models_dev import get_user_config_vision_override
 
 
 # ---------------------------------------------------------------------------
@@ -36,6 +36,30 @@ CUSTOM_PROVIDER_CFG = {
                     "context_length": 128000,
                     "supports_vision": False,
                 },
+                "my-string-true-model": {
+                    "context_length": 128000,
+                    "supports_vision": "true",
+                },
+                "my-string-false-model": {
+                    "context_length": 128000,
+                    "supports_vision": "false",
+                },
+                "my-bad-string-model": {
+                    "context_length": 128000,
+                    "supports_vision": "definitely",
+                },
+                "my-int-true-model": {
+                    "context_length": 128000,
+                    "supports_vision": 1,
+                },
+                "my-int-false-model": {
+                    "context_length": 128000,
+                    "supports_vision": 0,
+                },
+                "my-bad-int-model": {
+                    "context_length": 128000,
+                    "supports_vision": 2,
+                },
                 "my-model-no-flag": {
                     "context_length": 128000,
                 },
@@ -43,6 +67,13 @@ CUSTOM_PROVIDER_CFG = {
         }
     }
 }
+
+
+@contextmanager
+def models_dev_unknown():
+    """Patch models.dev lookup to simulate an unknown custom provider/model."""
+    with patch("agent.models_dev.get_model_capabilities", return_value=None):
+        yield
 
 
 # ---------------------------------------------------------------------------
@@ -62,6 +93,48 @@ class TestGetUserConfigVisionOverride:
             "my-custom-provider", "my-text-model", CUSTOM_PROVIDER_CFG
         )
         assert result is False
+
+    def test_supports_explicit_string_representations(self):
+        assert (
+            get_user_config_vision_override(
+                "my-custom-provider", "my-string-true-model", CUSTOM_PROVIDER_CFG
+            )
+            is True
+        )
+        assert (
+            get_user_config_vision_override(
+                "my-custom-provider", "my-string-false-model", CUSTOM_PROVIDER_CFG
+            )
+            is False
+        )
+
+    def test_supports_explicit_int_representations(self):
+        assert (
+            get_user_config_vision_override(
+                "my-custom-provider", "my-int-true-model", CUSTOM_PROVIDER_CFG
+            )
+            is True
+        )
+        assert (
+            get_user_config_vision_override(
+                "my-custom-provider", "my-int-false-model", CUSTOM_PROVIDER_CFG
+            )
+            is False
+        )
+
+    def test_returns_none_for_ambiguous_non_boolean_values(self):
+        assert (
+            get_user_config_vision_override(
+                "my-custom-provider", "my-bad-string-model", CUSTOM_PROVIDER_CFG
+            )
+            is None
+        )
+        assert (
+            get_user_config_vision_override(
+                "my-custom-provider", "my-bad-int-model", CUSTOM_PROVIDER_CFG
+            )
+            is None
+        )
 
     def test_returns_none_when_flag_absent(self):
         result = get_user_config_vision_override(
@@ -103,21 +176,28 @@ class TestLookupSupportsVisionUserConfigFallback:
     """When models.dev returns None (unknown provider), fall back to user config."""
 
     def test_custom_provider_vision_true(self):
-        with patch("agent.models_dev.get_model_capabilities", return_value=None):
+        with models_dev_unknown():
             result = _lookup_supports_vision(
                 "my-custom-provider", "my-vision-model", CUSTOM_PROVIDER_CFG
             )
         assert result is True
 
     def test_custom_provider_vision_false(self):
-        with patch("agent.models_dev.get_model_capabilities", return_value=None):
+        with models_dev_unknown():
             result = _lookup_supports_vision(
                 "my-custom-provider", "my-text-model", CUSTOM_PROVIDER_CFG
             )
         assert result is False
 
+    def test_string_false_is_not_treated_as_truthy(self):
+        with models_dev_unknown():
+            result = _lookup_supports_vision(
+                "my-custom-provider", "my-string-false-model", CUSTOM_PROVIDER_CFG
+            )
+        assert result is False
+
     def test_custom_provider_no_flag_returns_none(self):
-        with patch("agent.models_dev.get_model_capabilities", return_value=None):
+        with models_dev_unknown():
             result = _lookup_supports_vision(
                 "my-custom-provider", "my-model-no-flag", CUSTOM_PROVIDER_CFG
             )
@@ -135,7 +215,7 @@ class TestLookupSupportsVisionUserConfigFallback:
         assert result is False
 
     def test_no_cfg_returns_none_for_unknown_provider(self):
-        with patch("agent.models_dev.get_model_capabilities", return_value=None):
+        with models_dev_unknown():
             result = _lookup_supports_vision("my-custom-provider", "my-vision-model", None)
         assert result is None
 
@@ -148,25 +228,25 @@ class TestLookupSupportsVisionUserConfigFallback:
 class TestDecideImageInputModeCustomProvider:
     def test_auto_mode_custom_provider_vision_true_returns_native(self):
         cfg = {**CUSTOM_PROVIDER_CFG, "agent": {"image_input_mode": "auto"}}
-        with patch("agent.models_dev.get_model_capabilities", return_value=None):
+        with models_dev_unknown():
             mode = decide_image_input_mode("my-custom-provider", "my-vision-model", cfg)
         assert mode == "native"
 
     def test_auto_mode_custom_provider_vision_false_returns_text(self):
         cfg = {**CUSTOM_PROVIDER_CFG, "agent": {"image_input_mode": "auto"}}
-        with patch("agent.models_dev.get_model_capabilities", return_value=None):
+        with models_dev_unknown():
             mode = decide_image_input_mode("my-custom-provider", "my-text-model", cfg)
         assert mode == "text"
 
     def test_explicit_native_ignores_caps(self):
         cfg = {**CUSTOM_PROVIDER_CFG, "agent": {"image_input_mode": "native"}}
-        with patch("agent.models_dev.get_model_capabilities", return_value=None):
+        with models_dev_unknown():
             mode = decide_image_input_mode("my-custom-provider", "my-text-model", cfg)
         assert mode == "native"
 
     def test_explicit_text_ignores_caps(self):
         cfg = {**CUSTOM_PROVIDER_CFG, "agent": {"image_input_mode": "text"}}
-        with patch("agent.models_dev.get_model_capabilities", return_value=None):
+        with models_dev_unknown():
             mode = decide_image_input_mode("my-custom-provider", "my-vision-model", cfg)
         assert mode == "text"
 
@@ -177,42 +257,50 @@ class TestDecideImageInputModeCustomProvider:
 
 
 class TestAgentModelSupportsVisionUserConfigFallback:
-    def _make_agent(self):
+    def _make_agent(self) -> Any:
         from run_agent import AIAgent
         agent = object.__new__(AIAgent)
-        agent.provider = "my-custom-provider"
-        agent.model = "my-vision-model"
-        agent._anthropic_image_fallback_cache = {}
+        setattr(agent, "provider", "my-custom-provider")
+        setattr(agent, "model", "my-vision-model")
+        setattr(agent, "_anthropic_image_fallback_cache", {})
         return agent
 
     def test_custom_provider_vision_true_via_config(self):
         agent = self._make_agent()
-        with patch("agent.models_dev.get_model_capabilities", return_value=None), \
-             patch("hermes_cli.config.load_config", return_value=CUSTOM_PROVIDER_CFG):
+        with models_dev_unknown(), patch("hermes_cli.config.load_config", return_value=CUSTOM_PROVIDER_CFG):
             assert agent._model_supports_vision() is True
 
     def test_custom_provider_vision_false_via_config(self):
         agent = self._make_agent()
         agent.model = "my-text-model"
-        with patch("agent.models_dev.get_model_capabilities", return_value=None), \
-             patch("hermes_cli.config.load_config", return_value=CUSTOM_PROVIDER_CFG):
+        with models_dev_unknown(), patch("hermes_cli.config.load_config", return_value=CUSTOM_PROVIDER_CFG):
+            assert agent._model_supports_vision() is False
+
+    def test_string_false_via_config_returns_false(self):
+        agent = self._make_agent()
+        agent.model = "my-string-false-model"
+        with models_dev_unknown(), patch("hermes_cli.config.load_config", return_value=CUSTOM_PROVIDER_CFG):
             assert agent._model_supports_vision() is False
 
     def test_custom_provider_no_flag_returns_false(self):
         agent = self._make_agent()
         agent.model = "my-model-no-flag"
-        with patch("agent.models_dev.get_model_capabilities", return_value=None), \
-             patch("hermes_cli.config.load_config", return_value=CUSTOM_PROVIDER_CFG):
+        with models_dev_unknown(), patch("hermes_cli.config.load_config", return_value=CUSTOM_PROVIDER_CFG):
             assert agent._model_supports_vision() is False
 
-    def test_load_config_failure_returns_false(self):
+    def test_load_config_failure_returns_false_and_logs_debug(self, caplog):
+        import logging
+
         agent = self._make_agent()
-        with patch("agent.models_dev.get_model_capabilities", return_value=None), \
-             patch("hermes_cli.config.load_config", side_effect=RuntimeError("no config")):
+        caplog.set_level(logging.DEBUG, logger="run_agent")
+        with models_dev_unknown(), patch(
+            "hermes_cli.config.load_config", side_effect=RuntimeError("no config")
+        ):
             assert agent._model_supports_vision() is False
+        assert "Vision capability user-config fallback skipped" in caplog.text
+        assert "no config" in caplog.text
 
     def test_none_caps_and_no_config_returns_false(self):
         agent = self._make_agent()
-        with patch("agent.models_dev.get_model_capabilities", return_value=None), \
-             patch("hermes_cli.config.load_config", return_value={}):
+        with models_dev_unknown(), patch("hermes_cli.config.load_config", return_value={}):
             assert agent._model_supports_vision() is False

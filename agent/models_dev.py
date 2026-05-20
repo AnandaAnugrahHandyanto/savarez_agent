@@ -544,9 +544,18 @@ def get_user_config_vision_override(
     if not isinstance(model_entry, dict):
         return None
     val = model_entry.get("supports_vision")
-    if val is None:
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, str):
+        normalized = val.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
         return None
-    return bool(val)
+    if isinstance(val, int) and val in {0, 1}:
+        return bool(val)
+    return None
 
 
 def list_provider_models(provider: str) -> List[str]:

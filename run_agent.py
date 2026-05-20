@@ -3207,7 +3207,13 @@ class AIAgent:
             try:
                 from hermes_cli.config import load_config as _load_config
                 _cfg = _load_config() or {}
-            except Exception:
+            except Exception as exc:
+                logger.debug(
+                    "Vision capability user-config fallback skipped: failed to load config for %s:%s — %s",
+                    provider,
+                    model,
+                    exc,
+                )
                 _cfg = {}
             override = get_user_config_vision_override(provider, model, _cfg)
             return bool(override) if override is not None else False
