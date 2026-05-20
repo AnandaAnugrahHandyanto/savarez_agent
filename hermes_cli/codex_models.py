@@ -12,8 +12,8 @@ import os
 logger = logging.getLogger(__name__)
 
 DEFAULT_CODEX_MODELS: List[str] = [
-    "gpt-5.4",
     "gpt-5.5",
+    "gpt-5.4",
     "gpt-5.4-mini",
     "gpt-5.3-codex",
     # gpt-5.3-codex-spark is in research preview and is exposed *only* via
