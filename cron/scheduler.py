@@ -412,6 +412,7 @@ def _voice_scan_check(text: str, job_id: str = "?") -> tuple[bool, str]:
         "messages": [{"role": "user", "content": prompt}],
         "temperature": 0,
         "max_tokens": 600,
+        "response_format": {"type": "json_object"},
     }).encode("utf-8")
     req = urllib.request.Request(
         "https://openrouter.ai/api/v1/chat/completions",

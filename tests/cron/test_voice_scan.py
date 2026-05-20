@@ -350,3 +350,85 @@ def test_voice_scan_empty_text_passes():
     clean, reason = _voice_scan_check("", job_id="empty-test")
     assert clean is True
     assert reason == ""
+
+
+# Amy 5/19 16:03 verbatim — Phase 5 iteration 2 regression fixture.
+# Prod judge call returned voice=PASS despite three "if Amy responds /
+# she replies" violations. Root cause: missing response_format on the
+# OpenRouter call let gemini-3-flash-preview produce a "friendlier"
+# PASS verdict. Adding response_format={"type":"json_object"} pins
+# strict-JSON mode and the judge correctly returns FAIL.
+AMY_2026_05_19_VERBATIM = (
+    "Today is the last day of the observation window — the May 20 touchpoint "
+    "is tomorrow. You're holding the line as designed; no outreach today, just "
+    "readiness. AGS London starts the same day the check-in goes out, giving "
+    "us a natural zero-pressure opener if Amy responds. All 7 artifacts, the "
+    "intake template, and the architecture brief are waiting in the inbox — "
+    "we move fast the moment she replies.\n\n"
+    ":speech_balloon: *Coach's Take:* Fifteen days of silence points to "
+    "capacity, not disinterest — so tomorrow's one-liner carries the right "
+    "weight and zero friction. If she replies within 48 hours, we activate "
+    "intake and ask the single Berlin question in the same thread. If not, "
+    "we hold until the May 27 evaluation. I'll keep the radar on you."
+)
+
+
+def test_voice_scan_flags_amy_2026_05_19_verbatim(monkeypatch):
+    """Amy 5/19 16:03 prod regression — voice axis must FAIL on this exact
+    surface (mixed second-person majority + three first-name third-person
+    violations 'if Amy responds' / 'the moment she replies' / 'If she
+    replies'). Mock returns the FAIL verdict the live judge now produces
+    under response_format=json_object."""
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    import urllib.request
+    monkeypatch.setattr(
+        urllib.request,
+        "urlopen",
+        _make_fake_urlopen(
+            voice_verdict="FAIL",
+            voice_offending=[
+                "if Amy responds",
+                "the moment she replies",
+                "If she replies",
+            ],
+        ),
+    )
+    clean, reason = _voice_scan_check(AMY_2026_05_19_VERBATIM, job_id="amy-5-19")
+    assert clean is False
+    assert "voice=" in reason
+    assert "if Amy responds" in reason
+
+
+def test_voice_scan_request_pins_json_object_response_format(monkeypatch):
+    """Phase 5 iteration 2: scheduler MUST send response_format={"type":
+    "json_object"} on every judge call. Without it, gemini-3-flash-preview
+    drifts to PASS on real prod surfaces (Amy 5/19 16:03 confirmed 3/3
+    PASS without, 3/3 FAIL with).
+
+    Asserts the request body actually contains the field — caught by
+    capturing the urllib.request.Request body before it would hit network.
+    """
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    captured = {}
+
+    import urllib.request
+
+    def capture_urlopen(req, timeout=None):
+        captured["body"] = json.loads(req.data.decode("utf-8"))
+        return _FakeResponse({
+            "choices": [{"message": {"content": json.dumps({
+                "voice_verdict": "PASS",
+                "voice_offending": [],
+                "structure_verdict": "PASS",
+                "structure_reason": "",
+            })}}],
+        })
+
+    monkeypatch.setattr(urllib.request, "urlopen", capture_urlopen)
+    _voice_scan_check("Quick second-person sanity briefing for you.", job_id="rf-test")
+
+    assert "response_format" in captured["body"], (
+        "response_format missing from judge call — gemini may drift to PASS "
+        "on real third-person prod surfaces. Phase 5 iteration 2 regression."
+    )
+    assert captured["body"]["response_format"] == {"type": "json_object"}
