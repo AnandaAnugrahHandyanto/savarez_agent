@@ -11,6 +11,7 @@
  *   POST /edit           - Edit a sent message { chatId, messageId, message }
  *   POST /send-media     - Send media natively { chatId, filePath, mediaType?, caption?, fileName? }
  *   POST /typing         - Send typing indicator { chatId }
+ *   POST /react          - React to a message { chatId, messageId, emoji, senderId?, fromMe? }
  *   GET  /chat/:id       - Get chat info
  *   GET  /health         - Health check
  *
@@ -29,6 +30,7 @@ import { execSync } from 'child_process';
 import { tmpdir } from 'os';
 import qrcode from 'qrcode-terminal';
 import { matchesAllowedUser, parseAllowedUsers } from './allowlist.js';
+import { buildReactionPayload } from './reaction.js';
 
 // Parse CLI args
 const args = process.argv.slice(2);
@@ -424,6 +426,7 @@ async function startSocket() {
         messageId: msg.key.id,
         chatId,
         senderId,
+        fromMe: !!msg.key.fromMe,
         senderName: msg.pushName || senderNumber,
         chatName: isGroup ? (chatId.split('@')[0]) : (msg.pushName || senderNumber),
         isGroup,
@@ -666,6 +669,31 @@ app.post('/typing', async (req, res) => {
     res.json({ success: true });
   } catch (err) {
     res.json({ success: false });
+  }
+});
+
+// Native message reaction
+app.post('/react', async (req, res) => {
+  if (!sock || connectionState !== 'connected') {
+    return res.status(503).json({ error: 'Not connected' });
+  }
+
+  const { chatId, messageId, emoji, senderId, fromMe } = req.body;
+  if (!chatId || !messageId || typeof emoji !== 'string' || !emoji) {
+    return res.status(400).json({ error: 'chatId, messageId, and emoji are required' });
+  }
+
+  try {
+    const sent = await sendWithTimeout(chatId, buildReactionPayload({
+      chatId,
+      messageId,
+      emoji,
+      senderId,
+      fromMe,
+    }));
+    res.json({ success: true, messageId: sent?.key?.id });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 
