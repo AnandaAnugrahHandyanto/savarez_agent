@@ -2872,6 +2872,42 @@ def _cleanup_workspace(conn: sqlite3.Connection, task_id: str) -> None:
             return
         import shutil
         wp = Path(path)
+        # Safety: refuse to delete anything that does not resolve to a path
+        # under the Hermes-managed scratch root for this board. A misconfigured
+        # board default-workdir, a manually-edited row, or a symlink pointing
+        # at a real source tree must never trigger ``rm -rf`` on user data
+        # (see issue #28818). Resolve symlinks on both sides so a scratch dir
+        # containing a symlink to ``~/src`` cannot escape the scratch root.
+        try:
+            scratch_root = workspaces_root().resolve(strict=False)
+            resolved = wp.resolve(strict=False)
+        except (OSError, RuntimeError):
+            _log.warning(
+                "Refusing scratch cleanup for task %s: cannot resolve %s",
+                task_id, path,
+            )
+            return
+        try:
+            inside = resolved.is_relative_to(scratch_root)
+        except AttributeError:  # pragma: no cover — py<3.9 fallback
+            try:
+                resolved.relative_to(scratch_root)
+                inside = True
+            except ValueError:
+                inside = False
+        if not inside or resolved == scratch_root:
+            _log.warning(
+                "Refusing scratch cleanup for task %s: %s is outside scratch root %s",
+                task_id, resolved, scratch_root,
+            )
+            return
+        if wp.is_symlink():
+            # Never follow a symlink for rmtree; just unlink the link itself.
+            _log.warning(
+                "Refusing scratch cleanup for task %s: %s is a symlink",
+                task_id, wp,
+            )
+            return
         if wp.is_dir():
             shutil.rmtree(wp, ignore_errors=True)
             _log.debug("Removed scratch workspace: %s", wp)

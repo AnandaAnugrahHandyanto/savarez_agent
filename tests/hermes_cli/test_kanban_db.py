@@ -2960,3 +2960,94 @@ def test_detect_stale_does_not_tick_failure_counter(kanban_home, monkeypatch):
         assert "stale" in kinds, (
             f"Expected 'stale' event in task_events; got {kinds!r}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Scratch workspace cleanup safety (issue #28818)
+# ---------------------------------------------------------------------------
+
+
+class TestScratchCleanupSafety:
+    """``_cleanup_workspace`` must never delete paths outside the
+    Hermes-managed scratch root, even if a task row claims they are
+    ``scratch``. See issue #28818 — a board default-workdir pointed at
+    a real source checkout caused ``rm -rf`` on user data on task
+    completion.
+    """
+
+    def _make_task_with_workspace(self, conn, path: Path) -> str:
+        tid = kb.create_task(conn, title="t")
+        conn.execute(
+            "UPDATE tasks SET workspace_kind='scratch', workspace_path=? "
+            "WHERE id=?",
+            (str(path), tid),
+        )
+        conn.commit()
+        return tid
+
+    def test_refuses_to_delete_path_outside_scratch_root(
+        self, kanban_home, tmp_path
+    ):
+        real_src = tmp_path / "real_source"
+        real_src.mkdir()
+        (real_src / "important.txt").write_text("do not delete")
+        # Sanity: real_src is NOT under workspaces_root().
+        assert not str(real_src).startswith(str(kb.workspaces_root()))
+
+        with kb.connect() as conn:
+            tid = self._make_task_with_workspace(conn, real_src)
+            kb.complete_task(conn, tid, result="ok")
+
+        assert real_src.is_dir(), "cleanup deleted a path outside scratch root"
+        assert (real_src / "important.txt").exists()
+
+    def test_refuses_to_follow_symlink_escaping_scratch_root(
+        self, kanban_home, tmp_path
+    ):
+        real_src = tmp_path / "real_source"
+        real_src.mkdir()
+        (real_src / "important.txt").write_text("do not delete")
+
+        ws_root = kb.workspaces_root()
+        ws_root.mkdir(parents=True, exist_ok=True)
+        # Scratch workspace dir is a symlink to ~/src.
+        link = ws_root / "task-link"
+        link.symlink_to(real_src)
+
+        with kb.connect() as conn:
+            tid = self._make_task_with_workspace(conn, link)
+            kb.complete_task(conn, tid, result="ok")
+
+        assert real_src.is_dir(), "cleanup followed symlink and deleted source"
+        assert (real_src / "important.txt").exists()
+
+    def test_still_cleans_legitimate_scratch_dir(
+        self, kanban_home, tmp_path
+    ):
+        ws_root = kb.workspaces_root()
+        ws_root.mkdir(parents=True, exist_ok=True)
+        scratch_dir = ws_root / "task-real"
+        scratch_dir.mkdir()
+        (scratch_dir / "junk.txt").write_text("disposable")
+
+        with kb.connect() as conn:
+            tid = self._make_task_with_workspace(conn, scratch_dir)
+            kb.complete_task(conn, tid, result="ok")
+
+        assert not scratch_dir.exists(), (
+            "legitimate scratch dir was not cleaned up"
+        )
+
+    def test_refuses_to_delete_scratch_root_itself(
+        self, kanban_home, tmp_path
+    ):
+        ws_root = kb.workspaces_root()
+        ws_root.mkdir(parents=True, exist_ok=True)
+        (ws_root / "sibling.txt").write_text("other tasks live here")
+
+        with kb.connect() as conn:
+            tid = self._make_task_with_workspace(conn, ws_root)
+            kb.complete_task(conn, tid, result="ok")
+
+        assert ws_root.is_dir(), "cleanup wiped the entire scratch root"
+        assert (ws_root / "sibling.txt").exists()
