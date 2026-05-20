@@ -953,3 +953,54 @@ class TestSaveJobOutput:
         assert output_file.exists()
         assert output_file.read_text() == "# Results\nEverything ok."
         assert "test123" in str(output_file)
+
+
+class TestTimezoneMigrationDoubleFire:
+    """Regression for #28934: persisted next_run_at with a stale UTC offset
+    must not be dispatched early just because the converted instant looks due."""
+
+    def test_cron_next_run_with_stale_offset_does_not_fire_early(
+        self, tmp_cron_dir, monkeypatch
+    ):
+        pytest.importorskip("croniter")
+        # Persisted with old offset +10:00 (e.g. previous runtime timezone)
+        # Wall-clock intent: 21:00 local on 2026-05-19.
+        old_offset_iso = "2026-05-19T21:00:00+10:00"
+        # Current Hermes time is +02:00 at 13:02 — the stale instant
+        # 21:00+10 == 13:00+02 looks due, but the wall-clock 21:00 has
+        # not arrived in the new timezone yet.
+        tz_plus2 = timezone(timedelta(hours=2))
+        fake_now = datetime(2026, 5, 19, 13, 2, 0, tzinfo=tz_plus2)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: fake_now)
+
+        from cron.jobs import save_jobs
+
+        job = {
+            "id": "job-tz-migration",
+            "name": "weekly-21",
+            "enabled": True,
+            "schedule": {"kind": "cron", "expr": "0 21 * * 2"},
+            "next_run_at": old_offset_iso,
+            "prompt": "x",
+        }
+        save_jobs([job])
+
+        due = get_due_jobs()
+        assert due == [], (
+            "Job with stale persisted UTC offset must not be dispatched "
+            "early; its wall-clock time has not arrived in the new tz."
+        )
+
+        # next_run_at should have been rewritten into current Hermes tz,
+        # and should be strictly in the future.
+        from cron.jobs import load_jobs
+
+        updated = load_jobs()[0]
+        new_dt = datetime.fromisoformat(updated["next_run_at"])
+        assert new_dt > fake_now
+        assert new_dt.utcoffset() == fake_now.utcoffset()
+
+        # And on a second tick still inside the same wall-clock window,
+        # it must still not double-fire.
+        assert get_due_jobs() == []
+

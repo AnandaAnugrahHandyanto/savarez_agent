@@ -1020,10 +1020,43 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
                     needs_save = True
                     break
 
-        next_run_dt = _ensure_aware(datetime.fromisoformat(next_run))
+        parsed_next_run = datetime.fromisoformat(next_run)
+        next_run_dt = _ensure_aware(parsed_next_run)
         if next_run_dt <= now:
             schedule = job.get("schedule", {})
             kind = schedule.get("kind")
+
+            # Timezone-offset migration repair (issue #28934): if the
+            # persisted next_run_at carries a UTC offset that differs from
+            # the current Hermes timezone, and the *stored local wall-clock*
+            # time has not yet arrived in the current Hermes timezone, this
+            # is not really a due run — it is the same wall-clock cron
+            # occurrence that would otherwise fire twice (once early at the
+            # converted instant, again at the intended wall time). Recompute
+            # next_run_at from the current timezone and skip dispatch.
+            if (
+                kind in {"cron", "interval"}
+                and parsed_next_run.tzinfo is not None
+                and parsed_next_run.utcoffset() != now.utcoffset()
+            ):
+                stored_wall = parsed_next_run.replace(tzinfo=now.tzinfo)
+                if stored_wall > now:
+                    new_next = compute_next_run(schedule, now.isoformat())
+                    if new_next:
+                        logger.info(
+                            "Job '%s' next_run_at %s was persisted with a stale "
+                            "UTC offset; rescheduling to %s in current Hermes "
+                            "timezone to prevent double-fire (#28934).",
+                            job.get("name", job["id"]),
+                            next_run,
+                            new_next,
+                        )
+                        for rj in raw_jobs:
+                            if rj["id"] == job["id"]:
+                                rj["next_run_at"] = new_next
+                                needs_save = True
+                                break
+                        continue
 
             # For recurring jobs, check if the scheduled time is stale
             # (gateway was down and missed the window). Fast-forward to
