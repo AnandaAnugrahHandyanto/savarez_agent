@@ -1,0 +1,27 @@
+# 飞书 + 投研 + 开发日常（默认推荐）
+name: daily
+description: 飞书协作、Kanban、轻量开发与研究检索
+enabled:
+  - hermes-agent
+  - plan
+  - memory
+  - memory-recall
+  - web-search
+  - tavily-search
+  - tavily-research
+  - duckduckgo-search
+  - docker-management
+  - skill-creator
+  - mcp-builder
+  - kanban
+  - kanban-orchestrator
+  - kanban-stock-nexus
+  - china-stock-analysis
+  - stock-monitoring
+  - feishu-finance-kanban
+always_keep_prefixes:
+  - lark-
+always_keep_substrings:
+  - kanban
+  - stock
+  - feishu
