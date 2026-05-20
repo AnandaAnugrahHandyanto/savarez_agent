@@ -269,7 +269,7 @@ export function SessionPanel({ info, sid, t }: SessionPanelProps) {
             count={skillsTotal}
             onToggle={() => setSkillsOpen(v => !v)}
             open={skillsOpen}
-            suffix={skillsCatCount > 0 ? ti('branding.skillsInCategories', { count: String(skillsCatCount), suffix: skillsCatCount === 1 ? 'y' : 'ies' }) : undefined}
+            suffix={skillsCatCount > 0 ? ti('branding.skillsInCategories', { count: String(skillsCatCount) }) : undefined}
             t={t}
             title={ti('branding.availableSkills')}
           />
