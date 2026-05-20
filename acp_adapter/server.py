@@ -1537,6 +1537,11 @@ class HermesACPAgent(acp.Agent):
         if final_response and conn:
             # Always deliver the final response — plugins may have transformed
             # it after streaming finished (e.g. transform_llm_output hook).
+            logger.warning(
+                "TRACE: delivering final_response to ACP, streamed=%s len=%d has_debug=%s",
+                streamed_message, len(final_response),
+                "🔧 [Debug]" in final_response,
+            )
             update = acp.update_agent_message_text(final_response)
             await conn.session_update(session_id, update)
 
