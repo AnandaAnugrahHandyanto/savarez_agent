@@ -12,15 +12,23 @@ PatchResult.
 
 These tests pin the contract:
 
-  - When LSP is active AND ``enabled_for(path)`` for a ``.ts`` / ``.tsx``
-    / ``.go`` / ``.rs`` file, ``_check_lint`` returns ``skipped`` without
-    invoking the shell linter at all.
+  - When LSP is active AND ``enabled_for(path)`` for a ``.ts`` / ``.go``
+    / ``.rs`` file, ``_check_lint`` returns ``skipped`` without invoking
+    the shell linter at all.
   - When LSP is inactive or disabled-for-path, the shell linter runs
     exactly as before (regression guard for the default config).
   - The skip only applies to extensions in
     ``_SHELL_LINTER_LSP_REDUNDANT`` — Python ``py_compile`` and
     ``node --check`` keep running unconditionally because they're fast,
     file-local, and correct.
+  - ``.tsx`` is intentionally NOT in either ``LINTERS`` or
+    ``_SHELL_LINTER_LSP_REDUNDANT``: it had no ``LINTERS`` entry
+    pre-PR (so it was already implicitly ``skipped`` via the
+    ``ext not in LINTERS`` branch) and adding one would have inherited
+    ``.ts``'s broken ``tsc --noEmit FILE`` invocation for LSP-disabled
+    users.  When LSP IS enabled, ``.tsx`` is still covered by
+    typescript-language-server via ``_maybe_lsp_diagnostics`` — the
+    diagnostics show up on ``lsp_diagnostics``, not ``lint``.
 """
 from __future__ import annotations
 
