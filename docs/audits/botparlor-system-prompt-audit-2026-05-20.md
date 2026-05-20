@@ -456,3 +456,65 @@ Verification:
 - Prompt-build checks on all four hosts show no project context / `AGENTS.md`.
 - Visible startup tools are exactly `load_tool_pack`,
   `mcp_botparlor_set_mood`, and `memory`.
+
+## Pre/Post Group Comparison
+
+Post-rollout comparison group:
+
+- `PostSlim-GroupChat`
+  (`group_6f1451b6-3c42-4979-9f1f-d983e9d96f44`)
+- Span: 2026-05-20 17:53:11-17:55:38 UTC.
+- 25 group messages / 24 assistant replies.
+
+First assistant-turn context after rollout:
+
+| Bot | Pre-slim first context | Post-slim first context | Change |
+| --- | ---: | ---: | ---: |
+| Katie | 22,815 | 3,942 | -82.7% |
+| Sophia | 23,331 | 3,367 | -85.6% |
+| Lexi | 23,269 | 3,105 | -86.7% |
+| Scarlett | 24,909 | 4,314 | -82.7% |
+| Ria | 4,237 | 4,025 | -5.0% |
+
+Full-run totals:
+
+| Metric | PreSlim | PostSlim | Change |
+| --- | ---: | ---: | ---: |
+| Assistant replies | 15 | 24 | +60.0% |
+| Prompt/input tokens | 1,029,255 | 410,097 | -60.2% |
+| Output tokens | 5,203 | 3,373 | -35.2% |
+| Total tokens | 1,034,458 | 413,470 | -60.0% |
+| Model calls | 49 | 95 | +93.9% |
+| BotParlor tool calls | 10 | 9 | -10.0% |
+| First-context sum | 98,561 | 18,753 | -81.0% |
+| Last-context sum | 106,540 | 26,638 | -75.0% |
+| Mean context | 20,547 | 4,571 | -77.8% |
+| Max context | 26,441 | 5,989 | -77.3% |
+
+Normalized first three replies per bot:
+
+| Metric | PreSlim | PostSlim | Change |
+| --- | ---: | ---: | ---: |
+| Assistant replies | 15 | 15 | 0.0% |
+| Prompt/input tokens | 1,029,255 | 166,727 | -83.8% |
+| Output tokens | 5,203 | 1,428 | -72.6% |
+| Total tokens | 1,034,458 | 168,155 | -83.7% |
+| Model calls | 49 | 41 | -16.3% |
+| BotParlor tool calls | 10 | 6 | -40.0% |
+| First-context sum | 98,561 | 18,753 | -81.0% |
+| Last-context sum | 106,540 | 23,234 | -78.2% |
+| Mean context | 20,547 | 4,195 | -79.6% |
+| Max context | 26,441 | 5,463 | -79.3% |
+
+Interpretation:
+
+- The cleanest apples-to-apples result is the normalized first-three-replies
+  comparison: same reply count, prompt/input tokens down from `1,029,255` to
+  `166,727`, an `83.8%` reduction.
+- Even though the post-slim group ran longer, with `24` replies instead of
+  `15`, it still used `60.2%` fewer prompt/input tokens overall.
+- Post-slim max context stayed under `6k` input tokens across the longer run.
+- Behavioral caveats to watch: several post-slim group replies persisted as
+  very short `...` messages, and one Katie message looked like raw mood-tool
+  text rather than a parsed tool call. These do not affect the context-size
+  result but are worth watching in future group-chat behavior checks.
