@@ -18,7 +18,40 @@ from typing import Any, Iterable
 
 PLATFORM_TELEGRAM_BUSINESS = "telegram_business"
 DEFAULT_CHAT_RULE_MODE = "metadata_only"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
+BUSINESS_PAYLOAD_PROBE_LANE = "business_bot_probe"
+BUSINESS_PAYLOAD_PROBE_SCENARIOS: tuple[dict[str, str], ...] = (
+    {
+        "scenario_id": "S1_contact_inbound",
+        "alias": "CONTACT_1",
+        "expected_direction": "incoming_to_owner",
+    },
+    {
+        "scenario_id": "S2_contact_alen_manual_outbound",
+        "alias": "CONTACT_1",
+        "expected_direction": "outgoing_from_owner",
+    },
+    {
+        "scenario_id": "S3_known_noncontact_inbound",
+        "alias": "KNOWN_NONCONTACT_1",
+        "expected_direction": "incoming_to_owner",
+    },
+    {
+        "scenario_id": "S4_known_noncontact_alen_manual_outbound",
+        "alias": "KNOWN_NONCONTACT_1",
+        "expected_direction": "outgoing_from_owner",
+    },
+    {
+        "scenario_id": "S5_new_chat_inbound",
+        "alias": "NEW_CHAT_1",
+        "expected_direction": "incoming_to_owner",
+    },
+    {
+        "scenario_id": "S6_new_chat_alen_manual_outbound",
+        "alias": "NEW_CHAT_1",
+        "expected_direction": "outgoing_from_owner",
+    },
+)
 
 _MEETING_RE = re.compile(
     r"\b(встреча|созвон|звонок|колл|call|zoom|meet|meeting|appointment)\b",
@@ -56,6 +89,20 @@ def _utc_now_iso() -> str:
 
 def _json_dumps(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _sha256_text(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _json_list(values: Iterable[Any]) -> str:
+    return _json_dumps([_coerce_text(value) for value in values])
+
+
+def _direction_for_sender(sender_id: Any, owner_user_chat_id: Any) -> str:
+    if sender_id is None or owner_user_chat_id is None:
+        return "unknown"
+    return "outgoing_from_owner" if str(sender_id) == str(owner_user_chat_id) else "incoming_to_owner"
 
 
 def _coerce_iso(value: Any) -> str | None:
@@ -291,6 +338,55 @@ class LifeInboxStore:
                 CREATE INDEX IF NOT EXISTS idx_business_messages_updated
                     ON business_messages(updated_at);
 
+                CREATE TABLE IF NOT EXISTS business_payload_probe_scenarios (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    source_lane TEXT NOT NULL,
+                    scenario_id TEXT NOT NULL,
+                    alias TEXT,
+                    expected_direction TEXT,
+                    probe_text_len INTEGER NOT NULL,
+                    probe_text_sha256 TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    matched_event_id INTEGER,
+                    created_at TEXT NOT NULL,
+                    matched_at TEXT,
+                    notes TEXT,
+                    UNIQUE(source_lane, scenario_id),
+                    UNIQUE(source_lane, probe_text_sha256, probe_text_len)
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_business_payload_probe_scenarios_status
+                    ON business_payload_probe_scenarios(source_lane, status);
+
+                CREATE TABLE IF NOT EXISTS business_payload_probe_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    source_lane TEXT NOT NULL,
+                    scenario_id TEXT,
+                    update_id INTEGER,
+                    update_type TEXT NOT NULL,
+                    connection_id TEXT,
+                    chat_id TEXT,
+                    message_id TEXT,
+                    sender_id TEXT,
+                    direction TEXT NOT NULL DEFAULT 'unknown',
+                    message_date TEXT,
+                    has_text INTEGER NOT NULL DEFAULT 0,
+                    text_len INTEGER NOT NULL DEFAULT 0,
+                    text_sha256 TEXT,
+                    raw_text_stored INTEGER NOT NULL DEFAULT 0,
+                    field_availability_json TEXT NOT NULL DEFAULT '{}',
+                    payload_shape_json TEXT NOT NULL DEFAULT '{}',
+                    media_json TEXT NOT NULL DEFAULT '{}',
+                    reply_context_json TEXT NOT NULL DEFAULT '{}',
+                    deleted_message_ids_json TEXT NOT NULL DEFAULT '[]',
+                    created_at TEXT NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_business_payload_probe_events_scenario
+                    ON business_payload_probe_events(source_lane, scenario_id, created_at);
+                CREATE INDEX IF NOT EXISTS idx_business_payload_probe_events_message
+                    ON business_payload_probe_events(source_lane, connection_id, chat_id, message_id);
+
                 CREATE TABLE IF NOT EXISTS deleted_business_messages (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     update_id INTEGER,
@@ -356,6 +452,226 @@ class LifeInboxStore:
             """,
             (platform, chat_id, DEFAULT_CHAT_RULE_MODE, now, now),
         )
+
+    def prepare_business_payload_probe_scenarios(
+        self,
+        scenarios: Iterable[dict[str, Any]],
+        *,
+        source_lane: str = BUSINESS_PAYLOAD_PROBE_LANE,
+    ) -> None:
+        """Register strict live-probe scenario codes without storing raw text.
+
+        `probe_text` is accepted only long enough to calculate SHA-256 + length.
+        The plaintext code is intentionally not persisted, so later gateway
+        ingestion can match probe messages by hash while keeping DB/logs free of
+        raw chat content.
+        """
+
+        now = _utc_now_iso()
+        with self._connect() as conn:
+            for scenario in scenarios:
+                scenario_id = str(scenario["scenario_id"])
+                probe_text = str(scenario["probe_text"])
+                conn.execute(
+                    """
+                    INSERT INTO business_payload_probe_scenarios(
+                        source_lane, scenario_id, alias, expected_direction,
+                        probe_text_len, probe_text_sha256, status,
+                        matched_event_id, created_at, matched_at, notes
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, 'pending', NULL, ?, NULL, ?)
+                    ON CONFLICT(source_lane, scenario_id) DO UPDATE SET
+                        alias = excluded.alias,
+                        expected_direction = excluded.expected_direction,
+                        probe_text_len = excluded.probe_text_len,
+                        probe_text_sha256 = excluded.probe_text_sha256,
+                        status = 'pending',
+                        matched_event_id = NULL,
+                        matched_at = NULL,
+                        notes = excluded.notes
+                    """,
+                    (
+                        source_lane,
+                        scenario_id,
+                        _coerce_text(scenario.get("alias")),
+                        _coerce_text(scenario.get("expected_direction")),
+                        len(probe_text),
+                        _sha256_text(probe_text),
+                        now,
+                        _coerce_text(scenario.get("notes")),
+                    ),
+                )
+
+    def _match_probe_scenario_by_text(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        source_lane: str,
+        text_sha256: str | None,
+        text_len: int,
+    ) -> sqlite3.Row | None:
+        if not text_sha256:
+            return None
+        return conn.execute(
+            """
+            SELECT id, scenario_id
+            FROM business_payload_probe_scenarios
+            WHERE source_lane = ? AND probe_text_sha256 = ? AND probe_text_len = ?
+            ORDER BY CASE status WHEN 'pending' THEN 0 WHEN 'matched' THEN 1 ELSE 2 END, id
+            LIMIT 1
+            """,
+            (source_lane, text_sha256, text_len),
+        ).fetchone()
+
+    def _match_probe_scenario_by_message_identity(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        source_lane: str,
+        connection_id: str | None,
+        chat_id: str | None,
+        message_id: str | None,
+        deleted_message_ids: Iterable[Any] | None = None,
+    ) -> str | None:
+        candidate_ids = []
+        if message_id:
+            candidate_ids.append(str(message_id))
+        if deleted_message_ids:
+            candidate_ids.extend(str(value) for value in deleted_message_ids if value is not None)
+        if not candidate_ids:
+            return None
+        placeholders = ",".join("?" for _ in candidate_ids)
+        params: list[Any] = [source_lane, connection_id, chat_id, *candidate_ids]
+        row = conn.execute(
+            f"""
+            SELECT scenario_id
+            FROM business_payload_probe_events
+            WHERE source_lane = ?
+              AND connection_id IS ?
+              AND chat_id IS ?
+              AND message_id IN ({placeholders})
+              AND scenario_id IS NOT NULL
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            params,
+        ).fetchone()
+        return str(row["scenario_id"]) if row and row["scenario_id"] else None
+
+    def record_business_payload_probe_event(
+        self,
+        *,
+        update_id: int | None,
+        update_type: str,
+        connection_id: str | None,
+        owner_user_chat_id: str | int | None,
+        chat_id: str | int | None,
+        message_id: str | int | None = None,
+        sender_id: str | int | None = None,
+        text: str | None = None,
+        message_date: Any = None,
+        field_availability: Any | None = None,
+        payload_shape: Any | None = None,
+        media: Any | None = None,
+        reply_context: Any | None = None,
+        deleted_message_ids: Iterable[Any] | None = None,
+        source_lane: str = BUSINESS_PAYLOAD_PROBE_LANE,
+        capture_all: bool = False,
+    ) -> int | None:
+        """Record a sanitized Telegram Business payload-probe event.
+
+        By default the store records only events that match a prepared scenario
+        code by SHA-256/length, or follow-up edit/delete events for an already
+        matched message. Set `capture_all=True` for temporary shape-only capture
+        of all Business payloads. Raw text is never stored.
+        """
+
+        now = _utc_now_iso()
+        text_value = text or ""
+        text_len = len(text_value)
+        text_sha256 = _sha256_text(text_value) if text_value else None
+        connection_key = _coerce_text(connection_id)
+        chat_id_text = _coerce_text(chat_id)
+        message_id_text = _coerce_text(message_id)
+        sender_id_text = _coerce_text(sender_id)
+        deleted_ids = [value for value in (deleted_message_ids or [])]
+
+        with self._connect() as conn:
+            scenario_row = self._match_probe_scenario_by_text(
+                conn,
+                source_lane=source_lane,
+                text_sha256=text_sha256,
+                text_len=text_len,
+            )
+            scenario_id = str(scenario_row["scenario_id"]) if scenario_row else None
+            if scenario_id is None:
+                scenario_id = self._match_probe_scenario_by_message_identity(
+                    conn,
+                    source_lane=source_lane,
+                    connection_id=connection_key,
+                    chat_id=chat_id_text,
+                    message_id=message_id_text,
+                    deleted_message_ids=deleted_ids,
+                )
+            if scenario_id is None and not capture_all:
+                return None
+
+            cur = conn.execute(
+                """
+                INSERT INTO business_payload_probe_events(
+                    source_lane, scenario_id, update_id, update_type, connection_id,
+                    chat_id, message_id, sender_id, direction, message_date,
+                    has_text, text_len, text_sha256, raw_text_stored,
+                    field_availability_json, payload_shape_json, media_json,
+                    reply_context_json, deleted_message_ids_json, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    source_lane,
+                    scenario_id,
+                    update_id,
+                    update_type,
+                    connection_key,
+                    chat_id_text,
+                    message_id_text,
+                    sender_id_text,
+                    _direction_for_sender(sender_id_text, owner_user_chat_id),
+                    _coerce_iso(message_date),
+                    int(bool(text_value)),
+                    text_len,
+                    text_sha256,
+                    _json_dumps(field_availability or {}),
+                    _json_dumps(payload_shape or {}),
+                    _json_dumps(media or {}),
+                    _json_dumps(reply_context or {}),
+                    _json_list(deleted_ids),
+                    now,
+                ),
+            )
+            if cur.lastrowid is None:
+                raise RuntimeError("payload probe event insert succeeded but row id is unavailable")
+            event_id = int(cur.lastrowid)
+            if scenario_row is not None:
+                conn.execute(
+                    """
+                    UPDATE business_payload_probe_scenarios
+                    SET status = 'matched', matched_event_id = ?, matched_at = ?
+                    WHERE id = ?
+                    """,
+                    (event_id, now, int(scenario_row["id"])),
+                )
+            elif scenario_id is not None:
+                conn.execute(
+                    """
+                    UPDATE business_payload_probe_scenarios
+                    SET status = 'matched', matched_event_id = COALESCE(matched_event_id, ?),
+                        matched_at = COALESCE(matched_at, ?)
+                    WHERE source_lane = ? AND scenario_id = ?
+                    """,
+                    (event_id, now, source_lane, scenario_id),
+                )
+            return event_id
 
     def record_business_connection(
         self,
@@ -428,7 +744,7 @@ class LifeInboxStore:
         if not message_id_text:
             raise ValueError("message_id is required for Telegram Business messages")
         text_value = text or ""
-        text_sha256 = hashlib.sha256(text_value.encode("utf-8")).hexdigest() if text_value else None
+        text_sha256 = _sha256_text(text_value) if text_value else None
         candidate_reasons = detect_candidate_reasons(text_value)
 
         with self._connect() as conn:

@@ -336,6 +336,218 @@ async def test_send_refuses_own_bot_chat_without_calling_telegram():
     assert send_calls == []
 
 
+@pytest.mark.asyncio
+async def test_business_update_handler_records_payload_probe_shape_without_raw_text(tmp_path, monkeypatch):
+    life_home = tmp_path / ".hermes-life"
+    _write_accounts_registry(life_home)
+    monkeypatch.setenv("HERMES_LIFE_HOME", str(life_home))
+
+    from gateway.life_inbox_store import LifeInboxStore
+
+    store = LifeInboxStore(life_home / "accounts/telegram-602562/life_inbox.sqlite")
+    probe_text = "TBP-20260520-S1-contact-inbound"
+    store.prepare_business_payload_probe_scenarios(
+        [
+            {
+                "scenario_id": "S1_contact_inbound",
+                "alias": "CONTACT_1",
+                "expected_direction": "incoming_to_owner",
+                "probe_text": probe_text,
+            }
+        ]
+    )
+
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="fake-token"))
+    handled_messages = []
+
+    async def fake_handle_message(event):
+        handled_messages.append(event)
+
+    adapter.handle_message = fake_handle_message
+
+    await adapter._handle_business_update(
+        SimpleNamespace(
+            update_id=701,
+            business_connection=SimpleNamespace(
+                id="conn-1",
+                is_enabled=True,
+                user_chat_id=602562,
+                user=SimpleNamespace(id=602562, username="oldman", full_name="Alen"),
+                rights=SimpleNamespace(to_dict=lambda: {"can_read_messages": True}),
+            ),
+            business_message=None,
+            edited_business_message=None,
+            deleted_business_messages=None,
+        ),
+        None,
+    )
+
+    reply_to_message = SimpleNamespace(message_id=1409000)
+    chat = SimpleNamespace(id=1566649385, type="private", title=None, full_name="BaliRadar")
+    sender = SimpleNamespace(id=1566649385, full_name="BaliRadar", is_bot=False)
+    business_message = SimpleNamespace(
+        business_connection_id="conn-1",
+        chat=chat,
+        from_user=sender,
+        text=probe_text,
+        caption=None,
+        message_id=1409010,
+        date=datetime(2026, 5, 20, 8, 40, 0, tzinfo=timezone.utc),
+        reply_to_message=reply_to_message,
+        photo=[SimpleNamespace(file_id="photo-file-id")],
+        to_dict=lambda: {
+            "message_id": 1409010,
+            "date": 1779266400,
+            "chat": {"id": 1566649385, "type": "private", "first_name": "PrivateName"},
+            "from": {"id": 1566649385, "first_name": "PrivateName", "is_bot": False},
+            "text": probe_text,
+            "reply_to_message": {"message_id": 1409000, "text": "do not store me"},
+            "photo": [{"file_id": "photo-file-id", "file_unique_id": "unique"}],
+            "business_connection_id": "conn-1",
+        },
+    )
+
+    await adapter._handle_business_update(
+        SimpleNamespace(
+            update_id=702,
+            business_connection=None,
+            business_message=business_message,
+            edited_business_message=None,
+            deleted_business_messages=None,
+        ),
+        None,
+    )
+
+    assert handled_messages == []
+    db_path = life_home / "accounts/telegram-602562/life_inbox.sqlite"
+    with sqlite3.connect(db_path) as conn:
+        row = conn.execute(
+            """
+            SELECT scenario_id, direction, raw_text_stored,
+                   field_availability_json, payload_shape_json
+            FROM business_payload_probe_events
+            """
+        ).fetchone()
+
+    assert row[0] == "S1_contact_inbound"
+    assert row[1] == "incoming_to_owner"
+    assert row[2] == 0
+    fields = json.loads(row[3])
+    assert fields["message"]["has_text"] is True
+    assert fields["message"]["has_reply_to_message"] is True
+    assert fields["message"]["has_photo"] is True
+    shape = json.loads(row[4])
+    assert shape["message"]["keys"]["text"]["type"] == "str"
+    raw_db = db_path.read_bytes().decode("utf-8", errors="ignore")
+    assert probe_text not in raw_db
+    assert "PrivateName" not in raw_db
+    assert "do not store me" not in raw_db
+
+
+@pytest.mark.asyncio
+async def test_business_deleted_update_records_probe_event_for_prior_scenario(tmp_path, monkeypatch):
+    life_home = tmp_path / ".hermes-life"
+    _write_accounts_registry(life_home)
+    monkeypatch.setenv("HERMES_LIFE_HOME", str(life_home))
+
+    from gateway.life_inbox_store import LifeInboxStore
+
+    store = LifeInboxStore(life_home / "accounts/telegram-602562/life_inbox.sqlite")
+    probe_text = "TBP-20260520-S5-new-chat-delete"
+    store.prepare_business_payload_probe_scenarios(
+        [
+            {
+                "scenario_id": "S5_new_chat_inbound",
+                "alias": "NEW_CHAT_1",
+                "expected_direction": "incoming_to_owner",
+                "probe_text": probe_text,
+            }
+        ]
+    )
+
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="fake-token"))
+    await adapter._handle_business_update(
+        SimpleNamespace(
+            update_id=801,
+            business_connection=SimpleNamespace(
+                id="conn-1",
+                is_enabled=True,
+                user_chat_id=602562,
+                user=SimpleNamespace(id=602562, username="oldman", full_name="Alen"),
+                rights=SimpleNamespace(to_dict=lambda: {"can_read_messages": True}),
+            ),
+            business_message=None,
+            edited_business_message=None,
+            deleted_business_messages=None,
+        ),
+        None,
+    )
+    await adapter._handle_business_update(
+        SimpleNamespace(
+            update_id=802,
+            business_connection=None,
+            business_message=SimpleNamespace(
+                business_connection_id="conn-1",
+                chat=SimpleNamespace(id=999001, type="private", full_name="New Chat"),
+                from_user=SimpleNamespace(id=999001, full_name="New Chat"),
+                text=probe_text,
+                caption=None,
+                message_id=1409020,
+                date=datetime(2026, 5, 20, 8, 45, 0, tzinfo=timezone.utc),
+            ),
+            edited_business_message=None,
+            deleted_business_messages=None,
+        ),
+        None,
+    )
+    await adapter._handle_business_update(
+        SimpleNamespace(
+            update_id=803,
+            business_connection=None,
+            business_message=None,
+            edited_business_message=None,
+            deleted_business_messages=SimpleNamespace(
+                business_connection_id="conn-1",
+                chat=SimpleNamespace(id=999001, type="private"),
+                message_ids=[1409020],
+            ),
+        ),
+        None,
+    )
+
+    db_path = life_home / "accounts/telegram-602562/life_inbox.sqlite"
+    with sqlite3.connect(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT update_type, scenario_id, deleted_message_ids_json
+            FROM business_payload_probe_events ORDER BY id
+            """
+        ).fetchall()
+
+    assert rows == [
+        ("business_message", "S5_new_chat_inbound", "[]"),
+        ("deleted_business_messages", "S5_new_chat_inbound", '["1409020"]'),
+    ]
+
+
+def test_payload_shape_only_sanitizes_ptb_to_dict_values():
+    message = SimpleNamespace(
+        to_dict=lambda: {
+            "message_id": 1,
+            "text": "private raw text",
+            "from": {"id": 1566649385, "first_name": "PrivateName"},
+            "entities": [{"type": "url", "offset": 0, "length": 10}],
+        }
+    )
+
+    shape = TelegramAdapter._payload_shape_only(message)
+
+    assert shape["keys"]["text"] == {"type": "str"}
+    assert shape["keys"]["from"]["keys"]["first_name"] == {"type": "str"}
+    assert "private raw text" not in json.dumps(shape)
+    assert "PrivateName" not in json.dumps(shape)
+
+
 def test_should_process_message_ignores_messages_from_own_bot():
     adapter = TelegramAdapter(PlatformConfig(enabled=True, token="fake-token"))
     adapter._bot = SimpleNamespace(id=796330107, username="alenrbot")

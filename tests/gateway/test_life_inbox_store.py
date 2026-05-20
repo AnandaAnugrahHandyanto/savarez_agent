@@ -7,6 +7,8 @@ from pathlib import Path
 import pytest
 
 from gateway.life_inbox_store import (
+    BUSINESS_PAYLOAD_PROBE_LANE,
+    BUSINESS_PAYLOAD_PROBE_SCENARIOS,
     LifeInboxStore,
     detect_candidate_reasons,
     resolve_life_inbox_db_path,
@@ -185,3 +187,191 @@ def test_detect_candidate_reasons_covers_life_inbox_keywords():
         "follow_up",
     }
     assert detect_candidate_reasons("просто болтаем ни о чём") == []
+
+
+def test_prepare_payload_probe_scenarios_stores_hashes_not_probe_text(tmp_path):
+    store = LifeInboxStore(tmp_path / "life_inbox.sqlite")
+    probe_text = "TBP-20260520-S1-contact-inbound"
+
+    store.prepare_business_payload_probe_scenarios(
+        [
+            {
+                "scenario_id": "S1_contact_inbound",
+                "alias": "CONTACT_1",
+                "expected_direction": "incoming_to_owner",
+                "probe_text": probe_text,
+            }
+        ]
+    )
+
+    with sqlite3.connect(store.db_path) as conn:
+        row = conn.execute(
+            """
+            SELECT source_lane, scenario_id, alias, expected_direction,
+                   probe_text_len, probe_text_sha256, status
+            FROM business_payload_probe_scenarios
+            """
+        ).fetchone()
+
+    assert row[0] == BUSINESS_PAYLOAD_PROBE_LANE
+    assert row[1] == "S1_contact_inbound"
+    assert row[2] == "CONTACT_1"
+    assert row[3] == "incoming_to_owner"
+    assert row[4] == len(probe_text)
+    assert len(row[5]) == 64
+    assert row[6] == "pending"
+    assert probe_text not in store.db_path.read_bytes().decode("utf-8", errors="ignore")
+
+
+def test_record_payload_probe_event_matches_scenario_and_keeps_shape_only(tmp_path):
+    store = LifeInboxStore(tmp_path / "life_inbox.sqlite")
+    probe_text = "TBP-20260520-S2-owner-outbound"
+    store.prepare_business_payload_probe_scenarios(
+        [
+            {
+                "scenario_id": "S2_contact_alen_manual_outbound",
+                "alias": "CONTACT_1",
+                "expected_direction": "outgoing_from_owner",
+                "probe_text": probe_text,
+            }
+        ]
+    )
+
+    event_id = store.record_business_payload_probe_event(
+        update_id=701,
+        update_type="business_message",
+        connection_id="conn-1",
+        owner_user_chat_id="602562",
+        chat_id="1566649385",
+        message_id="1409010",
+        sender_id="602562",
+        text=probe_text,
+        message_date="2026-05-20T08:40:00+00:00",
+        field_availability={"message": {"has_text": True, "has_reply_to_message": False}},
+        payload_shape={"message": {"text": {"type": "str"}, "from": {"id": {"type": "int"}}}},
+    )
+
+    assert event_id is not None
+    with sqlite3.connect(store.db_path) as conn:
+        event_row = conn.execute(
+            """
+            SELECT source_lane, scenario_id, direction, text_len, raw_text_stored,
+                   field_availability_json, payload_shape_json
+            FROM business_payload_probe_events
+            """
+        ).fetchone()
+        scenario_row = conn.execute(
+            """
+            SELECT status, matched_event_id, matched_at
+            FROM business_payload_probe_scenarios
+            WHERE scenario_id = 'S2_contact_alen_manual_outbound'
+            """
+        ).fetchone()
+
+    assert event_row[0] == BUSINESS_PAYLOAD_PROBE_LANE
+    assert event_row[1] == "S2_contact_alen_manual_outbound"
+    assert event_row[2] == "outgoing_from_owner"
+    assert event_row[3] == len(probe_text)
+    assert event_row[4] == 0
+    assert json.loads(event_row[5])["message"]["has_text"] is True
+    assert json.loads(event_row[6])["message"]["text"]["type"] == "str"
+    assert scenario_row[0] == "matched"
+    assert scenario_row[1] == event_id
+    assert scenario_row[2] is not None
+    assert probe_text not in store.db_path.read_bytes().decode("utf-8", errors="ignore")
+
+
+def test_payload_probe_event_can_match_followup_edit_by_message_identity(tmp_path):
+    store = LifeInboxStore(tmp_path / "life_inbox.sqlite")
+    probe_text = "TBP-20260520-S1-edit-followup"
+    store.prepare_business_payload_probe_scenarios(
+        [
+            {
+                "scenario_id": "S1_contact_inbound",
+                "alias": "CONTACT_1",
+                "expected_direction": "incoming_to_owner",
+                "probe_text": probe_text,
+            }
+        ]
+    )
+    first_event_id = store.record_business_payload_probe_event(
+        update_id=801,
+        update_type="business_message",
+        connection_id="conn-1",
+        owner_user_chat_id="602562",
+        chat_id="1566649385",
+        message_id="1409011",
+        sender_id="1566649385",
+        text=probe_text,
+        message_date="2026-05-20T08:45:00+00:00",
+        field_availability={},
+        payload_shape={},
+    )
+
+    edited_event_id = store.record_business_payload_probe_event(
+        update_id=802,
+        update_type="edited_business_message",
+        connection_id="conn-1",
+        owner_user_chat_id="602562",
+        chat_id="1566649385",
+        message_id="1409011",
+        sender_id="1566649385",
+        text="edited private text not registered as a probe code",
+        message_date="2026-05-20T08:46:00+00:00",
+        field_availability={"message": {"has_edit_date": True}},
+        payload_shape={"message": {"edit_date": {"type": "datetime"}}},
+    )
+
+    assert first_event_id is not None
+    assert edited_event_id is not None
+    with sqlite3.connect(store.db_path) as conn:
+        rows = conn.execute(
+            "SELECT update_type, scenario_id FROM business_payload_probe_events ORDER BY id"
+        ).fetchall()
+
+    assert rows == [
+        ("business_message", "S1_contact_inbound"),
+        ("edited_business_message", "S1_contact_inbound"),
+    ]
+    assert "private text" not in store.db_path.read_bytes().decode("utf-8", errors="ignore")
+
+
+def test_payload_probe_event_without_scenario_is_skipped_unless_capture_all(tmp_path):
+    store = LifeInboxStore(tmp_path / "life_inbox.sqlite")
+
+    skipped = store.record_business_payload_probe_event(
+        update_id=901,
+        update_type="business_message",
+        connection_id="conn-1",
+        owner_user_chat_id="602562",
+        chat_id="1566649385",
+        message_id="1409012",
+        sender_id="1566649385",
+        text="private unmatched text",
+        message_date="2026-05-20T08:50:00+00:00",
+        field_availability={},
+        payload_shape={},
+    )
+    captured = store.record_business_payload_probe_event(
+        update_id=902,
+        update_type="business_message",
+        connection_id="conn-1",
+        owner_user_chat_id="602562",
+        chat_id="1566649385",
+        message_id="1409013",
+        sender_id="1566649385",
+        text="private unmatched text",
+        message_date="2026-05-20T08:50:10+00:00",
+        field_availability={"message": {"has_photo": True}},
+        payload_shape={"message": {"photo": {"type": "list", "length": 1}}},
+        capture_all=True,
+    )
+
+    assert skipped is None
+    assert captured is not None
+    with sqlite3.connect(store.db_path) as conn:
+        rows = conn.execute("SELECT scenario_id, text_len FROM business_payload_probe_events").fetchall()
+
+    assert rows == [(None, len("private unmatched text"))]
+    assert "private unmatched text" not in store.db_path.read_bytes().decode("utf-8", errors="ignore")
+    assert len(BUSINESS_PAYLOAD_PROBE_SCENARIOS) == 6

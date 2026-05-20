@@ -4785,6 +4785,185 @@ class TelegramAdapter(BasePlatformAdapter):
             return value
         return str(value)
 
+    @classmethod
+    def _payload_shape_only(cls, value: Any, *, _depth: int = 0, _max_depth: int = 5) -> dict[str, Any]:
+        """Return payload key/type shape without storing primitive values.
+
+        Telegram Business live probes need field availability and object shape,
+        not private text, names, file ids, or other raw values. This helper is
+        deliberately value-blind: every primitive becomes only its type name.
+        """
+
+        if value is None or cls._is_unset_mock(value):
+            return {"type": "null"}
+        if _depth >= _max_depth:
+            return {"type": type(value).__name__, "truncated": True}
+
+        if isinstance(value, dict):
+            return {
+                "type": "object",
+                "keys": {
+                    str(key): cls._payload_shape_only(item, _depth=_depth + 1, _max_depth=_max_depth)
+                    for key, item in sorted(value.items(), key=lambda pair: str(pair[0]))
+                },
+            }
+        if isinstance(value, (list, tuple)):
+            first_shape = (
+                cls._payload_shape_only(value[0], _depth=_depth + 1, _max_depth=_max_depth)
+                if value
+                else None
+            )
+            result: dict[str, Any] = {"type": "list", "length": len(value)}
+            if first_shape is not None:
+                result["first_item"] = first_shape
+            return result
+        if isinstance(value, (str, int, float, bool)):
+            return {"type": type(value).__name__}
+
+        to_dict = getattr(value, "to_dict", None)
+        if callable(to_dict):
+            try:
+                return cls._payload_shape_only(to_dict(), _depth=_depth, _max_depth=_max_depth)
+            except Exception:
+                return {"type": type(value).__name__, "to_dict_error": True}
+        if hasattr(value, "__dict__"):
+            public_attrs = {
+                key: item
+                for key, item in vars(value).items()
+                if not key.startswith("_") and not callable(item)
+            }
+            return cls._payload_shape_only(public_attrs, _depth=_depth, _max_depth=_max_depth)
+        return {"type": type(value).__name__}
+
+    @classmethod
+    def _field_present(cls, obj: Any, attr: str) -> bool:
+        if obj is None or cls._is_unset_mock(obj):
+            return False
+        value = getattr(obj, attr, None)
+        return value is not None and not cls._is_unset_mock(value)
+
+    @classmethod
+    def _text_present(cls, obj: Any, attr: str) -> bool:
+        if obj is None or cls._is_unset_mock(obj):
+            return False
+        value = getattr(obj, attr, None)
+        return bool(value) and not cls._is_unset_mock(value)
+
+    @classmethod
+    def _business_payload_field_availability(cls, update: Any, message: Any) -> dict[str, Any]:
+        sender = getattr(message, "from_user", None) or getattr(message, "sender_chat", None)
+        chat = getattr(message, "chat", None)
+        effective_message = getattr(update, "effective_message", None) or getattr(update, "message", None)
+        media_fields = (
+            "animation",
+            "audio",
+            "contact",
+            "dice",
+            "document",
+            "game",
+            "location",
+            "paid_media",
+            "photo",
+            "poll",
+            "sticker",
+            "story",
+            "venue",
+            "video",
+            "video_note",
+            "voice",
+        )
+        message_fields = {
+            "has_text": cls._text_present(message, "text"),
+            "has_caption": cls._text_present(message, "caption"),
+            "has_entities": cls._field_present(message, "entities"),
+            "has_caption_entities": cls._field_present(message, "caption_entities"),
+            "has_reply_to_message": cls._field_present(message, "reply_to_message"),
+            "has_external_reply": cls._field_present(message, "external_reply"),
+            "has_quote": cls._field_present(message, "quote"),
+            "has_forward_origin": cls._field_present(message, "forward_origin"),
+            "has_media_group_id": cls._field_present(message, "media_group_id"),
+            "has_sender_business_bot": cls._field_present(message, "sender_business_bot"),
+            "has_is_from_offline": cls._field_present(message, "is_from_offline"),
+            "has_edit_date": cls._field_present(message, "edit_date"),
+            "has_business_connection_id": cls._field_present(message, "business_connection_id"),
+        }
+        for field in media_fields:
+            message_fields[f"has_{field}"] = cls._field_present(message, field)
+        return {
+            "update": {
+                "has_business_connection": cls._field_present(update, "business_connection"),
+                "has_business_message": cls._field_present(update, "business_message"),
+                "has_edited_business_message": cls._field_present(update, "edited_business_message"),
+                "has_deleted_business_messages": cls._field_present(update, "deleted_business_messages"),
+                "has_regular_message": cls._field_present(update, "message"),
+                "has_effective_message": effective_message is not None and not cls._is_unset_mock(effective_message),
+                "regular_message_has_business_connection_id": bool(
+                    effective_message and cls._business_connection_id_from_message(effective_message)
+                ),
+            },
+            "chat": {
+                "chat_type": str(getattr(chat, "type", "")) or None,
+                "has_username": cls._field_present(chat, "username"),
+                "has_title": cls._field_present(chat, "title"),
+                "has_full_name": cls._field_present(chat, "full_name"),
+            },
+            "sender": {
+                "has_from_user": sender is not None and not cls._is_unset_mock(sender),
+                "has_username": cls._field_present(sender, "username"),
+                "has_is_bot": cls._field_present(sender, "is_bot"),
+                "has_language_code": cls._field_present(sender, "language_code"),
+                "has_is_premium": cls._field_present(sender, "is_premium"),
+            },
+            "message": message_fields,
+        }
+
+    @classmethod
+    def _business_payload_media_summary(cls, message: Any) -> dict[str, Any]:
+        media_fields = (
+            "animation",
+            "audio",
+            "contact",
+            "document",
+            "location",
+            "paid_media",
+            "photo",
+            "poll",
+            "sticker",
+            "venue",
+            "video",
+            "video_note",
+            "voice",
+        )
+        summary: dict[str, Any] = {}
+        for field in media_fields:
+            value = getattr(message, field, None)
+            if value is None or cls._is_unset_mock(value):
+                continue
+            summary[field] = {"present": True, "count": len(value) if isinstance(value, (list, tuple)) else 1}
+        return summary
+
+    @classmethod
+    def _business_payload_reply_summary(cls, message: Any) -> dict[str, Any]:
+        reply = getattr(message, "reply_to_message", None)
+        if reply is None or cls._is_unset_mock(reply):
+            return {}
+        return {
+            "present": True,
+            "message_id": str(getattr(reply, "message_id", "")) or None,
+            "has_text": cls._text_present(reply, "text"),
+            "has_caption": cls._text_present(reply, "caption"),
+        }
+
+    def _business_payload_probe_capture_all(self) -> bool:
+        configured = None
+        if getattr(self.config, "extra", None):
+            configured = self.config.extra.get("business_payload_probe_capture_all")
+        if configured is None:
+            configured = os.getenv("HERMES_TELEGRAM_BUSINESS_PAYLOAD_PROBE", "")
+        if isinstance(configured, str):
+            return configured.strip().lower() in {"1", "true", "yes", "on"}
+        return bool(configured)
+
     @staticmethod
     def _business_connection_id_from_message(message: Any) -> Optional[str]:
         connection_id = getattr(message, "business_connection_id", None)
@@ -4949,6 +5128,25 @@ class TelegramAdapter(BasePlatformAdapter):
                 text=text,
                 message_date=getattr(message, "date", None),
             )
+            store.record_business_payload_probe_event(
+                update_id=getattr(update, "update_id", None),
+                update_type=update_type,
+                connection_id=connection_id,
+                owner_user_chat_id=owner_user_chat_id,
+                chat_id=chat_id,
+                message_id=getattr(message, "message_id", None),
+                sender_id=sender_id,
+                text=text,
+                message_date=getattr(message, "date", None),
+                field_availability=self._business_payload_field_availability(update, message),
+                payload_shape={
+                    "update": self._payload_shape_only(update),
+                    "message": self._payload_shape_only(message),
+                },
+                media=self._business_payload_media_summary(message),
+                reply_context=self._business_payload_reply_summary(message),
+                capture_all=self._business_payload_probe_capture_all(),
+            )
         except Exception as exc:
             logger.warning("[Telegram Business Inbox] skipping message store: %s", exc)
 
@@ -4970,6 +5168,30 @@ class TelegramAdapter(BasePlatformAdapter):
                 connection_id=connection_id,
                 chat_id=getattr(chat, "id", None),
                 message_ids=message_ids,
+            )
+            store.record_business_payload_probe_event(
+                update_id=getattr(update, "update_id", None),
+                update_type="deleted_business_messages",
+                connection_id=connection_id,
+                owner_user_chat_id=owner_user_chat_id,
+                chat_id=getattr(chat, "id", None),
+                field_availability={
+                    "update": {
+                        "has_deleted_business_messages": True,
+                        "has_business_message": self._field_present(update, "business_message"),
+                        "has_edited_business_message": self._field_present(update, "edited_business_message"),
+                    },
+                    "deleted_business_messages": {
+                        "has_chat": chat is not None and not self._is_unset_mock(chat),
+                        "message_ids_count": len(message_ids),
+                    },
+                },
+                payload_shape={
+                    "update": self._payload_shape_only(update),
+                    "deleted_business_messages": self._payload_shape_only(deleted),
+                },
+                deleted_message_ids=message_ids,
+                capture_all=self._business_payload_probe_capture_all(),
             )
         except Exception as exc:
             logger.warning("[Telegram Business Inbox] skipping delete store: %s", exc)
