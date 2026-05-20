@@ -408,6 +408,12 @@ class StreamingConfig:
         )
 
 
+def _is_webex_connected(cfg: PlatformConfig) -> bool:
+    """Return whether Webex has enough auth/config to start."""
+    mode = str(cfg.extra.get("connection_mode") or "websocket").strip().lower()
+    return bool(cfg.token and (mode != "webhook" or cfg.extra.get("public_url")))
+
+
 # -----------------------------------------------------------------------------
 # Built-in platform connection checkers
 # -----------------------------------------------------------------------------
@@ -416,6 +422,7 @@ class StreamingConfig:
 # that rely on the generic ``token or api_key`` check (Telegram, Discord,
 # Slack, Matrix, Mattermost, HomeAssistant) do not need an entry here.
 _PLATFORM_CONNECTED_CHECKERS: dict[Platform, Callable[[PlatformConfig], bool]] = {
+    Platform.WEBEX: _is_webex_connected,
     Platform.WEIXIN: lambda cfg: bool(
         cfg.extra.get("account_id") and (cfg.token or cfg.extra.get("token"))
     ),
@@ -517,8 +524,7 @@ class GatewayConfig:
         # Webex defaults to websocket mode; webhook mode also needs a public URL
         # before it is considered connected.
         if platform == Platform.WEBEX:
-            mode = str(config.extra.get("connection_mode") or "websocket").strip().lower()
-            return bool(config.token and (mode != "webhook" or config.extra.get("public_url")))
+            return _is_webex_connected(config)
 
         # Generic token/api_key auth covers Telegram, Discord, Slack, etc.
         if config.token or config.api_key:
