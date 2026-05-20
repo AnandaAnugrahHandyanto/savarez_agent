@@ -18048,7 +18048,14 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     # Telegram polling, Discord gateway sockets, etc. The loser exits
     # cleanly before touching any external service.
     import atexit
-    from gateway.status import write_pid_file, remove_pid_file, get_running_pid
+    from gateway.status import (
+        write_pid_file,
+        remove_pid_file,
+        get_running_pid,
+        _get_pid_path,
+        _read_pid_record,
+        _pid_exists,
+    )
     _current_pid = get_running_pid()
     if _current_pid is not None and _current_pid != os.getpid():
         logger.error(
@@ -18064,11 +18071,43 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     try:
         write_pid_file()
     except FileExistsError:
-        release_gateway_runtime_lock()
-        logger.error(
-            "PID file race lost to another gateway instance. Exiting."
+        # The PID file still exists.  It may be stale (left behind after a
+        # SIGKILL / OOM kill where atexit handlers never fired) or it may
+        # indicate another gateway that started between our get_running_pid()
+        # check and this O_CREAT|O_EXCL write.  Validate before giving up.
+        pid_path = _get_pid_path()
+        existing_record = _read_pid_record(pid_path)
+        existing_pid = (
+            int(existing_record["pid"])
+            if existing_record and "pid" in existing_record
+            else None
         )
-        return False
+        if existing_pid is not None and not _pid_exists(existing_pid):
+            # Stale PID file — the recorded process is gone.  Force-remove
+            # and retry the atomic write.
+            logger.warning(
+                "Removing stale PID file (recorded PID %d no longer exists).",
+                existing_pid,
+            )
+            try:
+                pid_path.unlink()
+            except OSError:
+                pass
+            try:
+                write_pid_file()
+            except FileExistsError:
+                # Lost the race again — another process truly is starting.
+                release_gateway_runtime_lock()
+                logger.error(
+                    "PID file race lost to another gateway instance. Exiting."
+                )
+                return False
+        else:
+            release_gateway_runtime_lock()
+            logger.error(
+                "PID file race lost to another gateway instance. Exiting."
+            )
+            return False
     atexit.register(remove_pid_file)
     atexit.register(release_gateway_runtime_lock)
 
