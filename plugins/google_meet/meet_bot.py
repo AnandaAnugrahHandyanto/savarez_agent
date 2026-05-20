@@ -813,22 +813,113 @@ def _looks_like_human_speaker(speaker: str, bot_guest_name: str) -> bool:
     return True
 
 
+def _click_join_dom_fallback(page) -> Optional[str]:
+    """Return the clicked join label when a DOM-text fallback succeeds.
+
+    Meet's visible pre-join CTA sometimes isn't discoverable via Playwright's
+    role/name lookup even though the button is plainly rendered on the page.
+    Fall back to DOM text probes that match the live May 2026 Meet markup and
+    walk up to the nearest clickable ancestor.
+    """
+    probe = r'''
+    (labels => {
+      const texts = labels.map(label => String(label || '').trim()).filter(Boolean);
+      const seen = new Set();
+
+      const candidateRoots = [
+        ...document.querySelectorAll('button, [role="button"]'),
+        ...document.querySelectorAll('span[jsname="V67aGc"], div[jsname], span, div')
+      ];
+
+      const norm = value => String(value || '').replace(/\s+/g, ' ').trim();
+      const hasVisibleBox = el => {
+        const rect = el && typeof el.getBoundingClientRect === 'function'
+          ? el.getBoundingClientRect()
+          : null;
+        return !!rect && rect.width > 0 && rect.height > 0;
+      };
+      const isVisible = el => {
+        if (!el || !el.isConnected) return false;
+        const style = window.getComputedStyle(el);
+        if (!style) return false;
+        if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') {
+          return false;
+        }
+        return hasVisibleBox(el);
+      };
+      const clickableAncestor = node => {
+        let cur = node;
+        while (cur) {
+          if ((cur.matches && cur.matches('button, [role="button"]')) || cur.onclick || cur.tabIndex >= 0) {
+            return cur;
+          }
+          cur = cur.parentElement;
+        }
+        return null;
+      };
+
+      for (const node of candidateRoots) {
+        if (!node || seen.has(node)) continue;
+        seen.add(node);
+        const text = norm(node.innerText || node.textContent || '');
+        if (!text) continue;
+        const label = texts.find(target => text === target || text.includes(target));
+        if (!label) continue;
+        const target = clickableAncestor(node) || node;
+        if (!isVisible(target) && !isVisible(node)) continue;
+        try {
+          if (typeof target.scrollIntoView === 'function') {
+            target.scrollIntoView({block: 'center', inline: 'center'});
+          }
+        } catch (_) {}
+        for (const el of [target, node]) {
+          if (!el) continue;
+          try {
+            el.click();
+            return label;
+          } catch (_) {}
+          try {
+            ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'].forEach(type => {
+              el.dispatchEvent(new MouseEvent(type, {bubbles: true, cancelable: true, view: window}));
+            });
+            return label;
+          } catch (_) {}
+        }
+      }
+      return null;
+    })
+    '''
+    try:
+        clicked = page.evaluate(probe, ["Join now", "Ask to join", "Switch here"])
+    except Exception:
+        return None
+    return str(clicked).strip() if clicked else None
+
+
+
 def _click_join(page, state: _BotState) -> None:
     """Click 'Join now' or 'Ask to join' if either button is visible.
 
     Flags ``lobby_waiting`` when we hit the "waiting for host to admit you"
     state so the agent can surface that in status.
     """
+    clicked_label: Optional[str] = None
     for label in ("Join now", "Ask to join"):
         try:
             btn = page.get_by_role("button", name=label, exact=False).first
             if btn.count() and btn.is_visible():
                 btn.click(timeout=3_000)
-                if label == "Ask to join":
-                    state.set(lobby_waiting=True)
+                clicked_label = label
                 break
         except Exception:
             continue
+
+    if clicked_label is None:
+        clicked_label = _click_join_dom_fallback(page)
+
+    if clicked_label == "Ask to join":
+        state.set(lobby_waiting=True)
+
 
 
 def _parse_duration(raw: str) -> Optional[float]:
