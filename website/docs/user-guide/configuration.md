@@ -279,7 +279,7 @@ OIDC tokens are short-lived and should not be used as the documented deployment 
 
 ### Blaxel Backend
 
-Runs commands in a [Blaxel](https://blaxel.ai) cloud sandbox. Sandboxes are workspace-scoped and ephemeral by themselves; for durable storage that survives sandbox recreation Hermes provisions a Blaxel **volume** named `hermes-{task_id}-data` and mounts it at `/blaxel/persistent` whenever `container_persistent: true`. The agent's working directory is set to that mount, so files written by the agent live on the volume.
+Runs commands in a [Blaxel](https://blaxel.ai) cloud sandbox. Sandboxes are workspace-scoped and ephemeral by themselves; for durable storage that survives sandbox recreation Hermes provisions a Blaxel **volume** named from a sanitized, capped task id, such as `hermes-<sanitized-task-id>-data`, and mounts it at `/blaxel/persistent` whenever `container_persistent: true`. The agent's working directory is set to that mount, so files written by the agent live on the volume.
 
 ```yaml
 terminal:
@@ -287,6 +287,7 @@ terminal:
   blaxel_image: "blaxel/base-image:latest"  # Sandbox image
   blaxel_ttl: "24h"                         # Auto-expiration window (e.g. 30m, 24h)
   container_memory: 4096                    # MB (Blaxel default)
+  container_disk: 10240                     # MB for persistent volume size
   container_persistent: true                # Preserve files on a Blaxel volume
 ```
 
@@ -308,7 +309,7 @@ BL_REGION=us-pdx-1   # optional, defaults to us-pdx-1
 
 If the workspace has no available Blaxel volume quota, persistent startup fails with a clear error. Set `container_persistent: false` for ephemeral sandboxes, or increase the workspace volume quota before enabling persistence.
 
-**Resource limits:** Blaxel allocates CPU and disk per image profile. Only `container_memory` is forwarded to the sandbox; Hermes defaults Blaxel to 4096 MB and lets users raise it if their workspace quota allows more. `container_cpu` and `container_disk` are accepted but ignored with a log message.
+**Resource limits:** Blaxel allocates CPU and sandbox disk per image profile. `container_memory` is forwarded to the sandbox, and `container_disk` controls the Blaxel volume size when `container_persistent: true`. Hermes defaults Blaxel memory to 4096 MB and persistent volume size to 10240 MB. `container_cpu` is accepted but ignored with a log message.
 
 **Timeouts:** Blaxel caps a single blocking exec at 60 seconds. For longer Hermes timeouts, the backend automatically falls back to async execution + polling so commands up to `terminal.timeout` work transparently.
 

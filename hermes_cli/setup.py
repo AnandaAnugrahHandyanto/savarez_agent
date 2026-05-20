@@ -749,6 +749,43 @@ def _prompt_vercel_sandbox_settings(config: dict):
         save_env_value("VERCEL_TEAM_ID", team)
 
 
+def _prompt_blaxel_sandbox_settings(config: dict):
+    """Prompt for Blaxel settings without exposing ignored CPU sizing."""
+    terminal = config.setdefault("terminal", {})
+
+    print()
+    print_info("Blaxel sandbox settings:")
+    print_info("  CPU and sandbox disk are allocated by the selected Blaxel image.")
+    print_info("  container_disk controls the persistent volume size when persistence is enabled.")
+
+    current_persist = terminal.get("container_persistent", True)
+    persist_label = "yes" if current_persist else "no"
+    terminal["container_persistent"] = prompt(
+        "  Persist filesystem on a Blaxel volume? (yes/no)", persist_label
+    ).lower() in {"yes", "true", "y", "1"}
+
+    current_mem = terminal.get("container_memory", 4096)
+    if current_mem == 5120:
+        current_mem = 4096
+    mem_str = prompt("  Sandbox memory in MB (4096 = 4GB)", str(current_mem))
+    try:
+        terminal["container_memory"] = int(mem_str)
+    except ValueError:
+        terminal["container_memory"] = current_mem
+
+    if terminal["container_persistent"]:
+        current_disk = terminal.get("container_disk", 10240)
+        if current_disk == 51200:
+            current_disk = 10240
+        disk_str = prompt("  Persistent volume size in MB (10240 = 10GB)", str(current_disk))
+        try:
+            terminal["container_disk"] = int(disk_str)
+        except ValueError:
+            terminal["container_disk"] = current_disk
+    else:
+        terminal["container_disk"] = terminal.get("container_disk", 10240)
+
+
 def _read_nearest_vercel_project(start: Path | None = None) -> dict[str, str]:
     """Read project/team defaults from the nearest Vercel link file."""
     current = (start or Path.cwd()).resolve()
@@ -1755,7 +1792,7 @@ def setup_terminal_backend(config: dict):
         config["terminal"]["blaxel_image"] = image
         save_env_value("TERMINAL_BLAXEL_IMAGE", image)
 
-        _prompt_container_resources(config)
+        _prompt_blaxel_sandbox_settings(config)
 
     elif selected_backend == "ssh":
         print_success("Terminal backend: SSH")

@@ -295,6 +295,13 @@ def test_blaxel_backend_defaults_to_4gb_memory(monkeypatch):
     assert terminal_tool_module._get_env_config()["container_memory"] == 4096
 
 
+def test_blaxel_backend_defaults_to_10gb_volume(monkeypatch):
+    _clear_terminal_env(monkeypatch)
+    monkeypatch.setenv("TERMINAL_ENV", "blaxel")
+
+    assert terminal_tool_module._get_env_config()["container_disk"] == 10240
+
+
 def test_blaxel_backend_respects_memory_override(monkeypatch):
     _clear_terminal_env(monkeypatch)
     monkeypatch.setenv("TERMINAL_ENV", "blaxel")

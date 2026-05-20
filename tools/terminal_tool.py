@@ -1064,6 +1064,7 @@ def _get_env_config() -> Dict[str, Any]:
     else:
         default_cwd = "/root"
     default_container_memory = "4096" if env_type == "blaxel" else "5120"
+    default_container_disk = "10240" if env_type == "blaxel" else "51200"
 
     # Read TERMINAL_CWD but sanity-check it for container backends.
     # If Docker cwd passthrough is explicitly enabled, remap the host path to
@@ -1126,7 +1127,7 @@ def _get_env_config() -> Dict[str, Any]:
         # daytona, and vercel_sandbox -- ignored for local/ssh)
         "container_cpu": _parse_env_var("TERMINAL_CONTAINER_CPU", "1", float, "number"),
         "container_memory": _parse_env_var("TERMINAL_CONTAINER_MEMORY", default_container_memory),
-        "container_disk": _parse_env_var("TERMINAL_CONTAINER_DISK", "51200"),        # MB (default 50GB)
+        "container_disk": _parse_env_var("TERMINAL_CONTAINER_DISK", default_container_disk),
         "container_persistent": os.getenv("TERMINAL_CONTAINER_PERSISTENT", "true").lower() in {"true", "1", "yes"},
         "docker_volumes": _parse_env_var("TERMINAL_DOCKER_VOLUMES", "[]", json.loads, "valid JSON"),
         "docker_env": _parse_env_var("TERMINAL_DOCKER_ENV", "{}", json.loads, "valid JSON"),

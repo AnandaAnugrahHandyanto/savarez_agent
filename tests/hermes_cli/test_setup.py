@@ -41,6 +41,16 @@ def _clear_vercel_env(monkeypatch):
         monkeypatch.delenv(key, raising=False)
 
 
+def _clear_blaxel_env(monkeypatch):
+    for key in (
+        "BL_API_KEY",
+        "BL_WORKSPACE",
+        "TERMINAL_BLAXEL_IMAGE",
+        "TERMINAL_ENV",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+
 def _stub_tts(monkeypatch):
     """Stub out TTS prompts so setup_model_provider doesn't block."""
     monkeypatch.setattr("hermes_cli.setup.prompt_choice", lambda q, c, d=0: (
@@ -571,6 +581,50 @@ def test_vercel_setup_prefills_project_and_team_from_link_file(tmp_path, monkeyp
     assert os.environ["VERCEL_TEAM_ID"] == "linked-team"
     assert defaults["    Vercel project ID"] == "linked-project"
     assert defaults["    Vercel team ID"] == "linked-team"
+
+
+def test_blaxel_setup_prompts_only_effective_resource_knobs(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _clear_blaxel_env(monkeypatch)
+    monkeypatch.setitem(sys.modules, "blaxel", types.ModuleType("blaxel"))
+    config = load_config()
+
+    def fake_prompt_choice(question, choices, default=0):
+        if question == "Select terminal backend:":
+            return 6
+        raise AssertionError(f"Unexpected prompt_choice call: {question}")
+
+    prompt_values = iter([
+        "blaxel-key",
+        "workspace",
+        "blaxel/base-image:latest",
+        "yes",
+        "",
+        "",
+    ])
+    defaults = {}
+
+    def fake_prompt(message, default="", **kwargs):
+        assert "CPU cores" not in message
+        defaults[message] = default
+        value = next(prompt_values)
+        return value or default
+
+    monkeypatch.setattr("hermes_cli.setup.prompt_choice", fake_prompt_choice)
+    monkeypatch.setattr("hermes_cli.setup.prompt", fake_prompt)
+
+    from hermes_cli.setup import setup_terminal_backend
+
+    setup_terminal_backend(config)
+
+    assert config["terminal"]["backend"] == "blaxel"
+    assert config["terminal"]["container_persistent"] is True
+    assert config["terminal"]["container_memory"] == 4096
+    assert config["terminal"]["container_disk"] == 10240
+    assert defaults["  Sandbox memory in MB (4096 = 4GB)"] == "4096"
+    assert defaults["  Persistent volume size in MB (10240 = 10GB)"] == "10240"
+    assert os.environ["BL_API_KEY"] == "blaxel-key"
+    assert os.environ["BL_WORKSPACE"] == "workspace"
 
 
 def test_setup_slack_saves_home_channel(monkeypatch):

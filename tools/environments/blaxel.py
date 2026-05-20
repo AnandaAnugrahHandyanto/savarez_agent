@@ -13,6 +13,7 @@ import os
 import hashlib
 import re
 import shlex
+import shutil
 import tarfile
 import tempfile
 import threading
@@ -95,6 +96,45 @@ def _workspace_sync_max_bytes() -> int:
     return max(1, mb) * 1024 * 1024
 
 
+def _path_is_relative_to(path: Path, parent: Path) -> bool:
+    try:
+        path.relative_to(parent)
+        return True
+    except ValueError:
+        return False
+
+
+def _extract_data_tar(tar: tarfile.TarFile, dest: Path) -> None:
+    """Extract tar data members safely on Python versions without filters."""
+    dest = dest.resolve()
+    dest.mkdir(parents=True, exist_ok=True)
+
+    try:
+        tar.extractall(dest, filter="data")
+        return
+    except TypeError as e:
+        if "filter" not in str(e):
+            raise
+
+    for member in tar.getmembers():
+        target = (dest / member.name).resolve()
+        if target != dest and not _path_is_relative_to(target, dest):
+            raise tarfile.TarError(f"refusing to extract unsafe tar member {member.name!r}")
+        if member.isdir():
+            target.mkdir(parents=True, exist_ok=True)
+            continue
+        if not member.isfile():
+            continue
+
+        target.parent.mkdir(parents=True, exist_ok=True)
+        source = tar.extractfile(member)
+        if source is None:
+            continue
+        with source, open(target, "wb") as f:
+            shutil.copyfileobj(source, f)
+        os.chmod(target, member.mode & 0o777)
+
+
 def _ensure_blaxel_sdk() -> None:
     """Lazy-install blaxel SDK on demand. Idempotent once installed."""
     try:
@@ -163,9 +203,10 @@ class BlaxelEnvironment(BaseEnvironment):
         bl_region = os.getenv("BL_REGION", "").strip() or "us-pdx-1"
 
         # Blaxel sandbox config — see blaxel.core.SandboxCreateConfiguration.
-        # Resources: memory in MB. CPU/disk are not first-class on Blaxel
-        # sandboxes today (the platform allocates them per image profile),
-        # so we pass only ``memory`` and surface the others in logs.
+        # Resources: memory in MB. CPU and sandbox disk are not first-class
+        # on Blaxel sandboxes today (the platform allocates them per image
+        # profile), so we pass only ``memory`` to the sandbox. When persistent
+        # mode is enabled, ``disk`` is used below as the Blaxel volume size.
         # Region is read by the SDK from the BL_REGION env var; we don't
         # surface it as a Hermes-level knob.
         sandbox_config: dict[str, object] = {
@@ -179,7 +220,7 @@ class BlaxelEnvironment(BaseEnvironment):
 
         if cpu and int(cpu) != 1:
             logger.info("Blaxel: ignoring cpu=%s (allocated by image profile)", cpu)
-        if disk and int(disk) != 10240:
+        if disk and int(disk) != 10240 and not self._persistent:
             logger.info("Blaxel: ignoring disk=%s (allocated by image profile)", disk)
 
         # When persistent, ensure a Blaxel volume exists and mount it.
@@ -194,7 +235,7 @@ class BlaxelEnvironment(BaseEnvironment):
                 )
             volume_name = _blaxel_resource_name("hermes", task_id, "-data")
             self._volume_name = volume_name
-            volume_size_mb = max(1024, int(memory))
+            volume_size_mb = max(1024, int(disk))
             try:
                 SyncVolumeInstance.create_if_not_exists({
                     "name": volume_name,
@@ -500,7 +541,7 @@ class BlaxelEnvironment(BaseEnvironment):
             self._blaxel_workspace_bulk_download(Path(tf.name))
             try:
                 with tarfile.open(tf.name) as tar:
-                    tar.extractall(dest, filter="data")
+                    _extract_data_tar(tar, dest)
             except tarfile.ReadError:
                 logger.debug("Blaxel: workspace sync archive was empty or invalid")
                 return
@@ -536,20 +577,33 @@ class BlaxelEnvironment(BaseEnvironment):
             shell_cmd = f"bash -c {shlex.quote(cmd_string)}"
 
         process_name = f"hermes-{uuid.uuid4().hex[:12]}"
+        killed = threading.Event()
 
-        def cancel():
+        def kill_remote_process():
+            if killed.is_set():
+                return
+            killed.set()
             try:
                 sandbox.process.kill(process_name)
             except Exception:
                 pass
 
         def exec_fn() -> tuple[str, int]:
-            return self._exec_with_timeout(shell_cmd, process_name, timeout)
+            return self._exec_with_timeout(
+                shell_cmd,
+                process_name,
+                timeout,
+                kill_fn=kill_remote_process,
+            )
 
-        return _ThreadedProcessHandle(exec_fn, cancel_fn=cancel)
+        return _ThreadedProcessHandle(exec_fn, cancel_fn=kill_remote_process)
 
     def _exec_with_timeout(
-        self, shell_cmd: str, process_name: str, timeout: int,
+        self,
+        shell_cmd: str,
+        process_name: str,
+        timeout: int,
+        kill_fn=None,
     ) -> tuple[str, int]:
         """Run *shell_cmd* with a Hermes-style timeout.
 
@@ -591,10 +645,13 @@ class BlaxelEnvironment(BaseEnvironment):
                 return self._collect_output(proc_info, process_name, exit_code=exit_code)
             time.sleep(_BLAXEL_POLL_INTERVAL_SECONDS)
 
-        try:
-            sandbox.process.kill(process_name)
-        except Exception:
-            pass
+        if kill_fn is not None:
+            kill_fn()
+        else:
+            try:
+                sandbox.process.kill(process_name)
+            except Exception:
+                pass
         return ("", 124)
 
     def _collect_output(self, response, process_name: str,

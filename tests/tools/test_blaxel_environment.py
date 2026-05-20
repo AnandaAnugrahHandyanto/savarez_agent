@@ -277,9 +277,21 @@ class TestVolume:
             blaxel_sdk.SyncVolumeInstance.create_if_not_exists.call_args[0][0]
         )
         assert vol_config["name"] == "hermes-mytask-data"
+        assert vol_config["size"] == 10240
         assert vol_config["region"] == "us-pdx-1"
         assert vol_config["labels"] == {"hermes_task_id": "mytask"}
         assert env._volume_name == "hermes-mytask-data"
+
+    def test_persistent_volume_size_uses_disk_not_memory(
+        self, make_env, blaxel_sdk,
+    ):
+        _env = make_env(persistent=True, task_id="mytask", memory=8192, disk=20480)
+        vol_config = (
+            blaxel_sdk.SyncVolumeInstance.create_if_not_exists.call_args[0][0]
+        )
+        sandbox_config = blaxel_sdk.SyncSandboxInstance.create.call_args[0][0]
+        assert vol_config["size"] == 20480
+        assert sandbox_config["memory"] == 8192
 
     def test_persistent_mounts_volume_on_sandbox(self, make_env, blaxel_sdk):
         env = make_env(persistent=True, task_id="mytask")
@@ -399,6 +411,34 @@ class TestCleanup:
         assert workspace_sync_commands
         assert "node_modules" in workspace_sync_commands[0]
         assert ".hermes" in workspace_sync_commands[0]
+
+    def test_cleanup_sync_extracts_without_tar_filter_support(
+        self, make_env, monkeypatch, tmp_path,
+    ):
+        hermes_home = tmp_path / "hermes"
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        sb = _make_sandbox()
+        sb.fs.read_binary.return_value = _make_tar_bytes({
+            "result.txt": b"workspace-result",
+        })
+        env = make_env(persistent=False, sandbox=sb)
+        session_id = env._session_id
+
+        original_extractall = tarfile.TarFile.extractall
+
+        def extractall_without_filter(
+            self, path=".", members=None, *, numeric_owner=False, filter=None,
+        ):
+            if filter is not None:
+                raise TypeError("extractall() got an unexpected keyword argument 'filter'")
+            return original_extractall(self, path, members, numeric_owner=numeric_owner)
+
+        monkeypatch.setattr(tarfile.TarFile, "extractall", extractall_without_filter)
+
+        env.cleanup()
+
+        sync_root = hermes_home / "cache" / "remote-syncs" / session_id
+        assert (sync_root / "result.txt").read_bytes() == b"workspace-result"
 
 
 # ---------------------------------------------------------------------------

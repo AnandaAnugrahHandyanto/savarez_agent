@@ -637,7 +637,9 @@ DEFAULT_CONFIG = {
         "blaxel_image": "blaxel/base-image:latest",
         "blaxel_ttl": "24h",
         "vercel_runtime": "node24",
-        # Container resource limits (docker, singularity, modal, daytona, vercel_sandbox, blaxel — ignored for local/ssh)
+        # Shared container resource limits. Blaxel applies backend-specific
+        # defaults at setup/runtime when selected: 4096 MB memory and a
+        # 10240 MB persistent volume unless the user overrides these keys.
         "container_cpu": 1,
         "container_memory": 5120,       # MB (default 5GB)
         "container_disk": 51200,        # MB (default 50GB)
@@ -4239,6 +4241,38 @@ def _normalize_max_turns_config(config: Dict[str, Any]) -> Dict[str, Any]:
     return config
 
 
+def _apply_backend_terminal_defaults(
+    config: Dict[str, Any],
+    user_config: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Apply backend-specific defaults when the user did not override them."""
+    config = dict(config)
+    terminal = dict(config.get("terminal") or {})
+    user_terminal = (
+        user_config.get("terminal")
+        if isinstance(user_config, dict)
+        else None
+    )
+    if not isinstance(user_terminal, dict):
+        user_terminal = {}
+
+    backend = terminal.get("backend") or terminal.get("env_type")
+    if backend == "blaxel":
+        if (
+            "container_memory" not in user_terminal
+            and terminal.get("container_memory") == DEFAULT_CONFIG["terminal"]["container_memory"]
+        ):
+            terminal["container_memory"] = 4096
+        if (
+            "container_disk" not in user_terminal
+            and terminal.get("container_disk") == DEFAULT_CONFIG["terminal"]["container_disk"]
+        ):
+            terminal["container_disk"] = 10240
+
+    config["terminal"] = terminal
+    return config
+
+
 def cfg_get(cfg: Optional[Dict[str, Any]], *keys: str, default: Any = None) -> Any:
     """Traverse nested dict keys safely, returning ``default`` on any miss.
 
@@ -4382,10 +4416,12 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
 
         config = copy.deepcopy(DEFAULT_CONFIG)
 
+        user_config_for_backend_defaults: Dict[str, Any] = {}
         if cache_key is not None:
             try:
                 with open(config_path, encoding="utf-8") as f:
                     user_config = yaml.safe_load(f) or {}
+                user_config_for_backend_defaults = dict(user_config)
 
                 if "max_turns" in user_config:
                     agent_user_config = dict(user_config.get("agent") or {})
@@ -4398,7 +4434,10 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
             except Exception as e:
                 _warn_config_parse_failure(config_path, e)
 
-        normalized = _normalize_root_model_keys(_normalize_max_turns_config(config))
+        normalized = _apply_backend_terminal_defaults(
+            _normalize_root_model_keys(_normalize_max_turns_config(config)),
+            user_config_for_backend_defaults,
+        )
         expanded = _expand_env_vars(normalized)
         _LAST_EXPANDED_CONFIG_BY_PATH[path_key] = copy.deepcopy(expanded)
         if cache_key is not None:
