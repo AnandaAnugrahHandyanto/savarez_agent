@@ -10,8 +10,6 @@ import asyncio
 import json
 import logging
 import re
-import sys
-from pathlib import Path
 from typing import Any, AsyncIterator, Dict, List, Optional
 
 from fastapi import APIRouter, Request
@@ -22,14 +20,12 @@ log = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Engine bootstrap
 # ---------------------------------------------------------------------------
+# sys.path injection is centralised in _shared.py — never done here.
 
-_PLUGIN_DIR = Path(__file__).resolve().parent.parent
-if str(_PLUGIN_DIR) not in sys.path:
-    sys.path.insert(0, str(_PLUGIN_DIR))
+from .._shared import get_engine  # noqa: E402
+from engine import WorkflowEngine  # noqa: E402 (engine already on sys.path via _shared)
 
-from engine import WorkflowEngine, create_engine  # noqa: E402
-
-_engine: WorkflowEngine = create_engine()
+_engine: WorkflowEngine = get_engine()
 
 router = APIRouter()
 

@@ -162,3 +162,83 @@ def test_python_schema_self_consistent():
     # indexes present
     assert "idx_wd_source" in names
     assert "idx_wr_status" in names
+
+
+def test_owner_session_column_present():
+    """Phase 3a: workflow_runs must have an owner_session column after migration."""
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    ensure_schema(conn)
+    cols = [row[1] for row in conn.execute("PRAGMA table_info(workflow_runs)").fetchall()]
+    assert "owner_session" in cols, (
+        "owner_session column missing from workflow_runs — migration 003_owner_session.sql not applied"
+    )
+    conn.close()
+
+
+def test_ensure_schema_concurrent_process_race():
+    """
+    Phase 1.5: Two concurrent processes calling ensure_schema() on the same
+    on-disk DB must not corrupt the schema or raise an exception.
+
+    Uses multiprocessing to exercise the cross-process fcntl.flock guard.
+    One process wins the lock and applies migrations; the second serialises
+    behind it and sees the DB already at the latest version (no-op).
+    Both must exit without error, and the resulting schema must be consistent.
+    """
+    import multiprocessing
+    import tempfile
+
+    def _migrate_worker(db_path: str, result_queue) -> None:  # type: ignore[type-arg]
+        try:
+            conn = sqlite3.connect(db_path, check_same_thread=False)
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA foreign_keys = ON")
+            ensure_schema(conn)
+            conn.close()
+            result_queue.put(("ok", None))
+        except Exception as exc:
+            result_queue.put(("error", str(exc)))
+
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+        db_path = f.name
+
+    try:
+        ctx = multiprocessing.get_context("spawn")
+        q: multiprocessing.Queue = ctx.Queue()  # type: ignore[type-arg]
+
+        p1 = ctx.Process(target=_migrate_worker, args=(db_path, q))
+        p2 = ctx.Process(target=_migrate_worker, args=(db_path, q))
+        p1.start()
+        p2.start()
+        p1.join(timeout=30)
+        p2.join(timeout=30)
+
+        results = [q.get_nowait() for _ in range(2)]
+        errors = [msg for status, msg in results if status == "error"]
+        assert not errors, f"ensure_schema raised in concurrent worker(s): {errors}"
+
+        # Schema must be self-consistent after concurrent migration
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        rows = _get_schema_rows(conn)
+        names = {r[1] for r in rows}
+        assert "workflow_runs" in names
+        assert "owner_session" in [
+            row[1]
+            for row in conn.execute("PRAGMA table_info(workflow_runs)").fetchall()
+        ], "owner_session missing after concurrent migration"
+        conn.close()
+    finally:
+        for ext in ("", "-wal", "-shm"):
+            p = db_path + ext
+            if os.path.exists(p):
+                os.unlink(p)
+        # Remove migrate lock file if created
+        lock_path = db_path + ".migrate.lock"
+        if os.path.exists(lock_path):
+            os.unlink(lock_path)
+        # Remove the canonical lock file too
+        canonical = Path.home() / ".hermes" / "switchui-workflows.db.migrate.lock"
+        # Don't remove production lock — it may be in use
