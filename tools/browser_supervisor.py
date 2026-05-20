@@ -311,6 +311,12 @@ class CDPSupervisor:
         self._pending_calls: Dict[int, asyncio.Future] = {}
         self._ws: Optional[ClientConnection] = None
         self._page_session_id: Optional[str] = None
+        # Track the page targetId alongside the session id so we can verify the
+        # session is still on a real page before each evaluate (avoids landing
+        # on chrome://omnibox-popup when the supervisor started before the user
+        # had a real tab open). See _ensure_real_page_session().
+        self._page_target_id: Optional[str] = None
+        self._session_on_real_page: bool = False
         self._child_sessions: Dict[str, Dict[str, Any]] = {}  # session_id -> info
 
         # Dialog auto-dismiss watchdog handles (per dialog id).
@@ -497,6 +503,11 @@ class CDPSupervisor:
             return {"ok": False, "error": "supervisor has no attached page session"}
 
         async def _do_eval() -> Dict[str, Any]:
+            # If the supervisor started before a real http page existed, we may
+            # be attached to chrome://newtab or chrome://omnibox-popup. Ensure
+            # we're on a real page before evaluating — otherwise the model
+            # silently runs JS against the wrong document.
+            effective_sid = await self._ensure_real_page_session() or session_id
             return await self._cdp(
                 "Runtime.evaluate",
                 {
@@ -507,7 +518,7 @@ class CDPSupervisor:
                     # APIs that require a user-activation context.
                     "userGesture": True,
                 },
-                session_id=session_id,
+                session_id=effective_sid,
                 timeout=timeout,
             )
 
@@ -619,6 +630,8 @@ class CDPSupervisor:
                 # Reset per-connection session state so stale ids don't hang
                 # around after a reconnect.
                 self._page_session_id = None
+                self._page_target_id = None
+                self._session_on_real_page = False
                 self._child_sessions.clear()
                 # We deliberately keep `_pending_dialogs` and `_frames` —
                 # they're reconciled as the supervisor resubscribes and
@@ -681,18 +694,49 @@ class CDPSupervisor:
         """Find a page target, attach flattened session, enable domains, install dialog bridge."""
         resp = await self._cdp("Target.getTargets")
         targets = resp.get("result", {}).get("targetInfos", [])
-        page_target = next((t for t in targets if t.get("type") == "page"), None)
+        # When Chrome runs with --remote-debugging-port and the user already has
+        # tabs open, Target.getTargets returns chrome-internal pages too
+        # (chrome://newtab/, chrome://omnibox-popup.top-chrome/, devtools://...,
+        # chrome-extension://...). All have type == "page", so a naive
+        # next(... type == "page") can land on omnibox-popup and Runtime.evaluate
+        # then runs against the wrong document. Prefer real user pages first;
+        # fall back to any page if we somehow only see chrome-internal targets.
+        _INTERNAL_PREFIXES = (
+            "chrome://", "chrome-untrusted://", "chrome-extension://", "devtools://",
+        )
+        def _is_real_page(t: Dict[str, Any]) -> bool:
+            return (
+                t.get("type") == "page"
+                and not (t.get("url") or "").startswith(_INTERNAL_PREFIXES)
+            )
+        page_target = (
+            next((t for t in targets if _is_real_page(t)), None)
+            or next((t for t in targets if t.get("type") == "page"), None)
+        )
         if page_target is None:
             created = await self._cdp("Target.createTarget", {"url": "about:blank"})
             target_id = created["result"]["targetId"]
+            initial_url = "about:blank"
+            logger.info("supervisor attach: created new about:blank target %s", target_id[:16])
         else:
             target_id = page_target["targetId"]
+            initial_url = page_target.get("url") or ""
+            logger.info(
+                "supervisor attach: target %s url=%s (skipped %d internal pages)",
+                target_id[:16],
+                initial_url[:80],
+                sum(1 for t in targets if t.get("type") == "page" and not _is_real_page(t)),
+            )
 
         attach = await self._cdp(
             "Target.attachToTarget",
             {"targetId": target_id, "flatten": True},
         )
         self._page_session_id = attach["result"]["sessionId"]
+        self._page_target_id = target_id
+        self._session_on_real_page = bool(
+            initial_url and not initial_url.startswith(_INTERNAL_PREFIXES)
+        )
         await self._cdp("Page.enable", session_id=self._page_session_id)
         await self._cdp("Runtime.enable", session_id=self._page_session_id)
         await self._cdp(
@@ -705,6 +749,111 @@ class CDPSupervisor:
         # dialog response work on Browserbase (whose CDP proxy auto-dismisses
         # real native dialogs before we can call handleJavaScriptDialog).
         await self._install_dialog_bridge(self._page_session_id)
+
+    async def _ensure_real_page_session(self) -> Optional[str]:
+        """Make sure the active page session points at a real user page.
+
+        Background: when Chrome is launched with --remote-debugging-port and
+        the user hasn't opened a real tab yet, the only page-type targets are
+        chrome://newtab/ and chrome://omnibox-popup.top-chrome/ — the
+        supervisor attaches to one of those. A later browser_navigate opens a
+        new http(s) tab via the agent-browser CLI but the supervisor stays
+        attached to the original chrome:// target, so Runtime.evaluate runs in
+        the wrong document.
+
+        This method runs cheaply on every evaluate:
+        - Fast path (1 in-process bool check): once we've confirmed we're on
+          a real page, return immediately. The flag is reset on reconnect.
+        - Slow path (3 CDP calls, ~few ms): only when still on a chrome://
+          target. Query Target.getTargetInfo on our current target; if its URL
+          is still internal AND a real http(s) page now exists, re-attach to
+          that one, enable Page/Runtime, install dialog bridge, and update
+          _page_session_id atomically.
+        """
+        if self._session_on_real_page:
+            return self._page_session_id
+
+        _INTERNAL = (
+            "chrome://", "chrome-untrusted://", "chrome-extension://", "devtools://",
+        )
+
+        # Check current target's URL (best-effort — fall through on any error).
+        current_url = ""
+        if self._page_target_id:
+            try:
+                info = await self._cdp(
+                    "Target.getTargetInfo",
+                    {"targetId": self._page_target_id},
+                    timeout=2.0,
+                )
+                current_url = (
+                    info.get("result", {}).get("targetInfo", {}).get("url") or ""
+                )
+            except Exception as e:
+                logger.debug("ensure_real_page: getTargetInfo failed: %s", e)
+                return self._page_session_id
+
+        if current_url and not current_url.startswith(_INTERNAL):
+            # Current target is already real — cache and exit.
+            self._session_on_real_page = True
+            return self._page_session_id
+
+        # We're stuck on a chrome-internal target. Look for a real page.
+        try:
+            resp = await self._cdp("Target.getTargets", timeout=2.0)
+            targets = resp.get("result", {}).get("targetInfos", [])
+        except Exception as e:
+            logger.debug("ensure_real_page: getTargets failed: %s", e)
+            return self._page_session_id
+
+        real = next(
+            (
+                t for t in targets
+                if t.get("type") == "page"
+                and not (t.get("url") or "").startswith(_INTERNAL)
+            ),
+            None,
+        )
+        if real is None:
+            return self._page_session_id  # nothing better available
+
+        # Re-attach to the real page. Mirror _attach_initial_page setup so the
+        # new session behaves identically (Page+Runtime enabled, autoAttach for
+        # OOPIFs, dialog bridge installed).
+        try:
+            attach = await self._cdp(
+                "Target.attachToTarget",
+                {"targetId": real["targetId"], "flatten": True},
+                timeout=5.0,
+            )
+            new_sid = attach["result"]["sessionId"]
+            await self._cdp("Page.enable", session_id=new_sid, timeout=3.0)
+            await self._cdp("Runtime.enable", session_id=new_sid, timeout=3.0)
+            await self._cdp(
+                "Target.setAutoAttach",
+                {"autoAttach": True, "waitForDebuggerOnStart": False, "flatten": True},
+                session_id=new_sid,
+                timeout=3.0,
+            )
+        except Exception as e:
+            logger.warning("ensure_real_page: re-attach failed: %s", e)
+            return self._page_session_id
+
+        # Dialog bridge is best-effort and may take longer; install but don't
+        # block re-attach on it (errors logged inside _install_dialog_bridge).
+        await self._install_dialog_bridge(new_sid)
+
+        logger.info(
+            "supervisor: switched from internal target (url=%s) to real page %s url=%s",
+            current_url[:60] or "<unknown>",
+            real["targetId"][:16],
+            (real.get("url") or "")[:80],
+        )
+        with self._state_lock:
+            self._page_session_id = new_sid
+            self._page_target_id = real["targetId"]
+            self._session_on_real_page = True
+        return new_sid
 
     async def _install_dialog_bridge(self, session_id: str) -> None:
         """Install the dialog-bridge init script + Fetch interceptor on a session.
