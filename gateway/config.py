@@ -110,6 +110,7 @@ class Platform(Enum):
     DISCORD = "discord"
     WHATSAPP = "whatsapp"
     SLACK = "slack"
+    WEBEX = "webex"
     SIGNAL = "signal"
     MATTERMOST = "mattermost"
     MATRIX = "matrix"
@@ -407,6 +408,12 @@ class StreamingConfig:
         )
 
 
+def _is_webex_connected(cfg: PlatformConfig) -> bool:
+    """Return whether Webex has enough auth/config to start."""
+    mode = str(cfg.extra.get("connection_mode") or "websocket").strip().lower()
+    return bool(cfg.token and (mode != "webhook" or cfg.extra.get("public_url")))
+
+
 # -----------------------------------------------------------------------------
 # Built-in platform connection checkers
 # -----------------------------------------------------------------------------
@@ -415,6 +422,7 @@ class StreamingConfig:
 # that rely on the generic ``token or api_key`` check (Telegram, Discord,
 # Slack, Matrix, Mattermost, HomeAssistant) do not need an entry here.
 _PLATFORM_CONNECTED_CHECKERS: dict[Platform, Callable[[PlatformConfig], bool]] = {
+    Platform.WEBEX: _is_webex_connected,
     Platform.WEIXIN: lambda cfg: bool(
         cfg.extra.get("account_id") and (cfg.token or cfg.extra.get("token"))
     ),
@@ -512,6 +520,11 @@ class GatewayConfig:
                 config.extra.get("account_id")
                 and (config.token or config.extra.get("token"))
             )
+
+        # Webex defaults to websocket mode; webhook mode also needs a public URL
+        # before it is considered connected.
+        if platform == Platform.WEBEX:
+            return _is_webex_connected(config)
 
         # Generic token/api_key auth covers Telegram, Discord, Slack, etc.
         if config.token or config.api_key:
@@ -1238,6 +1251,7 @@ def _validate_gateway_config(config: "GatewayConfig") -> None:
         Platform.TELEGRAM: "TELEGRAM_BOT_TOKEN",
         Platform.DISCORD: "DISCORD_BOT_TOKEN",
         Platform.SLACK: "SLACK_BOT_TOKEN",
+        Platform.WEBEX: "WEBEX_BOT_TOKEN",
         Platform.MATTERMOST: "MATTERMOST_TOKEN",
         Platform.MATRIX: "MATRIX_ACCESS_TOKEN",
         Platform.WEIXIN: "WEIXIN_TOKEN",
@@ -1388,7 +1402,43 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             name=os.getenv("SLACK_HOME_CHANNEL_NAME", ""),
             thread_id=os.getenv("SLACK_HOME_CHANNEL_THREAD_ID") or None,
         )
-    
+
+    # Webex
+    webex_token = os.getenv("WEBEX_BOT_TOKEN")
+    if webex_token:
+        if Platform.WEBEX not in config.platforms:
+            config.platforms[Platform.WEBEX] = PlatformConfig()
+        config.platforms[Platform.WEBEX].enabled = True
+        config.platforms[Platform.WEBEX].token = webex_token
+        connection_mode = os.getenv("WEBEX_CONNECTION_MODE", "").strip().lower()
+        if connection_mode:
+            config.platforms[Platform.WEBEX].extra["connection_mode"] = connection_mode
+        public_url = os.getenv("WEBEX_WEBHOOK_PUBLIC_URL", "").strip()
+        if public_url:
+            config.platforms[Platform.WEBEX].extra["public_url"] = public_url
+        webhook_host = os.getenv("WEBEX_WEBHOOK_HOST", "").strip()
+        if webhook_host:
+            config.platforms[Platform.WEBEX].extra["host"] = webhook_host
+        webhook_port = os.getenv("WEBEX_WEBHOOK_PORT", "").strip()
+        if webhook_port:
+            try:
+                config.platforms[Platform.WEBEX].extra["port"] = int(webhook_port)
+            except ValueError:
+                logger.warning("Invalid WEBEX_WEBHOOK_PORT=%r; expected integer", webhook_port)
+        webhook_path = os.getenv("WEBEX_WEBHOOK_PATH", "").strip()
+        if webhook_path:
+            config.platforms[Platform.WEBEX].extra["path"] = webhook_path
+        webhook_secret = os.getenv("WEBEX_WEBHOOK_SECRET", "").strip()
+        if webhook_secret:
+            config.platforms[Platform.WEBEX].extra["secret"] = webhook_secret
+    webex_home = os.getenv("WEBEX_HOME_CHANNEL")
+    if webex_home and Platform.WEBEX in config.platforms:
+        config.platforms[Platform.WEBEX].home_channel = HomeChannel(
+            platform=Platform.WEBEX,
+            chat_id=webex_home,
+            name=os.getenv("WEBEX_HOME_CHANNEL_NAME", "Home"),
+        )
+
     # Signal
     signal_url = os.getenv("SIGNAL_HTTP_URL")
     signal_account = os.getenv("SIGNAL_ACCOUNT")

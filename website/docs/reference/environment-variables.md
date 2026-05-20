@@ -296,6 +296,17 @@ For cloud sandbox backends, persistence is filesystem-oriented. `TERMINAL_LIFETI
 | `GOOGLE_CHAT_MAX_BYTES` | Pub/Sub FlowControl max in-flight bytes (default: `16777216`, 16 MiB) |
 | `GOOGLE_CHAT_BOOTSTRAP_SPACES` | Comma-separated extra space IDs to probe at startup when resolving the bot's own `users/{id}` |
 | `GOOGLE_CHAT_DEBUG_RAW` | Set to any value to log redacted Pub/Sub envelopes at DEBUG level (debugging only) |
+| `WEBEX_BOT_TOKEN` | Webex bot token from the Webex developer portal |
+| `WEBEX_ALLOWED_USERS` | Comma-separated Webex user emails or person IDs allowed to use the bot |
+| `WEBEX_ALLOW_ALL_USERS` | Allow all Webex users without an allowlist |
+| `WEBEX_HOME_CHANNEL` | Default Webex room ID for cron delivery |
+| `WEBEX_HOME_CHANNEL_NAME` | Display name for the Webex home room |
+| `WEBEX_CONNECTION_MODE` | Webex inbound mode: `websocket` (default) or `webhook` |
+| `WEBEX_WEBHOOK_PUBLIC_URL` | Public HTTPS base URL for webhook mode |
+| `WEBEX_WEBHOOK_SECRET` | Shared secret for validating Webex webhook signatures |
+| `WEBEX_WEBHOOK_HOST` | Local bind host for webhook mode (default: `0.0.0.0`) |
+| `WEBEX_WEBHOOK_PORT` | Local webhook listen port (default: `8646`) |
+| `WEBEX_WEBHOOK_PATH` | Local webhook callback path (default: `/webex/webhook`) |
 | `WHATSAPP_ENABLED` | Enable the WhatsApp bridge (`true`/`false`) |
 | `WHATSAPP_MODE` | `bot` (separate number) or `self-chat` (message yourself) |
 | `WHATSAPP_ALLOWED_USERS` | Comma-separated phone numbers (with country code, no `+`), or `*` to allow all senders |

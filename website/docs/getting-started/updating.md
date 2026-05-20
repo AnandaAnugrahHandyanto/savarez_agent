@@ -144,7 +144,7 @@ Compare against the latest release at the [GitHub releases page](https://github.
 
 ### Updating from Messaging Platforms
 
-You can also update directly from Telegram, Discord, Slack, WhatsApp, or Teams by sending:
+You can also update directly from Telegram, Discord, Slack, Webex, WhatsApp, or Teams by sending:
 
 ```
 /update
