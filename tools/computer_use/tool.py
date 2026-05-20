@@ -1,16 +1,14 @@
-"""Entry point for the `computer_use` tool.
+"""Native Hermes Computer Use dispatcher.
 
-Universal (any-model) macOS desktop control via cua-driver's background
-computer-use primitive. Replaces #4562's Anthropic-native `computer_20251124`
-approach — the schema here is standard OpenAI function-calling so every
-tool-capable model can drive it.
+The model-facing surface lives in ``tools/computer_use_tool.py`` as explicit
+``computer_use_*`` tools. This module owns shared validation, policy, backend
+selection, dispatch, and response shaping for those native tools.
 
 Return contract
 ---------------
-For text-only results (wait, key, list_apps, focus_app, failures, etc.):
-  JSON string.
+For text-only results: JSON string.
 
-For captures / actions with `capture_after=True`:
+For app state results or actions with `capture_after=True`:
   A dict wrapped as the OpenAI-style multi-part tool-message content:
 
       {
@@ -124,8 +122,6 @@ def _is_blocked_type(text: str) -> Optional[str]:
 _backend_lock = threading.Lock()
 _backend: Optional[ComputerUseBackend] = None
 # Session-scoped approval state.
-_session_auto_approve = False
-_always_allow: set = set()  # legacy broad action unlocks
 _policy = ComputerUsePolicy()
 
 
@@ -147,7 +143,7 @@ def _get_backend() -> ComputerUseBackend:
 
 def reset_backend_for_tests() -> None:  # pragma: no cover
     """Test helper — tear down the cached backend."""
-    global _backend, _session_auto_approve, _always_allow, _approval_callback
+    global _backend, _approval_callback
     with _backend_lock:
         if _backend is not None:
             try:
@@ -155,8 +151,6 @@ def reset_backend_for_tests() -> None:  # pragma: no cover
             except Exception:
                 pass
         _backend = None
-    _session_auto_approve = False
-    _always_allow = set()
     _approval_callback = None
     _policy.reset_session()
 
@@ -285,10 +279,6 @@ def handle_computer_use(args: Dict[str, Any], **kwargs) -> Any:
 
 def _request_approval(action: str, args: Dict[str, Any]) -> Optional[str]:
     """Return None if approved, or a JSON error string if denied."""
-    global _session_auto_approve, _always_allow
-    if _session_auto_approve or action in _always_allow:
-        return None
-
     req = ComputerUseRequest(action=action, app=app_from_args(args), args=args)
     decision = _policy.evaluate(req)
     if decision.allowed:
@@ -580,16 +570,11 @@ def _element_to_dict(e: UIElement) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 def check_computer_use_requirements() -> bool:
-    """Return True iff computer_use can run on this host.
+    """Return True iff native Computer Use can run on this host.
 
-    Conditions: macOS + cua-driver binary installed (or override via env).
+    Conditions: macOS + configured backend binary installed (or override via env).
     """
     if sys.platform != "darwin":
         return False
     from tools.computer_use.cua_backend import cua_driver_binary_available
     return cua_driver_binary_available()
-
-
-def get_computer_use_schema() -> Dict[str, Any]:
-    from tools.computer_use.schema import COMPUTER_USE_SCHEMA
-    return COMPUTER_USE_SCHEMA

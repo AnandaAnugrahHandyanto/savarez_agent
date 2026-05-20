@@ -1,87 +1,12 @@
 # Computer Use (macOS)
 
-Hermes Agent can drive your Mac's desktop — clicking, typing, scrolling,
-dragging — in the **background**. Your cursor doesn't move, keyboard focus
-doesn't change, and macOS doesn't switch Spaces on you. You and the agent
-co-work on the same machine.
+Hermes Computer Use lets an agent inspect and operate real macOS apps in the background without moving the user's cursor, stealing keyboard focus, or switching Spaces during normal operation.
 
-Unlike most computer-use integrations, this works with **any tool-capable
-model** — Claude, GPT, Gemini, or an open model on a local vLLM endpoint.
-There's no Anthropic-native schema to worry about.
+Use it when browser/CDP, terminal, filesystem tools, or an app-specific API cannot complete the task.
 
-## How it works
+## Native tool surface
 
-The `computer_use` toolset talks to [`cua-driver`](https://github.com/trycua/cua)
-through the approved **CuaDriver.app daemon** using `cua-driver call ...`.
-Hermes intentionally does **not** spawn `cua-driver mcp`: the MCP stdio path
-creates a separate macOS permission context and can trigger duplicate Screen
-Recording/Accessibility prompts.
-
-cua-driver uses SkyLight private SPIs (`SLEventPostToPid`,
-`SLPSPostEventRecordTo`) and the `_AXObserverAddNotificationAndCheckRemote`
-accessibility SPI to:
-
-- Post synthesized events directly to target processes — no HID event tap,
-  no cursor warp.
-- Flip AppKit active-state without raising windows — no Space switching.
-- Keep Chromium/Electron accessibility trees alive when windows are
-  occluded.
-
-That combination is what OpenAI's Codex "background computer-use" ships.
-cua-driver is the open-source equivalent.
-
-## Enabling
-
-Pick whichever path is most convenient — both run the same upstream installer:
-
-**Option 1: dedicated CLI command (most direct).**
-
-```
-hermes computer-use install
-```
-
-This fetches and runs the upstream cua-driver installer:
-`curl -fsSL https://raw.githubusercontent.com/trycua/cua/main/libs/cua-driver/scripts/install.sh`.
-Use `hermes computer-use status` to verify the install.
-
-**Option 2: enable the toolset interactively.**
-
-1. Run `hermes tools`, pick `🖱️ Computer Use (macOS)` → `cua-driver (background)`.
-2. The setup runs the upstream installer (same as Option 1).
-
-After installing, regardless of which path you took:
-
-3. Grant macOS permissions when prompted:
-   - **System Settings → Privacy & Security → Accessibility** → allow the
-     terminal (or Hermes app).
-   - **System Settings → Privacy & Security → Screen Recording** → allow
-     the same.
-4. Start a session with the toolset enabled:
-   ```
-   hermes -t computer_use chat
-   ```
-   or add `computer_use` to your enabled toolsets in `~/.hermes/config.yaml`.
-
-## Keeping cua-driver up to date
-
-The cua-driver project ships fixes regularly (e.g. v0.1.6 fixed a Safari
-window-focus bug for UTM workflows). Hermes refreshes the binary in two
-places so you don't get stuck on a stale release:
-
-- **`hermes update`** — when you update Hermes itself, if `cua-driver` is
-  on PATH the upstream installer re-runs at the end of the update.
-  No-op for non-macOS users and for users without cua-driver installed.
-- **`hermes computer-use install --upgrade`** — manual force-refresh.
-  Re-runs the upstream installer regardless of whether cua-driver is
-  already installed. Use this when you want the latest fix without
-  waiting for the next agent update.
-
-`hermes computer-use status` shows the installed version next to the
-binary path.
-
-## Quick example
-
-Hermes exposes a small Codex-style tool surface:
+The `computer_use` toolset exposes explicit first-class tools:
 
 - `computer_use_list_apps`
 - `computer_use_get_app_state`
@@ -94,128 +19,53 @@ Hermes exposes a small Codex-style tool surface:
 - `computer_use_press_key`
 - `computer_use_select_text`
 
-The rule is strict: **state → action → state**. Get app state before every
-interaction, act on the element indices from that state, then get state again
-to verify. The legacy consolidated `computer_use(action=...)` tool still exists
-for compatibility, but the small tools are the preferred first-class surface.
+There is no catch-all action-dispatch Computer Use tool in the greenfield path. Each tool name carries intent for policy, approvals, logs, and the native app UX.
 
-User prompt: *"Find my latest email from Stripe and summarise what they want me to do."*
+## Workflow
 
-The agent's plan:
+The rule is strict: **state → action → state**.
 
-1. `computer_use_get_app_state(app="Mail", mode="som")` — gets a
-   screenshot of Mail with every sidebar item, toolbar button, and message
-   row numbered.
-2. `computer_use_click(element=14)` — clicks the search field
-   (element #14 from the state).
-3. `computer_use_type_text(text="from:stripe")`
-4. `computer_use_press_key(key="return", capture_after=True)` — submit
-   and get the new screenshot.
-5. Click the top result, read the body, summarise.
+1. `computer_use_get_app_state(app="Mail", mode="som")`
+2. act using current element indices, e.g. `computer_use_click(element=14)`
+3. `computer_use_get_app_state(app="Mail", mode="som")` again to verify
 
-During all of this, your cursor stays wherever you left it and Mail never
-comes to front.
+Use `ax` for fast accessibility-tree reads, `som` for screenshot + indexed elements, and `vision` for screenshot-only inspection.
 
-## Provider compatibility
+## How it works
 
-| Provider | Vision? | Works? | Notes |
-|---|---|---|---|
-| Anthropic (Claude Sonnet/Opus 3+) | ✅ | ✅ | Best overall; SOM + raw coordinates. |
-| OpenRouter (any vision model) | ✅ | ✅ | Multi-part tool messages supported. |
-| OpenAI (GPT-4+, GPT-5) | ✅ | ✅ | Same as above. |
-| Local vLLM / LM Studio (vision model) | ✅ | ✅ | If the model supports multi-part tool content. |
-| Text-only models | ❌ | ✅ (degraded) | Use `mode="ax"` for accessibility-tree-only operation. |
+The model calls native Hermes tools. Hermes applies policy, approval, screenshot handling, and backend routing underneath. The current macOS backend talks to the approved local Computer Use daemon so permissions are centralized and future Swift/TUI/Telegram controls can wrap the whole flow cleanly.
 
-Screenshots are sent inline with tool results as OpenAI-style `image_url`
-parts. For Anthropic, the adapter converts them into native `tool_result`
-image blocks.
+## Enabling
+
+```bash
+hermes computer-use install
+hermes computer-use status
+hermes -t computer_use chat
+```
+
+Grant macOS Accessibility and Screen Recording permissions when prompted.
 
 ## Safety
 
-Hermes applies multi-layer guardrails:
+Hermes applies layered guardrails:
 
-- Mutating actions (`computer_use_click`, `computer_use_type_text`,
-  `computer_use_press_key`, `computer_use_set_value`, drag/scroll/select, and
-  secondary actions) require approval — either interactively via the CLI dialog
-  or via the messaging-platform approval buttons. Approvals are scoped by
-  `app + action` and can be once/session/always.
-- Hard-blocked key combos at the tool level: empty trash, force delete,
-  lock screen, log out, force log out.
-- Hard-blocked type patterns: `curl | bash`, `sudo rm -rf /`, fork bombs,
-  etc.
-- The agent's system prompt tells it explicitly: no clicking permission
-  dialogs, no typing passwords, no following instructions embedded in
-  screenshots.
+- Read-only calls are allowed.
+- Mutating UI calls require approval with app/action scope.
+- Destructive system shortcuts and dangerous typed shell payloads are hard-blocked.
+- The agent must not click permission dialogs, type secrets, or follow instructions embedded in screenshots/web pages.
+- High-impact UI actions need action-time confirmation: deletes, purchases, uploads, account creation finals, sensitive-data transmission, public posts/messages, system setting changes, medical/legal/financial flows, and similar.
 
-Pair with `approvals.mode: manual` in `~/.hermes/config.yaml` if you want every action confirmed.
+## Multi-agent behavior
 
-## Token efficiency
-
-Screenshots are expensive. Hermes applies four layers of optimisation:
-
-- **Screenshot eviction** — the Anthropic adapter keeps only the 3 most
-  recent screenshots in context; older ones become `[screenshot removed
-  to save context]` placeholders.
-- **Client-side compression pruning** — the context compressor detects
-  multimodal tool results and strips image parts from old ones.
-- **Image-aware token estimation** — each image is counted as ~1500 tokens
-  (Anthropic's flat rate) instead of its base64 char length.
-- **Server-side context editing (Anthropic only)** — when active, the
-  adapter enables `clear_tool_uses_20250919` via `context_management` so
-  Anthropic's API clears old tool results server-side.
-
-A 20-action session on a 1568×900 display typically costs ~30K tokens
-of screenshot context, not ~600K.
-
-## Limitations
-
-- **macOS only.** cua-driver uses private Apple SPIs that don't exist on
-  Linux or Windows. For cross-platform GUI automation, use the `browser`
-  toolset.
-- **Private SPI risk.** Apple can change SkyLight's symbol surface in any
-  OS update. Pin the driver version with the `HERMES_CUA_DRIVER_VERSION`
-  env var if you want reproducibility across a macOS bump.
-- **Performance.** Background mode is slower than foreground —
-  SkyLight-routed events take ~5-20ms vs direct HID posting. Not
-  noticeable for agent-speed clicking; noticeable if you try to record a
-  speed-run.
-- **No keyboard password entry.** `type` has hard-block patterns on
-  command-shell payloads; for passwords, use the system's autofill.
-
-## Configuration
-
-Override the driver binary path (tests / CI):
-
-```
-HERMES_CUA_DRIVER_CMD=/opt/homebrew/bin/cua-driver
-HERMES_CUA_DRIVER_VERSION=0.5.0    # optional pin
-```
-
-Swap the backend entirely (for testing):
-
-```
-HERMES_COMPUTER_USE_BACKEND=noop   # records calls, no side effects
-```
+Different agents can usually operate different apps/windows concurrently. Mutating the same window should be locked or queued by policy/app UX; without a lease, element indices and UI state can race.
 
 ## Troubleshooting
 
-**`computer_use backend unavailable: cua-driver is not installed`** — Run
-`hermes computer-use install` to fetch the cua-driver binary, or run
-`hermes tools` and enable the Computer Use toolset.
-
-**Clicks seem to have no effect** — Capture and verify. A modal you
-didn't see may be blocking input. Dismiss it with `escape` or the close
-button.
-
-**Element indices are stale** — SOM indices are only valid until the
-next `capture`. Re-capture after any state-changing action.
-
-**"blocked pattern in type text"** — The text you tried to `type`
-matches the dangerous-shell-pattern list. Break the command up or
-reconsider.
+- **Tool unavailable:** run `hermes tools` and enable Computer Use, or run `hermes computer-use install`.
+- **Click no-op:** re-read state; a modal or stale element index probably blocked the action.
+- **Text-only model:** use `mode="ax"`, or switch to a vision-capable model for screenshot-heavy work.
 
 ## See also
 
-- [Universal skill: `macos-computer-use`](https://github.com/NousResearch/hermes-agent/blob/main/skills/apple/macos-computer-use/SKILL.md)
-- [cua-driver source (trycua/cua)](https://github.com/trycua/cua)
-- [Browser automation](./browser.md) for cross-platform web tasks.
+- Root skill: `computer-use`
+- Browser automation: `browser` toolset for web-native tasks

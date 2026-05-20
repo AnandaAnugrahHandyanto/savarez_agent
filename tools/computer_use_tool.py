@@ -1,9 +1,9 @@
-"""Shim for tool discovery. Registers Codex-style computer_use tools.
+"""Native Hermes Computer Use tool registrations.
 
-The implementation lives in ``tools/computer_use/``. We expose both the legacy
-single-dispatch ``computer_use`` tool and a small Codex-like surface so models
-can follow the safer state → action → state rhythm without juggling an action
-discriminator.
+Greenfield Computer Use exposes explicit ``computer_use_*`` tools. There is no
+model-facing catch-all action dispatcher; each tool name carries intent so
+policy, approvals, logging, and the future Swift app can reason about calls
+without reverse-parsing an ``action`` field.
 """
 
 from __future__ import annotations
@@ -11,7 +11,6 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any, Dict
 
-from tools.computer_use.schema import COMPUTER_USE_SCHEMA
 from tools.computer_use.tool import (
     check_computer_use_requirements,
     handle_computer_use,
@@ -38,20 +37,6 @@ def _handle(action: str, args: Dict[str, Any], **kwargs):
     return handle_computer_use(payload, **kwargs)
 
 
-registry.register(
-    name="computer_use",
-    toolset="computer_use",
-    schema=COMPUTER_USE_SCHEMA,
-    handler=lambda args, **kw: handle_computer_use(args, **kw),
-    check_fn=check_computer_use_requirements,
-    requires_env=[],
-    description=(
-        "Universal macOS desktop control via cua-driver. Prefer the smaller "
-        "computer_use_* tools for new workflows."
-    ),
-    override=True,
-)
-
 _COMMON_TARGET = {
     "app": {"type": "string", "description": "App name or bundle id, e.g. Safari or com.apple.Safari."},
     "element": {"type": "integer", "description": "Element index from the latest app state."},
@@ -60,10 +45,10 @@ _COMMON_TARGET = {
 }
 
 _TOOL_SPECS = [
-    ("computer_use_list_apps", "List running macOS apps/windows available to computer use.", {}, [], "list_apps"),
+    ("computer_use_list_apps", "List macOS apps/windows available to Computer Use.", {}, [], "list_apps"),
     ("computer_use_get_app_state", "Get app/window state. Call this before and after every action.", {
         "app": _COMMON_TARGET["app"],
-        "mode": {"type": "string", "enum": ["som", "vision", "ax"], "description": "Default som: screenshot + numbered accessibility elements."},
+        "mode": {"type": "string", "enum": ["som", "vision", "ax"], "description": "som: screenshot + accessibility elements; ax: tree only; vision: screenshot only."},
     }, [], "get_app_state"),
     ("computer_use_click", "Click an element or coordinate in the current app state.", {
         **_COMMON_TARGET,
@@ -91,7 +76,7 @@ _TOOL_SPECS = [
         "text": {"type": "string"},
         "capture_after": _COMMON_TARGET["capture_after"],
     }, ["text"], "type_text"),
-    ("computer_use_set_value", "Set a value on an element, including selects/popups/sliders.", {
+    ("computer_use_set_value", "Set a value on an element, including text fields, selects, popups, and sliders.", {
         "app": _COMMON_TARGET["app"],
         "element": _COMMON_TARGET["element"],
         "value": {"type": "string"},

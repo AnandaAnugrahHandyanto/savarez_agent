@@ -1,10 +1,8 @@
 """Cua-driver backend (macOS only), CLI/app-daemon transport.
 
-Hermes must not launch ``cua-driver mcp`` for first-class computer use. The MCP
-stdio route creates a separate macOS TCC permission context and causes duplicate
-CuaDriver permission prompts. This backend shells out to ``cua-driver call ...``
-so all actions route through the approved CuaDriver.app daemon, matching the
-Codex-style policy/workflow layer Hermes exposes to models.
+The native Hermes tool surface routes through the approved CuaDriver.app daemon.
+This backend shells out to ``cua-driver call ...`` so all actions share the same
+macOS permission context that the Swift app can onboard, monitor, and stop.
 """
 
 from __future__ import annotations

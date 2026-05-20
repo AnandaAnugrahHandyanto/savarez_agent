@@ -34,66 +34,52 @@ def noop_backend():
 
 
 # ---------------------------------------------------------------------------
-# Schema & registration
+# Native tool registration
 # ---------------------------------------------------------------------------
 
-class TestSchema:
-    def test_schema_is_universal_openai_function_format(self):
-        from tools.computer_use.schema import COMPUTER_USE_SCHEMA
-        assert COMPUTER_USE_SCHEMA["name"] == "computer_use"
-        assert "parameters" in COMPUTER_USE_SCHEMA
-        params = COMPUTER_USE_SCHEMA["parameters"]
-        assert params["type"] == "object"
-        assert "action" in params["properties"]
-        assert params["required"] == ["action"]
-
-    def test_schema_does_not_use_anthropic_native_types(self):
-        """Generic OpenAI schema — no `type: computer_20251124`."""
-        from tools.computer_use.schema import COMPUTER_USE_SCHEMA
-        assert COMPUTER_USE_SCHEMA.get("type") != "computer_20251124"
-        # The word should not appear in the description either.
-        dumped = json.dumps(COMPUTER_USE_SCHEMA)
-        assert "computer_20251124" not in dumped
-
-    def test_schema_supports_element_and_coordinate_targeting(self):
-        from tools.computer_use.schema import COMPUTER_USE_SCHEMA
-        props = COMPUTER_USE_SCHEMA["parameters"]["properties"]
-        assert "element" in props
-        assert "coordinate" in props
-        assert props["element"]["type"] == "integer"
-        assert props["coordinate"]["type"] == "array"
-
-    def test_schema_lists_all_expected_actions(self):
-        from tools.computer_use.schema import COMPUTER_USE_SCHEMA
-        actions = set(COMPUTER_USE_SCHEMA["parameters"]["properties"]["action"]["enum"])
-        assert actions >= {
-            "capture", "click", "double_click", "right_click", "middle_click",
-            "drag", "scroll", "type", "key", "wait", "list_apps", "focus_app",
-        }
-
-    def test_capture_mode_enum_has_som_vision_ax(self):
-        from tools.computer_use.schema import COMPUTER_USE_SCHEMA
-        modes = set(COMPUTER_USE_SCHEMA["parameters"]["properties"]["mode"]["enum"])
-        assert modes == {"som", "vision", "ax"}
-
-
 class TestRegistration:
-    def test_tool_registers_with_registry(self):
-        # Importing the shim registers the tool.
+    EXPECTED = {
+        "computer_use_list_apps",
+        "computer_use_get_app_state",
+        "computer_use_click",
+        "computer_use_perform_secondary_action",
+        "computer_use_scroll",
+        "computer_use_drag",
+        "computer_use_type_text",
+        "computer_use_set_value",
+        "computer_use_press_key",
+        "computer_use_select_text",
+    }
+
+    def test_only_explicit_native_tools_register(self):
         import tools.computer_use_tool  # noqa: F401
         from tools.registry import registry
-        entry = registry._tools.get("computer_use")
-        assert entry is not None
-        assert entry.toolset == "computer_use"
-        assert entry.schema["name"] == "computer_use"
+        assert self.EXPECTED <= set(registry._tools)
+        assert "computer_use" not in registry._tools
+        assert all(registry._tools[name].toolset == "computer_use" for name in self.EXPECTED)
+
+    def test_schemas_are_openai_function_format(self):
+        import tools.computer_use_tool  # noqa: F401
+        from tools.registry import registry
+        for name in self.EXPECTED:
+            schema = registry._tools[name].schema
+            assert schema["name"] == name
+            assert schema["parameters"]["type"] == "object"
+            assert "type" not in schema or schema["type"] != "computer_20251124"
+
+    def test_get_app_state_mode_enum_has_som_vision_ax(self):
+        import tools.computer_use_tool  # noqa: F401
+        from tools.registry import registry
+        schema = registry._tools["computer_use_get_app_state"].schema
+        modes = set(schema["parameters"]["properties"]["mode"]["enum"])
+        assert modes == {"som", "vision", "ax"}
 
     def test_check_fn_is_false_on_linux(self):
         import tools.computer_use_tool  # noqa: F401
         from tools.registry import registry
-        entry = registry._tools["computer_use"]
+        entry = registry._tools["computer_use_get_app_state"]
         if sys.platform != "darwin":
             assert entry.check_fn() is False
-
 
 # ---------------------------------------------------------------------------
 # Dispatch & action routing
@@ -305,7 +291,7 @@ class TestAnthropicAdapterMultimodal:
                 "tool_calls": [{
                     "id": "call_1",
                     "type": "function",
-                    "function": {"name": "computer_use", "arguments": "{}"},
+                    "function": {"name": "computer_use_get_app_state", "arguments": "{}"},
                 }],
             },
             {
@@ -361,7 +347,7 @@ class TestAnthropicAdapterMultimodal:
                 "tool_calls": [{
                     "id": f"call_{i}",
                     "type": "function",
-                    "function": {"name": "computer_use", "arguments": "{}"},
+                    "function": {"name": "computer_use_get_app_state", "arguments": "{}"},
                 }],
             })
             messages.append(_mm_tool(f"call_{i}"))
@@ -428,13 +414,13 @@ class TestCompressorScreenshotPruning:
         messages = [
             {"role": "user", "content": "go"},
             {"role": "assistant", "content": "",
-             "tool_calls": [{"id": "c1", "function": {"name": "computer_use", "arguments": "{}"}}]},
+             "tool_calls": [{"id": "c1", "function": {"name": "computer_use_get_app_state", "arguments": "{}"}}]},
             {"role": "tool", "tool_call_id": "c1", "content": [
                 {"type": "text", "text": "cap"},
                 {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{fake_png}"}},
             ]},
             {"role": "assistant", "content": "", "tool_calls": [
-                {"id": "c2", "function": {"name": "computer_use", "arguments": "{}"}}
+                {"id": "c2", "function": {"name": "computer_use_get_app_state", "arguments": "{}"}}
             ]},
             {"role": "tool", "tool_call_id": "c2", "content": "text-only short"},
             {"role": "assistant", "content": "done"},
@@ -458,7 +444,7 @@ class TestCompressorScreenshotPruning:
         messages = [
             {"role": "user", "content": "go"},
             {"role": "assistant", "content": "", "tool_calls": [
-                {"id": "c1", "function": {"name": "computer_use", "arguments": "{}"}}
+                {"id": "c1", "function": {"name": "computer_use_get_app_state", "arguments": "{}"}}
             ]},
             {"role": "tool", "tool_call_id": "c1", "content": {
                 "_multimodal": True,
@@ -607,10 +593,10 @@ class TestRunAgentMultimodalHelpers:
         }
 
         with patch.object(agent, "_model_supports_vision", return_value=False):
-            content = agent._tool_result_content_for_active_model("computer_use", result)
+            content = agent._tool_result_content_for_active_model("computer_use_get_app_state", result)
 
         parsed = json.loads(content)
-        assert "computer_use returned screenshot/image content" in parsed["error"]
+        assert "Computer Use returned screenshot/image content" in parsed["error"]
         assert parsed["text_summary"] == "screen captured"
         assert "image_url" not in content
 
@@ -627,7 +613,7 @@ class TestRunAgentMultimodalHelpers:
         }
 
         with patch.object(agent, "_model_supports_vision", return_value=True):
-            content = agent._tool_result_content_for_active_model("computer_use", result)
+            content = agent._tool_result_content_for_active_model("computer_use_get_app_state", result)
 
         assert content is result["content"]
         assert any(part.get("type") == "image_url" for part in content)
@@ -654,53 +640,30 @@ class TestRunAgentMultimodalHelpers:
 
 
 # ---------------------------------------------------------------------------
-# Universality: does the schema work without Anthropic?
+# Universality: native schemas work without Anthropic
 # ---------------------------------------------------------------------------
 
 class TestUniversality:
-    def test_schema_is_valid_openai_function_schema(self):
-        """The schema must be round-trippable as a standard OpenAI tool definition."""
-        from tools.computer_use.schema import COMPUTER_USE_SCHEMA
-        # OpenAI tool definition wrapper
-        wrapped = {"type": "function", "function": COMPUTER_USE_SCHEMA}
-        # Should serialize to JSON without error
-        blob = json.dumps(wrapped)
-        parsed = json.loads(blob)
-        assert parsed["function"]["name"] == "computer_use"
-
-    def test_no_provider_gating_in_tool_registration(self):
-        """Anthropic-only gating was a #4562 artefact — must not recur."""
+    def test_explicit_schemas_are_valid_openai_function_schemas(self):
         import tools.computer_use_tool  # noqa: F401
         from tools.registry import registry
-        entry = registry._tools["computer_use"]
-        # check_fn should only check platform + binary availability,
-        # never provider.
+        for name in TestRegistration.EXPECTED:
+            wrapped = {"type": "function", "function": registry._tools[name].schema}
+            blob = json.dumps(wrapped)
+            parsed = json.loads(blob)
+            assert parsed["function"]["name"] == name
+
+    def test_no_provider_gating_in_tool_registration(self):
+        import tools.computer_use_tool  # noqa: F401
+        from tools.registry import registry
+        entry = registry._tools["computer_use_get_app_state"]
         import inspect
         source = inspect.getsource(entry.check_fn)
         assert "anthropic" not in source.lower()
         assert "openai" not in source.lower()
 
-
-# --- Codex-style surface tests appended by Hermes ---
+# --- Native tool surface routing tests appended by Hermes ---
 class TestCodexStyleToolSurface:
-    def test_codex_style_tools_register_with_small_surface(self):
-        import tools.computer_use_tool  # noqa: F401
-        from tools.registry import registry
-        expected = {
-            "computer_use_list_apps",
-            "computer_use_get_app_state",
-            "computer_use_click",
-            "computer_use_perform_secondary_action",
-            "computer_use_scroll",
-            "computer_use_drag",
-            "computer_use_type_text",
-            "computer_use_set_value",
-            "computer_use_press_key",
-            "computer_use_select_text",
-        }
-        assert expected <= set(registry._tools)
-        assert all(registry._tools[name].toolset == "computer_use" for name in expected)
-
     def test_codex_style_get_app_state_routes_to_capture(self, noop_backend):
         from tools.registry import registry
         import tools.computer_use_tool  # noqa: F401
