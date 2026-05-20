@@ -11,8 +11,13 @@ There's no Anthropic-native schema to worry about.
 
 ## How it works
 
-The `computer_use` toolset speaks MCP over stdio to [`cua-driver`](https://github.com/trycua/cua),
-a macOS driver that uses SkyLight private SPIs (`SLEventPostToPid`,
+The `computer_use` toolset talks to [`cua-driver`](https://github.com/trycua/cua)
+through the approved **CuaDriver.app daemon** using `cua-driver call ...`.
+Hermes intentionally does **not** spawn `cua-driver mcp`: the MCP stdio path
+creates a separate macOS permission context and can trigger duplicate Screen
+Recording/Accessibility prompts.
+
+cua-driver uses SkyLight private SPIs (`SLEventPostToPid`,
 `SLPSPostEventRecordTo`) and the `_AXObserverAddNotificationAndCheckRemote`
 accessibility SPI to:
 
@@ -76,17 +81,35 @@ binary path.
 
 ## Quick example
 
+Hermes exposes a small Codex-style tool surface:
+
+- `computer_use_list_apps`
+- `computer_use_get_app_state`
+- `computer_use_click`
+- `computer_use_perform_secondary_action`
+- `computer_use_scroll`
+- `computer_use_drag`
+- `computer_use_type_text`
+- `computer_use_set_value`
+- `computer_use_press_key`
+- `computer_use_select_text`
+
+The rule is strict: **state → action → state**. Get app state before every
+interaction, act on the element indices from that state, then get state again
+to verify. The legacy consolidated `computer_use(action=...)` tool still exists
+for compatibility, but the small tools are the preferred first-class surface.
+
 User prompt: *"Find my latest email from Stripe and summarise what they want me to do."*
 
 The agent's plan:
 
-1. `computer_use(action="capture", mode="som", app="Mail")` — gets a
+1. `computer_use_get_app_state(app="Mail", mode="som")` — gets a
    screenshot of Mail with every sidebar item, toolbar button, and message
    row numbered.
-2. `computer_use(action="click", element=14)` — clicks the search field
-   (element #14 from the capture).
-3. `computer_use(action="type", text="from:stripe")`
-4. `computer_use(action="key", keys="return", capture_after=True)` — submit
+2. `computer_use_click(element=14)` — clicks the search field
+   (element #14 from the state).
+3. `computer_use_type_text(text="from:stripe")`
+4. `computer_use_press_key(key="return", capture_after=True)` — submit
    and get the new screenshot.
 5. Click the top result, read the body, summarise.
 
@@ -111,9 +134,11 @@ image blocks.
 
 Hermes applies multi-layer guardrails:
 
-- Destructive actions (click, type, drag, scroll, key, focus_app) require
-  approval — either interactively via the CLI dialog or via the
-  messaging-platform approval buttons.
+- Mutating actions (`computer_use_click`, `computer_use_type_text`,
+  `computer_use_press_key`, `computer_use_set_value`, drag/scroll/select, and
+  secondary actions) require approval — either interactively via the CLI dialog
+  or via the messaging-platform approval buttons. Approvals are scoped by
+  `app + action` and can be once/session/always.
 - Hard-blocked key combos at the tool level: empty trash, force delete,
   lock screen, log out, force log out.
 - Hard-blocked type patterns: `curl | bash`, `sudo rm -rf /`, fork bombs,

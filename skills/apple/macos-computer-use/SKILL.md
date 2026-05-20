@@ -16,10 +16,29 @@ metadata:
 
 # macOS Computer Use (universal, any-model)
 
-You have a `computer_use` tool that drives the Mac in the **background**.
-Your actions do NOT move the user's cursor, steal keyboard focus, or switch
-Spaces. The user can keep typing in their editor while you click around in
-Safari in another Space. This is the opposite of pyautogui-style automation.
+You have Codex-style `computer_use_*` tools that drive the Mac in the
+**background**. Your actions do NOT move the user's cursor, steal keyboard
+focus, or switch Spaces. The user can keep typing in their editor while you
+click around in Safari in another Space. This is the opposite of pyautogui-style
+automation.
+
+The preferred tool surface is small and explicit:
+
+```text
+computer_use_list_apps
+computer_use_get_app_state
+computer_use_click
+computer_use_perform_secondary_action
+computer_use_scroll
+computer_use_drag
+computer_use_type_text
+computer_use_set_value
+computer_use_press_key
+computer_use_select_text
+```
+
+The legacy consolidated `computer_use(action=...)` tool may still exist for
+compatibility, but prefer the small tools when available.
 
 Everything here works with any tool-capable model — Claude, GPT, Gemini, or
 an open model running through a local OpenAI-compatible endpoint. There is
@@ -27,10 +46,10 @@ no Anthropic-native schema to learn.
 
 ## The canonical workflow
 
-**Step 1 — Capture first.** Almost every task starts with:
+**State → action → state.** Almost every task starts with:
 
 ```
-computer_use(action="capture", mode="som", app="Safari")
+computer_use_get_app_state(app="Safari", mode="som")
 ```
 
 Returns a screenshot with numbered overlays on every interactable element
@@ -47,7 +66,7 @@ AND an AX-tree index like:
 habit:
 
 ```
-computer_use(action="click", element=7)
+computer_use_click(element=7)
 ```
 
 Much more reliable than pixel coordinates for every model. Claude was
@@ -57,7 +76,7 @@ trained on both; other models are often only reliable with indices.
 save a round-trip by asking for the post-action capture inline:
 
 ```
-computer_use(action="click", element=7, capture_after=True)
+computer_use_click(element=7, capture_after=True)
 ```
 
 ## Capture modes
@@ -71,18 +90,16 @@ computer_use(action="click", element=7, capture_after=True)
 ## Actions
 
 ```
-capture           mode=som|vision|ax   app=…  (default: current app)
-click             element=N     OR     coordinate=[x, y]
-double_click      element=N     OR     coordinate=[x, y]
-right_click       element=N     OR     coordinate=[x, y]
-middle_click      element=N     OR     coordinate=[x, y]
-drag              from_element=N, to_element=M        (or from/to_coordinate)
-scroll            direction=up|down|left|right   amount=3 (ticks)
-type              text="…"
-key               keys="cmd+s" | "return" | "escape" | "ctrl+alt+t"
-wait              seconds=0.5
-list_apps
-focus_app         app="Safari"  raise_window=false   (default: don't raise)
+computer_use_get_app_state mode=som|vision|ax app=…
+computer_use_click element=N OR coordinate=[x, y]
+computer_use_perform_secondary_action element=N secondary_action=AXShowMenu
+computer_use_scroll direction=up|down|left|right amount=3
+computer_use_drag from_element=N, to_element=M (or from/to_coordinate)
+computer_use_type_text text="…"
+computer_use_set_value element=N value="…"
+computer_use_press_key key="cmd+s" | "return" | "escape" | "ctrl+alt+t"
+computer_use_select_text element=N selection=all|text text="…"
+computer_use_list_apps
 ```
 
 All actions accept optional `capture_after=True` to get a follow-up

@@ -679,3 +679,72 @@ class TestUniversality:
         source = inspect.getsource(entry.check_fn)
         assert "anthropic" not in source.lower()
         assert "openai" not in source.lower()
+
+
+# --- Codex-style surface tests appended by Hermes ---
+class TestCodexStyleToolSurface:
+    def test_codex_style_tools_register_with_small_surface(self):
+        import tools.computer_use_tool  # noqa: F401
+        from tools.registry import registry
+        expected = {
+            "computer_use_list_apps",
+            "computer_use_get_app_state",
+            "computer_use_click",
+            "computer_use_perform_secondary_action",
+            "computer_use_scroll",
+            "computer_use_drag",
+            "computer_use_type_text",
+            "computer_use_set_value",
+            "computer_use_press_key",
+            "computer_use_select_text",
+        }
+        assert expected <= set(registry._tools)
+        assert all(registry._tools[name].toolset == "computer_use" for name in expected)
+
+    def test_codex_style_get_app_state_routes_to_capture(self, noop_backend):
+        from tools.registry import registry
+        import tools.computer_use_tool  # noqa: F401
+        out = registry.dispatch("computer_use_get_app_state", {"app": "Safari"})
+        parsed = json.loads(out)
+        assert parsed["mode"] == "som"
+        assert noop_backend.calls[-1] == ("capture", {"mode": "som", "app": "Safari"})
+
+    def test_codex_style_type_and_press_key_route_to_backend(self, noop_backend):
+        from tools.registry import registry
+        import tools.computer_use_tool  # noqa: F401
+        registry.dispatch("computer_use_type_text", {"app": "Safari", "text": "hello"})
+        registry.dispatch("computer_use_press_key", {"app": "Safari", "key": "Return"})
+        assert ("type", {"text": "hello"}) in noop_backend.calls
+        assert ("key", {"keys": "Return"}) in noop_backend.calls
+
+    def test_select_text_and_secondary_action_are_supported_actions(self, noop_backend):
+        from tools.computer_use.tool import handle_computer_use
+        out = handle_computer_use({"action": "select_text", "element": 3, "text": "hello", "selection": "text"})
+        parsed = json.loads(out)
+        assert parsed["action"] == "select_text"
+        out = handle_computer_use({"action": "perform_secondary_action", "element": 1, "secondary_action": "Raise"})
+        parsed = json.loads(out)
+        assert parsed["action"] == "perform_secondary_action"
+
+
+class TestComputerUsePolicy:
+    def test_mutating_actions_fail_closed_in_gateway_without_callback(self, noop_backend):
+        from tools.computer_use.tool import handle_computer_use
+        with patch.dict(os.environ, {"HERMES_GATEWAY_SESSION": "1", "HERMES_SESSION_KEY": "cu-test"}, clear=False):
+            out = handle_computer_use({"action": "click", "element": 1})
+        parsed = json.loads(out)
+        assert "error" in parsed
+        assert "approval" in parsed["error"].lower()
+        assert not any(name == "click" for name, _ in noop_backend.calls)
+
+    def test_policy_grants_session_scope_after_approval(self, noop_backend):
+        from tools.computer_use.tool import handle_computer_use, set_approval_callback
+        calls = []
+        def approve(action, args, summary):
+            calls.append((action, summary))
+            return "approve_session"
+        set_approval_callback(approve)
+        handle_computer_use({"action": "click", "app": "Safari", "element": 1})
+        handle_computer_use({"action": "click", "app": "Safari", "element": 2})
+        assert len(calls) == 1
+        assert [name for name, _ in noop_backend.calls].count("click") == 2

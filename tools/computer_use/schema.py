@@ -32,15 +32,20 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
                 "type": "string",
                 "enum": [
                     "capture",
+                    "get_app_state",
                     "click",
                     "double_click",
                     "right_click",
                     "middle_click",
+                    "perform_secondary_action",
                     "drag",
                     "scroll",
                     "type",
+                    "type_text",
                     "key",
+                    "press_key",
                     "set_value",
+                    "select_text",
                     "wait",
                     "list_apps",
                     "focus_app",
@@ -156,6 +161,18 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
                     "Key combo, e.g. 'cmd+s', 'ctrl+alt+t', 'return', "
                     "'escape', 'tab'. Use '+' to combine."
                 ),
+            },
+            "key": {
+                "type": "string",
+                "description": "Alias for keys used by computer_use_press_key.",
+            },
+            "secondary_action": {
+                "type": "string",
+                "description": "AX secondary action to perform, e.g. AXShowMenu, AXPress, Raise.",
+            },
+            "selection": {
+                "type": "string",
+                "description": "For select_text: 'all', 'text', or a backend-supported selection mode.",
             },
             "seconds": {
                 "type": "number",

@@ -46,6 +46,7 @@ from tools.computer_use.backend import (
     ComputerUseBackend,
     UIElement,
 )
+from tools.computer_use.policy import ComputerUsePolicy, ComputerUseRequest, app_from_args
 
 logger = logging.getLogger(__name__)
 
@@ -69,12 +70,13 @@ def set_approval_callback(cb) -> None:
 
 
 # Actions that read, not mutate. Always allowed.
-_SAFE_ACTIONS = frozenset({"capture", "wait", "list_apps"})
+_SAFE_ACTIONS = frozenset({"capture", "get_app_state", "wait", "list_apps"})
 
 # Actions that mutate user-visible state. Go through approval.
 _DESTRUCTIVE_ACTIONS = frozenset({
     "click", "double_click", "right_click", "middle_click",
-    "drag", "scroll", "type", "key", "set_value", "focus_app",
+    "perform_secondary_action", "drag", "scroll", "type", "type_text",
+    "key", "press_key", "set_value", "select_text", "focus_app",
 })
 
 # Hard-blocked key combinations. Mirrored from #4562 — these are destructive
@@ -123,7 +125,8 @@ _backend_lock = threading.Lock()
 _backend: Optional[ComputerUseBackend] = None
 # Session-scoped approval state.
 _session_auto_approve = False
-_always_allow: set = set()  # action names the user unlocked for the session
+_always_allow: set = set()  # legacy broad action unlocks
+_policy = ComputerUsePolicy()
 
 
 def _get_backend() -> ComputerUseBackend:
@@ -144,7 +147,7 @@ def _get_backend() -> ComputerUseBackend:
 
 def reset_backend_for_tests() -> None:  # pragma: no cover
     """Test helper — tear down the cached backend."""
-    global _backend, _session_auto_approve, _always_allow
+    global _backend, _session_auto_approve, _always_allow, _approval_callback
     with _backend_lock:
         if _backend is not None:
             try:
@@ -154,6 +157,8 @@ def reset_backend_for_tests() -> None:  # pragma: no cover
         _backend = None
     _session_auto_approve = False
     _always_allow = set()
+    _approval_callback = None
+    _policy.reset_session()
 
 
 class _NoopBackend(ComputerUseBackend):  # pragma: no cover
@@ -200,7 +205,19 @@ class _NoopBackend(ComputerUseBackend):  # pragma: no cover
         self.calls.append(("focus_app", {"app": app, "raise": raise_window}))
         return ActionResult(ok=True, action="focus_app")
 
+    def set_value(self, value: str, element: Optional[int] = None) -> ActionResult:
+        self.calls.append(("set_value", {"value": value, "element": element}))
+        return ActionResult(ok=True, action="set_value")
 
+    def perform_secondary_action(self, element: Optional[int] = None, secondary_action: str = "AXShowMenu") -> ActionResult:
+        self.calls.append(("perform_secondary_action", {"element": element, "secondary_action": secondary_action}))
+        return ActionResult(ok=True, action="perform_secondary_action")
+
+    def select_text(self, element: Optional[int] = None, text: str = "", selection: str = "all") -> ActionResult:
+        self.calls.append(("select_text", {"element": element, "text": text, "selection": selection}))
+        return ActionResult(ok=True, action="select_text")
+
+# ---------------------------------------------------------------------------
 # ---------------------------------------------------------------------------
 # Dispatch
 # ---------------------------------------------------------------------------
@@ -212,6 +229,15 @@ def handle_computer_use(args: Dict[str, Any], **kwargs) -> Any:
     (image + summary) which run_agent.py wraps into the tool message.
     """
     action = (args.get("action") or "").strip().lower()
+    action = {
+        "get_app_state": "capture",
+        "type_text": "type",
+        "press_key": "key",
+    }.get(action, action)
+    args = dict(args)
+    args["action"] = action
+    if action == "key" and "keys" not in args and "key" in args:
+        args["keys"] = args.get("key")
     if not action:
         return json.dumps({"error": "missing `action`"})
 
@@ -260,27 +286,54 @@ def handle_computer_use(args: Dict[str, Any], **kwargs) -> Any:
 def _request_approval(action: str, args: Dict[str, Any]) -> Optional[str]:
     """Return None if approved, or a JSON error string if denied."""
     global _session_auto_approve, _always_allow
-    if _session_auto_approve:
+    if _session_auto_approve or action in _always_allow:
         return None
-    if action in _always_allow:
+
+    req = ComputerUseRequest(action=action, app=app_from_args(args), args=args)
+    decision = _policy.evaluate(req)
+    if decision.allowed:
         return None
+    if not decision.approval_required:
+        return json.dumps({"error": decision.reason, "action": action})
+
+    summary = _summarize_action(action, args)
     cb = _approval_callback
     if cb is None:
-        # No CLI approval wired — default allow. Gateway approval is handled
-        # one layer out via the normal tool-approval infra.
+        if os.environ.get("HERMES_GATEWAY_SESSION") or os.environ.get("HERMES_EXEC_ASK"):
+            try:
+                from tools.approval import request_gateway_approval_blocking
+                verdict = request_gateway_approval_blocking({
+                    "command": f"computer_use: {summary}",
+                    "description": f"Allow computer_use to perform `{action}`?",
+                    "pattern_key": f"computer_use:{(req.app or '*').lower()}:{action}",
+                    "pattern_keys": [f"computer_use:{(req.app or '*').lower()}:{action}"],
+                    "tool": "computer_use",
+                    "computer_use": {"action": action, "app": req.app, "risk": decision.risk.value, "summary": summary},
+                })
+            except Exception:
+                verdict = "deny"
+            if verdict in {"once", "approve_once"}:
+                return None
+            if verdict in {"session", "always", "approve_session", "always_approve", "approve_always"}:
+                _policy.grant(req, verdict)
+                return None
+            return json.dumps({
+                "error": "computer_use approval denied or unavailable",
+                "action": action,
+                "risk": decision.risk.value,
+                "scope": list(decision.scope_key or req.scope_key),
+                "summary": summary,
+            })
         return None
-    summary = _summarize_action(action, args)
     try:
         verdict = cb(action, args, summary)
     except Exception as e:
         logger.warning("approval callback failed: %s", e)
         verdict = "deny"
-    if verdict == "approve_once":
+    if verdict in {"approve_once", "once"}:
         return None
-    if verdict == "approve_session" or verdict == "always_approve":
-        _always_allow.add(action)
-        if verdict == "always_approve":
-            _session_auto_approve = True
+    if verdict in {"approve_session", "session", "always_approve", "approve_always", "always"}:
+        _policy.grant(req, verdict)
         return None
     return json.dumps({"error": "denied by user", "action": action})
 
@@ -392,6 +445,27 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
         if value is None:
             return json.dumps({"error": "set_value requires `value`"})
         res = backend.set_value(value=str(value), element=args.get("element"))
+        return _maybe_follow_capture(backend, res, capture_after)
+
+    if action == "perform_secondary_action":
+        if hasattr(backend, "perform_secondary_action"):
+            res = backend.perform_secondary_action(
+                element=args.get("element"),
+                secondary_action=args.get("secondary_action") or args.get("name") or "AXShowMenu",
+            )
+        else:
+            res = ActionResult(ok=False, action="perform_secondary_action", message="backend does not support secondary actions")
+        return _maybe_follow_capture(backend, res, capture_after)
+
+    if action == "select_text":
+        if hasattr(backend, "select_text"):
+            res = backend.select_text(
+                element=args.get("element"),
+                text=args.get("text", ""),
+                selection=args.get("selection", "all"),
+            )
+        else:
+            res = ActionResult(ok=False, action="select_text", message="backend does not support select_text")
         return _maybe_follow_capture(backend, res, capture_after)
 
     return json.dumps({"error": f"unknown action {action!r}"})

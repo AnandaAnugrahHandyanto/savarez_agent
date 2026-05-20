@@ -1,11 +1,15 @@
-"""Shim for tool discovery. Registers `computer_use` with tools.registry.
+"""Shim for tool discovery. Registers Codex-style computer_use tools.
 
-The real implementation lives in the `tools/computer_use/` package to keep
-the file structure clean. This shim exists because tools.registry auto-imports
-`tools/*.py` — we need a top-level module to trigger the registration.
+The implementation lives in ``tools/computer_use/``. We expose both the legacy
+single-dispatch ``computer_use`` tool and a small Codex-like surface so models
+can follow the safer state → action → state rhythm without juggling an action
+discriminator.
 """
 
 from __future__ import annotations
+
+from copy import deepcopy
+from typing import Any, Dict
 
 from tools.computer_use.schema import COMPUTER_USE_SCHEMA
 from tools.computer_use.tool import (
@@ -16,6 +20,24 @@ from tools.computer_use.tool import (
 from tools.registry import registry
 
 
+def _schema(name: str, description: str, properties: Dict[str, Any] | None = None, required: list[str] | None = None) -> Dict[str, Any]:
+    return {
+        "name": name,
+        "description": description,
+        "parameters": {
+            "type": "object",
+            "properties": properties or {},
+            "required": required or [],
+        },
+    }
+
+
+def _handle(action: str, args: Dict[str, Any], **kwargs):
+    payload = dict(args or {})
+    payload["action"] = action
+    return handle_computer_use(payload, **kwargs)
+
+
 registry.register(
     name="computer_use",
     toolset="computer_use",
@@ -24,12 +46,82 @@ registry.register(
     check_fn=check_computer_use_requirements,
     requires_env=[],
     description=(
-        "Universal macOS desktop control via cua-driver. Works with any "
-        "tool-capable model (Anthropic, OpenAI, OpenRouter, local vLLM, "
-        "etc.). Background computer-use: does NOT steal the user's cursor "
-        "or keyboard focus."
+        "Universal macOS desktop control via cua-driver. Prefer the smaller "
+        "computer_use_* tools for new workflows."
     ),
+    override=True,
 )
+
+_COMMON_TARGET = {
+    "app": {"type": "string", "description": "App name or bundle id, e.g. Safari or com.apple.Safari."},
+    "element": {"type": "integer", "description": "Element index from the latest app state."},
+    "coordinate": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2},
+    "capture_after": {"type": "boolean", "description": "Take and return app state after the action."},
+}
+
+_TOOL_SPECS = [
+    ("computer_use_list_apps", "List running macOS apps/windows available to computer use.", {}, [], "list_apps"),
+    ("computer_use_get_app_state", "Get app/window state. Call this before and after every action.", {
+        "app": _COMMON_TARGET["app"],
+        "mode": {"type": "string", "enum": ["som", "vision", "ax"], "description": "Default som: screenshot + numbered accessibility elements."},
+    }, [], "get_app_state"),
+    ("computer_use_click", "Click an element or coordinate in the current app state.", {
+        **_COMMON_TARGET,
+        "button": {"type": "string", "enum": ["left", "right", "middle"]},
+    }, [], "click"),
+    ("computer_use_perform_secondary_action", "Perform an accessibility secondary action on an element, e.g. show menu.", {
+        **_COMMON_TARGET,
+        "secondary_action": {"type": "string", "description": "AX action name, e.g. AXShowMenu or AXPress."},
+    }, [], "perform_secondary_action"),
+    ("computer_use_scroll", "Scroll in an app/window or element.", {
+        **_COMMON_TARGET,
+        "direction": {"type": "string", "enum": ["up", "down", "left", "right"]},
+        "amount": {"type": "integer"},
+    }, ["direction"], "scroll"),
+    ("computer_use_drag", "Drag from one element/coordinate to another.", {
+        "app": _COMMON_TARGET["app"],
+        "from_element": {"type": "integer"},
+        "to_element": {"type": "integer"},
+        "from_coordinate": _COMMON_TARGET["coordinate"],
+        "to_coordinate": _COMMON_TARGET["coordinate"],
+        "capture_after": _COMMON_TARGET["capture_after"],
+    }, [], "drag"),
+    ("computer_use_type_text", "Type text into the targeted app/window.", {
+        "app": _COMMON_TARGET["app"],
+        "text": {"type": "string"},
+        "capture_after": _COMMON_TARGET["capture_after"],
+    }, ["text"], "type_text"),
+    ("computer_use_set_value", "Set a value on an element, including selects/popups/sliders.", {
+        "app": _COMMON_TARGET["app"],
+        "element": _COMMON_TARGET["element"],
+        "value": {"type": "string"},
+        "capture_after": _COMMON_TARGET["capture_after"],
+    }, ["value"], "set_value"),
+    ("computer_use_press_key", "Press a key or key combo in the targeted app/window.", {
+        "app": _COMMON_TARGET["app"],
+        "key": {"type": "string", "description": "Key or combo, e.g. Return, Escape, cmd+s."},
+        "capture_after": _COMMON_TARGET["capture_after"],
+    }, ["key"], "press_key"),
+    ("computer_use_select_text", "Select text in an element or text field.", {
+        "app": _COMMON_TARGET["app"],
+        "element": _COMMON_TARGET["element"],
+        "text": {"type": "string", "description": "Exact text to select, if supported."},
+        "selection": {"type": "string", "description": "Selection mode, usually all or text."},
+        "capture_after": _COMMON_TARGET["capture_after"],
+    }, [], "select_text"),
+]
+
+for tool_name, description, properties, required, action in _TOOL_SPECS:
+    registry.register(
+        name=tool_name,
+        toolset="computer_use",
+        schema=_schema(tool_name, description, deepcopy(properties), required),
+        handler=lambda args, _action=action, **kw: _handle(_action, args, **kw),
+        check_fn=check_computer_use_requirements,
+        requires_env=[],
+        description=description,
+        override=True,
+    )
 
 
 __all__ = [
