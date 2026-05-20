@@ -60,8 +60,17 @@ def load_mirror_pairs(config: dict[str, Any] | None) -> tuple[MirrorPair, ...]:
         return ()
 
     pairs: list[MirrorPair] = []
+    seen_names: set[str] = set()
     for raw_pair in mirror_cfg.get("pairs") or []:
         if not isinstance(raw_pair, dict):
+            continue
+        pair_name = str(raw_pair.get("name") or "mirror")
+        safe_pair_name = _safe_pair_name(pair_name)
+        if safe_pair_name in seen_names:
+            logger.warning(
+                "Skipping deterministic mirror pair with duplicate canonical name: %s",
+                safe_pair_name,
+            )
             continue
         endpoints: list[MirrorEndpoint] = []
         for raw_ep in raw_pair.get("endpoints") or []:
@@ -76,9 +85,10 @@ def load_mirror_pairs(config: dict[str, Any] | None) -> tuple[MirrorPair, ...]:
             endpoints.append(MirrorEndpoint(platform=platform, chat_id=chat_id, thread_id=thread_id))
         if len(endpoints) < 2:
             continue
+        seen_names.add(safe_pair_name)
         pairs.append(
             MirrorPair(
-                name=str(raw_pair.get("name") or "mirror"),
+                name=pair_name,
                 endpoints=tuple(endpoints),
                 mirror_user_messages=_coerce_bool(raw_pair.get("mirror_user_messages"), True),
                 mirror_assistant_messages=_coerce_bool(raw_pair.get("mirror_assistant_messages"), True),
@@ -139,9 +149,7 @@ def canonical_mirror_session_key(config: dict[str, Any] | None, source: SessionS
                 endpoint.thread_id == ANY_THREAD for endpoint in matched
             ):
                 return None
-            safe_name = "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in pair.name.strip())
-            if not safe_name:
-                safe_name = "mirror"
+            safe_name = _safe_pair_name(pair.name)
             if any(endpoint.thread_id == ANY_THREAD for endpoint in matched):
                 source_key = _safe_session_fragment(
                     f"{source_endpoint.platform}:{source_endpoint.chat_id}:{source_endpoint.thread_id or 'main'}"
@@ -181,6 +189,11 @@ def _coerce_bool(value: Any, default: bool) -> bool:
         if normalized in {"0", "false", "no", "n", "off", ""}:
             return False
     return bool(value)
+
+
+def _safe_pair_name(name: str) -> str:
+    safe_name = "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in name.strip())
+    return safe_name or "mirror"
 
 
 async def mirror_user_message(gateway: Any, source: SessionSource, text: str) -> None:

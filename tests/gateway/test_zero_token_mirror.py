@@ -180,6 +180,41 @@ def test_string_false_disables_mirror_directions():
     ) == ()
 
 
+def test_duplicate_canonical_pair_names_are_ignored_to_prevent_session_alias_collision():
+    config = {
+        "gateway": {
+            "deterministic_mirrors": {
+                "enabled": True,
+                "pairs": [
+                    {
+                        "name": "pm room",
+                        "endpoints": [
+                            {"platform": "telegram", "chat_id": "1"},
+                            {"platform": "slack", "chat_id": "C1"},
+                        ],
+                    },
+                    {
+                        "name": "pm_room",
+                        "endpoints": [
+                            {"platform": "telegram", "chat_id": "2"},
+                            {"platform": "slack", "chat_id": "C2"},
+                        ],
+                    },
+                ],
+            }
+        }
+    }
+
+    pairs = load_mirror_pairs(config)
+
+    assert len(pairs) == 1
+    assert pairs[0].name == "pm room"
+    assert canonical_mirror_session_key(config, SessionSource(platform=Platform.TELEGRAM, chat_id="1")) == (
+        "agent:main:mirror:pm_room"
+    )
+    assert canonical_mirror_session_key(config, SessionSource(platform=Platform.TELEGRAM, chat_id="2")) is None
+
+
 def test_resolve_gateway_session_key_uses_same_canonical_key_as_session_store():
     slack_source = SessionSource(
         platform=Platform.SLACK,
