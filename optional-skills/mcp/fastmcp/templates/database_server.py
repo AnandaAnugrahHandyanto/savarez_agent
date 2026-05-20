@@ -65,8 +65,13 @@ def query(sql: str, limit: int = 50) -> dict[str, Any]:
     """Run a read-only SELECT query and return rows plus column names."""
     _reject_mutation(sql)
     safe_limit = max(0, min(limit, MAX_ROWS))
+    normalized_sql = sql.strip()
+    if "limit" not in normalized_sql.lower():
+        if ";" in normalized_sql.rstrip(";"):
+            raise ValueError("Semicolons are not allowed in queries without LIMIT")
+        normalized_sql = f"{normalized_sql.rstrip(';')} LIMIT ?"
     with _connect() as conn:
-        cursor = conn.execute(sql)
+        cursor = conn.execute(normalized_sql, (safe_limit,)) if normalized_sql != sql.strip() else conn.execute(normalized_sql)
         columns = [column[0] for column in cursor.description or []]
         rows = [dict(zip(columns, row)) for row in cursor.fetchmany(safe_limit)]
     return {"limit": safe_limit, "columns": columns, "rows": rows}

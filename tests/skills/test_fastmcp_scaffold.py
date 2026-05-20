@@ -42,3 +42,13 @@ def test_render_template_rejects_unknown_or_path_traversal_templates():
 
     with pytest.raises(SystemExit):
         scaffold.render_template("../fastmcp/scripts/scaffold_fastmcp", "Server")
+
+
+def test_rendered_database_server_template_enforces_sql_level_limit():
+    scaffold = load_scaffold_module()
+
+    rendered = scaffold.render_template("database_server", "Server")
+
+    assert 'if "limit" not in normalized_sql.lower():' in rendered
+    assert 'if ";" in normalized_sql.rstrip(";"):' in rendered
+    assert 'normalized_sql = f"{normalized_sql.rstrip(\';\')} LIMIT ?"' in rendered
