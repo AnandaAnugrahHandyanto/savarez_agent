@@ -309,6 +309,122 @@ def test_assignee_reviewer_alone_does_not_classify_plain_child_as_review(kanban_
     assert {item["task_id"] for item in receipt["detector"]["non_review_children"]} == {first, second}
 
 
+def test_historical_issue155_review_children_without_scope_group_from_strong_subject_evidence(kanban_home):
+    with kb.connect() as conn:
+        root = _make_plain_root(conn)
+        first = kb.create_task(
+            conn,
+            title="#155 审计：evidence manifest 与四阶段合同模板",
+            body="""
+# #155 审计任务：evidence manifest 与四阶段合同模板
+
+## 上游
+
+- GitHub issue: https://github.com/GTZhou/TianGongKaiWu/issues/155
+- 执行父任务: t_906bb4e5（将作大匠）
+
+## 审计目标
+
+审计将作大匠交付的模板/schema/示例/测试证据是否足以支撑普通任务生命周期降耗。
+""".strip(),
+            assignee="yushidafu",
+            created_by="shumishi",
+            parents=[root],
+        )
+        second = kb.create_task(
+            conn,
+            title="#155 审核：evidence manifest 与四阶段合同模板 PR #160",
+            body="""
+## 审核对象
+
+- 仓库：GTZhou/TianGongKaiWu
+- Issue：#155 https://github.com/GTZhou/TianGongKaiWu/issues/155
+- PR：#160 https://github.com/GTZhou/TianGongKaiWu/pull/160
+- 执行父任务：t_906bb4e5
+- 执行分支：docs/issue-155-evidence-manifests
+""".strip(),
+            assignee="yushidafu",
+            created_by="jiangzuodajiang",
+            parents=[root],
+        )
+        assert kb.complete_task(
+            conn,
+            first,
+            summary="#155 / PR #160 审计通过",
+            metadata={
+                "audit_conclusion": "approved",
+                "issue_url": "https://github.com/GTZhou/TianGongKaiWu/issues/155",
+                "pr_url": "https://github.com/GTZhou/TianGongKaiWu/pull/160",
+                "reviewed_pr_head_sha": "4d3f022fb10b30791136b4feaa2bcfc3c96b402d",
+            },
+        )
+        assert kb.complete_task(
+            conn,
+            second,
+            summary="#155 / PR #160 重复审计卡已按 superseded duplicate 处置",
+            metadata={
+                "audit_conclusion": "passed_for_duplicate_disposition_not_reaudited",
+                "disposition": "superseded_duplicate",
+                "issue_url": "https://github.com/GTZhou/TianGongKaiWu/issues/155",
+                "pr_url": "https://github.com/GTZhou/TianGongKaiWu/pull/160",
+                "reviewed_pr_head_sha": "4d3f022fb10b30791136b4feaa2bcfc3c96b402d",
+                "superseded_by_task_id": first,
+            },
+        )
+
+        receipt = build_duplicate_child_receipt(conn, root_task_ids=[root], dry_run=True)
+
+    assert receipt["detector"]["insufficiently_marked_review_children"] == []
+    groups = receipt["detector"]["duplicate_groups"]
+    assert len(groups) == 1
+    group = groups[0]
+    assert group["group_state"] == "historical_duplicate"
+    assert group["group_key"]["issues"] == ["#155"]
+    assert group["group_key"]["prs"] == ["PR#160"]
+    assert group["group_key"]["head_shas"] == ["4d3f022fb10b30791136b4feaa2bcfc3c96b402d"]
+    assert [member["task_id"] for member in group["members"]] == [first, second]
+    assert receipt["dry_run_plan"]["actions"] == [
+        {
+            "action": "record_only_historical_duplicate",
+            "target_task_ids": [first, second],
+            "reason": "all duplicate children are terminal; detector records history only and does not back-edit old work",
+            "destructive": False,
+            "mutation_performed": False,
+        }
+    ]
+
+
+def test_scope_less_review_children_without_strong_subject_evidence_stay_insufficient(kanban_home):
+    with kb.connect() as conn:
+        root = _make_plain_root(conn)
+        first = kb.create_task(
+            conn,
+            title="审计 issue-only marker A",
+            body="GitHub issue: https://github.com/GTZhou/TianGongKaiWu/issues/155",
+            assignee="reviewer",
+            created_by="shumishi",
+            parents=[root],
+        )
+        second = kb.create_task(
+            conn,
+            title="审计 issue-only marker B",
+            body="GitHub issue: https://github.com/GTZhou/TianGongKaiWu/issues/155",
+            assignee="reviewer",
+            created_by="shumishi",
+            parents=[root],
+        )
+        assert kb.complete_task(conn, first, summary="issue-only review A")
+        assert kb.complete_task(conn, second, summary="issue-only review B")
+
+        receipt = build_duplicate_child_receipt(conn, root_task_ids=[root], dry_run=True)
+
+    assert receipt["detector"]["duplicate_groups"] == []
+    assert [
+        item["task_id"] for item in receipt["detector"]["insufficiently_marked_review_children"]
+    ] == [first, second]
+    assert receipt["dry_run_plan"]["actions"] == []
+
+
 def test_unmarked_review_children_require_manual_marker_completion(kanban_home):
     with kb.connect() as conn:
         root = _make_plain_root(conn)

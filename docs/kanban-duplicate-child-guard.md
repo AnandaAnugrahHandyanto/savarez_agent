@@ -73,6 +73,8 @@ detector 只聚合疑似 audit/review child。判定依据是 title/body/comment
 
 缺 marker 的 review-like child 会进入 `insufficiently_marked_review_children`，不参与 duplicate 判定，避免把两个不完整 child 用 `unknown_*` 误聚合。
 
+历史兼容例外：如果缺少显式 scope marker，但 child 已处于 terminal/completed 状态，且同时具备强 subject 证据 `issue + PR + reviewed head`，并且 run metadata 能证明它是已完成审计/重复处置（例如 `audit_conclusion`、`pr_review_decision`、`disposition`、`reviewed_pr_head_sha`、`pr_review_url`），detector 会派生 `phase_scope=historical_same_pr_head_review` 进行只读分组。该路径只用于历史重复识别，输出状态通常为 `historical_duplicate` / record-only，不倒改历史、不自动写入。若 structured metadata 中存在 `issue` / `issue_number` / `issue_url`，这些字段优先作为主 issue，避免把正文里的设计来源、非目标或 PR 编号等旁支 `#N` 误并入 group key。若只有 issue、只有 PR、只有 head，或缺少审计完成/处置 evidence，仍保留为 `insufficiently_marked_review_children`。
+
 重复分组 key：
 
 - `issues`
@@ -152,7 +154,7 @@ detector 只聚合疑似 audit/review child。判定依据是 title/body/comment
 
 ## 测试 fixture
 
-`tests/fixtures/kanban_duplicate_child_guard_issue155.json` 覆盖 #155 历史重复 child 类场景：同 issue、同 PR/head、同 assignee、同 review/audit scope 的两个未运行审计 child。测试会加载该 fixture 并验证输出 `unrun_duplicate` 与 dry-run actions。
+`tests/fixtures/kanban_duplicate_child_guard_issue155.json` 覆盖 #155 历史重复 child 类场景：同 issue、同 PR/head、同 assignee、同 review/audit scope 的两个未运行审计 child。`test_historical_issue155_review_children_without_scope_group_from_strong_subject_evidence` 另覆盖真实 #155 类历史形态：child body/run metadata 缺少显式 `review_scope_key/audit_scope`，但含 issue + PR + reviewed head + 审计完成/重复处置 evidence，预期输出 record-only `historical_duplicate`。测试会验证这一路径不依赖合成 scope marker，同时保留 issue-only 等弱证据为 `insufficiently_marked`。
 
 目标测试：
 

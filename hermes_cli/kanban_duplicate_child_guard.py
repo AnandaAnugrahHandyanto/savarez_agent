@@ -41,6 +41,27 @@ PHASE_RE = re.compile(r"(?:phase|scope|stage|current_step_key)\s*[:=]\s*([A-Za-z
 HASH_PHASE_RE = re.compile(r"#(\d+-[A-Za-z][A-Za-z0-9_.-]*)")
 TERMINAL_STATUSES = {"done", "archived"}
 UNRUN_STATUSES = {"triage", "todo", "scheduled", "ready"}
+STRONG_HISTORICAL_SUBJECT_SCOPE = "historical_same_pr_head_review"
+HEAD_METADATA_KEYS = {
+    "head_sha",
+    "artifact_head_sha",
+    "commit_id",
+    "reviewed_pr_head_sha",
+    "reviewed_head_sha",
+    "head_ref_oid",
+    "head_oid",
+}
+PR_METADATA_KEYS = {"pr_number", "pr", "pr_url", "pull_request", "pull_request_url"}
+REVIEW_COMPLETION_METADATA_KEYS = {
+    "audit_conclusion",
+    "review_conclusion",
+    "review_decision",
+    "pr_review_decision",
+    "disposition",
+    "existing_pr_review_url",
+    "pr_review_url",
+    "reviewed_pr_head_sha",
+}
 
 
 @dataclass(frozen=True)
@@ -135,11 +156,48 @@ def _first_match(regex: re.Pattern[str], text: str) -> str:
     return match.group(1).strip() if match else ""
 
 
+def _hash_issue_markers(text: str) -> Iterable[str]:
+    for match in HASH_ISSUE_RE.finditer(text):
+        prefix = text[max(0, match.start() - 24) : match.start()].lower()
+        if re.search(r"(?:pr|pull[-_ ]?request)[\s:#=：]*$", prefix):
+            continue
+        yield match.group(1)
+
+
 def _stringify_json(value: Any) -> str:
     try:
         return json.dumps(value, ensure_ascii=False, sort_keys=True)
     except Exception:
         return str(value)
+
+
+def _iter_metadata_items(value: Any) -> Iterable[tuple[str, Any]]:
+    if isinstance(value, dict):
+        for key, nested in value.items():
+            yield str(key), nested
+            yield from _iter_metadata_items(nested)
+    elif isinstance(value, list):
+        for nested in value:
+            yield from _iter_metadata_items(nested)
+
+
+def _metadata_has_any_key(metadata: Iterable[dict[str, Any]], keys: set[str]) -> bool:
+    wanted = {key.lower() for key in keys}
+    for meta in metadata:
+        for key, value in _iter_metadata_items(meta):
+            if key.lower() in wanted and value not in (None, "", [], {}):
+                return True
+    return False
+
+
+def _strong_historical_subject_scope(task: TaskNode, evidence: TaskEvidence, *, issues: set[str], prs: set[str], heads: set[str]) -> str:
+    if not (_is_terminal(task) or evidence.completed_run_count > 0):
+        return ""
+    if not (issues and prs and heads):
+        return ""
+    if not _metadata_has_any_key(evidence.run_metadata, REVIEW_COMPLETION_METADATA_KEYS):
+        return ""
+    return STRONG_HISTORICAL_SUBJECT_SCOPE
 
 
 def _task_search_text(task: TaskNode, evidence: Optional[TaskEvidence] = None) -> str:
@@ -165,11 +223,12 @@ def _extract_markers(task: TaskNode, evidence: TaskEvidence) -> dict[str, Any]:
     metadata_text = "\n".join(_stringify_json(meta) for meta in evidence.run_metadata)
     issues = set(_normalize_issue(x) for x in ISSUE_URL_RE.findall(text))
     issues.update(_normalize_issue(x) for x in ISSUE_FIELD_RE.findall(text))
+    structured_issues: set[str] = set()
     # Title-style references such as "审计｜#155" are useful for grouping, but
     # avoid parsing pull URL numbers as issues by running URL/field regexes first
     # and then accepting generic #N markers only from the title/body text.
     title_body_text = "\n".join(p for p in (task.title, task.body) if p)
-    issues.update(_normalize_issue(x) for x in HASH_ISSUE_RE.findall(title_body_text))
+    issues.update(_normalize_issue(x) for x in _hash_issue_markers(title_body_text))
     issues.discard(None)
 
     prs = set(f"PR#{int(x)}" for x in PULL_URL_RE.findall(text))
@@ -192,18 +251,28 @@ def _extract_markers(task: TaskNode, evidence: TaskEvidence) -> dict[str, Any]:
             value = meta.get(key)
             if isinstance(value, str):
                 issues.update(_normalize_issue(x) for x in ISSUE_URL_RE.findall(value))
+                structured_issues.update(
+                    norm for norm in (_normalize_issue(x) for x in ISSUE_URL_RE.findall(value)) if norm
+                )
                 norm = _normalize_issue(value)
                 if norm:
                     issues.add(norm)
+                    structured_issues.add(norm)
             elif value is not None:
                 norm = _normalize_issue(value)
                 if norm:
                     issues.add(norm)
-        pr_value = meta.get("pr_number") or meta.get("pr")
-        if pr_value is not None:
-            pr_norm = str(pr_value).strip().lstrip("#")
-            if pr_norm.isdigit():
-                prs.add(f"PR#{int(pr_norm)}")
+                    structured_issues.add(norm)
+        for key, value in _iter_metadata_items(meta):
+            key_l = key.lower()
+            if key_l in PR_METADATA_KEYS and value is not None:
+                if isinstance(value, str):
+                    prs.update(f"PR#{int(x)}" for x in PULL_URL_RE.findall(value))
+                pr_norm = str(value).strip().lstrip("#")
+                if pr_norm.isdigit():
+                    prs.add(f"PR#{int(pr_norm)}")
+            if key_l in HEAD_METADATA_KEYS and value:
+                heads.add(str(value))
         pr_state = meta.get("pr_state")
         if isinstance(pr_state, dict):
             pr_number = pr_state.get("number")
@@ -213,9 +282,21 @@ def _extract_markers(task: TaskNode, evidence: TaskEvidence) -> dict[str, Any]:
             value = meta.get(key)
             if value:
                 heads.add(str(value))
-        review_scope = str(meta.get("review_scope_key") or review_scope or "")
-        audit_scope = str(meta.get("audit_scope") or audit_scope or "")
+        review_scope = str(meta.get("review_scope_key") or meta.get("review_scope") or review_scope or "")
+        audit_scope = str(meta.get("audit_scope") or meta.get("audit_scope_key") or audit_scope or "")
         phase_scope = str(meta.get("phase_scope") or meta.get("current_step_key") or phase_scope or "")
+
+    if structured_issues:
+        issues = set(structured_issues)
+
+    if not (review_scope or audit_scope or phase_scope):
+        phase_scope = _strong_historical_subject_scope(
+            task,
+            evidence,
+            issues={i for i in issues if i},
+            prs=prs,
+            heads=heads,
+        )
 
     return {
         "issues": tuple(sorted(i for i in issues if i)),
