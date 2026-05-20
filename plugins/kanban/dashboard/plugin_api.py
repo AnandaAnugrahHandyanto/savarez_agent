@@ -40,9 +40,13 @@ import hmac
 import json
 import logging
 import os
+import re
 import sqlite3
+import subprocess
+import sys
 import time
 from dataclasses import asdict
+from pathlib import Path
 from typing import Any, Optional
 
 from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconnect, status as http_status
@@ -142,6 +146,11 @@ BOARD_COLUMNS: list[str] = [
 
 
 _CARD_SUMMARY_PREVIEW_CHARS = 200
+
+
+class OpenArtifactBody(BaseModel):
+    path: str
+    mode: str = Field("reveal", pattern="^(reveal|open)$")
 
 
 def _task_dict(
@@ -346,6 +355,647 @@ def _links_for(conn: sqlite3.Connection, task_id: str) -> dict[str, list[str]]:
 
 
 # ---------------------------------------------------------------------------
+# Selected-task summary tree helpers
+# ---------------------------------------------------------------------------
+
+_ARTIFACT_KEYS: dict[str, str] = {
+    "workspace_path": "workspace",
+    "diff_path": "diff",
+    "output_path": "output",
+    "file_path": "file",
+    "folder_path": "folder",
+    "artifact_path": "artifact",
+    "artifact_paths": "artifact",
+    "document_path": "document",
+    "created_files": "created_file",
+    "changed_files": "changed_file",
+    "saved_files": "saved_file",
+}
+_IMPORTANT_COMMENT_RE = re.compile(
+    r"review-required|handoff|artifact|output|saved|created|changed_files|diff_path|blocked|decision|path",
+    re.IGNORECASE,
+)
+_COMMENT_PATH_RE = re.compile(
+    r"(?P<path>~/(?:[^\s`'\"<>]+)|/(?:Users|tmp|var|private/var|Volumes|home)/(?:[^\s`'\"<>]+)|[A-Za-z]:[\\/](?:[^\s`'\"<>]+))"
+)
+_SUMMARY_TREE_MAX_DEPTH = 50
+_SUMMARY_TREE_MAX_NODES = 500
+
+
+def _walk_descendant_graph(
+    conn: sqlite3.Connection,
+    root_id: str,
+    *,
+    max_depth: int = _SUMMARY_TREE_MAX_DEPTH,
+    max_nodes: int = _SUMMARY_TREE_MAX_NODES,
+) -> tuple[list[str], list[dict[str, Any]], dict[str, int], bool]:
+    """Return descendant node order and parent→child edges from root.
+
+    The DB rejects cycles, but this reader is defensive because dashboard
+    endpoints should stay responsive even if an operator edits SQLite by hand.
+    """
+    order: list[str] = [root_id]
+    depths: dict[str, int] = {root_id: 0}
+    edges: list[dict[str, Any]] = []
+    queue: list[str] = [root_id]
+    expanded: set[str] = set()
+    truncated = False
+
+    while queue:
+        parent_id = queue.pop(0)
+        if parent_id in expanded:
+            continue
+        expanded.add(parent_id)
+        parent_depth = depths.get(parent_id, 0)
+        if parent_depth >= max_depth:
+            child_rows = conn.execute(
+                "SELECT 1 FROM task_links WHERE parent_id = ? LIMIT 1", (parent_id,)
+            ).fetchone()
+            if child_rows:
+                truncated = True
+            continue
+        for row in conn.execute(
+            "SELECT child_id FROM task_links WHERE parent_id = ? ORDER BY child_id",
+            (parent_id,),
+        ).fetchall():
+            child_id = row["child_id"]
+            child_depth = parent_depth + 1
+            edges.append({
+                "parent_id": parent_id,
+                "child_id": child_id,
+                "relation": "blocks",
+                "depth": child_depth,
+            })
+            if child_id not in depths:
+                if len(order) >= max_nodes:
+                    truncated = True
+                    continue
+                depths[child_id] = child_depth
+                order.append(child_id)
+                queue.append(child_id)
+    return order, edges, depths, truncated
+
+
+def _rows_by_task_id(conn: sqlite3.Connection, task_ids: list[str]) -> dict[str, sqlite3.Row]:
+    if not task_ids:
+        return {}
+    placeholders = ",".join(["?"] * len(task_ids))
+    return {
+        row["id"]: row
+        for row in conn.execute(
+            f"SELECT * FROM tasks WHERE id IN ({placeholders})",
+            tuple(task_ids),
+        ).fetchall()
+    }
+
+
+def _links_for_many(conn: sqlite3.Connection, task_ids: list[str]) -> tuple[dict[str, list[str]], dict[str, list[str]]]:
+    parents = {tid: [] for tid in task_ids}
+    children = {tid: [] for tid in task_ids}
+    if not task_ids:
+        return parents, children
+    placeholders = ",".join(["?"] * len(task_ids))
+    for row in conn.execute(
+        f"SELECT parent_id, child_id FROM task_links WHERE child_id IN ({placeholders}) OR parent_id IN ({placeholders}) ORDER BY parent_id, child_id",
+        tuple(task_ids) + tuple(task_ids),
+    ).fetchall():
+        if row["child_id"] in parents:
+            parents[row["child_id"]].append(row["parent_id"])
+        if row["parent_id"] in children:
+            children[row["parent_id"]].append(row["child_id"])
+    return parents, children
+
+
+def _run_dict_public(row: sqlite3.Row) -> dict[str, Any]:
+    try:
+        metadata = json.loads(row["metadata"]) if row["metadata"] else None
+    except Exception:
+        metadata = None
+    return {
+        "id": int(row["id"]),
+        "task_id": row["task_id"],
+        "profile": row["profile"],
+        "step_key": row["step_key"] if "step_key" in row.keys() else None,
+        "status": row["status"],
+        "outcome": row["outcome"],
+        "started_at": row["started_at"],
+        "ended_at": row["ended_at"],
+        "summary": row["summary"],
+        "metadata": metadata,
+        "error": row["error"],
+    }
+
+
+def _runs_for_many(conn: sqlite3.Connection, task_ids: list[str]) -> dict[str, list[dict[str, Any]]]:
+    runs = {tid: [] for tid in task_ids}
+    if not task_ids:
+        return runs
+    placeholders = ",".join(["?"] * len(task_ids))
+    for row in conn.execute(
+        f"""
+        SELECT * FROM task_runs
+         WHERE task_id IN ({placeholders})
+         ORDER BY task_id, COALESCE(ended_at, started_at) DESC, id DESC
+        """,
+        tuple(task_ids),
+    ).fetchall():
+        runs.setdefault(row["task_id"], []).append(_run_dict_public(row))
+    return runs
+
+
+def _comments_for_many(conn: sqlite3.Connection, task_ids: list[str]) -> dict[str, list[dict[str, Any]]]:
+    comments = {tid: [] for tid in task_ids}
+    if not task_ids:
+        return comments
+    placeholders = ",".join(["?"] * len(task_ids))
+    for row in conn.execute(
+        f"SELECT * FROM task_comments WHERE task_id IN ({placeholders}) ORDER BY task_id, created_at ASC, id ASC",
+        tuple(task_ids),
+    ).fetchall():
+        comments.setdefault(row["task_id"], []).append({
+            "id": row["id"],
+            "task_id": row["task_id"],
+            "author": row["author"],
+            "body": row["body"],
+            "created_at": row["created_at"],
+        })
+    return comments
+
+
+def _events_for_many(conn: sqlite3.Connection, task_ids: list[str]) -> dict[str, list[dict[str, Any]]]:
+    events = {tid: [] for tid in task_ids}
+    if not task_ids:
+        return events
+    placeholders = ",".join(["?"] * len(task_ids))
+    for row in conn.execute(
+        f"SELECT * FROM task_events WHERE task_id IN ({placeholders}) ORDER BY task_id, created_at ASC, id ASC",
+        tuple(task_ids),
+    ).fetchall():
+        try:
+            payload = json.loads(row["payload"]) if row["payload"] else None
+        except Exception:
+            payload = None
+        events.setdefault(row["task_id"], []).append({
+            "id": row["id"],
+            "task_id": row["task_id"],
+            "kind": row["kind"],
+            "payload": payload,
+            "created_at": row["created_at"],
+            "run_id": row["run_id"],
+        })
+    return events
+
+
+def _blocked_state(
+    task_status: str,
+    *,
+    runs: list[dict[str, Any]],
+    comments: list[dict[str, Any]],
+    events: list[dict[str, Any]],
+) -> Optional[dict[str, Any]]:
+    """Return the current structured block prompt for a blocked task."""
+    if task_status != "blocked":
+        return None
+
+    latest_block = next((e for e in reversed(events) if e.get("kind") == "blocked"), None)
+    blocked_runs = [
+        r for r in runs
+        if r.get("outcome") == "blocked" or r.get("status") == "blocked"
+    ]
+    blocked_runs.sort(
+        key=lambda r: (
+            int(r.get("ended_at") or r.get("started_at") or 0),
+            int(r.get("id") or 0),
+        ),
+        reverse=True,
+    )
+    latest_blocked_run = blocked_runs[0] if blocked_runs else None
+    reason = None
+    if latest_block and isinstance(latest_block.get("payload"), dict):
+        raw_reason = latest_block["payload"].get("reason")
+        if isinstance(raw_reason, str) and raw_reason.strip():
+            reason = raw_reason.strip()
+    source = "event.payload.reason" if reason else None
+    if not reason and latest_blocked_run:
+        raw_summary = latest_blocked_run.get("summary") or latest_blocked_run.get("error")
+        if isinstance(raw_summary, str) and raw_summary.strip():
+            reason = raw_summary.strip()
+            source = "run.summary"
+
+    since = latest_block.get("created_at") if latest_block else None
+    relevant_comments = [
+        c for c in comments
+        if since is None or int(c.get("created_at") or 0) >= int(since)
+    ]
+    latest_comment = relevant_comments[-1] if relevant_comments else (comments[-1] if comments else None)
+
+    return {
+        "is_blocked": True,
+        "reason": reason,
+        "missing_info": reason,
+        "blocked_at": latest_block.get("created_at") if latest_block else None,
+        "event_id": latest_block.get("id") if latest_block else None,
+        "run_id": latest_block.get("run_id") if latest_block else (latest_blocked_run or {}).get("id"),
+        "source": source,
+        "latest_relevant_comment": latest_comment,
+        "comment_prompt": "Add the missing info as a comment, then unblock when ready.",
+    }
+
+
+def _comment_slice(comments: list[dict[str, Any]], *, comment_limit: int) -> list[dict[str, Any]]:
+    if comment_limit <= 0:
+        return []
+    return comments[-comment_limit:]
+
+
+def _important_comments(comments: list[dict[str, Any]], *, comment_limit: int) -> list[dict[str, Any]]:
+    if comment_limit <= 0:
+        return []
+    picked: list[dict[str, Any]] = []
+    seen: set[int] = set()
+    for c in reversed(comments):
+        if _IMPORTANT_COMMENT_RE.search(c.get("body") or ""):
+            picked.append(c)
+            seen.add(int(c["id"]))
+            if len(picked) >= comment_limit:
+                return list(reversed(picked))
+    for c in reversed(comments):
+        if int(c["id"]) not in seen:
+            picked.append(c)
+            if len(picked) >= comment_limit:
+                break
+    return list(reversed(picked))
+
+
+def _safe_path_text(value: Any) -> Optional[str]:
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text or "\x00" in text or "\n" in text or len(text) > 4096:
+        return None
+    return text
+
+
+def _normalise_artifact_path(raw: str, *, workspace_path: Optional[str] = None) -> tuple[str, Optional[str], bool, Optional[str]]:
+    label_path = raw
+    expanded = os.path.expanduser(raw)
+    is_absolute = os.path.isabs(expanded) or re.match(r"^[A-Za-z]:[\\/]", expanded) is not None
+    if is_absolute:
+        return label_path, str(Path(expanded)), True, None
+    if workspace_path:
+        return label_path, str(Path(os.path.expanduser(workspace_path)) / expanded), True, None
+    return label_path, None, False, "relative path; no workspace base"
+
+
+def _path_is_within(path: str, base: str) -> bool:
+    try:
+        Path(path).resolve().relative_to(Path(base).resolve())
+        return True
+    except Exception:
+        return False
+
+
+def _artifact_record(
+    raw_path: str,
+    *,
+    kind: str,
+    source: str,
+    workspace_path: Optional[str] = None,
+    workspace_kind: Optional[str] = None,
+    run_id: Optional[int] = None,
+    comment_id: Optional[int] = None,
+) -> Optional[dict[str, Any]]:
+    text = _safe_path_text(raw_path)
+    if not text:
+        return None
+    label_path, resolved_path, openable_base, reason = _normalise_artifact_path(
+        text, workspace_path=workspace_path,
+    )
+    exists = None
+    is_dir = None
+    if resolved_path:
+        try:
+            p = Path(resolved_path)
+            exists = p.exists()
+            is_dir = p.is_dir() if exists else None
+        except OSError:
+            exists = None
+            is_dir = None
+            reason = reason or "path could not be checked"
+    if exists is False:
+        reason = reason or "path does not exist"
+
+    scratch_workspace = workspace_kind == "scratch"
+    scratch_derived = bool(
+        scratch_workspace
+        and resolved_path
+        and workspace_path
+        and _path_is_within(resolved_path, workspace_path)
+    )
+    if scratch_derived:
+        reason = "scratch workspace path is temporary; no durable artifact path exposed"
+    elif kind == "workspace" and scratch_workspace:
+        reason = "scratch workspace is temporary; not a durable artifact"
+
+    user_actionable = bool(openable_base and resolved_path and exists) and not scratch_derived
+    if source == "comment.regex":
+        user_actionable = False
+        reason = reason or "comment-derived path is shown for context only"
+    if kind == "workspace" and workspace_kind == "scratch":
+        user_actionable = False
+    openable = user_actionable
+    if user_actionable:
+        availability = "available"
+        public_path = label_path
+        public_resolved = resolved_path
+        public_label = label_path
+    elif scratch_derived or (kind == "workspace" and workspace_kind == "scratch"):
+        availability = "scratch"
+        public_path = None
+        public_resolved = None
+        public_label = "scratch workspace artifact"
+    elif exists is False:
+        availability = "missing"
+        public_path = None
+        public_resolved = None
+        public_label = f"missing {kind.replace('_', ' ')}"
+    else:
+        availability = "unknown"
+        public_path = None
+        public_resolved = None
+        public_label = f"unavailable {kind.replace('_', ' ')}"
+
+    return {
+        "path": public_path,
+        "resolved_path": public_resolved,
+        "label": public_label,
+        "kind": kind,
+        "exists": exists,
+        "is_dir": is_dir,
+        "openable": openable,
+        "user_actionable": user_actionable,
+        "availability": availability,
+        "source": source,
+        "run_id": run_id,
+        "comment_id": comment_id,
+        "reason": reason,
+    }
+
+
+def _values_for_artifact_key(value: Any) -> list[str]:
+    found: list[str] = []
+    if isinstance(value, str):
+        text = _safe_path_text(value)
+        if text:
+            found.append(text)
+    elif isinstance(value, list):
+        for item in value:
+            found.extend(_values_for_artifact_key(item))
+    elif isinstance(value, dict):
+        for key in ("path", "resolved_path", "file", "folder"):
+            if key in value:
+                found.extend(_values_for_artifact_key(value[key]))
+        if not found:
+            for item in value.values():
+                found.extend(_values_for_artifact_key(item))
+    return found
+
+
+def _iter_artifact_metadata_values(value: Any, *, prefix: str = "run.metadata"):
+    if isinstance(value, dict):
+        for key, item in value.items():
+            key_s = str(key)
+            source = f"{prefix}.{key_s}"
+            if key_s in _ARTIFACT_KEYS:
+                for path_value in _values_for_artifact_key(item):
+                    yield key_s, source, path_value
+            if isinstance(item, (dict, list)):
+                yield from _iter_artifact_metadata_values(item, prefix=source)
+    elif isinstance(value, list):
+        for item in value:
+            if isinstance(item, (dict, list)):
+                yield from _iter_artifact_metadata_values(item, prefix=prefix)
+
+
+def _extract_artifacts(
+    *,
+    task_row: sqlite3.Row,
+    runs: list[dict[str, Any]],
+    comments: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    artifacts: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    workspace_path = task_row["workspace_path"]
+    workspace_kind = task_row["workspace_kind"]
+
+    def add(record: Optional[dict[str, Any]]) -> None:
+        if not record:
+            return
+        key_path = record.get("resolved_path") or record.get("path") or record.get("label")
+        key = (str(key_path), str(record.get("kind") or "unknown"))
+        if key in seen:
+            return
+        seen.add(key)
+        artifacts.append(record)
+
+    if workspace_path:
+        label = "scratch workspace (may be temporary)" if workspace_kind == "scratch" else f"{workspace_kind} workspace"
+        rec = _artifact_record(
+            workspace_path,
+            kind="workspace",
+            source="task.workspace_path",
+            workspace_path=None,
+            workspace_kind=workspace_kind,
+        )
+        if rec:
+            rec["label"] = label
+            add(rec)
+
+    for run in runs:
+        metadata = run.get("metadata")
+        if not metadata:
+            continue
+        for artifact_key, source, path_value in _iter_artifact_metadata_values(metadata):
+            add(_artifact_record(
+                path_value,
+                kind=_ARTIFACT_KEYS.get(artifact_key, "unknown"),
+                source=source,
+                workspace_path=workspace_path,
+                workspace_kind=workspace_kind,
+                run_id=run.get("id"),
+            ))
+
+    for comment in comments:
+        body = comment.get("body") or ""
+        for match in _COMMENT_PATH_RE.finditer(body):
+            add(_artifact_record(
+                match.group("path"),
+                kind="artifact",
+                source="comment.regex",
+                workspace_path=workspace_path,
+                workspace_kind=workspace_kind,
+                comment_id=comment.get("id"),
+            ))
+
+    return artifacts
+
+
+def _artifact_state(artifacts: list[dict[str, Any]]) -> dict[str, Any]:
+    actionable = [a for a in artifacts if a.get("user_actionable")]
+    if actionable:
+        state = "available"
+        reason = None
+    elif artifacts:
+        state = "absent"
+        reasons = [a.get("reason") for a in artifacts if a.get("reason")]
+        reason = reasons[0] if reasons else "no durable user-actionable artifact path"
+    else:
+        state = "absent"
+        reason = "no artifact metadata found"
+    return {
+        "state": state,
+        "has_user_actionable": bool(actionable),
+        "user_actionable_count": len(actionable),
+        "candidate_count": len(artifacts),
+        "reason": reason,
+    }
+
+
+def _display_result(task_row: sqlite3.Row, latest_run: Optional[dict[str, Any]]) -> Optional[str]:
+    if task_row["result"]:
+        return task_row["result"]
+    if latest_run and latest_run.get("summary"):
+        return latest_run["summary"]
+    if latest_run and latest_run.get("error"):
+        outcome = latest_run.get("outcome") or latest_run.get("status") or "failed"
+        return f"{outcome}: {latest_run['error']}"
+    return None
+
+
+def _summary_tree_payload(
+    conn: sqlite3.Connection,
+    root_id: str,
+    *,
+    include_comments: bool = True,
+    comment_limit: int = 3,
+) -> dict[str, Any]:
+    if kanban_db.get_task(conn, root_id) is None:
+        raise HTTPException(status_code=404, detail=f"task {root_id} not found")
+    comment_limit = max(0, min(int(comment_limit), 20))
+    order, edges, depths, truncated = _walk_descendant_graph(conn, root_id)
+    rows = _rows_by_task_id(conn, order)
+    order = [tid for tid in order if tid in rows]
+    parents, children = _links_for_many(conn, order)
+    runs_by_task = _runs_for_many(conn, order)
+    comments_by_task = _comments_for_many(conn, order)
+    events_by_task = _events_for_many(conn, order)
+
+    tasks: dict[str, dict[str, Any]] = {}
+    status_counts: dict[str, int] = {}
+    for tid in order:
+        row = rows[tid]
+        task_runs = runs_by_task.get(tid, [])
+        latest_run = task_runs[0] if task_runs else None
+        all_comments = comments_by_task.get(tid, [])
+        status_counts[row["status"]] = status_counts.get(row["status"], 0) + 1
+        artifacts = _extract_artifacts(task_row=row, runs=task_runs, comments=all_comments)
+        task_events = events_by_task.get(tid, [])
+        tasks[tid] = {
+            "id": row["id"],
+            "title": row["title"],
+            "status": row["status"],
+            "assignee": row["assignee"],
+            "priority": row["priority"],
+            "tenant": row["tenant"],
+            "created_at": row["created_at"],
+            "started_at": row["started_at"],
+            "completed_at": row["completed_at"],
+            "workspace_kind": row["workspace_kind"],
+            "workspace_path": row["workspace_path"],
+            "result": row["result"],
+            "current_step_key": row["current_step_key"] if "current_step_key" in row.keys() else None,
+            "workflow_template_id": row["workflow_template_id"] if "workflow_template_id" in row.keys() else None,
+            "latest_summary": latest_run.get("summary") if latest_run else None,
+            "display_result": _display_result(row, latest_run),
+            "latest_run": latest_run,
+            "run_count": len(task_runs),
+            "comments": _comment_slice(all_comments, comment_limit=comment_limit) if include_comments else [],
+            "comment_count": len(all_comments),
+            "important_comments": _important_comments(all_comments, comment_limit=comment_limit) if include_comments else [],
+            "parents": parents.get(tid, []),
+            "children": children.get(tid, []),
+            "depth": depths.get(tid, 0),
+            "artifacts": artifacts,
+            "artifact_state": _artifact_state(artifacts),
+            "block": _blocked_state(
+                row["status"],
+                runs=task_runs,
+                comments=all_comments,
+                events=task_events,
+            ),
+        }
+
+    stats: dict[str, Any] = {
+        "total": len(order),
+        "max_depth": max((depths.get(tid, 0) for tid in order), default=0),
+        "truncated": truncated,
+    }
+    for status_name in list(BOARD_COLUMNS) + ["archived"]:
+        stats[status_name] = status_counts.get(status_name, 0)
+    for status_name, count in status_counts.items():
+        stats.setdefault(status_name, count)
+    return {
+        "root_id": root_id,
+        "generated_at": int(time.time()),
+        "tasks": tasks,
+        "edges": [e for e in edges if e["parent_id"] in rows and e["child_id"] in rows],
+        "roots": [root_id],
+        "order": order,
+        "stats": stats,
+    }
+
+
+def _derived_artifact_path_lookup(payload: dict[str, Any]) -> dict[str, str]:
+    paths: dict[str, str] = {}
+    for node in payload.get("tasks", {}).values():
+        for artifact in node.get("artifacts", []):
+            if not artifact.get("user_actionable") or not artifact.get("openable"):
+                continue
+            resolved = artifact.get("resolved_path") or artifact.get("path")
+            if not isinstance(resolved, str) or not resolved:
+                continue
+            for key in ("path", "resolved_path"):
+                value = artifact.get(key)
+                if isinstance(value, str) and value:
+                    paths[value] = resolved
+    return paths
+
+
+def _open_local_path(path: str, *, mode: str) -> dict[str, Any]:
+    resolved = str(Path(os.path.expanduser(path)))
+    p = Path(resolved)
+    if not p.exists():
+        return {"ok": False, "reason": "path does not exist", "path": path, "resolved_path": resolved}
+    try:
+        if sys.platform == "darwin":
+            cmd = ["open", "-R", resolved] if mode == "reveal" and not p.is_dir() else ["open", resolved]
+            subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        elif sys.platform.startswith("linux"):
+            target = resolved if p.is_dir() or mode == "open" else str(p.parent)
+            subprocess.Popen(["xdg-open", target], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        elif sys.platform.startswith("win"):
+            if p.is_dir() or mode == "open":
+                os.startfile(resolved)  # type: ignore[attr-defined]
+            else:
+                subprocess.Popen(["explorer", f"/select,{resolved}"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        else:
+            return {"ok": False, "reason": f"unsupported platform: {sys.platform}", "path": path, "resolved_path": resolved}
+    except Exception as exc:
+        return {"ok": False, "reason": str(exc), "path": path, "resolved_path": resolved}
+    return {"ok": True, "path": path, "resolved_path": resolved, "mode": mode}
+
+
+# ---------------------------------------------------------------------------
 # GET /board
 # ---------------------------------------------------------------------------
 
@@ -432,6 +1082,10 @@ def get_board(
         # for boards with hundreds of tasks). Truncated to a card-size
         # preview here — the full text is available via /tasks/:id.
         summary_map = kanban_db.latest_summaries(conn, [t.id for t in tasks])
+        blocked_ids = [t.id for t in tasks if t.status == "blocked"]
+        blocked_runs = _runs_for_many(conn, blocked_ids)
+        blocked_comments = _comments_for_many(conn, blocked_ids)
+        blocked_events = _events_for_many(conn, blocked_ids)
 
         for t in tasks:
             full = summary_map.get(t.id)
@@ -442,6 +1096,12 @@ def get_board(
             d["link_counts"] = link_counts.get(t.id, {"parents": 0, "children": 0})
             d["comment_count"] = comment_counts.get(t.id, 0)
             d["progress"] = progress.get(t.id)  # None when the task has no children
+            d["block"] = _blocked_state(
+                t.status,
+                runs=blocked_runs.get(t.id, []),
+                comments=blocked_comments.get(t.id, []),
+                events=blocked_events.get(t.id, []),
+            )
             diags = diagnostics_per_task.get(t.id)
             if diags:
                 # Full list goes into the payload so the drawer can render
@@ -482,6 +1142,57 @@ def get_board(
         }
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# GET /tasks/:id/summary-tree + local artifact open
+# ---------------------------------------------------------------------------
+
+@router.get("/tasks/{task_id}/summary-tree")
+def get_task_summary_tree(
+    task_id: str,
+    include_comments: bool = Query(True),
+    comment_limit: int = Query(3, ge=0, le=20),
+    depth: str = Query("all", description="Currently accepts 'all'; traversal is capped defensively."),
+    board: Optional[str] = Query(None),
+):
+    # ``depth`` is accepted for the frontend contract. The backend currently
+    # returns all descendants with hard safety caps so v1 callers avoid N+1
+    # requests without needing a separate max-depth negotiation.
+    _ = depth
+    board = _resolve_board(board)
+    conn = _conn(board=board)
+    try:
+        return _summary_tree_payload(
+            conn,
+            task_id,
+            include_comments=include_comments,
+            comment_limit=comment_limit,
+        )
+    finally:
+        conn.close()
+
+
+@router.post("/tasks/{task_id}/artifacts/open")
+def open_task_artifact(
+    task_id: str,
+    body: OpenArtifactBody,
+    board: Optional[str] = Query(None),
+):
+    """Open/reveal a derived local artifact path without accepting arbitrary paths."""
+    board = _resolve_board(board)
+    conn = _conn(board=board)
+    try:
+        payload = _summary_tree_payload(conn, task_id, include_comments=True, comment_limit=10)
+    finally:
+        conn.close()
+    path_lookup = _derived_artifact_path_lookup(payload)
+    requested = body.path
+    requested_resolved = str(Path(os.path.expanduser(requested)))
+    allowed_path = path_lookup.get(requested) or path_lookup.get(requested_resolved)
+    if not allowed_path:
+        return {"ok": False, "reason": "path is not a derived artifact for this task", "path": requested}
+    return _open_local_path(allowed_path, mode=body.mode)
 
 
 # ---------------------------------------------------------------------------
@@ -527,20 +1238,32 @@ def get_task(
         if diag_list:
             task_d["diagnostics"] = diag_list
             task_d["warnings"] = _warnings_summary_from_diagnostics(diag_list)
+        comments = [_comment_dict(c) for c in kanban_db.list_comments(conn, task_id)]
+        events = [_event_dict(e) for e in kanban_db.list_events(conn, task_id)]
+        runs = [
+            _run_dict(r)
+            for r in kanban_db.list_runs(
+                conn,
+                task_id,
+                state_type=run_state_type,
+                state_name=run_state_name,
+            )
+        ]
+        # The block prompt should always reflect the full task history, even
+        # when the caller filtered the run-history table in the drawer.
+        all_runs = [_run_dict(r) for r in kanban_db.list_runs(conn, task_id)]
+        task_d["block"] = _blocked_state(
+            task.status,
+            runs=all_runs,
+            comments=comments,
+            events=events,
+        )
         return {
             "task": task_d,
-            "comments": [_comment_dict(c) for c in kanban_db.list_comments(conn, task_id)],
-            "events": [_event_dict(e) for e in kanban_db.list_events(conn, task_id)],
+            "comments": comments,
+            "events": events,
             "links": _links_for(conn, task_id),
-            "runs": [
-                _run_dict(r)
-                for r in kanban_db.list_runs(
-                    conn,
-                    task_id,
-                    state_type=run_state_type,
-                    state_name=run_state_name,
-                )
-            ],
+            "runs": runs,
         }
     finally:
         conn.close()

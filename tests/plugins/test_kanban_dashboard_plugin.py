@@ -282,6 +282,210 @@ def test_task_detail_404_on_unknown(client):
     assert r.status_code == 404
 
 
+def _complete_task(task_id: str, *, result=None, summary=None, metadata=None):
+    conn = kb.connect()
+    try:
+        assert kb.complete_task(
+            conn,
+            task_id,
+            result=result,
+            summary=summary,
+            metadata=metadata,
+        )
+    finally:
+        conn.close()
+
+
+def test_task_summary_tree_returns_descendants_edges_and_latest_run(client):
+    root = client.post("/api/plugins/kanban/tasks", json={"title": "root", "assignee": "pm"}).json()["task"]
+    child = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "child", "assignee": "backendeng", "parents": [root["id"]]},
+    ).json()["task"]
+    grandchild = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "grandchild", "assignee": "frontendeng", "parents": [child["id"]]},
+    ).json()["task"]
+
+    _complete_task(root["id"], result="root result wins", summary="root run summary")
+    _complete_task(
+        child["id"],
+        summary="child handoff summary",
+        metadata={"diff_path": "/tmp/child.diff"},
+    )
+
+    r = client.get(f"/api/plugins/kanban/tasks/{root['id']}/summary-tree")
+    assert r.status_code == 200, r.text
+    data = r.json()
+
+    assert data["root_id"] == root["id"]
+    assert data["order"] == [root["id"], child["id"], grandchild["id"]]
+    assert {tuple((e["parent_id"], e["child_id"], e["depth"])) for e in data["edges"]} == {
+        (root["id"], child["id"], 1),
+        (child["id"], grandchild["id"], 2),
+    }
+    assert data["tasks"][root["id"]]["display_result"] == "root result wins"
+    assert data["tasks"][child["id"]]["display_result"] == "child handoff summary"
+    assert data["tasks"][child["id"]]["latest_run"]["outcome"] == "completed"
+    assert data["tasks"][child["id"]]["latest_run"]["profile"] == "backendeng"
+    assert data["tasks"][child["id"]]["latest_run"]["metadata"] == {"diff_path": "/tmp/child.diff"}
+    assert data["tasks"][child["id"]]["run_count"] == 1
+    assert data["tasks"][grandchild["id"]]["parents"] == [child["id"]]
+    assert data["tasks"][root["id"]]["children"] == [child["id"]]
+    assert data["tasks"][root["id"]]["current_step_key"] is None
+    assert data["stats"]["total"] == 3
+    assert data["stats"]["max_depth"] == 2
+
+
+def test_task_summary_tree_extracts_artifacts_and_important_comments(client, tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "relative.py").write_text("print('hi')")
+    output = tmp_path / "out.txt"
+    output.write_text("saved")
+    doc = tmp_path / "doc.md"
+    doc.write_text("doc")
+
+    task = client.post(
+        "/api/plugins/kanban/tasks",
+        json={
+            "title": "artifact task",
+            "workspace_kind": "worktree",
+            "workspace_path": str(workspace),
+        },
+    ).json()["task"]
+    _complete_task(
+        task["id"],
+        summary="artifact handoff",
+        metadata={
+            "workspace_path": str(workspace),
+            "diff_path": str(tmp_path / "changes.diff"),
+            "output_path": str(output),
+            "file_path": str(output),
+            "folder_path": str(workspace),
+            "artifact_path": str(tmp_path / "artifact.bin"),
+            "artifact_paths": [str(tmp_path / "a.bin"), {"path": str(tmp_path / "b.bin")}],
+            "document_path": str(doc),
+            "created_files": [str(tmp_path / "created.txt")],
+            "changed_files": ["relative.py"],
+            "saved_files": [str(tmp_path / "saved.txt")],
+        },
+    )
+    conn = kb.connect()
+    try:
+        kb.add_comment(conn, task["id"], "reviewer", f"review-required handoff: saved artifact at {doc}")
+    finally:
+        conn.close()
+
+    r = client.get(f"/api/plugins/kanban/tasks/{task['id']}/summary-tree?comment_limit=2")
+    assert r.status_code == 200, r.text
+    node = r.json()["tasks"][task["id"]]
+    artifacts = node["artifacts"]
+    kinds = {a["kind"] for a in artifacts}
+    assert {
+        "workspace", "diff", "output", "file", "folder", "artifact", "document", "created_file", "changed_file", "saved_file",
+    } <= kinds
+    changed = next(a for a in artifacts if a["kind"] == "changed_file")
+    assert changed["path"] == "relative.py"
+    assert changed["resolved_path"] == str(workspace / "relative.py")
+    assert changed["exists"] is True
+    comment_artifact = next(a for a in artifacts if a["source"] == "comment.regex")
+    assert comment_artifact["user_actionable"] is False
+    assert comment_artifact["path"] is None
+    assert comment_artifact["resolved_path"] is None
+    assert node["important_comments"][0]["body"].startswith("review-required handoff")
+    assert node["comment_count"] == 1
+
+
+def test_task_summary_tree_multiple_parents_do_not_duplicate_node(client):
+    root = client.post("/api/plugins/kanban/tasks", json={"title": "root"}).json()["task"]
+    first = client.post("/api/plugins/kanban/tasks", json={"title": "first", "parents": [root["id"]]}).json()["task"]
+    second = client.post("/api/plugins/kanban/tasks", json={"title": "second", "parents": [root["id"]]}).json()["task"]
+    shared = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "shared", "parents": [first["id"], second["id"]]},
+    ).json()["task"]
+
+    r = client.get(f"/api/plugins/kanban/tasks/{root['id']}/summary-tree")
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["order"].count(shared["id"]) == 1
+    assert set(data["tasks"][shared["id"]]["parents"]) == {first["id"], second["id"]}
+    assert {tuple((e["parent_id"], e["child_id"])) for e in data["edges"]} >= {
+        (first["id"], shared["id"]),
+        (second["id"], shared["id"]),
+    }
+
+
+def test_open_artifact_endpoint_refuses_arbitrary_paths_and_handles_missing_allowed_path(client, tmp_path):
+    missing = tmp_path / "missing.txt"
+    task = client.post("/api/plugins/kanban/tasks", json={"title": "artifact open"}).json()["task"]
+    _complete_task(task["id"], summary="has missing artifact", metadata={"file_path": str(missing)})
+
+    r = client.post(
+        f"/api/plugins/kanban/tasks/{task['id']}/artifacts/open",
+        json={"path": "/etc/passwd", "mode": "reveal"},
+    )
+    assert r.status_code == 200
+    assert r.json()["ok"] is False
+    assert "not a derived artifact" in r.json()["reason"]
+
+    r = client.post(
+        f"/api/plugins/kanban/tasks/{task['id']}/artifacts/open",
+        json={"path": str(missing), "mode": "reveal"},
+    )
+    assert r.status_code == 200
+    assert r.json()["ok"] is False
+    assert "not a derived artifact" in r.json()["reason"]
+
+
+def test_summary_tree_redacts_missing_artifact_paths(client, tmp_path):
+    missing = tmp_path / "missing-report.md"
+    task = client.post("/api/plugins/kanban/tasks", json={"title": "missing artifact"}).json()["task"]
+    _complete_task(task["id"], summary="expected doc", metadata={"document_path": str(missing)})
+
+    r = client.get(f"/api/plugins/kanban/tasks/{task['id']}/summary-tree")
+    assert r.status_code == 200, r.text
+    node = r.json()["tasks"][task["id"]]
+    doc_artifacts = [a for a in node["artifacts"] if a["kind"] == "document"]
+    assert doc_artifacts
+    assert all(a["availability"] == "missing" for a in doc_artifacts)
+    assert all(a["path"] is None and a["resolved_path"] is None for a in doc_artifacts)
+    assert node["artifact_state"]["state"] == "absent"
+    assert node["artifact_state"]["has_user_actionable"] is False
+
+
+def test_summary_tree_redacts_scratch_workspace_artifact_paths(client, tmp_path):
+    workspace = tmp_path / "scratch"
+    workspace.mkdir()
+    doc = workspace / "report.md"
+    doc.write_text("temporary report")
+
+    task = client.post(
+        "/api/plugins/kanban/tasks",
+        json={
+            "title": "scratch artifact",
+            "workspace_kind": "scratch",
+            "workspace_path": str(workspace),
+        },
+    ).json()["task"]
+    _complete_task(task["id"], summary="wrote doc", metadata={"document_path": str(doc)})
+
+    r = client.get(f"/api/plugins/kanban/tasks/{task['id']}/summary-tree")
+    assert r.status_code == 200, r.text
+    node = r.json()["tasks"][task["id"]]
+    assert node["artifact_state"] == {
+        "state": "absent",
+        "has_user_actionable": False,
+        "user_actionable_count": 0,
+        "candidate_count": 2,
+        "reason": "scratch workspace is temporary; not a durable artifact",
+    }
+    assert {a["availability"] for a in node["artifacts"]} == {"scratch"}
+    assert all(a["path"] is None and a["resolved_path"] is None for a in node["artifacts"])
+    assert all(str(workspace) not in (a["label"] or "") for a in node["artifacts"])
+
+
 # ---------------------------------------------------------------------------
 # PATCH /tasks/:id — status transitions
 # ---------------------------------------------------------------------------
@@ -319,6 +523,33 @@ def test_patch_block_then_unblock(client):
     )
     assert r.status_code == 200
     assert r.json()["task"]["status"] == "ready"
+
+
+def test_blocked_task_exposes_current_missing_info_on_board_detail_and_summary_tree(client):
+    t = client.post("/api/plugins/kanban/tasks", json={"title": "needs decision"}).json()["task"]
+    r = client.patch(
+        f"/api/plugins/kanban/tasks/{t['id']}",
+        json={"status": "blocked", "block_reason": "choose the rollout window"},
+    )
+    assert r.status_code == 200
+    conn = kb.connect()
+    try:
+        kb.add_comment(conn, t["id"], "pm", "Use Friday unless launch support says no")
+    finally:
+        conn.close()
+
+    board = client.get("/api/plugins/kanban/board").json()
+    blocked_card = next(c for c in board["columns"] if c["name"] == "blocked")["tasks"][0]
+    assert blocked_card["block"]["reason"] == "choose the rollout window"
+    assert blocked_card["block"]["missing_info"] == "choose the rollout window"
+    assert blocked_card["block"]["latest_relevant_comment"]["body"].startswith("Use Friday")
+
+    detail = client.get(f"/api/plugins/kanban/tasks/{t['id']}").json()
+    assert detail["task"]["block"]["source"] == "event.payload.reason"
+    assert detail["task"]["block"]["comment_prompt"].startswith("Add the missing info")
+
+    tree = client.get(f"/api/plugins/kanban/tasks/{t['id']}/summary-tree").json()
+    assert tree["tasks"][t["id"]]["block"]["event_id"] == detail["task"]["block"]["event_id"]
 
 
 def test_patch_schedule_then_unblock(client):
@@ -1031,6 +1262,30 @@ def test_dashboard_dependency_selects_use_value_change_handler():
 
     assert parent_select in bundle
     assert child_select in bundle
+
+
+def test_dashboard_bundle_renders_summary_artifacts_and_blocked_ux():
+    """The dashboard bundle should expose the summary-tree/artifact/block
+    affordances backed by the Kanban dashboard API.
+    """
+    repo_root = Path(__file__).resolve().parents[2]
+    bundle = (
+        repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
+    ).read_text()
+    css = (
+        repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "style.css"
+    ).read_text()
+
+    assert "function TaskSummaryTreeSection(props)" in bundle
+    assert "summary-tree?comment_limit=3" in bundle
+    assert "function ArtifactButtons(props)" in bundle
+    assert "/artifacts/open" in bundle
+    assert "Blocked — missing input needed" in bundle
+    assert "function BlockedStatusPanel(props)" in bundle
+
+    assert ".hermes-kanban-summary-tree" in css
+    assert ".hermes-kanban-artifact-chip" in css
+    assert ".hermes-kanban-blocked-top" in css
 
 
 def test_bulk_archive(client):
