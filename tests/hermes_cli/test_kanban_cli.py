@@ -525,6 +525,8 @@ def test_board_placement_error_detects_board_after_subcommand(argv):
         ["kanban", "--board", "incoming-knowledge", "list"],
         ["kanban", "--board=incoming-knowledge", "list"],
         ["kanban", "list", "--status", "ready"],
+        ["chat", "kanban", "list", "--board", "incoming-knowledge"],
+        ["chat", "-q", "kanban list --board incoming-knowledge"],
         ["model", "list", "--board", "incoming-knowledge"],
         ["--model", "kanban", "model", "list", "--board", "incoming-knowledge"],
         ["--resume", "kanban", "model", "list", "--board", "incoming-knowledge"],

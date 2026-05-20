@@ -105,9 +105,6 @@ def board_placement_error(
             token = tokens[i]
             if token == "--":
                 return None
-            if token == command_token:
-                tokens = tokens[i + 1:]
-                break
             if token.startswith("-"):
                 if "=" in token:
                     i += 1
@@ -115,6 +112,12 @@ def board_placement_error(
                 if token in _TOP_LEVEL_VALUE_FLAGS and i + 1 < len(tokens):
                     i += 2
                     continue
+                i += 1
+                continue
+            if token != command_token:
+                return None
+            tokens = tokens[i + 1:]
+            break
             i += 1
         else:
             return None
