@@ -8106,7 +8106,10 @@ class GatewayRunner:
         context = build_session_context(source, self.config, session_entry)
         
         # Set session context variables for tools (task-local, concurrency-safe)
-        _session_env_tokens = self._set_session_env(context)
+        _session_env_tokens = self._set_session_env(
+            context,
+            run_generation=run_generation,
+        )
         
         # Read privacy.redact_pii from config (re-read per message)
         _redact_pii = False
@@ -8769,28 +8772,10 @@ class GatewayRunner:
             except Exception as e:
                 logger.error("Process watcher setup error: %s", e)
 
-            # Drain watch pattern notifications that arrived during the agent run.
-            # Watch events and completions share the same queue; completions are
-            # already handled by the per-process watcher task above, so we only
-            # inject watch-type events here.
-            try:
-                from tools.process_registry import process_registry as _pr
-                _watch_events = []
-                while not _pr.completion_queue.empty():
-                    evt = _pr.completion_queue.get_nowait()
-                    evt_type = evt.get("type", "completion")
-                    if evt_type in {"watch_match", "watch_disabled"}:
-                        _watch_events.append(evt)
-                    # else: completion events are handled by the watcher task
-                for evt in _watch_events:
-                    synth_text = _format_gateway_process_notification(evt)
-                    if synth_text:
-                        try:
-                            await self._inject_watch_notification(synth_text, evt)
-                        except Exception as e2:
-                            logger.error("Watch notification injection error: %s", e2)
-            except Exception as e:
-                logger.debug("Watch queue drain error: %s", e)
+            await self._drain_watch_pattern_notifications(
+                current_session_key=session_key,
+                current_run_generation=run_generation,
+            )
 
             # NOTE: Dangerous command approvals are now handled inline by the
             # blocking gateway approval mechanism in tools/approval.py.  The agent
@@ -14327,7 +14312,12 @@ class GatewayRunner:
 
         return delivered
 
-    def _set_session_env(self, context: SessionContext) -> list:
+    def _set_session_env(
+        self,
+        context: SessionContext,
+        *,
+        run_generation: Optional[int] = None,
+    ) -> list:
         """Set session context variables for the current async task.
 
         Uses ``contextvars`` instead of ``os.environ`` so that concurrent
@@ -14346,6 +14336,7 @@ class GatewayRunner:
             user_name=str(context.source.user_name) if context.source.user_name else "",
             session_key=context.session_key,
             message_id=str(context.source.message_id) if context.source.message_id else "",
+            run_generation=str(run_generation or ""),
         )
 
     def _clear_session_env(self, tokens: list) -> None:
@@ -14615,6 +14606,102 @@ class GatewayRunner:
             user_id=str(evt.get("user_id") or "").strip() or None,
             user_name=str(evt.get("user_name") or "").strip() or None,
         )
+
+    @staticmethod
+    def _coerce_run_generation(value: Any) -> Optional[int]:
+        try:
+            text = str(value or "").strip()
+            return int(text) if text else None
+        except Exception:
+            return None
+
+    def _should_drop_watch_notification(
+        self,
+        evt: dict,
+        *,
+        current_session_key: str = "",
+        current_run_generation: Optional[int] = None,
+    ) -> bool:
+        evt_session_key = str(evt.get("session_key") or "").strip()
+        evt_generation = self._coerce_run_generation(evt.get("run_generation"))
+        current_generation = self._coerce_run_generation(current_run_generation)
+
+        if (
+            evt_session_key
+            and evt_generation is not None
+            and not self._is_session_run_current(evt_session_key, evt_generation)
+        ):
+            logger.info(
+                "Dropping stale watch notification for %s process=%s generation=%s",
+                evt_session_key,
+                evt.get("session_id", "unknown"),
+                evt_generation,
+            )
+            return True
+
+        if current_session_key and evt_session_key == current_session_key:
+            if (
+                evt_generation is None
+                or current_generation is None
+                or evt_generation == current_generation
+            ):
+                logger.info(
+                    "Dropping same-turn watch notification for %s process=%s generation=%s",
+                    evt_session_key,
+                    evt.get("session_id", "unknown"),
+                    evt_generation if evt_generation is not None else "unknown",
+                )
+                return True
+
+        return False
+
+    async def _drain_watch_pattern_notifications(
+        self,
+        *,
+        current_session_key: str = "",
+        current_run_generation: Optional[int] = None,
+    ) -> int:
+        """Drain queued watch-pattern events without re-entering stale turns.
+
+        Watch events and notify_on_complete completions share the same registry
+        queue. Completions are handled by per-process watcher tasks; this drain
+        only handles watch-type events. Events emitted by the currently
+        completing run are stale by the time we reach this point: injecting them
+        back through ``adapter.handle_message`` would create a second synthetic
+        turn in the same Telegram topic.
+        """
+        try:
+            from tools.process_registry import process_registry as _pr
+        except Exception as e:
+            logger.debug("Watch queue drain import error: %s", e)
+            return 0
+
+        injected = 0
+        try:
+            _watch_events = []
+            while not _pr.completion_queue.empty():
+                evt = _pr.completion_queue.get_nowait()
+                evt_type = evt.get("type", "completion")
+                if evt_type in {"watch_match", "watch_disabled"}:
+                    _watch_events.append(evt)
+                # else: completion events are handled by the watcher task
+            for evt in _watch_events:
+                if self._should_drop_watch_notification(
+                    evt,
+                    current_session_key=current_session_key,
+                    current_run_generation=current_run_generation,
+                ):
+                    continue
+                synth_text = _format_gateway_process_notification(evt)
+                if synth_text:
+                    try:
+                        await self._inject_watch_notification(synth_text, evt)
+                        injected += 1
+                    except Exception as e2:
+                        logger.error("Watch notification injection error: %s", e2)
+        except Exception as e:
+            logger.debug("Watch queue drain error: %s", e)
+        return injected
 
     async def _inject_watch_notification(self, synth_text: str, evt: dict) -> None:
         """Inject a watch-pattern notification as a synthetic message event.
@@ -16304,6 +16391,7 @@ class GatewayRunner:
             # session_key is now set via contextvars in _set_session_env()
             # (concurrency-safe). Keep os.environ as fallback for CLI/cron.
             os.environ["HERMES_SESSION_KEY"] = session_key or ""
+            os.environ["HERMES_SESSION_RUN_GENERATION"] = str(run_generation or "")
 
             # Read from env var or use default (same as CLI)
             max_iterations = int(os.getenv("HERMES_MAX_ITERATIONS", "90"))

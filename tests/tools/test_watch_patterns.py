@@ -113,6 +113,15 @@ class TestCheckWatchPatterns:
         assert evt["user_name"] == "alice"
         assert evt["thread_id"] == "42"
 
+    def test_match_carries_run_generation(self, registry):
+        session = _make_session(watch_patterns=["ERROR"])
+        session.watcher_run_generation = "7"
+
+        registry._check_watch_patterns(session, "ERROR: disk full\n")
+        evt = registry.completion_queue.get_nowait()
+
+        assert evt["run_generation"] == "7"
+
     def test_multiple_patterns(self, registry):
         """First matching pattern is reported."""
         session = _make_session(watch_patterns=["WARN", "ERROR"])
@@ -303,6 +312,7 @@ class TestCheckpointPersistence:
             "watch_patterns": ["PANIC", "OOM"],
         }]))
         monkeypatch.setattr(pr_mod, "CHECKPOINT_PATH", checkpoint)
+        monkeypatch.setattr(registry, "_is_host_pid_alive", lambda _pid: False)
         # PID doesn't exist, so nothing will be recovered
         count = registry.recover_from_checkpoint()
         # Won't recover since PID is fake, but verify the code path doesn't crash

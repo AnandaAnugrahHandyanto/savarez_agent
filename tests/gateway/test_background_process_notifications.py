@@ -442,6 +442,88 @@ async def test_inject_watch_notification_carries_message_id_reply_anchor(monkeyp
     assert synth_event.source.thread_id == "24296"
 
 
+@pytest.mark.asyncio
+async def test_same_turn_watch_match_does_not_reenter_session(monkeypatch, tmp_path):
+    """Watch matches emitted by the current run must not start a second turn.
+
+    Regression for a Telegram DM Topic phantom continuation: a finite
+    background login probe emitted several watch_pattern matches while the
+    agent was already finishing its answer. The end-of-run queue drain injected
+    those stale matches back through adapter.handle_message(), which queued a
+    synthetic follow-up and made the agent continue after it had already
+    delivered the final answer.
+    """
+    import tools.process_registry as pr_module
+    from tools.process_registry import ProcessRegistry
+
+    registry = ProcessRegistry()
+    monkeypatch.setattr(pr_module, "process_registry", registry)
+
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    adapter = runner.adapters[Platform.TELEGRAM]
+
+    session_key = "agent:main:telegram:dm:123:24296"
+    registry.completion_queue.put({
+        "type": "watch_match",
+        "session_id": "proc_login_probe",
+        "session_key": session_key,
+        "run_generation": 7,
+        "command": "python interactive_login_capture.py",
+        "pattern": "send_code",
+        "output": '{"phase":"send_code","ok":false,"status":403}',
+        "platform": "telegram",
+        "chat_id": "123",
+        "chat_type": "dm",
+        "thread_id": "24296",
+        "message_id": "777",
+    })
+
+    await runner._drain_watch_pattern_notifications(
+        current_session_key=session_key,
+        current_run_generation=7,
+    )
+
+    adapter.handle_message.assert_not_awaited()
+    assert registry.completion_queue.empty()
+
+
+@pytest.mark.asyncio
+async def test_stale_watch_match_generation_is_dropped(monkeypatch, tmp_path):
+    import tools.process_registry as pr_module
+    from tools.process_registry import ProcessRegistry
+
+    registry = ProcessRegistry()
+    monkeypatch.setattr(pr_module, "process_registry", registry)
+
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    adapter = runner.adapters[Platform.TELEGRAM]
+
+    session_key = "agent:main:telegram:dm:123:24296"
+    runner._session_run_generation[session_key] = 8
+    registry.completion_queue.put({
+        "type": "watch_match",
+        "session_id": "proc_old_probe",
+        "session_key": session_key,
+        "run_generation": 7,
+        "command": "python old_probe.py",
+        "pattern": "ready",
+        "output": "ready",
+        "platform": "telegram",
+        "chat_id": "123",
+        "chat_type": "dm",
+        "thread_id": "24296",
+        "message_id": "777",
+    })
+
+    await runner._drain_watch_pattern_notifications(
+        current_session_key="agent:main:telegram:dm:123:99999",
+        current_run_generation=2,
+    )
+
+    adapter.handle_message.assert_not_awaited()
+    assert registry.completion_queue.empty()
+
+
 def test_build_process_event_source_falls_back_to_session_key_chat_type(monkeypatch, tmp_path):
     runner = _build_runner(monkeypatch, tmp_path, "all")
 
