@@ -3462,6 +3462,7 @@ class GatewayRunner:
         # to shut Hazel down without respawning.
         bash_bin = shutil.which("bash") or "/bin/bash"
         setsid_bin = shutil.which("setsid")
+        bash_bin = shutil.which("bash") or "/bin/bash"
         if setsid_bin:
             subprocess.Popen(
                 [setsid_bin, bash_bin, "-lc", shell_cmd],
