@@ -7721,6 +7721,24 @@ def _finalize_update_output(state):
             pass
 
 
+def _git_cmd_for_update() -> list[str]:
+    """Return a robust git command vector for update/check paths.
+
+    Some shell/env setups can leak a quoted git token (``git\"``) into update
+    plumbing. Resolve to an absolute executable up front so ``subprocess`` never
+    tries to exec the literal bad token.
+    """
+    git_exe = shutil.which("git")
+    if not git_exe and sys.platform == "darwin" and Path("/usr/bin/git").exists():
+        git_exe = "/usr/bin/git"
+    git_exe = git_exe or "git"
+    git_exe = git_exe.strip().strip('"').strip("'")
+    git_cmd = [git_exe]
+    if sys.platform == "win32":
+        git_cmd = [git_exe, "-c", "windows.appendAtomically=false"]
+    return git_cmd
+
+
 def _resolve_update_branch(args) -> str:
     """Normalize ``args.branch`` into a non-empty branch name.
 
@@ -7775,9 +7793,7 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
         print("✗ Not a git repository — cannot check for updates.")
         sys.exit(1)
 
-    git_cmd = ["git"]
-    if sys.platform == "win32":
-        git_cmd = ["git", "-c", "windows.appendAtomically=false"]
+    git_cmd = _git_cmd_for_update()
 
     # Fetch only the branch we compare against; prefer upstream as the canonical
     # reference. A bare `git fetch <remote>` pulls every ref, and this repo has
@@ -8289,9 +8305,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         )
 
     # Build git command once — reused for fork detection and the update itself.
-    git_cmd = ["git"]
-    if sys.platform == "win32":
-        git_cmd = ["git", "-c", "windows.appendAtomically=false"]
+    git_cmd = _git_cmd_for_update()
 
     # Discard npm lockfile churn before any stash/branch logic. npm rewrites
     # tracked package-lock.json files non-deterministically at install/build
