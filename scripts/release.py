@@ -1256,6 +1256,7 @@ AUTHOR_MAP = {
     "120500656+oooindefatigable@users.noreply.github.com": "ooovenenoso",
     "vanthinh6886@gmail.com": "vanthinh6886",  # PR #28018 salvage (yaml/flock/atomic write guards)
     "erik.engervall@gmail.com": "erikengervall",  # PR #28774 (firecrawl integration tag)
+    "hanqshih@gmail.com": "M1racleShih",  # PR (feishu table rendering fix)
 }
 
 
