@@ -1008,7 +1008,7 @@ class TestGatewaySystemServiceRouting:
         monkeypatch.setattr(
             gateway_cli,
             "systemd_install",
-            lambda force=False, system=False, run_as_user=None: calls.append((force, system, run_as_user)),
+            lambda force=False, system=False, run_as_user=None, enable_on_startup=True: calls.append((force, system, run_as_user)),
         )
 
         gateway_cli.gateway_command(

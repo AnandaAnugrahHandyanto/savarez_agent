@@ -1224,6 +1224,11 @@ def _get_platform_tools(
             if pts in toolset_names:
                 # Explicitly listed in config — enabled
                 enabled_toolsets.add(pts)
+            elif has_explicit_config:
+                # A user-saved explicit built-in toolset list is authoritative.
+                # Do not auto-enable newly discovered plugin toolsets on top of
+                # an explicit override such as ["web", "terminal"].
+                continue
             elif pts in _DEFAULT_OFF_TOOLSETS:
                 # Opt-in plugin toolset — stay off until user picks it
                 continue

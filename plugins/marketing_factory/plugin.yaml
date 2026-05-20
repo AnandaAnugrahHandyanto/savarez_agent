@@ -1,0 +1,7 @@
+name: marketing_factory
+version: 0.1.0
+description: "Dry-run-first Marketing Agent Factory: isolated brand profiles, campaign drafts, approvals, schedules, dry-run publishing, audit trail, and CLI/tools."
+author: Hermes Agent
+kind: backend
+provides_tools:
+  - marketing_factory
