@@ -291,10 +291,15 @@ export const DARK_THEME: Theme = {
     statusCritical: '#FF6B6B',
     selectionBg: '#3a3a55',
 
-    diffAdded: 'rgb(220,255,220)',
-    diffRemoved: 'rgb(255,220,220)',
-    diffAddedWord: 'rgb(36,138,61)',
-    diffRemovedWord: 'rgb(207,34,46)',
+    // Diff line backgrounds are applied to whole added/removed rows in
+    // markdown ```diff fences and inline ==highlights.  Keep dark-theme
+    // backgrounds dark; using GitHub-light-style mint/pink here creates the
+    // large pale blocks shown in dark terminals and makes wrapped diff output
+    // hard to scan.
+    diffAdded: '#0f2e1d',
+    diffRemoved: '#3a1216',
+    diffAddedWord: '#7ee787',
+    diffRemovedWord: '#ffa198',
     shellDollar: '#4dabf7'
   },
 
