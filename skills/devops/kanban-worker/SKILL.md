@@ -107,7 +107,7 @@ Capture and report **Proof of State** before claiming, changing, restarting, or 
 - **Cron jobs:** Report `cronjob list`, specific job IDs, and their status/schedule.
 - **Systemd services/timers:** Report `systemctl --user status <unit>`, `list-units`, or `list-timers` output summaries.
 - **Databases:** Report schema versions, migration row counts, or specific record checks (`SELECT COUNT(*)`).
-- **Runtime state:** Report before/after evidence for any persistent changes.
+- **Runtime state:** Report before/after evidence for any persistent changes (e.g. `git diff`, `git status`, or specific command outputs).
 
 **Evidence guidelines:**
 - Record evidence in `kanban_comment`, `metadata`, or handoff summaries.

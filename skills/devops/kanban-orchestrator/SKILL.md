@@ -60,7 +60,7 @@ When routing work that affects persistent or runtime state (cron jobs, systemd s
 
 **Instructions for task bodies:**
 - Instruct workers to capture and report concrete before/after evidence (command outputs, row counts, etc.).
-- Explicitly name expected evidence: e.g., "provide `cronjob list` output", "report `systemctl status` after restart", or "verify migration with `SELECT COUNT(*)`".
+- Explicitly name expected evidence: e.g., "provide `cronjob list` output", "report `systemctl status` after restart", "verify migration with `SELECT COUNT(*)`", or "include `git diff` for file changes".
 - Mandate the redaction of secrets, tokens, and raw PII in all reports.
 - Require evidence to be recorded in `kanban_comment`, `metadata`, or handoff summaries.
 
