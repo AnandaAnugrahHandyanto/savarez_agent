@@ -2226,6 +2226,13 @@ class DiscordAdapter(BasePlatformAdapter):
         # Check user ID allowlist (works for both DMs and guild messages)
         if has_users and user_id in allowed_users:
             return True
+        # Pairing store: users who completed the DM pairing flow are also
+        # authorized. Without this check, "hermes pairing approve discord
+        # <code>" is silently inert whenever DISCORD_ALLOWED_USERS is set —
+        # the env-var allowlist runs first and drops the message before
+        # gateway/run.py:_is_user_authorized's pairing-aware check ever runs.
+        if self._user_is_paired(user_id):
+            return True
         # Role allowlist is only consulted when configured.
         if not has_roles:
             return False
@@ -2271,6 +2278,24 @@ class DiscordAdapter(BasePlatformAdapter):
             return False
         m_roles = getattr(m, "roles", None) or []
         return any(getattr(r, "id", None) in allowed_roles for r in m_roles)
+
+    def _user_is_paired(self, user_id: str) -> bool:
+        """Return True if ``user_id`` is in the Discord pairing store.
+
+        Defensive: tolerates test fixtures that bypass ``__init__`` and a
+        missing ``gateway_runner.pairing_store`` reference. Falls back to a
+        local ``PairingStore`` instance so the check still works in unit
+        tests that exercise the adapter in isolation.
+        """
+        try:
+            runner = getattr(self, "gateway_runner", None)
+            store = getattr(runner, "pairing_store", None) if runner else None
+            if store is None:
+                from gateway.pairing import PairingStore
+                store = PairingStore()
+            return store.is_approved("discord", user_id)
+        except Exception:
+            return False
 
     # ── Slash command authorization ─────────────────────────────────────
     # Slash commands (``_run_simple_slash`` and ``_handle_thread_create_slash``)
