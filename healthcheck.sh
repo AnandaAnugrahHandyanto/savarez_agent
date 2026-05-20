@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
-# Basic host health check for disk and memory pressure.
+# Basic host resource health check for disk and memory pressure.
 #
+# This is intentionally scoped to host resource pressure. Application
+# liveness/readiness checks should stay in the Hermes runtime healthcheck
+# path so container/orchestrator probes can call the app check and this script
+# independently.
 # Environment overrides:
 #   DISK_USAGE_THRESHOLD=90    # fail if any checked filesystem is >= this % used
 #   MEMORY_USAGE_THRESHOLD=90  # fail if memory usage is >= this % used
