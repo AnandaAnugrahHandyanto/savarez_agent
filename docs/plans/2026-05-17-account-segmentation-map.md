@@ -92,7 +92,7 @@ Keep names boring and obvious:
 - `qa-testing`
 - `business-admin`
 - `business-support`
-- `research-secure`
+- `research-m3-global`
 - `recovery-admin`
 
 If there are multiple business accounts later, add the role or function first, then the client or brand.

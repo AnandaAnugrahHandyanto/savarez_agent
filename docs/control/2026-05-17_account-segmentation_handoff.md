@@ -19,7 +19,7 @@
 
 - `qa-testing` for messy flows.
 - `business-admin` / `business-support` for live ops.
-- `research-secure` for sensitive research.
+- `research-m3-global` for sensitive research.
 - `recovery-admin` for recovery only.
 
 ## What still needs doing
