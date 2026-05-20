@@ -129,6 +129,13 @@ export const EN = {
   'image.attachNoticeName': '📎 Attached image: {name}',
   'image.tok': ' tok',
   'image.attached': '📎 Image #{count} attached from clipboard{meta}',
+  'input.placeholder1': 'Ask me anything…',
+  'input.placeholder2': 'Try "explain this codebase"',
+  'input.placeholder3': 'Try "write a test for…"',
+  'input.placeholder4': 'Try "refactor the auth module"',
+  'input.placeholder5': 'Try "/help" for commands',
+  'input.placeholder6': 'Try "fix the lint errors"',
+  'input.placeholder7': 'Try "how does the config loader work?"',
   'input.promptCancelled': 'prompt cancelled',
   'paste.noImage': 'No image found in clipboard',
   'section.thinking': 'Thinking',
@@ -482,6 +489,22 @@ export const EN = {
   'time.today': 'today',
   'time.yesterday': 'yesterday',
   'todo.incomplete': 'incomplete',
+  'toolset.browser': 'Browser',
+  'toolset.clarify': 'Clarify',
+  'toolset.code_execution': 'Code Execution',
+  'toolset.cronjob': 'Cron Jobs',
+  'toolset.delegation': 'Delegation',
+  'toolset.file': 'Files',
+  'toolset.image_gen': 'Image Generation',
+  'toolset.memory': 'Memory',
+  'toolset.search': 'Search',
+  'toolset.session_search': 'Session Search',
+  'toolset.skills': 'Skills',
+  'toolset.terminal': 'Terminal',
+  'toolset.todo': 'Todo',
+  'toolset.tts': 'TTS',
+  'toolset.vision': 'Vision',
+  'toolset.web': 'Web',
   'todo.still': '{count} still {status}',
   'agents.controlsLive': 'x kill · X subtree · p {action}',
   'agents.controlsLocked': 'controls locked',
@@ -549,6 +572,13 @@ const ZH: Record<TranslationKey, TranslationValue> = {
   'image.attachNoticeName': '📎 已附加图片：{name}',
   'image.tok': ' token',
     'image.attached': '📎 图片 #{count} 已从剪贴板附加{meta}',
+  'input.placeholder1': '随便问我…',
+  'input.placeholder2': '试试“解释这个代码库”',
+  'input.placeholder3': '试试“为…写个测试”',
+  'input.placeholder4': '试试“重构认证模块”',
+  'input.placeholder5': '试试“/help”查看命令',
+  'input.placeholder6': '试试“修复 lint 错误”',
+  'input.placeholder7': '试试“配置加载器怎么工作？”',
   'input.promptCancelled': '输入已取消',
   'paste.noImage': '剪贴板中没有图片',
   'section.thinking': '思考',
@@ -902,6 +932,22 @@ const ZH: Record<TranslationKey, TranslationValue> = {
   'time.today': '今天',
   'time.yesterday': '昨天',
   'todo.incomplete': '未完成',
+  'toolset.browser': '浏览器',
+  'toolset.clarify': '澄清',
+  'toolset.code_execution': '代码执行',
+  'toolset.cronjob': '定时任务',
+  'toolset.delegation': '委托',
+  'toolset.file': '文件',
+  'toolset.image_gen': '图片生成',
+  'toolset.memory': '记忆',
+  'toolset.search': '搜索',
+  'toolset.session_search': '会话搜索',
+  'toolset.skills': '技能',
+  'toolset.terminal': '终端',
+  'toolset.todo': '待办',
+  'toolset.tts': '语音合成',
+  'toolset.vision': '视觉',
+  'toolset.web': '网页',
   'todo.still': '还有 {count} 项{status}',
   'agents.controlsLive': 'x 终止 · X 子树 · p {action}',
   'agents.controlsLocked': '控制已锁定',
@@ -1002,3 +1048,12 @@ export function I18nProvider({ children, locale }: { children: ReactNode; locale
 }
 
 export const useI18n = () => useContext(I18nContext)
+
+/** 工具集原始名称（带 _tools 后缀或不带）→ 显示名称 */
+export const toolsetLabel = (raw: string, locale: Locale): string => {
+  const key = raw.endsWith('_tools') ? raw.slice(0, -6) : raw
+  if (locale !== 'zh') return key
+  // 中文查表，找不到就用原名
+  const zh = ZH[`toolset.${key}` as keyof typeof ZH]
+  return (zh as string) ?? key
+}

@@ -6015,6 +6015,19 @@ class HermesCLI:
 
     def new_session(self, silent=False, title=None):
         """Start a fresh session with a new session ID and cleared agent state."""
+        lang = (self.config.get("display", {}) or {}).get("language", "en")
+
+        def _(en: str, l: str) -> str:
+            if l.startswith("zh"):
+                _map = {
+                    "session started untitled.": "会话已开始，未命名。",
+                    "Title is empty after cleanup — session started untitled.": "标题清理后为空——会话已开始，未命名。",
+                    "New session started: ": "新会话已开始：",
+                    "New session started!": "新会话已开始！",
+                }
+                return _map.get(en, en)
+            return en
+
         if self.agent and self.conversation_history:
             # Trigger memory extraction on the old session before session_id rotates.
             self.agent.commit_memory_session(self.conversation_history)
@@ -6082,13 +6095,13 @@ class HermesCLI:
                             self._pending_title = None
                             title = sanitized
                         except ValueError as e:
-                            _cprint(f"  {e} — session started untitled.")
+                            _cprint(f"  {e} — {_('session started untitled.', lang)}")
                             title = None
                         except Exception:
                             title = None
                     elif title is not None:
                         # sanitize_title returned empty (whitespace-only / unprintable)
-                        _cprint("  Title is empty after cleanup — session started untitled.")
+                        _cprint(f"  {_('Title is empty after cleanup — session started untitled.', lang)}")
                         title = None
             # Notify memory providers that session_id rotated to a fresh
             # conversation. reset=True signals providers to flush accumulated
@@ -6110,9 +6123,9 @@ class HermesCLI:
 
         if not silent:
             if title:
-                print(f"(^_^)v New session started: {title}")
+                print(f"(^_^)v {_('New session started: ', lang)}{title}")
             else:
-                print("(^_^)v New session started!")
+                print(f"(^_^)v {_('New session started!', lang)}")
 
     def _handle_handoff_command(self, cmd_original: str) -> bool:
         """Handle ``/handoff <platform>`` — transfer this CLI session to a gateway platform.

@@ -4,7 +4,7 @@ import unicodeSpinners from 'unicode-animations'
 
 import { artWidth, caduceus, CADUCEUS_WIDTH, logo, LOGO_WIDTH } from '../banner.js'
 import { flat } from '../lib/text.js'
-import { useI18n } from '../i18n.js'
+import { toolsetLabel, useI18n } from '../i18n.js'
 import type { Theme } from '../theme.js'
 import type { PanelSection, SessionInfo } from '../types.js'
 
@@ -99,7 +99,7 @@ const SKILLS_MAX = 8
 const TOOLSETS_MAX = 8
 
 export function SessionPanel({ info, sid, t }: SessionPanelProps) {
-  const { t: ti } = useI18n()
+  const { t: ti, locale } = useI18n()
   const cols = useStdout().stdout?.columns ?? 100
   const heroLines = caduceus(t.color, t.bannerHero || undefined)
   const leftW = Math.min((artWidth(heroLines) || CADUCEUS_WIDTH) + 4, Math.floor(cols * 0.4))
@@ -172,8 +172,8 @@ export function SessionPanel({ info, sid, t }: SessionPanelProps) {
       <>
         {shown.map(([k, vs]) => (
           <Text key={k} wrap="truncate">
-            <Text color={t.color.muted}>{strip(k)}: </Text>
-            <Text color={t.color.text}>{truncLine(strip(k) + ': ', vs)}</Text>
+            <Text color={t.color.muted}>{toolsetLabel(k, locale)}: </Text>
+            <Text color={t.color.text}>{truncLine(toolsetLabel(k, locale) + ': ', vs)}</Text>
           </Text>
         ))}
         {overflow > 0 && (

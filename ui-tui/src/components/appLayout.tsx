@@ -7,8 +7,8 @@ import type { AppLayoutProps } from '../app/interfaces.js'
 import { $isBlocked, $overlayState, patchOverlayState } from '../app/overlayStore.js'
 import { $uiState } from '../app/uiStore.js'
 import { INLINE_MODE, SHOW_FPS } from '../config/env.js'
-import { PLACEHOLDER } from '../content/placeholders.js'
-import { useI18n } from '../i18n.js'
+import { type TranslationKey, useI18n } from '../i18n.js'
+import { pick } from '../lib/text.js'
 import {
   COMPOSER_PROMPT_GAP_WIDTH,
   composerPromptWidth,
@@ -178,6 +178,12 @@ const ComposerPane = memo(function ComposerPane({
   const inputHeight = inputVisualHeight(composer.input, inputColumns)
   const inputMouseRef = useRef<null | TextInputMouseApi>(null)
 
+  const placeholderKey = useMemo<TranslationKey>(() => pick([
+    'input.placeholder1', 'input.placeholder2', 'input.placeholder3',
+    'input.placeholder4', 'input.placeholder5', 'input.placeholder6',
+    'input.placeholder7'
+  ]), [])
+
   const captureInputDrag = (e: GutterMouseEvent) => {
     if (e.button !== 0) {
       return
@@ -302,7 +308,7 @@ const ComposerPane = memo(function ComposerPane({
                   onChange={composer.updateInput}
                   onPaste={composer.handleTextPaste}
                   onSubmit={composer.submit}
-                  placeholder={composer.empty ? PLACEHOLDER : ui.busy ? i18n.t('input.interruptHint') : ''}
+                  placeholder={composer.empty ? i18n.t(placeholderKey) : ui.busy ? i18n.t('input.interruptHint') : ''}
                   value={composer.input}
                   voiceRecordKey={composer.voiceRecordKey}
                 />
