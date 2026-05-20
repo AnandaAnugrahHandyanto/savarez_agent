@@ -1539,3 +1539,230 @@
 .hermes-kanban-trash-label {
   font-weight: 500;
 }
+
+/* ---- Kanban readability pass ----------------------------------------
+ *
+ * The default Hermes theme is atmospheric, but the kanban board is an
+ * operational surface: it needs clear scan lines more than texture. These
+ * overrides keep the theme variables and status colors, while lifting
+ * contrast, type size, and card separation inside the board only.
+ */
+
+.hermes-kanban {
+  --hermes-kanban-panel: color-mix(in srgb, var(--background-base, #041c1c) 88%, #000 12%);
+  --hermes-kanban-surface: color-mix(in srgb, var(--background-base, #041c1c) 74%, var(--midground-base, #ffe6cb) 8%);
+  --hermes-kanban-surface-strong: color-mix(in srgb, var(--background-base, #041c1c) 66%, var(--midground-base, #ffe6cb) 14%);
+  --hermes-kanban-text: color-mix(in srgb, var(--midground-base, #ffe6cb) 94%, #fff 6%);
+  --hermes-kanban-muted: color-mix(in srgb, var(--midground-base, #ffe6cb) 68%, transparent);
+  --hermes-kanban-border: color-mix(in srgb, var(--midground-base, #ffe6cb) 30%, transparent);
+  background: color-mix(in srgb, var(--hermes-kanban-panel) 90%, transparent);
+  border: 1px solid var(--hermes-kanban-border);
+  border-radius: calc(var(--radius, 0.5rem) + 0.2rem);
+  padding: 0.85rem;
+  color: var(--hermes-kanban-text);
+}
+
+.hermes-kanban,
+.hermes-kanban :where(button, input, select, textarea, label, span, div, p) {
+  letter-spacing: 0;
+}
+
+.hermes-kanban :where(
+  .hermes-kanban-column-label,
+  .hermes-kanban-column-sub,
+  .hermes-kanban-card-title,
+  .hermes-kanban-card-meta,
+  .hermes-kanban-assignee,
+  .hermes-kanban-tag,
+  .hermes-kanban-priority
+) {
+  text-transform: none;
+}
+
+.hermes-kanban > :first-child {
+  background: color-mix(in srgb, var(--hermes-kanban-surface) 82%, transparent);
+  border: 1px solid var(--hermes-kanban-border);
+  border-radius: var(--radius, 0.5rem);
+  padding: 0.75rem;
+}
+
+.hermes-kanban-columns {
+  gap: 1rem;
+  grid-template-columns: repeat(auto-fit, minmax(310px, 1fr));
+}
+
+.hermes-kanban-column {
+  background: color-mix(in srgb, var(--hermes-kanban-surface) 92%, transparent);
+  border-color: var(--hermes-kanban-border);
+  border-radius: var(--radius, 0.5rem);
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.2);
+  padding: 0.7rem;
+  min-height: 220px;
+}
+
+.hermes-kanban-column[data-kanban-column="triage"] { border-top: 3px solid #c58af0; }
+.hermes-kanban-column[data-kanban-column="todo"] { border-top: 3px solid color-mix(in srgb, var(--midground-base, #ffe6cb) 52%, transparent); }
+.hermes-kanban-column[data-kanban-column="ready"] { border-top: 3px solid #e5bf48; }
+.hermes-kanban-column[data-kanban-column="running"] { border-top: 3px solid #47d18c; }
+.hermes-kanban-column[data-kanban-column="blocked"] { border-top: 3px solid #ff5a66; }
+.hermes-kanban-column[data-kanban-column="done"] { border-top: 3px solid #69a7ff; }
+
+.hermes-kanban-column-header {
+  padding: 0.15rem 0.1rem 0.45rem;
+  font-size: 0.95rem;
+  color: var(--hermes-kanban-text);
+}
+
+.hermes-kanban-column-count {
+  color: var(--hermes-kanban-muted);
+  font-size: 0.8rem;
+}
+
+.hermes-kanban-column-sub {
+  color: var(--hermes-kanban-muted);
+  font-size: 0.78rem;
+  line-height: 1.35;
+}
+
+.hermes-kanban-column-add {
+  width: 26px;
+  height: 26px;
+  background: color-mix(in srgb, var(--midground-base, #ffe6cb) 7%, transparent);
+  border-color: var(--hermes-kanban-border);
+}
+
+.hermes-kanban-column-body {
+  gap: 0.65rem;
+}
+
+.hermes-kanban-empty {
+  background: color-mix(in srgb, var(--background-base, #041c1c) 54%, transparent);
+  color: var(--hermes-kanban-muted);
+  border-color: color-mix(in srgb, var(--midground-base, #ffe6cb) 20%, transparent);
+}
+
+.hermes-kanban-card {
+  border-radius: var(--radius, 0.5rem);
+}
+
+.hermes-kanban-card-content {
+  background: color-mix(in srgb, var(--hermes-kanban-surface-strong) 96%, transparent);
+  border: 1px solid color-mix(in srgb, var(--midground-base, #ffe6cb) 24%, transparent);
+  border-radius: var(--radius, 0.5rem);
+  gap: 0.45rem;
+  padding: 0.7rem 0.75rem !important;
+}
+
+.hermes-kanban-card:hover .hermes-kanban-card-content {
+  border-color: color-mix(in srgb, var(--color-ring) 65%, var(--midground-base, #ffe6cb) 25%);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-ring) 50%, transparent);
+}
+
+.hermes-kanban-column[data-kanban-column="blocked"] .hermes-kanban-card-content {
+  border-left: 4px solid #ff5a66;
+}
+
+.hermes-kanban-column[data-kanban-column="done"] .hermes-kanban-card-content {
+  border-left: 4px solid #69a7ff;
+}
+
+.hermes-kanban-column[data-kanban-column="running"] .hermes-kanban-card-content {
+  border-left: 4px solid #47d18c;
+}
+
+.hermes-kanban-card-title {
+  font-size: 0.98rem;
+  font-weight: 650;
+  line-height: 1.35;
+  color: var(--hermes-kanban-text);
+}
+
+.hermes-kanban-card-id {
+  font-size: 0.72rem;
+  color: var(--hermes-kanban-muted);
+  letter-spacing: 0.01em;
+}
+
+.hermes-kanban-card-meta {
+  color: var(--hermes-kanban-muted);
+  font-size: 0.78rem;
+}
+
+.hermes-kanban-assignee {
+  color: color-mix(in srgb, var(--hermes-kanban-text) 88%, var(--color-ring) 12%);
+  font-weight: 650;
+}
+
+.hermes-kanban-priority,
+.hermes-kanban-tag,
+.hermes-kanban-progress {
+  font-size: 0.68rem !important;
+  color: var(--hermes-kanban-text);
+  background: color-mix(in srgb, var(--midground-base, #ffe6cb) 12%, transparent);
+  border-color: color-mix(in srgb, var(--midground-base, #ffe6cb) 28%, transparent);
+}
+
+@media (max-width: 900px) {
+  .hermes-kanban {
+    padding: 0.65rem;
+  }
+
+  .hermes-kanban-columns {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* The host dashboard ships strong utility styles. Keep this final block
+ * intentionally explicit so the kanban readability pass wins within the
+ * plugin. */
+.hermes-kanban {
+  background: rgba(2, 13, 13, 0.9) !important;
+  border-color: rgba(255, 230, 203, 0.32) !important;
+}
+
+.hermes-kanban :where(
+  .hermes-kanban-column-label,
+  .hermes-kanban-column-sub,
+  .hermes-kanban-card-title,
+  .hermes-kanban-card-meta,
+  .hermes-kanban-assignee,
+  .hermes-kanban-card-id,
+  .hermes-kanban-tag,
+  .hermes-kanban-priority,
+  .hermes-kanban-progress
+) {
+  text-transform: none !important;
+}
+
+.hermes-kanban > :first-child {
+  background: rgba(5, 27, 27, 0.92) !important;
+  border-color: rgba(255, 230, 203, 0.28) !important;
+}
+
+.hermes-kanban-column {
+  background: rgba(4, 24, 24, 0.94) !important;
+  border-color: rgba(255, 230, 203, 0.3) !important;
+}
+
+.hermes-kanban-card-content {
+  background: rgba(8, 38, 37, 0.98) !important;
+  border-color: rgba(255, 230, 203, 0.3) !important;
+}
+
+.hermes-kanban-card-title {
+  color: #fff1dc !important;
+}
+
+.hermes-kanban-column-sub,
+.hermes-kanban-card-meta,
+.hermes-kanban-card-id {
+  color: rgba(255, 230, 203, 0.72) !important;
+}
+
+.hermes-kanban-columns {
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)) !important;
+}
+
+.hermes-kanban-column {
+  min-height: 190px !important;
+}
