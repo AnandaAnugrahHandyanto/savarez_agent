@@ -6754,8 +6754,19 @@ class AIAgent:
             # Explicitly read proxy settings while still honoring NO_PROXY for
             # loopback / local endpoints such as a locally hosted sub2api.
             _proxy = _get_proxy_for_base_url(base_url)
+            # ``retries=1`` covers the narrow window where a request
+            # checks out a connection from httpx's keepalive pool that
+            # the peer has already closed but TCP keepalive hasn't yet
+            # noticed.  Without it, the first post-idle tool call after
+            # a 2-3 minute pause hangs / errors out with no recovery
+            # path until the user kicks the loop (#28834).  httpx only
+            # retries connection-establishment failures, so this can't
+            # double-submit a half-sent request.
             return _httpx.Client(
-                transport=_httpx.HTTPTransport(socket_options=_sock_opts),
+                transport=_httpx.HTTPTransport(
+                    socket_options=_sock_opts,
+                    retries=1,
+                ),
                 proxy=_proxy,
             )
         except Exception:
