@@ -398,6 +398,13 @@ def _status_update(sid: str, kind: str, text: str | None = None):
         sid,
         {"kind": kind if text is not None else "status", "text": body},
     )
+    if "switching to fallback:" in body:
+        try:
+            agent = (_sessions.get(sid) or {}).get("agent")
+            if agent is not None:
+                _emit("session.info", sid, _session_info(agent))
+        except Exception:
+            logger.debug("failed to emit fallback session.info", exc_info=True)
 
 
 def _estimate_image_tokens(width: int, height: int) -> int:
