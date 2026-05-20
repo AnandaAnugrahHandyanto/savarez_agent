@@ -524,7 +524,8 @@ def _handle_block(args: dict, **kw) -> str:
     reason = args.get("reason")
     if not reason or not str(reason).strip():
         return tool_error("reason is required — explain what input you need")
-board = args.get("board")
+    
+    board = args.get("board")
     
     # Auto-detect handoff from reason patterns
     handoff_arg = args.get("handoff")
@@ -535,6 +536,7 @@ board = args.get("board")
         reason_lower = reason.lower()
         handoff_patterns = ["review-required:", "handoff:", "needs-review:", "awaiting review:"]
         handoff = any(p in reason_lower for p in handoff_patterns)
+    
     try:
         kb, conn = _connect(board=board)
         try:
