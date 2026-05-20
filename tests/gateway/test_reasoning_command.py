@@ -80,6 +80,7 @@ class TestReasoningCommand:
     def test_parse_reasoning_command_args_accepts_ascii_and_smart_global_flags(self):
         assert gateway_run.GatewayRunner._parse_reasoning_command_args("high --global") == ("high", True)
         assert gateway_run.GatewayRunner._parse_reasoning_command_args("—global xhigh") == ("xhigh", True)
+        assert gateway_run.GatewayRunner._parse_reasoning_command_args("max --global") == ("max", True)
 
     @pytest.mark.asyncio
     async def test_reasoning_command_reloads_current_state_from_config(self, tmp_path, monkeypatch):
@@ -133,15 +134,15 @@ class TestReasoningCommand:
         monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
 
         runner = _make_runner()
-        event = _make_event("/reasoning high")
+        event = _make_event("/reasoning max")
         session_key = runner._session_key_for_source(event.source)
 
         result = await runner._handle_reasoning_command(event)
 
         saved = yaml.safe_load(config_path.read_text(encoding="utf-8"))
         assert saved["agent"]["reasoning_effort"] == "medium"
-        assert runner._session_reasoning_overrides[session_key] == {"enabled": True, "effort": "high"}
-        assert runner._reasoning_config == {"enabled": True, "effort": "high"}
+        assert runner._session_reasoning_overrides[session_key] == {"enabled": True, "effort": "max"}
+        assert runner._reasoning_config == {"enabled": True, "effort": "max"}
         assert "session only" in result
 
     @pytest.mark.asyncio
