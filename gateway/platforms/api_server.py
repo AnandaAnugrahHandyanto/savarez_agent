@@ -8,6 +8,12 @@ Exposes an HTTP server with endpoints:
 - DELETE /v1/responses/{response_id} — Delete a stored response
 - GET  /v1/models                  — lists hermes-agent as an available model
 - GET  /v1/capabilities            — machine-readable API capabilities for external UIs
+- GET  /api/sessions               — list persisted Hermes sessions
+- POST /api/sessions               — create a persisted Hermes session
+- GET/PATCH/DELETE /api/sessions/{session_id}
+- GET  /api/sessions/{session_id}/messages
+- POST /api/sessions/{session_id}/fork
+- POST /api/sessions/{session_id}/chat[/stream]
 - POST /v1/runs                    — start a run, returns run_id immediately (202)
 - GET  /v1/runs/{run_id}           — retrieve current run status
 - GET  /v1/runs/{run_id}/events    — SSE stream of structured lifecycle events
@@ -995,6 +1001,12 @@ class APIServerAdapter(BasePlatformAdapter):
                 "chat_completions_streaming": True,
                 "responses_api": True,
                 "responses_streaming": True,
+                "sessions": True,
+                "session_crud": True,
+                "session_messages": True,
+                "session_fork": True,
+                "session_chat": True,
+                "session_chat_streaming": True,
                 "run_submission": True,
                 "run_status": True,
                 "run_events_sse": True,
@@ -1002,6 +1014,14 @@ class APIServerAdapter(BasePlatformAdapter):
                 "run_approval_response": True,
                 "tool_progress_events": True,
                 "approval_events": True,
+                "admin_config": False,
+                "jobs_admin": False,
+                "memory_write_api": False,
+                "skills_api": False,
+                "audio_transcription": False,
+                "audio_speech": False,
+                "realtime_voice": False,
+                "webrtc": False,
                 "session_continuity_header": "X-Hermes-Session-Id",
                 "session_key_header": "X-Hermes-Session-Key",
                 "cors": bool(self._cors_origins),
@@ -1012,6 +1032,15 @@ class APIServerAdapter(BasePlatformAdapter):
                 "models": {"method": "GET", "path": "/v1/models"},
                 "chat_completions": {"method": "POST", "path": "/v1/chat/completions"},
                 "responses": {"method": "POST", "path": "/v1/responses"},
+                "sessions": {"method": "GET", "path": "/api/sessions"},
+                "session_create": {"method": "POST", "path": "/api/sessions"},
+                "session_detail": {"method": "GET", "path": "/api/sessions/{session_id}"},
+                "session_update": {"method": "PATCH", "path": "/api/sessions/{session_id}"},
+                "session_delete": {"method": "DELETE", "path": "/api/sessions/{session_id}"},
+                "session_messages": {"method": "GET", "path": "/api/sessions/{session_id}/messages"},
+                "session_fork": {"method": "POST", "path": "/api/sessions/{session_id}/fork"},
+                "session_chat": {"method": "POST", "path": "/api/sessions/{session_id}/chat"},
+                "session_chat_stream": {"method": "POST", "path": "/api/sessions/{session_id}/chat/stream"},
                 "runs": {"method": "POST", "path": "/v1/runs"},
                 "run_status": {"method": "GET", "path": "/v1/runs/{run_id}"},
                 "run_events": {"method": "GET", "path": "/v1/runs/{run_id}/events"},
@@ -1019,6 +1048,399 @@ class APIServerAdapter(BasePlatformAdapter):
                 "run_stop": {"method": "POST", "path": "/v1/runs/{run_id}/stop"},
             },
         })
+
+    # ------------------------------------------------------------------
+    # /api/sessions — client control surface over SessionDB + _run_agent
+    # ------------------------------------------------------------------
+
+    async def _read_json_body(self, request: "web.Request", default: Optional[Dict[str, Any]] = None) -> tuple[Optional[Dict[str, Any]], Optional["web.Response"]]:
+        """Parse a JSON object request body with a small, stable error shape."""
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, Exception):
+            if default is not None and not request.can_read_body:
+                return default, None
+            return None, web.json_response(_openai_error("Invalid JSON in request body"), status=400)
+        if body is None and default is not None:
+            body = default
+        if not isinstance(body, dict):
+            return None, web.json_response(_openai_error("Request body must be a JSON object"), status=400)
+        return body, None
+
+    def _validate_session_id(self, session_id: str) -> Optional["web.Response"]:
+        """Reject path/client session ids that are unsafe to echo or persist."""
+        if not session_id or not str(session_id).strip():
+            return web.json_response(_openai_error("Missing session ID", param="session_id"), status=400)
+        if re.search(r'[\r\n\x00]', session_id):
+            return web.json_response(_openai_error("Invalid session ID", param="session_id"), status=400)
+        if len(session_id) > self._MAX_SESSION_HEADER_LEN:
+            return web.json_response(_openai_error("Session ID too long", param="session_id"), status=400)
+        return None
+
+    @staticmethod
+    def _session_response_headers(session_id: str, gateway_session_key: Optional[str] = None) -> Dict[str, str]:
+        headers = {"X-Hermes-Session-Id": session_id}
+        if gateway_session_key:
+            headers["X-Hermes-Session-Key"] = gateway_session_key
+        return headers
+
+    @staticmethod
+    def _normalize_session_record(session: Dict[str, Any]) -> Dict[str, Any]:
+        """Return a client-safe session dict with both id and session_id keys."""
+        data = dict(session or {})
+        session_id = data.get("id") or data.get("session_id")
+        if session_id is not None:
+            data["id"] = session_id
+            data["session_id"] = session_id
+        # Keep raw numeric timestamps and DB counters; drop heavy/private fields.
+        data.pop("system_prompt", None)
+        data.pop("model_config", None)
+        return data
+
+    @staticmethod
+    def _normalize_message_record(message: Dict[str, Any]) -> Dict[str, Any]:
+        """Return a JSON-safe message record suitable for mobile/web clients."""
+        data = dict(message or {})
+        for key in ("reasoning_details", "codex_reasoning_items", "codex_message_items"):
+            value = data.get(key)
+            if isinstance(value, str) and value:
+                try:
+                    data[key] = json.loads(value)
+                except (json.JSONDecodeError, TypeError):
+                    pass
+        return data
+
+    def _get_existing_session_or_404(self, session_id: str) -> tuple[Optional[Dict[str, Any]], Optional["web.Response"]]:
+        err = self._validate_session_id(session_id)
+        if err is not None:
+            return None, err
+        db = self._ensure_session_db()
+        if db is None:
+            return None, web.json_response(_openai_error("Session database unavailable", err_type="server_error"), status=503)
+        session = db.get_session(session_id)
+        if not session:
+            return None, web.json_response(_openai_error("Session not found", param="session_id", code="not_found"), status=404)
+        return session, None
+
+    async def _handle_list_sessions(self, request: "web.Request") -> "web.Response":
+        """GET /api/sessions — list persisted sessions for external clients."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        try:
+            limit = int(request.query.get("limit", "50"))
+            offset = int(request.query.get("offset", "0"))
+        except ValueError:
+            return web.json_response(_openai_error("limit and offset must be integers"), status=400)
+        limit = max(1, min(limit, 200))
+        offset = max(0, offset)
+        source = request.query.get("source") or None
+
+        db = self._ensure_session_db()
+        if db is None:
+            return web.json_response(_openai_error("Session database unavailable", err_type="server_error"), status=503)
+        sessions = [
+            self._normalize_session_record(row)
+            for row in db.list_sessions_rich(
+                source=source,
+                limit=limit,
+                offset=offset,
+                order_by_last_active=True,
+            )
+        ]
+        total = db.session_count(source=source)
+        return web.json_response({
+            "object": "list",
+            "data": sessions,
+            "items": sessions,
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+        })
+
+    async def _handle_create_session(self, request: "web.Request") -> "web.Response":
+        """POST /api/sessions — create a SessionDB-backed API session."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        body, err = await self._read_json_body(request, default={})
+        if err is not None:
+            return err
+        assert body is not None
+        session_id = str(body.get("session_id") or body.get("id") or f"api_{uuid.uuid4().hex}").strip()
+        validation = self._validate_session_id(session_id)
+        if validation is not None:
+            return validation
+
+        source = str(body.get("source") or "api_server").strip() or "api_server"
+        model = body.get("model")
+        system_prompt = body.get("system_prompt")
+        title = body.get("title")
+
+        db = self._ensure_session_db()
+        if db is None:
+            return web.json_response(_openai_error("Session database unavailable", err_type="server_error"), status=503)
+        try:
+            db.create_session(session_id, source, model=model, system_prompt=system_prompt)
+            if title is not None:
+                db.set_session_title(session_id, title)
+        except ValueError as exc:
+            return web.json_response(_openai_error(str(exc)), status=400)
+        session = self._normalize_session_record(db.get_session(session_id) or {"id": session_id, "source": source})
+        return web.json_response(
+            {"object": "hermes.session", "session": session},
+            status=201,
+            headers=self._session_response_headers(session_id),
+        )
+
+    async def _handle_get_session(self, request: "web.Request") -> "web.Response":
+        """GET /api/sessions/{session_id}."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        session_id = request.match_info.get("session_id", "")
+        session, err = self._get_existing_session_or_404(session_id)
+        if err is not None:
+            return err
+        return web.json_response(
+            {"object": "hermes.session", "session": self._normalize_session_record(session or {})},
+            headers=self._session_response_headers(session_id),
+        )
+
+    async def _handle_update_session(self, request: "web.Request") -> "web.Response":
+        """PATCH /api/sessions/{session_id} — currently supports title updates."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        session_id = request.match_info.get("session_id", "")
+        session, err = self._get_existing_session_or_404(session_id)
+        if err is not None:
+            return err
+        body, err = await self._read_json_body(request, default={})
+        if err is not None:
+            return err
+        assert body is not None
+        db = self._ensure_session_db()
+        try:
+            if "title" in body:
+                db.set_session_title(session_id, body.get("title"))
+        except ValueError as exc:
+            return web.json_response(_openai_error(str(exc)), status=400)
+        session = self._normalize_session_record(db.get_session(session_id) or session or {})
+        return web.json_response(
+            {"object": "hermes.session", "session": session},
+            headers=self._session_response_headers(session_id),
+        )
+
+    async def _handle_delete_session(self, request: "web.Request") -> "web.Response":
+        """DELETE /api/sessions/{session_id}."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        session_id = request.match_info.get("session_id", "")
+        _, err = self._get_existing_session_or_404(session_id)
+        if err is not None:
+            return err
+        db = self._ensure_session_db()
+        deleted = bool(db.delete_session(session_id))
+        return web.json_response(
+            {"object": "hermes.session.deleted", "id": session_id, "session_id": session_id, "deleted": deleted},
+            headers=self._session_response_headers(session_id),
+        )
+
+    async def _handle_get_session_messages(self, request: "web.Request") -> "web.Response":
+        """GET /api/sessions/{session_id}/messages."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        session_id = request.match_info.get("session_id", "")
+        _, err = self._get_existing_session_or_404(session_id)
+        if err is not None:
+            return err
+        db = self._ensure_session_db()
+        messages = [self._normalize_message_record(row) for row in db.get_messages(session_id)]
+        return web.json_response(
+            {"object": "list", "data": messages, "messages": messages, "total": len(messages), "session_id": session_id},
+            headers=self._session_response_headers(session_id),
+        )
+
+    async def _handle_fork_session(self, request: "web.Request") -> "web.Response":
+        """POST /api/sessions/{session_id}/fork — branch a session using SessionDB lineage."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        parent_id = request.match_info.get("session_id", "")
+        parent, err = self._get_existing_session_or_404(parent_id)
+        if err is not None:
+            return err
+        body, err = await self._read_json_body(request, default={})
+        if err is not None:
+            return err
+        assert body is not None
+        child_id = str(body.get("session_id") or body.get("id") or f"api_{uuid.uuid4().hex}").strip()
+        validation = self._validate_session_id(child_id)
+        if validation is not None:
+            return validation
+        title = body.get("title") or (f"{parent.get('title')} (fork)" if parent and parent.get("title") else None)
+        model = body.get("model", parent.get("model") if parent else None)
+        source = body.get("source", parent.get("source") if parent else "api_server") or "api_server"
+        db = self._ensure_session_db()
+        assert db is not None
+        try:
+            # Current SessionDB's branch-aware listing treats a child as a branch
+            # when the parent is ended with reason='branched' before the child is
+            # created.  Reuse that existing primitive instead of inventing fork
+            # metadata in the API layer.
+            db.end_session(parent_id, "branched")
+            db.create_session(child_id, str(source), model=model, parent_session_id=parent_id)
+            for msg in db.get_messages(parent_id):
+                db.append_message(
+                    child_id,
+                    msg.get("role", "user"),
+                    msg.get("content"),
+                    tool_name=msg.get("tool_name"),
+                    tool_calls=msg.get("tool_calls"),
+                    tool_call_id=msg.get("tool_call_id"),
+                    token_count=msg.get("token_count"),
+                    finish_reason=msg.get("finish_reason"),
+                    reasoning=msg.get("reasoning"),
+                    reasoning_content=msg.get("reasoning_content"),
+                    reasoning_details=msg.get("reasoning_details"),
+                    codex_reasoning_items=msg.get("codex_reasoning_items"),
+                    codex_message_items=msg.get("codex_message_items"),
+                )
+            if title is not None:
+                db.set_session_title(child_id, title)
+        except ValueError as exc:
+            return web.json_response(_openai_error(str(exc)), status=400)
+        session = self._normalize_session_record(db.get_session(child_id) or {"id": child_id, "parent_session_id": parent_id})
+        return web.json_response(
+            {"object": "hermes.session", "session": session, "parent_session_id": parent_id},
+            status=201,
+            headers=self._session_response_headers(child_id),
+        )
+
+    def _extract_session_chat_message(self, body: Dict[str, Any]) -> tuple[Any, Optional[str], Optional["web.Response"]]:
+        """Extract user message + optional system prompt from session chat payloads."""
+        system_prompt = body.get("system_message") or body.get("system_prompt")
+        if "message" in body:
+            message = body.get("message")
+            if not _content_has_visible_payload(message):
+                return None, system_prompt, web.json_response(_openai_error("Missing message", param="message"), status=400)
+            return message, system_prompt, None
+        messages = body.get("messages")
+        if isinstance(messages, list) and messages:
+            for idx, msg in enumerate(messages):
+                if not isinstance(msg, dict):
+                    continue
+                if msg.get("role") == "system":
+                    content = _normalize_chat_content(msg.get("content", ""))
+                    system_prompt = f"{system_prompt}\n{content}" if system_prompt else content
+                if msg.get("role") == "user":
+                    try:
+                        message = _normalize_multimodal_content(msg.get("content", ""))
+                    except ValueError as exc:
+                        return None, system_prompt, _multimodal_validation_error(exc, param=f"messages[{idx}].content")
+                    if _content_has_visible_payload(message):
+                        return message, system_prompt, None
+        return None, system_prompt, web.json_response(_openai_error("Missing message", param="message"), status=400)
+
+    async def _handle_session_chat(self, request: "web.Request") -> "web.Response":
+        """POST /api/sessions/{session_id}/chat — non-streaming session chat."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        session_id = request.match_info.get("session_id", "")
+        _, err = self._get_existing_session_or_404(session_id)
+        if err is not None:
+            return err
+        body, err = await self._read_json_body(request)
+        if err is not None:
+            return err
+        assert body is not None
+        user_message, system_prompt, err = self._extract_session_chat_message(body)
+        if err is not None:
+            return err
+        gateway_session_key, key_err = self._parse_session_key_header(request)
+        if key_err is not None:
+            return key_err
+        db = self._ensure_session_db()
+        history = db.get_messages_as_conversation(session_id)
+        try:
+            result, usage = await self._run_agent(
+                user_message=user_message,
+                conversation_history=history,
+                ephemeral_system_prompt=system_prompt,
+                session_id=session_id,
+                gateway_session_key=gateway_session_key,
+            )
+        except Exception as exc:
+            logger.error("Error running agent for session chat: %s", exc, exc_info=True)
+            return web.json_response(_openai_error(f"Internal server error: {exc}", err_type="server_error"), status=500)
+        final_response = result.get("final_response") or ""
+        effective_session_id = result.get("session_id", session_id)
+        headers = self._session_response_headers(effective_session_id, gateway_session_key)
+        return web.json_response({
+            "object": "hermes.session.chat.completion",
+            "session_id": effective_session_id,
+            "message": {"role": "assistant", "content": final_response},
+            "response": final_response,
+            "completed": bool(result.get("completed", True)),
+            "partial": bool(result.get("partial", False)),
+            "usage": usage,
+        }, headers=headers)
+
+    async def _handle_session_chat_stream(self, request: "web.Request") -> "web.StreamResponse":
+        """POST /api/sessions/{session_id}/chat/stream — SSE chat over a persisted session."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        session_id = request.match_info.get("session_id", "")
+        _, err = self._get_existing_session_or_404(session_id)
+        if err is not None:
+            return err
+        body, err = await self._read_json_body(request)
+        if err is not None:
+            return err
+        assert body is not None
+        user_message, system_prompt, err = self._extract_session_chat_message(body)
+        if err is not None:
+            return err
+        gateway_session_key, key_err = self._parse_session_key_header(request)
+        if key_err is not None:
+            return key_err
+
+        import queue as _q
+        stream_q: _q.Queue = _q.Queue()
+
+        def _on_delta(delta):
+            if delta is not None:
+                stream_q.put(delta)
+
+        db = self._ensure_session_db()
+        history = db.get_messages_as_conversation(session_id)
+        agent_ref = [None]
+        agent_task = asyncio.ensure_future(self._run_agent(
+            user_message=user_message,
+            conversation_history=history,
+            ephemeral_system_prompt=system_prompt,
+            session_id=session_id,
+            stream_delta_callback=_on_delta,
+            agent_ref=agent_ref,
+            gateway_session_key=gateway_session_key,
+        ))
+        agent_task.add_done_callback(lambda _fut: stream_q.put(None))
+        return await self._write_sse_chat_completion(
+            request,
+            f"sesschat-{uuid.uuid4().hex[:24]}",
+            body.get("model", self._model_name),
+            int(time.time()),
+            stream_q,
+            agent_task,
+            agent_ref,
+            session_id=session_id,
+            gateway_session_key=gateway_session_key,
+        )
 
     async def _handle_chat_completions(self, request: "web.Request") -> "web.Response":
         """POST /v1/chat/completions — OpenAI Chat Completions format."""
@@ -3396,7 +3818,6 @@ class APIServerAdapter(BasePlatformAdapter):
         try:
             mws = [mw for mw in (cors_middleware, body_limit_middleware, security_headers_middleware) if mw is not None]
             self._app = web.Application(middlewares=mws, client_max_size=MAX_REQUEST_BYTES)
-            self._app["api_server_adapter"] = self
             self._app.router.add_get("/health", self._handle_health)
             self._app.router.add_get("/health/detailed", self._handle_health_detailed)
             self._app.router.add_get("/v1/health", self._handle_health)
@@ -3406,6 +3827,18 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_post("/v1/responses", self._handle_responses)
             self._app.router.add_get("/v1/responses/{response_id}", self._handle_get_response)
             self._app.router.add_delete("/v1/responses/{response_id}", self._handle_delete_response)
+            # Session control API for mobile/web clients.  This is a thin
+            # wrapper over SessionDB and the same _run_agent path used by
+            # /v1/chat/completions and /v1/runs.
+            self._app.router.add_get("/api/sessions", self._handle_list_sessions)
+            self._app.router.add_post("/api/sessions", self._handle_create_session)
+            self._app.router.add_get("/api/sessions/{session_id}", self._handle_get_session)
+            self._app.router.add_patch("/api/sessions/{session_id}", self._handle_update_session)
+            self._app.router.add_delete("/api/sessions/{session_id}", self._handle_delete_session)
+            self._app.router.add_get("/api/sessions/{session_id}/messages", self._handle_get_session_messages)
+            self._app.router.add_post("/api/sessions/{session_id}/fork", self._handle_fork_session)
+            self._app.router.add_post("/api/sessions/{session_id}/chat", self._handle_session_chat)
+            self._app.router.add_post("/api/sessions/{session_id}/chat/stream", self._handle_session_chat_stream)
             # Cron jobs management API
             self._app.router.add_get("/api/jobs", self._handle_list_jobs)
             self._app.router.add_post("/api/jobs", self._handle_create_job)
@@ -3421,6 +3854,11 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_get("/v1/runs/{run_id}/events", self._handle_run_events)
             self._app.router.add_post("/v1/runs/{run_id}/approval", self._handle_run_approval)
             self._app.router.add_post("/v1/runs/{run_id}/stop", self._handle_stop_run)
+            # Expose the adapter to middleware/compatibility shims after native
+            # routes are registered, so downstream bootstrap patches cannot
+            # shadow the upstream handlers added above.
+            assert self._app is not None
+            self._app["api_server_adapter"] = self
             # Start background sweep to clean up orphaned (unconsumed) run streams
             sweep_task = asyncio.create_task(self._sweep_orphaned_runs())
             try:
