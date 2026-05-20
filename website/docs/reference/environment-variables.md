@@ -337,8 +337,8 @@ For cloud sandbox backends, persistence is filesystem-oriented. `TERMINAL_LIFETI
 | `FEISHU_APP_SECRET` | Feishu/Lark bot App Secret |
 | `FEISHU_DOMAIN` | `feishu` (China) or `lark` (international). Default: `feishu` |
 | `FEISHU_CONNECTION_MODE` | `websocket` (recommended) or `webhook`. Default: `websocket` |
-| `FEISHU_ENCRYPT_KEY` | Optional encryption key for webhook mode |
-| `FEISHU_VERIFICATION_TOKEN` | Optional verification token for webhook mode |
+| `FEISHU_ENCRYPT_KEY` | Webhook encryption key. Required in webhook mode unless `FEISHU_VERIFICATION_TOKEN` is set |
+| `FEISHU_VERIFICATION_TOKEN` | Webhook verification token. Required in webhook mode unless `FEISHU_ENCRYPT_KEY` is set |
 | `FEISHU_ALLOWED_USERS` | Comma-separated Feishu user IDs allowed to message the bot |
 | `FEISHU_ALLOW_BOTS` | `none` (default) / `mentions` / `all` — accept inbound messages from other bots after Feishu/Lark delivers them. Non-@ group bot messages may not be delivered by the platform. See [bot-to-bot messaging](../user-guide/messaging/feishu.md#bot-to-bot-messaging) |
 | `FEISHU_REQUIRE_MENTION` | `true` (default) / `false` — whether Hermes requires delivered group messages to @mention the bot. This does not bypass Feishu/Lark event delivery limits. Override per-chat via `group_rules.<chat_id>.require_mention`. |

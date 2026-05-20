@@ -157,7 +157,9 @@ If you leave the allowlist empty, anyone who can reach the bot may be able to us
 
 ### Webhook Encryption Key
 
-When running in webhook mode, set an encryption key to enable signature verification of inbound webhook payloads:
+When running in webhook mode, configure `FEISHU_ENCRYPT_KEY`, `FEISHU_VERIFICATION_TOKEN`, or both. The webhook server refuses to start if both are empty, so inbound events must be authenticated before they reach the SDK.
+
+Set an encryption key to enable signature verification of inbound webhook payloads:
 
 ```bash
 FEISHU_ENCRYPT_KEY=your-encrypt-key
@@ -172,7 +174,7 @@ SHA256(timestamp + nonce + encrypt_key + body)
 The computed hash is compared against the `x-lark-signature` header using timing-safe comparison. Event payloads with invalid or missing signatures are rejected with HTTP 401.
 
 :::tip
-In WebSocket mode, signature verification is handled by the SDK itself, so `FEISHU_ENCRYPT_KEY` is optional. In webhook mode, it is strongly recommended for production.
+In WebSocket mode, signature verification is handled by the SDK itself, so `FEISHU_ENCRYPT_KEY` is optional. In webhook mode, at least one of `FEISHU_ENCRYPT_KEY` or `FEISHU_VERIFICATION_TOKEN` is required.
 :::
 
 ### Verification Token
@@ -185,7 +187,7 @@ FEISHU_VERIFICATION_TOKEN=your-verification-token
 
 This token is also found in the **Event Subscriptions** section of your Feishu app. When set, event webhook payloads must contain a matching `token` in their `header` object. Mismatched tokens are rejected with HTTP 401.
 
-Both `FEISHU_ENCRYPT_KEY` and `FEISHU_VERIFICATION_TOKEN` can be used together for defense in depth.
+Both `FEISHU_ENCRYPT_KEY` and `FEISHU_VERIFICATION_TOKEN` can be used together for defense in depth. If you do not set an encryption key in webhook mode, this token becomes required.
 
 ## Group Message Policy
 
