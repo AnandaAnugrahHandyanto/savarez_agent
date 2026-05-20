@@ -74,6 +74,8 @@ def _make_adapter(require_mention=None, strict_mention=None, free_response_chann
     adapter.config = PlatformConfig(enabled=True, extra=extra)
     adapter._bot_user_id = BOT_USER_ID
     adapter._team_bot_user_ids = {}
+    adapter._slack_last_seen = {}
+    adapter._save_slack_last_seen = MagicMock()
     return adapter
 
 
@@ -436,6 +438,37 @@ def test_real_channel_thread_reply_preserves_thread_ts_when_reply_in_thread_fals
 
     assert msg_event.source.thread_id == "1710000000.000300"
     assert msg_event.reply_to_message_id == "1710000000.000300"
+
+
+def test_slack_ts_newer_compares_slack_timestamps():
+    assert SlackAdapter._slack_ts_newer("1710000000.000301", "1710000000.000300") is True
+    assert SlackAdapter._slack_ts_newer("1710000000.000300", "1710000000.000301") is False
+
+
+def test_slack_catch_up_replays_history_chronologically():
+    adapter = _make_adapter(require_mention=False)
+    adapter._slack_last_seen = {"T1:C0AQWDLHY9M": "1710000000.000100"}
+    adapter._handle_slack_message = AsyncMock()
+
+    client = MagicMock()
+    client.conversations_history = AsyncMock(return_value={
+        "messages": [
+            {"type": "message", "user": "U2", "text": "second", "ts": "1710000000.000300"},
+            {"type": "message", "user": "U1", "text": "first", "ts": "1710000000.000200"},
+        ]
+    })
+
+    replayed = asyncio.run(adapter._catch_up_slack_conversation(
+        client,
+        "T1",
+        {"id": CHANNEL_ID, "is_channel": True},
+    ))
+
+    assert replayed == 2
+    assert [call.args[0]["text"] for call in adapter._handle_slack_message.call_args_list] == ["first", "second"]
+    assert all(call.args[0]["channel"] == CHANNEL_ID for call in adapter._handle_slack_message.call_args_list)
+    assert all(call.args[0]["team"] == "T1" for call in adapter._handle_slack_message.call_args_list)
+    assert all(call.args[0]["channel_type"] == "channel" for call in adapter._handle_slack_message.call_args_list)
 
 
 # ---------------------------------------------------------------------------
