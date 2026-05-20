@@ -321,6 +321,28 @@ def test_patch_block_then_unblock(client):
     assert r.json()["task"]["status"] == "ready"
 
 
+def test_patch_schedule_then_unblock(client):
+    t = client.post("/api/plugins/kanban/tasks", json={"title": "x"}).json()["task"]
+    r = client.patch(
+        f"/api/plugins/kanban/tasks/{t['id']}",
+        json={"status": "scheduled", "block_reason": "run tomorrow"},
+    )
+    assert r.status_code == 200
+    assert r.json()["task"]["status"] == "scheduled"
+
+    columns = client.get("/api/plugins/kanban/board").json()["columns"]
+    assert "scheduled" in [c["name"] for c in columns]
+    scheduled = next(c for c in columns if c["name"] == "scheduled")
+    assert any(x["id"] == t["id"] for x in scheduled["tasks"])
+
+    r = client.patch(
+        f"/api/plugins/kanban/tasks/{t['id']}",
+        json={"status": "ready"},
+    )
+    assert r.status_code == 200
+    assert r.json()["task"]["status"] == "ready"
+
+
 def test_patch_drag_drop_move_todo_to_ready(client):
     """Direct status write: the drag-drop path for statuses without a
     dedicated verb (e.g. manually promoting todo -> ready).
@@ -461,6 +483,33 @@ def test_patch_status_running_rejected(client):
         for tt in col["tasks"]
     }
     assert statuses.get(t["id"]) != "running"
+
+
+# ---------------------------------------------------------------------------
+# DELETE /tasks/:id
+# ---------------------------------------------------------------------------
+
+def test_delete_task(client):
+    t = client.post("/api/plugins/kanban/tasks", json={"title": "to-delete"}).json()["task"]
+    r = client.delete(f"/api/plugins/kanban/tasks/{t['id']}")
+    assert r.status_code == 200
+    assert r.json()["deleted"] is True
+    assert r.json()["task_id"] == t["id"]
+
+    # Gone from board
+    board = client.get("/api/plugins/kanban/board").json()
+    all_ids = [tt["id"] for col in board["columns"] for tt in col["tasks"]]
+    assert t["id"] not in all_ids
+
+    # Gone from detail
+    r = client.get(f"/api/plugins/kanban/tasks/{t['id']}")
+    assert r.status_code == 404
+
+
+def test_delete_task_not_found(client):
+    r = client.delete("/api/plugins/kanban/tasks/t_nonexistent")
+    assert r.status_code == 404
+    assert "not found" in r.json()["detail"]
 
 
 # ---------------------------------------------------------------------------
@@ -1890,7 +1939,8 @@ def test_diagnostics_endpoint_surfaces_blocked_hallucination(client):
 
 
 def test_diagnostics_endpoint_severity_filter(client):
-    """Warning-severity filter excludes error-severity entries."""
+    """Severity filter is at-or-above: warning includes warning+error+critical,
+    error includes error+critical, critical is exact (no higher level)."""
     conn = kb.connect()
     try:
         # A warning-severity diagnostic (prose phantom) on one task.
@@ -1909,12 +1959,15 @@ def test_diagnostics_endpoint_severity_filter(client):
     finally:
         conn.close()
 
+    # warning filter is at-or-above → both the warning AND the error pass.
     r = client.get("/api/plugins/kanban/diagnostics?severity=warning")
     assert r.status_code == 200
     data = r.json()
-    assert data["count"] == 1
-    assert data["diagnostics"][0]["task_id"] == p1
+    assert data["count"] == 2
+    task_ids = {row["task_id"] for row in data["diagnostics"]}
+    assert task_ids == {p1, p2}
 
+    # error filter is at-or-above → only the error passes (warning is below).
     r = client.get("/api/plugins/kanban/diagnostics?severity=error")
     data = r.json()
     assert data["count"] == 1

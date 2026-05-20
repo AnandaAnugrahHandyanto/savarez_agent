@@ -137,7 +137,7 @@ def _conn(board: Optional[str] = None):
 # tasks into ``todo`` and makes the dashboard look like the Scheduled column
 # disappeared.
 BOARD_COLUMNS: list[str] = [
-    "triage", "todo", "scheduled", "ready", "running", "blocked", "done",
+    "triage", "todo", "scheduled", "ready", "running", "blocked", "review", "done",
 ]
 
 
@@ -354,6 +354,12 @@ def get_board(
     tenant: Optional[str] = Query(None, description="Filter to a single tenant"),
     include_archived: bool = Query(False),
     board: Optional[str] = Query(None, description="Kanban board slug (omit for current)"),
+    workflow_template_id: Optional[str] = Query(
+        None, description="Restrict to tasks using this workflow template id",
+    ),
+    current_step_key: Optional[str] = Query(
+        None, description="Restrict to tasks at this workflow step key",
+    ),
 ):
     """Return the full board grouped by status column.
 
@@ -368,7 +374,11 @@ def get_board(
     conn = _conn(board=board)
     try:
         tasks = kanban_db.list_tasks(
-            conn, tenant=tenant, include_archived=include_archived
+            conn,
+            tenant=tenant,
+            include_archived=include_archived,
+            workflow_template_id=workflow_template_id,
+            current_step_key=current_step_key,
         )
         # Pre-fetch link counts per task (cheap: one query).
         link_counts: dict[str, dict[str, int]] = {}
@@ -479,10 +489,29 @@ def get_board(
 # ---------------------------------------------------------------------------
 
 @router.get("/tasks/{task_id}")
-def get_task(task_id: str, board: Optional[str] = Query(None)):
+def get_task(
+    task_id: str,
+    board: Optional[str] = Query(None),
+    run_state_type: Optional[str] = Query(
+        None, description="With run_state_name: filter runs by column 'status' or 'outcome'",
+    ),
+    run_state_name: Optional[str] = Query(
+        None, description="With run_state_type: exact value for that run column",
+    ),
+):
     board = _resolve_board(board)
     conn = _conn(board=board)
     try:
+        if (run_state_type is None) ^ (run_state_name is None):
+            raise HTTPException(
+                status_code=400,
+                detail="run_state_type and run_state_name must be passed together or omitted",
+            )
+        if run_state_type is not None and run_state_type not in ("status", "outcome"):
+            raise HTTPException(
+                status_code=400,
+                detail="run_state_type must be 'status' or 'outcome'",
+            )
         task = kanban_db.get_task(conn, task_id)
         if task is None:
             raise HTTPException(status_code=404, detail=f"task {task_id} not found")
@@ -503,7 +532,15 @@ def get_task(task_id: str, board: Optional[str] = Query(None)):
             "comments": [_comment_dict(c) for c in kanban_db.list_comments(conn, task_id)],
             "events": [_event_dict(e) for e in kanban_db.list_events(conn, task_id)],
             "links": _links_for(conn, task_id),
-            "runs": [_run_dict(r) for r in kanban_db.list_runs(conn, task_id)],
+            "runs": [
+                _run_dict(r)
+                for r in kanban_db.list_runs(
+                    conn,
+                    task_id,
+                    state_type=run_state_type,
+                    state_name=run_state_name,
+                )
+            ],
         }
     finally:
         conn.close()
@@ -624,10 +661,12 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
                 )
             elif s == "blocked":
                 ok = kanban_db.block_task(conn, task_id, reason=payload.block_reason)
+            elif s == "scheduled":
+                ok = kanban_db.schedule_task(conn, task_id, reason=payload.block_reason)
             elif s == "ready":
-                # Re-open a blocked task, or just an explicit status set.
+                # Re-open a blocked/scheduled task, or just an explicit status set.
                 current = kanban_db.get_task(conn, task_id)
-                if current and current.status == "blocked":
+                if current and current.status in ("blocked", "scheduled"):
                     ok = kanban_db.unblock_task(conn, task_id)
                 else:
                     # Direct status write for drag-drop (todo -> ready etc).
@@ -639,11 +678,28 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
                     status_code=400,
                     detail="Cannot set status to 'running' directly; use the dispatcher/claim path",
                 )
-            elif s in {"todo", "triage"}:
+            elif s in ("todo", "triage", "scheduled"):
                 ok = _set_status_direct(conn, task_id, s)
             else:
                 raise HTTPException(status_code=400, detail=f"unknown status: {s}")
             if not ok:
+                # For ``ready``, name the blocking parent(s) so the dashboard
+                # can render an actionable toast instead of a silent no-op.
+                # See #26744.
+                if s == "ready":
+                    blockers = _parents_blocking_ready(conn, task_id)
+                    if blockers:
+                        names = ", ".join(
+                            f"{p['title']!r} ({p['id']}, status={p['status']})"
+                            for p in blockers
+                        )
+                        raise HTTPException(
+                            status_code=409,
+                            detail=(
+                                f"Cannot move to 'ready': blocked by parent(s) "
+                                f"not done — {names}"
+                            ),
+                        )
                 raise HTTPException(
                     status_code=409,
                     detail=f"status transition to {s!r} not valid from current state",
@@ -689,6 +745,46 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
         return {"task": _task_dict(updated) if updated else None}
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# DELETE /tasks/:id
+# ---------------------------------------------------------------------------
+
+@router.delete("/tasks/{task_id}")
+def delete_task(task_id: str, board: Optional[str] = Query(None)):
+    board = _resolve_board(board)
+    conn = _conn(board=board)
+    try:
+        ok = kanban_db.delete_task(conn, task_id)
+        if not ok:
+            raise HTTPException(status_code=404, detail=f"task {task_id} not found")
+        return {"deleted": True, "task_id": task_id}
+    finally:
+        conn.close()
+
+
+def _parents_blocking_ready(
+    conn: sqlite3.Connection, task_id: str,
+) -> list:
+    """Return parent rows (``id``, ``title``, ``status``) that aren't ``done``
+    and therefore prevent ``task_id`` from being promoted to ``ready``.
+
+    Used to enrich the 409 response from :func:`update_task` so the
+    dashboard can show an actionable toast (#26744) instead of a silent
+    no-op.  Returns ``[]`` when nothing blocks the transition (e.g. no
+    parents, or all parents already done).
+    """
+    rows = conn.execute(
+        "SELECT t.id, t.title, t.status FROM tasks t "
+        "JOIN task_links l ON l.parent_id = t.id "
+        "WHERE l.child_id = ? AND t.status != 'done'",
+        (task_id,),
+    ).fetchall()
+    return [
+        {"id": r["id"], "title": r["title"], "status": r["status"]}
+        for r in rows
+    ]
 
 
 def _set_status_direct(
@@ -910,7 +1006,7 @@ def bulk_update(payload: BulkTaskBody, board: Optional[str] = Query(None)):
                         ok = kanban_db.block_task(conn, tid)
                     elif s == "ready":
                         cur = kanban_db.get_task(conn, tid)
-                        if cur and cur.status == "blocked":
+                        if cur and cur.status in ("blocked", "scheduled"):
                             ok = kanban_db.unblock_task(conn, tid)
                         else:
                             ok = _set_status_direct(conn, tid, "ready")
@@ -924,6 +1020,8 @@ def bulk_update(payload: BulkTaskBody, board: Optional[str] = Query(None)):
                         )
                         results.append(entry)
                         continue
+                    elif s == "scheduled":
+                        ok = kanban_db.schedule_task(conn, tid)
                     elif s in {"todo", "triage"}:
                         ok = _set_status_direct(conn, tid, s)
                     else:

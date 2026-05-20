@@ -2700,6 +2700,12 @@ def test_default_spawn_auto_loads_kanban_worker_skill(kanban_home, monkeypatch):
     We intercept Popen to capture the argv without actually spawning a
     hermes subprocess (which would hang trying to call an LLM).
     """
+    # Pretend the bundled kanban-worker skill resolves for this isolated
+    # HERMES_HOME — the fixture creates an empty tmpdir without the
+    # devops/kanban-worker tree, and _default_spawn gates the --skills
+    # flag on actual resolvability.
+    monkeypatch.setattr(kb, "_kanban_worker_skill_available", lambda _h: True)
+
     captured = {}
 
     class FakeProc:
@@ -2969,6 +2975,7 @@ def test_create_task_skills_lists_all_toolset_typos(kanban_home):
 def test_default_spawn_appends_per_task_skills(kanban_home, monkeypatch):
     """Dispatcher argv must carry one `--skills X` pair per task skill,
     in addition to the built-in kanban-worker."""
+    monkeypatch.setattr(kb, "_kanban_worker_skill_available", lambda _h: True)
     captured = {}
 
     class FakeProc:
@@ -3018,6 +3025,7 @@ def test_default_spawn_appends_per_task_skills(kanban_home, monkeypatch):
 
 def test_default_spawn_dedupes_kanban_worker_from_task_skills(kanban_home, monkeypatch):
     """If a task explicitly lists 'kanban-worker', we don't double-pass it."""
+    monkeypatch.setattr(kb, "_kanban_worker_skill_available", lambda _h: True)
     captured = {}
 
     class FakeProc:
@@ -4375,3 +4383,77 @@ def test_reclaim_task_clears_failure_counter(kanban_home):
         assert task.status == "ready"
     finally:
         conn.close()
+
+
+def test_dispatch_once_integrates_stale_detection(kanban_home, monkeypatch):
+    """dispatch_once with stale_timeout_seconds reclaims stale running tasks."""
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+    monkeypatch.setattr(
+        _kb,
+        "_terminate_reclaimed_worker",
+        lambda pid, claim_lock, **kwargs: {
+            "prev_pid": int(pid) if pid else None,
+            "host_local": True,
+            "termination_attempted": True,
+            "terminated": True,
+            "sigkill": False,
+        },
+    )
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="stale-dispatch", assignee="worker")
+        kb.claim_task(conn, t)
+        kb._set_worker_pid(conn, t, 99999)  # fake PID — avoid killing test
+
+        five_hours_ago = int(time.time()) - (5 * 3600)
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET started_at = ? WHERE id = ?", (five_hours_ago, t)
+            )
+            conn.execute(
+                "UPDATE task_runs SET started_at = ? "
+                "WHERE id = (SELECT current_run_id FROM tasks WHERE id = ?)",
+                (five_hours_ago, t),
+            )
+
+        res = kb.dispatch_once(
+            conn,
+            spawn_fn=lambda tsk, ws: None,
+            stale_timeout_seconds=14400,
+        )
+        assert t in res.stale, "Stale task should appear in result.stale"
+        assert kb.get_task(conn, t).status == "ready"
+
+
+def test_dispatch_once_stale_disabled_when_timeout_zero(kanban_home, monkeypatch):
+    """dispatch_once with stale_timeout_seconds=0 skips stale detection."""
+    # Use os.getpid() so _pid_alive → True, preventing detect_crashed_workers
+    # from reclaiming. Only stale detection (disabled via timeout=0) is tested.
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="skip-stale", assignee="worker")
+        kb.claim_task(conn, t)
+        # Claim sets worker_pid to 0 initially. Set it to os.getpid() so the
+        # crash detector sees a live PID and skips it.
+        kb._set_worker_pid(conn, t, os.getpid())
+
+        five_hours_ago = int(time.time()) - (5 * 3600)
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET started_at = ? WHERE id = ?", (five_hours_ago, t)
+            )
+            conn.execute(
+                "UPDATE task_runs SET started_at = ? "
+                "WHERE id = (SELECT current_run_id FROM tasks WHERE id = ?)",
+                (five_hours_ago, t),
+            )
+
+        res = kb.dispatch_once(
+            conn,
+            spawn_fn=lambda tsk, ws: None,
+            stale_timeout_seconds=0,
+        )
+        assert res.stale == [], "stale_timeout_seconds=0 should disable detection"
+        assert kb.get_task(conn, t).status == "running"

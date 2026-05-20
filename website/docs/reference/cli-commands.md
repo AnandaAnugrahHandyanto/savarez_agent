@@ -62,6 +62,7 @@ hermes [global-options] <command> [subcommand/options]
 | `hermes config` | Show, edit, migrate, and query configuration files. |
 | `hermes pairing` | Approve or revoke messaging pairing codes. |
 | `hermes skills` | Browse, install, publish, audit, and configure skills. |
+| `hermes bundles` | Group several skills under a single `/<name>` slash command. See [Skill Bundles](../user-guide/features/skills.md#skill-bundles). |
 | `hermes curator` | Background skill maintenance — status, run, pause, pin. See [Curator](../user-guide/features/curator.md). |
 | `hermes memory` | Configure external memory provider. Plugin-specific subcommands (e.g. `hermes honcho`) register automatically when their provider is active. |
 | `hermes acp` | Run Hermes as an ACP server for editor integration. |
@@ -211,6 +212,7 @@ Subcommands:
 | `stop` | Stop the service (or foreground process). |
 | `restart` | Restart the service. |
 | `status` | Show service status. |
+| `list` | List **all profiles** and whether each profile's gateway is currently running (with PID where available). Handy when you run multiple profiles side-by-side and want a single overview. |
 | `install` | Install as a systemd (Linux) or launchd (macOS) background service. |
 | `uninstall` | Remove the installed service. |
 | `setup` | Interactive messaging-platform setup. |
@@ -404,8 +406,9 @@ Multi-profile, multi-project collaboration board. Each install can host many boa
 | `claim <id>` | Atomically claim a ready task. Prints resolved workspace path. |
 | `comment <id> "<text>"` | Append a comment. The next worker that claims the task reads it as part of its `kanban_show()` response. |
 | `complete <id>` | Mark task done. Flags: `--result`, `--summary`, `--metadata`. |
-| `block <id> "<reason>"` | Mark task blocked. Also appends the reason as a comment. |
-| `unblock <id>` | Return a blocked task to ready. |
+| `block <id> "<reason>"` | Mark task blocked for human input. Also appends the reason as a comment. |
+| `schedule <id> "<reason>"` | Park time-delay/follow-up work in `scheduled` so it is not shown as a human blocker. |
+| `unblock <id>` | Return a blocked or scheduled task to ready (or `todo` if dependencies are still open). |
 | `archive <id>` | Hide from default list. `gc` will remove scratch workspaces. |
 | `tail <id>` | Follow a task's event stream. |
 | `dispatch` | One dispatcher pass on the active board. Flags: `--dry-run`, `--max N`, `--failure-limit N`, `--json`. |
@@ -823,7 +826,42 @@ Notes:
 - `--force` does not override a `dangerous` scan verdict.
 - `--source skills-sh` searches the public `skills.sh` directory.
 - `--source well-known` lets you point Hermes at a site exposing `/.well-known/skills/index.json`.
+- `--source browse-sh` searches [browse.sh](https://browse.sh)'s catalog of 200+ site-specific browser-automation skills. Identifiers look like `browse-sh/airbnb.com/search-listings-ddgioa`.
 - Passing an `http(s)://…/*.md` URL installs a single-file SKILL.md directly. When frontmatter has no `name:` and the URL slug isn't a valid identifier, an interactive terminal prompts for a name; non-interactive surfaces (`/skills install` inside the TUI, gateway platforms) require `--name <x>` instead.
+
+## `hermes bundles`
+
+```bash
+hermes bundles <subcommand>
+```
+
+Skill bundles group several skills under one `/<bundle-name>` slash command. Invoking the bundle loads every referenced skill into a single combined user message. Storage: `~/.hermes/skill-bundles/<slug>.yaml`. See [Skill Bundles](../user-guide/features/skills.md#skill-bundles) for the YAML schema and behavior.
+
+Subcommands:
+
+| Subcommand | Description |
+|------------|-------------|
+| `list` | List installed bundles (default when no subcommand given) |
+| `show <name>` | Show one bundle's name, description, skills, and file path |
+| `create <name>` | Create a new bundle. Pass `--skill <id>` (repeat) or omit for interactive entry. `--description`, `--instruction`, `--force` available. |
+| `delete <name>` | Remove a bundle file |
+| `reload` | Re-scan `~/.hermes/skill-bundles/` and report added/removed bundles |
+
+Examples:
+
+```bash
+hermes bundles create backend-dev \
+  --skill github-code-review \
+  --skill test-driven-development \
+  --skill github-pr-workflow \
+  -d "Backend feature work"
+
+hermes bundles list
+hermes bundles show backend-dev
+hermes bundles delete backend-dev
+```
+
+In a chat session, `/bundles` lists installed bundles and `/<bundle-name>` loads one.
 
 ## `hermes curator`
 
