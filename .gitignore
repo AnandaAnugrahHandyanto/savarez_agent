@@ -77,6 +77,12 @@ IDENTITY.md
 identity/
 _docs/
 .synapse/
+.openclaw/
+.openclaw-desktop/
+.python/
+.python
+_artifacts/
+*.lnk
 *.log
 vendor/openclaw-mirror/AI-Scientist
 vendor/openclaw-mirror/ShinkaEvolve

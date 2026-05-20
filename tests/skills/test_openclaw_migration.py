@@ -185,6 +185,98 @@ def test_migrator_optionally_imports_supported_secrets_and_messaging_settings(tm
     assert "TELEGRAM_BOT_TOKEN=123:abc" in env_text
 
 
+def test_migrator_imports_channel_provider_gateway_and_vrchat_secrets(tmp_path: Path):
+    mod = load_module()
+    source = tmp_path / ".openclaw"
+    target = tmp_path / ".hermes"
+    output_dir = target / "migration-report"
+    (source / "credentials" / "auth-profiles").mkdir(parents=True)
+    (source / "credentials" / "auth-profiles" / "profile.json").write_text(
+        json.dumps({"encrypted": "ciphertext", "provider": "openai-codex"}),
+        encoding="utf-8",
+    )
+    (source / ".env").write_text(
+        "\ufeff"
+        "TELEGRAM_WEBHOOK_SECRET=telegram-webhook-secret\n"
+        "TELEGRAM_WEBHOOK_URL=https://telegram.example/webhook\n"
+        "LINE_WEBHOOK_URL=https://line.example/webhook\n"
+        "OPENCLAW_GATEWAY_TOKEN=env-gateway-token\n"
+        "OLLAMA_API_KEY=ollama-env-key\n"
+        "VRCHAT_OSC_RECV_PORT=9001\n",
+        encoding="utf-8",
+    )
+    (source / "openclaw.json").write_text(
+        json.dumps(
+            {
+                "channels": {
+                    "telegram": {"botToken": "telegram-token", "webhookPort": 9443},
+                    "discord": {"token": "discord-token", "allowFrom": ["discord-user"]},
+                    "line": {
+                        "channelAccessToken": "line-access-token",
+                        "channelSecret": "line-secret",
+                        "allowFrom": ["line-user"],
+                        "groupAllowFrom": ["line-group"],
+                    },
+                },
+                "gateway": {"auth": {"token": "json-gateway-token"}},
+                "plugins": {
+                    "entries": {
+                        "local-voice": {
+                            "config": {
+                                "vrchatOscEnabled": True,
+                                "vrchatOscPort": 9000,
+                            }
+                        }
+                    }
+                },
+                "models": {
+                    "providers": {
+                        "llama-cpp": {"apiKey": "llama-key"},
+                        "ollama": {"apiKey": "${OLLAMA_API_KEY}"},
+                        "hypura": {"apiKey": "hypura-key"},
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    target.mkdir()
+
+    migrator = mod.Migrator(
+        source_root=source,
+        target_root=target,
+        execute=True,
+        workspace_target=None,
+        overwrite=False,
+        migrate_secrets=True,
+        output_dir=output_dir,
+        selected_options={"secret-settings", "provider-keys"},
+    )
+    report = migrator.migrate()
+
+    env_data = mod.parse_env_file(target / ".env")
+    assert env_data["TELEGRAM_BOT_TOKEN"] == "telegram-token"
+    assert env_data["TELEGRAM_WEBHOOK_PORT"] == "9443"
+    assert env_data["TELEGRAM_WEBHOOK_SECRET"] == "telegram-webhook-secret"
+    assert env_data["DISCORD_BOT_TOKEN"] == "discord-token"
+    assert env_data["DISCORD_ALLOWED_USERS"] == "discord-user"
+    assert env_data["LINE_CHANNEL_ACCESS_TOKEN"] == "line-access-token"
+    assert env_data["LINE_CHANNEL_SECRET"] == "line-secret"
+    assert env_data["LINE_ALLOWED_USERS"] == "line-user"
+    assert env_data["LINE_ALLOWED_GROUPS"] == "line-group"
+    assert env_data["LINE_PUBLIC_URL"] == "https://line.example/webhook"
+    assert env_data["HERMES_GATEWAY_TOKEN"] == "env-gateway-token"
+    assert env_data["VRCHAT_OSC_ENABLED"] == "true"
+    assert env_data["VRCHAT_OSC_HOST"] == "127.0.0.1"
+    assert env_data["VRCHAT_OSC_SEND_PORT"] == "9000"
+    assert env_data["VRCHAT_OSC_RECV_PORT"] == "9001"
+    assert env_data["LLAMA_CPP_API_KEY"] == "llama-key"
+    assert env_data["OLLAMA_API_KEY"] == "ollama-env-key"
+    assert env_data["HYPURA_API_KEY"] == "hypura-key"
+    assert (output_dir / "archive" / "credentials" / "auth-profiles" / "profile.json").exists()
+    assert any(item["kind"] == "oauth-credentials" and item["status"] == "archived" for item in report["items"])
+
+
 def test_messaging_cwd_skipped_when_inside_source(tmp_path: Path):
     """MESSAGING_CWD pointing inside the OpenClaw source dir should be skipped."""
     mod = load_module()
@@ -443,7 +535,10 @@ def test_migrator_can_rename_conflicting_imported_skill(tmp_path: Path):
     assert renamed_skill.exists()
     assert existing_skill.joinpath("SKILL.md").read_text(encoding="utf-8").endswith("existing\n")
     imported_items = [item for item in report["items"] if item["kind"] == "skill" and item["status"] == "migrated"]
-    assert any(item["details"].get("renamed_from", "").endswith("/demo-skill") for item in imported_items)
+    assert any(
+        item["details"].get("renamed_from", "").replace("\\", "/").endswith("/demo-skill")
+        for item in imported_items
+    )
 
 
 def test_migrator_can_overwrite_conflicting_imported_skill_with_backup(tmp_path: Path):
@@ -816,7 +911,11 @@ def test_cron_store_is_archived_without_config_cron_section(tmp_path: Path):
 
     cron_items = [item for item in report["items"] if item["kind"] == "cron-jobs"]
     archived_store = next(
-        (item for item in cron_items if item["destination"] and item["destination"].endswith("archive/cron-store")),
+        (
+            item
+            for item in cron_items
+            if item["destination"] and item["destination"].replace("\\", "/").endswith("archive/cron-store")
+        ),
         None,
     )
     assert archived_store is not None
@@ -825,6 +924,75 @@ def test_cron_store_is_archived_without_config_cron_section(tmp_path: Path):
     notes_text = (output_dir / "MIGRATION_NOTES.md").read_text(encoding="utf-8")
     assert "Run `hermes cron` to recreate scheduled tasks" in notes_text
     assert "archive/cron-config.json" not in notes_text
+
+
+def test_embedded_openclaw_home_cron_store_is_reported_in_dry_run(tmp_path: Path):
+    mod = load_module()
+    source = tmp_path / "openclaw-repo"
+    target = tmp_path / ".hermes"
+    cron_dir = source / ".openclaw-desktop" / "cron"
+    cron_dir.mkdir(parents=True)
+    target.mkdir()
+    (source / ".openclaw-desktop" / "openclaw.json").write_text("\ufeff" + json.dumps({"channels": {}}), encoding="utf-8")
+    (cron_dir / "jobs.json").write_text(json.dumps({"version": 1, "jobs": []}), encoding="utf-8")
+
+    migrator = mod.Migrator(
+        source_root=source,
+        target_root=target,
+        execute=False,
+        workspace_target=None,
+        overwrite=False,
+        migrate_secrets=False,
+        output_dir=None,
+        selected_options={"cron-jobs"},
+    )
+    report = migrator.migrate()
+
+    cron_items = [item for item in report["items"] if item["kind"] == "cron-jobs"]
+    assert any(
+        item["destination"] and item["destination"].replace("\\", "/").endswith("archive/cron-store")
+        for item in cron_items
+    )
+
+
+def test_repo_source_extensions_are_not_recursively_archived(tmp_path: Path):
+    mod = load_module()
+    source = tmp_path / "openclaw-repo"
+    target = tmp_path / ".hermes"
+    output_dir = target / "migration-report"
+    source.mkdir()
+    target.mkdir()
+    desktop_home = source / ".openclaw-desktop"
+    desktop_home.mkdir()
+    (desktop_home / "openclaw.json").write_text(
+        "\ufeff" + json.dumps({"plugins": {"entries": {"demo": {}}}}),
+        encoding="utf-8",
+    )
+    source_extensions = source / "extensions" / "demo"
+    source_extensions.mkdir(parents=True)
+    (source_extensions / "plugin.yaml").write_text("name: demo\n", encoding="utf-8")
+
+    migrator = mod.Migrator(
+        source_root=source,
+        target_root=target,
+        execute=True,
+        workspace_target=None,
+        overwrite=False,
+        migrate_secrets=False,
+        output_dir=output_dir,
+        selected_options={"plugins-config"},
+    )
+    report = migrator.migrate()
+
+    assert (output_dir / "archive" / "plugins-config.json").exists()
+    assert not (output_dir / "archive" / "extensions").exists()
+    assert any(
+        item["kind"] == "plugins-config"
+        and item["status"] == "skipped"
+        and item["source"]
+        and item["source"].replace("\\", "/").endswith("/extensions")
+        for item in report["items"]
+    )
 
 
 def test_skill_installs_cleanly_under_skills_guard():
@@ -943,14 +1111,15 @@ def test_migrate_memory_rebrands_entries(tmp_path):
     assert "Hermes" in result
 
 
-def test_migrate_soul_rebrands_content(tmp_path):
+def test_migrate_soul_preserves_content(tmp_path):
     mod = load_module()
     source_root = tmp_path / "openclaw"
     source_root.mkdir()
     workspace = source_root / "workspace"
     workspace.mkdir()
     soul_md = workspace / "SOUL.md"
-    soul_md.write_text("You are OpenClaw, an AI assistant made by SparkLab.", encoding="utf-8")
+    original = "You are OpenClaw, an AI assistant made by SparkLab."
+    soul_md.write_text(original, encoding="utf-8")
 
     target_root = tmp_path / "hermes"
     target_root.mkdir()
@@ -968,8 +1137,51 @@ def test_migrate_soul_rebrands_content(tmp_path):
     migrator.migrate()
 
     result = (target_root / "SOUL.md").read_text(encoding="utf-8")
-    assert "OpenClaw" not in result
-    assert "You are Hermes" in result
+    assert result == original
+
+
+def test_repo_root_sources_are_imported_without_workspace_dir(tmp_path):
+    mod = load_module()
+    source_root = tmp_path / "openclaw-repo"
+    source_root.mkdir()
+    (source_root / "SOUL.md").write_text("Root OpenClaw SOUL.", encoding="utf-8")
+    (source_root / ".env").write_text("LINE_WEBHOOK_URL=https://root.example/line\n", encoding="utf-8")
+    (source_root / "MEMORY.md").write_text("# Memory\n\n- Root OpenClaw memory entry\n", encoding="utf-8")
+    (source_root / "USER.md").write_text("# User\n\n- Root OpenClaw user entry\n", encoding="utf-8")
+    (source_root / "HEARTBEAT.md").write_text("# Heartbeat\n", encoding="utf-8")
+    memory_dir = source_root / "memory"
+    memory_dir.mkdir()
+    (memory_dir / "2026-05-20.md").write_text("# Daily\n\n- Daily OpenClaw memory entry\n", encoding="utf-8")
+    desktop_home = source_root / ".openclaw-desktop"
+    desktop_home.mkdir()
+    (desktop_home / "openclaw.json").write_text("\ufeff" + json.dumps({"ui": {"name": "OpenClaw"}}), encoding="utf-8")
+    (desktop_home / ".env").write_text("TELEGRAM_WEBHOOK_SECRET=desktop-secret\n", encoding="utf-8")
+
+    target_root = tmp_path / "hermes"
+    target_root.mkdir()
+
+    migrator = mod.Migrator(
+        source_root=source_root,
+        target_root=target_root,
+        execute=True,
+        workspace_target=None,
+        overwrite=False,
+        migrate_secrets=False,
+        output_dir=tmp_path / "report",
+        selected_options={"soul", "memory", "user-profile", "daily-memory", "archive"},
+    )
+    assert migrator.load_openclaw_config()["ui"]["name"] == "OpenClaw"
+    assert migrator.load_openclaw_env()["LINE_WEBHOOK_URL"] == "https://root.example/line"
+    assert migrator.load_openclaw_env()["TELEGRAM_WEBHOOK_SECRET"] == "desktop-secret"
+    migrator.migrate()
+
+    assert (target_root / "SOUL.md").read_text(encoding="utf-8") == "Root OpenClaw SOUL."
+    memory = (target_root / "memories" / "MEMORY.md").read_text(encoding="utf-8")
+    assert "Root Hermes memory entry" in memory
+    assert "Daily Hermes memory entry" in memory
+    user = (target_root / "memories" / "USER.md").read_text(encoding="utf-8")
+    assert "Root Hermes user entry" in user
+    assert any(item.kind == "archive" and item.source and item.source.endswith("HEARTBEAT.md") for item in migrator.items)
 
 
 # ── migrate_model_config: alias resolution (issue #16745) ──────────────────

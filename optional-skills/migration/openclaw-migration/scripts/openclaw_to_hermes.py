@@ -35,6 +35,26 @@ SKILL_CATEGORY_DESCRIPTION = (
 SKILL_CONFLICT_MODES = {"skip", "overwrite", "rename"}
 SUPPORTED_SECRET_TARGETS={
     "TELEGRAM_BOT_TOKEN",
+    "TELEGRAM_CHAT_ID",
+    "TELEGRAM_WEBHOOK_PORT",
+    "TELEGRAM_WEBHOOK_SECRET",
+    "TELEGRAM_WEBHOOK_URL",
+    "DISCORD_BOT_TOKEN",
+    "DISCORD_ALLOWED_USERS",
+    "LINE_CHANNEL_ACCESS_TOKEN",
+    "LINE_CHANNEL_SECRET",
+    "LINE_ALLOWED_USERS",
+    "LINE_ALLOWED_GROUPS",
+    "LINE_PUBLIC_URL",
+    "LINE_WEBHOOK_URL",
+    "HERMES_GATEWAY_TOKEN",
+    "VRCHAT_OSC_ENABLED",
+    "VRCHAT_OSC_HOST",
+    "VRCHAT_OSC_SEND_PORT",
+    "VRCHAT_OSC_RECV_PORT",
+    "LLAMA_CPP_API_KEY",
+    "OLLAMA_API_KEY",
+    "HYPURA_API_KEY",
     "OPENROUTER_API_KEY",
     "OPENAI_API_KEY",
     "ANTHROPIC_API_KEY",
@@ -367,7 +387,7 @@ def parse_env_file(path: Path) -> Dict[str, str]:
     if not path.exists():
         return {}
     data: Dict[str, str] = {}
-    for raw_line in path.read_text(encoding="utf-8").splitlines():
+    for raw_line in path.read_text(encoding="utf-8-sig").splitlines():
         line = raw_line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
@@ -778,6 +798,22 @@ class Migrator:
                 + ", ".join(sorted(SKILL_CONFLICT_MODES))
             )
 
+    def source_roots(self) -> List[Path]:
+        roots = [self.source_root]
+        for nested_name in (".openclaw-desktop", ".openclaw"):
+            nested = self.source_root / nested_name
+            if nested.is_dir():
+                roots.append(nested)
+        return roots
+
+    def openclaw_config_path(self) -> Path:
+        for root in self.source_roots():
+            for name in ("openclaw.json", "clawdbot.json", "moltbot.json"):
+                config_path = root / name
+                if config_path.exists():
+                    return config_path
+        return self.source_root / "openclaw.json"
+
     def is_selected(self, option_id: str) -> bool:
         return option_id in self.selected_options
 
@@ -837,23 +873,24 @@ class Migrator:
                 self._config_apply_blocked = True
 
     def source_candidate(self, *relative_paths: str) -> Optional[Path]:
-        for rel in relative_paths:
-            candidate = self.source_root / rel
-            if candidate.exists():
-                return candidate
-            # OpenClaw renamed workspace/ to workspace-main/ (and workspace-{agentId}
-            # for multi-agent).  Try the new path as a fallback.
-            if rel.startswith("workspace/"):
-                suffix = rel[len("workspace/"):]
-                for variant in ("workspace-main", "workspace-assistant"):
-                    alt = self.source_root / variant / suffix
+        for root in self.source_roots():
+            for rel in relative_paths:
+                candidate = root / rel
+                if candidate.exists():
+                    return candidate
+                # OpenClaw renamed workspace/ to workspace-main/ (and workspace-{agentId}
+                # for multi-agent).  Try the new path as a fallback.
+                if rel.startswith("workspace/"):
+                    suffix = rel[len("workspace/"):]
+                    for variant in ("workspace-main", "workspace-assistant"):
+                        alt = root / variant / suffix
+                        if alt.exists():
+                            return alt
+                elif rel.startswith("workspace.default/"):
+                    suffix = rel[len("workspace.default/"):]
+                    alt = root / "workspace-main" / suffix
                     if alt.exists():
                         return alt
-            elif rel.startswith("workspace.default/"):
-                suffix = rel[len("workspace.default/"):]
-                alt = self.source_root / "workspace-main" / suffix
-                if alt.exists():
-                    return alt
 
         # Final fallback: check the configured workspace directory from
         # agents.defaults.workspace in openclaw.json.  Users who started
@@ -897,7 +934,7 @@ class Migrator:
         self.run_if_selected(
             "memory",
             lambda: self.migrate_memory(
-                self.source_candidate("workspace/MEMORY.md", "workspace.default/MEMORY.md"),
+                self.source_candidate("workspace/MEMORY.md", "workspace.default/MEMORY.md", "MEMORY.md"),
                 self.target_root / "memories" / "MEMORY.md",
                 self.memory_limit,
                 kind="memory",
@@ -906,7 +943,7 @@ class Migrator:
         self.run_if_selected(
             "user-profile",
             lambda: self.migrate_memory(
-                self.source_candidate("workspace/USER.md", "workspace.default/USER.md"),
+                self.source_candidate("workspace/USER.md", "workspace.default/USER.md", "USER.md"),
                 self.target_root / "memories" / "USER.md",
                 self.user_limit,
                 kind="user-profile",
@@ -1133,16 +1170,17 @@ class Migrator:
             self.record(kind, source, destination, "migrated", "Would copy")
 
     def migrate_soul(self) -> None:
-        source = self.source_candidate("workspace/SOUL.md", "workspace.default/SOUL.md")
+        source = self.source_candidate("workspace/SOUL.md", "workspace.default/SOUL.md", "SOUL.md")
         if not source:
             self.record("soul", None, self.target_root / "SOUL.md", "skipped", "No OpenClaw SOUL.md found")
             return
-        self.copy_file(source, self.target_root / "SOUL.md", kind="soul", transform=rebrand_text)
+        self.copy_file(source, self.target_root / "SOUL.md", kind="soul")
 
     def migrate_workspace_agents(self) -> None:
         source = self.source_candidate(
             f"workspace/{WORKSPACE_INSTRUCTIONS_FILENAME}",
             f"workspace.default/{WORKSPACE_INSTRUCTIONS_FILENAME}",
+            WORKSPACE_INSTRUCTIONS_FILENAME,
         )
         if source is None:
             self.record("workspace-agents", "workspace/AGENTS.md", "", "skipped", "Source file not found")
@@ -1198,7 +1236,7 @@ class Migrator:
             self.record(kind, source, destination, "migrated", "Would merge entries", overflow_preview=overflowed[:5], **details)
 
     def migrate_command_allowlist(self) -> None:
-        source = self.source_root / "exec-approvals.json"
+        source = self.source_candidate("exec-approvals.json") or self.source_root / "exec-approvals.json"
         destination = self.target_root / "config.yaml"
         if not source.exists():
             self.record("command-allowlist", None, destination, "skipped", "No OpenClaw exec approvals file found")
@@ -1258,19 +1296,25 @@ class Migrator:
 
     def load_openclaw_config(self) -> Dict[str, Any]:
         # Check current name and legacy config filenames
-        for name in ("openclaw.json", "clawdbot.json", "moltbot.json"):
-            config_path = self.source_root / name
-            if config_path.exists():
-                try:
-                    data = json.loads(config_path.read_text(encoding="utf-8"))
-                    return data if isinstance(data, dict) else {}
-                except json.JSONDecodeError:
-                    continue
+        for root in self.source_roots():
+            for name in ("openclaw.json", "clawdbot.json", "moltbot.json"):
+                config_path = root / name
+                if config_path.exists():
+                    try:
+                        data = json.loads(config_path.read_text(encoding="utf-8-sig"))
+                        return data if isinstance(data, dict) else {}
+                    except json.JSONDecodeError:
+                        continue
         return {}
 
     def load_openclaw_env(self) -> Dict[str, str]:
         """Load the OpenClaw .env file for secrets that live there instead of config."""
-        return parse_env_file(self.source_root / ".env")
+        merged: Dict[str, str] = {}
+        for root in self.source_roots():
+            env_data = parse_env_file(root / ".env")
+            if env_data:
+                merged.update(env_data)
+        return merged
 
     def merge_env_values(self, additions: Dict[str, str], kind: str, source: Path) -> None:
         destination = self.target_root / ".env"
@@ -1340,8 +1384,8 @@ class Migrator:
             if not inside_source:
                 additions["MESSAGING_CWD"] = ws_path
 
-        allowlist_path = self.source_root / "credentials" / "telegram-default-allowFrom.json"
-        if allowlist_path.exists():
+        allowlist_path = self.source_candidate("credentials/telegram-default-allowFrom.json")
+        if allowlist_path and allowlist_path.exists():
             try:
                 allow_data = json.loads(allowlist_path.read_text(encoding="utf-8"))
             except json.JSONDecodeError:
@@ -1354,9 +1398,9 @@ class Migrator:
                         additions["TELEGRAM_ALLOWED_USERS"] = ",".join(users)
 
         if additions:
-            self.merge_env_values(additions, "messaging-settings", self.source_root / "openclaw.json")
+            self.merge_env_values(additions, "messaging-settings", self.openclaw_config_path())
         else:
-            self.record("messaging-settings", self.source_root / "openclaw.json", self.target_root / ".env", "skipped", "No Hermes-compatible messaging settings found")
+            self.record("messaging-settings", self.openclaw_config_path(), self.target_root / ".env", "skipped", "No Hermes-compatible messaging settings found")
 
     def handle_secret_settings(self, config: Optional[Dict[str, Any]] = None) -> None:
         config = config or self.load_openclaw_config()
@@ -1364,7 +1408,7 @@ class Migrator:
             self.migrate_secret_settings(config)
             return
 
-        config_path = self.source_root / "openclaw.json"
+        config_path = self.openclaw_config_path()
         if config_path.exists():
             self.record(
                 "secret-settings",
@@ -1386,23 +1430,123 @@ class Migrator:
 
     def migrate_secret_settings(self, config: Dict[str, Any]) -> None:
         secret_additions: Dict[str, str] = {}
+        openclaw_env = self.load_openclaw_env()
+
+        def add_value(target_key: str, value: Any) -> None:
+            resolved = resolve_secret_input(value, openclaw_env)
+            if resolved:
+                secret_additions[target_key] = resolved
+
+        def add_env(source_key: str, target_key: Optional[str] = None) -> None:
+            value = openclaw_env.get(source_key, "").strip()
+            if value:
+                secret_additions[target_key or source_key] = value
 
         tg_cfg = config.get("channels", {}).get("telegram", {})
-        telegram_token = self._get_channel_field(tg_cfg, "botToken") if isinstance(tg_cfg, dict) else None
-        if isinstance(telegram_token, str) and telegram_token.strip():
-            secret_additions["TELEGRAM_BOT_TOKEN"] = telegram_token.strip()
+        if isinstance(tg_cfg, dict):
+            add_value("TELEGRAM_BOT_TOKEN", self._get_channel_field(tg_cfg, "botToken"))
+            webhook_port = self._get_channel_field(tg_cfg, "webhookPort")
+            if webhook_port:
+                secret_additions["TELEGRAM_WEBHOOK_PORT"] = str(webhook_port).strip()
+
+        for key in (
+            "TELEGRAM_BOT_TOKEN",
+            "TELEGRAM_CHAT_ID",
+            "TELEGRAM_WEBHOOK_PORT",
+            "TELEGRAM_WEBHOOK_SECRET",
+            "TELEGRAM_WEBHOOK_URL",
+        ):
+            add_env(key)
+
+        discord_cfg = config.get("channels", {}).get("discord", {})
+        if isinstance(discord_cfg, dict):
+            add_value("DISCORD_BOT_TOKEN", self._get_channel_field(discord_cfg, "token"))
+            allow_from = self._get_channel_field(discord_cfg, "allowFrom") or []
+            if isinstance(allow_from, list):
+                users = [str(user).strip() for user in allow_from if str(user).strip()]
+                if users:
+                    secret_additions["DISCORD_ALLOWED_USERS"] = ",".join(users)
+        add_env("DISCORD_BOT_TOKEN")
+        add_env("DISCORD_ALLOWED_USERS")
+
+        line_cfg = config.get("channels", {}).get("line", {})
+        if isinstance(line_cfg, dict):
+            add_value("LINE_CHANNEL_ACCESS_TOKEN", self._get_channel_field(line_cfg, "channelAccessToken"))
+            add_value("LINE_CHANNEL_SECRET", self._get_channel_field(line_cfg, "channelSecret"))
+            allow_from = self._get_channel_field(line_cfg, "allowFrom") or []
+            if isinstance(allow_from, list):
+                users = [str(user).strip() for user in allow_from if str(user).strip()]
+                if users:
+                    secret_additions["LINE_ALLOWED_USERS"] = ",".join(users)
+            group_allow_from = self._get_channel_field(line_cfg, "groupAllowFrom") or []
+            if isinstance(group_allow_from, list):
+                groups = [str(group).strip() for group in group_allow_from if str(group).strip()]
+                if groups:
+                    secret_additions["LINE_ALLOWED_GROUPS"] = ",".join(groups)
+
+        for key in (
+            "LINE_CHANNEL_ACCESS_TOKEN",
+            "LINE_CHANNEL_SECRET",
+            "LINE_ALLOWED_USERS",
+            "LINE_ALLOWED_GROUPS",
+            "LINE_PUBLIC_URL",
+            "LINE_WEBHOOK_URL",
+        ):
+            add_env(key)
+        if "LINE_WEBHOOK_URL" in secret_additions and "LINE_PUBLIC_URL" not in secret_additions:
+            secret_additions["LINE_PUBLIC_URL"] = secret_additions["LINE_WEBHOOK_URL"]
+
+        gateway_auth = config.get("gateway", {}).get("auth", {})
+        if isinstance(gateway_auth, dict):
+            add_value("HERMES_GATEWAY_TOKEN", gateway_auth.get("token"))
+        add_env("HERMES_GATEWAY_TOKEN")
+        add_env("OPENCLAW_GATEWAY_TOKEN", "HERMES_GATEWAY_TOKEN")
+
+        local_voice = (
+            config.get("plugins", {})
+            .get("entries", {})
+            .get("local-voice", {})
+        )
+        local_voice_cfg = local_voice.get("config", {}) if isinstance(local_voice, dict) else {}
+        if isinstance(local_voice_cfg, dict):
+            if local_voice_cfg.get("vrchatOscEnabled") is not None:
+                secret_additions["VRCHAT_OSC_ENABLED"] = str(local_voice_cfg.get("vrchatOscEnabled")).lower()
+            if local_voice_cfg.get("vrchatOscPort"):
+                secret_additions["VRCHAT_OSC_SEND_PORT"] = str(local_voice_cfg.get("vrchatOscPort")).strip()
+            secret_additions.setdefault("VRCHAT_OSC_HOST", "127.0.0.1")
+            secret_additions.setdefault("VRCHAT_OSC_RECV_PORT", "9001")
+
+        for key in ("VRCHAT_OSC_HOST", "VRCHAT_OSC_SEND_PORT", "VRCHAT_OSC_RECV_PORT"):
+            add_env(key)
 
         if secret_additions:
-            self.merge_env_values(secret_additions, "secret-settings", self.source_root / "openclaw.json")
+            self.merge_env_values(secret_additions, "secret-settings", self.openclaw_config_path())
         else:
             self.record(
                 "secret-settings",
-                self.source_root / "openclaw.json",
+                self.openclaw_config_path(),
                 self.target_root / ".env",
                 "skipped",
                 "No allowlisted Hermes-compatible secrets found",
                 supported_targets=sorted(SUPPORTED_SECRET_TARGETS),
             )
+        self.archive_oauth_credentials()
+
+    def archive_oauth_credentials(self) -> None:
+        source = self.source_candidate("credentials/auth-profiles")
+        if not source or not source.is_dir():
+            self.record("oauth-credentials", None, None, "skipped", "No OpenClaw OAuth credential profiles found")
+            return
+        destination = self.archive_dir / "credentials" / "auth-profiles" if self.archive_dir else Path("archive/credentials/auth-profiles")
+        if self.execute and self.archive_dir:
+            shutil.copytree(source, destination, dirs_exist_ok=True)
+        self.record(
+            "oauth-credentials",
+            source,
+            destination,
+            "archived",
+            "Encrypted OpenClaw OAuth profiles archived for manual review",
+        )
 
     def _resolve_channel_secret(self, value: Any) -> Optional[str]:
         """Resolve a channel config value that may be a SecretRef."""
@@ -1435,9 +1579,9 @@ class Migrator:
                 if users:
                     additions["DISCORD_ALLOWED_USERS"] = ",".join(users)
         if additions:
-            self.merge_env_values(additions, "discord-settings", self.source_root / "openclaw.json")
+            self.merge_env_values(additions, "discord-settings", self.openclaw_config_path())
         else:
-            self.record("discord-settings", self.source_root / "openclaw.json", self.target_root / ".env", "skipped", "No Discord settings found")
+            self.record("discord-settings", self.openclaw_config_path(), self.target_root / ".env", "skipped", "No Discord settings found")
 
     def migrate_slack_settings(self, config: Optional[Dict[str, Any]] = None) -> None:
         config = config or self.load_openclaw_config()
@@ -1456,9 +1600,9 @@ class Migrator:
                 if users:
                     additions["SLACK_ALLOWED_USERS"] = ",".join(users)
         if additions:
-            self.merge_env_values(additions, "slack-settings", self.source_root / "openclaw.json")
+            self.merge_env_values(additions, "slack-settings", self.openclaw_config_path())
         else:
-            self.record("slack-settings", self.source_root / "openclaw.json", self.target_root / ".env", "skipped", "No Slack settings found")
+            self.record("slack-settings", self.openclaw_config_path(), self.target_root / ".env", "skipped", "No Slack settings found")
 
     def migrate_whatsapp_settings(self, config: Optional[Dict[str, Any]] = None) -> None:
         config = config or self.load_openclaw_config()
@@ -1471,9 +1615,9 @@ class Migrator:
                 if users:
                     additions["WHATSAPP_ALLOWED_USERS"] = ",".join(users)
         if additions:
-            self.merge_env_values(additions, "whatsapp-settings", self.source_root / "openclaw.json")
+            self.merge_env_values(additions, "whatsapp-settings", self.openclaw_config_path())
         else:
-            self.record("whatsapp-settings", self.source_root / "openclaw.json", self.target_root / ".env", "skipped", "No WhatsApp settings found")
+            self.record("whatsapp-settings", self.openclaw_config_path(), self.target_root / ".env", "skipped", "No WhatsApp settings found")
 
     def migrate_signal_settings(self, config: Optional[Dict[str, Any]] = None) -> None:
         config = config or self.load_openclaw_config()
@@ -1492,14 +1636,14 @@ class Migrator:
                 if users:
                     additions["SIGNAL_ALLOWED_USERS"] = ",".join(users)
         if additions:
-            self.merge_env_values(additions, "signal-settings", self.source_root / "openclaw.json")
+            self.merge_env_values(additions, "signal-settings", self.openclaw_config_path())
         else:
-            self.record("signal-settings", self.source_root / "openclaw.json", self.target_root / ".env", "skipped", "No Signal settings found")
+            self.record("signal-settings", self.openclaw_config_path(), self.target_root / ".env", "skipped", "No Signal settings found")
 
     def handle_provider_keys(self, config: Optional[Dict[str, Any]] = None) -> None:
         config = config or self.load_openclaw_config()
         if not self.migrate_secrets:
-            config_path = self.source_root / "openclaw.json"
+            config_path = self.openclaw_config_path()
             self.record(
                 "provider-keys",
                 config_path,
@@ -1529,7 +1673,7 @@ class Migrator:
                     if isinstance(raw_key, dict) and raw_key.get("source") in {"file", "exec"}:
                         self.record(
                             "provider-keys",
-                            self.source_root / "openclaw.json",
+                            self.openclaw_config_path(),
                             None,
                             "skipped",
                             f"Provider '{provider_name}' uses a {raw_key['source']}-backed SecretRef "
@@ -1561,6 +1705,12 @@ class Migrator:
                         env_var = "OPENROUTER_API_KEY"
                     elif "openai" in name_lower:
                         env_var = "OPENAI_API_KEY"
+                    elif name_lower in {"llama-cpp", "llamacpp"}:
+                        env_var = "LLAMA_CPP_API_KEY"
+                    elif name_lower == "ollama":
+                        env_var = "OLLAMA_API_KEY"
+                    elif name_lower == "hypura":
+                        env_var = "HYPURA_API_KEY"
 
                 if env_var:
                     secret_additions[env_var] = api_key
@@ -1587,7 +1737,9 @@ class Migrator:
             "OPENAI_API_KEY": "OPENAI_API_KEY",
             "ANTHROPIC_API_KEY": "ANTHROPIC_API_KEY",
             "ELEVENLABS_API_KEY": "ELEVENLABS_API_KEY",
-            "TELEGRAM_BOT_TOKEN": "TELEGRAM_BOT_TOKEN",
+            "LLAMA_CPP_API_KEY": "LLAMA_CPP_API_KEY",
+            "OLLAMA_API_KEY": "OLLAMA_API_KEY",
+            "HYPURA_API_KEY": "HYPURA_API_KEY",
             "DEEPSEEK_API_KEY": "DEEPSEEK_API_KEY",
             "GEMINI_API_KEY": "GEMINI_API_KEY",
             "ZAI_API_KEY": "ZAI_API_KEY",
@@ -1614,8 +1766,8 @@ class Migrator:
                         secret_additions[hermes_key] = val.strip()
 
         # Check per-agent auth-profiles.json for additional credentials
-        auth_profiles_path = self.source_root / "agents" / "main" / "agent" / "auth-profiles.json"
-        if auth_profiles_path.exists():
+        auth_profiles_path = self.source_candidate("agents/main/agent/auth-profiles.json")
+        if auth_profiles_path and auth_profiles_path.exists():
             try:
                 profiles = json.loads(auth_profiles_path.read_text(encoding="utf-8"))
                 if isinstance(profiles, dict):
@@ -1639,11 +1791,11 @@ class Migrator:
                 pass
 
         if secret_additions:
-            self.merge_env_values(secret_additions, "provider-keys", self.source_root / "openclaw.json")
+            self.merge_env_values(secret_additions, "provider-keys", self.openclaw_config_path())
         else:
             self.record(
                 "provider-keys",
-                self.source_root / "openclaw.json",
+                self.openclaw_config_path(),
                 self.target_root / ".env",
                 "skipped",
                 "No provider API keys found",
@@ -1653,7 +1805,7 @@ class Migrator:
     def migrate_model_config(self, config: Optional[Dict[str, Any]] = None) -> None:
         config = config or self.load_openclaw_config()
         destination = self.target_root / "config.yaml"
-        source_path = self.source_root / "openclaw.json"
+        source_path = self.openclaw_config_path()
 
         model_value = config.get("agents", {}).get("defaults", {}).get("model")
         if model_value is None:
@@ -1722,7 +1874,7 @@ class Migrator:
     def migrate_tts_config(self, config: Optional[Dict[str, Any]] = None) -> None:
         config = config or self.load_openclaw_config()
         destination = self.target_root / "config.yaml"
-        source_path = self.source_root / "openclaw.json"
+        source_path = self.openclaw_config_path()
 
         tts = config.get("messages", {}).get("tts", {})
         if not isinstance(tts, dict) or not tts:
@@ -1822,10 +1974,14 @@ class Migrator:
     def migrate_shared_skills(self) -> None:
         # Check all OpenClaw skill sources: managed, personal, project-level
         skill_sources = [
-            (self.source_root / "skills", "shared-skills", "managed skills"),
+            (self.source_candidate("skills") or self.source_root / "skills", "shared-skills", "managed skills"),
             (Path.home() / ".agents" / "skills", "personal-skills", "personal cross-project skills"),
-            (self.source_root / "workspace" / ".agents" / "skills", "project-skills", "project-level shared skills"),
-            (self.source_root / "workspace.default" / ".agents" / "skills", "project-skills", "project-level shared skills"),
+            (
+                self.source_candidate("workspace/.agents/skills", "workspace.default/.agents/skills")
+                or self.source_root / "workspace" / ".agents" / "skills",
+                "project-skills",
+                "project-level shared skills",
+            ),
         ]
         found_any = False
         for source_root, kind_label, desc in skill_sources:
@@ -1888,15 +2044,15 @@ class Migrator:
             self.record("shared-skill-category", None, desc_path, "migrated", "Would create category description")
 
     def migrate_daily_memory(self) -> None:
-        source_dir = self.source_candidate("workspace/memory")
+        source_dir = self.source_candidate("workspace/memory", "memory")
         destination = self.target_root / "memories" / "MEMORY.md"
         if not source_dir or not source_dir.is_dir():
-            self.record("daily-memory", None, destination, "skipped", "No workspace/memory/ directory found")
+            self.record("daily-memory", None, destination, "skipped", "No OpenClaw memory directory found")
             return
 
         md_files = sorted(p for p in source_dir.iterdir() if p.is_file() and p.suffix == ".md")
         if not md_files:
-            self.record("daily-memory", source_dir, destination, "skipped", "No .md files found in workspace/memory/")
+            self.record("daily-memory", source_dir, destination, "skipped", "No .md files found in OpenClaw memory directory")
             return
 
         all_incoming: List[str] = []
@@ -2052,18 +2208,18 @@ class Migrator:
 
     def archive_docs(self) -> None:
         candidates = [
-            self.source_candidate("workspace/IDENTITY.md", "workspace.default/IDENTITY.md"),
-            self.source_candidate("workspace/TOOLS.md", "workspace.default/TOOLS.md"),
-            self.source_candidate("workspace/HEARTBEAT.md", "workspace.default/HEARTBEAT.md"),
-            self.source_candidate("workspace/BOOTSTRAP.md", "workspace.default/BOOTSTRAP.md"),
+            self.source_candidate("workspace/IDENTITY.md", "workspace.default/IDENTITY.md", "IDENTITY.md"),
+            self.source_candidate("workspace/TOOLS.md", "workspace.default/TOOLS.md", "TOOLS.md"),
+            self.source_candidate("workspace/HEARTBEAT.md", "workspace.default/HEARTBEAT.md", "HEARTBEAT.md"),
+            self.source_candidate("workspace/BOOTSTRAP.md", "workspace.default/BOOTSTRAP.md", "BOOTSTRAP.md"),
         ]
         for candidate in candidates:
             if candidate:
                 self.archive_path(candidate, reason="No direct Hermes destination; archived for manual review")
 
         for rel in ("workspace/.learnings", "workspace/memory"):
-            candidate = self.source_root / rel
-            if candidate.exists():
+            candidate = self.source_candidate(rel)
+            if candidate and candidate.exists():
                 self.archive_path(candidate, reason="No direct Hermes destination; archived for manual review")
 
         partially_extracted = [
@@ -2071,8 +2227,8 @@ class Migrator:
             ("credentials/telegram-default-allowFrom.json", "Selected Hermes-compatible values were extracted; raw credentials file was not copied."),
         ]
         for rel, reason in partially_extracted:
-            candidate = self.source_root / rel
-            if candidate.exists():
+            candidate = self.source_candidate(rel)
+            if candidate and candidate.exists():
                 self.record("raw-config-skip", candidate, None, "skipped", reason)
 
         skipped_sensitive = [
@@ -2082,10 +2238,11 @@ class Migrator:
             "identity",
             "workspace.zip",
         ]
-        for rel in skipped_sensitive:
-            candidate = self.source_root / rel
-            if candidate.exists():
-                self.record("sensitive-skip", candidate, None, "skipped", "Contains secrets, binary state, or product-specific runtime data")
+        for root in self.source_roots():
+            for rel in skipped_sensitive:
+                candidate = root / rel
+                if candidate.exists():
+                    self.record("sensitive-skip", candidate, None, "skipped", "Contains secrets, binary state, or product-specific runtime data")
 
     def archive_path(self, source: Path, reason: str) -> None:
         destination = self.archive_dir / relative_label(source, self.source_root) if self.archive_dir else None
@@ -2195,13 +2352,18 @@ class Migrator:
                         "archived" if not self.execute else "migrated", "Would archive plugins config")
 
         # Copy extensions directory if it exists
-        ext_dir = self.source_root / "extensions"
-        if ext_dir.is_dir() and self.archive_dir:
-            dest_ext = self.archive_dir / "extensions"
-            if self.execute:
-                shutil.copytree(ext_dir, dest_ext, dirs_exist_ok=True)
-            self.record("plugins-config", str(ext_dir), str(dest_ext), "archived",
-                        "Extensions directory archived")
+        ext_dir = self.source_candidate("extensions")
+        if ext_dir and ext_dir.is_dir():
+            embedded_home = any(root != self.source_root for root in self.source_roots())
+            if embedded_home and ext_dir == self.source_root / "extensions":
+                self.record("plugins-config", str(ext_dir), None, "skipped",
+                            "Source checkout extensions are not copied into the Hermes migration archive")
+            else:
+                dest_ext = self.archive_dir / "extensions" if self.archive_dir else Path("archive/extensions")
+                if self.execute and self.archive_dir:
+                    shutil.copytree(ext_dir, dest_ext, dirs_exist_ok=True)
+                self.record("plugins-config", str(ext_dir), str(dest_ext), "archived",
+                            "Extensions directory archived")
 
         # Extract any plugin env vars
         entries = plugins.get("entries") or {}
@@ -2217,7 +2379,7 @@ class Migrator:
     def migrate_cron_jobs(self, config: Optional[Dict[str, Any]] = None) -> None:
         config = config or self.load_openclaw_config()
         cron = config.get("cron") or {}
-        cron_store = self.source_root / "cron"
+        cron_store = self.source_candidate("cron")
         found_any = False
 
         # Archive the full cron config when present
@@ -2234,10 +2396,10 @@ class Migrator:
                             "archived", "Would archive cron config")
 
         # Also check for cron store files even when config.cron is missing
-        if cron_store.is_dir() and self.archive_dir:
+        if cron_store and cron_store.is_dir():
             found_any = True
-            dest_cron = self.archive_dir / "cron-store"
-            if self.execute:
+            dest_cron = self.archive_dir / "cron-store" if self.archive_dir else Path("archive/cron-store")
+            if self.execute and self.archive_dir:
                 shutil.copytree(cron_store, dest_cron, dirs_exist_ok=True)
             self.record("cron-jobs", str(cron_store), str(dest_cron), "archived",
                         "Cron job store archived")
@@ -2265,15 +2427,13 @@ class Migrator:
                         "archived", "Would archive hooks config")
 
         # Copy workspace hooks directory
-        for ws_name in ("workspace", "workspace.default"):
-            hooks_dir = self.source_root / ws_name / "hooks"
-            if hooks_dir.is_dir() and self.archive_dir:
-                dest_hooks = self.archive_dir / "workspace-hooks"
-                if self.execute:
-                    shutil.copytree(hooks_dir, dest_hooks, dirs_exist_ok=True)
-                self.record("hooks-config", str(hooks_dir), str(dest_hooks), "archived",
-                            "Workspace hooks directory archived")
-                break
+        hooks_dir = self.source_candidate("workspace/hooks", "workspace.default/hooks")
+        if hooks_dir and hooks_dir.is_dir():
+            dest_hooks = self.archive_dir / "workspace-hooks" if self.archive_dir else Path("archive/workspace-hooks")
+            if self.execute and self.archive_dir:
+                shutil.copytree(hooks_dir, dest_hooks, dirs_exist_ok=True)
+            self.record("hooks-config", str(hooks_dir), str(dest_hooks), "archived",
+                        "Workspace hooks directory archived")
 
     # ── Agent config ──────────────────────────────────────────
     def migrate_agent_config(self, config: Optional[Dict[str, Any]] = None) -> None:

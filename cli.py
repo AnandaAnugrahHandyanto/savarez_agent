@@ -2399,6 +2399,39 @@ def _looks_like_slash_command(text: str) -> bool:
     return "/" not in first_word[1:]
 
 
+def _bare_command_hint(
+    text: str,
+    skill_commands: Optional[Dict[str, Any]] = None,
+) -> Optional[str]:
+    """Return a local hint when a bare token is an installed command name."""
+    if not isinstance(text, str):
+        return None
+
+    stripped = text.strip()
+    if not stripped or stripped.startswith("/") or len(stripped.split()) != 1:
+        return None
+
+    token = stripped.lower().replace("_", "-")
+    if not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", token):
+        return None
+
+    slash_key = f"/{token}"
+    try:
+        from hermes_cli.commands import COMMANDS
+        known_command = slash_key in COMMANDS
+    except Exception:
+        known_command = False
+
+    known_skills = skill_commands if skill_commands is not None else _skill_commands
+    if not known_command and slash_key not in (known_skills or {}):
+        return None
+
+    return (
+        "That looks like a Hermes command or skill name. "
+        "Commands start with `/`; type `/help` to browse available commands."
+    )
+
+
 # ============================================================================
 # Skill Slash Commands — dynamic commands generated from installed skills
 # ============================================================================
@@ -13688,6 +13721,12 @@ class HermesCLI:
                             if app.is_running:
                                 app.exit()
                         continue
+
+                    if not _file_drop and not submit_images and isinstance(user_input, str):
+                        bare_hint = _bare_command_hint(user_input)
+                        if bare_hint:
+                            _cprint(f"  {_DIM}{bare_hint}{_RST}")
+                            continue
                     
                     # Expand paste references back to full content
                     _paste_ref_re = re.compile(r'\[Pasted text #\d+: \d+ lines \u2192 (.+?)\]')

@@ -1,6 +1,6 @@
 """Tests for slash command prefix matching in HermesCLI.process_command."""
 from unittest.mock import MagicMock, patch
-from cli import HermesCLI
+from cli import HermesCLI, _bare_command_hint
 
 
 def _make_cli():
@@ -100,12 +100,38 @@ class TestSlashCommandPrefixMatching:
         cli_obj.console.print = lambda *a, **kw: printed.append(str(a))
 
         import cli as cli_mod
-        with patch.object(cli_mod, '_skill_commands', fake_skill):
+        with patch.object(cli_mod, '_skill_commands', fake_skill), \
+             patch("cli.build_skill_invocation_message", return_value="skill msg"):
             cli_obj.process_command("/test-skill-xy")
 
         # Should NOT show "Unknown command" — should have dispatched or attempted skill
         unknown = any("Unknown command" in p for p in printed)
         assert not unknown, f"Expected skill prefix to match, got: {printed}"
+        cli_obj._pending_input.put.assert_called_once_with("skill msg")
+
+
+class TestBareCommandHint:
+    def test_hints_for_bare_builtin_command(self):
+        hint = _bare_command_hint("help", skill_commands={})
+        assert hint is not None
+        assert "Commands start with `/`" in hint
+
+    def test_hints_for_bare_skill_command(self):
+        hint = _bare_command_hint(
+            "godmode",
+            skill_commands={"/godmode": {"name": "godmode"}},
+        )
+        assert hint is not None
+        assert "Commands start with `/`" in hint
+
+    def test_does_not_hint_for_normal_chat(self):
+        assert _bare_command_hint(
+            "help me debug",
+            skill_commands={"/help-me-debug": {}},
+        ) is None
+
+    def test_does_not_hint_for_explicit_slash_command(self):
+        assert _bare_command_hint("/help", skill_commands={}) is None
 
     def test_ambiguous_between_builtin_and_skill(self):
         """Ambiguous prefix spanning builtin + skill commands shows suggestions."""

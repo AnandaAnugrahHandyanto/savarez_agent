@@ -9,6 +9,7 @@
 # All Hermes shortcuts land in:  %USERPROFILE%\Desktop\Hermes Agent\
 # Optional -DesktopRoot: one explorer shortcut on the Desktop root that opens that folder.
 # Legacy .lnk files on the Desktop root (and optional public desktop) are removed.
+# Legacy OpenClaw/Hakua root shortcuts are moved under Hermes Agent\Legacy OpenClaw.
 #
 # Console shortcuts use cmd.exe /k with pause-on-error so tracebacks stay visible.
 
@@ -19,6 +20,7 @@ param(
     [switch]$CreateVenv,
     [switch]$RecreateSo8tLlamaShortcut,
     [switch]$KeepLegacyDesktopRootShortcuts,
+    [switch]$KeepLegacyOpenClawRootShortcuts,
     [switch]$DesktopRoot
 )
 
@@ -34,6 +36,13 @@ $HermesShortcutNames = @(
     "Hermes Config (.hermes).lnk",
     "Hermes Stack.lnk",
     "Hermes Hypura Stack.lnk"
+)
+
+# Legacy OpenClaw launchers are still useful, but should not live on the
+# Desktop root once Hermes owns the top-level shortcut surface.
+$LegacyOpenClawShortcutNames = @(
+    "OpenClaw.lnk",
+    "Hakua-Sovereign-Manifestation.lnk"
 )
 
 function Get-RepoRoot {
@@ -256,6 +265,43 @@ function Remove-StaleHermesShortcuts {
     return $removed
 }
 
+function Move-LegacyOpenClawShortcuts {
+    param(
+        [string[]]$SearchRoots,
+        [string]$ShortcutDir
+    )
+
+    $rows = @()
+    $legacyDir = Join-Path $ShortcutDir "Legacy OpenClaw"
+
+    foreach ($root in $SearchRoots) {
+        if (-not (Test-Path -LiteralPath $root)) { continue }
+
+        foreach ($name in $LegacyOpenClawShortcutNames) {
+            $source = Join-Path $root $name
+            if (-not (Test-Path -LiteralPath $source)) { continue }
+
+            if (-not (Test-Path -LiteralPath $legacyDir)) {
+                New-Item -ItemType Directory -Path $legacyDir -Force | Out-Null
+            }
+
+            $destination = Join-Path $legacyDir $name
+            if (Test-Path -LiteralPath $destination) {
+                Remove-Item -LiteralPath $destination -Force
+            }
+
+            Move-Item -LiteralPath $source -Destination $destination -Force
+            $rows += [PSCustomObject]@{
+                Path       = $source
+                Status     = "moved-legacy-openclaw"
+                TargetPath = $destination
+            }
+        }
+    }
+
+    return $rows
+}
+
 function Ensure-So8tLlamaShortcut {
     param(
         [string]$Desktop,
@@ -317,6 +363,11 @@ if (-not $KeepLegacyDesktopRootShortcuts) {
     $removed = Remove-StaleHermesShortcuts -SearchRoots $searchRoots -ShortcutDir $shortcutDir
 }
 
+$legacyOpenClawMoved = @()
+if (-not $KeepLegacyOpenClawRootShortcuts) {
+    $legacyOpenClawMoved = Move-LegacyOpenClawShortcuts -SearchRoots $searchRoots -ShortcutDir $shortcutDir
+}
+
 $definitions = @(
     @{
         Name        = "Hermes Agent CLI.lnk"
@@ -362,6 +413,10 @@ if ($removed.Count -gt 0) {
     foreach ($r in $removed) {
         $results += [PSCustomObject]@{ Path = $r; Status = "removed-stale" }
     }
+}
+
+if ($legacyOpenClawMoved.Count -gt 0) {
+    $results += $legacyOpenClawMoved
 }
 
 if ($venvStatus) {
