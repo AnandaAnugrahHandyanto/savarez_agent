@@ -289,6 +289,84 @@ class TestCaptureResponse:
 
 
 # ---------------------------------------------------------------------------
+# cua-driver backend window selection
+# ---------------------------------------------------------------------------
+
+class TestCuaDriverBackendWindowSelection:
+    def test_capture_lists_all_windows_and_prefers_large_titled_app_window(self):
+        from tools.computer_use.cua_backend import CuaDriverBackend
+
+        class FakeSession:
+            def __init__(self):
+                self.calls = []
+
+            def call_tool(self, name, args):
+                self.calls.append((name, args))
+                if name == "list_windows":
+                    return {
+                        "data": None,
+                        "images": [],
+                        "structuredContent": {
+                            "windows": [
+                                {
+                                    "app_name": "Google Chrome",
+                                    "pid": 100,
+                                    "window_id": 1,
+                                    "is_on_screen": True,
+                                    "title": "",
+                                    "z_index": 0,
+                                    "bounds": {"width": 1, "height": 1},
+                                },
+                                {
+                                    "app_name": "Google Chrome",
+                                    "pid": 100,
+                                    "window_id": 2,
+                                    "is_on_screen": False,
+                                    "title": "JDI Reports - Google Chrome",
+                                    "z_index": 10,
+                                    "bounds": {"width": 1440, "height": 900},
+                                },
+                                {
+                                    "app_name": "Safari",
+                                    "pid": 200,
+                                    "window_id": 3,
+                                    "is_on_screen": True,
+                                    "title": "Frontmost unrelated app",
+                                    "z_index": -1,
+                                    "bounds": {"width": 1200, "height": 800},
+                                },
+                            ]
+                        },
+                    }
+                if name == "get_window_state":
+                    return {
+                        "data": "✅ Google Chrome — 0 elements\nAXWindow \"JDI Reports - Google Chrome\"",
+                        "images": [],
+                        "structuredContent": {},
+                    }
+                raise AssertionError(f"unexpected tool: {name}")
+
+        backend = object.__new__(CuaDriverBackend)
+        session = FakeSession()
+        backend_any: Any = backend
+        backend_any._session = session
+        backend_any._active_pid = None
+        backend_any._active_window_id = None
+
+        result = backend.capture(mode="ax", app="Chrome")
+
+        assert session.calls[0] == ("list_windows", {"on_screen_only": False})
+        assert backend._active_pid == 100
+        assert backend._active_window_id == 2
+        assert session.calls[1] == (
+            "get_window_state",
+            {"pid": 100, "window_id": 2},
+        )
+        assert result.app == "Google Chrome"
+        assert result.window_title == "JDI Reports - Google Chrome"
+
+
+# ---------------------------------------------------------------------------
 # Anthropic adapter: multimodal tool-result conversion
 # ---------------------------------------------------------------------------
 

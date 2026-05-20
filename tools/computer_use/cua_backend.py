@@ -348,8 +348,12 @@ class CuaDriverBackend(ComputerUseBackend):
         Maps hermes `capture(mode, app)` → cua-driver `list_windows` +
         `get_window_state` (ax/som) or `screenshot` (vision).
         """
-        # Step 1: enumerate on-screen windows to find target pid/window_id.
-        lw_out = self._session.call_tool("list_windows", {"on_screen_only": True})
+        # Step 1: enumerate windows to find target pid/window_id.
+        # Use all windows, not only the current Space. cua-driver can target
+        # background windows on other Spaces; restricting to on-screen/current
+        # Space silently falls back to the frontmost unrelated app when the
+        # requested `app` is open elsewhere (e.g. Chrome in another Space).
+        lw_out = self._session.call_tool("list_windows", {"on_screen_only": False})
 
         # Prefer structuredContent.windows (MCP 2024-11-05+); fall back to
         # text-line parsing for older cua-driver builds.
@@ -364,6 +368,7 @@ class CuaDriverBackend(ComputerUseBackend):
                     "off_screen": not w.get("is_on_screen", True),
                     "title": w.get("title", ""),
                     "z_index": w.get("z_index", 0),
+                    "bounds": w.get("bounds") or {},
                 }
                 for w in raw_windows
             ]
@@ -378,14 +383,32 @@ class CuaDriverBackend(ComputerUseBackend):
                                  elements=[], app="", window_title="", png_bytes_len=0)
 
         # Filter by app name (case-insensitive substring) if requested.
+        app_filtered = False
         if app:
             app_lower = app.lower()
             filtered = [w for w in windows if app_lower in w["app_name"].lower()]
             if filtered:
                 windows = filtered
+                app_filtered = True
 
-        # Pick first on-screen window (sorted by z_index / z-order above).
-        target = next((w for w in windows if not w["off_screen"]), windows[0])
+        # Pick the target window. For an explicit app on another Space,
+        # cua-driver reports many untitled Chrome/Safari helper windows as
+        # off-screen; prefer titled, large content windows over menu bars and
+        # 1x1/helper windows. Without an app filter, keep the z-order/frontmost
+        # behavior.
+        if app_filtered:
+            def _target_score(w: Dict[str, Any]) -> Tuple[int, int, int, int]:
+                b = w.get("bounds") or {}
+                area = int(b.get("width", 0) or 0) * int(b.get("height", 0) or 0)
+                return (
+                    1 if w.get("title") else 0,
+                    1 if not w.get("off_screen") else 0,
+                    area,
+                    -int(w.get("z_index", 0) or 0),
+                )
+            target = max(windows, key=_target_score)
+        else:
+            target = next((w for w in windows if not w["off_screen"]), windows[0])
         self._active_pid = target["pid"]
         self._active_window_id = target["window_id"]
         app_name = target["app_name"]
