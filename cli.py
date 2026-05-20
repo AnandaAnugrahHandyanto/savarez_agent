@@ -42,7 +42,7 @@ from urllib.parse import unquote, urlparse
 from contextlib import contextmanager
 from pathlib import Path
 from datetime import datetime
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, cast
 
 logger = logging.getLogger(__name__)
 
@@ -301,7 +301,7 @@ def load_cli_config() -> Dict[str, Any]:
         config_path = project_config_path
 
     # Default configuration
-    defaults = {
+    defaults: Dict[str, Any] = {
         "model": {
             "default": "",
             "base_url": "",
@@ -404,6 +404,7 @@ def load_cli_config() -> Dict[str, Any]:
     # When using defaults (no config file / no terminal section), we should NOT
     # overwrite env vars that were already set by .env -- only a user's config
     # file should be authoritative.
+    default_terminal_config = defaults["terminal"].copy()
     _file_has_terminal_config = False
 
     # Load from file if exists
@@ -476,10 +477,13 @@ def load_cli_config() -> Dict[str, Any]:
 
     # Expand ${ENV_VAR} references in config values before bridging to env vars.
     from hermes_cli.config import _expand_env_vars
-    defaults = _expand_env_vars(defaults)
+    defaults = cast(Dict[str, Any], _expand_env_vars(defaults))
 
     # Apply terminal config to environment variables (so terminal_tool picks them up)
     terminal_config = defaults.get("terminal", {})
+    if not isinstance(terminal_config, dict):
+        terminal_config = default_terminal_config.copy()
+        defaults["terminal"] = terminal_config
     
     # Normalize config key: the new config system (hermes_cli/config.py) and all
     # documentation use "backend", the legacy cli-config.yaml uses "env_type".

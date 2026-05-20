@@ -17,6 +17,7 @@ argparse → cmd_chat → cli.main() → HermesCLI → AIAgent call chain.
 from __future__ import annotations
 
 import os
+import sys
 import textwrap
 import importlib
 
@@ -105,6 +106,24 @@ class TestIgnoreUserConfigEnvGate:
 
         # "true" != "1", so user config IS loaded
         assert cfg["model"]["default"] == "anthropic/claude-sonnet-4.6"
+
+    def test_null_terminal_section_falls_back_to_defaults(self, tmp_path, monkeypatch):
+        """YAML ``terminal: null`` must not break CLI config loading."""
+        (tmp_path / "config.yaml").write_text("terminal: null\n", encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        previous_cli = sys.modules.pop("cli", None)
+
+        try:
+            cli = importlib.import_module("cli")
+            monkeypatch.setattr(cli, "_hermes_home", tmp_path)
+            cfg = cli.load_cli_config()
+        finally:
+            sys.modules.pop("cli", None)
+            if previous_cli is not None:
+                sys.modules["cli"] = previous_cli
+
+        assert cfg["terminal"]["env_type"] == "local"
+        assert cfg["terminal"]["cwd"]
 
 
 class TestIgnoreRulesEnvGate:

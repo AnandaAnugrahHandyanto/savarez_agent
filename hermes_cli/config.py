@@ -5039,6 +5039,8 @@ def show_config():
     print()
     print(color("◆ Terminal", Colors.CYAN, Colors.BOLD))
     terminal = config.get('terminal', {})
+    if not isinstance(terminal, dict):
+        terminal = DEFAULT_CONFIG.get('terminal', {})
     print(f"  Backend:      {terminal.get('backend', 'local')}")
     print(f"  Working dir:  {terminal.get('cwd', '.')}")
     print(f"  Timeout:      {terminal.get('timeout', 60)}s")

@@ -40,6 +40,20 @@ def test_show_config_marks_placeholders(tmp_path, capsys):
     assert "hermes config set <key> <value>" in out
 
 
+def test_show_config_handles_null_terminal_section(tmp_path, capsys):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("terminal: null\n", encoding="utf-8")
+
+    with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+        show_config()
+
+    out = capsys.readouterr().out
+    assert "◆ Terminal" in out
+    assert "Backend:" in out
+    assert "local" in out
+    assert "Working dir:" in out
+
+
 def test_setup_summary_marks_placeholders(tmp_path, capsys):
     with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
         _print_setup_summary({"tts": {"provider": "edge"}}, tmp_path)
