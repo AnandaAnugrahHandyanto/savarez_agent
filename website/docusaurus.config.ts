@@ -2,6 +2,8 @@ import {themes as prismThemes} from 'prism-react-renderer';
 import type {Config} from '@docusaurus/types';
 import type * as Preset from '@docusaurus/preset-classic';
 
+const strictLinks = process.env.HERMES_DOCS_STRICT_LINKS === '1';
+
 const config: Config = {
   title: 'Hermes Agent',
   tagline: 'The self-improving AI agent',
@@ -13,12 +15,13 @@ const config: Config = {
   organizationName: 'NousResearch',
   projectName: 'hermes-agent',
 
-  onBrokenLinks: 'warn',
+  onBrokenLinks: strictLinks ? 'throw' : 'warn',
+  onBrokenAnchors: strictLinks ? 'throw' : 'warn',
 
   markdown: {
     mermaid: true,
     hooks: {
-      onBrokenMarkdownLinks: 'warn',
+      onBrokenMarkdownLinks: strictLinks ? 'throw' : 'warn',
     },
   },
 
