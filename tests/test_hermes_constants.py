@@ -9,6 +9,7 @@ import pytest
 import hermes_constants
 from hermes_constants import (
     VALID_REASONING_EFFORTS,
+    display_hermes_home,
     get_default_hermes_root,
     is_container,
     parse_reasoning_effort,
@@ -171,3 +172,33 @@ class TestParseReasoningEffort:
         """
         documented = {"minimal", "low", "medium", "high", "xhigh"}
         assert documented.issubset(set(VALID_REASONING_EFFORTS))
+
+
+class TestDisplayHermesHome:
+    """Tests for display_hermes_home() — must produce strings that anyone
+    reading them can resolve correctly without knowing how HERMES_HOME and
+    the unix user's home dir relate. ``~`` always means ``$HOME`` to the
+    reader, so the shorthand is only safe when the rendered string starts
+    with ``~/`` followed by a path the reader can actually find under
+    ``$HOME``.
+    """
+
+    def test_default_install_uses_shorthand(self, tmp_path, monkeypatch):
+        """Standard install (HERMES_HOME under HOME): ``~/.hermes`` shorthand."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        assert display_hermes_home() == "~/.hermes"
+
+    def test_hermes_home_equals_user_home_returns_absolute(self, tmp_path, monkeypatch):
+        """Regression: when HERMES_HOME equals ``Path.home()`` (the official
+        Docker image's ``useradd -d /opt/data`` + ``ENV HERMES_HOME=/opt/data``
+        layout), the old implementation returned ``~/.``. Concatenated into
+        a description like ``Relative paths resolve under ~/./scripts/.``,
+        readers expand ``~`` to their own ``$HOME`` and look for files in
+        the wrong place. Must return the absolute path so the result is
+        unambiguous."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        result = display_hermes_home()
+        assert result == str(tmp_path)
+        assert "~" not in result
