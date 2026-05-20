@@ -2891,6 +2891,91 @@ class TelegramAdapter(BasePlatformAdapter):
             # Catch-all (e.g. page counter button "mx:noop")
             await query.answer()
 
+    def _build_callback_event(self, query: Any, data: str) -> Optional[MessageEvent]:
+        """Convert an unclaimed Telegram inline-button click into a text event.
+
+        Hermes-owned callback prefixes (model picker, approvals, clarify,
+        update prompts, etc.) are handled directly in ``_handle_callback_query``.
+        Everything else can be treated like the user typed the callback payload,
+        which lets profile-level bots build simple button-driven menus without
+        each button needing a bespoke Telegram callback handler.
+        """
+        message = getattr(query, "message", None)
+        user = getattr(query, "from_user", None)
+        if not message or not user:
+            return None
+
+        chat = getattr(message, "chat", None)
+        if not chat:
+            return None
+
+        chat_type = "dm"
+        chat_type_value = getattr(getattr(chat, "type", None), "value", getattr(chat, "type", None))
+        if chat_type_value in {ChatType.GROUP, ChatType.SUPERGROUP, "group", "supergroup"}:
+            chat_type = "group"
+        elif chat_type_value in {ChatType.CHANNEL, "channel"}:
+            chat_type = "channel"
+
+        thread_id_raw = getattr(message, "message_thread_id", None)
+        thread_id_str = str(thread_id_raw) if thread_id_raw else None
+        chat_topic = None
+        topic_skill = None
+
+        if chat_type == "dm" and thread_id_str:
+            topic_info = self._get_dm_topic_info(str(chat.id), thread_id_str)
+            if topic_info:
+                chat_topic = topic_info.get("name")
+                topic_skill = topic_info.get("skill")
+        elif chat_type == "group" and thread_id_str:
+            group_topics_config: list = self.config.extra.get("group_topics", [])
+            for chat_entry in group_topics_config:
+                if str(chat_entry.get("chat_id", "")) == str(chat.id):
+                    for topic in chat_entry.get("topics", []):
+                        tid = topic.get("thread_id")
+                        if tid is not None and str(tid) == thread_id_str:
+                            chat_topic = topic.get("name")
+                            topic_skill = topic.get("skill")
+                            break
+                    break
+
+        chat_name = getattr(chat, "title", None) or (
+            getattr(chat, "full_name", None) if hasattr(chat, "full_name") else None
+        )
+        message_id = str(getattr(message, "message_id", "")) or None
+        source = self.build_source(
+            chat_id=str(chat.id),
+            chat_name=chat_name,
+            chat_type=chat_type,
+            user_id=str(user.id),
+            user_name=getattr(user, "full_name", None),
+            thread_id=thread_id_str,
+            chat_topic=chat_topic,
+            message_id=message_id,
+        )
+
+        from gateway.platforms.base import resolve_channel_prompt
+        chat_id_str = str(chat.id)
+        channel_prompt = resolve_channel_prompt(
+            self.config.extra,
+            thread_id_str or chat_id_str,
+            chat_id_str if thread_id_str else None,
+        )
+
+        reply_text = getattr(message, "text", None) or getattr(message, "caption", None) or None
+
+        return MessageEvent(
+            text=data,
+            message_type=MessageType.TEXT,
+            source=source,
+            raw_message=message,
+            message_id=message_id,
+            reply_to_message_id=message_id,
+            reply_to_text=reply_text,
+            auto_skill=topic_skill,
+            channel_prompt=channel_prompt,
+            timestamp=getattr(message, "date", None),
+        )
+
     async def _handle_callback_query(
         self, update: "Update", context: "ContextTypes.DEFAULT_TYPE"
     ) -> None:
@@ -3202,42 +3287,54 @@ class TelegramAdapter(BasePlatformAdapter):
             return
 
         # --- Update prompt callbacks ---
-        if not data.startswith("update_prompt:"):
+        if data.startswith("update_prompt:"):
+            answer = data.split(":", 1)[1]  # "y" or "n"
+            caller_id = str(getattr(query.from_user, "id", ""))
+            if not self._is_callback_user_authorized(
+                caller_id,
+                chat_id=query_chat_id,
+                chat_type=str(query_chat_type) if query_chat_type is not None else None,
+                thread_id=str(query_thread_id) if query_thread_id is not None else None,
+                user_name=query_user_name,
+            ):
+                await query.answer(text="⛔ You are not authorized to answer update prompts.")
+                return
+            await query.answer(text=f"Sent '{answer}' to the update process.")
+            # Edit the message to show the choice and remove buttons
+            label = "Yes" if answer == "y" else "No"
+            try:
+                await query.edit_message_text(
+                    text=self.format_message(f"⚕ Update prompt answered: *{label}*"),
+                    parse_mode=ParseMode.MARKDOWN_V2,
+                    reply_markup=None,
+                )
+            except Exception:
+                pass  # non-fatal if edit fails
+            # Write the response file
+            try:
+                from hermes_constants import get_hermes_home
+                home = get_hermes_home()
+                response_path = home / ".update_response"
+                tmp = response_path.with_suffix(".tmp")
+                tmp.write_text(answer)
+                tmp.replace(response_path)
+                logger.info("Telegram update prompt answered '%s' by user %s",
+                            answer, getattr(query.from_user, "id", "unknown"))
+            except Exception as exc:
+                logger.error("Failed to write update response from callback: %s", exc)
             return
-        answer = data.split(":", 1)[1]  # "y" or "n"
-        caller_id = str(getattr(query.from_user, "id", ""))
-        if not self._is_callback_user_authorized(
-            caller_id,
-            chat_id=query_chat_id,
-            chat_type=str(query_chat_type) if query_chat_type is not None else None,
-            thread_id=str(query_thread_id) if query_thread_id is not None else None,
-            user_name=query_user_name,
-        ):
-            await query.answer(text="⛔ You are not authorized to answer update prompts.")
-            return
-        await query.answer(text=f"Sent '{answer}' to the update process.")
-        # Edit the message to show the choice and remove buttons
-        label = "Yes" if answer == "y" else "No"
+
+        # --- Generic profile callbacks ---
+        event = self._build_callback_event(query, data)
         try:
-            await query.edit_message_text(
-                text=self.format_message(f"⚕ Update prompt answered: *{label}*"),
-                parse_mode=ParseMode.MARKDOWN_V2,
-                reply_markup=None,
-            )
+            await query.answer()
         except Exception:
-            pass  # non-fatal if edit fails
-        # Write the response file
-        try:
-            from hermes_constants import get_hermes_home
-            home = get_hermes_home()
-            response_path = home / ".update_response"
-            tmp = response_path.with_suffix(".tmp")
-            tmp.write_text(answer)
-            tmp.replace(response_path)
-            logger.info("Telegram update prompt answered '%s' by user %s",
-                        answer, getattr(query.from_user, "id", "unknown"))
-        except Exception as exc:
-            logger.error("Failed to write update response from callback: %s", exc)
+            pass
+        if not event:
+            logger.warning("Telegram callback missing message/user context; dropping data=%s", data)
+            return
+        logger.info("[%s] Routing Telegram callback as text event: %s", self.name, data)
+        await self.handle_message(event)
 
     # Maps `gt:<verb>` -> (script-name, extra-args, success-label, is_state).
     # Scripts live in ~/.hermes/scripts/gmail-triage/. `arg` from the callback

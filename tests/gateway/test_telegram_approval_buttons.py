@@ -589,3 +589,68 @@ class TestTelegramApprovalCallback:
         query.answer.assert_called_once()
         query.edit_message_text.assert_called_once()
         assert (tmp_path / ".update_response").read_text() == "n"
+
+    @pytest.mark.asyncio
+    async def test_generic_callback_routes_as_text_event(self):
+        """Unclaimed inline buttons should behave like user text input."""
+        adapter = _make_adapter()
+        adapter.handle_message = AsyncMock()
+
+        query = AsyncMock()
+        query.data = "/action"
+        query.message = MagicMock()
+        query.message.chat_id = 12345
+        query.message.chat.id = 12345
+        query.message.chat.type = "private"
+        query.message.chat.title = None
+        query.message.chat.full_name = "Bot Chat"
+        query.message.message_id = 777
+        query.message.message_thread_id = None
+        query.message.text = "Action inbox"
+        query.message.caption = None
+        query.message.date = MagicMock()
+        query.from_user = MagicMock()
+        query.from_user.id = 999
+        query.from_user.full_name = "Steve"
+        query.from_user.first_name = "Steve"
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+
+        update = MagicMock()
+        update.callback_query = query
+        context = MagicMock()
+
+        await adapter._handle_callback_query(update, context)
+
+        query.answer.assert_called_once()
+        query.edit_message_text.assert_not_called()
+        adapter.handle_message.assert_called_once()
+        event = adapter.handle_message.call_args.args[0]
+        assert event.text == "/action"
+        assert event.message_id == "777"
+        assert event.reply_to_message_id == "777"
+        assert event.reply_to_text == "Action inbox"
+        assert event.source.chat_id == "12345"
+        assert event.source.user_id == "999"
+        assert event.source.message_id == "777"
+
+    @pytest.mark.asyncio
+    async def test_generic_callback_without_context_is_acked_and_dropped(self):
+        """Missing callback context should stop Telegram's spinner, not crash."""
+        adapter = _make_adapter()
+        adapter.handle_message = AsyncMock()
+
+        query = AsyncMock()
+        query.data = "/action"
+        query.message = None
+        query.from_user = MagicMock()
+        query.answer = AsyncMock()
+
+        update = MagicMock()
+        update.callback_query = query
+        context = MagicMock()
+
+        await adapter._handle_callback_query(update, context)
+
+        query.answer.assert_called_once()
+        adapter.handle_message.assert_not_called()

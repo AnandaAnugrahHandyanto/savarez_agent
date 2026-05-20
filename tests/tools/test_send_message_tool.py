@@ -52,7 +52,18 @@ def _install_telegram_mock(monkeypatch, bot):
     # MessageEntity needed by #27865 mention-detection path; tests don't
     # inspect it but the import must succeed.
     _MessageEntity = lambda **_kw: SimpleNamespace(**_kw)
-    telegram_mod = SimpleNamespace(Bot=lambda token: bot, MessageEntity=_MessageEntity, constants=constants_mod)
+    _InlineKeyboardButton = lambda text, callback_data: SimpleNamespace(
+        text=text,
+        callback_data=callback_data,
+    )
+    _InlineKeyboardMarkup = lambda rows: SimpleNamespace(inline_keyboard=rows)
+    telegram_mod = SimpleNamespace(
+        Bot=lambda token: bot,
+        MessageEntity=_MessageEntity,
+        InlineKeyboardButton=_InlineKeyboardButton,
+        InlineKeyboardMarkup=_InlineKeyboardMarkup,
+        constants=constants_mod,
+    )
     monkeypatch.setitem(sys.modules, "telegram", telegram_mod)
     monkeypatch.setitem(sys.modules, "telegram.constants", constants_mod)
 
@@ -321,6 +332,38 @@ class TestSendMessageTool:
         assert leaked not in result["error"]
         assert "access_token=***" in result["error"]
 
+    def test_buttons_are_passed_to_platform_sender(self):
+        config, telegram_cfg = _make_config()
+        buttons = [[{"text": "Open", "callback_data": "/open"}]]
+
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+             patch("gateway.mirror.mirror_to_session", return_value=True):
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "send",
+                        "target": "telegram:12345",
+                        "message": "hello",
+                        "buttons": buttons,
+                    }
+                )
+            )
+
+        assert result["success"] is True
+        send_mock.assert_awaited_once_with(
+            Platform.TELEGRAM,
+            telegram_cfg,
+            "12345",
+            "hello",
+            thread_id=None,
+            media_files=[],
+            force_document=False,
+            buttons=buttons,
+        )
+
 
 class TestSendTelegramMediaDelivery:
     def test_sends_text_then_photo_for_media_tag(self, tmp_path, monkeypatch):
@@ -428,6 +471,38 @@ class TestSendTelegramMediaDelivery:
         assert "error" in result
         assert "No deliverable text or media remained" in result["error"]
         bot.send_message.assert_not_awaited()
+
+    def test_attaches_inline_keyboard_to_text_send(self, monkeypatch):
+        bot = MagicMock()
+        bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=3))
+        bot.send_photo = AsyncMock()
+        bot.send_video = AsyncMock()
+        bot.send_voice = AsyncMock()
+        bot.send_audio = AsyncMock()
+        bot.send_document = AsyncMock()
+        _install_telegram_mock(monkeypatch, bot)
+
+        result = asyncio.run(
+            _send_telegram(
+                "token",
+                "12345",
+                "Choose one",
+                buttons=[
+                    [
+                        {"text": "A", "callback_data": "choice:a"},
+                        {"text": "B", "callback_data": "choice:b"},
+                    ]
+                ],
+            )
+        )
+
+        assert result["success"] is True
+        kwargs = bot.send_message.await_args.kwargs
+        keyboard = kwargs["reply_markup"].inline_keyboard
+        assert keyboard[0][0].text == "A"
+        assert keyboard[0][0].callback_data == "choice:a"
+        assert keyboard[0][1].text == "B"
+        assert keyboard[0][1].callback_data == "choice:b"
 
 
 # ---------------------------------------------------------------------------
@@ -564,7 +639,7 @@ class TestSendToPlatformChunking:
 
         sent_calls = []
 
-        async def fake_send(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False, force_document=False):
+        async def fake_send(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False, force_document=False, buttons=None):
             sent_calls.append(media_files or [])
             return {"success": True, "platform": "telegram", "chat_id": chat_id, "message_id": str(len(sent_calls))}
 
@@ -2569,4 +2644,3 @@ class TestSendTelegramThreadNotFoundRetry:
         finally:
             if media_path and os.path.exists(media_path):
                 os.unlink(media_path)
-
