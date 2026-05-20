@@ -9,6 +9,7 @@ from hermes_integrations.ouroboros_upstream.bigbang.interview import (
     InterviewRound,
     InterviewState,
     InterviewStatus,
+    build_toolless_question_prompt,
 )
 from hermes_integrations.ouroboros_upstream.bigbang.seed_generator import SeedGenerator
 from hermes_integrations.ouroboros_upstream.auto.seed_repairer import SeedRepairer
@@ -63,6 +64,29 @@ def record_answer(state_payload: dict[str, Any] | None, answer: str, next_questi
     elif next_question is not None:
         state.rounds.append(InterviewRound(round_number=state.current_round_number, question=str(next_question.get("text") or "")))
     return state.model_dump(mode="json")
+
+
+def build_interview_question_contract(state_payload: dict[str, Any] | None, values: dict[str, Any], review: dict[str, Any]) -> dict[str, Any]:
+    """Return the vendored upstream question-generation contract for Hermes.
+
+    This does not call an LLM inside the gateway. It proves the session is now
+    carrying the upstream InterviewEngine prompt/round/brownfield contract, so a
+    Hermes agent or future approved provider bridge can generate the question as
+    an adapter-equivalent to upstream `ask_next_question`.
+    """
+
+    if isinstance(state_payload, dict):
+        state = InterviewState.model_validate(state_payload)
+    else:
+        state = InterviewState(
+            interview_id="unknown",
+            initial_context=str(values.get("goal") or ""),
+            is_brownfield=bool(__import__('re').search(r"brownfield|gateway|repo|runtime|existing", " ".join([str(values.get('goal') or ''), str(values.get('context') or '')]), __import__('re').IGNORECASE)),
+            codebase_context=str(values.get("context") or ""),
+        )
+    if review and state.ambiguity_score is None:
+        state.store_ambiguity(score=float(review.get("ambiguity_score", 1.0)), breakdown=review)
+    return build_toolless_question_prompt(state)
 
 
 def _ontology(values: dict[str, Any]) -> OntologySchema:

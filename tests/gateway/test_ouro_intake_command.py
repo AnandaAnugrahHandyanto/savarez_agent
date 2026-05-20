@@ -797,3 +797,49 @@ EXISTING_DEPENDENCIES: Hermes gateway"""
     assert seed_contract["seed_extraction"]["source"] == "hermes_agent_structured_extraction"
     assert seed_contract["seed_extraction"]["provider_call"] is False
     assert seed_contract["upstream_seed"]["goal"] == "Gateway Hermes extraction"
+
+
+def test_bo062_records_vendored_upstream_question_prompt_contract(hermes_home):
+    from gateway.ouro_intake import handle_ouro_intake_command
+
+    started = handle_ouro_intake_command(
+        'goal:"Improve existing gateway intake" project:bo tenant:kanban context:"Hermes gateway existing runtime"',
+        actor="tester",
+    )
+
+    sessions = json.loads((hermes_home / "ouro_intake_sessions.json").read_text())
+    contract = sessions[started.session_id]["upstream_question_contract"]
+    prompt = contract["system_prompt"]
+    assert contract["source"] == "vendored_q00_ouroboros_interview_prompt_contract"
+    assert contract["requires_provider_question"] is True
+    assert sessions[started.session_id]["upstream_question_provider_call"] is False
+    assert sessions[started.session_id]["upstream_question_adapter"] == "hermes_gateway_safe_no_provider_call"
+    assert "You are an expert requirements engineer conducting a Socratic interview" in prompt
+    assert "Your ONLY job is to ask questions that reduce ambiguity" in prompt
+    assert "Answer prefixes the caller may use" in prompt
+    assert "This is a BROWNFIELD project" in prompt
+    assert "Perspective Panel" in prompt
+
+
+def test_bo062_updates_upstream_question_contract_after_answer(hermes_home):
+    from gateway.ouro_intake import handle_ouro_intake_command
+
+    started = handle_ouro_intake_command("오토파일럿 만들고싶어", actor="tester")
+    first = json.loads((hermes_home / "ouro_intake_sessions.json").read_text())[started.session_id]
+    first_round = first["upstream_question_contract"]["round_number"]
+
+    refined = handle_ouro_intake_command(
+        f'answer session:{started.session_id} answer:"A와 B에 가까워"',
+        actor="tester",
+    )
+    assert refined.action == "refine_pending"
+    approved = handle_ouro_intake_command(f"answer session:{started.session_id} answer:승인", actor="tester")
+    assert approved.action == "interview_updated"
+
+    sessions = json.loads((hermes_home / "ouro_intake_sessions.json").read_text())
+    session = sessions[started.session_id]
+    contract = session["upstream_question_contract"]
+    assert contract["round_number"] > first_round
+    assert "Current Ambiguity Snapshot" in contract["system_prompt"]
+    assert "Weakest area" in contract["system_prompt"]
+    assert session["upstream_question_provider_call"] is False

@@ -22,6 +22,7 @@ from hermes_constants import get_hermes_home
 from hermes_cli import kanban_db as kb
 from hermes_cli.kanban_native_admission import next_public_id, normalize_namespace
 from hermes_integrations.ouroboros_upstream.adapter import (
+    build_interview_question_contract as _vendored_ouroboros_question_contract,
     build_seed_dict as _vendored_ouroboros_seed_dict,
     record_answer as _vendored_ouroboros_record_answer,
     review_and_repair_seed_dict as _vendored_ouroboros_review_and_repair_seed_dict,
@@ -638,6 +639,18 @@ def _seed_review(values: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _refresh_upstream_question_contract(session: dict[str, Any], values: dict[str, Any], review: dict[str, Any]) -> None:
+    """Persist the vendored upstream InterviewEngine prompt contract for this turn."""
+
+    session["upstream_question_contract"] = _vendored_ouroboros_question_contract(
+        session.get("upstream_interview_state"),
+        values,
+        review,
+    )
+    session["upstream_question_provider_call"] = False
+    session["upstream_question_adapter"] = "hermes_gateway_safe_no_provider_call"
+
+
 
 def _detect_language(values: dict[str, Any]) -> str:
     text = " ".join(str(values.get(key) or "") for key in ("goal", "context", "scope", "answer"))
@@ -996,6 +1009,12 @@ def _start_interview(raw_args: str, *, actor: str | None, origin: dict[str, Any]
     sessions = _load_sessions()
     status = "restate_pending" if review["mode"] == "seed_ready_for_admission" else "interviewing"
     question = _hermes_gateway_fallback_question(values, review)
+    upstream_interview_state = _vendored_ouroboros_start_state(
+        session_id,
+        values,
+        question if status == "interviewing" else {"text": _restate_goal(values)},
+    )
+    upstream_question_contract = _vendored_ouroboros_question_contract(upstream_interview_state, values, review)
     sessions[session_id] = {
         "session_id": session_id,
         "created_at": int(time.time()),
@@ -1005,12 +1024,11 @@ def _start_interview(raw_args: str, *, actor: str | None, origin: dict[str, Any]
         "turns": [],
         "rounds": [],
         "last_question": question if status == "interviewing" else {"id": "restate_confirmation", "track": "restate", "text": _restate_goal(values), "options": []},
-        "upstream_interview_state": _vendored_ouroboros_start_state(
-            session_id,
-            values,
-            question if status == "interviewing" else {"text": _restate_goal(values)},
-        ),
+        "upstream_interview_state": upstream_interview_state,
         "upstream_interview_provider": "vendored_q00_ouroboros_subset",
+        "upstream_question_contract": upstream_question_contract,
+        "upstream_question_provider_call": False,
+        "upstream_question_adapter": "hermes_gateway_safe_no_provider_call",
         "track": question["track"] if status == "interviewing" else "restate",
         "language": _detect_language(values),
         "phase": status,
@@ -1119,6 +1137,7 @@ def _answer_interview(raw_args: str, *, actor: str | None) -> OuroIntakeResult:
                     ambiguity_score=review["ambiguity_score"],
                     ambiguity_breakdown=review,
                 )
+                _refresh_upstream_question_contract(session, values, review)
                 message = _format_restate(session_id, values, review)
             else:
                 question = _hermes_gateway_fallback_question(values, review, previous_track=(pending_question or {}).get("track"))
@@ -1133,6 +1152,7 @@ def _answer_interview(raw_args: str, *, actor: str | None) -> OuroIntakeResult:
                     ambiguity_score=review["ambiguity_score"],
                     ambiguity_breakdown=review,
                 )
+                _refresh_upstream_question_contract(session, values, review)
                 message = _format_next_question(session_id, review, question)
             sessions[session_id] = session
             _save_sessions(sessions)
@@ -1163,6 +1183,7 @@ def _answer_interview(raw_args: str, *, actor: str | None) -> OuroIntakeResult:
             ambiguity_breakdown=review,
             completed=True,
         )
+        _refresh_upstream_question_contract(session, values, review)
         session["updated_at"] = int(time.time())
         sessions[session_id] = session
         _save_sessions(sessions)
@@ -1227,6 +1248,7 @@ def _answer_interview(raw_args: str, *, actor: str | None) -> OuroIntakeResult:
             ambiguity_score=review["ambiguity_score"],
             ambiguity_breakdown=review,
         )
+        _refresh_upstream_question_contract(session, values, review)
         message = _format_restate(session_id, values, review)
     else:
         question = _hermes_gateway_fallback_question(values, review, previous_track=(previous_question or {}).get("track"))
@@ -1241,6 +1263,7 @@ def _answer_interview(raw_args: str, *, actor: str | None) -> OuroIntakeResult:
             ambiguity_score=review["ambiguity_score"],
             ambiguity_breakdown=review,
         )
+        _refresh_upstream_question_contract(session, values, review)
         message = _format_next_question(session_id, review, question)
     sessions[session_id] = session
     _save_sessions(sessions)
