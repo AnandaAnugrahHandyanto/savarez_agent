@@ -1718,6 +1718,108 @@ def run_doctor(args):
             [f"Azure Foundry Entra: {err}. {hint}"],
         )
 
+    def _probe_jina() -> _ConnectivityResult:
+        """Check Jina API connectivity (s.jina.ai search + r.jina.ai extract)."""
+        key = os.getenv("JINA_API_KEY", "").strip()
+        if not key:
+            return _ConnectivityResult(
+                "Jina API",
+                [(color("⚠", Colors.YELLOW), "Jina API",
+                  color("(not configured)", Colors.DIM))],
+                [],
+            )
+        try:
+            import httpx
+            headers = {"Authorization": f"Bearer {key}"}
+            # Probe search endpoint (s.jina.ai) with a trivial query.
+            try:
+                r = httpx.post(
+                    "https://s.jina.ai/",
+                    headers=headers,
+                    content="test",
+                    params={"numResults": 1},
+                    timeout=10,
+                )
+                if r.status_code == 200:
+                    search_ok = True
+                    search_detail = ""
+                elif r.status_code == 401:
+                    search_ok = False
+                    search_detail = color("(invalid API key)", Colors.DIM)
+                elif r.status_code == 429:
+                    search_ok = False
+                    search_detail = color("(rate limited)", Colors.DIM)
+                else:
+                    search_ok = False
+                    search_detail = color(f"(HTTP {r.status_code})", Colors.DIM)
+            except Exception as e:
+                search_ok = False
+                search_detail = color(f"(search: {e})", Colors.DIM)
+
+            # Probe extract endpoint (r.jina.ai) with a dummy URL.
+            try:
+                r = httpx.get(
+                    "https://r.jina.ai/https://example.com",
+                    headers=headers,
+                    timeout=10,
+                )
+                # 200/403/404 are all "reachable" — Jina may block scraping
+                # but the endpoint itself is up. We only flag 401/429 as real issues.
+                if r.status_code == 401:
+                    extract_ok = False
+                    extract_detail = color("(invalid API key)", Colors.DIM)
+                elif r.status_code == 429:
+                    extract_ok = False
+                    extract_detail = color("(rate limited)", Colors.DIM)
+                else:
+                    extract_ok = True
+                    extract_detail = ""
+            except Exception as e:
+                extract_ok = False
+                extract_detail = color(f"(extract: {e})", Colors.DIM)
+
+            # Combine results.
+            if search_ok and extract_ok:
+                return _ConnectivityResult(
+                    "Jina API",
+                    [(color("✓", Colors.GREEN), "Jina API",
+                      color("(search + extract OK)", Colors.DIM))],
+                    [],
+                )
+            elif search_ok or extract_ok:
+                parts = []
+                if not search_ok:
+                    parts.append(f"search{search_detail}")
+                if not extract_ok:
+                    parts.append(f"extract{extract_detail}")
+                detail = ", ".join(parts)
+                return _ConnectivityResult(
+                    "Jina API",
+                    [(color("⚠", Colors.YELLOW), "Jina API",
+                      color(f"(partial: {detail})", Colors.DIM))],
+                    [],
+                )
+            else:
+                parts = []
+                if search_detail:
+                    parts.append(f"search{search_detail}")
+                if extract_detail:
+                    parts.append(f"extract{extract_detail}")
+                detail = ", ".join(parts)
+                return _ConnectivityResult(
+                    "Jina API",
+                    [(color("✗", Colors.RED), "Jina API",
+                      color(f"({detail})", Colors.DIM))],
+                    ["Check JINA_API_KEY in .env"],
+                )
+        except Exception as e:
+            return _ConnectivityResult(
+                "Jina API",
+                [(color("✗", Colors.RED), "Jina API",
+                  color(f"({e})", Colors.DIM))],
+                ["Check network connectivity"],
+            )
+
     # Build the probe submission list in display order
     _probes.append(("OpenRouter API", _probe_openrouter))
     _probes.append(("Anthropic API", _probe_anthropic))
@@ -1736,6 +1838,7 @@ def run_doctor(args):
 
     _probes.append(("AWS Bedrock", _probe_bedrock))
     _probes.append(("Azure Foundry (Entra ID)", _probe_azure_entra))
+    _probes.append(("Jina API", _probe_jina))
 
     # Print a single status line so users see something happening, then
     # fan out. ``\r`` clears it once the first real result line lands.
