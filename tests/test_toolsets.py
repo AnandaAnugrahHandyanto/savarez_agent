@@ -32,6 +32,14 @@ class TestGetToolset:
         assert ts is not None
         assert "web_search" in ts["tools"]
 
+    def test_x_search_toolset_distinguishes_xurl_account_actions(self):
+        ts = get_toolset("x_search")
+        assert ts is not None
+        description = ts["description"]
+        assert "Read-only public X discovery" in description
+        assert "xurl skill" in description
+        assert "authenticated X API reads and account actions" in description
+
     def test_merges_registry_tools_into_builtin_toolset(self, monkeypatch):
         reg = ToolRegistry()
         reg.register(
