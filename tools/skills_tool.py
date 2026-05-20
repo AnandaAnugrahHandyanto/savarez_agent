@@ -153,6 +153,7 @@ _INJECTION_PATTERNS: list = [
     "ctypes.cdll(",
     "ctypes.cdll.",
     "__import__('os')",
+    '__import__("os")',
     "importlib.import_module",
     "../../../",
     "shutil.rmtree(",

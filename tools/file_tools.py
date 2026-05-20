@@ -889,6 +889,13 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
         for _m in _re.finditer(r'^\*\*\*\s+(?:Update|Add|Delete)\s+File:\s*(.+)$', patch, _re.MULTILINE):
             _paths_to_check.append(_m.group(1).strip())
     for _p in _paths_to_check:
+        # ── Traversal guard for ALL paths (including V4A-extracted) ──
+        if has_traversal_component(_p):
+            return tool_error(
+                f"Path contains '..' traversal component: {_p}. "
+                "Use the terminal tool with absolute paths to patch files "
+                "outside the current directory."
+            )
         sensitive_err = _check_sensitive_path(_p, task_id)
         if sensitive_err:
             return tool_error(sensitive_err)
@@ -977,6 +984,18 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
                 output_mode: str = "content", context: int = 0,
                 task_id: str = "default") -> str:
     """Search for content or files."""
+    # ── Path traversal guard ──────────────────────────────────────────
+    # Inconsistent with read/write/patch tools but lower risk (read-only).
+    # Still block obvious traversal to stay consistent with the hardened
+    # file tool family.
+    if has_traversal_component(path):
+        return json.dumps({
+            "error": (
+                f"Cannot search '{path}': path contains '..' traversal "
+                "components. Use the absolute path or the terminal tool "
+                "to access files outside the current directory."
+            ),
+        })
     try:
         offset, limit = normalize_search_pagination(offset, limit)
 
