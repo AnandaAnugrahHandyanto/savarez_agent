@@ -76,6 +76,7 @@ def _ensure_discord_mock():
 _ensure_discord_mock()
 
 from gateway.platforms.discord import DiscordAdapter  # noqa: E402
+from gateway.platforms.base import MessageEvent, MessageType  # noqa: E402
 
 
 class FakeTree:
@@ -112,6 +113,43 @@ def adapter():
     # construct a full auth context (allowlist / channel scope).
     adapter._check_slash_authorization = AsyncMock(return_value=True)
     return adapter
+
+
+# ------------------------------------------------------------------
+# Discord command mention normalization
+# ------------------------------------------------------------------
+
+
+def test_discord_application_command_mention_normalizes_to_slash_command():
+    text = DiscordAdapter._normalize_application_command_mention(
+        "</status:123456789012345678>"
+    )
+
+    event = MessageEvent(text=text, message_type=MessageType.COMMAND)
+
+    assert text == "/status"
+    assert event.is_command()
+    assert event.get_command() == "status"
+
+
+def test_discord_application_command_mention_preserves_arguments():
+    text = DiscordAdapter._normalize_application_command_mention(
+        "</model:123456789012345678> anthropic/claude-sonnet-4"
+    )
+
+    event = MessageEvent(text=text, message_type=MessageType.COMMAND)
+
+    assert text == "/model anthropic/claude-sonnet-4"
+    assert event.get_command() == "model"
+    assert event.get_command_args() == "anthropic/claude-sonnet-4"
+
+
+def test_discord_application_command_mention_after_bot_mention_normalizes():
+    normalized = DiscordAdapter._normalize_application_command_mention(
+        "</reset:123456789012345678>"
+    )
+
+    assert normalized == "/reset"
 
 
 # ------------------------------------------------------------------

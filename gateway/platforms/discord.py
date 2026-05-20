@@ -16,6 +16,7 @@ import logging
 import os
 import struct
 import subprocess
+import re
 import tempfile
 import threading
 import time
@@ -30,6 +31,10 @@ _DISCORD_COMMAND_SYNC_STATE_SUBDIR = "gateway"
 _DISCORD_COMMAND_SYNC_STATE_FILENAME = "discord_command_sync_state.json"
 _DISCORD_COMMAND_SYNC_MUTATION_INTERVAL_SECONDS = 4.5
 _DISCORD_COMMAND_SYNC_MAX_RATE_LIMIT_SLEEP_SECONDS = 30.0
+_DISCORD_APPLICATION_COMMAND_MENTION_RE = re.compile(
+    r"^</(?P<command>[^:>]+):(?P<id>\d+)>(?P<rest>.*)$",
+    re.DOTALL,
+)
 
 try:
     import discord
@@ -48,7 +53,6 @@ from pathlib import Path as _Path
 sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
 
 from gateway.config import Platform, PlatformConfig
-import re
 
 from gateway.platforms.helpers import MessageDeduplicator, ThreadParticipationTracker
 from utils import atomic_json_write
@@ -2859,6 +2863,27 @@ class DiscordAdapter(BasePlatformAdapter):
         # Discord markdown is fairly standard, no special escaping needed
         return content
 
+    @staticmethod
+    def _normalize_application_command_mention(content: str) -> str:
+        """Convert a clicked Discord command mention into slash text.
+
+        When a user clicks a Discord command suggestion inside the message
+        composer instead of invoking the native slash interaction, Discord can
+        deliver the message content as an application-command mention such as
+        ``</status:123456789012345678>``.  Hermes' command dispatcher expects
+        plain slash text (``/status``), so normalize the leading mention before
+        command detection.
+        """
+        text = (content or "").strip()
+        match = _DISCORD_APPLICATION_COMMAND_MENTION_RE.match(text)
+        if not match:
+            return content
+        command = " ".join(match.group("command").split()).strip()
+        if not command:
+            return content
+        rest = (match.group("rest") or "").strip()
+        return f"/{command} {rest}".strip()
+
     async def _run_simple_slash(
         self,
         interaction: discord.Interaction,
@@ -4456,7 +4481,7 @@ class DiscordAdapter(BasePlatformAdapter):
         # Save mention-stripped text before auto-threading since create_thread()
         # can clobber message.content, breaking /command detection in channels.
         raw_content = message.content.strip()
-        normalized_content = raw_content
+        normalized_content = self._normalize_application_command_mention(raw_content)
         mention_prefix = False
 
         snapshot_attachments = []
@@ -4468,11 +4493,12 @@ class DiscordAdapter(BasePlatformAdapter):
                 snapshot_attachments.extend(getattr(snap, "attachments", []) or [])
             if snapshot_text_parts and not raw_content:
                 raw_content = "\n".join(snapshot_text_parts)
-                normalized_content = raw_content
+                normalized_content = self._normalize_application_command_mention(raw_content)
         if self._client.user and self._client.user in message.mentions:
             mention_prefix = True
             normalized_content = normalized_content.replace(f"<@{self._client.user.id}>", "").strip()
             normalized_content = normalized_content.replace(f"<@!{self._client.user.id}>", "").strip()
+            normalized_content = self._normalize_application_command_mention(normalized_content)
             message.content = normalized_content
         if not isinstance(message.channel, discord.DMChannel):
             channel_ids = {str(message.channel.id)}
