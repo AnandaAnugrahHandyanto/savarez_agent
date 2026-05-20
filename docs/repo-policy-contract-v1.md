@@ -104,6 +104,8 @@ For `hermes-agent`, gateway restart/reload is a live mutation. Ordinary closeout
 
 ## Closeout sections
 
+The canonical template lives in `docs/repo-policy-closeout-template.md` and `agent/repo_policy_closeout.py`.
+
 Every repo task closeout must include these sections:
 
 ```text
