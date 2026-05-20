@@ -1233,17 +1233,34 @@ class ProcessRegistry:
                 for s in self._running.values()
             )
 
-    def has_active_for_session(self, session_key: str) -> bool:
-        """Check if there are active processes for a gateway session key."""
+    # Maximum age (seconds) for a background process to block session reset.
+    # Processes older than this are treated as stale and ignored by the
+    # reset guard — preview servers and forgotten dev tools started days ago
+    # should not keep a session alive forever (issue #29177).
+    BACKGROUND_PROCESS_RESET_BLOCK_TTL: int = 4 * 3600  # 4 hours
+
+    def has_active_for_session(self, session_key: str, max_age_seconds: Optional[int] = None) -> bool:
+        """Check if there are active non-stale processes for a gateway session key.
+
+        Processes older than ``max_age_seconds`` (default: BACKGROUND_PROCESS_RESET_BLOCK_TTL)
+        are considered stale and do not block session reset — they are not killed,
+        just ignored by the guard (issue #29177).
+        """
         with self._lock:
             sessions = list(self._running.values())
 
         for session in sessions:
             self._refresh_detached_session(session)
 
+        if max_age_seconds is None:
+            max_age_seconds = self.BACKGROUND_PROCESS_RESET_BLOCK_TTL
+
+        now = time.time()
         with self._lock:
             return any(
-                s.session_key == session_key and not s.exited
+                s.session_key == session_key
+                and not s.exited
+                and (now - s.started_at) < max_age_seconds
                 for s in self._running.values()
             )
 
