@@ -35,6 +35,7 @@ from agent.tool_dispatch_helpers import (
     _is_multimodal_tool_result,
     _multimodal_text_summary,
     _append_subdir_hint_to_multimodal,
+    make_tool_result_message,
 )
 from tools.terminal_tool import (
     _get_approval_callback,
@@ -84,12 +85,11 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                 f"[Tool execution cancelled — {tc.function.name} was skipped "
                 "due to user interrupt]"
             )
-            messages.append({
-                "role": "tool",
-                "name": tc.function.name,
-                "content": skipped_content,
-                "tool_call_id": tc.id,
-            })
+            messages.append(make_tool_result_message(
+                tc.function.name,
+                skipped_content,
+                tc.id,
+            ))
             agent._record_turn_tool_trace(
                 tool_call_id=tc.id,
                 name=tc.function.name,
@@ -466,13 +466,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         # image tool result never poisons canonical session history.
         # String results pass through unchanged.
         _tool_content = agent._tool_result_content_for_active_model(name, function_result)
-        tool_msg = {
-            "role": "tool",
-            "name": name,
-            "content": _tool_content,
-            "tool_call_id": tc.id,
-        }
-        messages.append(tool_msg)
+        messages.append(make_tool_result_message(name, _tool_content, tc.id))
 
         # ── Per-tool /steer drain ───────────────────────────────────
         # Same as the sequential path: drain between each collected
@@ -482,7 +476,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             tool_call_id=tc.id,
             name=name,
             arguments=args,
-            result_content=str(tool_msg.get("content") or ""),
+            result_content=str(_tool_content or ""),
             duration=tool_duration,
             is_error=trace_is_error,
             blocked=blocked,
@@ -916,13 +910,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         # Unwrap _multimodal dicts to an OpenAI-style content list
         # (see parallel path for rationale). String results pass through.
         _tool_content = agent._tool_result_content_for_active_model(function_name, function_result)
-        tool_msg = {
-            "role": "tool",
-            "name": function_name,
-            "content": _tool_content,
-            "tool_call_id": tool_call.id
-        }
-        messages.append(tool_msg)
+        messages.append(make_tool_result_message(function_name, _tool_content, tool_call.id))
 
         # ── Per-tool /steer drain ───────────────────────────────────
         # Drain pending steer BETWEEN individual tool calls so the
@@ -933,7 +921,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             tool_call_id=tool_call.id,
             name=function_name,
             arguments=function_args,
-            result_content=str(tool_msg.get("content") or ""),
+            result_content=str(_tool_content or ""),
             duration=tool_duration,
             is_error=_is_error_result,
             blocked=_execution_blocked,
@@ -963,13 +951,11 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     f"[Tool execution skipped — {skipped_name} was not started. "
                     "User sent a new message]"
                 )
-                skip_msg = {
-                    "role": "tool",
-                    "name": skipped_name,
-                    "content": skipped_content,
-                    "tool_call_id": skipped_tc.id
-                }
-                messages.append(skip_msg)
+                messages.append(make_tool_result_message(
+                    skipped_name,
+                    skipped_content,
+                    skipped_tc.id,
+                ))
                 agent._record_turn_tool_trace(
                     tool_call_id=skipped_tc.id,
                     name=skipped_name,
