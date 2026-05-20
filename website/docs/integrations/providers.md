@@ -42,6 +42,7 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 | **Hugging Face** | `HF_TOKEN` in `~/.hermes/.env` (provider: `huggingface`, aliases: `hf`) |
 | **Google / Gemini** | `GOOGLE_API_KEY` (or `GEMINI_API_KEY`) in `~/.hermes/.env` (provider: `gemini`) |
 | **Google Gemini (OAuth)** | `hermes model` → "Google Gemini (OAuth)" (provider: `google-gemini-cli`, free tier supported, browser PKCE login) |
+| **Google Antigravity (OAuth)** | Install and sign in with Antigravity CLI (`agy`), then choose "Google Antigravity (OAuth)" in `hermes model` (provider: `antigravity-cli`) |
 | **LM Studio** | `hermes model` → "LM Studio" (provider: `lmstudio`, optional `LM_API_KEY`) |
 | **Custom Endpoint** | `hermes model` → choose "Custom endpoint" (saved in `config.yaml`) |
 
@@ -136,6 +137,33 @@ HERMES_GEMINI_CLIENT_SECRET=...   # optional for Desktop clients
 Register a **Desktop app** OAuth client at
 [console.cloud.google.com/apis/credentials](https://console.cloud.google.com/apis/credentials)
 with the Generative Language API enabled.
+
+### Google Antigravity via OAuth (`antigravity-cli`)
+
+The `antigravity-cli` provider reuses an existing Antigravity CLI login instead
+of starting a separate Hermes browser OAuth flow. Install Antigravity CLI, run
+`agy`, complete Google's login there, then select **Google Antigravity (OAuth)**
+from `hermes model`.
+
+Hermes reads Antigravity's token file from
+`~/.gemini/antigravity-cli/antigravity-oauth-token`, refreshes it with the OAuth
+client credentials discovered from the local `agy` install, and sends requests to
+Google's Code Assist agent backend using the same OpenAI-shaped adapter as the
+Gemini CLI OAuth provider.
+
+Optional advanced overrides:
+
+```bash
+HERMES_ANTIGRAVITY_CLIENT_ID=your-client.apps.googleusercontent.com
+HERMES_ANTIGRAVITY_CLIENT_SECRET=...
+HERMES_ANTIGRAVITY_CLI_PATH=/path/to/agy
+HERMES_ANTIGRAVITY_CLI_HOME=/path/to/antigravity-cli-token-dir
+```
+
+Use the API-key `gemini` provider for Google's official Gemini API path. Use
+`google-gemini-cli` when you want Hermes-managed Gemini CLI OAuth, and
+`antigravity-cli` when you already use Antigravity CLI and want Hermes to reuse
+that local login.
 
 :::info Codex Note
 The OpenAI Codex provider authenticates via device code (open a URL, enter a code). Hermes stores the resulting credentials in its own auth store under `~/.hermes/auth.json` and can import existing Codex CLI credentials from `~/.codex/auth.json` when present. No Codex CLI installation is required.
@@ -1466,7 +1494,7 @@ fallback_model:
 
 When activated, the fallback swaps the model and provider mid-session without losing your conversation. The chain is tried entry-by-entry; activation is one-shot per session.
 
-Supported providers: `openrouter`, `nous`, `openai-codex`, `copilot`, `copilot-acp`, `anthropic`, `gemini`, `google-gemini-cli`, `qwen-oauth`, `huggingface`, `zai`, `kimi-coding`, `kimi-coding-cn`, `minimax`, `minimax-cn`, `minimax-oauth`, `deepseek`, `nvidia`, `xai`, `xai-oauth`, `ollama-cloud`, `bedrock`, `ai-gateway`, `azure-foundry`, `opencode-zen`, `opencode-go`, `kilocode`, `xiaomi`, `arcee`, `gmi`, `stepfun`, `lmstudio`, `alibaba`, `alibaba-coding-plan`, `tencent-tokenhub`, `custom`.
+Supported providers: `openrouter`, `nous`, `openai-codex`, `copilot`, `copilot-acp`, `anthropic`, `gemini`, `google-gemini-cli`, `antigravity-cli`, `qwen-oauth`, `huggingface`, `zai`, `kimi-coding`, `kimi-coding-cn`, `minimax`, `minimax-cn`, `minimax-oauth`, `deepseek`, `nvidia`, `xai`, `xai-oauth`, `ollama-cloud`, `bedrock`, `ai-gateway`, `azure-foundry`, `opencode-zen`, `opencode-go`, `kilocode`, `xiaomi`, `arcee`, `gmi`, `stepfun`, `lmstudio`, `alibaba`, `alibaba-coding-plan`, `tencent-tokenhub`, `custom`.
 
 :::tip
 Fallback is configured exclusively through `config.yaml` — or interactively via `hermes fallback`. For full details on when it triggers, how the chain advances, and how it interacts with auxiliary tasks and delegation, see [Fallback Providers](/docs/user-guide/features/fallback-providers).

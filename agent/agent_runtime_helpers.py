@@ -1212,7 +1212,7 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
             agent._client_log_context(),
         )
         return client
-    if agent.provider == "google-gemini-cli" or str(client_kwargs.get("base_url", "")).startswith("cloudcode-pa://"):
+    if agent.provider in {"google-gemini-cli", "antigravity-cli"} or str(client_kwargs.get("base_url", "")).startswith("cloudcode-pa://"):
         from agent.gemini_cloudcode_adapter import GeminiCloudCodeClient
 
         # Strip OpenAI-specific kwargs the Gemini client doesn't accept
@@ -1220,6 +1220,7 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
             k: v for k, v in client_kwargs.items()
             if k in {"api_key", "base_url", "default_headers", "project_id", "timeout"}
         }
+        safe_kwargs["credential_source"] = "antigravity-cli" if agent.provider == "antigravity-cli" else "google-gemini-cli"
         client = GeminiCloudCodeClient(**safe_kwargs)
         _ra().logger.info(
             "Gemini Cloud Code Assist client created (%s, shared=%s) %s",

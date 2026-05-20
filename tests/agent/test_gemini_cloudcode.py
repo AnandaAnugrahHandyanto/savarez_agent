@@ -942,6 +942,67 @@ class TestMakeStreamChunk:
         assert chunk.choices[0].finish_reason == "stop"
 
 
+class _AntigravityStreamResponse:
+    status_code = 200
+
+    def __init__(self, events):
+        self._events = events
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        return False
+
+    def iter_text(self):
+        yield from self._events
+
+
+class _RecordingAntigravityHTTP:
+    def __init__(self, events):
+        self._events = events
+        self.stream_calls = []
+
+    def post(self, url, *, json=None, headers=None):
+        raise AssertionError("Antigravity agent requests must use streamGenerateContent")
+
+    def stream(self, method, url, *, json=None, headers=None):
+        self.stream_calls.append({
+            "method": method,
+            "url": url,
+            "json": json,
+            "headers": headers,
+        })
+        return _AntigravityStreamResponse(self._events)
+
+    def close(self):
+        pass
+
+
+def _assert_antigravity_agent_request(call, *, expected_model):
+    assert call["method"] == "POST"
+    assert call["url"] == (
+        "https://daily-cloudcode-pa.googleapis.com"
+        "/v1internal:streamGenerateContent?alt=sse"
+    )
+    headers = call["headers"]
+    assert headers["Authorization"] == "Bearer antigravity-token"
+    assert headers["Accept"] == "text/event-stream"
+    assert headers["User-Agent"] == "antigravity"
+    assert "X-Goog-Api-Client" not in headers
+
+    payload = call["json"]
+    assert payload["project"] == "p"
+    assert payload["model"] == expected_model
+    assert payload["requestId"].startswith("agent/")
+    assert payload["userAgent"] == "antigravity"
+    assert payload["requestType"] == "agent"
+    assert "user_prompt_id" not in payload
+    assert "userPromptId" not in payload
+    generation_config = payload["request"].get("generationConfig") or {}
+    assert "thinkingConfig" not in generation_config
+
+
 class TestGeminiCloudCodeClient:
     def test_client_exposes_openai_interface(self):
         from agent.gemini_cloudcode_adapter import GeminiCloudCodeClient
@@ -953,6 +1014,392 @@ class TestGeminiCloudCodeClient:
             assert callable(client.chat.completions.create)
         finally:
             client.close()
+
+    def test_antigravity_credential_source_uses_antigravity_oauth(self, monkeypatch):
+        from agent import antigravity_oauth, google_oauth
+        from agent.gemini_cloudcode_adapter import GeminiCloudCodeClient
+        from agent.google_code_assist import ProjectContext
+
+        monkeypatch.setattr(
+            antigravity_oauth,
+            "get_valid_access_token",
+            lambda: "antigravity-token",
+        )
+        monkeypatch.setattr(
+            google_oauth,
+            "get_valid_access_token",
+            lambda: (_ for _ in ()).throw(AssertionError("google_oauth must not be used")),
+        )
+
+        class _StreamResponse:
+            status_code = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc_val, exc_tb):
+                return False
+
+            @staticmethod
+            def iter_text():
+                yield (
+                    'data: {"response":{"candidates":[{"content":{"parts":'
+                    '[{"text":"ok"}]},"finishReason":"STOP"}]}}\n\n'
+                )
+
+        class _HTTP:
+            def post(self, url, *, json=None, headers=None):
+                raise AssertionError("Antigravity agent requests must use streamGenerateContent")
+
+            def stream(self, method, url, *, json=None, headers=None):
+                assert method == "POST"
+                assert url == (
+                    "https://daily-cloudcode-pa.googleapis.com"
+                    "/v1internal:streamGenerateContent?alt=sse"
+                )
+                assert headers["Authorization"] == "Bearer antigravity-token"
+                assert headers["Accept"] == "text/event-stream"
+                assert headers["User-Agent"] == "antigravity"
+                assert "X-Goog-Api-Client" not in headers
+                assert json["project"] == "p"
+                assert json["model"] == "gemini-3-flash-agent"
+                assert json["requestId"].startswith("agent/")
+                assert json["userAgent"] == "antigravity"
+                assert json["requestType"] == "agent"
+                assert "user_prompt_id" not in json
+                assert "userPromptId" not in json
+                generation_config = json["request"].get("generationConfig") or {}
+                assert "thinkingConfig" not in generation_config
+                return _StreamResponse()
+
+            def close(self):
+                pass
+
+        client = GeminiCloudCodeClient(api_key="dummy", credential_source="antigravity-cli")
+        client._http = _HTTP()
+        monkeypatch.setattr(
+            client,
+            "_ensure_project_context",
+            lambda access_token, model: ProjectContext("p", "", "", "test"),
+        )
+        try:
+            result = client.chat.completions.create(
+                model="gemini-3-flash-agent",
+                messages=[{"role": "user", "content": "hi"}],
+            )
+        finally:
+            client.close()
+
+        assert result.choices[0].message.content == "ok"
+
+    def test_antigravity_gemini_35_flash_non_stream_e2e_aggregates_sse(
+        self,
+        monkeypatch,
+    ):
+        from agent import antigravity_oauth, google_oauth
+        from agent.gemini_cloudcode_adapter import GeminiCloudCodeClient
+        from agent.google_code_assist import ProjectContext
+
+        monkeypatch.setattr(
+            antigravity_oauth,
+            "get_valid_access_token",
+            lambda: "antigravity-token",
+        )
+        monkeypatch.setattr(
+            google_oauth,
+            "get_valid_access_token",
+            lambda: (_ for _ in ()).throw(AssertionError("google_oauth must not be used")),
+        )
+
+        http = _RecordingAntigravityHTTP([
+            (
+                'data: {"response":{"candidates":[{"content":{"parts":'
+                '[{"thought":true,"text":"thinking "},{"text":"first "}]}}]}}\n\n'
+            ),
+            (
+                'data: {"response":{"candidates":[{"content":{"parts":'
+                '[{"text":"second"}]},"finishReason":"STOP"}]}}\n\n'
+            ),
+        ])
+        client = GeminiCloudCodeClient(api_key="dummy", credential_source="antigravity-cli")
+        client._http = http
+        monkeypatch.setattr(
+            client,
+            "_ensure_project_context",
+            lambda access_token, model: ProjectContext("p", "", "", "test"),
+        )
+        try:
+            result = client.chat.completions.create(
+                model="gemini-3-flash-agent",
+                messages=[{"role": "user", "content": "hi"}],
+                temperature=0,
+            )
+        finally:
+            client.close()
+
+        assert len(http.stream_calls) == 1
+        _assert_antigravity_agent_request(
+            http.stream_calls[0],
+            expected_model="gemini-3-flash-agent",
+        )
+        assert result.model == "gemini-3-flash-agent"
+        assert result.choices[0].message.content == "first second"
+        assert result.choices[0].message.reasoning == "thinking "
+        assert result.choices[0].finish_reason == "stop"
+
+    def test_antigravity_non_stream_e2e_aggregates_sse_tool_calls(
+        self,
+        monkeypatch,
+    ):
+        from agent import antigravity_oauth, google_oauth
+        from agent.gemini_cloudcode_adapter import GeminiCloudCodeClient
+        from agent.google_code_assist import ProjectContext
+
+        monkeypatch.setattr(
+            antigravity_oauth,
+            "get_valid_access_token",
+            lambda: "antigravity-token",
+        )
+        monkeypatch.setattr(
+            google_oauth,
+            "get_valid_access_token",
+            lambda: (_ for _ in ()).throw(AssertionError("google_oauth must not be used")),
+        )
+
+        http = _RecordingAntigravityHTTP([
+            (
+                'data: {"response":{"candidates":[{"content":{"parts":'
+                '[{"functionCall":{"name":"read_file","args":{"path":"README.md"}}}],'
+                '"role":"model"},"finishReason":"STOP"}]}}\n\n'
+            ),
+        ])
+        client = GeminiCloudCodeClient(api_key="dummy", credential_source="antigravity-cli")
+        client._http = http
+        monkeypatch.setattr(
+            client,
+            "_ensure_project_context",
+            lambda access_token, model: ProjectContext("p", "", "", "test"),
+        )
+        try:
+            result = client.chat.completions.create(
+                model="gemini-3-flash-agent",
+                messages=[{"role": "user", "content": "hi"}],
+                tools=[{
+                    "type": "function",
+                    "function": {
+                        "name": "read_file",
+                        "description": "Read a file",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {"path": {"type": "string"}},
+                            "required": ["path"],
+                        },
+                    },
+                }],
+            )
+        finally:
+            client.close()
+
+        assert len(http.stream_calls) == 1
+        _assert_antigravity_agent_request(
+            http.stream_calls[0],
+            expected_model="gemini-3-flash-agent",
+        )
+        tool_calls = result.choices[0].message.tool_calls
+        assert len(tool_calls) == 1
+        assert tool_calls[0].function.name == "read_file"
+        assert json.loads(tool_calls[0].function.arguments) == {"path": "README.md"}
+        assert result.choices[0].finish_reason == "tool_calls"
+
+    def test_antigravity_gemini_35_flash_stream_e2e_yields_sse_chunks(
+        self,
+        monkeypatch,
+    ):
+        from agent import antigravity_oauth, google_oauth
+        from agent.gemini_cloudcode_adapter import GeminiCloudCodeClient
+        from agent.google_code_assist import ProjectContext
+
+        monkeypatch.setattr(
+            antigravity_oauth,
+            "get_valid_access_token",
+            lambda: "antigravity-token",
+        )
+        monkeypatch.setattr(
+            google_oauth,
+            "get_valid_access_token",
+            lambda: (_ for _ in ()).throw(AssertionError("google_oauth must not be used")),
+        )
+
+        http = _RecordingAntigravityHTTP([
+            (
+                'data: {"response":{"candidates":[{"content":{"parts":'
+                '[{"thought":true,"text":"stream-thinking "}]}}]}}\n\n'
+            ),
+            (
+                'data: {"response":{"candidates":[{"content":{"parts":'
+                '[{"text":"stream-ok"}]},"finishReason":"STOP"}]}}\n\n'
+            ),
+        ])
+        client = GeminiCloudCodeClient(api_key="dummy", credential_source="antigravity-cli")
+        client._http = http
+        monkeypatch.setattr(
+            client,
+            "_ensure_project_context",
+            lambda access_token, model: ProjectContext("p", "", "", "test"),
+        )
+        try:
+            chunks = list(client.chat.completions.create(
+                model="gemini-3-flash-agent",
+                messages=[{"role": "user", "content": "hi"}],
+                stream=True,
+            ))
+        finally:
+            client.close()
+
+        assert len(http.stream_calls) == 1
+        _assert_antigravity_agent_request(
+            http.stream_calls[0],
+            expected_model="gemini-3-flash-agent",
+        )
+        deltas = [chunk.choices[0].delta for chunk in chunks]
+        assert [delta.reasoning for delta in deltas if delta.reasoning] == [
+            "stream-thinking ",
+        ]
+        assert "".join(delta.content or "" for delta in deltas) == "stream-ok"
+        assert chunks[-1].choices[0].finish_reason == "stop"
+
+    def test_antigravity_model_ids_pass_through_without_alias_rewrite(self, monkeypatch):
+        from agent import antigravity_oauth, google_oauth
+        from agent.gemini_cloudcode_adapter import GeminiCloudCodeClient
+        from agent.google_code_assist import ProjectContext
+
+        monkeypatch.setattr(
+            antigravity_oauth,
+            "get_valid_access_token",
+            lambda: "antigravity-token",
+        )
+        monkeypatch.setattr(
+            google_oauth,
+            "get_valid_access_token",
+            lambda: (_ for _ in ()).throw(AssertionError("google_oauth must not be used")),
+        )
+
+        http = _RecordingAntigravityHTTP([
+            (
+                'data: {"response":{"candidates":[{"content":{"parts":'
+                '[{"text":"ok"}]},"finishReason":"STOP"}]}}\n\n'
+            ),
+        ])
+        client = GeminiCloudCodeClient(api_key="dummy", credential_source="antigravity-cli")
+        client._http = http
+        monkeypatch.setattr(
+            client,
+            "_ensure_project_context",
+            lambda access_token, model: ProjectContext("p", "", "", "test"),
+        )
+        try:
+            client.chat.completions.create(
+                model="gemini-3.5-flash",
+                messages=[{"role": "user", "content": "hi"}],
+            )
+        finally:
+            client.close()
+
+        assert http.stream_calls[0]["json"]["model"] == "gemini-3.5-flash"
+
+    def test_antigravity_explicit_thinking_config_is_preserved(self, monkeypatch):
+        from agent import antigravity_oauth, google_oauth
+        from agent.gemini_cloudcode_adapter import GeminiCloudCodeClient
+        from agent.google_code_assist import ProjectContext
+
+        monkeypatch.setattr(
+            antigravity_oauth,
+            "get_valid_access_token",
+            lambda: "antigravity-token",
+        )
+        monkeypatch.setattr(
+            google_oauth,
+            "get_valid_access_token",
+            lambda: (_ for _ in ()).throw(AssertionError("google_oauth must not be used")),
+        )
+
+        http = _RecordingAntigravityHTTP([
+            (
+                'data: {"response":{"candidates":[{"content":{"parts":'
+                '[{"text":"ok"}]},"finishReason":"STOP"}]}}\n\n'
+            ),
+        ])
+        client = GeminiCloudCodeClient(api_key="dummy", credential_source="antigravity-cli")
+        client._http = http
+        monkeypatch.setattr(
+            client,
+            "_ensure_project_context",
+            lambda access_token, model: ProjectContext("p", "", "", "test"),
+        )
+        try:
+            client.chat.completions.create(
+                model="gemini-3-flash-agent",
+                messages=[{"role": "user", "content": "hi"}],
+                extra_body={
+                    "thinking_config": {
+                        "include_thoughts": True,
+                        "thinking_budget": 1234,
+                    }
+                },
+            )
+        finally:
+            client.close()
+
+        generation_config = http.stream_calls[0]["json"]["request"]["generationConfig"]
+        assert generation_config["thinkingConfig"] == {
+            "includeThoughts": True,
+            "thinkingBudget": 1234,
+        }
+
+    def test_antigravity_project_context_does_not_touch_google_oauth_store(self, monkeypatch):
+        from agent import google_oauth
+        import agent.gemini_cloudcode_adapter as adapter
+        from agent.gemini_cloudcode_adapter import GeminiCloudCodeClient
+        from agent.google_code_assist import ProjectContext
+
+        monkeypatch.setattr(google_oauth, "resolve_project_id_from_env", lambda: "")
+        monkeypatch.setattr(
+            google_oauth,
+            "load_credentials",
+            lambda: (_ for _ in ()).throw(AssertionError("google credentials must not be loaded")),
+        )
+        monkeypatch.setattr(
+            google_oauth,
+            "update_project_ids",
+            lambda **_: (_ for _ in ()).throw(AssertionError("google credentials must not be updated")),
+        )
+        captured = {}
+
+        def fake_resolve_project_context(
+            access_token,
+            configured_project_id,
+            env_project_id,
+            user_agent_model,
+            code_assist_endpoint="",
+        ):
+            captured["code_assist_endpoint"] = code_assist_endpoint
+            return ProjectContext(
+                project_id="agy-project",
+                managed_project_id="agy-managed",
+                tier_id="",
+                source="discovered",
+            )
+
+        monkeypatch.setattr(adapter, "resolve_project_context", fake_resolve_project_context)
+
+        client = GeminiCloudCodeClient(api_key="dummy", credential_source="antigravity-cli")
+        try:
+            ctx = client._ensure_project_context("antigravity-token", "gemini-3-flash-preview")
+        finally:
+            client.close()
+
+        assert ctx.project_id == "agy-project"
+        assert captured["code_assist_endpoint"] == "https://daily-cloudcode-pa.googleapis.com"
 
 
 class TestGeminiHttpErrorParsing:
@@ -1119,11 +1566,37 @@ class TestProviderRegistration:
         assert "google-gemini-cli" in PROVIDER_REGISTRY
         assert PROVIDER_REGISTRY["google-gemini-cli"].auth_type == "oauth_external"
 
+    def test_antigravity_registry_entry(self):
+        from hermes_cli.auth import PROVIDER_REGISTRY
+
+        assert "antigravity-cli" in PROVIDER_REGISTRY
+        assert PROVIDER_REGISTRY["antigravity-cli"].auth_type == "oauth_external"
+        assert PROVIDER_REGISTRY["antigravity-cli"].inference_base_url == "cloudcode-pa://google"
+
     def test_google_gemini_alias_still_goes_to_api_key_gemini(self):
         """Regression guard: don't shadow the existing google-gemini → gemini alias."""
         from hermes_cli.auth import resolve_provider
 
         assert resolve_provider("google-gemini") == "gemini"
+
+    def test_antigravity_aliases(self):
+        from hermes_cli.auth import resolve_provider
+        from hermes_cli.models import normalize_provider
+
+        assert resolve_provider("agy") == "antigravity-cli"
+        assert resolve_provider("antigravity-oauth") == "antigravity-cli"
+        assert normalize_provider("agy") == "antigravity-cli"
+        assert normalize_provider("antigravity-oauth") == "antigravity-cli"
+
+    def test_antigravity_picker_uses_recommended_gemini_agent_models(self):
+        from hermes_cli.models import _PROVIDER_MODELS
+
+        assert _PROVIDER_MODELS["antigravity-cli"] == [
+            "gemini-3-flash-agent",
+            "gemini-3.5-flash-low",
+            "gemini-pro-agent",
+            "gemini-3.1-pro-low",
+        ]
 
     def test_runtime_provider_raises_when_not_logged_in(self):
         from hermes_cli.auth import AuthError
@@ -1132,6 +1605,14 @@ class TestProviderRegistration:
         with pytest.raises(AuthError) as exc_info:
             resolve_runtime_provider(requested="google-gemini-cli")
         assert exc_info.value.code == "google_oauth_not_logged_in"
+
+    def test_antigravity_runtime_provider_raises_when_not_logged_in(self):
+        from hermes_cli.auth import AuthError
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+
+        with pytest.raises(AuthError) as exc_info:
+            resolve_runtime_provider(requested="antigravity-cli")
+        assert exc_info.value.code == "antigravity_oauth_not_logged_in"
 
     def test_runtime_provider_returns_correct_shape_when_logged_in(self):
         from agent.google_oauth import GoogleCredentials, save_credentials
@@ -1153,15 +1634,40 @@ class TestProviderRegistration:
         assert result["project_id"] == "my-proj"
         assert result["email"] == "t@e.com"
 
+    def test_antigravity_runtime_provider_returns_correct_shape_when_logged_in(self, monkeypatch):
+        import hermes_cli.auth as auth_mod
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+
+        monkeypatch.setattr(
+            auth_mod,
+            "resolve_antigravity_oauth_runtime_credentials",
+            lambda: {
+                "provider": "antigravity-cli",
+                "base_url": "cloudcode-pa://google",
+                "api_key": "agy-token",
+                "source": "antigravity-cli",
+                "expires_at_ms": 123,
+            },
+            raising=False,
+        )
+
+        result = resolve_runtime_provider(requested="antigravity-cli")
+        assert result["provider"] == "antigravity-cli"
+        assert result["api_mode"] == "chat_completions"
+        assert result["api_key"] == "agy-token"
+        assert result["base_url"] == "cloudcode-pa://google"
+        assert result["source"] == "antigravity-cli"
+
     def test_determine_api_mode(self):
         from hermes_cli.providers import determine_api_mode
 
         assert determine_api_mode("google-gemini-cli", "cloudcode-pa://google") == "chat_completions"
+        assert determine_api_mode("antigravity-cli", "cloudcode-pa://google") == "chat_completions"
 
     def test_oauth_capable_set_preserves_existing(self):
         from hermes_cli.auth_commands import _OAUTH_CAPABLE_PROVIDERS
 
-        for required in ("anthropic", "nous", "openai-codex", "qwen-oauth", "google-gemini-cli"):
+        for required in ("anthropic", "nous", "openai-codex", "qwen-oauth", "google-gemini-cli", "antigravity-cli"):
             assert required in _OAUTH_CAPABLE_PROVIDERS
 
     def test_config_env_vars_registered(self):
@@ -1171,6 +1677,10 @@ class TestProviderRegistration:
             "HERMES_GEMINI_CLIENT_ID",
             "HERMES_GEMINI_CLIENT_SECRET",
             "HERMES_GEMINI_PROJECT_ID",
+            "HERMES_ANTIGRAVITY_CLIENT_ID",
+            "HERMES_ANTIGRAVITY_CLIENT_SECRET",
+            "HERMES_ANTIGRAVITY_CLI_PATH",
+            "HERMES_ANTIGRAVITY_CLI_HOME",
         ):
             assert key in OPTIONAL_ENV_VARS
 

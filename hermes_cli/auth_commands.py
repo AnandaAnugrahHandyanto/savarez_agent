@@ -33,7 +33,16 @@ from hermes_constants import OPENROUTER_BASE_URL
 
 
 # Providers that support OAuth login in addition to API keys.
-_OAUTH_CAPABLE_PROVIDERS = {"anthropic", "nous", "openai-codex", "xai-oauth", "qwen-oauth", "google-gemini-cli", "minimax-oauth"}
+_OAUTH_CAPABLE_PROVIDERS = {
+    "anthropic",
+    "nous",
+    "openai-codex",
+    "xai-oauth",
+    "qwen-oauth",
+    "google-gemini-cli",
+    "antigravity-cli",
+    "minimax-oauth",
+}
 
 
 def _get_custom_provider_names() -> list:
@@ -377,6 +386,29 @@ def auth_add_command(args) -> None:
             source=f"{SOURCE_MANUAL}:google_pkce",
             access_token=creds["access_token"],
             refresh_token=creds.get("refresh_token"),
+        )
+        pool.add_entry(entry)
+        print(f'Added {provider} OAuth credential #{len(pool.entries())}: "{entry.label}"')
+        return
+
+    if provider == "antigravity-cli":
+        from agent.antigravity_oauth import get_valid_access_token, load_credentials
+
+        access_token = get_valid_access_token()
+        creds = load_credentials()
+        label = (getattr(args, "label", None) or "").strip() or _oauth_default_label(
+            provider,
+            len(pool.entries()) + 1,
+        )
+        entry = PooledCredential(
+            provider=provider,
+            id=uuid.uuid4().hex[:6],
+            label=label,
+            auth_type=AUTH_TYPE_OAUTH,
+            priority=0,
+            source=f"{SOURCE_MANUAL}:antigravity_cli",
+            access_token=access_token,
+            refresh_token=(creds.refresh_token if creds else None),
         )
         pool.add_entry(entry)
         print(f'Added {provider} OAuth credential #{len(pool.entries())}: "{entry.label}"')

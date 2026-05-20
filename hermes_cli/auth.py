@@ -214,6 +214,12 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         auth_type="oauth_external",
         inference_base_url=DEFAULT_GEMINI_CLOUDCODE_BASE_URL,
     ),
+    "antigravity-cli": ProviderConfig(
+        id="antigravity-cli",
+        name="Google Antigravity (OAuth)",
+        auth_type="oauth_external",
+        inference_base_url=DEFAULT_GEMINI_CLOUDCODE_BASE_URL,
+    ),
     "lmstudio": ProviderConfig(
         id="lmstudio",
         name="LM Studio",
@@ -1424,7 +1430,9 @@ def resolve_provider(
         "github-copilot-acp": "copilot-acp", "copilot-acp-agent": "copilot-acp",
         "aigateway": "ai-gateway", "vercel": "ai-gateway", "vercel-ai-gateway": "ai-gateway",
         "opencode": "opencode-zen", "zen": "opencode-zen",
-        "qwen-portal": "qwen-oauth", "qwen-cli": "qwen-oauth", "qwen-oauth": "qwen-oauth", "google-gemini-cli": "google-gemini-cli", "gemini-cli": "google-gemini-cli", "gemini-oauth": "google-gemini-cli",
+        "qwen-portal": "qwen-oauth", "qwen-cli": "qwen-oauth", "qwen-oauth": "qwen-oauth",
+        "google-gemini-cli": "google-gemini-cli", "gemini-cli": "google-gemini-cli", "gemini-oauth": "google-gemini-cli",
+        "antigravity-cli": "antigravity-cli", "agy": "antigravity-cli", "antigravity-oauth": "antigravity-cli",
         "hf": "huggingface", "hugging-face": "huggingface", "huggingface-hub": "huggingface",
         "mimo": "xiaomi", "xiaomi-mimo": "xiaomi",
         "tencent": "tencent-tokenhub", "tokenhub": "tencent-tokenhub",
@@ -2075,6 +2083,45 @@ def resolve_gemini_oauth_runtime_credentials(
     }
 
 
+def resolve_antigravity_oauth_runtime_credentials(
+    *,
+    force_refresh: bool = False,
+) -> Dict[str, Any]:
+    """Resolve runtime OAuth creds from the Antigravity CLI token store."""
+    try:
+        from agent.antigravity_oauth import (
+            AntigravityOAuthError,
+            _credentials_path,
+            get_valid_access_token,
+            load_credentials,
+        )
+    except ImportError as exc:
+        raise AuthError(
+            f"agent.antigravity_oauth is not importable: {exc}",
+            provider="antigravity-cli",
+            code="antigravity_oauth_module_missing",
+        ) from exc
+
+    try:
+        access_token = get_valid_access_token(force_refresh=force_refresh)
+    except AntigravityOAuthError as exc:
+        raise AuthError(
+            str(exc),
+            provider="antigravity-cli",
+            code=exc.code,
+        ) from exc
+
+    creds = load_credentials()
+    return {
+        "provider": "antigravity-cli",
+        "base_url": DEFAULT_GEMINI_CLOUDCODE_BASE_URL,
+        "api_key": access_token,
+        "source": "antigravity-cli",
+        "expires_at_ms": (creds.expires_at_ms if creds else None),
+        "auth_file": str(_credentials_path()),
+    }
+
+
 def get_gemini_oauth_auth_status() -> Dict[str, Any]:
     """Return a status dict for `hermes auth list` / `hermes status`."""
     try:
@@ -2097,6 +2144,29 @@ def get_gemini_oauth_auth_status() -> Dict[str, Any]:
         "expires_at_ms": creds.expires_ms,
         "email": creds.email,
         "project_id": creds.project_id,
+    }
+
+
+def get_antigravity_oauth_auth_status() -> Dict[str, Any]:
+    """Return a status dict for the Antigravity CLI OAuth token source."""
+    try:
+        from agent.antigravity_oauth import _credentials_path, load_credentials
+    except ImportError:
+        return {"logged_in": False, "error": "agent.antigravity_oauth unavailable"}
+    auth_path = _credentials_path()
+    creds = load_credentials()
+    if creds is None or not creds.access_token:
+        return {
+            "logged_in": False,
+            "auth_file": str(auth_path),
+            "error": "not logged in",
+        }
+    return {
+        "logged_in": True,
+        "auth_file": str(auth_path),
+        "source": "antigravity-cli",
+        "api_key": creds.access_token,
+        "expires_at_ms": creds.expires_at_ms,
     }
 # Spotify auth — PKCE tokens stored in ~/.hermes/auth.json
 # =============================================================================
@@ -5656,6 +5726,8 @@ def get_auth_status(provider_id: Optional[str] = None) -> Dict[str, Any]:
         return get_gemini_oauth_auth_status()
     if target == "minimax-oauth":
         return get_minimax_oauth_auth_status()
+    if target == "antigravity-cli":
+        return get_antigravity_oauth_auth_status()
     if target == "copilot-acp":
         return get_external_process_provider_status(target)
     if target == "azure-foundry":

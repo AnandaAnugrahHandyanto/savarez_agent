@@ -77,6 +77,11 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         auth_type="oauth_external",
         base_url_override="cloudcode-pa://google",
     ),
+    "antigravity-cli": HermesOverlay(
+        transport="openai_chat",
+        auth_type="oauth_external",
+        base_url_override="cloudcode-pa://google",
+    ),
     "lmstudio": HermesOverlay(
         transport="openai_chat",
         auth_type="api_key",
@@ -318,6 +323,8 @@ ALIASES: Dict[str, str] = {
     # google-gemini-cli (OAuth + Code Assist)
     "gemini-cli": "google-gemini-cli",
     "gemini-oauth": "google-gemini-cli",
+    "agy": "antigravity-cli",
+    "antigravity-oauth": "antigravity-cli",
 
 
     # huggingface

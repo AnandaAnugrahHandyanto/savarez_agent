@@ -6,6 +6,7 @@ isinstance(model, dict)) to silently fail — leaving the provider unset and
 falling back to auto-detection.
 """
 
+import builtins
 import os
 from unittest.mock import patch, MagicMock
 
@@ -71,6 +72,21 @@ class TestSaveModelChoiceAlwaysDict:
 
 
 class TestProviderPersistsAfterModelSave:
+    def test_static_provider_choices_fallback_includes_antigravity(self, monkeypatch):
+        """The CLI --provider fallback list must stay in sync with provider wiring."""
+        from hermes_cli import main as main_mod
+
+        real_import = builtins.__import__
+
+        def fail_models_import(name, globals=None, locals=None, fromlist=(), level=0):
+            if name == "hermes_cli.models" and fromlist and "CANONICAL_PROVIDERS" in fromlist:
+                raise RuntimeError("simulate provider catalog import failure")
+            return real_import(name, globals, locals, fromlist, level)
+
+        monkeypatch.setattr(builtins, "__import__", fail_models_import)
+
+        assert "antigravity-cli" in main_mod._build_provider_choices()
+
     def test_update_config_for_provider_uses_atomic_yaml_write(self, config_home):
         """Provider switches should delegate config writes to atomic_yaml_write."""
         from hermes_cli.auth import _update_config_for_provider
@@ -177,6 +193,50 @@ class TestProviderPersistsAfterModelSave:
         assert model.get("api_mode") == "codex_responses"
         assert config["agent"]["reasoning_effort"] == "high"
 
+    def test_select_provider_and_model_persists_antigravity_selection(self, config_home, monkeypatch):
+        """The provider picker must route antigravity-cli through a real model flow."""
+        from hermes_cli.main import select_provider_and_model
+
+        monkeypatch.setattr("hermes_cli.auth.resolve_provider", lambda *args, **kwargs: None)
+
+        def choose_antigravity(labels, default=0):
+            for idx, label in enumerate(labels):
+                if "Antigravity" in label:
+                    return idx
+            raise AssertionError(f"Antigravity provider missing from menu: {labels}")
+
+        with patch(
+            "hermes_cli.main._prompt_provider_choice",
+            side_effect=choose_antigravity,
+        ), patch(
+            "hermes_cli.auth.get_antigravity_oauth_auth_status",
+            return_value={"logged_in": True},
+        ), patch(
+            "hermes_cli.auth.resolve_antigravity_oauth_runtime_credentials",
+            return_value={
+                "provider": "antigravity-cli",
+                "base_url": "cloudcode-pa://google",
+                "api_key": "agy-token",
+                "source": "antigravity-cli",
+            },
+        ), patch(
+            "hermes_cli.auth._prompt_model_selection",
+            return_value="gemini-3-flash-agent",
+        ), patch(
+            "builtins.input",
+            return_value="y",
+        ), patch("builtins.print"):
+            select_provider_and_model()
+
+        import yaml
+
+        config = yaml.safe_load((config_home / "config.yaml").read_text()) or {}
+        model = config.get("model")
+        assert isinstance(model, dict)
+        assert model["provider"] == "antigravity-cli"
+        assert model["base_url"] == "cloudcode-pa://google"
+        assert model["default"] == "gemini-3-flash-agent"
+
     def test_named_custom_provider_preserves_explicit_api_mode(self, config_home):
         """Named custom providers should re-activate with their saved api_mode."""
         import yaml
@@ -210,6 +270,85 @@ class TestProviderPersistsAfterModelSave:
         assert model.get("provider") == "custom"
         assert model.get("base_url") == "https://packy.example.com/v1"
         assert model.get("api_mode") == "codex_responses"
+
+    def test_select_provider_and_model_does_not_persist_antigravity_without_credentials(
+        self,
+        config_home,
+        monkeypatch,
+    ):
+        """Missing Antigravity credentials must leave the existing model config alone."""
+        from hermes_cli.main import select_provider_and_model
+
+        before = (config_home / "config.yaml").read_text()
+        monkeypatch.setattr("hermes_cli.auth.resolve_provider", lambda *args, **kwargs: None)
+
+        def choose_antigravity(labels, default=0):
+            for idx, label in enumerate(labels):
+                if "Antigravity" in label:
+                    return idx
+            raise AssertionError(f"Antigravity provider missing from menu: {labels}")
+
+        with patch(
+            "hermes_cli.main._prompt_provider_choice",
+            side_effect=choose_antigravity,
+        ), patch(
+            "hermes_cli.auth.get_antigravity_oauth_auth_status",
+            return_value={"logged_in": False, "auth_file": "/tmp/agy-token"},
+        ), patch(
+            "hermes_cli.auth.resolve_antigravity_oauth_runtime_credentials",
+        ) as resolve_credentials, patch(
+            "hermes_cli.auth._prompt_model_selection",
+        ) as prompt_model, patch(
+            "builtins.input",
+            return_value="y",
+        ), patch("builtins.print"):
+            select_provider_and_model()
+
+        assert (config_home / "config.yaml").read_text() == before
+        resolve_credentials.assert_not_called()
+        prompt_model.assert_not_called()
+
+    def test_select_provider_and_model_cancelled_antigravity_warning_leaves_config(
+        self,
+        config_home,
+        monkeypatch,
+    ):
+        """Declining the Antigravity warning must stop before credential checks."""
+        from hermes_cli.main import select_provider_and_model
+
+        before = (config_home / "config.yaml").read_text()
+        monkeypatch.setattr("hermes_cli.auth.resolve_provider", lambda *args, **kwargs: None)
+
+        def choose_antigravity(labels, default=0):
+            for idx, label in enumerate(labels):
+                if "Antigravity" in label:
+                    return idx
+            raise AssertionError(f"Antigravity provider missing from menu: {labels}")
+
+        with patch(
+            "hermes_cli.main._prompt_provider_choice",
+            side_effect=choose_antigravity,
+        ), patch(
+            "hermes_cli.auth.get_antigravity_oauth_auth_status",
+        ) as auth_status, patch(
+            "hermes_cli.auth.resolve_antigravity_oauth_runtime_credentials",
+        ) as resolve_credentials, patch(
+            "hermes_cli.auth._prompt_model_selection",
+        ) as prompt_model, patch(
+            "builtins.input",
+            return_value="n",
+        ), patch("builtins.print") as printed:
+            select_provider_and_model()
+
+        assert (config_home / "config.yaml").read_text() == before
+        warning_text = "\n".join(
+            str(call.args[0]) for call in printed.call_args_list if call.args
+        )
+        assert "third-party software" in warning_text
+        assert "account restrictions" in warning_text
+        auth_status.assert_not_called()
+        resolve_credentials.assert_not_called()
+        prompt_model.assert_not_called()
 
     def test_copilot_acp_provider_saved_when_selected(self, config_home):
         """_model_flow_copilot_acp should persist provider/base_url/model together."""
@@ -393,4 +532,3 @@ class TestBaseUrlValidation:
 
         saved = get_env_value("GLM_BASE_URL") or ""
         assert saved == "", "Empty input should not save a base URL"
-
