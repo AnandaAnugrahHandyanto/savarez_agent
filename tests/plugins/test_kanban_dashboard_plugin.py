@@ -1033,6 +1033,22 @@ def test_dashboard_dependency_selects_use_value_change_handler():
     assert child_select in bundle
 
 
+def test_dashboard_bundle_renders_control_cockpit_panel():
+    repo_root = Path(__file__).resolve().parents[2]
+    bundle = (
+        repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
+    ).read_text()
+
+    assert "function CockpitPanel(props)" in bundle
+    assert "function CockpitPhaseBar(props)" in bundle
+    assert "function CockpitApprovalQueue(props)" in bundle
+    assert "function CockpitFleetRoster(props)" in bundle
+    assert "`${API}/cockpit`" in bundle
+    assert "Handshake phases" in bundle
+    assert "Approval queue" in bundle
+    assert "Fleet roster" in bundle
+
+
 def test_bulk_archive(client):
     a = client.post("/api/plugins/kanban/tasks", json={"title": "a"}).json()["task"]
     b = client.post("/api/plugins/kanban/tasks", json={"title": "b"}).json()["task"]

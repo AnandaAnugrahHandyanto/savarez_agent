@@ -9,6 +9,185 @@
   width: 100%;
 }
 
+/* ---- Control cockpit ------------------------------------------------ */
+
+.hermes-kanban-cockpit {
+  border: 1px solid var(--color-border);
+  background: color-mix(in srgb, var(--color-card) 92%, transparent);
+  border-radius: var(--radius);
+  padding: 0.75rem;
+}
+
+.hermes-kanban-cockpit--loading,
+.hermes-kanban-cockpit--error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.hermes-kanban-cockpit-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 0.75rem;
+}
+
+.hermes-kanban-cockpit-title {
+  font-size: 0.95rem;
+  font-weight: 700;
+}
+
+.hermes-kanban-cockpit-subtitle {
+  font-size: 0.72rem;
+  color: var(--color-muted-foreground);
+}
+
+.hermes-kanban-cockpit-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.hermes-kanban-cockpit-pill {
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  padding: 0.15rem 0.5rem;
+  font-size: 0.68rem;
+  color: var(--color-muted-foreground);
+  background: color-mix(in srgb, var(--color-foreground) 4%, transparent);
+}
+
+.hermes-kanban-cockpit-pill--warn {
+  border-color: color-mix(in srgb, var(--color-destructive, #d14a4a) 45%, var(--color-border));
+  color: var(--color-foreground);
+  background: color-mix(in srgb, var(--color-destructive, #d14a4a) 10%, transparent);
+}
+
+.hermes-kanban-cockpit-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(240px, 0.9fr) minmax(240px, 0.95fr);
+  gap: 0.75rem;
+}
+
+.hermes-kanban-cockpit-card {
+  border: 1px solid color-mix(in srgb, var(--color-border) 78%, transparent);
+  border-radius: var(--radius-sm, 0.25rem);
+  padding: 0.65rem;
+  min-width: 0;
+}
+
+.hermes-kanban-cockpit-card-head {
+  font-size: 0.75rem;
+  font-weight: 700;
+  margin-bottom: 0.45rem;
+}
+
+.hermes-kanban-cockpit-phasebar {
+  display: flex;
+  height: 0.7rem;
+  overflow: hidden;
+  border-radius: 999px;
+  border: 1px solid var(--color-border);
+  background: color-mix(in srgb, var(--color-foreground) 5%, transparent);
+}
+
+.hermes-kanban-cockpit-phase {
+  min-width: 0.4rem;
+  background: color-mix(in srgb, var(--color-ring) 48%, transparent);
+  border-right: 1px solid color-mix(in srgb, var(--color-card) 70%, transparent);
+  color: transparent;
+}
+
+.hermes-kanban-cockpit-phase-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin-top: 0.55rem;
+}
+
+.hermes-kanban-cockpit-phase-chip {
+  appearance: none;
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--color-foreground);
+  padding: 0.12rem 0.45rem;
+  font-size: 0.62rem;
+  cursor: pointer;
+}
+
+.hermes-kanban-cockpit-phase-chip--muted {
+  color: var(--color-muted-foreground);
+  opacity: 0.72;
+}
+
+.hermes-kanban-cockpit-stats {
+  display: flex;
+  gap: 0.45rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.45rem;
+  font-size: 0.65rem;
+  color: var(--color-muted-foreground);
+}
+
+.hermes-kanban-cockpit-approval-list,
+.hermes-kanban-cockpit-roster {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.hermes-kanban-cockpit-approval {
+  appearance: none;
+  text-align: left;
+  border: 1px solid color-mix(in srgb, var(--color-destructive, #d14a4a) 28%, var(--color-border));
+  background: color-mix(in srgb, var(--color-destructive, #d14a4a) 7%, transparent);
+  color: var(--color-foreground);
+  border-radius: var(--radius-sm, 0.25rem);
+  padding: 0.4rem;
+  cursor: pointer;
+}
+
+.hermes-kanban-cockpit-approval-title,
+.hermes-kanban-cockpit-profile-name {
+  display: block;
+  font-size: 0.72rem;
+  font-weight: 650;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hermes-kanban-cockpit-approval-meta,
+.hermes-kanban-cockpit-profile-counts {
+  display: block;
+  font-size: 0.62rem;
+  color: var(--color-muted-foreground);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hermes-kanban-cockpit-profile {
+  border-left: 2px solid color-mix(in srgb, var(--color-ring) 45%, var(--color-border));
+  padding-left: 0.45rem;
+}
+
+@media (max-width: 980px) {
+  .hermes-kanban-cockpit-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .hermes-kanban-cockpit-head {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}
+
 /* ---- Code/pre reset (theme-immune default) --------------------------- *
  *
  * Themes (shipped AND user-installable) routinely paint every <code> and

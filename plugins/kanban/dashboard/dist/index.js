@@ -470,6 +470,9 @@
     const [search, setSearch] = useState("");
     const [laneByProfile, setLaneByProfile] = useState(true);
     const [configApplied, setConfigApplied] = useState(false);
+    const [cockpit, setCockpit] = useState(null);
+    const [cockpitLoading, setCockpitLoading] = useState(false);
+    const [cockpitError, setCockpitError] = useState(null);
 
     const [selectedTaskId, setSelectedTaskId] = useState(null);
     const [selectedIds, setSelectedIds] = useState(() => new Set());
@@ -523,6 +526,19 @@
         .finally(function () { setLoading(false); });
     }, [tenantFilter, includeArchived, board]);
 
+    const loadCockpit = useCallback(function () {
+      setCockpitLoading(true);
+      return SDK.fetchJSON(withBoard(`${API}/cockpit`, board))
+        .then(function (data) {
+          setCockpit(data || null);
+          setCockpitError(null);
+        })
+        .catch(function (err) {
+          setCockpitError(parseApiErrorMessage(err));
+        })
+        .finally(function () { setCockpitLoading(false); });
+    }, [board]);
+
     // --- load list of boards for the switcher ------------------------------
     const loadBoardList = useCallback(function () {
       return SDK.fetchJSON(withBoard(`${API}/boards`, board))
@@ -552,8 +568,9 @@
       reloadTimerRef.current = setTimeout(function () {
         reloadTimerRef.current = null;
         loadBoard();
+        loadCockpit();
       }, 250);
-    }, [loadBoard]);
+    }, [loadBoard, loadCockpit]);
 
     useEffect(function () {
       loadBoard();
@@ -564,6 +581,10 @@
         }
       };
     }, [loadBoard]);
+
+    useEffect(function () {
+      loadCockpit();
+    }, [loadCockpit]);
 
     // --- WebSocket ---------------------------------------------------------
     useEffect(function () {
@@ -742,9 +763,10 @@
         }
         loadBoard();
         loadBoardList();  // refresh counts in the switcher
+        loadCockpit();
         return res;
       });
-    }, [loadBoard, loadBoardList, board, t]);
+    }, [loadBoard, loadBoardList, loadCockpit, board, t]);
 
     const toggleSelected = useCallback(function (id, additive) {
       setSelectedIds(function (prev) {
@@ -967,6 +989,13 @@
           onNewClick: function () { setShowNewBoard(true); },
           onDeleteBoard: deleteBoard,
         }),
+        h(CockpitPanel, {
+          snapshot: cockpit,
+          loading: cockpitLoading,
+          error: cockpitError,
+          onRefresh: loadCockpit,
+          onOpenTask: setSelectedTaskId,
+        }),
         showNewBoard ? h(NewBoardDialog, {
           onCancel: function () { setShowNewBoard(false); },
           onCreate: function (payload) {
@@ -990,7 +1019,10 @@
               .then(loadBoard)
               .catch(function (e) { setError(String(e.message || e)); });
           },
-          onRefresh: loadBoard,
+          onRefresh: function () {
+            loadBoard();
+            loadCockpit();
+          },
         }),
        selectedIds.size > 0 ? h(BulkActionBar, {
          count: selectedIds.size,
@@ -1030,6 +1062,192 @@
           eventTick: taskEventTick[selectedTaskId] || 0,
         }) : null,
       ),
+    );
+  }
+
+  // -------------------------------------------------------------------------
+  // Control Cockpit -- compact fleet, handshake, and approval overview.
+  // -------------------------------------------------------------------------
+
+  function CockpitPanel(props) {
+    const snap = props.snapshot;
+    const phases = snap && snap.handshake ? snap.handshake.phase_counts || {} : {};
+    const attention = snap && snap.attention ? snap.attention : {};
+    const fleet = snap && snap.fleet ? snap.fleet : {};
+    const board = snap && snap.board ? snap.board : null;
+
+    if (!snap && props.loading) {
+      return h("div", { className: "hermes-kanban-cockpit hermes-kanban-cockpit--loading" },
+        h("div", { className: "hermes-kanban-cockpit-title" }, "Control Cockpit"),
+        h("div", { className: "text-xs text-muted-foreground" }, "Loading fleet snapshot..."),
+      );
+    }
+
+    if (!snap && props.error) {
+      return h("div", { className: "hermes-kanban-cockpit hermes-kanban-cockpit--error" },
+        h("div", { className: "hermes-kanban-cockpit-title" }, "Control Cockpit"),
+        h("div", { className: "text-xs text-destructive" }, props.error),
+        h("button", {
+          type: "button",
+          className: "hermes-kanban-edit-link",
+          onClick: props.onRefresh,
+        }, "refresh"),
+      );
+    }
+
+    if (!snap) return null;
+
+    return h("section", { className: "hermes-kanban-cockpit" },
+      h("div", { className: "hermes-kanban-cockpit-head" },
+        h("div", null,
+          h("div", { className: "hermes-kanban-cockpit-title" }, "Control Cockpit"),
+          h("div", { className: "hermes-kanban-cockpit-subtitle" },
+            board
+              ? `${board.name || board.slug} - ${board.total || 0} active tasks`
+              : "Fleet snapshot"),
+        ),
+        h("div", { className: "hermes-kanban-cockpit-actions" },
+          h("span", {
+            className: "hermes-kanban-cockpit-pill",
+            title: "Active worker attempts currently recorded in task_runs.",
+          }, `${fleet.active_run_count || 0} running`),
+          h("span", {
+            className: attention.approval_count > 0
+              ? "hermes-kanban-cockpit-pill hermes-kanban-cockpit-pill--warn"
+              : "hermes-kanban-cockpit-pill",
+            title: "Blocked or review tasks that look like they need Milos approval.",
+          }, `${attention.approval_count || 0} approvals`),
+          h("button", {
+            type: "button",
+            className: "hermes-kanban-edit-link",
+            onClick: props.onRefresh,
+            disabled: !!props.loading,
+            title: "Refresh cockpit snapshot",
+          }, props.loading ? "refreshing" : "refresh"),
+        ),
+      ),
+      props.error ? h("div", { className: "text-xs text-destructive" }, props.error) : null,
+      h("div", { className: "hermes-kanban-cockpit-grid" },
+        h(CockpitPhaseBar, { phases: phases, onOpenTask: props.onOpenTask, tasks: snap.handshake.tasks || [] }),
+        h(CockpitApprovalQueue, {
+          approvals: attention.approval_queue || [],
+          blockedCount: attention.blocked_count || 0,
+          staleReadyCount: attention.stale_ready_count || 0,
+          diagnosticCount: attention.diagnostic_count || 0,
+          onOpenTask: props.onOpenTask,
+        }),
+        h(CockpitFleetRoster, {
+          profiles: fleet.profiles || [],
+          byProfile: fleet.by_profile || {},
+          activeRuns: fleet.active_runs || [],
+        }),
+      ),
+    );
+  }
+
+  function CockpitPhaseBar(props) {
+    const ordered = [
+      "DISCOVERED",
+      "KANBAN_BOUND",
+      "ACCEPTED",
+      "IN_PROGRESS",
+      "APPROVAL_PENDING",
+      "PEER_REVIEW_PENDING",
+      "BLOCKED",
+      "COMPLETE",
+    ];
+    const total = ordered.reduce(function (sum, phase) {
+      return sum + Number(props.phases[phase] || 0);
+    }, 0);
+
+    return h("div", { className: "hermes-kanban-cockpit-card" },
+      h("div", { className: "hermes-kanban-cockpit-card-head" }, "Handshake phases"),
+      h("div", { className: "hermes-kanban-cockpit-phasebar" },
+        ordered.map(function (phase) {
+          const count = Number(props.phases[phase] || 0);
+          const pct = total > 0 ? Math.max(6, Math.round((count / total) * 100)) : 0;
+          return h("div", {
+            key: phase,
+            className: "hermes-kanban-cockpit-phase",
+            style: { flexBasis: pct + "%" },
+            title: `${phase}: ${count}`,
+          }, count > 0 ? count : "");
+        }),
+      ),
+      h("div", { className: "hermes-kanban-cockpit-phase-list" },
+        ordered.map(function (phase) {
+          const count = Number(props.phases[phase] || 0);
+          return h("button", {
+            key: phase,
+            type: "button",
+            className: count > 0
+              ? "hermes-kanban-cockpit-phase-chip"
+              : "hermes-kanban-cockpit-phase-chip hermes-kanban-cockpit-phase-chip--muted",
+            onClick: function () {
+              const first = (props.tasks || []).find(function (task) { return task.phase === phase; });
+              if (first && props.onOpenTask) props.onOpenTask(first.task_id);
+            },
+            title: count > 0 ? `Open first task in ${phase}` : `${phase}: no tasks`,
+          }, `${phase.replace(/_/g, " ")} ${count}`);
+        }),
+      ),
+    );
+  }
+
+  function CockpitApprovalQueue(props) {
+    const approvals = props.approvals || [];
+    return h("div", { className: "hermes-kanban-cockpit-card" },
+      h("div", { className: "hermes-kanban-cockpit-card-head" }, "Approval queue"),
+      h("div", { className: "hermes-kanban-cockpit-stats" },
+        h("span", null, `${props.blockedCount || 0} blocked`),
+        h("span", null, `${props.staleReadyCount || 0} stale ready`),
+        h("span", null, `${props.diagnosticCount || 0} diagnostics`),
+      ),
+      approvals.length === 0
+        ? h("div", { className: "text-xs text-muted-foreground" }, "No approval gates waiting.")
+        : h("div", { className: "hermes-kanban-cockpit-approval-list" },
+            approvals.slice(0, 5).map(function (item) {
+              return h("button", {
+                key: item.task_id,
+                type: "button",
+                className: "hermes-kanban-cockpit-approval",
+                onClick: function () { props.onOpenTask && props.onOpenTask(item.task_id); },
+                title: item.reason || "Open approval task",
+              },
+                h("span", { className: "hermes-kanban-cockpit-approval-title" }, item.title || item.task_id),
+                h("span", { className: "hermes-kanban-cockpit-approval-meta" },
+                  `${item.assignee ? "@" + item.assignee + " - " : ""}${item.reason || ""}`),
+              );
+            }),
+          ),
+    );
+  }
+
+  function CockpitFleetRoster(props) {
+    const profiles = props.profiles || [];
+    const byProfile = props.byProfile || {};
+    const activeRuns = props.activeRuns || [];
+    return h("div", { className: "hermes-kanban-cockpit-card" },
+      h("div", { className: "hermes-kanban-cockpit-card-head" }, "Fleet roster"),
+      profiles.length === 0
+        ? h("div", { className: "text-xs text-muted-foreground" }, "No profile metadata loaded.")
+        : h("div", { className: "hermes-kanban-cockpit-roster" },
+            profiles.slice(0, 8).map(function (profile) {
+              const counts = byProfile[profile.name] || {};
+              const active = activeRuns.filter(function (run) {
+                return run.profile === profile.name;
+              }).length;
+              return h("div", {
+                key: profile.name,
+                className: "hermes-kanban-cockpit-profile",
+                title: profile.description || profile.name,
+              },
+                h("span", { className: "hermes-kanban-cockpit-profile-name" }, "@" + profile.name),
+                h("span", { className: "hermes-kanban-cockpit-profile-counts" },
+                  `${active} run / ${counts.ready || 0} ready / ${counts.blocked || 0} blocked`),
+              );
+            }),
+          ),
     );
   }
 
