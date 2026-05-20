@@ -176,6 +176,33 @@ def test_open_claim_without_report_blocks_missing_report(tmp_path, monkeypatch):
     assert "Reason: missing_report" in out
 
 
+def test_explicit_in_progress_response_without_report_passes(tmp_path, monkeypatch):
+    repo, ref, sha = _make_repo(tmp_path)
+    monkeypatch.chdir(repo)
+    gate_state.registry.set(_claim(ref, sha))
+    response = """Gate status: in_progress
+Working set: still running focused validation.
+Next action: continue tool execution before final packet.
+"""
+
+    assert _on_transform_llm_output(response_text=response, session_id="s1") is None
+
+
+def test_in_progress_marker_with_closure_language_still_blocks(tmp_path, monkeypatch):
+    repo, ref, sha = _make_repo(tmp_path)
+    monkeypatch.chdir(repo)
+    gate_state.registry.set(_claim(ref, sha))
+    response = """Gate status: in_progress
+Summary: the ratified gate is completed and ready for Source.
+"""
+
+    out = _on_transform_llm_output(response_text=response, session_id="s1")
+
+    assert out is not None
+    assert "Completion-report runtime hook blocked" in out
+    assert "Reason: missing_report" in out
+
+
 def test_open_claim_with_valid_report_passes(tmp_path, monkeypatch):
     repo, ref, sha = _make_repo(tmp_path)
     monkeypatch.chdir(repo)

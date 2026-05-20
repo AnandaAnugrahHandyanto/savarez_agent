@@ -16,6 +16,17 @@ logger = logging.getLogger(__name__)
 _RATIFICATION_RE = re.compile(
     r"Source\s+ratifies\s+prompt:(?P<path>\S+)\s+with\s+SHA(?:256)?:(?P<sha>[0-9a-f]{64})"
 )
+_IN_PROGRESS_MARKER_RE = re.compile(r"(?im)^\s*Gate status:\s*in_progress\s*$")
+_IN_PROGRESS_FORBIDDEN_RE = re.compile(
+    r"(?i)("
+    r"\bcomplet(?:e|ed|ion)\b|"
+    r"\bclos(?:e|ed|ure)\b|"
+    r"\breleas(?:e|ed|ing)\b|"
+    r"\bready\s+for\s+(?:the\s+)?next\s+source\b|"
+    r"\bexact\s+next\s+source\s+prompt\b|"
+    r"source\s+ratifies\s+prompt:"
+    r")"
+)
 
 
 def _session(session_id: str | None) -> str:
@@ -70,6 +81,16 @@ def _refresh_open_gate(session_id: str, user_message: str = "") -> GateRecord | 
     return None
 
 
+def _is_explicit_in_progress_response(response_text: str) -> bool:
+    """Return true only for narrow, auditable non-terminal gate updates."""
+    text = response_text or ""
+    if _IN_PROGRESS_MARKER_RE.search(text) is None:
+        return False
+    if validation.terminal_section_violation(text) is None:
+        return False
+    return _IN_PROGRESS_FORBIDDEN_RE.search(text) is None
+
+
 def _evaluate(record: GateRecord, response_text: str) -> str | None:
     if not record.required:
         return None
@@ -78,6 +99,12 @@ def _evaluate(record: GateRecord, response_text: str) -> str | None:
         return None
     if not record.controller_id or record.controller_id == "unknown-controller":
         logger.warning("pco-completion-gate: unknown controller for open gate")
+    if _is_explicit_in_progress_response(response_text):
+        logger.info(
+            "pco-completion-gate: allowing explicit in-progress response for session %s",
+            record.session_id,
+        )
+        return None
 
     repo_root = discovery.find_repo_root()
     if repo_root is None:
