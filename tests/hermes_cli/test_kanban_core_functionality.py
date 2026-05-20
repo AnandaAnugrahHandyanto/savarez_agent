@@ -2364,6 +2364,7 @@ def test_build_worker_context_role_history_bounded_to_5(kanban_home):
 # Battle-test findings (May 2026: stress/ suite exposed zombie + id collision)
 # -------------------------------------------------------------------------
 
+@pytest.mark.live_system_guard_bypass
 @pytest.mark.skipif("linux" not in __import__("sys").platform,
                     reason="zombie detection is Linux-specific")
 def test_pid_alive_detects_zombie(kanban_home):

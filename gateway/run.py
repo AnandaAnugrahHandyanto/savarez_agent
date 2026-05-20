@@ -4476,6 +4476,19 @@ class GatewayRunner:
                             )
                             # Reset the failure counter on success.
                             sub_fail_counts.pop(sub_key, None)
+                            
+                            # For completed events, trigger AI summary generation
+                            # as a background task (non-blocking)
+                            if kind == "completed":
+                                asyncio.create_task(
+                                    self._generate_and_deliver_task_summary(
+                                        task_id=sub["task_id"],
+                                        board=board_slug,
+                                        adapter=adapter,
+                                        chat_id=sub["chat_id"],
+                                        thread_id=sub.get("thread_id"),
+                                    )
+                                )
                         except Exception as exc:
                             fails = sub_fail_counts.get(sub_key, 0) + 1
                             sub_fail_counts[sub_key] = fails
@@ -4590,6 +4603,39 @@ class GatewayRunner:
             )
         finally:
             conn.close()
+
+    async def _generate_and_deliver_task_summary(
+        self,
+        task_id: str,
+        board: Optional[str],
+        adapter: Any,
+        chat_id: str,
+        thread_id: Optional[str],
+    ) -> None:
+        """Generate and deliver an AI summary for a completed task.
+        
+        This is called as a background task after a completion notification
+        is sent. It generates a comprehensive AI summary covering what was
+        done, how it was done, impact, and key metrics, then delivers it
+        as a follow-up message.
+        
+        Failures are logged but don't affect the main notifier flow.
+        """
+        try:
+            from gateway.kanban_summary import generate_and_deliver_summary
+            await generate_and_deliver_summary(
+                task_id=task_id,
+                board=board,
+                adapter=adapter,
+                chat_id=chat_id,
+                thread_id=thread_id,
+                gateway_runner=self,
+            )
+        except Exception as exc:
+            logger.warning(
+                "kanban summary: background generation failed for %s: %s",
+                task_id, exc,
+            )
 
     async def _kanban_dispatcher_watcher(self) -> None:
         """Embedded kanban dispatcher — one tick every `dispatch_interval_seconds`.

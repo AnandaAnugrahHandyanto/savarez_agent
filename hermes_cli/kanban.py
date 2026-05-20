@@ -20,11 +20,20 @@ import os
 import shlex
 import sys
 import time
+import sqlite3
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, Iterable
+
+from rich.console import Console
+from rich.layout import Layout
+from rich.live import Live
+from rich.panel import Panel
+from rich.table import Table
+from rich.text import Text
 
 from hermes_cli import kanban_db as kb
-
 
 # ---------------------------------------------------------------------------
 # Small formatting helpers
@@ -1866,53 +1875,156 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
     return 0
 
 
-def _cmd_watch(args: argparse.Namespace) -> int:
-    """Live-stream task_events to the terminal."""
-    kinds = (
-        {k.strip() for k in args.kinds.split(",") if k.strip()}
-        if args.kinds else None
-    )
-    cursor = 0
-    print("Watching kanban events. Ctrl-C to stop.", flush=True)
-    # Seed cursor at the latest id so we don't replay history.
-    with kb.connect() as conn:
-        row = conn.execute(
-            "SELECT COALESCE(MAX(id), 0) AS m FROM task_events"
-        ).fetchone()
-        cursor = int(row["m"])
+def _get_watch_data(conn: sqlite3.Connection) -> tuple[list[dict], list[dict]]:
+    """Fetch state for all active tasks and recent events."""
+    # 1. Active tasks (not 'done' or 'archived')
+    tasks = conn.execute(
+        "SELECT * FROM tasks WHERE status NOT IN ('done', 'archived') ORDER BY priority DESC, created_at ASC"
+    ).fetchall()
 
-    try:
-        while True:
-            with kb.connect() as conn:
-                rows = conn.execute(
-                    "SELECT e.id, e.task_id, e.kind, e.payload, e.created_at, "
-                    "       t.assignee, t.tenant "
-                    "FROM task_events e LEFT JOIN tasks t ON t.id = e.task_id "
-                    "WHERE e.id > ? ORDER BY e.id ASC LIMIT 200",
-                    (cursor,),
-                ).fetchall()
-            for r in rows:
-                cursor = max(cursor, int(r["id"]))
-                if kinds and r["kind"] not in kinds:
-                    continue
-                if args.assignee and r["assignee"] != args.assignee:
-                    continue
-                if args.tenant and r["tenant"] != args.tenant:
-                    continue
+    active_data = []
+    for t in tasks:
+        # Get latest run for this task
+        run = conn.execute(
+            "SELECT * FROM task_runs WHERE task_id = ? ORDER BY id DESC LIMIT 1",
+            (t["id"],)
+        ).fetchone()
+        
+        failures = conn.execute(
+            "SELECT COUNT(*) as n FROM task_runs WHERE task_id = ? AND outcome IN ('crashed', 'timed_out', 'spawn_failed')",
+            (t["id"],)
+        ).fetchone()["n"]
+
+        active_data.append({
+            "id": t["id"],
+            "title": t["title"],
+            "status": t["status"],
+            "assignee": t["assignee"],
+            "pid": run["worker_pid"] if run else None,
+            "failures": failures,
+            "last_heartbeat": t["last_heartbeat_at"],
+        })
+
+    # 2. Recent events for the board
+    events = conn.execute(
+        "SELECT e.id, e.task_id, e.kind, e.payload, e.created_at, t.title "
+        "FROM task_events e JOIN tasks t ON t.id = e.task_id "
+        "ORDER BY e.id DESC LIMIT 20"
+    ).fetchall()
+
+    event_data = [
+        {
+            "ts": _fmt_ts(e["created_at"]),
+            "tid": e["task_id"],
+            "title": e["title"],
+            "kind": e["kind"],
+            "payload": e["payload"],
+        }
+        for e in events
+    ]
+
+    return active_data, event_data
+
+
+def _cmd_watch(args: argparse.Namespace) -> int:
+    """Real-time TUI dashboard for the Kanban board."""
+    console = Console()
+    
+    def make_layout() -> Layout:
+        layout = Layout()
+        layout.split_column(
+            Layout(name="header", size=3),
+            Layout(name="main", ratio=1),
+            Layout(name="footer", size=12),
+        )
+        layout["main"].split_row(
+            Layout(name="tasks", ratio=3),
+            Layout(name="details", ratio=1),
+        )
+        return layout
+
+    def update_display(layout: Layout, active_tasks: list[dict], recent_events: list[dict]):
+        # Header: Board Summary
+        board = kb.get_current_board()
+        meta = kb.read_board_metadata(board)
+        layout["header"].update(
+            Panel(
+                f"[bold magenta]{meta['icon']} {meta['name']}[/bold magenta] | Board: [cyan]{board}[/cyan] | "
+                f"Active Tasks: [yellow]{len(active_tasks)}[/yellow]",
+                style="white on blue"
+            )
+        )
+
+        # Main Table: Active Tasks
+        table = Table(title="Active Tasks", expand=True, box=None)
+        table.add_column("ID", style="cyan", no_wrap=True)
+        table.add_column("Status", style="magenta")
+        table.add_column("Profile", style="green")
+        table.add_column("PID", style="yellow")
+        table.add_column("Health", style="white")
+        table.add_column("Fail", style="red")
+        table.add_column("Title", style="white")
+
+        for t in active_tasks:
+            # Health check for PID
+            health = "—"
+            if t["pid"]:
                 try:
-                    payload = json.loads(r["payload"]) if r["payload"] else None
-                except Exception:
-                    payload = None
-                pl = f" {payload}" if payload else ""
-                print(
-                    f"[{_fmt_ts(r['created_at'])}] {r['task_id']:10s} "
-                    f"{r['kind']:18s} (@{r['assignee'] or '-'}){pl}",
-                    flush=True,
-                )
-            time.sleep(max(0.1, args.interval))
+                    import os
+                    os.kill(t["pid"], 0)
+                    health = "[green]ALIVE[/green]"
+                except (OSError, ProcessLookupError):
+                    health = "[red]DEAD[/red]"
+
+            status_color = {
+                "running": "green",
+                "blocked": "red",
+                "ready": "yellow",
+                "triage": "blue",
+                "todo": "white",
+            }.get(t["status"], "white")
+
+            table.add_row(
+                t["id"],
+                f"[{status_color}]{t['status']}[/{status_color}]",
+                t["assignee"] or "—",
+                str(t["pid"]) if t["pid"] else "—",
+                health,
+                str(t["failures"]),
+                t["title"]
+            )
+        
+        layout["tasks"].update(Panel(table, title="Board State"))
+        
+        # Details: Basic Info (could be expanded to show a specific task)
+        # For now, just showing some global stats
+        stats_text = Text()
+        stats_text.append("TUI Watch Mode\n", style="bold")
+        stats_text.append("Press Ctrl+C to exit\n\n")
+        stats_text.append("Monitoring active workers via /proc\n")
+        stats_text.append("Database polling interval: 0.5s")
+        layout["details"].update(Panel(stats_text, title="Info"))
+
+        # Footer: Recent Events
+        event_list = Text()
+        for e in recent_events:
+            color = "green" if "completed" in e["kind"] else "yellow" if "blocked" in e["kind"] else "white"
+            event_list.append(f"[{e['ts']}] {e['tid']} {e['title'][:15]:<15} {e['kind']:<15} {e['payload']}\n", style=color)
+        
+        layout["footer"].update(Panel(event_list, title="Recent Activity"))
+
+    layout = make_layout()
+    
+    try:
+        with Live(layout, refresh_per_second=2, screen=True) as live:
+            while True:
+                with kb.connect() as conn:
+                    active_tasks, recent_events = _get_watch_data(conn)
+                update_display(layout, active_tasks, recent_events)
+                time.sleep(max(0.1, args.interval))
     except KeyboardInterrupt:
-        print("\n(stopped)")
         return 0
+
 
 
 def _cmd_stats(args: argparse.Namespace) -> int:

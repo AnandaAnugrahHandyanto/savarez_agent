@@ -796,7 +796,10 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- ``max_retries=1`` blocks on the first failure. NULL (the common
     -- case) falls through to the dispatcher-level ``kanban.failure_limit``
     -- config and then ``DEFAULT_FAILURE_LIMIT``.
-    max_retries          INTEGER
+    max_retries          INTEGER,
+    -- Set while a completed task is being verified so failures can return it
+    -- to the assignee that performed the original implementation.
+    pre_verifying_assignee TEXT
 );
 
 CREATE TABLE IF NOT EXISTS task_links (
@@ -1075,6 +1078,15 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
         # which is the correct default (they keep the global behaviour
         # they were getting before the column existed).
         _add_column_if_missing(conn, "tasks", "max_retries", "max_retries INTEGER")
+    if "pre_verifying_assignee" not in cols:
+        # Stores the implementation assignee while a completed task is in
+        # verification so failed verification can route the task back.
+        _add_column_if_missing(
+            conn,
+            "tasks",
+            "pre_verifying_assignee",
+            "pre_verifying_assignee TEXT",
+        )
 
     # task_events gained a run_id column; back-fill it as NULL for
     # historical events (they predate runs and can't be attributed).
@@ -1864,6 +1876,7 @@ def claim_task(
     *,
     ttl_seconds: int = DEFAULT_CLAIM_TTL_SECONDS,
     claimer: Optional[str] = None,
+    worker_pid: Optional[int] = None,
 ) -> Optional[Task]:
     """Atomically transition ``ready -> running``.
 
@@ -1925,12 +1938,13 @@ def claim_task(
                SET status        = 'running',
                    claim_lock    = ?,
                    claim_expires = ?,
-                   started_at    = COALESCE(started_at, ?)
+                   started_at    = COALESCE(started_at, ?),
+                   worker_pid    = COALESCE(worker_pid, ?)
              WHERE id = ?
                AND status = 'ready'
                AND claim_lock IS NULL
             """,
-            (lock, expires, now, task_id),
+            (lock, expires, now, worker_pid, task_id),
         )
         if cur.rowcount != 1:
             return None
@@ -1946,8 +1960,8 @@ def claim_task(
             INSERT INTO task_runs (
                 task_id, profile, step_key, status,
                 claim_lock, claim_expires, max_runtime_seconds,
-                started_at
-            ) VALUES (?, ?, ?, 'running', ?, ?, ?, ?)
+                started_at, worker_pid
+            ) VALUES (?, ?, ?, 'running', ?, ?, ?, ?, ?)
             """,
             (
                 task_id,
@@ -1957,6 +1971,7 @@ def claim_task(
                 expires,
                 trow["max_runtime_seconds"] if trow else None,
                 now,
+                worker_pid,
             ),
         )
         run_id = run_cur.lastrowid
@@ -1966,7 +1981,7 @@ def claim_task(
         )
         _append_event(
             conn, task_id, "claimed",
-            {"lock": lock, "expires": expires, "run_id": run_id},
+            {"lock": lock, "expires": expires, "run_id": run_id, "worker_pid": worker_pid},
             run_id=run_id,
         )
         return get_task(conn, task_id)
@@ -2853,15 +2868,61 @@ def resolve_workspace(task: Task, *, board: Optional[str] = None) -> Path:
         p.mkdir(parents=True, exist_ok=True)
         return p
     if kind == "worktree":
-        if not task.workspace_path:
-            # Default: .worktrees/<id>/ under CWD.  Worker skill creates it.
-            return Path.cwd() / ".worktrees" / task.id
-        p = Path(task.workspace_path).expanduser()
-        if not p.is_absolute():
-            raise ValueError(
-                f"task {task.id} has non-absolute worktree path "
-                f"{task.workspace_path!r}; use an absolute path"
+        try:
+            repo_root = Path(
+                subprocess.check_output(
+                    ["git", "rev-parse", "--show-toplevel"],
+                    text=True,
+                ).strip()
             )
+        except Exception as e:
+            raise ValueError(
+                f"task {task.id} requested workspace_kind=worktree, "
+                "but the dispatcher is not running inside a git repository"
+            ) from e
+
+        if not task.workspace_path:
+            p = repo_root / ".worktrees" / f"task_{task.id}"
+        else:
+            p = Path(task.workspace_path).expanduser()
+            if not p.is_absolute():
+                raise ValueError(
+                    f"task {task.id} has non-absolute worktree path "
+                    f"{task.workspace_path!r}; use an absolute path"
+                )
+
+        if not p.exists():
+            branch = f"kanban/task_{task.id}"
+            try:
+                base_ref = subprocess.check_output(
+                    ["git", "-C", str(repo_root), "rev-parse", "--abbrev-ref", "HEAD"],
+                    text=True,
+                ).strip()
+                if base_ref == "HEAD":
+                    base_ref = subprocess.check_output(
+                        ["git", "-C", str(repo_root), "rev-parse", "HEAD"],
+                        text=True,
+                    ).strip()
+                subprocess.run(
+                    ["git", "-C", str(repo_root), "worktree", "add", "-b", branch, str(p), base_ref],
+                    check=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                )
+            except subprocess.CalledProcessError as e:
+                if "already exists" in (e.stderr or ""):
+                    subprocess.run(
+                        ["git", "-C", str(repo_root), "worktree", "add", str(p), branch],
+                        check=True,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        text=True,
+                    )
+                else:
+                    raise ValueError(
+                        f"Failed to create git worktree at {p}: {e.stderr or e}"
+                    ) from e
         return p
     raise ValueError(f"unknown workspace_kind: {kind}")
 
@@ -3015,25 +3076,32 @@ def _pid_alive(pid: Optional[int]) -> bool:
     """
     if not pid or pid <= 0:
         return False
+    pid_int = int(pid)
+    # Linux /proc is the most direct source of both existence and zombie state.
+    # Prefer it over helper libraries so process-namespace quirks cannot make a
+    # live child look dead while /proc/<pid>/status is readable.
+    if sys.platform == "linux":
+        try:
+            with open(f"/proc/{pid_int}/status", "r", encoding="utf-8") as f:
+                for line in f:
+                    if line.startswith("State:"):
+                        # "State:\tZ (zombie)" → dead; any other state → live.
+                        return "Z" not in line.split(":", 1)[1]
+        except FileNotFoundError:
+            return False
+        except PermissionError:
+            return True
+        except OSError:
+            pass
     from gateway.status import _pid_exists
-    if not _pid_exists(int(pid)):
+    try:
+        exists = _pid_exists(pid_int)
+    except Exception:
+        return False
+    if not exists:
         return False
     # Still here → process exists. Check for zombie on platforms
     # where we have a cheap, deterministic process-state probe.
-    if sys.platform == "linux":
-        try:
-            with open(f"/proc/{int(pid)}/status", "r", encoding="utf-8") as f:
-                for line in f:
-                    if line.startswith("State:"):
-                        # "State:\tZ (zombie)" → dead
-                        if "Z" in line.split(":", 1)[1]:
-                            return False
-                        break
-        except (FileNotFoundError, PermissionError, OSError):
-            # proc entry gone → already reaped; treat as dead.
-            # PermissionError shouldn't happen for our own children but
-            # be defensive.
-            pass
     elif sys.platform == "darwin":
         try:
             proc = subprocess.run(
@@ -3800,7 +3868,7 @@ def dispatch_once(
         if dry_run:
             result.spawned.append((row["id"], row["assignee"], ""))
             continue
-        claimed = claim_task(conn, row["id"], ttl_seconds=ttl_seconds)
+        claimed = claim_task(conn, row["id"], ttl_seconds=ttl_seconds, worker_pid=os.getpid())
         if claimed is None:
             continue
         try:

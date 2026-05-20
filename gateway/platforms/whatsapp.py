@@ -192,27 +192,28 @@ from gateway.platforms.base import (
 
 
 def check_whatsapp_requirements() -> bool:
-    """
-    Check if WhatsApp dependencies are available.
-    
-    WhatsApp requires a Node.js bridge for most implementations.
-    """
-    # Check for Node.js.  Resolve via shutil.which so we respect PATHEXT
-    # (node.exe vs node) and get a meaningful "not installed" signal
-    # instead of spawning a cmd flash on Windows.
     _node = shutil.which("node")
     if not _node:
         return False
+    
     try:
-        result = subprocess.run(
-            [_node, "--version"],
-            capture_output=True,
-            text=True,
-            timeout=5
-        )
-        return result.returncode == 0
+        result = subprocess.run([_node, "--version"], capture_output=True, timeout=5)
+        if result.returncode != 0:
+            return False
     except Exception:
         return False
+    
+    _bridge_root = Path(__file__).parents[2] / "scripts" / "whatsapp-bridge"
+    _nm = _bridge_root / "node_modules"
+    if not _nm.is_dir():
+        return False
+    _missing = []
+    for _pkg in ("@whiskeysockets/baileys", "link-preview-js"):
+        if not (_nm / _pkg).is_dir():
+            _missing.append(_pkg)
+    if _missing:
+        return False
+    return True
 
 
 class WhatsAppAdapter(BasePlatformAdapter):

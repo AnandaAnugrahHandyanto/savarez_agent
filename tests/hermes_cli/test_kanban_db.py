@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import os
+import subprocess
 import time
 from pathlib import Path
 
@@ -774,16 +775,50 @@ def test_dir_workspace_honors_given_path(kanban_home, tmp_path):
     assert ws.exists()
 
 
-def test_worktree_workspace_returns_intended_path(kanban_home, tmp_path):
-    target = str(tmp_path / ".worktrees" / "my-task")
+def test_worktree_workspace_creates_isolated_git_worktree(kanban_home, tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-b", "main"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "Test User"], cwd=repo, check=True)
+    (repo / "README.md").write_text("base\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=repo, check=True)
+    monkeypatch.chdir(repo)
+
     with kb.connect() as conn:
-        t = kb.create_task(
-            conn, title="ship", workspace_kind="worktree", workspace_path=target
-        )
+        t = kb.create_task(conn, title="ship", workspace_kind="worktree")
         task = kb.get_task(conn, t)
         ws = kb.resolve_workspace(task)
-    # We do NOT auto-create worktrees; the worker's skill handles that.
-    assert str(ws) == target
+
+    assert ws == repo / ".worktrees" / f"task_{t}"
+    assert (ws / ".git").exists()
+    assert subprocess.check_output(["git", "-C", str(ws), "branch", "--show-current"], text=True).strip() == f"kanban/task_{t}"
+
+
+def test_worktree_workspace_allows_two_concurrent_tasks(kanban_home, tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-b", "main"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "Test User"], cwd=repo, check=True)
+    (repo / "README.md").write_text("base\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=repo, check=True)
+    monkeypatch.chdir(repo)
+
+    with kb.connect() as conn:
+        t1 = kb.create_task(conn, title="one", workspace_kind="worktree")
+        t2 = kb.create_task(conn, title="two", workspace_kind="worktree")
+        ws1 = kb.resolve_workspace(kb.get_task(conn, t1))
+        ws2 = kb.resolve_workspace(kb.get_task(conn, t2))
+
+    assert ws1 != ws2
+    assert ws1.exists()
+    assert ws2.exists()
+    branches = subprocess.check_output(["git", "worktree", "list", "--porcelain"], cwd=repo, text=True)
+    assert f"branch refs/heads/kanban/task_{t1}" in branches
+    assert f"branch refs/heads/kanban/task_{t2}" in branches
 
 
 # ---------------------------------------------------------------------------

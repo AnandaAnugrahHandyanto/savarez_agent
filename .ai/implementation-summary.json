@@ -1,0 +1,22 @@
+{
+  "task_id": "t_01ec166c",
+  "summary": "Implemented dispatcher-side git worktree creation for Kanban worktree tasks. Worktrees now default to <repo>/.worktrees/task_<task_id> and use per-task branches kanban/task_<task_id>, allowing concurrent tasks to resolve separate directories without sharing the checked-out base branch.",
+  "changed_files": [
+    "hermes_cli/kanban_db.py",
+    "tests/hermes_cli/test_kanban_db.py"
+  ],
+  "tests_run": [
+    {
+      "command": "./venv/bin/python -m pytest tests/hermes_cli/test_kanban_db.py::test_worktree_workspace_creates_isolated_git_worktree tests/hermes_cli/test_kanban_db.py::test_worktree_workspace_allows_two_concurrent_tasks -q -o 'addopts='",
+      "result": "2 passed"
+    },
+    {
+      "command": "./venv/bin/python -m pytest tests/hermes_cli/test_kanban_db.py -q -o 'addopts='",
+      "result": "83 passed"
+    }
+  ],
+  "notes": [
+    "Existing unrelated uncommitted changes were present before this run in gateway/platforms/whatsapp.py, gateway/run.py, hermes_cli/kanban.py, uv.lock, gateway/kanban_summary.py, and .ai/.",
+    "This run intentionally touched only hermes_cli/kanban_db.py, tests/hermes_cli/test_kanban_db.py, and this implementation summary."
+  ]
+}

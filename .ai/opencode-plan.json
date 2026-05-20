@@ -1,0 +1,58 @@
+{
+  "task_summary": "Add a Proof of State mandate to the kanban-worker and kanban-orchestrator bundled skills, then review, commit, and open a PR after implementation. Current inspection shows the mandate is absent from both target skill files; the existing flash implementation task is blocked because the expected implementation contract file is missing.",
+  "risk": "high",
+  "assumptions": [
+    "This is documentation/skill guidance work, but risk is high because the requested guidance governs cron jobs, systemd services, database/schema/data changes, runtime state, and agent behavior around persistent state.",
+    "The correct target repo is /home/server/.hermes/hermes-agent.",
+    "The uncommitted files already present in the worktree are unrelated user/agent work and must not be overwritten or committed as part of this task unless explicitly reviewed later."
+  ],
+  "files_inspected": [
+    "/home/server/.hermes/hermes-agent/skills/devops/kanban-worker/SKILL.md",
+    "/home/server/.hermes/hermes-agent/skills/devops/kanban-orchestrator/SKILL.md",
+    "/home/server/.hermes/hermes-agent/skills/devops/webhook-subscriptions/SKILL.md",
+    "/home/server/.hermes/hermes-agent/AGENTS.md",
+    "kanban task t_3da5944a thread",
+    "kanban task t_982aee8a thread"
+  ],
+  "files_likely_to_change": [
+    "/home/server/.hermes/hermes-agent/skills/devops/kanban-worker/SKILL.md",
+    "/home/server/.hermes/hermes-agent/skills/devops/kanban-orchestrator/SKILL.md",
+    "/home/server/.hermes/hermes-agent/.ai/implementation-contract.json"
+  ],
+  "files_not_to_touch": [
+    "/home/server/.hermes/hermes-agent/gateway/platforms/whatsapp.py",
+    "/home/server/.hermes/hermes-agent/gateway/run.py",
+    "/home/server/.hermes/hermes-agent/hermes_cli/kanban.py",
+    "/home/server/.hermes/hermes-agent/hermes_cli/kanban_db.py",
+    "/home/server/.hermes/hermes-agent/uv.lock",
+    "/home/server/.hermes/hermes-agent/gateway/kanban_summary.py",
+    "Any cron job definitions, systemd unit files, database files, migration files, or production configuration files"
+  ],
+  "implementation_plan": [
+    "1. Create /home/server/.hermes/hermes-agent/.ai/implementation-contract.json so the flash implementation profile has the required contract and can proceed safely.",
+    "2. In skills/devops/kanban-worker/SKILL.md, add a concise 'Proof of State' section near Workspace handling and Good summary + metadata. State that workers must capture and report concrete before/after state evidence before claiming, changing, restarting, or marking done work that affects persistent or runtime state.",
+    "3. Worker wording must explicitly cover cron jobs, systemd/user services and timers, and database/schema/data changes. Examples should include cronjob list/job id/status, systemctl --user status/list-units/list-timers output summaries, migration/schema/version row/count checks, git status/diff when applicable, and before/after evidence for any changes.",
+    "4. Worker wording must require recording evidence in kanban comments, metadata, or handoff summaries and redacting secrets, tokens, raw PII, and sensitive row contents from durable board logs.",
+    "5. In skills/devops/kanban-orchestrator/SKILL.md, add routing guidance requiring orchestrators to include Proof of State requirements in task bodies and parent handoffs for cron/systemd/DB/runtime-state work, without implying workers may operate outside authorized workspaces.",
+    "6. Keep wording precise. Do not broaden the existing workspace policy; persistent/runtime state work outside the workspace must require explicit task authorization.",
+    "7. Validate YAML frontmatter and markdown sanity for both skill files. If a dedicated skill validator exists, run it; otherwise use a minimal Python frontmatter parser/check plus grep checks for Proof of State, cron jobs, systemd, and database/schema/data changes.",
+    "8. Flash implementer blocks review-required with changed files, validation output, and diff location. Planner re-reviews wording and integration before committing.",
+    "9. Before committing, inspect git diff and git status to ensure only intended skill/contract files are included, excluding pre-existing unrelated modifications. Then commit and create PR only after review acceptance."
+  ],
+  "tests_to_run": [
+    "python - <<'PY'\nfrom pathlib import Path\nfor p in ['skills/devops/kanban-worker/SKILL.md','skills/devops/kanban-orchestrator/SKILL.md']:\n    text = Path(p).read_text()\n    assert text.startswith('---\\n')\n    assert text.count('---') >= 2\n    for term in ['Proof of State', 'cron', 'systemd', 'database']:\n        assert term.lower() in text.lower(), (p, term)\nprint('skill markdown/frontmatter sanity ok')\nPY",
+    "git diff -- skills/devops/kanban-worker/SKILL.md skills/devops/kanban-orchestrator/SKILL.md .ai/implementation-contract.json",
+    "git status --short"
+  ],
+  "known_risks": [
+    "The current worktree already has unrelated uncommitted changes; careless commit/PR preparation could include them.",
+    "Overly broad wording could authorize state changes outside a task's workspace or outside explicit task authorization.",
+    "Under-specified wording could let agents mark stateful work done without actual before/after evidence.",
+    "Proof examples involving DB row counts and service status can leak sensitive data if redaction guidance is weak."
+  ],
+  "unknowns": [
+    "Whether the project has a dedicated skill validation command beyond basic frontmatter/markdown sanity checks.",
+    "Whether Codex architecture review is required before creating the implementation contract or whether this planner plan is sufficient for the flash profile's contract gate.",
+    "Whether the eventual PR should include the .ai/implementation-contract.json file or treat it as workflow-only scaffolding."
+  ]
+}
