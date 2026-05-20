@@ -248,7 +248,7 @@ def _render_table_block_for_telegram(table_block: list[str]) -> str:
         else:
             # No row-label column: use first non-empty cell as heading.
             heading = next((cell for cell in cells if cell), f"Row {index}")
-            data_cells = cells
+            data_cells = cells[1:]  # Remove first cell — it's already in heading
 
         # Pad or trim data_cells to match headers length.
         if len(data_cells) < len(headers):
