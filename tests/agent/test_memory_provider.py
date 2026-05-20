@@ -117,7 +117,7 @@ class TestMemoryProviderABC:
 
         with pytest.raises(
             TypeError,
-            match="Can't instantiate abstract class IncompleteProvider without an implementation for abstract method 'initialize'",
+            match="Can't instantiate abstract class IncompleteProvider .* abstract method '?initialize'?",
         ):
             IncompleteProvider()
 
