@@ -213,8 +213,12 @@ class TestInstallHangupProtection:
         try:
             # On Windows (no SIGHUP) we still wrap stdio and create the log.
             assert state["installed"] is True
-            assert isinstance(sys.stdout, _UpdateOutputStream)
-            assert isinstance(sys.stderr, _UpdateOutputStream)
+            # Use type-name check instead of isinstance to avoid xdist
+            # double-import race (editable install + sys.path.insert in
+            # conftest can load hermes_cli.main twice, producing two
+            # distinct _UpdateOutputStream class objects).
+            assert type(sys.stdout).__name__ == "_UpdateOutputStream"
+            assert type(sys.stderr).__name__ == "_UpdateOutputStream"
             assert state["log_file"] is not None
 
             sys.stdout.write("checking mirror\n")
