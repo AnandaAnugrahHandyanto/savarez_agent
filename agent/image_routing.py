@@ -81,19 +81,30 @@ def _explicit_aux_vision_override(cfg: Optional[Dict[str, Any]]) -> bool:
     return True
 
 
-def _lookup_supports_vision(provider: str, model: str) -> Optional[bool]:
-    """Return True/False if we can resolve caps, None if unknown."""
+def _lookup_supports_vision(
+    provider: str,
+    model: str,
+    cfg: Optional[Dict[str, Any]] = None,
+) -> Optional[bool]:
+    """Return True/False if we can resolve caps, None if unknown.
+
+    Resolution order:
+    1. models.dev capability database (covers all registered providers).
+    2. User config ``providers.<provider>.models.<model>.supports_vision``
+       (fallback for custom / self-hosted providers absent from models.dev).
+    """
     if not provider or not model:
         return None
     try:
-        from agent.models_dev import get_model_capabilities
+        from agent.models_dev import get_model_capabilities, get_user_config_vision_override
         caps = get_model_capabilities(provider, model)
     except Exception as exc:  # pragma: no cover - defensive
         logger.debug("image_routing: caps lookup failed for %s:%s — %s", provider, model, exc)
         return None
-    if caps is None:
-        return None
-    return bool(caps.supports_vision)
+    if caps is not None:
+        return bool(caps.supports_vision)
+    # models.dev has no entry for this provider/model — fall back to user config.
+    return get_user_config_vision_override(provider, model, cfg)
 
 
 def decide_image_input_mode(
@@ -123,7 +134,7 @@ def decide_image_input_mode(
     if _explicit_aux_vision_override(cfg):
         return "text"
 
-    supports = _lookup_supports_vision(provider, model)
+    supports = _lookup_supports_vision(provider, model, cfg)
     if supports is True:
         return "native"
     return "text"

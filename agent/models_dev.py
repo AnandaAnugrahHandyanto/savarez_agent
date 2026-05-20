@@ -506,6 +506,49 @@ def get_model_capabilities(provider: str, model: str) -> Optional[ModelCapabilit
     )
 
 
+def get_user_config_vision_override(
+    provider: str,
+    model: str,
+    cfg: Optional[Dict[str, Any]],
+) -> Optional[bool]:
+    """Read ``supports_vision`` from the user's config.yaml provider entry.
+
+    Returns ``True`` or ``False`` when the flag is explicitly set, ``None``
+    when it cannot be determined (provider not found, model not found, flag
+    absent).
+
+    This is the fallback for custom / self-hosted providers that are not
+    registered in the models.dev database.  Call after
+    :func:`get_model_capabilities` returns ``None``.
+
+    Config shape expected::
+
+        providers:
+          my-provider:
+            models:
+              my-model:
+                supports_vision: true
+    """
+    if not isinstance(cfg, dict) or not provider or not model:
+        return None
+    providers_cfg = cfg.get("providers")
+    if not isinstance(providers_cfg, dict):
+        return None
+    provider_entry = providers_cfg.get(provider)
+    if not isinstance(provider_entry, dict):
+        return None
+    models_entry = provider_entry.get("models")
+    if not isinstance(models_entry, dict):
+        return None
+    model_entry = models_entry.get(model)
+    if not isinstance(model_entry, dict):
+        return None
+    val = model_entry.get("supports_vision")
+    if val is None:
+        return None
+    return bool(val)
+
+
 def list_provider_models(provider: str) -> List[str]:
     """Return all model IDs for a provider from models.dev.
 
