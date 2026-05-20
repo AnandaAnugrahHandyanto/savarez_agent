@@ -62,6 +62,37 @@ def _ra():
     return run_agent
 
 
+def _emit_blocked_post_tool_call(
+    agent,
+    *,
+    function_name: str,
+    function_args: dict,
+    result: str,
+    effective_task_id: str,
+    tool_call_id: str,
+    error_type: str,
+    error_message: str,
+) -> None:
+    try:
+        from model_tools import _emit_post_tool_call_hook
+        _emit_post_tool_call_hook(
+            function_name=function_name,
+            function_args=function_args,
+            result=result,
+            task_id=effective_task_id or "",
+            session_id=getattr(agent, "session_id", "") or "",
+            tool_call_id=tool_call_id or "",
+            turn_id=getattr(agent, "_current_turn_id", "") or "",
+            api_request_id=getattr(agent, "_current_api_request_id", "") or "",
+            duration_ms=0,
+            status="blocked",
+            error_type=error_type,
+            error_message=error_message,
+        )
+    except Exception:
+        pass
+
+
 def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0) -> None:
     """Execute multiple tool calls concurrently using a thread pool.
 
@@ -127,18 +158,44 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         try:
             from hermes_cli.plugins import get_pre_tool_call_block_message
             block_message = get_pre_tool_call_block_message(
-                function_name, function_args, task_id=effective_task_id or "",
+                function_name,
+                function_args,
+                task_id=effective_task_id or "",
+                session_id=getattr(agent, "session_id", "") or "",
+                tool_call_id=getattr(tool_call, "id", "") or "",
+                turn_id=getattr(agent, "_current_turn_id", "") or "",
+                api_request_id=getattr(agent, "_current_api_request_id", "") or "",
             )
         except Exception:
             block_message = None
 
         if block_message is not None:
             block_result = json.dumps({"error": block_message}, ensure_ascii=False)
+            _emit_blocked_post_tool_call(
+                agent,
+                function_name=function_name,
+                function_args=function_args,
+                result=block_result,
+                effective_task_id=effective_task_id,
+                tool_call_id=getattr(tool_call, "id", "") or "",
+                error_type="plugin_block",
+                error_message=block_message,
+            )
         else:
             guardrail_decision = agent._tool_guardrails.before_call(function_name, function_args)
             if not guardrail_decision.allows_execution:
                 block_result = agent._guardrail_block_result(guardrail_decision)
                 blocked_by_guardrail = True
+                _emit_blocked_post_tool_call(
+                    agent,
+                    function_name=function_name,
+                    function_args=function_args,
+                    result=block_result,
+                    effective_task_id=effective_task_id,
+                    tool_call_id=getattr(tool_call, "id", "") or "",
+                    error_type="guardrail_block",
+                    error_message=getattr(guardrail_decision, "message", None) or "Tool blocked by guardrail policy",
+                )
 
         parsed_calls.append((tool_call, function_name, function_args, block_result, blocked_by_guardrail))
 
@@ -501,7 +558,13 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         try:
             from hermes_cli.plugins import get_pre_tool_call_block_message
             _block_msg = get_pre_tool_call_block_message(
-                function_name, function_args, task_id=effective_task_id or "",
+                function_name,
+                function_args,
+                task_id=effective_task_id or "",
+                session_id=getattr(agent, "session_id", "") or "",
+                tool_call_id=getattr(tool_call, "id", "") or "",
+                turn_id=getattr(agent, "_current_turn_id", "") or "",
+                api_request_id=getattr(agent, "_current_api_request_id", "") or "",
             )
         except Exception:
             pass
@@ -590,11 +653,31 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             # Tool blocked by plugin policy — return error without executing.
             function_result = json.dumps({"error": _block_msg}, ensure_ascii=False)
             tool_duration = 0.0
+            _emit_blocked_post_tool_call(
+                agent,
+                function_name=function_name,
+                function_args=function_args,
+                result=function_result,
+                effective_task_id=effective_task_id,
+                tool_call_id=getattr(tool_call, "id", "") or "",
+                error_type="plugin_block",
+                error_message=_block_msg,
+            )
         elif _guardrail_block_decision is not None:
             # Tool blocked by tool-loop guardrail — synthesize exactly one
             # tool result for the original tool_call_id without executing.
             function_result = agent._guardrail_block_result(_guardrail_block_decision)
             tool_duration = 0.0
+            _emit_blocked_post_tool_call(
+                agent,
+                function_name=function_name,
+                function_args=function_args,
+                result=function_result,
+                effective_task_id=effective_task_id,
+                tool_call_id=getattr(tool_call, "id", "") or "",
+                error_type="guardrail_block",
+                error_message=getattr(_guardrail_block_decision, "message", None) or "Tool blocked by guardrail policy",
+            )
         elif function_name == "todo":
             from tools.todo_tool import todo_tool as _todo_tool
             function_result = _todo_tool(
@@ -749,6 +832,8 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     function_name, function_args, effective_task_id,
                     tool_call_id=tool_call.id,
                     session_id=agent.session_id or "",
+                    turn_id=getattr(agent, "_current_turn_id", "") or "",
+                    api_request_id=getattr(agent, "_current_api_request_id", "") or "",
                     enabled_tools=list(agent.valid_tool_names) if agent.valid_tool_names else None,
                     skip_pre_tool_call_hook=True,
                 )
@@ -769,6 +854,8 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     function_name, function_args, effective_task_id,
                     tool_call_id=tool_call.id,
                     session_id=agent.session_id or "",
+                    turn_id=getattr(agent, "_current_turn_id", "") or "",
+                    api_request_id=getattr(agent, "_current_api_request_id", "") or "",
                     enabled_tools=list(agent.valid_tool_names) if agent.valid_tool_names else None,
                     skip_pre_tool_call_hook=True,
                 )

@@ -2184,6 +2184,8 @@ class TestConcurrentToolExecution:
                 "web_search", {"q": "test"}, "task-1",
                 tool_call_id=None,
                 session_id=agent.session_id,
+                turn_id="",
+                api_request_id="",
                 enabled_tools=list(agent.valid_tool_names),
                 skip_pre_tool_call_hook=True,
             )
@@ -2283,6 +2285,34 @@ class TestConcurrentToolExecution:
         assert len(messages) == 1
         assert messages[0]["role"] == "tool"
         assert json.loads(messages[0]["content"]) == {"error": "Blocked by policy"}
+
+    def test_sequential_blocked_tool_emits_terminal_post_tool_hook(self, agent, monkeypatch):
+        """Blocked pre_tool_call decisions still terminate observer tool spans."""
+        tool_call = _mock_tool_call(name="write_file",
+                                    arguments='{"path":"test.txt","content":"hello"}',
+                                    call_id="c1")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tool_call])
+        messages = []
+        hook_calls = []
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins.get_pre_tool_call_block_message",
+            lambda *args, **kwargs: "Blocked by policy",
+        )
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: hook_calls.append((hook_name, kwargs)) or [],
+        )
+
+        with patch("run_agent.handle_function_call", side_effect=AssertionError("should not run")):
+            agent._execute_tool_calls_sequential(mock_msg, messages, "task-1")
+
+        post_call = next(call for call in hook_calls if call[0] == "post_tool_call")
+        assert post_call[1]["tool_name"] == "write_file"
+        assert post_call[1]["tool_call_id"] == "c1"
+        assert post_call[1]["status"] == "blocked"
+        assert post_call[1]["error_type"] == "plugin_block"
+        assert post_call[1]["error_message"] == "Blocked by policy"
 
     def test_blocked_memory_tool_does_not_reset_counter(self, agent, monkeypatch):
         """Blocked memory tool should not reset the nudge counter."""
@@ -2684,9 +2714,15 @@ class TestRunConversation:
         assert [call["api_call_count"] for call in pre_request_calls] == [1, 2]
         assert [call["api_call_count"] for call in post_request_calls] == [1, 2]
         assert all(call["session_id"] == agent.session_id for call in pre_request_calls)
+        assert all(call["turn_id"] == pre_request_calls[0]["turn_id"] for call in pre_request_calls + post_request_calls)
+        assert [call["api_request_id"] for call in pre_request_calls] == [
+            call["api_request_id"] for call in post_request_calls
+        ]
         assert all("message_count" in c and isinstance(c.get("request_messages"), list) for c in pre_request_calls)
+        assert all("request" in c and "messages" in c["request"]["body"] for c in pre_request_calls)
         assert any(msg.get("role") == "user" and msg.get("content") == "search something" for msg in pre_request_calls[0]["request_messages"])
-        assert all("usage" in c and "response" in c and "assistant_message" in c for c in post_request_calls)
+        assert all("usage" in c and "response" in c for c in post_request_calls)
+        assert all("assistant_message" in c["response"] for c in post_request_calls)
 
     def test_content_with_tool_calls_stays_silent_for_non_cli_quiet_mode(self, agent):
         self._setup_agent(agent)

@@ -1499,12 +1499,36 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
         try:
             from hermes_cli.plugins import get_pre_tool_call_block_message
             block_message = get_pre_tool_call_block_message(
-                function_name, function_args, task_id=effective_task_id or "",
+                function_name,
+                function_args,
+                task_id=effective_task_id or "",
+                session_id=getattr(agent, "session_id", "") or "",
+                tool_call_id=tool_call_id or "",
+                turn_id=getattr(agent, "_current_turn_id", "") or "",
+                api_request_id=getattr(agent, "_current_api_request_id", "") or "",
             )
         except Exception:
             pass
     if block_message is not None:
-        return json.dumps({"error": block_message}, ensure_ascii=False)
+        result = json.dumps({"error": block_message}, ensure_ascii=False)
+        try:
+            from model_tools import _emit_post_tool_call_hook
+            _emit_post_tool_call_hook(
+                function_name=function_name,
+                function_args=function_args,
+                result=result,
+                task_id=effective_task_id or "",
+                session_id=getattr(agent, "session_id", "") or "",
+                tool_call_id=tool_call_id or "",
+                turn_id=getattr(agent, "_current_turn_id", "") or "",
+                api_request_id=getattr(agent, "_current_api_request_id", "") or "",
+                status="blocked",
+                error_type="plugin_block",
+                error_message=block_message,
+            )
+        except Exception:
+            pass
+        return result
 
     if function_name == "todo":
         from tools.todo_tool import todo_tool as _todo_tool
@@ -1571,6 +1595,8 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
             function_name, function_args, effective_task_id,
             tool_call_id=tool_call_id,
             session_id=agent.session_id or "",
+            turn_id=getattr(agent, "_current_turn_id", "") or "",
+            api_request_id=getattr(agent, "_current_api_request_id", "") or "",
             enabled_tools=list(agent.valid_tool_names) if agent.valid_tool_names else None,
             skip_pre_tool_call_hook=True,
         )

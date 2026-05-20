@@ -774,8 +774,14 @@ def _run_cleanup():
     # Shut down memory provider (on_session_end + shutdown_all) at actual
     # session boundary — NOT per-turn inside run_conversation().
     try:
-        from hermes_cli.plugins import invoke_hook as _invoke_hook
-        _invoke_hook("on_session_finalize", session_id=_active_agent_ref.session_id if _active_agent_ref else None, platform="cli")
+        from hermes_cli.plugins import OBSERVER_SCHEMA_VERSION, invoke_hook as _invoke_hook
+        _invoke_hook(
+            "on_session_finalize",
+            session_id=_active_agent_ref.session_id if _active_agent_ref else None,
+            platform="cli",
+            reason="shutdown",
+            telemetry_schema_version=OBSERVER_SCHEMA_VERSION,
+        )
     except Exception:
         pass
     try:
@@ -6004,11 +6010,13 @@ class HermesCLI:
         lifecycle point (shutdown, /new, /reset).
         """
         try:
-            from hermes_cli.plugins import invoke_hook as _invoke_hook
+            from hermes_cli.plugins import OBSERVER_SCHEMA_VERSION, invoke_hook as _invoke_hook
             _invoke_hook(
                 event_type,
                 session_id=self.agent.session_id if self.agent else None,
                 platform=getattr(self, "platform", None) or "cli",
+                reason="new_session" if event_type == "on_session_reset" else "session_boundary",
+                telemetry_schema_version=OBSERVER_SCHEMA_VERSION,
             )
         except Exception:
             pass
@@ -14165,7 +14173,7 @@ class HermesCLI:
             # the exit occurred, meaning run_conversation's hook didn't fire.
             if self.agent and getattr(self, '_agent_running', False):
                 try:
-                    from hermes_cli.plugins import invoke_hook as _invoke_hook
+                    from hermes_cli.plugins import OBSERVER_SCHEMA_VERSION, invoke_hook as _invoke_hook
                     _invoke_hook(
                         "on_session_end",
                         session_id=self.agent.session_id,
@@ -14173,6 +14181,8 @@ class HermesCLI:
                         interrupted=True,
                         model=getattr(self.agent, 'model', None),
                         platform=getattr(self.agent, 'platform', None) or "cli",
+                        reason="shutdown",
+                        telemetry_schema_version=OBSERVER_SCHEMA_VERSION,
                     )
                 except Exception:
                     pass
