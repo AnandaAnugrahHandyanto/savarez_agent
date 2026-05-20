@@ -12301,6 +12301,19 @@ Examples:
         "--limit", type=int, default=500, help="Max sessions to load (default: 500)"
     )
 
+    sessions_goblins = sessions_subparsers.add_parser(
+        "goblins",
+        help="Extract goblin quotes from session history into a Markdown log",
+    )
+    sessions_goblins.add_argument("--source", help="Filter by source")
+    sessions_goblins.add_argument(
+        "--output",
+        help="Markdown log path (default: $HERMES_HOME/goblin-quotes.md)",
+    )
+    sessions_goblins.add_argument(
+        "--limit", type=int, help="Maximum messages to scan before extraction"
+    )
+
     def _confirm_prompt(prompt: str) -> bool:
         """Prompt for y/N confirmation, safe against non-TTY environments."""
         try:
@@ -12453,6 +12466,23 @@ Examples:
 
             relaunch(["--resume", selected_id])
             return  # won't reach here after execvp
+
+        elif action == "goblins":
+            from pathlib import Path as _Path
+
+            from agent.goblin_quotes import append_goblin_log
+
+            output = _Path(args.output).expanduser() if args.output else None
+            summary = append_goblin_log(
+                db,
+                log_path=output,
+                source=getattr(args, "source", None),
+                limit=getattr(args, "limit", None),
+            )
+            print(
+                f"Goblin quotes: scanned {summary['scanned']}, "
+                f"added {summary['added']} → {summary['path']}"
+            )
 
         elif action == "stats":
             total = db.session_count()
