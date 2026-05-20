@@ -396,3 +396,63 @@ Fresh live Ria session `20260520_141211_ddaf1b` after the context-file trim:
 - Session through six visible user messages: `12` model calls,
   `49,364` cumulative prompt tokens, `396` generated tokens, about `15.1s`
   summed model-call latency (`1.26s/call` average).
+
+## Chatbot Baseline Rollout
+
+Alex accepted the current Ria configuration as the chatbot baseline:
+
+```text
+HERMES_TUI_TOOLSETS=botparlor,memory,tool_loader
+HERMES_TUI_VISIBLE_TOOLS=mcp_botparlor_set_mood,memory,load_tool_pack
+HERMES_TUI_SKIP_CONTEXT_FILES=1
+```
+
+Baseline properties:
+
+- Startup visible tools: `load_tool_pack`, `mcp_botparlor_set_mood`, `memory`.
+- BotParlor MCP tools remain registered but hidden until loaded by pack.
+- Cwd project context files are skipped while SOUL and memory remain enabled.
+- Skills stay out of the startup prompt unless the `skills` pack is loaded.
+
+Pre-rollout group comparison captured from BotParlor group
+`PreSlim-GroupChat` (`group_ecc65b24-9796-4ee3-8078-1dff6459358b`), before
+rolling the baseline to Katie/Sophia/Lexi/Scarlett:
+
+| Bot | First reply context | Third reply context |
+| --- | ---: | ---: |
+| Katie | 22,815 | 24,284 |
+| Sophia | 23,331 | 26,094 |
+| Lexi | 23,269 | 24,712 |
+| Scarlett | 24,909 | 26,441 |
+| Ria already slim | 4,237 | 5,009 |
+
+Group totals for that pre-rollout run:
+
+- 16 group messages / 15 assistant replies.
+- 49 model calls.
+- 1,029,255 prompt tokens.
+- 5,203 output tokens.
+- 10 BotParlor tool calls.
+- Span: 2026-05-20 14:34:42-14:37:59 UTC.
+
+Rollout completed for chatbot hosts:
+
+| Bot | Host | Branch | Commit | System chars in prompt-build check |
+| --- | --- | --- | --- | ---: |
+| Ria | `ria.st-el.com` | `ria/lazy-tool-canary` | `246444071` | 9,843 |
+| Katie | `katie.st-el.com` | `chatbot/lazy-tool-standard` | `246444071` | 11,316 |
+| Sophia | `sophia.st-el.com` | `chatbot/lazy-tool-standard` | `246444071` | 11,300 |
+| Lexi | `lexi.st-el.com` | `chatbot/lazy-tool-standard` | `246444071` | 10,998 |
+| Scarlett | `scarlett.st-el.com` | `chatbot/lazy-tool-standard` | `246444071` | 17,975 |
+
+Verification:
+
+- `python -m py_compile` passed on deployed Hermes files for all four new
+  rollout hosts.
+- `tui-ws-bridge.py` on all four hosts includes MCP startup discovery.
+- `tui-ws-bridge.service` and `hermes-gateway.service` are active.
+- Bridge `/health` returns OK on all four hosts.
+- Production BotParlor reports all chatbot gateways connected.
+- Prompt-build checks on all four hosts show no project context / `AGENTS.md`.
+- Visible startup tools are exactly `load_tool_pack`,
+  `mcp_botparlor_set_mood`, and `memory`.
