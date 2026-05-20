@@ -524,7 +524,7 @@ def telegram_bot_commands() -> list[tuple[str, str]]:
     """
     overrides = _resolve_config_gates()
     result: list[tuple[str, str]] = []
-    menu_excluded = {"afterwork", "debug", "platform", "update"}
+    menu_excluded = {"debug", "insights", "platform", "update"}
     for cmd in COMMAND_REGISTRY:
         if not _is_gateway_available(cmd, overrides):
             continue
@@ -1028,7 +1028,7 @@ def slack_native_slashes() -> list[tuple[str, str, str]]:
     gets dropped by the clamp or for free-form questions.
     """
     overrides = _resolve_config_gates()
-    menu_excluded = {"afterwork"}
+    menu_excluded: set[str] = set()
     entries: list[tuple[str, str, str]] = []
     seen: set[str] = set()
 

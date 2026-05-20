@@ -119,6 +119,11 @@ class TestResolveCommand:
         assert "퇴근" in GATEWAY_KNOWN_COMMANDS
         assert "퇴근모드" in GATEWAY_KNOWN_COMMANDS
 
+    def test_afterwork_visible_in_telegram_menu(self):
+        names = {name for name, _ in telegram_bot_commands()}
+
+        assert "afterwork" in names
+
     def test_workflow_skill_wrappers_are_registered_for_cli_and_gateway(self):
         workflow_names = {
             "autopilot",

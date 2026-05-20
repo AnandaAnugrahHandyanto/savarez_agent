@@ -84,7 +84,22 @@ def test_switch_and_current_project_with_alias(monkeypatch, tmp_path):
 
 
 def test_handle_prefixed_message_routes_via_steer(monkeypatch, tmp_path):
-    monkeypatch.setattr(ps, "discover_tmux_projects", lambda: [])
+    monkeypatch.setattr(
+        ps,
+        "discover_tmux_projects",
+        lambda: [
+            ps.ProjectSession(
+                label="dev-1",
+                tmux_target="dev:1.0",
+                workdir=str(tmp_path),
+                aliases=["HUD"],
+                notify=True,
+                status="ready",
+                command="python3.11",
+                routable=True,
+            )
+        ],
+    )
     sent = []
     monkeypatch.setattr(ps, "_send_to_tmux", lambda project, prompt: sent.append((project.label, prompt)))
     state = ps.ProjectRoutingState(
@@ -96,6 +111,9 @@ def test_handle_prefixed_message_routes_via_steer(monkeypatch, tmp_path):
                 workdir=str(tmp_path),
                 aliases=["HUD"],
                 notify=True,
+                status="ready",
+                command="python3.11",
+                routable=True,
             )
         }
     )
@@ -134,13 +152,20 @@ def test_handle_prefixed_message_ignores_office_mode(monkeypatch, tmp_path):
 
 
 def test_set_mode_toggles_notify_and_sends_instructions(monkeypatch, tmp_path):
-    monkeypatch.setattr(ps, "discover_tmux_projects", lambda: [])
+    monkeypatch.setattr(
+        ps,
+        "discover_tmux_projects",
+        lambda: [
+            ps.ProjectSession(label="dev-1", tmux_target="dev:1.0", workdir=str(tmp_path), status="ready", command="python3.11", routable=True),
+            ps.ProjectSession(label="dev-2", tmux_target="dev:2.0", workdir=str(tmp_path), status="ready", command="hermes", routable=True),
+        ],
+    )
     sent = []
     monkeypatch.setattr(ps, "_send_to_tmux", lambda project, prompt: sent.append((project.label, prompt)))
     state = ps.ProjectRoutingState(
         projects={
-            "dev-1": ps.ProjectSession(label="dev-1", tmux_target="dev:1.0", workdir=str(tmp_path)),
-            "dev-2": ps.ProjectSession(label="dev-2", tmux_target="dev:2.0", workdir=str(tmp_path)),
+            "dev-1": ps.ProjectSession(label="dev-1", tmux_target="dev:1.0", workdir=str(tmp_path), status="ready", command="python3.11", routable=True),
+            "dev-2": ps.ProjectSession(label="dev-2", tmux_target="dev:2.0", workdir=str(tmp_path), status="ready", command="hermes", routable=True),
         }
     )
     path = tmp_path / "project_sessions.json"
@@ -179,14 +204,18 @@ def test_set_mode_rejects_invalid_scope(monkeypatch, tmp_path):
 
 
 def test_set_mode_does_not_mark_failed_project_notify(monkeypatch, tmp_path):
-    monkeypatch.setattr(ps, "discover_tmux_projects", lambda: [])
+    monkeypatch.setattr(
+        ps,
+        "discover_tmux_projects",
+        lambda: [ps.ProjectSession(label="dev-1", tmux_target="dev:1.0", workdir=str(tmp_path), status="ready", command="python3.11", routable=True)],
+    )
 
     def fail(project, prompt):
         raise RuntimeError("tmux missing")
 
     monkeypatch.setattr(ps, "_send_to_tmux", fail)
     state = ps.ProjectRoutingState(
-        projects={"dev-1": ps.ProjectSession(label="dev-1", tmux_target="dev:1.0", workdir=str(tmp_path))}
+        projects={"dev-1": ps.ProjectSession(label="dev-1", tmux_target="dev:1.0", workdir=str(tmp_path), status="ready", command="python3.11", routable=True)}
     )
     path = tmp_path / "project_sessions.json"
     ps.save_state(state, path)
@@ -214,3 +243,79 @@ def test_discover_tmux_projects_filters_broad_roots(monkeypatch, tmp_path):
 
     assert [p.label for p in projects] == ["HUD"]
     assert projects[0].tmux_target == "dev:1.0"
+
+
+
+def test_shell_only_project_is_listed_but_not_routable(monkeypatch, tmp_path):
+    project = tmp_path / "shell-project"
+    project.mkdir()
+    (project / ".hermes").mkdir()
+    output = "dev\t1\tshell-project\t0\t{}\tzsh\n".format(project)
+    monkeypatch.setattr(ps, "_run_tmux", lambda args: output)
+    sent = []
+    monkeypatch.setattr(ps, "_send_to_tmux", lambda project, prompt: sent.append((project.label, prompt)))
+    path = tmp_path / "project_sessions.json"
+    state = ps.refresh_from_tmux(ps.load_state(path))
+    ps.save_state(state, path)
+
+    listing = ps.format_projects(state, _source())
+    assert "SHELL-ONLY" in listing
+    assert "Telegram 지시: 불가" in listing
+
+    switch = ps.switch_project(_source(), "shell-project", path=path)
+    assert "전환 완료: 주의" in switch
+    blocked = ps.send_prompt_to_project(_source(), "상태 요약", path=path)
+    assert "[차단]" in blocked
+    assert "Hermes 세션이 아닙니다" in blocked
+    assert sent == []
+
+
+def test_afterwork_all_excludes_shell_only_and_stale_projects(monkeypatch, tmp_path):
+    sent = []
+    monkeypatch.setattr(ps, "_send_to_tmux", lambda project, prompt: sent.append((project.label, prompt)))
+    monkeypatch.setattr(ps, "_capture_pane", lambda project, lines=80: "recent output")
+    monkeypatch.setattr(
+        ps,
+        "discover_tmux_projects",
+        lambda: [
+            ps.ProjectSession(label="ready", tmux_target="dev:1.0", workdir=str(tmp_path / "ready"), status="ready", command="python3.11", routable=True),
+            ps.ProjectSession(label="shell", tmux_target="dev:2.0", workdir=str(tmp_path / "shell"), status="shell-only", command="zsh", routable=False),
+        ],
+    )
+    (tmp_path / "ready").mkdir()
+    (tmp_path / "shell").mkdir()
+    state = ps.ProjectRoutingState(
+        projects={
+            "ready": ps.ProjectSession(label="ready", tmux_target="dev:1.0", workdir=str(tmp_path / "ready"), status="ready", command="python3.11", routable=True),
+            "stale": ps.ProjectSession(label="stale", tmux_target="old:1.0", workdir=str(tmp_path / "stale"), status="ready", command="python3.11", routable=True),
+        }
+    )
+    path = tmp_path / "project_sessions.json"
+    ps.save_state(state, path)
+
+    msg = ps.set_mode(_source(), "away", "all", path=path)
+
+    assert "[ready]" in msg
+    assert "[shell] SHELL-ONLY" in msg
+    assert "[stale] STALE" in msg
+    assert sent == [("ready", sent[0][1])]
+    reloaded = ps.load_state(path)
+    assert reloaded.projects["ready"].notify is True
+    assert reloaded.projects["shell"].notify is False
+    assert reloaded.projects["stale"].notify is False
+    snapshot = Path(reloaded.projects["ready"].last_away_snapshot_path)
+    assert snapshot.exists()
+    assert "steer_sent: True" in snapshot.read_text(encoding="utf-8")
+
+
+def test_refresh_marks_missing_projects_stale(monkeypatch, tmp_path):
+    monkeypatch.setattr(ps, "discover_tmux_projects", lambda: [])
+    state = ps.ProjectRoutingState(
+        projects={"old": ps.ProjectSession(label="old", tmux_target="old:1.0", workdir=str(tmp_path), status="ready", command="python3.11", routable=True, notify=True)}
+    )
+
+    refreshed = ps.refresh_from_tmux(state)
+
+    assert refreshed.projects["old"].status == "stale"
+    assert refreshed.projects["old"].routable is False
+    assert refreshed.projects["old"].notify is False
