@@ -42,10 +42,12 @@ def test_home_relative_cwd_collapses_home(tmp_path, monkeypatch):
     assert result == "~/projects/hermes"
 
 
+
 def test_home_relative_cwd_leaves_abs_path_alone(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path / "other"))
     result = _home_relative_cwd(str(tmp_path / "outside" / "dir"))
     assert result == str(tmp_path / "outside" / "dir")
+
 
 
 def test_home_relative_cwd_empty_returns_empty():
@@ -55,6 +57,7 @@ def test_home_relative_cwd_empty_returns_empty():
 # ---------------------------------------------------------------------------
 # format_runtime_footer
 # ---------------------------------------------------------------------------
+
 
 def test_format_footer_all_fields(monkeypatch, tmp_path):
     monkeypatch.setenv("HOME", str(tmp_path))
@@ -68,6 +71,7 @@ def test_format_footer_all_fields(monkeypatch, tmp_path):
         fields=("model", "context_pct", "cwd"),
     )
     assert out == "gpt-5.4 · 68% · ~/projects/hermes"
+
 
 
 def test_format_footer_skips_missing_context_length():
@@ -84,6 +88,7 @@ def test_format_footer_skips_missing_context_length():
     assert "/tmp/wd" in out
 
 
+
 def test_format_footer_context_pct_clamped_to_100():
     out = format_runtime_footer(
         model="m",
@@ -93,6 +98,7 @@ def test_format_footer_context_pct_clamped_to_100():
         fields=("context_pct",),
     )
     assert out == "100%"
+
 
 
 def test_format_footer_context_pct_never_negative():
@@ -107,12 +113,14 @@ def test_format_footer_context_pct_never_negative():
     assert out == ""
 
 
+
 def test_format_footer_empty_fields_returns_empty():
     out = format_runtime_footer(
         model="m", context_tokens=0, context_length=100,
         cwd="/x", fields=(),
     )
     assert out == ""
+
 
 
 def test_format_footer_drops_cwd_when_empty(monkeypatch):
@@ -127,6 +135,7 @@ def test_format_footer_drops_cwd_when_empty(monkeypatch):
     assert out == "gpt-5.4 · 50%"
 
 
+
 def test_format_footer_custom_field_order():
     out = format_runtime_footer(
         model="openai/gpt-5.4",
@@ -135,6 +144,7 @@ def test_format_footer_custom_field_order():
         fields=("context_pct", "model"),  # swapped + no cwd
     )
     assert out == "50% · gpt-5.4"
+
 
 
 def test_format_footer_unknown_field_silently_ignored():
@@ -147,13 +157,90 @@ def test_format_footer_unknown_field_silently_ignored():
     assert out == "gpt-5.4 · 50%"
 
 
+
+def test_format_footer_renders_tokens_api_calls_and_cost():
+    out = format_runtime_footer(
+        model="openai/gpt-5.4",
+        context_tokens=43000,
+        context_length=100000,
+        cwd="",
+        total_tokens=2184,
+        api_calls=3,
+        estimated_cost_usd=0.0123,
+        cost_status="estimated",
+        fields=("model", "context_pct", "tokens", "api_calls", "cost"),
+    )
+    assert out == "gpt-5.4 · 43% · 2,184 tok · 3 calls · ~$0.012"
+
+
+
+def test_format_footer_renders_token_breakdown_when_available():
+    out = format_runtime_footer(
+        model="openai/gpt-5.4",
+        context_tokens=0,
+        context_length=None,
+        cwd="",
+        prompt_tokens=1200,
+        completion_tokens=456,
+        cache_read_tokens=78,
+        cache_write_tokens=9,
+        reasoning_tokens=12,
+        fields=("token_breakdown",),
+    )
+    assert out == "tok in 1,200 · out 456 · cache r 78 · cache w 9 · reason 12"
+
+
+
+def test_format_footer_omits_cost_when_unavailable():
+    out = format_runtime_footer(
+        model="openai/gpt-5.4",
+        context_tokens=0,
+        context_length=None,
+        cwd="",
+        total_tokens=2184,
+        api_calls=3,
+        estimated_cost_usd=None,
+        cost_status="unknown",
+        fields=("tokens", "api_calls", "cost"),
+    )
+    assert out == "2,184 tok · 3 calls"
+
+
+
+def test_format_footer_renders_included_cost_without_amount():
+    out = format_runtime_footer(
+        model="openai/gpt-5.4",
+        context_tokens=0,
+        context_length=None,
+        cwd="",
+        estimated_cost_usd=None,
+        cost_status="included",
+        fields=("cost",),
+    )
+    assert out == "cost included"
+
+
+
+def test_format_footer_omits_token_breakdown_when_missing():
+    out = format_runtime_footer(
+        model="openai/gpt-5.4",
+        context_tokens=0,
+        context_length=None,
+        cwd="",
+        fields=("model", "token_breakdown"),
+    )
+    assert out == "gpt-5.4"
+
+
 # ---------------------------------------------------------------------------
 # resolve_footer_config
 # ---------------------------------------------------------------------------
 
+
 def test_resolve_defaults_off_empty_config():
     cfg = resolve_footer_config({}, "telegram")
     assert cfg == {"enabled": False, "fields": ["model", "context_pct", "cwd"]}
+
 
 
 def test_resolve_global_enable():
@@ -161,6 +248,7 @@ def test_resolve_global_enable():
     cfg = resolve_footer_config(user, "telegram")
     assert cfg["enabled"] is True
     assert cfg["fields"] == ["model", "context_pct", "cwd"]
+
 
 
 def test_resolve_platform_override_wins():
@@ -176,6 +264,7 @@ def test_resolve_platform_override_wins():
     assert resolve_footer_config(user, "telegram")["enabled"] is True
     # Slack overrides to off
     assert resolve_footer_config(user, "slack")["enabled"] is False
+
 
 
 def test_resolve_platform_can_add_fields_only():
@@ -195,6 +284,7 @@ def test_resolve_platform_can_add_fields_only():
     assert dc["fields"] == ["context_pct"]
 
 
+
 def test_resolve_ignores_malformed_config():
     # Non-dict runtime_footer shouldn't crash
     user = {"display": {"runtime_footer": "on"}}
@@ -206,6 +296,7 @@ def test_resolve_ignores_malformed_config():
 # build_footer_line — top-level entry point used by gateway/run.py
 # ---------------------------------------------------------------------------
 
+
 def test_build_footer_empty_when_disabled():
     out = build_footer_line(
         user_config={},
@@ -215,6 +306,7 @@ def test_build_footer_empty_when_disabled():
         cwd="/tmp",
     )
     assert out == ""
+
 
 
 def test_build_footer_returns_rendered_when_enabled(monkeypatch, tmp_path):
@@ -229,6 +321,39 @@ def test_build_footer_returns_rendered_when_enabled(monkeypatch, tmp_path):
     (tmp_path / "proj").mkdir(exist_ok=True)
     assert "gpt-5.4" in out
     assert "25%" in out
+
+
+
+def test_build_footer_supports_rich_metrics_fields():
+    out = build_footer_line(
+        user_config={
+            "display": {
+                "runtime_footer": {
+                    "enabled": True,
+                    "fields": ["model", "tokens", "api_calls", "cost", "token_breakdown"],
+                }
+            }
+        },
+        platform_key="slack",
+        model="copilot/gpt-5.4-mini",
+        context_tokens=0,
+        context_length=None,
+        cwd="",
+        total_tokens=2184,
+        api_calls=3,
+        estimated_cost_usd=0.0123,
+        cost_status="estimated",
+        prompt_tokens=1200,
+        completion_tokens=456,
+        cache_read_tokens=78,
+        cache_write_tokens=9,
+        reasoning_tokens=12,
+    )
+    assert out == (
+        "gpt-5.4-mini · 2,184 tok · 3 calls · ~$0.012 · "
+        "tok in 1,200 · out 456 · cache r 78 · cache w 9 · reason 12"
+    )
+
 
 
 def test_build_footer_per_platform_off_suppresses():
@@ -246,6 +371,7 @@ def test_build_footer_per_platform_off_suppresses():
         cwd="/tmp",
     )
     assert out == ""
+
 
 
 def test_build_footer_no_data_returns_empty_even_when_enabled():

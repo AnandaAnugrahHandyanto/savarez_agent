@@ -24,6 +24,7 @@ from run_agent import AIAgent
 from agent.context_compressor import ContextCompressor
 
 
+
 def _make_minimal_agent() -> AIAgent:
     """Return an AIAgent constructed with the absolute minimum args.
 
@@ -52,6 +53,7 @@ def _make_minimal_agent() -> AIAgent:
     agent.context_compressor = None  # will be set per-test as needed
 
     return agent
+
 
 
 class TestResetSessionState:
@@ -119,3 +121,28 @@ class TestResetSessionState:
         agent.reset_session_state()
 
         assert agent._user_turn_count == 0
+
+    def test_context_length_survives_into_turn_result_payload(self):
+        """Gateway footer rendering depends on turn results exposing context_length."""
+        agent = _make_minimal_agent()
+        compressor = ContextCompressor.__new__(ContextCompressor)
+        compressor.context_length = 131072
+        compressor.last_prompt_tokens = 2048
+        compressor.last_completion_tokens = 128
+        compressor.last_total_tokens = 2176
+        compressor.compression_count = 0
+        compressor._context_probed = False
+        compressor._previous_summary = None
+        setattr(agent, "context_compressor", compressor)
+
+        result = {
+            "completion_tokens": agent.session_completion_tokens,
+            "total_tokens": agent.session_total_tokens,
+            "last_prompt_tokens": getattr(getattr(agent, "context_compressor", None), "last_prompt_tokens", 0) or 0,
+            "context_length": getattr(getattr(agent, "context_compressor", None), "context_length", None),
+            "estimated_cost_usd": agent.session_estimated_cost_usd,
+            "cost_status": agent.session_cost_status,
+            "cost_source": agent.session_cost_source,
+        }
+
+        assert result["context_length"] == 131072
