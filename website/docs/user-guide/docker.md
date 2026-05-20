@@ -125,6 +125,21 @@ The `/opt/data` volume is the single source of truth for all Hermes state. It ma
 Never run two Hermes **gateway** containers against the same data directory simultaneously — session files and memory stores are not designed for concurrent write access.
 :::
 
+### Tool auth files and subprocess HOME
+
+Some CLI tools store OAuth state below `~`, not directly in `/opt/data`. Hermes tool subprocesses run with `HOME=$HERMES_HOME/home`; in this Docker layout that resolves to `/opt/data/home`. When a tool's docs mention `~/.tool-name`, create or verify that state under `/opt/data/home`, not `/opt/data`.
+
+For example, the bundled [`xurl` skill](./skills/bundled/social-media/social-media-xurl.md) stores X/Twitter OAuth state in `~/.xurl`. Inside the official Hermes container, run manual xurl setup yourself, outside an agent session, with:
+
+```sh
+HOME=/opt/data/home xurl auth apps add my-app --client-id YOUR_CLIENT_ID --client-secret YOUR_CLIENT_SECRET
+HOME=/opt/data/home xurl auth oauth2 --app my-app YOUR_USERNAME
+HOME=/opt/data/home xurl auth default my-app YOUR_USERNAME
+HOME=/opt/data/home xurl auth status
+```
+
+Replace the placeholders in your own shell; do not paste client IDs, client secrets, or tokens into chat. If those commands are run with `HOME=/opt/data`, the OAuth flow can succeed but Hermes-run `xurl` commands will look in `/opt/data/home/.xurl` and report no apps or tokens.
+
 ## Multi-profile support
 
 Hermes supports [multiple profiles](../reference/profile-commands.md) — separate `~/.hermes/` directories that let you run independent agents (different SOUL, skills, memory, sessions, credentials) from a single installation. **When running under Docker, using Hermes' built-in multi-profile feature is not recommended.**

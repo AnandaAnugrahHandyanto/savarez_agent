@@ -1,7 +1,7 @@
 ---
 name: xurl
 description: "X/Twitter via xurl CLI: post, search, DM, media, v2 API."
-version: 1.1.1
+version: 1.1.2
 author: xdevplatform + openclaw + Hermes Agent
 license: MIT
 platforms: [linux, macos]
@@ -48,6 +48,8 @@ Forbidden flags in agent commands (they accept inline secrets):
 
 App credential registration and credential rotation must be done by the user manually, outside the agent session. After credentials are registered, the user authenticates with `xurl auth oauth2` — also outside the agent session. Tokens persist to `~/.xurl` in YAML. Each app has isolated tokens. OAuth 2.0 tokens auto-refresh.
 
+When Hermes itself runs in Docker, remember that `~/.xurl` means the HOME of the process running `xurl`. Hermes tool subprocesses use `$HERMES_HOME/home` as HOME, so in the official Docker image (`HERMES_HOME=/opt/data`) agent-run `xurl` commands read credentials from `/opt/data/home/.xurl`, not `/opt/data/.xurl`. Run manual auth with `HOME=/opt/data/home` so the OAuth files land where Hermes will look.
+
 ---
 
 ## Installation
@@ -82,6 +84,16 @@ If `xurl` is installed but `auth status` shows no apps or tokens, the user needs
 ## One-Time User Setup (user runs these outside the agent)
 
 These steps must be performed by the user directly, NOT by the agent, because they involve pasting secrets. Direct the user to this block; do not execute it for them.
+
+:::tip Dockerized Hermes
+If Hermes is running inside the official Docker image with `/opt/data` mounted as the data directory, run the setup commands with the same HOME Hermes tool subprocesses use:
+
+```bash
+export HOME=/opt/data/home
+```
+
+This stores xurl credentials in `/opt/data/home/.xurl`. If you instead authenticate with `HOME=/opt/data`, the OAuth flow can succeed but Hermes-run `xurl` commands will still report no apps or tokens because they read `$HERMES_HOME/home/.xurl`.
+:::
 
 1. Create or open an app at https://developer.x.com/en/portal/dashboard
 2. Set the redirect URI to `http://localhost:8080/callback`
