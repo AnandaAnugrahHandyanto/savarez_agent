@@ -1132,7 +1132,7 @@ DEFAULT_CONFIG = {
             "locale": "en-US",
             "region": "DEFAULT",         # DEFAULT, GLOBAL, US_EAST, US_WEST, IN, EU_CENTRAL, etc.
             "style": "Conversational",   # Optional speaking style
-            "rate": 0,                  # -50 to 50
+            "speaking_rate": 0,                  # -50 to 50
             "pitch": 0,                  # -50 to 50
         },
         "neutts": {

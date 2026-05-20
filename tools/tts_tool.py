@@ -124,6 +124,13 @@ def _import_mistral_client():
 
 def _import_murf_sdk():
     """Lazy import Murf SDK classes. Returns (Murf, MurfRegion)."""
+    try:
+        from tools.lazy_deps import ensure as _lazy_ensure
+        _lazy_ensure("tts.murf", prompt=False)
+    except ImportError:
+        pass
+    except Exception as e:
+        raise ImportError(str(e))
     from murf import Murf
     from murf.region import MurfRegion
     return Murf, MurfRegion
@@ -174,7 +181,6 @@ DEFAULT_MISTRAL_TTS_MODEL = "voxtral-mini-tts-2603"
 DEFAULT_MISTRAL_TTS_VOICE_ID = "c69964a6-ab8b-4f8a-9465-ec0925096ec8"  # Paul - Neutral
 DEFAULT_MURF_MODEL = "GEN2"
 DEFAULT_MURF_VOICE_ID = "en-US-natalie"
-DEFAULT_MURF_LOCALE = "en-US"
 DEFAULT_XAI_VOICE_ID = "eve"
 DEFAULT_XAI_LANGUAGE = "en"
 DEFAULT_XAI_SAMPLE_RATE = 24000
@@ -1455,7 +1461,8 @@ def _generate_murf_tts(text: str, output_path: str, tts_config: Dict[str, Any]) 
     output_format = format_map.get(ext, "MP3")
    
 
-    rate = murf_config.get("rate", murf_config.get("rate"))
+    # `speaking_rate` is the canonical config key; keep `rate` as a legacy alias.
+    speaking_rate = murf_config.get("speaking_rate", murf_config.get("rate"))
     sample_rate = murf_config.get("sample_rate", murf_config.get("sampleRate"))
 
     shared_kwargs: Dict[str, Any] = {
@@ -1467,8 +1474,9 @@ def _generate_murf_tts(text: str, output_path: str, tts_config: Dict[str, Any]) 
         shared_kwargs["style"] = murf_config.get("style")
     if murf_config.get("pitch") is not None:
         shared_kwargs["pitch"] = murf_config.get("pitch")
-    if rate is not None:
-        shared_kwargs["rate"] = rate
+    if speaking_rate is not None:
+        # murf sdk expects functional argument rate not as speaking rate
+        shared_kwargs["rate"] = speaking_rate
     if sample_rate is not None:
         shared_kwargs["sample_rate"] = sample_rate
 
@@ -2462,7 +2470,13 @@ if __name__ == "__main__":
         f"{'set' if resolve_openai_audio_api_key() else 'not set (VOICE_TOOLS_OPENAI_KEY or OPENAI_API_KEY)'}"
     )
     print(f"  MiniMax:    {'API key set' if get_env_value('MINIMAX_API_KEY') else 'not set (MINIMAX_API_KEY)'}")
-    print(f"  Murf:       {'API key set' if get_env_value('MURF_API_KEY') else 'not set (MURF_API_KEY)'}")
+    murf_sdk_status = (
+        "installed"
+        if _check(_import_murf_sdk, "murf")
+        else "not installed (pip install 'hermes-agent[tts-premium]')"
+    )
+    print(f"  Murf SDK:   {murf_sdk_status}")
+    print(f"    API Key:  {'set' if get_env_value('MURF_API_KEY') else 'not set (MURF_API_KEY)'}")
     print(f"  Piper:      {'installed' if _check_piper_available() else 'not installed (pip install piper-tts)'}")
     print(f"  ffmpeg:     {'✅ found' if _has_ffmpeg() else '❌ not found (needed for Telegram Opus)'}")
     print(f"\n  Output dir: {DEFAULT_OUTPUT_DIR}")

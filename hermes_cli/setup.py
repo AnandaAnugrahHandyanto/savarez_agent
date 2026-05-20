@@ -26,7 +26,6 @@ from hermes_cli.nous_subscription import get_nous_subscription_features
 from tools.tool_backend_helpers import managed_nous_tools_enabled
 from utils import base_url_hostname
 from hermes_constants import get_optional_skills_dir
-import tools.tts_tool as tts_tool
 logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
@@ -1389,6 +1388,7 @@ def _setup_tts_provider(config: dict):
                 selected = "edge"
 
     elif selected == "murf":
+        from tools import tts_tool
         # Check if Murf SDK is installed
         try:
             tts_tool._import_murf_sdk()
@@ -1407,8 +1407,8 @@ def _setup_tts_provider(config: dict):
             else:
                 print_warning("No API key provided. Falling back to Edge TTS.")
                 selected = "edge"
-        Murf , MurfRegion = tts_tool._import_murf_sdk()
         if selected == "murf":
+            Murf , MurfRegion = tts_tool._import_murf_sdk()
             murf_client = Murf(api_key=existing)
             print()
             print_info("Murf voice docs:")
@@ -1468,19 +1468,20 @@ def _setup_tts_provider(config: dict):
                 style = prompt("Murf style", default=default_style)
                 murf_cfg["style"] = style
 
-            default_rate = str(murf_cfg.get("rate", 0)).strip()
+            default_rate = str(murf_cfg.get("speaking_rate", murf_cfg.get("rate", 0))).strip()
             try:
                 default_rate_int = int(default_rate)
             except Exception:
                 default_rate_int = 0
             default_rate_int = max(-50, min(50, default_rate_int))
-            rate = prompt("Murf rate (-50 to 50)", default=str(default_rate_int))
+            speaking_rate = prompt("Murf Speaking Rate (-50 to 50)", default=str(default_rate_int))
             try:
-                rate_int = int(rate)
+                speaking_rate_int = int(speaking_rate)
             except Exception:
-                rate_int = 0
-            rate_int = max(-50, min(50, rate_int))
-            murf_cfg["rate"] = rate_int
+                speaking_rate_int = 0
+            speaking_rate_int = max(-50, min(50, speaking_rate_int))
+            murf_cfg["speaking_rate"] = speaking_rate_int
+            murf_cfg.pop("rate", None)
 
             default_pitch = str(murf_cfg.get("pitch", 0)).strip()
             try:
