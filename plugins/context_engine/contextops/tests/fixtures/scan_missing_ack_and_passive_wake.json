@@ -1,0 +1,29 @@
+{
+  "runtime_events": [
+    {"id": "evt-raw-snap-1", "kind": "kanban_completed"},
+    {"id": "evt-raw-snap-2", "kind": "task_handoff"}
+  ],
+  "messages": [
+    {
+      "message_id": "msg-raw-snap-1",
+      "session_id": "sess-raw-snap-1",
+      "role": "assistant",
+      "summary": "delegated work completed; awaiting origin ACK",
+      "content": "USER: secret transcript must not leak"
+    }
+  ],
+  "tasks": [
+    {
+      "id": "t_snap_ack_missing",
+      "origin": "#contextops-origin",
+      "return_to": "#contextops-origin",
+      "delegated": true,
+      "status": "done",
+      "origin_ack_observed": false,
+      "delivery_mode": "passive",
+      "trigger_agent": false,
+      "operator_expected_active_wake": true,
+      "pair_role": "fix"
+    }
+  ]
+}
