@@ -2430,7 +2430,7 @@ def _(rid, params: dict) -> dict:
     if err:
         return err
 
-    from hermes_constants import display_hermes_home
+    from hermes_constants import format_status_location_lines
 
     key = session.get("session_key") or params.get("session_id") or ""
     agent = session.get("agent")
@@ -2460,15 +2460,12 @@ def _(rid, params: dict) -> dict:
     usage = _get_usage(agent) if agent is not None else {}
     provider = getattr(agent, "provider", None) or "unknown"
     model = getattr(agent, "model", None) or "(unknown)"
-    lines = [
-        "Hermes TUI Status",
-        "",
-        f"Session ID: {key}",
-        f"Path: {display_hermes_home()}",
-    ]
     title = (meta.get("title") or "").strip()
+    lines: list[str] = []
     if title:
         lines.append(f"Title: {title}")
+    lines.append(f"Session ID: {key}")
+    lines.extend(format_status_location_lines())
     lines.extend(
         [
             f"Model: {model} ({provider})",

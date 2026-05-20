@@ -59,6 +59,21 @@ def test_status_prefix_prefers_status_command_over_statusbar_toggle():
     assert cli_obj._status_bar_visible is True
 
 
+def test_show_session_status_omits_title_line_when_empty():
+    cli_obj = _make_cli()
+    cli_obj._session_db.get_session.return_value = {"title": "", "started_at": 1775791440}
+
+    with patch(
+        "hermes_constants.format_status_location_lines",
+        return_value=["Profile: scraping-prompts", "Home Path: ~/.hermes", "Working Dir: ~/p"],
+    ):
+        cli_obj._show_session_status()
+
+    printed = "\n".join(str(call.args[0]) for call in cli_obj.console.print.call_args_list)
+    assert "Title:" not in printed
+    assert "Session ID: session-123" in printed
+
+
 def test_show_session_status_prints_gateway_style_summary():
     cli_obj = _make_cli()
     cli_obj.agent = SimpleNamespace(
@@ -70,13 +85,22 @@ def test_show_session_status_prints_gateway_style_summary():
         "started_at": 1775791440,
     }
 
-    with patch("cli.display_hermes_home", return_value="~/.hermes"):
+    with patch(
+        "hermes_constants.format_status_location_lines",
+        return_value=[
+            "Profile: default",
+            "Home Path: ~/.hermes",
+            "Working Dir: ~/projects/demo",
+        ],
+    ):
         cli_obj._show_session_status()
 
     printed = "\n".join(str(call.args[0]) for call in cli_obj.console.print.call_args_list)
-    assert "Hermes CLI Status" in printed
+    assert "Hermes CLI Status" not in printed
     assert "Session ID: session-123" in printed
-    assert "Path: ~/.hermes" in printed
+    assert printed.index("Title: My titled session") < printed.index("Session ID:")
+    assert "Profile: default" in printed
+    assert "Working Dir: ~/projects/demo" in printed
     assert "Title: My titled session" in printed
     assert "Model: openai/gpt-5.4 (openai)" in printed
     assert "Tokens: 321" in printed

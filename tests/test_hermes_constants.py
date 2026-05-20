@@ -171,3 +171,44 @@ class TestParseReasoningEffort:
         """
         documented = {"minimal", "low", "medium", "high", "xhigh"}
         assert documented.issubset(set(VALID_REASONING_EFFORTS))
+
+
+class TestFormatStatusLocationLines:
+    def test_profile_home_and_working_dir(self, tmp_path, monkeypatch):
+        native = tmp_path / ".hermes"
+        profile = native / "profiles" / "scraping-prompts"
+        project = native / "projects" / "scraping-prompts"
+        profile.mkdir(parents=True)
+        project.mkdir(parents=True)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile))
+        monkeypatch.setenv("TERMINAL_CWD", str(project))
+
+        from hermes_constants import format_status_location_lines
+
+        lines = format_status_location_lines()
+        assert lines == [
+            "Profile: scraping-prompts",
+            "Home Path: ~/.hermes/profiles/scraping-prompts",
+            "Working Dir: ~/.hermes/projects/scraping-prompts",
+        ]
+
+    def test_working_dir_prefers_project_over_hermes_agent_cwd(
+        self, tmp_path, monkeypatch
+    ):
+        native = tmp_path / ".hermes"
+        profile = native / "profiles" / "scraping-prompts"
+        project = native / "projects" / "scraping-prompts"
+        agent_dir = native / "hermes-agent"
+        profile.mkdir(parents=True)
+        project.mkdir(parents=True)
+        agent_dir.mkdir(parents=True)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile))
+        monkeypatch.setenv("TERMINAL_CWD", str(agent_dir))
+
+        from hermes_constants import format_status_location_lines
+
+        lines = format_status_location_lines()
+        assert "Profile: scraping-prompts" in lines
+        assert "Working Dir: ~/.hermes/projects/scraping-prompts" in lines
