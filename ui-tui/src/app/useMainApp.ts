@@ -199,7 +199,7 @@ export function useMainApp(gw: GatewayClient) {
     gw,
     onClipboardPaste: quiet => clipboardPasteRef.current(quiet),
     onImageAttached: info => {
-      sys(attachedImageNotice(info))
+      sys(attachedImageNotice(info, ui.locale))
     },
     submitRef
   })
@@ -489,7 +489,7 @@ export function useMainApp(gw: GatewayClient) {
         }
 
         if (r.attached) {
-          const meta = imageTokenMeta(r)
+          const meta = imageTokenMeta(r, ui.locale)
 
           return sys(ti('image.attached', { count: String(r.count), meta: meta ? ` · ${meta}` : '' }))
         }

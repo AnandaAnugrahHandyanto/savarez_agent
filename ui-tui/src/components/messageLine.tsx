@@ -37,7 +37,7 @@ export const MessageLine = memo(function MessageLine({
   t,
   tools = []
 }: MessageLineProps) {
-  const { t: ti } = useI18n()
+  const { t: ti, locale } = useI18n()
   // Per-section overrides win over the global mode, so resolve each section
   // we might consume here once and gate visibility on the *content-bearing*
   // sections only — never on the global mode.  A `trail` message feeds Tool
@@ -155,7 +155,7 @@ export const MessageLine = memo(function MessageLine({
     }
 
     if (msg.role === 'user' && msg.text.length > LONG_MSG && isPasteBackedText(msg.text)) {
-      const [head, ...rest] = userDisplay(msg.text).split(ti('transcript.longMessage'))
+      const [head, ...rest] = userDisplay(msg.text, locale).split(ti('transcript.longMessage'))
 
       return (
         <Text color={body}>

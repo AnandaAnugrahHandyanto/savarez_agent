@@ -112,7 +112,7 @@ export const sessionCommands: SlashCommand[] = [
     run: (arg, ctx) => {
       ctx.gateway.rpc<ImageAttachResponse>('image.attach', { path: arg, session_id: ctx.sid }).then(
         ctx.guarded<ImageAttachResponse>(r => {
-          ctx.transcript.sys(attachedImageNotice(r))
+          ctx.transcript.sys(attachedImageNotice(r, ctx.ui.locale))
 
           if (r.remainder) {
             ctx.composer.setInput(r.remainder)
