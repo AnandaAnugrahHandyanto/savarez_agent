@@ -169,7 +169,7 @@ _SECRET_REDACTIONS: tuple[tuple[re.Pattern[str], str], ...] = (
 )
 
 _TRACE_INTENT_RE = re.compile(r"\[(?:kanban-)?trace-intent:v1\]|kanban-trace-intent:v1", re.I)
-_PR_URL_RE = re.compile(r"https://github\.com/[^\s)]+/[^\s)]+/pull/(\d+)", re.I)
+_PR_URL_RE = re.compile(r"https://github\.com/([^/\s)]+)/([^/\s)]+)/pull/(\d+)", re.I)
 _PR_REF_RE = re.compile(r"\b(?:PR|pull request)\s*#?(\d+)\b", re.I)
 
 
@@ -560,13 +560,32 @@ def _run_json(command: Sequence[str], *, timeout: int = 30) -> tuple[Any | None,
         return None, f"invalid JSON from {command[0]}: {exc}"
 
 
-def _parse_pr_numbers(*texts: Any) -> list[int]:
-    found: set[int] = set()
-    for text in texts:
-        s = str(text or "")
-        found.update(int(match.group(1)) for match in _PR_URL_RE.finditer(s))
-        found.update(int(match.group(1)) for match in _PR_REF_RE.finditer(s))
-    return sorted(found)
+def _parse_pr_refs(default_repo: str, *texts: Any) -> list[tuple[str, int]]:
+    refs: list[tuple[str, int]] = []
+    seen: set[tuple[str, int]] = set()
+    text_values = [str(text or "") for text in texts]
+    explicit_url_numbers = {
+        int(match.group(3))
+        for text in text_values
+        for match in _PR_URL_RE.finditer(text)
+    }
+    for s in text_values:
+        matches = [
+            (match.start(), f"{match.group(1)}/{match.group(2)}", int(match.group(3)))
+            for match in _PR_URL_RE.finditer(s)
+        ]
+        matches.extend(
+            (match.start(), default_repo, int(match.group(1)))
+            for match in _PR_REF_RE.finditer(s)
+            if int(match.group(1)) not in explicit_url_numbers
+        )
+        for _, ref_repo, number in sorted(matches, key=lambda item: item[0]):
+            ref = (ref_repo, number)
+            if ref in seen:
+                continue
+            seen.add(ref)
+            refs.append(ref)
+    return refs
 
 
 def load_github_snapshot(issue: str, repo: str, gh_command: str = "gh") -> tuple[dict[str, Any], list[str]]:
@@ -592,13 +611,13 @@ def load_github_snapshot(issue: str, repo: str, gh_command: str = "gh") -> tuple
     issue_obj["labels"] = [label.get("name") if isinstance(label, Mapping) else label for label in _as_list(issue_obj.get("labels"))]
     text_sources = [issue_obj.get("body"), issue_obj.get("title")]
     text_sources.extend(comment.get("body") for comment in _as_list(issue_obj.get("comments")) if isinstance(comment, Mapping))
-    pr_numbers = _parse_pr_numbers(*text_sources)[:5]
+    pr_refs = _parse_pr_refs(repo, *text_sources)[:5]
     prs: list[dict[str, Any]] = []
     pr_fields = "number,title,state,url,headRefOid,baseRefName,isDraft,mergedAt,statusCheckRollup"
-    for number in pr_numbers:
-        pr_data, pr_err = _run_json([*gh, "pr", "view", str(number), "--repo", repo, "--json", pr_fields])
+    for pr_repo, number in pr_refs:
+        pr_data, pr_err = _run_json([*gh, "pr", "view", str(number), "--repo", pr_repo, "--json", pr_fields])
         if pr_err:
-            warnings.append(f"github pr #{number} read failed: {pr_err}")
+            warnings.append(f"github pr {pr_repo}#{number} read failed: {pr_err}")
             continue
         prs.append(_as_dict(pr_data))
     return {"issue": issue_obj, "prs": prs}, warnings

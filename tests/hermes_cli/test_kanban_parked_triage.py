@@ -228,6 +228,71 @@ def test_github_read_failure_returns_nested_issue_fallback(monkeypatch):
 
 
 
+def test_load_github_snapshot_reads_cross_repo_pr_url_from_own_repo(monkeypatch):
+    calls = []
+
+    def fake_run_json(command):
+        calls.append(command)
+        if command[1:3] == ["issue", "view"]:
+            return {
+                "number": 156,
+                "title": "parked triage helper",
+                "state": "OPEN",
+                "labels": [],
+                "body": "Artifact PR: https://github.com/NousResearch/hermes-agent/pull/29003",
+                "url": "https://github.com/GTZhou/TianGongKaiWu/issues/156",
+                "comments": [],
+            }, None
+        if command[1:3] == ["pr", "view"] and command[3] == "29003":
+            assert command[5] == "NousResearch/hermes-agent"
+            return {
+                "number": 29003,
+                "url": "https://github.com/NousResearch/hermes-agent/pull/29003",
+                "state": "OPEN",
+            }, None
+        return None, f"unexpected command: {command}"
+
+    monkeypatch.setattr(triage, "_run_json", fake_run_json)
+
+    snapshot_part, warnings = triage.load_github_snapshot("156", "GTZhou/TianGongKaiWu")
+
+    assert warnings == []
+    assert snapshot_part["prs"] == [
+        {"number": 29003, "url": "https://github.com/NousResearch/hermes-agent/pull/29003", "state": "OPEN"}
+    ]
+    assert [call[5] for call in calls if call[1:3] == ["pr", "view"]] == ["NousResearch/hermes-agent"]
+
+
+
+def test_load_github_snapshot_dedupes_pr_urls_and_keeps_same_repo_shorthand(monkeypatch):
+    pr_calls = []
+
+    def fake_run_json(command):
+        if command[1:3] == ["issue", "view"]:
+            return {
+                "number": 156,
+                "title": "PR #160",
+                "state": "OPEN",
+                "labels": [],
+                "body": "Cross repo https://github.com/NousResearch/hermes-agent/pull/29003",
+                "url": "https://github.com/GTZhou/TianGongKaiWu/issues/156",
+                "comments": [{"body": "Duplicate https://github.com/NousResearch/hermes-agent/pull/29003, PR #29003, and PR #160"}],
+            }, None
+        if command[1:3] == ["pr", "view"]:
+            pr_calls.append((command[3], command[5]))
+            return {"number": int(command[3]), "url": f"https://github.com/{command[5]}/pull/{command[3]}", "state": "OPEN"}, None
+        return None, f"unexpected command: {command}"
+
+    monkeypatch.setattr(triage, "_run_json", fake_run_json)
+
+    snapshot_part, warnings = triage.load_github_snapshot("156", "GTZhou/TianGongKaiWu")
+
+    assert warnings == []
+    assert pr_calls == [("29003", "NousResearch/hermes-agent"), ("160", "GTZhou/TianGongKaiWu")]
+    assert [pr["number"] for pr in snapshot_part["prs"]] == [29003, 160]
+
+
+
 def test_schema_and_runbook_cli_outputs_are_parseable_json(capsys):
     assert triage.main(["schema"]) == 0
     schema = json.loads(capsys.readouterr().out)
