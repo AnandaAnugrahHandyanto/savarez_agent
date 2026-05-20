@@ -90,6 +90,7 @@ Default to `ax` for speed once you know the target. Use `som` when you need visu
 ## Targeting Rules
 
 - Prefer `app` by bundle id when known; app name is fine for quick work.
+- Mutating calls should include `app`; Hermes resolves that app/window before acting and fails closed if the target cannot be found.
 - Prefer element indices returned by the latest state call.
 - Never reuse element indices across windows or after a fresh state call unless they came from that exact latest state.
 - Use coordinates only when AX cannot reach the surface.

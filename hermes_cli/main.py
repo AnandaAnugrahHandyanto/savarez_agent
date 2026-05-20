@@ -12297,22 +12297,32 @@ Examples:
             install_cua_driver(upgrade=bool(getattr(args, "upgrade", False)))
             return
         if action == "status":
-            import shutil
-            import subprocess
-            path = shutil.which("cua-driver")
+            from tools.computer_use.cua_backend import cua_driver_executable, cua_driver_version_status
+            path = cua_driver_executable()
             if path:
-                version = ""
-                try:
-                    version = subprocess.run(
-                        ["cua-driver", "--version"],
-                        capture_output=True, text=True, timeout=5,
-                    ).stdout.strip()
-                except Exception:
-                    pass
+                status_version = cua_driver_version_status()
+                version = status_version.get("actual") or ""
                 if version:
                     print(f"cua-driver: installed at {path} ({version})")
+                    if not status_version.get("ok"):
+                        print(f"version: below recommended {status_version.get('minimum')}; run `hermes computer-use install --upgrade`")
                 else:
                     print(f"cua-driver: installed at {path}")
+                try:
+                    from tools.computer_use.cua_backend import cua_driver_permissions_status
+                    status = cua_driver_permissions_status()
+                    if status.get('ok') is True:
+                        print("permissions: ok")
+                    elif status.get('ok') is None:
+                        print("permissions: unknown")
+                    else:
+                        print("permissions: not ready")
+                    msg = (status.get('message') or '').strip()
+                    if msg:
+                        for line in msg.splitlines():
+                            print(f"  {line}")
+                except Exception as e:
+                    print(f"permissions: unknown ({e})")
                 print("  Refresh to latest: hermes computer-use install --upgrade")
                 return
             print("cua-driver: not installed")

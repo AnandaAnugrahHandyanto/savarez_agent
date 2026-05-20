@@ -207,8 +207,19 @@ class _NoopBackend(ComputerUseBackend):  # pragma: no cover
         self.calls.append(("perform_secondary_action", {"element": element, "secondary_action": secondary_action}))
         return ActionResult(ok=True, action="perform_secondary_action")
 
-    def select_text(self, element: Optional[int] = None, text: str = "", selection: str = "all") -> ActionResult:
-        self.calls.append(("select_text", {"element": element, "text": text, "selection": selection}))
+    def select_text(
+        self,
+        element: Optional[int] = None,
+        text: str = "",
+        selection: str = "all",
+        prefix: str = "",
+        suffix: str = "",
+        cursor: Optional[str] = None,
+    ) -> ActionResult:
+        self.calls.append(("select_text", {
+            "element": element, "text": text, "selection": selection,
+            "prefix": prefix, "suffix": suffix, "cursor": cursor,
+        }))
         return ActionResult(ok=True, action="select_text")
 
 # ---------------------------------------------------------------------------
@@ -341,7 +352,8 @@ def _summarize_action(action: str, args: Dict[str, Any]) -> str:
         dst = args.get("to_element") or args.get("to_coordinate")
         return f"drag {src} → {dst}"
     if action == "scroll":
-        return f"scroll {args.get('direction', '?')} x{args.get('amount', 3)}"
+        dist = f"{args.get('pages')} page(s)" if args.get("pages") is not None else f"x{args.get('amount', 3)}"
+        return f"scroll {args.get('direction', '?')} {dist}"
     if action == "type":
         text = args.get("text", "")
         return f"type {text[:60]!r}" + ("..." if len(text) > 60 else "")
@@ -352,8 +364,33 @@ def _summarize_action(action: str, args: Dict[str, Any]) -> str:
     return action
 
 
+
+def _target_app_if_requested(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) -> Optional[str]:
+    """Resolve app-scoped mutating calls before executing the action.
+
+    Codex Computer Use requires app on mutating calls. Hermes keeps runtime
+    backward compatibility for already-targeted sessions, but when app is
+    supplied it must be real: select the target window and fail before acting if
+    it cannot be resolved.
+    """
+    app = args.get("app")
+    if not app or action in _SAFE_ACTIONS or action in {"wait", "list_apps", "focus_app"}:
+        return None
+    if not hasattr(backend, "focus_app"):
+        return json.dumps({"error": f"backend cannot target app {app!r} for {action}"})
+    res = backend.focus_app(str(app), raise_window=False)
+    if not getattr(res, "ok", False):
+        return json.dumps({
+            "error": f"could not target app {app!r} for {action}: {getattr(res, 'message', '')}",
+            "hint": "Call computer_use_list_apps or computer_use_get_app_state(app=...) to find an on-screen target window.",
+        })
+    return None
+
 def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) -> Any:
     capture_after = bool(args.get("capture_after"))
+    target_error = _target_app_if_requested(backend, action, args)
+    if target_error:
+        return target_error
 
     if action == "capture":
         mode = str(args.get("mode", "som"))
@@ -376,7 +413,7 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
         if not app:
             return json.dumps({"error": "focus_app requires `app`"})
         res = backend.focus_app(app, raise_window=bool(args.get("raise_window")))
-        return _maybe_follow_capture(backend, res, capture_after)
+        return _maybe_follow_capture(backend, res, capture_after, app=args.get("app"))
 
     if action in {"click", "double_click", "right_click", "middle_click"}:
         button = args.get("button")
@@ -388,7 +425,8 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
         elif action == "middle_click":
             button = "middle"
         else:
-            button = button or "left"
+            button = args.get("mouse_button") or button or "left"
+            click_count = int(args.get("click_count") or click_count)
         element = args.get("element")
         coord = args.get("coordinate") or (None, None)
         x, y = (coord[0], coord[1]) if coord and coord[0] is not None else (None, None)
@@ -397,7 +435,7 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
             x=x, y=y, button=button or "left", click_count=click_count,
             modifiers=args.get("modifiers"),
         )
-        return _maybe_follow_capture(backend, res, capture_after)
+        return _maybe_follow_capture(backend, res, capture_after, app=args.get("app"))
 
     if action == "drag":
         res = backend.drag(
@@ -408,34 +446,35 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
             button=args.get("button", "left"),
             modifiers=args.get("modifiers"),
         )
-        return _maybe_follow_capture(backend, res, capture_after)
+        return _maybe_follow_capture(backend, res, capture_after, app=args.get("app"))
 
     if action == "scroll":
         coord = args.get("coordinate") or (None, None)
         res = backend.scroll(
             direction=args.get("direction", "down"),
             amount=int(args.get("amount", 3)),
+            pages=float(args["pages"]) if args.get("pages") is not None else None,
             element=args.get("element"),
             x=coord[0] if coord and coord[0] is not None else None,
             y=coord[1] if coord and coord[1] is not None else None,
             modifiers=args.get("modifiers"),
         )
-        return _maybe_follow_capture(backend, res, capture_after)
+        return _maybe_follow_capture(backend, res, capture_after, app=args.get("app"))
 
     if action == "type":
         res = backend.type_text(args.get("text", ""))
-        return _maybe_follow_capture(backend, res, capture_after)
+        return _maybe_follow_capture(backend, res, capture_after, app=args.get("app"))
 
     if action == "key":
         res = backend.key(args.get("keys", ""))
-        return _maybe_follow_capture(backend, res, capture_after)
+        return _maybe_follow_capture(backend, res, capture_after, app=args.get("app"))
 
     if action == "set_value":
         value = args.get("value")
         if value is None:
             return json.dumps({"error": "set_value requires `value`"})
         res = backend.set_value(value=str(value), element=args.get("element"))
-        return _maybe_follow_capture(backend, res, capture_after)
+        return _maybe_follow_capture(backend, res, capture_after, app=args.get("app"))
 
     if action == "perform_secondary_action":
         if hasattr(backend, "perform_secondary_action"):
@@ -445,7 +484,7 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
             )
         else:
             res = ActionResult(ok=False, action="perform_secondary_action", message="backend does not support secondary actions")
-        return _maybe_follow_capture(backend, res, capture_after)
+        return _maybe_follow_capture(backend, res, capture_after, app=args.get("app"))
 
     if action == "select_text":
         if hasattr(backend, "select_text"):
@@ -453,10 +492,13 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
                 element=args.get("element"),
                 text=args.get("text", ""),
                 selection=args.get("selection", "all"),
+                prefix=args.get("prefix", ""),
+                suffix=args.get("suffix", ""),
+                cursor=args.get("cursor"),
             )
         else:
             res = ActionResult(ok=False, action="select_text", message="backend does not support select_text")
-        return _maybe_follow_capture(backend, res, capture_after)
+        return _maybe_follow_capture(backend, res, capture_after, app=args.get("app"))
 
     return json.dumps({"error": f"unknown action {action!r}"})
 
@@ -516,12 +558,15 @@ def _capture_response(cap: CaptureResult) -> Any:
 
 
 def _maybe_follow_capture(
-    backend: ComputerUseBackend, res: ActionResult, do_capture: bool,
+    backend: ComputerUseBackend,
+    res: ActionResult,
+    do_capture: bool,
+    app: Optional[str] = None,
 ) -> Any:
     if not do_capture:
         return _text_response(res)
     try:
-        cap = backend.capture(mode="som")
+        cap = backend.capture(mode="som", app=app)
     except Exception as e:
         logger.warning("follow-up capture failed: %s", e)
         return _text_response(res)

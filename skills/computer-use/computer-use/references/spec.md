@@ -24,8 +24,8 @@ Expose explicit greenfield Hermes tools only. Tool names should encode intent so
 Models must be trained and prompted around:
 
 1. `computer_use_get_app_state(app=..., mode=...)`
-2. one action tool using state-derived targets
-3. `computer_use_get_app_state(...)` again for verification
+2. one action tool using state-derived targets and the same `app`
+3. `computer_use_get_app_state(app=...)` again for verification
 
 State calls are read-only. Mutating calls go through policy.
 

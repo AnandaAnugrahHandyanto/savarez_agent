@@ -17,17 +17,18 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from tools.computer_use.backend import ActionResult, CaptureResult, ComputerUseBackend, UIElement
 
 logger = logging.getLogger(__name__)
 
-PINNED_CUA_DRIVER_VERSION = os.environ.get("HERMES_CUA_DRIVER_VERSION", "0.5.0")
+PINNED_CUA_DRIVER_VERSION = os.environ.get("HERMES_CUA_DRIVER_VERSION", "0.2.0")
 _CUA_DRIVER_CMD = os.environ.get("HERMES_CUA_DRIVER_CMD", "cua-driver")
 
 _WINDOW_LINE_RE = re.compile(r'^-\s+(.+?)\s+\(pid\s+(\d+)\)\s+.*\[window_id:\s+(\d+)\]', re.MULTILINE)
-_ELEMENT_LINE_RE = re.compile(r'^\s*-\s+\[(\d+)\]\s+(\w+)(?:\s+"([^"]*)")?', re.MULTILINE)
+_ELEMENT_LINE_RE = re.compile(r'^\s*-\s+\[(\d+)\]\s+([A-Za-z0-9_]+)(.*)$', re.MULTILINE)
 
 
 def _is_macos() -> bool:
@@ -38,8 +39,47 @@ def _is_arm_mac() -> bool:
     return _is_macos() and platform.machine() == "arm64"
 
 
+def cua_driver_executable() -> Optional[str]:
+    """Resolve cua-driver even when Hermes runs with a sparse macOS PATH."""
+    resolved = shutil.which(_CUA_DRIVER_CMD)
+    if resolved:
+        return resolved
+    if os.path.isabs(_CUA_DRIVER_CMD) and os.path.exists(_CUA_DRIVER_CMD):
+        return _CUA_DRIVER_CMD
+    for candidate in (
+        "/opt/homebrew/bin/cua-driver",
+        "/usr/local/bin/cua-driver",
+        os.path.expanduser("~/.local/bin/cua-driver"),
+    ):
+        if os.path.exists(candidate):
+            return candidate
+    return None
+
+
 def cua_driver_binary_available() -> bool:
-    return bool(shutil.which(_CUA_DRIVER_CMD))
+    return bool(cua_driver_executable())
+
+
+def _version_tuple(version: str) -> Tuple[int, ...]:
+    nums = re.findall(r"\d+", version or "")
+    return tuple(int(n) for n in nums[:3]) or (0,)
+
+
+def cua_driver_version(timeout: float = 5.0) -> str:
+    exe = cua_driver_executable()
+    if not exe:
+        return ""
+    try:
+        return subprocess.run([exe, "--version"], capture_output=True, text=True, timeout=timeout).stdout.strip()
+    except Exception:
+        return ""
+
+
+def cua_driver_version_status() -> Dict[str, Any]:
+    actual = cua_driver_version()
+    minimum = PINNED_CUA_DRIVER_VERSION
+    ok = bool(actual) and _version_tuple(actual) >= _version_tuple(minimum)
+    return {"ok": ok, "actual": actual, "minimum": minimum}
 
 
 def cua_driver_install_hint() -> str:
@@ -47,6 +87,37 @@ def cua_driver_install_hint() -> str:
         "cua-driver is not installed. Install with `hermes computer-use install` "
         "or run `hermes tools` and enable the Computer Use toolset."
     )
+
+
+def cua_driver_permissions_status(timeout: float = 2.0) -> Dict[str, Any]:
+    """Probe macOS TCC status through the approved CuaDriver app context."""
+    try:
+        exe = cua_driver_executable()
+        if not exe:
+            return {"available": False, "ok": False, "message": cua_driver_install_hint()}
+        if _is_macos():
+            open_bin = shutil.which("open") or "/usr/bin/open"
+            subprocess.run(
+                [open_bin, "-g", "-a", "CuaDriver", "--args", "serve"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5,
+            )
+            time.sleep(0.5)
+        last_timeout: Optional[float] = None
+        try:
+            proc = subprocess.run(
+                [exe, "call", "check_permissions", "{}"],
+                text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout,
+            )
+        except subprocess.TimeoutExpired as e:
+            last_timeout = float(e.timeout or timeout)
+            return {"available": True, "ok": None, "message": f"permission probe timed out after {last_timeout}s; CuaDriver may still be starting"}
+    except Exception as e:
+        return {"available": True, "ok": None, "message": str(e)}
+    text = ((proc.stdout or "") + ("\n" + proc.stderr if proc.stderr else "")).strip()
+    lower = text.lower()
+    unreliable = "not running inside the cua-driver daemon" in lower or "results may be inaccurate" in lower
+    ok = proc.returncode == 0 and "granted" in lower and "denied" not in lower and "not granted" not in lower and not unreliable
+    return {"available": True, "ok": ok, "message": text, "returncode": proc.returncode, "unreliable": unreliable}
 
 
 def _parse_json_or_text(text: str) -> Any:
@@ -80,10 +151,26 @@ def _parse_windows_from_text(text: str) -> List[Dict[str, Any]]:
     return windows
 
 
-def _parse_elements_from_tree(markdown: str) -> List[UIElement]:
+def _label_from_element_tail(tail: str) -> str:
+    tail = tail or ""
+    for pat in (r'"([^"]+)"', r'\(([^)]+)\)', r'=\s*"([^"]+)"', r'help="([^"]+)"'):
+        m = re.search(pat, tail)
+        if m:
+            return m.group(1).strip()
+    return ""
+
+
+def _parse_elements_from_tree(markdown: str, *, app: str = "", pid: int = 0, window_id: int = 0) -> List[UIElement]:
     elements = []
     for m in _ELEMENT_LINE_RE.finditer(markdown or ""):
-        elements.append(UIElement(index=int(m.group(1)), role=m.group(2), label=m.group(3) or ""))
+        elements.append(UIElement(
+            index=int(m.group(1)),
+            role=m.group(2),
+            label=_label_from_element_tail(m.group(3) or ""),
+            app=app,
+            pid=pid or 0,
+            window_id=window_id or 0,
+        ))
     return elements
 
 
@@ -125,10 +212,14 @@ class CuaDriverBackend(ComputerUseBackend):
     def is_available(self) -> bool:
         return _is_macos() and cua_driver_binary_available()
 
+    def permissions_status(self) -> Dict[str, Any]:
+        return cua_driver_permissions_status()
+
     def _call(self, name: str, args: Dict[str, Any], timeout: float = 30.0) -> Dict[str, Any]:
-        if not cua_driver_binary_available():
+        exe = cua_driver_executable()
+        if not exe:
             raise RuntimeError(cua_driver_install_hint())
-        cmd = [_CUA_DRIVER_CMD, "call", name, json.dumps(args or {})]
+        cmd = [exe, "call", name, json.dumps(args or {})]
         proc = subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout)
         parsed = _parse_json_or_text(proc.stdout)
         if proc.returncode != 0:
@@ -163,6 +254,7 @@ class CuaDriverBackend(ComputerUseBackend):
                     "window_id": int(w.get("window_id") or w.get("windowId") or 0),
                     "off_screen": not w.get("is_on_screen", True),
                     "title": w.get("title", ""),
+                    "bounds": w.get("bounds") or {},
                     "z_index": w.get("z_index", 0),
                 })
             return sorted(windows, key=lambda w: w.get("z_index", 0))
@@ -175,8 +267,9 @@ class CuaDriverBackend(ComputerUseBackend):
         if app:
             needle = app.lower()
             matched = [w for w in windows if needle in (w.get("app_name", "") + " " + w.get("title", "")).lower()]
-            if matched:
-                windows = matched
+            if not matched:
+                return None
+            windows = matched
         target = next((w for w in windows if not w.get("off_screen")), windows[0] if windows else None)
         if target:
             self._active_pid = int(target.get("pid") or 0)
@@ -192,29 +285,50 @@ class CuaDriverBackend(ComputerUseBackend):
         png_b64: Optional[str] = None
         elements: List[UIElement] = []
         window_title = str(target.get("title") or "")
-        width = height = 0
+        bounds = target.get("bounds") or {}
+        width = int(bounds.get("width") or target.get("width") or 0) if isinstance(bounds, dict) else 0
+        height = int(bounds.get("height") or target.get("height") or 0) if isinstance(bounds, dict) else 0
         if mode == "vision":
             out = self._call("screenshot", {"window_id": window_id, "format": "jpeg", "quality": 85})
             if out["images"]:
                 png_b64 = out["images"][0]
         else:
             call_args: Dict[str, Any] = {"pid": pid, "window_id": window_id}
-            if mode == "som":
-                tmp = tempfile.NamedTemporaryFile(prefix="hermes-cua-", suffix=".jpg", delete=False)
-                tmp.close()
-                call_args["screenshot_out_file"] = tmp.name
-            out = self._call("get_window_state", call_args)
-            text = out["data"] if isinstance(out["data"], str) else json.dumps(out["data"])
-            _summary, tree = _split_tree_text(text)
-            elements = _parse_elements_from_tree(tree or text)
-            wt = re.search(r'AXWindow\s+"([^"]+)"', tree or text)
-            if wt:
-                window_title = wt.group(1)
-            if out["images"]:
-                png_b64 = out["images"][0]
-            elif mode == "som" and call_args.get("screenshot_out_file") and os.path.exists(call_args["screenshot_out_file"]):
-                with open(call_args["screenshot_out_file"], "rb") as fh:
-                    png_b64 = base64.b64encode(fh.read()).decode("ascii")
+            tmp_path: Optional[str] = None
+            try:
+                if mode == "som":
+                    tmp = tempfile.NamedTemporaryFile(prefix="hermes-cua-", suffix=".jpg", delete=False)
+                    tmp.close()
+                    tmp_path = tmp.name
+                    call_args["screenshot_out_file"] = tmp_path
+                out = self._call("get_window_state", call_args)
+                structured = out.get("structuredContent") if isinstance(out, dict) else None
+                data = out["data"]
+                if isinstance(data, dict):
+                    tree = str(data.get("tree_markdown") or data.get("tree") or data.get("markdown") or "")
+                    window_title = str(data.get("window_title") or data.get("title") or window_title)
+                    width = int(data.get("width") or width or 0)
+                    height = int(data.get("height") or height or 0)
+                elif isinstance(structured, dict):
+                    tree = str(structured.get("tree_markdown") or structured.get("tree") or "")
+                else:
+                    text = data if isinstance(data, str) else json.dumps(data)
+                    _summary, tree = _split_tree_text(text)
+                elements = _parse_elements_from_tree(tree, app=self._active_app, pid=int(pid or 0), window_id=int(window_id or 0))
+                wt = re.search(r'AXWindow\s+"([^"]+)"', tree)
+                if wt:
+                    window_title = wt.group(1)
+                if out["images"]:
+                    png_b64 = out["images"][0]
+                elif mode == "som" and tmp_path and os.path.exists(tmp_path):
+                    with open(tmp_path, "rb") as fh:
+                        png_b64 = base64.b64encode(fh.read()).decode("ascii")
+            finally:
+                if tmp_path and os.path.exists(tmp_path):
+                    try:
+                        os.unlink(tmp_path)
+                    except OSError:
+                        pass
         png_bytes_len = 0
         if png_b64:
             try:
@@ -235,12 +349,16 @@ class CuaDriverBackend(ComputerUseBackend):
 
     def _require_pid(self, action: str) -> Optional[ActionResult]:
         if self._active_pid is None:
-            return ActionResult(ok=False, action=action, message="No active window — call get_app_state first.")
+            return ActionResult(ok=False, action=action, message="No active window — pass app=... or call computer_use_get_app_state(app=...) first.")
         return None
 
     def click(self, *, element: Optional[int] = None, x: Optional[int] = None, y: Optional[int] = None, button: str = "left", click_count: int = 1, modifiers: Optional[List[str]] = None) -> ActionResult:
         if err := self._require_pid("click"):
             return err
+        if button not in {"left", "right"}:
+            return ActionResult(ok=False, action="click", message=f"unsupported mouse button {button!r}; use left or right")
+        if click_count not in {1, 2}:
+            return ActionResult(ok=False, action="click", message="click_count must be 1 or 2")
         tool = "right_click" if button == "right" else ("double_click" if click_count == 2 else "click")
         args: Dict[str, Any] = {"pid": self._active_pid}
         if element is not None:
@@ -267,9 +385,12 @@ class CuaDriverBackend(ComputerUseBackend):
             args["to_x"], args["to_y"] = to_xy
         return self._action("drag", args)
 
-    def scroll(self, *, direction: str, amount: int = 3, element: Optional[int] = None, x: Optional[int] = None, y: Optional[int] = None, modifiers: Optional[List[str]] = None) -> ActionResult:
+    def scroll(self, *, direction: str, amount: int = 3, pages: Optional[float] = None, element: Optional[int] = None, x: Optional[int] = None, y: Optional[int] = None, modifiers: Optional[List[str]] = None) -> ActionResult:
         if err := self._require_pid("scroll"):
             return err
+        if pages is not None:
+            # Codex uses page-ish distances; cua-driver scroll takes wheel ticks.
+            amount = max(1, int(round(abs(float(pages)) * 6)))
         args: Dict[str, Any] = {"pid": self._active_pid, "direction": direction, "amount": max(1, min(50, amount))}
         if element is not None:
             args.update({"window_id": self._active_window_id, "element_index": element})
@@ -306,7 +427,7 @@ class CuaDriverBackend(ComputerUseBackend):
             return ActionResult(ok=False, action="perform_secondary_action", message="secondary action requires element")
         return self._action("perform_secondary_action", {"pid": self._active_pid, "window_id": self._active_window_id, "element_index": element, "action": secondary_action})
 
-    def select_text(self, element: Optional[int] = None, text: str = "", selection: str = "all") -> ActionResult:
+    def select_text(self, element: Optional[int] = None, text: str = "", selection: str = "all", prefix: str = "", suffix: str = "", cursor: Optional[str] = None) -> ActionResult:
         if err := self._require_pid("select_text"):
             return err
         args: Dict[str, Any] = {"pid": self._active_pid, "window_id": self._active_window_id, "selection": selection}
@@ -314,6 +435,12 @@ class CuaDriverBackend(ComputerUseBackend):
             args["element_index"] = element
         if text:
             args["text"] = text
+        if prefix:
+            args["prefix"] = prefix
+        if suffix:
+            args["suffix"] = suffix
+        if cursor:
+            args["cursor"] = cursor
         return self._action("select_text", args)
 
     def list_apps(self) -> List[Dict[str, Any]]:

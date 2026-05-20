@@ -40,7 +40,7 @@ def _handle(action: str, args: Dict[str, Any], **kwargs):
 _COMMON_TARGET = {
     "app": {"type": "string", "description": "App name or bundle id, e.g. Safari or com.apple.Safari."},
     "element": {"type": "integer", "description": "Element index from the latest app state."},
-    "coordinate": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2},
+    "coordinate": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2, "description": "Fallback [x, y] coordinate when no accessibility element works."},
     "capture_after": {"type": "boolean", "description": "Take and return app state after the action."},
 }
 
@@ -52,17 +52,20 @@ _TOOL_SPECS = [
     }, [], "get_app_state"),
     ("computer_use_click", "Click an element or coordinate in the current app state.", {
         **_COMMON_TARGET,
-        "button": {"type": "string", "enum": ["left", "right", "middle"]},
-    }, [], "click"),
+        "button": {"type": "string", "enum": ["left", "right"], "description": "Mouse button; alias for mouse_button."},
+        "mouse_button": {"type": "string", "enum": ["left", "right"], "description": "Codex-compatible alias for button."},
+        "click_count": {"type": "integer", "minimum": 1, "maximum": 2},
+    }, ["app"], "click"),
     ("computer_use_perform_secondary_action", "Perform an accessibility secondary action on an element, e.g. show menu.", {
         **_COMMON_TARGET,
         "secondary_action": {"type": "string", "description": "AX action name, e.g. AXShowMenu or AXPress."},
-    }, [], "perform_secondary_action"),
+    }, ["app", "element"], "perform_secondary_action"),
     ("computer_use_scroll", "Scroll in an app/window or element.", {
         **_COMMON_TARGET,
         "direction": {"type": "string", "enum": ["up", "down", "left", "right"]},
-        "amount": {"type": "integer"},
-    }, ["direction"], "scroll"),
+        "amount": {"type": "integer", "description": "Wheel ticks; pages is preferred for Codex-style page scrolling."},
+        "pages": {"type": "number", "description": "Codex-compatible scroll distance in pages; converted to wheel ticks."},
+    }, ["app", "direction"], "scroll"),
     ("computer_use_drag", "Drag from one element/coordinate to another.", {
         "app": _COMMON_TARGET["app"],
         "from_element": {"type": "integer"},
@@ -70,30 +73,33 @@ _TOOL_SPECS = [
         "from_coordinate": _COMMON_TARGET["coordinate"],
         "to_coordinate": _COMMON_TARGET["coordinate"],
         "capture_after": _COMMON_TARGET["capture_after"],
-    }, [], "drag"),
+    }, ["app"], "drag"),
     ("computer_use_type_text", "Type text into the targeted app/window.", {
         "app": _COMMON_TARGET["app"],
         "text": {"type": "string"},
         "capture_after": _COMMON_TARGET["capture_after"],
-    }, ["text"], "type_text"),
+    }, ["app", "text"], "type_text"),
     ("computer_use_set_value", "Set a value on an element, including text fields, selects, popups, and sliders.", {
         "app": _COMMON_TARGET["app"],
         "element": _COMMON_TARGET["element"],
         "value": {"type": "string"},
         "capture_after": _COMMON_TARGET["capture_after"],
-    }, ["value"], "set_value"),
+    }, ["app", "element", "value"], "set_value"),
     ("computer_use_press_key", "Press a key or key combo in the targeted app/window.", {
         "app": _COMMON_TARGET["app"],
         "key": {"type": "string", "description": "Key or combo, e.g. Return, Escape, cmd+s."},
         "capture_after": _COMMON_TARGET["capture_after"],
-    }, ["key"], "press_key"),
+    }, ["app", "key"], "press_key"),
     ("computer_use_select_text", "Select text in an element or text field.", {
         "app": _COMMON_TARGET["app"],
         "element": _COMMON_TARGET["element"],
         "text": {"type": "string", "description": "Exact text to select, if supported."},
         "selection": {"type": "string", "description": "Selection mode, usually all or text."},
+        "prefix": {"type": "string", "description": "Optional text expected immediately before target text."},
+        "suffix": {"type": "string", "description": "Optional text expected immediately after target text."},
+        "cursor": {"type": "string", "enum": ["before", "after"], "description": "Place cursor before/after selection when backend supports it."},
         "capture_after": _COMMON_TARGET["capture_after"],
-    }, [], "select_text"),
+    }, ["app", "element"], "select_text"),
 ]
 
 for tool_name, description, properties, required, action in _TOOL_SPECS:

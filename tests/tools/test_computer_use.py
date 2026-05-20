@@ -690,6 +690,109 @@ class TestCodexStyleToolSurface:
         assert parsed["action"] == "perform_secondary_action"
 
 
+class TestCodexParityImprovements:
+    def test_mutating_schemas_require_app_and_element_where_needed(self):
+        import tools.computer_use_tool  # noqa: F401
+        from tools.registry import registry
+
+        assert "app" in registry._tools["computer_use_click"].schema["parameters"]["required"]
+        assert registry._tools["computer_use_set_value"].schema["parameters"]["required"] == ["app", "element", "value"]
+        assert registry._tools["computer_use_perform_secondary_action"].schema["parameters"]["required"] == ["app", "element"]
+        assert registry._tools["computer_use_select_text"].schema["parameters"]["required"] == ["app", "element"]
+
+    def test_app_scoped_action_targets_app_before_clicking(self, noop_backend):
+        from tools.computer_use.tool import handle_computer_use
+
+        handle_computer_use({"action": "click", "app": "Safari", "element": 7})
+
+        assert noop_backend.calls[0] == ("focus_app", {"app": "Safari", "raise": False})
+        assert noop_backend.calls[1][0] == "click"
+        assert noop_backend.calls[1][1]["element"] == 7
+
+    def test_app_scoped_action_retarges_after_prior_capture(self, noop_backend):
+        from tools.computer_use.tool import handle_computer_use
+
+        handle_computer_use({"action": "capture", "app": "Notes"})
+        handle_computer_use({"action": "click", "app": "Safari", "element": 1})
+
+        assert ("capture", {"mode": "som", "app": "Notes"}) in noop_backend.calls
+        assert ("focus_app", {"app": "Safari", "raise": False}) in noop_backend.calls
+
+    def test_scroll_pages_alias_passes_to_backend(self, noop_backend):
+        from tools.computer_use.tool import handle_computer_use
+
+        handle_computer_use({"action": "scroll", "app": "Safari", "direction": "down", "pages": 1.5, "element": 2})
+        scroll_kw = next(c[1] for c in noop_backend.calls if c[0] == "scroll")
+        assert scroll_kw["pages"] == 1.5
+        assert scroll_kw["element"] == 2
+
+    def test_select_text_prefix_suffix_cursor_pass_through(self, noop_backend):
+        from tools.computer_use.tool import handle_computer_use
+
+        handle_computer_use({
+            "action": "select_text", "app": "Safari", "element": 4,
+            "text": "target", "selection": "text", "prefix": "before",
+            "suffix": "after", "cursor": "after",
+        })
+        kw = next(c[1] for c in noop_backend.calls if c[0] == "select_text")
+        assert kw == {
+            "element": 4, "text": "target", "selection": "text",
+            "prefix": "before", "suffix": "after", "cursor": "after",
+        }
+
+    def test_cua_markdown_parser_populates_labels_and_target_metadata(self):
+        from tools.computer_use.cua_backend import _parse_elements_from_tree
+
+        tree = """- AXApplication \"cmux\"
+  - [0] AXWindow \"Hermes\" actions=[AXRaise]
+    - [1] AXButton (Run) actions=[AXPress]
+    - [2] AXTextField = \"Search\"
+    - [3] AXUnknown help=\"More options\"
+"""
+        elements = _parse_elements_from_tree(tree, app="cmux", pid=123, window_id=456)
+
+        assert [e.label for e in elements] == ["Hermes", "Run", "Search", "More options"]
+        assert all(e.app == "cmux" and e.pid == 123 and e.window_id == 456 for e in elements)
+
+
+    def test_capture_after_preserves_app_target(self):
+        from tools.computer_use import tool as cu_tool
+        from tools.computer_use.backend import ActionResult, CaptureResult
+
+        class FakeBackend:
+            def __init__(self): self.calls = []
+            def focus_app(self, app, raise_window=False):
+                self.calls.append(("focus_app", app)); return ActionResult(ok=True, action="focus_app")
+            def click(self, **kw):
+                self.calls.append(("click", kw)); return ActionResult(ok=True, action="click")
+            def capture(self, mode="som", app=None):
+                self.calls.append(("capture", app)); return CaptureResult(mode=mode, width=1, height=1, app=app or "wrong")
+            def list_apps(self): return []
+            def drag(self, **kw): return ActionResult(ok=True, action="drag")
+            def scroll(self, **kw): return ActionResult(ok=True, action="scroll")
+            def type_text(self, text): return ActionResult(ok=True, action="type")
+            def key(self, keys): return ActionResult(ok=True, action="key")
+
+        fake = FakeBackend()
+        cu_tool.set_approval_callback(lambda *args: "approve_once")
+        with patch.object(cu_tool, "_get_backend", return_value=fake):
+            out = cu_tool.handle_computer_use({"action": "click", "app": "Safari", "element": 1, "capture_after": True})
+
+        assert ("capture", "Safari") in fake.calls
+        parsed = json.loads(out) if isinstance(out, str) else out
+        if isinstance(parsed, dict) and not parsed.get("_multimodal"):
+            assert parsed["app"] == "Safari"
+
+    def test_unsupported_click_shapes_are_rejected_by_backend(self):
+        from tools.computer_use.cua_backend import CuaDriverBackend
+
+        backend = CuaDriverBackend()
+        backend._active_pid = 123
+        backend._active_window_id = 456
+        assert backend.click(element=1, button="middle").ok is False
+        assert backend.click(element=1, click_count=3).ok is False
+
+
 class TestComputerUsePolicy:
     def test_mutating_actions_fail_closed_in_gateway_without_callback(self, noop_backend):
         from tools.computer_use.tool import handle_computer_use

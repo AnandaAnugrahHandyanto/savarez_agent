@@ -26,7 +26,7 @@ There is no catch-all action-dispatch Computer Use tool in the greenfield path. 
 The rule is strict: **state → action → state**.
 
 1. `computer_use_get_app_state(app="Mail", mode="som")`
-2. act using current element indices, e.g. `computer_use_click(element=14)`
+2. `computer_use_click(app="Mail", element=14)`
 3. `computer_use_get_app_state(app="Mail", mode="som")` again to verify
 
 Use `ax` for fast accessibility-tree reads, `som` for screenshot + indexed elements, and `vision` for screenshot-only inspection.
