@@ -5,6 +5,7 @@ import errno
 import json
 import logging
 import os
+import pwd
 import threading
 from pathlib import Path
 
@@ -78,6 +79,34 @@ _BLOCKED_DEVICE_PATHS = frozenset({
 })
 
 
+def _real_home() -> str:
+    """Return the invoking user's real home directory, ignoring ``$HOME``.
+
+    The gateway sets ``HOME`` to the profile sandbox dir (commit 4fb42d019,
+    "fix: per-profile subprocess HOME isolation"), which makes
+    ``Path.expanduser()`` resolve ``~`` to the sandbox instead of the real
+    user home. File tools must see the real home so ``~/...`` paths behave
+    consistently regardless of profile sandboxing. See issue #28456.
+    """
+    try:
+        return pwd.getpwuid(os.getuid()).pw_dir
+    except (KeyError, OSError):
+        return os.environ.get("HOME", "")
+
+
+def _expanduser_real(filepath: str) -> str:
+    """Like ``os.path.expanduser`` but resolves ``~`` to the real user home.
+
+    Only ``~`` and ``~/...`` (current user) are rewritten — ``~other`` is
+    delegated to the stdlib so explicit other-user lookups still work.
+    """
+    if filepath == "~":
+        return _real_home()
+    if filepath.startswith("~/"):
+        return os.path.join(_real_home(), filepath[2:])
+    return os.path.expanduser(filepath)
+
+
 def _resolve_path(filepath: str, task_id: str = "default") -> Path:
     """Resolve a path relative to TERMINAL_CWD (the worktree base directory)
     instead of the main repository root.
@@ -118,7 +147,7 @@ def _get_live_tracking_cwd(task_id: str = "default") -> str | None:
 
 def _resolve_path_for_task(filepath: str, task_id: str = "default") -> Path:
     """Resolve *filepath* against the task's live terminal cwd when possible."""
-    p = Path(filepath).expanduser()
+    p = Path(_expanduser_real(filepath))
     if not p.is_absolute():
         base = _get_live_tracking_cwd(task_id) or os.environ.get(
             "TERMINAL_CWD", os.getcwd()
@@ -135,7 +164,7 @@ def _is_blocked_device(filepath: str) -> bool:
     through (e.g. /dev/stdin → /proc/self/fd/0 → /dev/pts/0), defeating
     the check.
     """
-    normalized = os.path.expanduser(filepath)
+    normalized = _expanduser_real(filepath)
     if normalized in _BLOCKED_DEVICE_PATHS:
         return True
     # /proc/self/fd/0-2 and /proc/<pid>/fd/0-2 are Linux aliases for stdio
@@ -161,7 +190,7 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
         resolved = str(_resolve_path_for_task(filepath, task_id))
     except (OSError, ValueError):
         resolved = filepath
-    normalized = os.path.normpath(os.path.expanduser(filepath))
+    normalized = os.path.normpath(_expanduser_real(filepath))
     _err = (
         f"Refusing to write to sensitive system path: {filepath}\n"
         "Use the terminal tool with sudo if you need to modify system files."

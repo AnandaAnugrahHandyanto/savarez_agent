@@ -83,3 +83,37 @@ class TestResolvePath:
                     file_tools._file_ops_cache[task_id] = previous
 
         assert result == live_dir / "nested" / "file.txt"
+
+
+class TestTildeRealHome:
+    """Regression: ~ must resolve to the real user home, not $HOME (#28456).
+
+    Hermes profile sandboxing sets $HOME to the profile sandbox dir.
+    ``Path.expanduser()`` would honor that and silently fail to find files
+    at the user's real home.
+    """
+
+    def test_tilde_ignores_sandbox_home_env(self, monkeypatch, tmp_path):
+        import pwd
+        sandbox = tmp_path / "profiles" / "threepio" / "home"
+        sandbox.mkdir(parents=True)
+        monkeypatch.setenv("HOME", str(sandbox))
+
+        from tools.file_tools import _expanduser_real, _resolve_path
+
+        real_home = pwd.getpwuid(os.getuid()).pw_dir
+        assert _expanduser_real("~/foo.txt") == os.path.join(real_home, "foo.txt")
+        assert _expanduser_real("~") == real_home
+
+        # _resolve_path output must be under real home, not sandbox
+        result = str(_resolve_path("~/.hermes/shared/x.md"))
+        assert result.startswith(real_home), result
+        assert str(sandbox) not in result
+
+    def test_tilde_other_user_delegates_to_stdlib(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        from tools.file_tools import _expanduser_real
+
+        assert _expanduser_real("~nosuch_user_xyz123/f") == os.path.expanduser(
+            "~nosuch_user_xyz123/f"
+        )
