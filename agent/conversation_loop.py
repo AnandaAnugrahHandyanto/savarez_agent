@@ -523,6 +523,41 @@ def run_conversation(
     except Exception as exc:
         logger.warning("pre_llm_call hook failed: %s", exc)
 
+    # ContextOps active cognitive hydration (pre-answer).
+    # Disabled by default; allowlist-gated. The adapter is *metadata-only* —
+    # no send_message, no kanban writes, no memory writes, no dispatch, no
+    # gateway restart. It fails closed: any missing/unsafe input returns
+    # ``None`` and leaves the API-call user context unchanged.
+    _contextops_active_user_context = ""
+    _contextops_active_health: Dict[str, Any] = {
+        "enabled": False,
+        "skipped_reason": "not_invoked",
+    }
+    try:
+        from contextops.active_hydration import build_active_context as _cops_build_active
+        from hermes_cli.config import load_config as _cops_load_config
+        try:
+            _cops_cfg = _cops_load_config()
+        except Exception:
+            _cops_cfg = None
+        _cops_text, _contextops_active_health = _cops_build_active(
+            agent=agent,
+            original_user_message=original_user_message,
+            config=_cops_cfg,
+        )
+        if isinstance(_cops_text, str) and _cops_text.strip():
+            _contextops_active_user_context = _cops_text
+    except Exception as exc:
+        logger.warning("ContextOps active hydration failed: %s", exc)
+        _contextops_active_health = {
+            "enabled": False,
+            "skipped_reason": "exception",
+        }
+    try:
+        agent._contextops_active_hydration_health = dict(_contextops_active_health)
+    except Exception:
+        pass
+
     # Main conversation loop
     api_call_count = 0
     final_response = None
@@ -756,6 +791,8 @@ def run_conversation(
                         _injections.append(_fenced)
                 if _plugin_user_context:
                     _injections.append(_plugin_user_context)
+                if _contextops_active_user_context:
+                    _injections.append(_contextops_active_user_context)
                 if _injections:
                     _base = api_msg.get("content", "")
                     if isinstance(_base, str):
