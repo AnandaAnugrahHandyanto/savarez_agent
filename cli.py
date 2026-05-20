@@ -361,6 +361,7 @@ def load_cli_config() -> Dict[str, Any]:
             "busy_input_mode": "interrupt",
             "persistent_output": True,
             "persistent_output_max_lines": 200,
+            "show_session_title": False,
 
             "skin": "default",
         },
@@ -2671,6 +2672,8 @@ class HermesCLI:
         self.streaming_enabled = CLI_CONFIG["display"].get("streaming", False)
         # show_timestamps: prefix user and assistant labels with [HH:MM]
         self.show_timestamps = CLI_CONFIG["display"].get("timestamps", False)
+        # show_session_title: display session title in the status bar
+        self.show_session_title = CLI_CONFIG["display"].get("show_session_title", False)
         self.final_response_markdown = str(
             CLI_CONFIG["display"].get("final_response_markdown", "strip")
         ).strip().lower() or "strip"
@@ -3199,6 +3202,7 @@ class HermesCLI:
         snapshot = {
             "model_name": model_name,
             "model_short": model_short,
+            "session_title": self._get_session_title_for_status(),
             "duration": format_duration_compact(elapsed_seconds),
             "prompt_elapsed": self._format_prompt_elapsed(
                 getattr(self, "_prompt_start_time", None),
@@ -3253,6 +3257,16 @@ class HermesCLI:
                 snapshot["context_percent"] = max(0, min(100, round((context_tokens / context_length) * 100)))
 
         return snapshot
+
+    def _get_session_title_for_status(self) -> Optional[str]:
+        """Fetch the session title for the status bar. Returns None if unavailable."""
+        try:
+            if getattr(self, "_session_db", None) and getattr(self, "session_id", None):
+                title = self._session_db.get_session_title(self.session_id)
+                return title.strip() if title else None
+        except Exception:
+            pass
+        return None
 
     @staticmethod
     def _status_bar_display_width(text: str) -> int:
@@ -3455,10 +3469,17 @@ class HermesCLI:
             duration_label = snapshot["duration"]
 
             yolo_active = bool(os.getenv("HERMES_YOLO_MODE"))
+
+            # Title prefix when enabled and available
+            title = snapshot.get("session_title") if self.show_session_title else None
+            title_prefix = f"📝 {title} │ " if title else ""
+
             if width < 52:
                 text = f"⚕ {snapshot['model_short']} · {duration_label}"
                 if yolo_active:
                     text += " · ⚠ YOLO"
+                if title_prefix:
+                    text = f"{title_prefix}{text}"
                 return self._trim_status_bar_text(text, width)
             if width < 76:
                 parts = [f"⚕ {snapshot['model_short']}", percent_label]
@@ -3471,7 +3492,10 @@ class HermesCLI:
                 parts.append(duration_label)
                 if yolo_active:
                     parts.append("⚠ YOLO")
-                return self._trim_status_bar_text(" · ".join(parts), width)
+                text = " · ".join(parts)
+                if title_prefix:
+                    text = f"{title_prefix}{text}"
+                return self._trim_status_bar_text(text, width)
 
             if snapshot["context_length"]:
                 ctx_total = _format_context_length(snapshot["context_length"])
@@ -3493,7 +3517,10 @@ class HermesCLI:
                 parts.append(prompt_elapsed)
             if yolo_active:
                 parts.append("⚠ YOLO")
-            return self._trim_status_bar_text(" │ ".join(parts), width)
+            text = " │ ".join(parts)
+            if title_prefix:
+                text = f"{title_prefix}{text}"
+            return self._trim_status_bar_text(text, width)
         except Exception:
             return f"⚕ {self.model if getattr(self, 'model', None) else 'Hermes'}"
 
@@ -3511,6 +3538,8 @@ class HermesCLI:
             duration_label = snapshot["duration"]
             yolo_active = bool(os.getenv("HERMES_YOLO_MODE"))
 
+            title = snapshot.get("session_title") if self.show_session_title else None
+
             if width < 52:
                 frags = [
                     ("class:status-bar", " ⚕ "),
@@ -3521,6 +3550,10 @@ class HermesCLI:
                 if yolo_active:
                     frags.append(("class:status-bar-dim", " · "))
                     frags.append(("class:status-bar-yolo", "⚠ YOLO"))
+                if title:
+                    frags.insert(0, ("class:status-bar-dim", " · "))
+                    frags.insert(0, ("class:status-bar-title", title))
+                    frags.insert(0, ("class:status-bar-title", "📝 "))
                 frags.append(("class:status-bar", " "))
             else:
                 percent = snapshot["context_percent"]
@@ -3547,6 +3580,10 @@ class HermesCLI:
                     if yolo_active:
                         frags.append(("class:status-bar-dim", " · "))
                         frags.append(("class:status-bar-yolo", "⚠ YOLO"))
+                    if title:
+                        frags.insert(0, ("class:status-bar-dim", " · "))
+                        frags.insert(0, ("class:status-bar-title", title))
+                        frags.insert(0, ("class:status-bar-title", "📝 "))
                     frags.append(("class:status-bar", " "))
                 else:
                     if snapshot["context_length"]:
@@ -3587,6 +3624,10 @@ class HermesCLI:
                     if yolo_active:
                         frags.append(("class:status-bar-dim", " │ "))
                         frags.append(("class:status-bar-yolo", "⚠ YOLO"))
+                    if title:
+                        frags.insert(0, ("class:status-bar-dim", " │ "))
+                        frags.insert(0, ("class:status-bar-title", title))
+                        frags.insert(0, ("class:status-bar-title", "📝 "))
                     frags.append(("class:status-bar", " "))
 
             total_width = sum(self._status_bar_display_width(text) for _, text in frags)

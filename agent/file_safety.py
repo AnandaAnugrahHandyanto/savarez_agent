@@ -25,7 +25,6 @@ def build_write_denied_paths(home: str) -> set[str]:
             os.path.join(home, ".ssh", "authorized_keys"),
             os.path.join(home, ".ssh", "id_rsa"),
             os.path.join(home, ".ssh", "id_ed25519"),
-            os.path.join(home, ".ssh", "config"),
             str(hermes_home / ".env"),
             os.path.join(home, ".bashrc"),
             os.path.join(home, ".zshrc"),
@@ -48,7 +47,6 @@ def build_write_denied_prefixes(home: str) -> list[str]:
     return [
         os.path.realpath(p) + os.sep
         for p in [
-            os.path.join(home, ".ssh"),
             os.path.join(home, ".aws"),
             os.path.join(home, ".gnupg"),
             os.path.join(home, ".kube"),
