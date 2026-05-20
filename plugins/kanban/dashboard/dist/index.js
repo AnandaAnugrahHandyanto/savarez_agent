@@ -1115,8 +1115,8 @@
             className: attention.approval_count > 0
               ? "hermes-kanban-cockpit-pill hermes-kanban-cockpit-pill--warn"
               : "hermes-kanban-cockpit-pill",
-            title: "Blocked or review tasks that look like they need Milos approval.",
-          }, `${attention.approval_count || 0} approvals`),
+            title: "Blocked or review tasks that heuristically look like they need Milos approval.",
+          }, `${attention.approval_count || 0} approval cues`),
           h("button", {
             type: "button",
             className: "hermes-kanban-edit-link",
@@ -1140,6 +1140,7 @@
           profiles: fleet.profiles || [],
           byProfile: fleet.by_profile || {},
           activeRuns: fleet.active_runs || [],
+          activeRunsByProfile: fleet.active_runs_by_profile || {},
         }),
       ),
     );
@@ -1149,6 +1150,7 @@
     const ordered = [
       "DISCOVERED",
       "KANBAN_BOUND",
+      "SCHEDULED",
       "ACCEPTED",
       "IN_PROGRESS",
       "APPROVAL_PENDING",
@@ -1197,14 +1199,14 @@
   function CockpitApprovalQueue(props) {
     const approvals = props.approvals || [];
     return h("div", { className: "hermes-kanban-cockpit-card" },
-      h("div", { className: "hermes-kanban-cockpit-card-head" }, "Approval queue"),
+      h("div", { className: "hermes-kanban-cockpit-card-head" }, "Approval cues"),
       h("div", { className: "hermes-kanban-cockpit-stats" },
         h("span", null, `${props.blockedCount || 0} blocked`),
         h("span", null, `${props.staleReadyCount || 0} stale ready`),
         h("span", null, `${props.diagnosticCount || 0} diagnostics`),
       ),
       approvals.length === 0
-        ? h("div", { className: "text-xs text-muted-foreground" }, "No approval gates waiting.")
+        ? h("div", { className: "text-xs text-muted-foreground" }, "No approval cues waiting.")
         : h("div", { className: "hermes-kanban-cockpit-approval-list" },
             approvals.slice(0, 5).map(function (item) {
               return h("button", {
@@ -1227,6 +1229,7 @@
     const profiles = props.profiles || [];
     const byProfile = props.byProfile || {};
     const activeRuns = props.activeRuns || [];
+    const activeRunsByProfile = props.activeRunsByProfile || {};
     return h("div", { className: "hermes-kanban-cockpit-card" },
       h("div", { className: "hermes-kanban-cockpit-card-head" }, "Fleet roster"),
       profiles.length === 0
@@ -1234,9 +1237,10 @@
         : h("div", { className: "hermes-kanban-cockpit-roster" },
             profiles.slice(0, 8).map(function (profile) {
               const counts = byProfile[profile.name] || {};
-              const active = activeRuns.filter(function (run) {
+              const sampledActive = activeRuns.filter(function (run) {
                 return run.profile === profile.name;
               }).length;
+              const active = Number(activeRunsByProfile[profile.name] || sampledActive || 0);
               return h("div", {
                 key: profile.name,
                 className: "hermes-kanban-cockpit-profile",

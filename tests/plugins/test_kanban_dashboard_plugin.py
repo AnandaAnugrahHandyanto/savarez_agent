@@ -1045,7 +1045,8 @@ def test_dashboard_bundle_renders_control_cockpit_panel():
     assert "function CockpitFleetRoster(props)" in bundle
     assert "`${API}/cockpit`" in bundle
     assert "Handshake phases" in bundle
-    assert "Approval queue" in bundle
+    assert "\"SCHEDULED\"" in bundle
+    assert "Approval cues" in bundle
     assert "Fleet roster" in bundle
 
 
@@ -1172,6 +1173,14 @@ def test_cockpit_endpoint_summarizes_fleet_and_handshake(client):
         "/api/plugins/kanban/tasks",
         json={"title": "ship dashboard change", "assignee": "fullstackdev"},
     ).json()["task"]
+    scheduled = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "run later", "assignee": "ops"},
+    ).json()["task"]
+    client.patch(
+        f"/api/plugins/kanban/tasks/{scheduled['id']}",
+        json={"status": "scheduled", "block_reason": "run tomorrow"},
+    )
     blocked = client.post(
         "/api/plugins/kanban/tasks",
         json={
@@ -1192,6 +1201,22 @@ def test_cockpit_endpoint_summarizes_fleet_and_handshake(client):
     try:
         claimed = kb.claim_task(conn, ready["id"], claimer="test-worker")
         assert claimed is not None
+        with kb.write_txn(conn):
+            conn.execute(
+                """
+                INSERT INTO task_runs (
+                    task_id, profile, status, claim_lock, claim_expires,
+                    started_at, metadata, error
+                ) VALUES (?, 'orphan', 'running', 'stale-lock', ?, ?, ?, ?)
+                """,
+                (
+                    ready["id"],
+                    int(time.time()) + 60,
+                    int(time.time()),
+                    '{"secret_like":"do-not-surface"}',
+                    "do-not-surface",
+                ),
+            )
     finally:
         conn.close()
 
@@ -1203,14 +1228,48 @@ def test_cockpit_endpoint_summarizes_fleet_and_handshake(client):
     assert data["board"]["counts"]["triage"] == 1
     assert data["board"]["counts"]["running"] == 1
     assert data["handshake"]["phase_counts"]["DISCOVERED"] == 1
+    assert data["handshake"]["phase_counts"]["SCHEDULED"] == 1
     assert data["handshake"]["phase_counts"]["IN_PROGRESS"] == 1
     assert data["handshake"]["phase_counts"]["APPROVAL_PENDING"] == 1
     task_ids = {row["task_id"] for row in data["handshake"]["tasks"]}
-    assert {triage["id"], ready["id"], blocked["id"]}.issubset(task_ids)
+    assert {triage["id"], ready["id"], scheduled["id"], blocked["id"]}.issubset(task_ids)
+    assert data["handshake"]["task_count"] >= 4
+    assert "default_workdir" not in data["board"]
+    assert all("workspace_path" not in row for row in data["handshake"]["tasks"])
     assert data["attention"]["approval_queue"][0]["task_id"] == blocked["id"]
     assert "destructive" in data["attention"]["approval_queue"][0]["reason"].lower()
     assert data["fleet"]["profiles"]
+    assert data["fleet"]["active_run_count"] == 1
+    assert data["fleet"]["active_runs_by_profile"]["fullstackdev"] == 1
+    assert data["fleet"]["active_runs_truncated"] is False
+    assert len(data["fleet"]["active_runs"]) == 1
+    run = data["fleet"]["active_runs"][0]
+    assert run["task_id"] == ready["id"]
+    assert run["profile"] == "fullstackdev"
+    assert "claim_lock" not in run
+    assert "metadata" not in run
+    assert "summary" not in run
+    assert "error" not in run
     assert "orchestration" in data
+
+
+def test_cockpit_endpoint_survives_task_age_exception(client, monkeypatch):
+    task = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "bad timestamp"},
+    ).json()["task"]
+
+    def boom(_task):
+        raise ValueError("bad timestamp")
+
+    monkeypatch.setattr(kb, "task_age", boom)
+
+    response = client.get("/api/plugins/kanban/cockpit")
+
+    assert response.status_code == 200, response.text
+    rows = response.json()["handshake"]["tasks"]
+    row = next(row for row in rows if row["task_id"] == task["id"])
+    assert row["age"]["created_age_seconds"] is None
 
 
 def test_cockpit_endpoint_honors_board_query_param(client):

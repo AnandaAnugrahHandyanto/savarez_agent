@@ -144,6 +144,17 @@ BOARD_COLUMNS: list[str] = [
 _CARD_SUMMARY_PREVIEW_CHARS = 200
 
 
+def _safe_task_age(task: kanban_db.Task) -> dict[str, Optional[int]]:
+    try:
+        return kanban_db.task_age(task)
+    except Exception:
+        return {
+            "created_age_seconds": None,
+            "started_age_seconds": None,
+            "time_to_complete_seconds": None,
+        }
+
+
 def _task_dict(
     task: kanban_db.Task,
     *,
@@ -152,10 +163,7 @@ def _task_dict(
     d = asdict(task)
     # Add derived age metrics so the UI can colour stale cards without
     # computing deltas client-side.
-    try:
-        d["age"] = kanban_db.task_age(task)
-    except Exception:
-        d["age"] = {"created_age_seconds": None, "started_age_seconds": None, "time_to_complete_seconds": None}
+    d["age"] = _safe_task_age(task)
     # Surface the latest non-null run summary so dashboards don't show
     # blank cards/drawers for tasks where the worker handed off via
     # ``task_runs.summary`` (the kanban-worker pattern) instead of
@@ -237,6 +245,10 @@ _APPROVAL_TERMS = (
     "external write",
 )
 
+_COCKPIT_ACTIVE_RUN_LIMIT = 50
+_COCKPIT_TASK_LIST_LIMIT = 200
+_COCKPIT_ATTENTION_LIMIT = 25
+
 
 def _approval_reason(task: kanban_db.Task, latest_summary: Optional[str]) -> Optional[str]:
     """Return a short approval reason when a task appears to need Milos.
@@ -265,6 +277,24 @@ def _approval_reason(task: kanban_db.Task, latest_summary: Optional[str]) -> Opt
     if task.status == "review":
         return "review: waiting for peer or owner review"
     return None
+
+
+def _cockpit_run_dict(r: kanban_db.Run) -> dict[str, Any]:
+    """Reduced run shape for the cockpit roster.
+
+    The task drawer exposes detailed run handoff fields after the operator
+    opens a task. The cockpit only needs active-worker identity and timing,
+    so keep claim locks, metadata, summaries, and errors out of this overview.
+    """
+    return {
+        "id": r.id,
+        "task_id": r.task_id,
+        "profile": r.profile,
+        "step_key": r.step_key,
+        "status": r.status,
+        "started_at": r.started_at,
+        "last_heartbeat_at": r.last_heartbeat_at,
+    }
 
 
 def _handshake_phase(task: kanban_db.Task, approval_reason: Optional[str]) -> str:
@@ -474,6 +504,7 @@ def get_board(
             workflow_template_id=workflow_template_id,
             current_step_key=current_step_key,
         )
+        task_ids = [t.id for t in tasks]
         # Pre-fetch link counts per task (cheap: one query).
         link_counts: dict[str, dict[str, int]] = {}
         for row in conn.execute(
@@ -511,7 +542,7 @@ def get_board(
         # We get the full structured list per task AND a compact
         # summary for the card badge (so cards don't carry the detail
         # text; the drawer fetches that via /tasks/:id or /diagnostics).
-        diagnostics_per_task = _compute_task_diagnostics(conn, task_ids=None)
+        diagnostics_per_task = _compute_task_diagnostics(conn, task_ids=task_ids)
 
         latest_event_id = conn.execute(
             "SELECT COALESCE(MAX(id), 0) AS m FROM task_events"
@@ -525,7 +556,7 @@ def get_board(
         # window-function query (avoids N+1 ``latest_summary`` calls
         # for boards with hundreds of tasks). Truncated to a card-size
         # preview here — the full text is available via /tasks/:id.
-        summary_map = kanban_db.latest_summaries(conn, [t.id for t in tasks])
+        summary_map = kanban_db.latest_summaries(conn, task_ids)
 
         for t in tasks:
             full = summary_map.get(t.id)
@@ -1761,16 +1792,48 @@ def get_cockpit(board: Optional[str] = Query(None)):
         latest_summary_by_task = (
             kanban_db.latest_summaries(conn, task_ids) if task_ids else {}
         )
-        diagnostics_per_task = _compute_task_diagnostics(conn, task_ids=None)
+        diagnostics_per_task = _compute_task_diagnostics(conn, task_ids=task_ids)
         stats = kanban_db.board_stats(conn)
         board_meta = kanban_db.read_board_metadata(slug)
         board_counts = stats.get("by_status", {})
 
+        active_run_count = int(conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM task_runs r
+            JOIN tasks t ON t.current_run_id = r.id
+            WHERE r.ended_at IS NULL
+              AND t.status = 'running'
+            """
+        ).fetchone()[0] or 0)
+        active_runs_by_profile = {
+            str(row["profile"] or ""): int(row["count"] or 0)
+            for row in conn.execute(
+                """
+                SELECT profile, COUNT(*) AS count
+                FROM task_runs r
+                JOIN tasks t ON t.current_run_id = r.id
+                WHERE r.ended_at IS NULL
+                  AND t.status = 'running'
+                GROUP BY profile
+                """
+            ).fetchall()
+        }
         active_run_rows = conn.execute(
-            "SELECT * FROM task_runs WHERE ended_at IS NULL ORDER BY started_at ASC"
+            """
+            SELECT r.*
+            FROM task_runs r
+            JOIN tasks t ON t.current_run_id = r.id
+            WHERE r.ended_at IS NULL
+              AND t.status = 'running'
+            ORDER BY r.started_at ASC
+            LIMIT ?
+            """,
+            (_COCKPIT_ACTIVE_RUN_LIMIT,),
         ).fetchall()
         active_runs = [
-            _run_dict(kanban_db.Run.from_row(row)) for row in active_run_rows
+            _cockpit_run_dict(kanban_db.Run.from_row(row))
+            for row in active_run_rows
         ]
 
         phase_counts: dict[str, int] = {}
@@ -1786,6 +1849,7 @@ def get_cockpit(board: Optional[str] = Query(None)):
             phase = _handshake_phase(task, approval_reason)
             phase_counts[phase] = phase_counts.get(phase, 0) + 1
             diagnostics = diagnostics_per_task.get(task.id) or []
+            age = _safe_task_age(task)
             row = {
                 "task_id": task.id,
                 "title": task.title,
@@ -1795,8 +1859,7 @@ def get_cockpit(board: Optional[str] = Query(None)):
                 "tenant": task.tenant,
                 "priority": task.priority,
                 "workspace_kind": task.workspace_kind,
-                "workspace_path": task.workspace_path,
-                "age": kanban_db.task_age(task),
+                "age": age,
                 "diagnostic_count": len(diagnostics),
                 "approval_reason": approval_reason,
             }
@@ -1808,14 +1871,14 @@ def get_cockpit(board: Optional[str] = Query(None)):
                     "assignee": task.assignee,
                     "status": task.status,
                     "reason": approval_reason,
-                    "created_at": task.created_at,
+                    "created_age_seconds": age.get("created_age_seconds"),
                 })
             if task.status == "blocked":
                 blocked_tasks.append(row)
             if (
                 task.status == "ready"
-                and task.created_at
-                and now - int(task.created_at) > 1800
+                and age.get("created_age_seconds") is not None
+                and int(age["created_age_seconds"]) > 1800
             ):
                 stale_ready.append(row)
 
@@ -1827,11 +1890,18 @@ def get_cockpit(board: Optional[str] = Query(None)):
             )
         )
         approval_queue.sort(
-            key=lambda row: (-int(row.get("created_at") or 0), row["task_id"])
+            key=lambda row: (
+                row.get("created_age_seconds") is None,
+                int(row.get("created_age_seconds") or 0),
+                row["task_id"],
+            )
         )
         blocked_tasks.sort(key=lambda row: row["task_id"])
         stale_ready.sort(
-            key=lambda row: -(row["age"].get("created_age_seconds") or 0)
+            key=lambda row: (
+                row["age"].get("created_age_seconds") is None,
+                -(row["age"].get("created_age_seconds") or 0),
+            )
         )
 
         profiles, profile_error = _profile_roster_for_cockpit()
@@ -1843,7 +1913,6 @@ def get_cockpit(board: Optional[str] = Query(None)):
                 "slug": board_meta.get("slug") or slug,
                 "name": board_meta.get("name") or slug,
                 "description": board_meta.get("description") or "",
-                "default_workdir": board_meta.get("default_workdir"),
                 "counts": board_counts,
                 "total": sum(int(v) for v in board_counts.values()),
             },
@@ -1853,20 +1922,32 @@ def get_cockpit(board: Optional[str] = Query(None)):
                 "by_profile": by_profile,
                 "known_profile_names": sorted(profiles_by_name.keys()),
                 "active_runs": active_runs,
-                "active_run_count": len(active_runs),
+                "active_runs_by_profile": active_runs_by_profile,
+                "active_run_count": active_run_count,
+                "active_run_sample_limit": _COCKPIT_ACTIVE_RUN_LIMIT,
+                "active_runs_truncated": active_run_count > len(active_runs),
             },
             "attention": {
-                "approval_queue": approval_queue,
+                "approval_queue": approval_queue[:_COCKPIT_ATTENTION_LIMIT],
                 "approval_count": len(approval_queue),
-                "blocked_tasks": blocked_tasks,
+                "approval_sample_limit": _COCKPIT_ATTENTION_LIMIT,
+                "approval_truncated": len(approval_queue) > _COCKPIT_ATTENTION_LIMIT,
+                "blocked_tasks": blocked_tasks[:_COCKPIT_ATTENTION_LIMIT],
                 "blocked_count": len(blocked_tasks),
-                "stale_ready": stale_ready,
+                "blocked_sample_limit": _COCKPIT_ATTENTION_LIMIT,
+                "blocked_truncated": len(blocked_tasks) > _COCKPIT_ATTENTION_LIMIT,
+                "stale_ready": stale_ready[:_COCKPIT_ATTENTION_LIMIT],
                 "stale_ready_count": len(stale_ready),
+                "stale_ready_sample_limit": _COCKPIT_ATTENTION_LIMIT,
+                "stale_ready_truncated": len(stale_ready) > _COCKPIT_ATTENTION_LIMIT,
                 "diagnostic_count": sum(len(v) for v in diagnostics_per_task.values()),
             },
             "handshake": {
                 "phase_counts": phase_counts,
-                "tasks": handshake_tasks,
+                "tasks": handshake_tasks[:_COCKPIT_TASK_LIST_LIMIT],
+                "task_count": len(handshake_tasks),
+                "task_sample_limit": _COCKPIT_TASK_LIST_LIMIT,
+                "tasks_truncated": len(handshake_tasks) > _COCKPIT_TASK_LIST_LIMIT,
             },
             "orchestration": get_orchestration_settings(),
             "now": now,
