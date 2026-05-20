@@ -76,8 +76,7 @@ print('hi')
 
         formatted = adapter.format_message(content)
 
-        assert "
-" in formatted
+        assert "\n" in formatted
         assert all(len(line) <= weixin.WEIXIN_COPY_LINE_WIDTH for line in formatted.splitlines())
         assert " ".join(formatted.split()) == " ".join(content.split())
 
