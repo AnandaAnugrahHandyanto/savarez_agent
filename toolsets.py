@@ -239,6 +239,16 @@ TOOLSETS = {
         "includes": []
     },
 
+    "qzone": {
+        "description": (
+            "QQ空间 (QZone) — publish 说说 status updates with text, images, or "
+            "an AI-generated image. Borrows the QQ login state from a running "
+            "OneBot (NapCat/Lagrange) instance."
+        ),
+        "tools": ["qzone_publish"],
+        "includes": []
+    },
+
     "kanban": {
         "description": (
             "Kanban multi-agent coordination — only active when the agent "
