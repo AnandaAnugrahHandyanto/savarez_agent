@@ -452,6 +452,7 @@ AUTHOR_MAP = {
     "me@janstepanovsky.cz": "hhhonzik",
     "139848623+hhuang91@users.noreply.github.com": "hhuang91",
     "s.ozaki@ebinou.net": "Satoshi-agi",
+    "SatoDri@users.noreply.github.com": "SatoDri",
     "10774721+kunlabs@users.noreply.github.com": "kunlabs",
     "110560187+Wang-tianhao@users.noreply.github.com": "Wang-tianhao",
     "170458616+ghostmfr@users.noreply.github.com": "ghostmfr",

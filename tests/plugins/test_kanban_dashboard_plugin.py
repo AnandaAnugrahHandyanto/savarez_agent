@@ -397,6 +397,74 @@ def test_task_summary_tree_extracts_artifacts_and_important_comments(client, tmp
     assert node["comment_count"] == 1
 
 
+def test_summary_tree_redacts_artifact_paths_outside_workspace(client, tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    outside = tmp_path / "outside.txt"
+    outside.write_text("outside")
+
+    task = client.post(
+        "/api/plugins/kanban/tasks",
+        json={
+            "title": "outside artifact",
+            "workspace_kind": "worktree",
+            "workspace_path": str(workspace),
+        },
+    ).json()["task"]
+    _complete_task(
+        task["id"],
+        summary="attempted outside artifacts",
+        metadata={
+            "file_path": str(outside),
+            "changed_files": ["../outside.txt"],
+        },
+    )
+
+    r = client.get(f"/api/plugins/kanban/tasks/{task['id']}/summary-tree")
+    assert r.status_code == 200, r.text
+    node = r.json()["tasks"][task["id"]]
+    artifacts = [a for a in node["artifacts"] if a["kind"] in {"file", "changed_file"}]
+    assert len(artifacts) == 2
+    assert all(a["availability"] == "outside_workspace" for a in artifacts)
+    assert all(a["user_actionable"] is False for a in artifacts)
+    assert all(a["path"] is None and a["resolved_path"] is None for a in artifacts)
+    assert all(a["exists"] is None and a["is_dir"] is None for a in artifacts)
+
+
+def test_open_artifact_endpoint_redacts_launcher_exceptions(client, tmp_path, monkeypatch):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    artifact = workspace / "report.md"
+    artifact.write_text("report")
+
+    task = client.post(
+        "/api/plugins/kanban/tasks",
+        json={
+            "title": "open artifact",
+            "workspace_kind": "worktree",
+            "workspace_path": str(workspace),
+        },
+    ).json()["task"]
+    _complete_task(task["id"], summary="wrote report", metadata={"file_path": "report.md"})
+
+    mod = sys.modules["hermes_dashboard_plugin_kanban_test"]
+
+    def fail_open(*args, **kwargs):
+        raise RuntimeError("secret local launcher detail")
+
+    monkeypatch.setattr(mod.subprocess, "Popen", fail_open)
+
+    r = client.post(
+        f"/api/plugins/kanban/tasks/{task['id']}/artifacts/open",
+        json={"path": "report.md", "mode": "reveal"},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is False
+    assert body["reason"] == "failed to open path"
+    assert "secret local launcher detail" not in str(body)
+
+
 def test_task_summary_tree_multiple_parents_do_not_duplicate_node(client):
     root = client.post("/api/plugins/kanban/tasks", json={"title": "root"}).json()["task"]
     first = client.post("/api/plugins/kanban/tasks", json={"title": "first", "parents": [root["id"]]}).json()["task"]
@@ -440,8 +508,17 @@ def test_open_artifact_endpoint_refuses_arbitrary_paths_and_handles_missing_allo
 
 
 def test_summary_tree_redacts_missing_artifact_paths(client, tmp_path):
-    missing = tmp_path / "missing-report.md"
-    task = client.post("/api/plugins/kanban/tasks", json={"title": "missing artifact"}).json()["task"]
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    missing = workspace / "missing-report.md"
+    task = client.post(
+        "/api/plugins/kanban/tasks",
+        json={
+            "title": "missing artifact",
+            "workspace_kind": "worktree",
+            "workspace_path": str(workspace),
+        },
+    ).json()["task"]
     _complete_task(task["id"], summary="expected doc", metadata={"document_path": str(missing)})
 
     r = client.get(f"/api/plugins/kanban/tasks/{task['id']}/summary-tree")
@@ -451,8 +528,7 @@ def test_summary_tree_redacts_missing_artifact_paths(client, tmp_path):
     assert doc_artifacts
     assert all(a["availability"] == "missing" for a in doc_artifacts)
     assert all(a["path"] is None and a["resolved_path"] is None for a in doc_artifacts)
-    assert node["artifact_state"]["state"] == "absent"
-    assert node["artifact_state"]["has_user_actionable"] is False
+    assert all(a["user_actionable"] is False for a in doc_artifacts)
 
 
 def test_summary_tree_redacts_scratch_workspace_artifact_paths(client, tmp_path):

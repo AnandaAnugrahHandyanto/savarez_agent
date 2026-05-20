@@ -636,23 +636,53 @@ def _safe_path_text(value: Any) -> Optional[str]:
     return text
 
 
-def _normalise_artifact_path(raw: str, *, workspace_path: Optional[str] = None) -> tuple[str, Optional[str], bool, Optional[str]]:
-    label_path = raw
-    expanded = os.path.expanduser(raw)
-    is_absolute = os.path.isabs(expanded) or re.match(r"^[A-Za-z]:[\\/]", expanded) is not None
-    if is_absolute:
-        return label_path, str(Path(expanded)), True, None
-    if workspace_path:
-        return label_path, str(Path(os.path.expanduser(workspace_path)) / expanded), True, None
-    return label_path, None, False, "relative path; no workspace base"
-
-
 def _path_is_within(path: str, base: str) -> bool:
     try:
-        Path(path).resolve().relative_to(Path(base).resolve())
+        base_resolved = Path(base).resolve(strict=False)
+        candidate_resolved = Path(path).resolve(strict=False)
+        candidate_resolved.relative_to(base_resolved)
         return True
     except Exception:
         return False
+
+
+def _normalise_artifact_path(
+    raw: str,
+    *,
+    workspace_path: Optional[str] = None,
+    allow_absolute_without_workspace: bool = False,
+) -> tuple[str, Optional[str], bool, Optional[str]]:
+    """Resolve a dashboard artifact path only when it is under an allowed base.
+
+    Run metadata and comments can be produced by agents, so treat every path
+    value as untrusted. Relative artifact paths are resolved under the task
+    workspace; absolute paths are only exposed if they also live under that
+    workspace. The sole exception is the task's own workspace path, which has
+    no parent workspace to validate against.
+    """
+    label_path = raw
+    expanded = os.path.expanduser(raw)
+    is_absolute = os.path.isabs(expanded) or re.match(r"^[A-Za-z]:[\\/]", expanded) is not None
+
+    if workspace_path:
+        try:
+            base = Path(os.path.expanduser(workspace_path)).resolve(strict=False)
+            candidate = Path(expanded) if is_absolute else base / expanded
+            resolved = candidate.resolve(strict=False)
+        except OSError:
+            return label_path, None, False, "path could not be normalized"
+        if not _path_is_within(str(resolved), str(base)):
+            return label_path, None, False, "path outside allowed workspace"
+        return label_path, str(resolved), True, None
+
+    if is_absolute and allow_absolute_without_workspace:
+        try:
+            return label_path, str(Path(expanded).resolve(strict=False)), True, None
+        except OSError:
+            return label_path, None, False, "path could not be normalized"
+    if is_absolute:
+        return label_path, None, False, "absolute path; no workspace base"
+    return label_path, None, False, "relative path; no workspace base"
 
 
 def _artifact_record(
@@ -669,7 +699,9 @@ def _artifact_record(
     if not text:
         return None
     label_path, resolved_path, openable_base, reason = _normalise_artifact_path(
-        text, workspace_path=workspace_path,
+        text,
+        workspace_path=workspace_path,
+        allow_absolute_without_workspace=(kind == "workspace"),
     )
     exists = None
     is_dir = None
@@ -714,6 +746,11 @@ def _artifact_record(
         public_path = None
         public_resolved = None
         public_label = "scratch workspace artifact"
+    elif reason == "path outside allowed workspace":
+        availability = "outside_workspace"
+        public_path = None
+        public_resolved = None
+        public_label = f"outside workspace {kind.replace('_', ' ')}"
     elif exists is False:
         availability = "missing"
         public_path = None
@@ -791,7 +828,7 @@ def _extract_artifacts(
     def add(record: Optional[dict[str, Any]]) -> None:
         if not record:
             return
-        key_path = record.get("resolved_path") or record.get("path") or record.get("label")
+        key_path = record.get("resolved_path") or record.get("path") or f"{record.get('source')}:{record.get('label')}"
         key = (str(key_path), str(record.get("kind") or "unknown"))
         if key in seen:
             return
@@ -990,8 +1027,9 @@ def _open_local_path(path: str, *, mode: str) -> dict[str, Any]:
                 subprocess.Popen(["explorer", f"/select,{resolved}"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         else:
             return {"ok": False, "reason": f"unsupported platform: {sys.platform}", "path": path, "resolved_path": resolved}
-    except Exception as exc:
-        return {"ok": False, "reason": str(exc), "path": path, "resolved_path": resolved}
+    except Exception:
+        log.exception("Failed to open local path: %s (mode=%s)", resolved, mode)
+        return {"ok": False, "reason": "failed to open path", "path": path, "resolved_path": resolved}
     return {"ok": True, "path": path, "resolved_path": resolved, "mode": mode}
 
 
