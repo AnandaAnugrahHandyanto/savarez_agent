@@ -17,6 +17,8 @@ def _make_adapter(
     allowed_chats=None,
     guest_mode=None,
     bot_username="hermes_bot",
+    ignore_root_dm=None,
+    dm_topic_chat_ids=None,
 ):
     from gateway.platforms.telegram import TelegramAdapter
 
@@ -51,6 +53,8 @@ def _make_adapter(
         extra["allowed_chats"] = []
     if guest_mode is not None:
         extra["guest_mode"] = guest_mode
+    if ignore_root_dm is not None:
+        extra["ignore_root_dm"] = ignore_root_dm
 
     adapter = object.__new__(TelegramAdapter)
     adapter.platform = Platform.TELEGRAM
@@ -61,6 +65,7 @@ def _make_adapter(
     adapter._pending_text_batch_tasks = {}
     adapter._text_batch_delay_seconds = 0.01
     adapter._mention_patterns = adapter._compile_mention_patterns()
+    adapter._dm_topic_chat_ids = {str(c) for c in dm_topic_chat_ids} if dm_topic_chat_ids else set()
     # Trigger-gating tests don't exercise the allowlist gate (added by
     # #23795 + #24468).  Force-authorize all senders so the trigger logic
     # under test runs.  Without this, every fake message hits the new
@@ -95,13 +100,13 @@ def _group_message(
     )
 
 
-def _dm_message(text="hello", *, from_user_id=111):
+def _dm_message(text="hello", *, from_user_id=111, thread_id=None):
     return SimpleNamespace(
         text=text,
         caption=None,
         entities=[],
         caption_entities=[],
-        message_thread_id=None,
+        message_thread_id=thread_id,
         chat=SimpleNamespace(id=from_user_id, type="private"),
         from_user=SimpleNamespace(id=from_user_id),
         reply_to_message=None,
@@ -518,3 +523,44 @@ def test_config_bridges_telegram_ignored_threads(monkeypatch, tmp_path):
 
     assert config is not None
     assert __import__("os").environ["TELEGRAM_IGNORED_THREADS"] == "31,42"
+
+
+# ---------------------------------------------------------------------------
+# ignore_root_dm — root DM messages must be silently dropped when the DM chat
+# has dm_topics configured and ignore_root_dm is enabled.
+# ---------------------------------------------------------------------------
+
+class TestIgnoreRootDm:
+    DM_CHAT_ID = 111
+
+    def _adapter(self, ignore_root_dm=True):
+        return _make_adapter(
+            ignore_root_dm=ignore_root_dm,
+            dm_topic_chat_ids=[self.DM_CHAT_ID],
+        )
+
+    def test_root_dm_dropped_when_ignore_root_dm_enabled(self):
+        adapter = self._adapter(ignore_root_dm=True)
+        msg = _dm_message("hello", from_user_id=self.DM_CHAT_ID)
+        assert adapter._should_process_message(msg) is False
+
+    def test_threaded_dm_passes_when_ignore_root_dm_enabled(self):
+        adapter = self._adapter(ignore_root_dm=True)
+        msg = _dm_message("reply", from_user_id=self.DM_CHAT_ID, thread_id=42)
+        assert adapter._should_process_message(msg) is True
+
+    def test_root_dm_passes_when_ignore_root_dm_disabled(self):
+        adapter = self._adapter(ignore_root_dm=False)
+        msg = _dm_message("hello", from_user_id=self.DM_CHAT_ID)
+        assert adapter._should_process_message(msg) is True
+
+    def test_command_passes_even_with_ignore_root_dm(self):
+        adapter = self._adapter(ignore_root_dm=True)
+        msg = _dm_message("/start", from_user_id=self.DM_CHAT_ID)
+        assert adapter._should_process_message(msg, is_command=True) is True
+
+    def test_chat_not_in_dm_topics_passes_through(self):
+        adapter = self._adapter(ignore_root_dm=True)
+        other_chat = self.DM_CHAT_ID + 1
+        msg = _dm_message("hello", from_user_id=other_chat)
+        assert adapter._should_process_message(msg) is True
