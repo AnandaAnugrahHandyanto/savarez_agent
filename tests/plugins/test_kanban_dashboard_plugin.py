@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -95,10 +96,20 @@ def test_dashboard_frontend_column_metadata_matches_api_columns():
     bundle = repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
     js = bundle.read_text()
 
-    assert (
-        'const COLUMN_ORDER = ["triage", "todo", "scheduled", "ready", '
-        '"running", "blocked", "review", "done"];'
-    ) in js
+    column_order_match = re.search(
+        r"const COLUMN_ORDER = \[(?P<columns>.*?)\];", js, re.DOTALL,
+    )
+    assert column_order_match is not None, "COLUMN_ORDER definition is missing"
+    assert re.findall(r'"([^"]+)"', column_order_match.group("columns")) == [
+        "triage",
+        "todo",
+        "scheduled",
+        "ready",
+        "running",
+        "blocked",
+        "review",
+        "done",
+    ]
     assert 'scheduled: "Scheduled"' in js
     assert 'review: "Review"' in js
     assert 'scheduled: "hermes-kanban-dot-scheduled"' in js
@@ -111,9 +122,11 @@ def test_dashboard_columns_keep_visible_horizontal_scrollbar():
     repo_root = Path(__file__).resolve().parents[2]
     styles = repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "style.css"
     css = styles.read_text()
-    columns_rule = css[
-        css.index(".hermes-kanban-columns {"):css.index(".hermes-kanban-column {")
-    ]
+    columns_rule_match = re.search(
+        r"\.hermes-kanban-columns\s*\{(?P<body>.*?)\n\}", css, re.DOTALL,
+    )
+    assert columns_rule_match is not None, ".hermes-kanban-columns rule is missing"
+    columns_rule = columns_rule_match.group("body")
 
     assert "overflow-x: auto;" in columns_rule
     assert "scrollbar-width: thin;" in columns_rule
