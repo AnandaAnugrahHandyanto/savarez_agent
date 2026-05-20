@@ -26,4 +26,4 @@ python3 scripts/apply_skills_preset.py science
 | `finance` | 投研、财报模型、Kanban 股票、飞书 | 见 dry-run |
 | `science` | K-Dense 科学包 + 文献检索 | 见 dry-run |
 
-`dev` / `finance` 会自动保留所有 `lark-*` 与名称含 `kanban`/`stock` 的 skill。
+`daily` 启用飞书 **lark-cli**（含 `lark-slides`）+ **`feishu-finance-kanban` / `feishu-finance-nexus`**（实时飞书 + 股票池 Base），**不**启用内置 `kanban-stock-nexus`。`dev` / `finance` 见各 yaml。
