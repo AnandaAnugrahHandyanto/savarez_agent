@@ -30,6 +30,8 @@ from __future__ import annotations
 
 import logging
 import os
+import re
+import subprocess
 import tempfile
 import uuid
 from datetime import datetime
@@ -37,6 +39,8 @@ from pathlib import Path
 from typing import Any, List, Optional, Tuple
 
 from agent.model_metadata import estimate_request_tokens_rough
+from agent.redact import redact_sensitive_text
+from hermes_constants import get_hermes_home
 
 logger = logging.getLogger(__name__)
 
@@ -248,6 +252,263 @@ def replay_compression_warning(agent: Any) -> None:
             pass
 
 
+def _handoff_safe_slug(value: str) -> str:
+    slug = re.sub(r"[^A-Za-z0-9_.-]+", "-", value or "session").strip("-._")
+    return slug[:80] or "session"
+
+
+def _resolve_handoff_dir(raw_dir: str) -> Path:
+    """Resolve a handoff artifact directory under the active HERMES_HOME."""
+    raw = (raw_dir or ".hermes/handoffs").strip()
+    path = Path(raw).expanduser()
+    hermes_home = get_hermes_home().expanduser().resolve()
+    if path.is_absolute():
+        resolved = path.resolve()
+    else:
+        # The documented default is ".hermes/handoffs". Interpret that as
+        # the active HERMES_HOME rather than creating a repo-local nested
+        # ``.hermes/.hermes`` path under profile-scoped working directories.
+        parts = path.parts
+        if parts and parts[0] == ".hermes":
+            resolved = hermes_home.joinpath(*parts[1:]).resolve()
+        else:
+            resolved = (hermes_home / path).resolve()
+    try:
+        resolved.relative_to(hermes_home)
+    except ValueError as exc:
+        raise ValueError("handoff_artifact_dir must resolve under HERMES_HOME") from exc
+    return resolved
+
+
+def _truncate_handoff_text(value: Any, limit: int = 4000) -> str:
+    text = redact_sensitive_text(str(value or ""))
+    if len(text) <= limit:
+        return text
+    return text[:limit] + f"\n...[truncated {len(text) - limit:,} chars]"
+
+
+def _git_snapshot() -> dict[str, str]:
+    """Best-effort git metadata for a handoff packet; never raises."""
+    cwd = Path.cwd()
+
+    def _run(args: list[str]) -> str:
+        try:
+            proc = subprocess.run(
+                ["git", *args],
+                cwd=cwd,
+                capture_output=True,
+                text=True,
+                timeout=2,
+                check=False,
+            )
+        except Exception:
+            return ""
+        if proc.returncode != 0:
+            return ""
+        return _truncate_handoff_text(proc.stdout.strip(), 3000)
+
+    return {
+        "workspace": str(cwd),
+        "branch": _run(["branch", "--show-current"]),
+        "status": _run(["status", "--short"]),
+        "recent_commits": _run(["log", "-3", "--oneline"]),
+    }
+
+
+def _todo_handoff_lines(agent: Any) -> list[str]:
+    store = getattr(agent, "_todo_store", None)
+    if store is None or not hasattr(store, "read"):
+        return ["- No active todo snapshot available."]
+    try:
+        items = store.read() or []
+    except Exception:
+        items = []
+    if not items:
+        return ["- No active todos recorded."]
+    lines = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        status = _truncate_handoff_text(item.get("status", "pending"), 80)
+        item_id = _truncate_handoff_text(item.get("id", "?"), 120)
+        content = _truncate_handoff_text(item.get("content", ""), 1000)
+        lines.append(f"- [{status}] {item_id}: {content}")
+    return lines or ["- No active todos recorded."]
+
+
+def _message_handoff_lines(messages: list[dict[str, Any]], *, max_messages: int = 8) -> list[str]:
+    if not messages:
+        return ["- No compressed context messages available."]
+    selected = messages[-max_messages:]
+    lines: list[str] = []
+    omitted = max(0, len(messages) - len(selected))
+    if omitted:
+        lines.append(f"- Omitted {omitted} older compressed message(s); inspect the prior session transcript if needed.")
+    for idx, msg in enumerate(selected, start=max(0, len(messages) - len(selected)) + 1):
+        if not isinstance(msg, dict):
+            continue
+        role = msg.get("role", "?")
+        content = _truncate_handoff_text(msg.get("content", ""), 1800).replace("\n", "\n  ")
+        lines.append(f"- Message {idx} ({role}):\n  {content}")
+    return lines or ["- No compressed context messages available."]
+
+
+def _build_compression_handoff_packet(
+    agent: Any,
+    *,
+    compressed_messages: list[dict[str, Any]],
+    old_session_id: str,
+    new_session_id: str,
+    old_title: Optional[str],
+    approx_tokens: Optional[int],
+    trigger_description: str = "repeated context compression became risky",
+) -> str:
+    """Build a compact, redacted markdown packet for a fresh session."""
+    git = _git_snapshot()
+    compression_count = getattr(agent.context_compressor, "compression_count", 0)
+    after = getattr(agent, "_auto_handoff_after_compressions", 2)
+    mode = getattr(agent, "_auto_handoff_mode", "prompt_user")
+    provider = getattr(agent, "provider", "") or ""
+    model = getattr(agent, "model", "") or ""
+    title = old_title or "(untitled)"
+
+    lines = [
+        "# Hermes handoff packet",
+        "",
+        f"This packet was generated automatically because {trigger_description}.",
+        "A fresh Hermes session should treat this as context, then verify live repo state before editing or making external changes.",
+        "",
+        "## Scope",
+        f"- Previous session ID: `{_truncate_handoff_text(old_session_id, 200)}`",
+        f"- New session ID: `{_truncate_handoff_text(new_session_id, 200)}`",
+        f"- Session title: {_truncate_handoff_text(title, 500)}",
+        f"- Trigger: {_truncate_handoff_text(trigger_description, 500)}",
+        f"- Compression count: {compression_count} (configured threshold {after})",
+        f"- Mode: `{_truncate_handoff_text(mode, 80)}`",
+        f"- Workspace/repo path: `{_truncate_handoff_text(git['workspace'], 1000)}`",
+        f"- Active model/provider: `{_truncate_handoff_text(model, 200)}` / `{_truncate_handoff_text(provider, 120)}`",
+        f"- Approx tokens before compression: {approx_tokens:,}" if approx_tokens else "- Approx tokens before compression: unknown",
+        "",
+        "## Current repo state",
+        f"- Branch: `{_truncate_handoff_text(git['branch'] or '(unknown/non-git)', 500)}`",
+        "- `git status --short`:",
+        "```text",
+        _truncate_handoff_text(git["status"] or "(clean or unavailable)", 3000),
+        "```",
+        "- Recent commits:",
+        "```text",
+        _truncate_handoff_text(git["recent_commits"] or "(unavailable)", 3000),
+        "```",
+        "",
+        "## Active todo snapshot",
+        *_todo_handoff_lines(agent),
+        "",
+        "## Compressed context snapshot",
+        *_message_handoff_lines(compressed_messages),
+        "",
+        "## Next recommended action",
+        "- Verify live repo state before editing: run `git status --short` and inspect any files referenced above.",
+        "- Continue the active in-progress todo first; do not repeat completed work unless verification shows it is missing.",
+        "",
+        "## Safety notes",
+        "- Secrets, tokens, API keys, passwords, `.env` contents, and raw credentials are intentionally omitted/redacted.",
+        "- Stop and ask before destructive operations, protected/default branch writes, or externally visible actions unless already approved in the live session.",
+        "- Prefer checking source files, tests, and persisted artifacts over trusting this packet blindly.",
+    ]
+    return redact_sensitive_text("\n".join(lines).rstrip() + "\n")
+
+
+def _write_handoff_packet(agent: Any, old_session_id: str, packet: str) -> Optional[Path]:
+    try:
+        directory = _resolve_handoff_dir(
+            getattr(agent, "_auto_handoff_artifact_dir", ".hermes/handoffs")
+        )
+        directory.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        path = directory / f"{_handoff_safe_slug(old_session_id)}-{timestamp}-handoff.md"
+        path.write_text(packet, encoding="utf-8")
+        return path
+    except Exception as exc:
+        logger.warning("Could not write compression handoff packet: %s", exc)
+        return None
+
+
+def create_handoff_packet(
+    agent: Any,
+    messages: Optional[list[dict[str, Any]]] = None,
+    *,
+    approx_tokens: Optional[int] = None,
+    trigger_description: str = "manual /handoff-packet request",
+) -> tuple[str, Optional[Path]]:
+    """Create and persist a handoff packet without rotating sessions.
+
+    This backs the manual CLI command and intentionally has no session side
+    effects: it does not end the current session, create a child session, or
+    mutate compressor counters.
+    """
+    old_session_id = str(getattr(agent, "session_id", "") or "manual")
+    old_title = None
+    session_db = getattr(agent, "_session_db", None)
+    if session_db:
+        try:
+            old_title = session_db.get_session_title(old_session_id)
+        except Exception:
+            old_title = None
+    packet = _build_compression_handoff_packet(
+        agent,
+        compressed_messages=list(messages or []),
+        old_session_id=old_session_id,
+        new_session_id="(manual packet; no new session started)",
+        old_title=old_title,
+        approx_tokens=approx_tokens,
+        trigger_description=trigger_description,
+    )
+    return packet, _write_handoff_packet(agent, old_session_id, packet)
+
+
+def _should_auto_handoff_after_compression(agent: Any) -> bool:
+    if not getattr(agent, "_auto_handoff_on_compression_enabled", False):
+        return False
+    max_handoffs = getattr(agent, "_auto_handoff_max_auto_handoffs", 1)
+    try:
+        max_handoffs = int(max_handoffs)
+    except (TypeError, ValueError):
+        max_handoffs = 1
+    if max_handoffs <= 0:
+        return False
+    current_handoffs = getattr(agent, "_auto_handoff_count", 0)
+    try:
+        current_handoffs = int(current_handoffs)
+    except (TypeError, ValueError):
+        current_handoffs = 0
+    if current_handoffs >= max_handoffs:
+        return False
+    after = getattr(agent, "_auto_handoff_after_compressions", 2)
+    try:
+        after = max(1, int(after))
+    except (TypeError, ValueError):
+        after = 2
+    compression_count = getattr(agent.context_compressor, "compression_count", 0)
+    try:
+        compression_count = int(compression_count)
+    except (TypeError, ValueError):
+        compression_count = 0
+    return compression_count >= after
+
+
+def _fresh_session_handoff_messages(packet: str, artifact_path: Optional[Path]) -> list[dict[str, str]]:
+    artifact_line = f"\n\nHandoff artifact path: `{artifact_path}`" if artifact_path else ""
+    content = (
+        "[Hermes automatic compression handoff]\n\n"
+        "A previous Hermes session reached the configured repeated-compression threshold. "
+        "Continue from the handoff packet below. First verify live repo state before editing; "
+        "do not blindly trust the packet if files or external systems changed."
+        f"{artifact_line}\n\n"
+        f"{packet}"
+    )
+    return [{"role": "user", "content": content}]
+
+
 def compress_context(
     agent: Any,
     messages: list,
@@ -372,15 +633,60 @@ def compress_context(
     new_system_prompt = agent._build_system_prompt(system_message)
     agent._cached_system_prompt = new_system_prompt
 
+    old_session_id = agent.session_id
+    old_title = None
     if agent._session_db:
         try:
-            # Propagate title to the new session with auto-numbering
-            old_title = agent._session_db.get_session_title(agent.session_id)
+            old_title = agent._session_db.get_session_title(old_session_id)
+        except Exception:
+            old_title = None
+
+    handoff_triggered = _should_auto_handoff_after_compression(agent)
+    handoff_mode = getattr(agent, "_auto_handoff_mode", "prompt_user")
+    fresh_session_requested = handoff_triggered and handoff_mode == "fresh_session"
+    split_reason = "compression_handoff" if fresh_session_requested else "compression"
+    new_session_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+    session_rotated = False
+    handoff_artifact_path: Optional[Path] = None
+    handoff_packet: Optional[str] = None
+
+    if handoff_triggered:
+        handoff_packet = _build_compression_handoff_packet(
+            agent,
+            compressed_messages=compressed,
+            old_session_id=old_session_id,
+            new_session_id=new_session_id,
+            old_title=old_title,
+            approx_tokens=approx_tokens,
+        )
+
+    if agent._session_db:
+        try:
             # Trigger memory extraction on the old session before it rotates.
             agent.commit_memory_session(messages)
-            agent._session_db.end_session(agent.session_id, "compression")
-            old_session_id = agent.session_id
-            agent.session_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+            agent._session_db_created = False
+            if fresh_session_requested:
+                # For true handoff mode, create the linked child first. If
+                # that fails, the old session remains an ordinary compressed
+                # continuation and no handoff artifact/count is emitted.
+                agent._session_db.create_session(
+                    session_id=new_session_id,
+                    source=agent.platform or os.environ.get("HERMES_SESSION_SOURCE", "cli"),
+                    model=agent.model,
+                    model_config=agent._session_init_model_config,
+                    parent_session_id=old_session_id,
+                )
+                agent._session_db.end_session(old_session_id, split_reason)
+            else:
+                agent._session_db.end_session(old_session_id, split_reason)
+                agent._session_db.create_session(
+                    session_id=new_session_id,
+                    source=agent.platform or os.environ.get("HERMES_SESSION_SOURCE", "cli"),
+                    model=agent.model,
+                    model_config=agent._session_init_model_config,
+                    parent_session_id=old_session_id,
+                )
+            agent.session_id = new_session_id
             os.environ["HERMES_SESSION_ID"] = agent.session_id
             try:
                 from gateway.session_context import _SESSION_ID
@@ -389,15 +695,8 @@ def compress_context(
                 pass
             # Update session_log_file to point to the new session's JSON file
             agent.session_log_file = agent.logs_dir / f"session_{agent.session_id}.json"
-            agent._session_db_created = False
-            agent._session_db.create_session(
-                session_id=agent.session_id,
-                source=agent.platform or os.environ.get("HERMES_SESSION_SOURCE", "cli"),
-                model=agent.model,
-                model_config=agent._session_init_model_config,
-                parent_session_id=old_session_id,
-            )
             agent._session_db_created = True
+            session_rotated = True
             # Auto-number the title for the continuation session
             if old_title:
                 try:
@@ -409,44 +708,80 @@ def compress_context(
             # Reset flush cursor — new session starts with no messages written
             agent._last_flushed_db_idx = 0
         except Exception as e:
+            if not session_rotated:
+                agent._session_db_created = True
             logger.warning("Session DB compression split failed — new session will NOT be indexed: %s", e)
 
-    # Notify the context engine that the session_id rotated because of
-    # compression (not a fresh /new). Plugin engines (e.g. hermes-lcm) use
-    # boundary_reason="compression" to preserve DAG lineage across the
-    # rollover instead of re-initializing fresh per-session state.
-    # See hermes-lcm#68. Built-in ContextCompressor ignores kwargs.
+    handoff_performed = False
+    if handoff_triggered and handoff_packet and (not fresh_session_requested or session_rotated):
+        handoff_artifact_path = _write_handoff_packet(
+            agent, old_session_id, handoff_packet
+        )
+        try:
+            agent._auto_handoff_count = int(getattr(agent, "_auto_handoff_count", 0)) + 1
+        except (TypeError, ValueError):
+            agent._auto_handoff_count = 1
+        agent._last_auto_handoff_artifact_path = (
+            str(handoff_artifact_path) if handoff_artifact_path else ""
+        )
+        agent._emit_status(
+            "🔁 Compression handoff triggered after "
+            f"{getattr(agent.context_compressor, 'compression_count', '?')} "
+            "compression(s). "
+            + (
+                f"Handoff packet: {handoff_artifact_path}"
+                if handoff_artifact_path
+                else "Handoff packet could not be written; continuing with in-memory packet."
+            )
+        )
+        handoff_performed = True
+
+    if fresh_session_requested and session_rotated and handoff_packet:
+        compressed = _fresh_session_handoff_messages(
+            handoff_packet, handoff_artifact_path
+        )
+        # Reset compressor/plugin state after constructing the packet so the
+        # fresh linked session does not carry iterative-summary state forward.
+        try:
+            if hasattr(agent.context_compressor, "on_session_reset"):
+                agent.context_compressor.on_session_reset()
+        except Exception as _reset_err:
+            logger.debug("context engine on_session_reset (compression handoff): %s", _reset_err)
+
+    # Notify the context engine that the session_id rotated. Plugin engines
+    # can distinguish ordinary compression from a fresh handoff via
+    # boundary_reason.
     try:
-        _old_sid = locals().get("old_session_id")
-        if _old_sid and hasattr(agent.context_compressor, "on_session_start"):
+        _old_sid = old_session_id
+        if session_rotated and _old_sid and hasattr(agent.context_compressor, "on_session_start"):
             agent.context_compressor.on_session_start(
                 agent.session_id or "",
-                boundary_reason="compression",
+                boundary_reason=split_reason,
                 old_session_id=_old_sid,
             )
     except Exception as _ce_err:
-        logger.debug("context engine on_session_start (compression): %s", _ce_err)
+        logger.debug("context engine on_session_start (%s): %s", split_reason, _ce_err)
 
-    # Notify memory providers of the compression-driven session_id rotation
-    # so provider-cached per-session state (Hindsight's _document_id,
-    # accumulated turn buffers, counters) refreshes. reset=False because
-    # the logical conversation continues; only the id and DB row rolled
-    # over. See #6672.
+    # Notify memory providers of the compression-driven session_id rotation.
+    # A fresh handoff resets provider per-session state; ordinary compression
+    # keeps logical continuity.
     try:
-        _old_sid = locals().get("old_session_id")
-        if _old_sid and agent._memory_manager:
+        _old_sid = old_session_id
+        if session_rotated and _old_sid and agent._memory_manager:
             agent._memory_manager.on_session_switch(
                 agent.session_id or "",
                 parent_session_id=_old_sid,
-                reset=False,
-                reason="compression",
+                reset=fresh_session_requested,
+                reason=split_reason,
             )
     except Exception as _me_err:
-        logger.debug("memory manager on_session_switch (compression): %s", _me_err)
+        logger.debug("memory manager on_session_switch (%s): %s", split_reason, _me_err)
 
-    # Warn on repeated compressions (quality degrades with each pass)
-    _cc = agent.context_compressor.compression_count
-    if _cc >= 2:
+    # Warn on repeated compressions (quality degrades with each pass). The
+    # automatic handoff notice above is more actionable, so avoid duplicate
+    # warning noise when a handoff already fired.
+    _cc = getattr(agent.context_compressor, "compression_count", 0)
+    if _cc >= 2 and not handoff_performed:
         agent._vprint(
             f"{agent.log_prefix}⚠️  Session compressed {_cc} times — "
             f"accuracy may degrade. Consider /new to start fresh.",

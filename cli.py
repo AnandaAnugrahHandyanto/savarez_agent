@@ -6264,6 +6264,53 @@ class HermesCLI:
         _cprint("  Your CLI session is intact.")
         return True
 
+    def _handle_handoff_packet_command(self, cmd_original: str) -> None:
+        """Handle ``/handoff-packet [note]`` — write a handoff packet only."""
+        if not self.agent:
+            _cprint("  No active agent -- send a message first.")
+            return
+        messages = list(self.conversation_history or [])
+        if not messages:
+            _cprint("  No conversation history to summarize into a handoff packet.")
+            return
+
+        note = ""
+        parts = cmd_original.split(None, 1)
+        if len(parts) > 1:
+            note = parts[1].strip()
+        trigger = "manual /handoff-packet request"
+        if note:
+            trigger = f"manual /handoff-packet request: {note}"
+
+        with self._busy_command("Writing handoff packet..."):
+            try:
+                from agent.conversation_compression import create_handoff_packet
+                from agent.model_metadata import estimate_request_tokens_rough
+
+                system_prompt = getattr(self.agent, "_cached_system_prompt", "") or ""
+                tools = getattr(self.agent, "tools", None) or None
+                approx_tokens = estimate_request_tokens_rough(
+                    messages,
+                    system_prompt=system_prompt,
+                    tools=tools,
+                )
+                packet, path = create_handoff_packet(
+                    self.agent,
+                    messages,
+                    approx_tokens=approx_tokens,
+                    trigger_description=trigger,
+                )
+            except Exception as exc:
+                _cprint(f"  ❌ Handoff packet failed: {exc}")
+                return
+
+        if path:
+            _cprint(f"  ✅ Handoff packet written: {path}")
+            _cprint("     Start a fresh session with /new and paste the packet if you want to continue there.")
+        else:
+            _cprint("  ⚠️  Could not write handoff artifact; copy the packet below:")
+            _cprint(packet)
+
     def _handle_resume_command(self, cmd_original: str) -> None:
         """Handle /resume <session_id_or_title> — switch to a previous session mid-conversation."""
         parts = cmd_original.split(None, 1)
@@ -7986,6 +8033,8 @@ class HermesCLI:
         elif canonical == "handoff":
             if not self._handle_handoff_command(cmd_original):
                 return False
+        elif canonical == "handoff-packet":
+            self._handle_handoff_packet_command(cmd_original)
         elif canonical == "new":
             parts = cmd_original.split(maxsplit=1)
             title = parts[1].strip() if len(parts) > 1 else None
