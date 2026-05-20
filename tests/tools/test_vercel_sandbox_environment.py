@@ -231,6 +231,15 @@ def make_env(vercel_module, request):
     def _cleanup_envs():
         for env in envs:
             env._sync_manager = None
+            # Mark as non-persistent to prevent snapshot writes during
+            # finalizer cleanup.  The tests themselves call cleanup() and
+            # verify snapshot state explicitly; the finalizer should only
+            # release sandbox resources, not write test-observable state.
+            # Without this, the finalizer can write {task-123: snap_default}
+            # to the snapshot store, which leaks across test boundaries on
+            # Python 3.12 CI + xdist (likely a monkyepatch/env-isolation
+            # timing quirk).  See t_b8fcdc5c.
+            env._persistent = False
             env.cleanup()
 
     request.addfinalizer(_cleanup_envs)
