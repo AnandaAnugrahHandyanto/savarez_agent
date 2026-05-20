@@ -676,7 +676,9 @@ class AIAgent:
         self.provider = provider_name or ""
         self.acp_command = acp_command or command
         self.acp_args = list(acp_args or args or [])
-        if api_mode in {"chat_completions", "codex_responses", "anthropic_messages"}:
+        explicit_api_mode = api_mode in {"chat_completions", "codex_responses", "anthropic_messages"}
+        self._explicit_api_mode = explicit_api_mode
+        if explicit_api_mode:
             self.api_mode = api_mode
         elif self.provider == "openai-codex":
             self.api_mode = "codex_responses"
@@ -712,7 +714,8 @@ class AIAgent:
         # ACP runtimes are excluded: CopilotACPClient handles its own
         # routing and does not implement the Responses API surface.
         if (
-            self.api_mode == "chat_completions"
+            not explicit_api_mode
+            and self.api_mode == "chat_completions"
             and self.provider != "copilot-acp"
             and not str(self.base_url or "").lower().startswith("acp://copilot")
             and not str(self.base_url or "").lower().startswith("acp+tcp://")
@@ -918,6 +921,8 @@ class AIAgent:
                     }
                 elif "portal.qwen.ai" in effective_base.lower():
                     client_kwargs["default_headers"] = _qwen_portal_headers()
+                elif "sophon-ai.bytedance.net" in effective_base.lower() and api_key:
+                    client_kwargs["default_headers"] = {"api-key": api_key}
             else:
                 # No explicit creds — use the centralized provider router
                 from agent.auxiliary_client import resolve_provider_client
@@ -4643,6 +4648,8 @@ class AIAgent:
             self._client_kwargs["default_headers"] = {"User-Agent": "KimiCLI/1.30.0"}
         elif "portal.qwen.ai" in normalized:
             self._client_kwargs["default_headers"] = _qwen_portal_headers()
+        elif "sophon-ai.bytedance.net" in normalized and getattr(self, "api_key", ""):
+            self._client_kwargs["default_headers"] = {"api-key": self.api_key}
         else:
             self._client_kwargs.pop("default_headers", None)
 

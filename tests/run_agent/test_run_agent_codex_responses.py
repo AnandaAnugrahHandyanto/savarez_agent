@@ -259,6 +259,24 @@ def test_copilot_acp_stays_on_chat_completions_for_gpt_5_models(monkeypatch):
     assert agent.api_mode == "chat_completions"
 
 
+def test_explicit_chat_completions_api_mode_is_respected_for_custom_gpt5(monkeypatch):
+    _patch_agent_bootstrap(monkeypatch)
+    agent = run_agent.AIAgent(
+        model="gpt-5.4-2026-03-05",
+        provider="custom",
+        api_mode="chat_completions",
+        base_url="https://sophon-ai.bytedance.net/gateway/openapi/model/chatCompletion",
+        api_key="test-token",
+        quiet_mode=True,
+        max_iterations=1,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+    assert agent.provider == "custom"
+    assert agent.api_mode == "chat_completions"
+    assert agent._client_kwargs["default_headers"] == {"api-key": "test-token"}
+
+
 def test_build_api_kwargs_codex(monkeypatch):
     agent = _build_agent(monkeypatch)
     kwargs = agent._build_api_kwargs(

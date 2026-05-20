@@ -153,8 +153,8 @@ def _get_chrome_debug_candidates(system: str) -> list[str]:
 
     if system == "Darwin":
         for app in (
-            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
             "/Applications/Chromium.app/Contents/MacOS/Chromium",
+            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
             "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
             "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
         ):
@@ -4104,7 +4104,7 @@ class HermesCLI:
             # First session or empty history — still finalize the old session
             self._notify_session_boundary("on_session_finalize")
 
-        old_session_id = self.session_id
+        old_session_id = self.session_idl
         if self._session_db and old_session_id:
             try:
                 self._session_db.end_session(old_session_id, "new_session")
@@ -5919,23 +5919,32 @@ class HermesCLI:
         import subprocess as _sp
 
         candidates = _get_chrome_debug_candidates(system)
-
+        print(f' 浏览器配置有 {len(candidates)} 个')
+        for candidate in candidates:
+            print(f'浏览器配置： {candidate}')
         if not candidates:
             return False
 
         # Dedicated profile dir so debug Chrome won't collide with normal Chrome
         data_dir = str(_hermes_home / "chrome-debug")
+        print(f'浏览器用户数据保存地址: {data_dir}')
         os.makedirs(data_dir, exist_ok=True)
-
+        
         chrome = candidates[0]
+        print(f'加载 浏览器 信息，浏览器地址为 {chrome}')
         try:
             _sp.Popen(
                 [
                     chrome,
                     f"--remote-debugging-port={port}",
                     f"--user-data-dir={data_dir}",
+                    "--remote-allow-origins=*",
+                    "--disable-features=ClearSiteDataOnExit",
+                    "--disable-clear-browsing-data-on-exit",
+                    "--persist-cookies",
                     "--no-first-run",
                     "--no-default-browser-check",
+                    "--password-store=basic",
                 ],
                 stdout=_sp.DEVNULL,
                 stderr=_sp.DEVNULL,
@@ -5952,7 +5961,7 @@ class HermesCLI:
         parts = cmd.strip().split(None, 1)
         sub = parts[1].lower().strip() if len(parts) > 1 else "status"
 
-        _DEFAULT_CDP = "http://localhost:9222"
+        _DEFAULT_CDP = "http://localhost:9223"
         current = os.environ.get("BROWSER_CDP_URL", "").strip()
 
         if sub.startswith("connect"):
@@ -5970,7 +5979,7 @@ class HermesCLI:
             print()
 
             # Extract port for connectivity checks
-            _port = 9222
+            _port = 9223
             try:
                 _port = int(cdp_url.rsplit(":", 1)[-1].split("/")[0])
             except (ValueError, IndexError):
@@ -5989,10 +5998,10 @@ class HermesCLI:
                 pass
 
             if _already_open:
-                print(f"   ✓ Chrome is already listening on port {_port}")
+                print(f"   ✓ chromium is already listening on port {_port}")
             elif cdp_url == _DEFAULT_CDP:
                 # Try to auto-launch Chrome with remote debugging
-                print("   Chrome isn't running with remote debugging — attempting to launch...")
+                print("   chromium isn't running with remote debugging — attempting to launch...")
                 _launched = self._try_launch_chrome_debug(_port, _plat.system())
                 if _launched:
                     # Wait for the port to come up
@@ -6013,31 +6022,39 @@ class HermesCLI:
                         print(f"   ⚠ Chrome launched but port {_port} isn't responding yet")
                         print("     Try again in a few seconds — the debug instance may still be starting")
                 else:
-                    print("   ⚠ Could not auto-launch Chrome")
+                    print("   ⚠ Could not auto-launch Chromium")
                     # Show manual instructions as fallback
                     _data_dir = str(_hermes_home / "chrome-debug")
                     sys_name = _plat.system()
                     if sys_name == "Darwin":
-                        chrome_cmd = (
-                            'open -a "Google Chrome" --args'
-                            f" --remote-debugging-port=9222"
-                            f' --user-data-dir="{_data_dir}"'
-                            " --no-first-run --no-default-browser-check"
+                        chromium_cmd = (
+                            'open -a /Applications/Chromium.app/Contents/MacOS/Chromium --args',
+                            f"--remote-debugging-port={_port}",
+                            f"--user-data-dir={_data_dir}",
+                            "--remote-allow-origins=*",
+                            "--disable-features=ClearSiteDataOnExit",
+                            "--disable-clear-browsing-data-on-exit",
+                            "--persist-cookies",
+                            "--no-first-run",
+                            "--no-default-browser-check",
+                            "--password-store=basic",
                         )
                     elif sys_name == "Windows":
-                        chrome_cmd = (
-                            f'chrome.exe --remote-debugging-port=9222'
+                        chromium_cmd = (
+                            f'chrome.exe --remote-debugging-port=9223'
                             f' --user-data-dir="{_data_dir}"'
+                            f" --remote-allow-origins=*"
                             f" --no-first-run --no-default-browser-check"
                         )
                     else:
-                        chrome_cmd = (
-                            f"google-chrome --remote-debugging-port=9222"
+                        chromium_cmd = (
+                            f"google-chrome --remote-debugging-port=9223"
                             f' --user-data-dir="{_data_dir}"'
+                            f" --remote-allow-origins=*"
                             f" --no-first-run --no-default-browser-check"
                         )
                     print(f"     Launch Chrome manually:")
-                    print(f"     {chrome_cmd}")
+                    print(f"     {chromium_cmd}")
             else:
                 print(f"   ⚠ Port {_port} is not reachable at {cdp_url}")
 
@@ -6045,6 +6062,12 @@ class HermesCLI:
             print()
             print("🌐 Browser connected to live Chrome via CDP")
             print(f"   Endpoint: {cdp_url}")
+            print("开始注入cookie信息")
+            try:
+                from inject_cookies import chromium_cookie as _inject_cookies_main
+                _inject_cookies_main(["--host", "localhost", "--port", str(_port)])
+            except Exception as _e:
+                print(f"   ⚠ 注入 cookie 失败: {_e}")
             print()
 
             # Inject context message so the model knows
@@ -6088,7 +6111,7 @@ class HermesCLI:
                 print("🌐 Browser: connected to live Chrome via CDP")
                 print(f"   Endpoint: {current}")
 
-                _port = 9222
+                _port = 9223
                 try:
                     _port = int(current.rsplit(":", 1)[-1].split("/")[0])
                 except (ValueError, IndexError):
@@ -6960,7 +6983,6 @@ class HermesCLI:
                     self._voice_continuous = False
                     self._no_speech_count = 0
                     _cprint(f"{_DIM}No speech detected 3 times, continuous mode stopped.{_RST}")
-                    return
             else:
                 self._no_speech_count = 0
 
