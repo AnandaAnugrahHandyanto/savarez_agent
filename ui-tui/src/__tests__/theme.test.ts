@@ -39,6 +39,41 @@ afterEach(() => {
   vi.resetModules()
 })
 
+function rgb(color: string): [number, number, number] {
+  const hex = color.match(/^#([0-9a-f]{6})$/i)?.[1]
+
+  if (hex) {
+    return [parseInt(hex.slice(0, 2), 16), parseInt(hex.slice(2, 4), 16), parseInt(hex.slice(4, 6), 16)]
+  }
+
+  const channels = color.match(/^rgb\((\d+),(\d+),(\d+)\)$/)?.slice(1).map(Number)
+
+  if (channels?.length === 3) {
+    return channels as [number, number, number]
+  }
+
+  throw new Error(`unsupported test color: ${color}`)
+}
+
+function relativeLuminance(color: string): number {
+  const channel = (v: number) => {
+    const normalized = v / 255
+
+    return normalized <= 0.03928 ? normalized / 12.92 : ((normalized + 0.055) / 1.055) ** 2.4
+  }
+
+  const [red, green, blue] = rgb(color)
+
+  return 0.2126 * channel(red) + 0.7152 * channel(green) + 0.0722 * channel(blue)
+}
+
+function contrastRatio(foreground: string, background: string): number {
+  const fg = relativeLuminance(foreground)
+  const bg = relativeLuminance(background)
+
+  return (Math.max(fg, bg) + 0.05) / (Math.min(fg, bg) + 0.05)
+}
+
 describe('DEFAULT_THEME', () => {
   it('has brand defaults', async () => {
     const { DEFAULT_THEME } = await importThemeWithCleanEnv()
@@ -53,6 +88,26 @@ describe('DEFAULT_THEME', () => {
 
     expect(DEFAULT_THEME.color.primary).toBe('#FFD700')
     expect(DEFAULT_THEME.color.error).toBe('#ef5350')
+  })
+})
+
+describe('diff highlight colors', () => {
+  it('keeps dark-theme diff backgrounds dark with readable foregrounds', async () => {
+    const { DARK_THEME } = await importThemeWithCleanEnv()
+
+    expect(relativeLuminance(DARK_THEME.color.diffAdded)).toBeLessThan(0.15)
+    expect(relativeLuminance(DARK_THEME.color.diffRemoved)).toBeLessThan(0.15)
+    expect(contrastRatio(DARK_THEME.color.diffAddedWord, DARK_THEME.color.diffAdded)).toBeGreaterThanOrEqual(4.5)
+    expect(contrastRatio(DARK_THEME.color.diffRemovedWord, DARK_THEME.color.diffRemoved)).toBeGreaterThanOrEqual(4.5)
+  })
+
+  it('keeps light-theme diff backgrounds light with readable foregrounds', async () => {
+    const { LIGHT_THEME } = await importThemeWithCleanEnv()
+
+    expect(relativeLuminance(LIGHT_THEME.color.diffAdded)).toBeGreaterThan(0.6)
+    expect(relativeLuminance(LIGHT_THEME.color.diffRemoved)).toBeGreaterThan(0.6)
+    expect(contrastRatio(LIGHT_THEME.color.diffAddedWord, LIGHT_THEME.color.diffAdded)).toBeGreaterThanOrEqual(4.0)
+    expect(contrastRatio(LIGHT_THEME.color.diffRemovedWord, LIGHT_THEME.color.diffRemoved)).toBeGreaterThanOrEqual(4.0)
   })
 })
 
