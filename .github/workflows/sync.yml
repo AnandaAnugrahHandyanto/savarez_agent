@@ -18,7 +18,7 @@ jobs:
             exit 0
           fi
 
-      # 1. 检出当前 Fork 的仓库代码（保留 fetch-depth: 0）
+      # 1. 检出当前 Fork 的仓库代码
       - name: Checkout my repo
         uses: actions/checkout@v3
         with:
@@ -32,6 +32,8 @@ jobs:
           upstream_sync_branch: main
           target_sync_branch: main
           target_repo_token: ${{ secrets.GITHUB_TOKEN }}
+          # ⚠️ 关键修复：添加 merge_args 解决 modify/delete 冲突
+          merge_args: '--strategy-option=theirs'
 
       # 3. 【核心防御】将官方带过来的干扰文件移入 disabled 目录
       - name: Disable Official Workflows
