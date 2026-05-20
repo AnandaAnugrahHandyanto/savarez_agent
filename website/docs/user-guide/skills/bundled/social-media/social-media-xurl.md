@@ -62,6 +62,8 @@ Forbidden flags in agent commands (they accept inline secrets):
 
 App credential registration and credential rotation must be done by the user manually, outside the agent session. After credentials are registered, the user authenticates with `xurl auth oauth2` — also outside the agent session. Tokens persist to `~/.xurl` in YAML. Each app has isolated tokens. OAuth 2.0 tokens auto-refresh.
 
+When Hermes runs in the official Docker image, tool subprocesses use the isolated home directory at `$HERMES_HOME/home` (usually `/opt/data/home`). In that environment, complete xurl setup from the same home that Hermes tools will use, for example with `HOME=/opt/data/home`, so the resulting `.xurl` directory is visible to agent-run `xurl` commands.
+
 ---
 
 ## Installation
