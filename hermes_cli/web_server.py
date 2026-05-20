@@ -14,6 +14,7 @@ import hmac
 import importlib.util
 import json
 import logging
+import mimetypes
 import os
 import secrets
 import subprocess
@@ -75,6 +76,28 @@ except ImportError:
 
 WEB_DIST = Path(os.environ["HERMES_WEB_DIST"]) if "HERMES_WEB_DIST" in os.environ else Path(__file__).parent / "web_dist"
 _log = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Force-register MIME types for dashboard assets.
+#
+# On native Windows, Python's :mod:`mimetypes` seeds itself from the registry
+# (HKCR\.js etc.).  Many Windows installs map ``.js`` to ``text/plain`` —
+# notably anything with an exotic editor association — which causes Starlette
+# /  StaticFiles to serve ``/assets/*.js`` with ``Content-Type: text/plain``.
+# Modern browsers refuse to execute module scripts with a non-JS MIME type,
+# so the SPA shell loads but the bundle never runs and the dashboard stays
+# blank. See issue #28987.
+#
+# Calling :func:`mimetypes.add_type` overrides any prior mapping (including
+# registry-sourced ones) for the lifetime of the process, on every platform.
+# ---------------------------------------------------------------------------
+mimetypes.init()
+mimetypes.add_type("application/javascript", ".js")
+mimetypes.add_type("application/javascript", ".mjs")
+mimetypes.add_type("text/css", ".css")
+mimetypes.add_type("application/json", ".json")
+mimetypes.add_type("image/svg+xml", ".svg")
+mimetypes.add_type("application/wasm", ".wasm")
 
 app = FastAPI(title="Hermes Agent", version=__version__)
 

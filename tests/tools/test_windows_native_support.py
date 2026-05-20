@@ -492,6 +492,46 @@ class TestWebServerPtyBridgeGuard:
 # ---------------------------------------------------------------------------
 
 
+class TestDashboardMimeTypes:
+    """Dashboard JS bundles must serve as application/javascript, not text/plain.
+
+    On Windows, ``mimetypes`` seeds from the registry where ``.js`` is often
+    mapped to ``text/plain``. The web server must normalize this at import
+    time so /assets/*.js loads as a module script (issue #28987).
+    """
+
+    def test_web_server_force_registers_js_mime(self):
+        root = Path(__file__).resolve().parents[2]
+        source = (root / "hermes_cli" / "web_server.py").read_text(encoding="utf-8")
+        assert "import mimetypes" in source
+        assert 'mimetypes.add_type("application/javascript", ".js")' in source
+        assert 'mimetypes.add_type("application/javascript", ".mjs")' in source
+
+    def test_js_mime_overrides_registry_after_import(self, monkeypatch):
+        """Even if a prior mapping points .js at text/plain, importing
+        web_server must restore application/javascript."""
+        import mimetypes as _mt
+
+        # Simulate the Windows-registry-poisoned state.
+        _mt.add_type("text/plain", ".js")
+        assert _mt.guess_type("x.js")[0] == "text/plain"
+
+        # Re-execute the force-register block by re-importing web_server.
+        # The module is normally already imported; calling add_type again is
+        # what matters, and that's what the module does at import time.
+        import importlib
+        import hermes_cli.web_server as ws  # noqa: F401
+        importlib.reload(ws)
+
+        assert _mt.guess_type("bundle.js")[0] == "application/javascript"
+        assert _mt.guess_type("bundle.mjs")[0] == "application/javascript"
+
+
+# ---------------------------------------------------------------------------
+# Entry points wire configure_windows_stdio
+# ---------------------------------------------------------------------------
+
+
 class TestEntryPointsConfigureStdio:
     """cli.py, hermes_cli/main.py, gateway/run.py must call configure_windows_stdio."""
 
