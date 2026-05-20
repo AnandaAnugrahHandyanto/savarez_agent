@@ -3438,6 +3438,7 @@ def block_task(
     *,
     reason: Optional[str] = None,
     expected_run_id: Optional[int] = None,
+    metadata: Optional[dict] = None,
 ) -> bool:
     """Transition ``running -> blocked``."""
     with write_txn(conn):
@@ -3474,6 +3475,7 @@ def block_task(
             conn, task_id,
             outcome="blocked", status="blocked",
             summary=reason,
+            metadata=metadata,
         )
         # Synthesize a run when blocking a never-claimed task so the
         # reason is preserved in attempt history.
@@ -3482,6 +3484,7 @@ def block_task(
                 conn, task_id,
                 outcome="blocked",
                 summary=reason,
+                metadata=metadata,
             )
         _append_event(conn, task_id, "blocked", {"reason": reason}, run_id=run_id)
         return True
