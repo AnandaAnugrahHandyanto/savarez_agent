@@ -121,6 +121,214 @@ def test_turn_route_skips_priority_processing_for_unsupported_models():
     assert route["request_overrides"] == {}
 
 
+def test_turn_route_uses_configured_simple_model_for_short_chat():
+    runner = _make_runner()
+    runner._smart_model_routing = {
+        "enabled": True,
+        "max_simple_chars": 160,
+        "max_simple_words": 28,
+        "cheap_model": {"model": "mlx-community/Qwen3.5-4B-MLX-4bit"},
+    }
+    runtime_kwargs = {
+        "api_key": "***",
+        "base_url": "http://localhost:8080/v1",
+        "provider": "custom",
+        "api_mode": "chat_completions",
+        "command": None,
+        "args": [],
+        "credential_pool": None,
+    }
+
+    route = gateway_run.GatewayRunner._resolve_turn_agent_config(
+        runner,
+        "is it my turn?",
+        "mlx-community/Qwen3.6-35B-A3B-nvfp4",
+        runtime_kwargs,
+    )
+
+    assert route["model"] == "mlx-community/Qwen3.5-4B-MLX-4bit"
+    assert route["runtime"]["base_url"] == "http://localhost:8080/v1"
+    assert route["smart_model_route"] == "simple"
+
+
+def test_topic_model_config_uses_custom_provider_runtime():
+    model, runtime = gateway_run.GatewayRunner._apply_topic_model_config(
+        "large-model",
+        {"provider": "custom", "base_url": "http://old/v1", "api_mode": "chat_completions"},
+        {
+            "custom_providers": [
+                {
+                    "name": "mlx-vlm",
+                    "base_url": "http://localhost:8080/v1",
+                    "api_key": "mlx-local",
+                    "api_mode": "chat_completions",
+                }
+            ]
+        },
+        {
+            "provider": "mlx-vlm",
+            "model": "mlx-community/Qwen3.5-4B-MLX-4bit",
+        },
+    )
+
+    assert model == "mlx-community/Qwen3.5-4B-MLX-4bit"
+    assert runtime["provider"] == "mlx-vlm"
+    assert runtime["base_url"] == "http://localhost:8080/v1"
+    assert runtime["api_key"] == "mlx-local"
+
+
+def test_topic_model_config_resolves_builtin_provider_runtime(monkeypatch):
+    def _fake_resolve_runtime_provider(**kwargs):
+        assert kwargs["requested"] == "anthropic"
+        assert kwargs["target_model"] == "claude-opus-4-6"
+        return {
+            "provider": "anthropic",
+            "base_url": "https://api.anthropic.com",
+            "api_key": "anthropic-key",
+            "api_mode": "anthropic_messages",
+            "command": None,
+            "args": [],
+            "credential_pool": None,
+        }
+
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        _fake_resolve_runtime_provider,
+    )
+
+    model, runtime = gateway_run.GatewayRunner._apply_topic_model_config(
+        "global-model",
+        {
+            "provider": "openrouter",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key": "openrouter-key",
+            "api_mode": "chat_completions",
+        },
+        {},
+        {"provider": "anthropic", "model": "claude-opus-4-6"},
+    )
+
+    assert model == "claude-opus-4-6"
+    assert runtime["provider"] == "anthropic"
+    assert runtime["base_url"] == "https://api.anthropic.com"
+    assert runtime["api_key"] == "anthropic-key"
+    assert runtime["api_mode"] == "anthropic_messages"
+
+
+def test_topic_toolsets_override_platform_defaults():
+    enabled = gateway_run.GatewayRunner._resolve_topic_toolsets(
+        {
+            "platform_toolsets": {"telegram": ["hermes-telegram"]},
+            "mcp_servers": {
+                "github": {"enabled": True},
+                "sqlite-state": {"enabled": True},
+            },
+        },
+        "telegram",
+        {"toolsets": ["memory", "session_search", "no_mcp"]},
+    )
+
+    assert enabled == ["memory", "session_search"]
+
+
+def test_turn_route_preserves_topic_runtime_token_budget():
+    runner = _make_runner()
+    runtime_kwargs = {
+        "api_key": "***",
+        "base_url": "http://localhost:8082/v1",
+        "provider": "mlx-vlm-small",
+        "api_mode": "chat_completions",
+        "command": None,
+        "args": [],
+        "credential_pool": None,
+        "max_tokens": 512,
+    }
+
+    route = gateway_run.GatewayRunner._resolve_turn_agent_config(
+        runner,
+        "tell me a short joke",
+        "mlx-community/Qwen3.5-4B-MLX-4bit",
+        runtime_kwargs,
+    )
+
+    assert route["runtime"]["max_tokens"] == 512
+    assert route["signature"][-1] == 512
+
+
+def test_turn_route_ignores_malformed_smart_routing_thresholds():
+    runner = _make_runner()
+    runner._smart_model_routing = {
+        "enabled": True,
+        "max_simple_chars": "short",
+        "max_simple_words": "few",
+        "cheap_model": {"model": "cheap-model"},
+    }
+    runtime_kwargs = {
+        "api_key": "***",
+        "base_url": "http://localhost:8080/v1",
+        "provider": "custom",
+        "api_mode": "chat_completions",
+        "command": None,
+        "args": [],
+        "credential_pool": None,
+    }
+
+    route = gateway_run.GatewayRunner._resolve_turn_agent_config(
+        runner,
+        "quick thought?",
+        "large-model",
+        runtime_kwargs,
+    )
+
+    assert route["model"] == "cheap-model"
+    assert route["smart_model_route"] == "simple"
+
+
+def test_session_model_override_wins_over_topic_runtime(monkeypatch):
+    runner = _make_runner()
+    runner._session_model_overrides["topic-session"] = {
+        "model": "large-model",
+        "provider": "mlx-vlm-large",
+        "api_key": "large-key",
+        "base_url": "http://localhost:8080/v1",
+        "api_mode": "chat_completions",
+    }
+    monkeypatch.setattr(
+        gateway_run,
+        "_resolve_runtime_agent_kwargs",
+        lambda: {
+            "provider": "global",
+            "api_mode": "chat_completions",
+            "base_url": "http://global/v1",
+            "api_key": "global-key",
+            "args": [],
+            "command": None,
+            "credential_pool": None,
+        },
+    )
+
+    model, runtime = runner._resolve_effective_agent_runtime(
+        session_key="topic-session",
+        user_config={
+            "custom_providers": [
+                {
+                    "name": "mlx-vlm-small",
+                    "base_url": "http://localhost:8082/v1",
+                    "api_key": "small-key",
+                    "api_mode": "chat_completions",
+                    "max_tokens": 512,
+                }
+            ]
+        },
+        topic_config={"provider": "mlx-vlm-small", "model": "small-model"},
+    )
+
+    assert model == "large-model"
+    assert runtime["provider"] == "mlx-vlm-large"
+    assert runtime["base_url"] == "http://localhost:8080/v1"
+    assert "max_tokens" not in runtime
+
+
 @pytest.mark.asyncio
 async def test_handle_fast_command_persists_config(monkeypatch, tmp_path):
     runner = _make_runner()
@@ -136,6 +344,20 @@ async def test_handle_fast_command_persists_config(monkeypatch, tmp_path):
 
     saved = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))
     assert saved["agent"]["service_tier"] == "fast"
+
+
+@pytest.mark.asyncio
+async def test_footer_status_does_not_toggle_config(monkeypatch, tmp_path):
+    runner = _make_runner()
+    config = {"display": {"runtime_footer": {"enabled": False}}}
+
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: config)
+
+    response = await runner._handle_footer_command(_make_event("/footer status"))
+
+    assert "Runtime footer: **OFF**" in response
+    assert not (tmp_path / "config.yaml").exists()
 
 
 @pytest.mark.asyncio
