@@ -4,11 +4,13 @@
 # Environment overrides:
 #   DISK_USAGE_THRESHOLD=90    # fail if any checked filesystem is >= this % used
 #   MEMORY_USAGE_THRESHOLD=90  # fail if memory usage is >= this % used
+#   HERMES_HEALTHCHECK_MEMINFO=/proc/meminfo  # test override for meminfo path
 
 set -euo pipefail
 
 DISK_USAGE_THRESHOLD="${DISK_USAGE_THRESHOLD:-90}"
 MEMORY_USAGE_THRESHOLD="${MEMORY_USAGE_THRESHOLD:-90}"
+MEMINFO_PATH="${HERMES_HEALTHCHECK_MEMINFO:-/proc/meminfo}"
 
 failures=0
 
@@ -37,18 +39,20 @@ check_disk_space() {
   fi
 
   # Skip pseudo/temporary filesystems so the signal is focused on real mounted
-  # storage. Parse from the right so mount points with spaces are preserved.
+  # storage. Parse from the right so mount points containing spaces are kept.
   while IFS= read -r line; do
     [[ "$line" == Filesystem* ]] && continue
     [[ -z "$line" ]] && continue
 
     local source used_pct target used
-    target="${line##* }"
-    line="${line% "$target"}"
-    used_pct="${line##* }"
-    line="${line% "$used_pct"}"
-    source="${line%% *}"
+    read -r source _ _ _ used_pct target <<< "$line"
     used="${used_pct%%%}"
+
+    if ! is_integer "$used" || [[ -z "$target" ]]; then
+      echo "  FAIL unable to parse filesystem usage line: ${line}"
+      failures=$((failures + 1))
+      continue
+    fi
 
     if (( used >= DISK_USAGE_THRESHOLD )); then
       echo "  FAIL ${target}: ${used}% used (${source})"
@@ -63,11 +67,11 @@ check_memory() {
   echo "Memory:"
 
   local mem_total_kb mem_available_kb mem_used_pct
-  mem_total_kb="$(awk '/^MemTotal:/ {print $2}' /proc/meminfo)"
-  mem_available_kb="$(awk '/^MemAvailable:/ {print $2}' /proc/meminfo)"
+  mem_total_kb="$(awk '/^MemTotal:/ {print $2}' "$MEMINFO_PATH" 2>/dev/null || true)"
+  mem_available_kb="$(awk '/^MemAvailable:/ {print $2}' "$MEMINFO_PATH" 2>/dev/null || true)"
 
-  if [[ -z "$mem_total_kb" || -z "$mem_available_kb" || "$mem_total_kb" -eq 0 ]]; then
-    echo "  FAIL unable to read memory information from /proc/meminfo"
+  if ! is_integer "$mem_total_kb" || ! is_integer "$mem_available_kb" || (( mem_total_kb == 0 || mem_available_kb > mem_total_kb )); then
+    echo "  FAIL unable to read memory information from ${MEMINFO_PATH}"
     failures=$((failures + 1))
     return
   fi
