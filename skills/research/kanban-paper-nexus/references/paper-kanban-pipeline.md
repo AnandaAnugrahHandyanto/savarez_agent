@@ -2,7 +2,8 @@
 
 Board: `paper-nexus`. Titles: `[paper] <arxiv_id> …`.
 
-**Read first:** `paper-reading-framework.md` (CEL + 实验五问 + 写作原则).
+**Read first:** `paper-reading-framework.md` (CEL + 实验五问 + 写作原则).  
+**跨会话：** `memory-os.md`（每阶段 `store_memory_markdown`）.
 
 ## Scripts & registry
 
@@ -52,6 +53,8 @@ Downstream: `kanban_show` 读父任务 handoff；**禁止**编造父任务未出
 
 **完成标准：** 读者不看 PDF 也能知道「这篇想证明什么、去哪找证据」。
 
+**Memory：** `search_memory`（canonical_id）；完成后 `store_memory_markdown` stage=T0。
+
 ---
 
 ## T1 — 主张-证据链（CEL）
@@ -61,6 +64,8 @@ Downstream: `kanban_show` 读父任务 handoff；**禁止**编造父任务未出
 - 至少 1 行 strength 为 `medium` 或 `weak`
 
 **完成标准：** 无「显著提升」类空话；局限列诚实。
+
+**Memory：** stage=T1，`importance_score`≥0.75，CEL 全文写入 body。
 
 ---
 
@@ -97,12 +102,15 @@ Downstream: `kanban_show` 读父任务 handoff；**禁止**编造父任务未出
 
 **禁止：** 跨论文 doc；handoff 无依据的新 SOTA 数字。
 
+**Memory：** stage=T5，含 `feishu_doc_url` + 中文核心总结 5 条。
+
 ---
 
 ## T6 — QA
 
 - 逐项 `qa-rubric.md`；输出 `qa_pass` + `recommendation`（精读/引用/不建议复现）
 - FAIL → block 并 @ 对应 stage
+- PASS → `store_memory_markdown` stage=T6（`qa_pass` + `recommendation_zh`）
 
 ---
 

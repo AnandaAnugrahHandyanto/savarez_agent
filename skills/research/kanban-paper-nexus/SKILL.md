@@ -1,7 +1,7 @@
 ---
 name: kanban-paper-nexus
 description: Paper-to-doc Kanban DAG on Hermes; Feishu via lark-cli.
-version: 1.1.0
+version: 1.2.0
 author: Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
@@ -25,6 +25,22 @@ metadata:
 3. **实验可审计** — T4 用五问检查 baseline/指标/方差/消融/复现，不是复述表格。
 4. **文档服务决策** — 中文写清「能否信、能否用、下一步」；English 为 mirror。
 5. **一篇论文一篇 doc** — registry 管 canonical id；同论文只 append（见下）。
+6. **Memory OS 可追溯** — 跨会话用 `workflow_id: paper-nexus:<canonical_id>` 回忆 CEL、doc、QA 结论（见 `references/memory-os.md`）。
+
+## Memory OS（跨会话记忆）
+
+| 时机 | 工具 | 说明 |
+|------|------|------|
+| 建卡前 | `search_memory` | query=canonical_id 或标题，避免重复 doc/重复精读 |
+| 每阶段完成 | `store_memory_markdown` | 用 `paper_memory_markdown.py` 生成 entry |
+| 可选背景 | `search_existing_knowledge` | 公司 wiki 是否已有该主题（不替代 CEL） |
+
+```bash
+python3 skills/research/kanban-paper-nexus/scripts/paper_memory_markdown.py \
+  --stage T5 --handoff handoff.json --task-id t_xxx
+```
+
+**workflow_id：** `paper-nexus:2402.03300`（canonical，无 `vN`）。详表见 `references/memory-os.md`。
 
 ## 文档 1:1 规则
 
@@ -47,6 +63,7 @@ metadata:
 - 看板 `paper-nexus`；gateway + `kanban.dispatch_in_gateway: true`
 - Workers：`kanban-researcher`（T0–T3）、`kanban-coder`（T4）、`kanban-writer`（T5）、`kanban-qa`（T6）
 - `lark-cli`、`arxiv` / `web_extract`（深度读 PDF 时）
+- **`unified-memory-os` MCP**（`search_memory` + `store_memory_markdown`）
 - 深度阅读可选：`references/paper-reading-framework.md` + PaperQA
 
 ## Parse User Input
@@ -81,11 +98,13 @@ T2∥T3 可并行；T4 必须等 T1+T2。
 ## Orchestrator Procedure
 
 1. `skill_view` 本 skill + `kanban-orchestrator`
-2. `hermes kanban boards switch paper-nexus`
-3. 解析 `paper_id`、`deep`；`resolve` 告知将 **create** 或 **append** doc
-4. `kanban_create` 全表；`parents` 用返回的 task_id
-5. 确认 `notify_subscribed: true`
-6. 回复（中文）：canonical_id、task_ids、doc 策略、arXiv/PDF、预计 T5 交付
+2. `search_memory`（`workflow_id` 或 canonical_id）— 有则告知用户并复用 doc URL
+3. `hermes kanban boards switch paper-nexus`
+4. 解析 `paper_id`、`deep`；`resolve` 告知将 **create** 或 **append** doc
+5. `kanban_create` 全表；`parents` 用返回的 task_id
+6. 确认 `notify_subscribed: true`
+7. `store_memory_markdown`（stage=orchestrator，含 task_ids、doc 策略）
+8. 回复（中文）：canonical_id、task_ids、doc 策略、Memory 是否命中、arXiv/PDF
 
 ## Worker 必读
 
@@ -94,6 +113,7 @@ T2∥T3 可并行；T4 必须等 T1+T2。
 | `paper-reading-framework.md` | T0–T5 |
 | `feishu-doc-bilingual-template.md` | T5 |
 | `paper-kanban-pipeline.md` | 全流程 + handoff schema |
+| `memory-os.md` | 何时 search/store、workflow_id |
 | `qa-rubric.md` | T6 |
 
 `handoff.json` 必须含：`canonical_id`, `stage`, `thesis_one_liner`, `claims[]`, `feishu_doc_url`。
@@ -104,6 +124,7 @@ T2∥T3 可并行；T4 必须等 T1+T2。
 - 无 Evidence 列的 CEL、全是「强」无局限
 - 跨论文共用 doc、同论文重复 create
 - `feishu-finance-kanban` / `kanban-stock-nexus`
+- 只写 Kanban/SQLite 不写 Memory OS（跨会话会丢）
 
 ## Verification
 

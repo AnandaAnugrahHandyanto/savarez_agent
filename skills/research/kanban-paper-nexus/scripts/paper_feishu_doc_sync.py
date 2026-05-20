@@ -105,6 +105,7 @@ def sync_paper_doc(paper_id: str, marker: str = "", board: str = "paper-nexus") 
         title=meta["title"],
         board=board,
     )
+    wf = f"paper-nexus:{meta['canonical_id']}"
     return {
         "action": action,
         "canonical_id": meta["canonical_id"],
@@ -112,6 +113,13 @@ def sync_paper_doc(paper_id: str, marker: str = "", board: str = "paper-nexus") 
         "doc_url": doc_url,
         "document_id": document_id,
         "title": meta["title"],
+        "memory_os": {
+            "workflow_id": wf,
+            "store_hint": (
+                f"After T5/T6 call store_memory_markdown with workflow_id={wf}; "
+                "generate entry via paper_memory_markdown.py"
+            ),
+        },
     }
 
 

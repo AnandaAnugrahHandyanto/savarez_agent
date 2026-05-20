@@ -27,6 +27,13 @@
 - [ ] 本篇论文独立 doc（registry canonical_id 唯一）
 - [ ] 同论文重跑为 append，非第二篇 doc
 
+## E. Memory OS
+
+- [ ] `search_memory` 在流水线开始前已执行（或编排 handoff 注明 `memory_hit: true/false`）
+- [ ] `workflow_id: paper-nexus:<canonical_id>` 至少 1 条记忆含 `feishu_doc_url`
+- [ ] T1 记忆含 CEL 或 `claims`；T6 或 T5 含 `recommendation_zh` / `qa_pass`
+- [ ] 未将 PDF 全文写入 Memory（仅摘要/CEL/链接）
+
 ## 输出格式
 
 ```json

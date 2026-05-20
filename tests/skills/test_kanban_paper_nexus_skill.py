@@ -70,6 +70,30 @@ def test_registry_resolve_create_then_update(tmp_path, monkeypatch):
     assert r["doc_url"] == "https://my.feishu.cn/docx/TESTDOC"
 
 
+def test_memory_markdown_entry():
+    import importlib.util
+    import json
+    import tempfile
+
+    path = SKILL.parent / "scripts" / "paper_memory_markdown.py"
+    spec = importlib.util.spec_from_file_location("paper_memory_markdown", path)
+    mod = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(mod)
+    handoff = {
+        "paper_id": "2402.03300v3",
+        "canonical_id": "2402.03300",
+        "thesis_one_liner": "测试论点",
+        "feishu_doc_url": "https://my.feishu.cn/docx/TEST",
+        "claims": [{"id": "C1", "claim_zh": "x", "strength": "weak"}],
+    }
+    entry = mod.build_entry("T1", handoff, session_id="sess-1", task_id="t_abcd")
+    assert "workflow_id: paper-nexus:2402.03300" in entry
+    assert "store" not in entry  # raw entry for MCP, not instruction
+    assert "importance_score: 0.75" in entry
+    assert "测试论点" in entry
+
+
 def test_metadata_script_parses_arxiv_id():
     import importlib.util
 
