@@ -153,7 +153,7 @@ function Build-HermesCommandLine {
     else {
         $inner = if ($prefix) { "`"$exe`" $prefix $SubArgs" } else { "`"$exe`" $SubArgs" }
     }
-    return "$inner || echo. & echo [Hermes exited with error - press any key] & pause >nul"
+    return "$inner || (echo. & echo [Hermes exited with error - press any key] & pause >nul)"
 }
 
 function New-HermesShortcut {
@@ -376,8 +376,8 @@ $definitions = @(
     },
     @{
         Name        = "Hermes Gateway.lnk"
-        SubArgs     = "gateway"
-        Description = "Hermes messaging gateway (foreground)"
+        SubArgs     = "gateway run --replace"
+        Description = "Hermes messaging gateway (foreground, replacing any stale instance)"
     },
     @{
         Name        = "Hermes Harness.lnk"
@@ -510,7 +510,9 @@ else {
 
 if ($DesktopRoot) {
     $folderOpenerName = "Hermes Agent (open folder).lnk"
-    $folderOpenerLnk = Join-Path $userDesktop $folderOpenerName
+    $desktopHermesDir = Join-Path $userDesktop "01_Hermes_Discord_Setup"
+    New-Item -ItemType Directory -Force -Path $desktopHermesDir | Out-Null
+    $folderOpenerLnk = Join-Path $desktopHermesDir $folderOpenerName
     try {
         $row = New-HermesShortcut `
             -LinkPath $folderOpenerLnk `

@@ -19,6 +19,7 @@ logs/
 data/
 .pytest_cache/
 tmp/
+/_tmp_*.txt
 temp_vision_images/
 hermes-*/*
 examples/
