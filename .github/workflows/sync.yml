@@ -1,0 +1,60 @@
+name: Auto Sync from Upstream
+
+on:
+  schedule:
+    - cron: '0 3 1,14 * *' # 每月1号和14号凌晨3点自动同步
+  workflow_dispatch:       # 允许手动点击运行
+
+jobs:
+  sync-and-clean:
+    runs-on: ubuntu-latest
+    
+    steps:
+      # 0. 【防御死循环】如果是机器人自己提交的，直接跳过
+      - name: Check if self-commit, skip if so
+        run: |
+          if [[ "$GITHUB_ACTOR" == "Auto-Cleaner" ]]; then
+            echo "🤖 检测到是机器人自我维护提交，跳过本次运行。"
+            exit 0
+          fi
+
+      # 1. 检出当前 Fork 的仓库代码（保留 fetch-depth: 0）
+      - name: Checkout my repo
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0 
+
+      # 2. 同步上游官方仓库的最新代码
+      - name: Sync from Upstream
+        uses: aormsby/Fork-Sync-With-Upstream-action@v3.4
+        with:
+          upstream_sync_repo: NousResearch/hermes-agent
+          upstream_sync_branch: main
+          target_sync_branch: main
+          target_repo_token: ${{ secrets.GITHUB_TOKEN }}
+
+      # 3. 【核心防御】将官方带过来的干扰文件移入 disabled 目录
+      - name: Disable Official Workflows
+        run: |
+          WORKFLOW_DIR=".github/workflows"
+          DISABLED_DIR="$WORKFLOW_DIR/disabled"
+          
+          mkdir -p "$DISABLED_DIR"
+          
+          for file in $(find "$WORKFLOW_DIR" -maxdepth 1 -type f \( -name "*.yml" -o -name "*.yaml" \) 2>/dev/null || echo ""); do
+            filename=$(basename "$file")
+            if [[ "$filename" != "sync.yml" ]]; then
+              echo "🧹 正在移走干扰文件: $filename"
+              mv "$file" "$DISABLED_DIR/"
+            fi
+          done
+          
+          if [ -n "$(git status --porcelain)" ]; then
+            git config --global user.name "Auto-Cleaner"
+            git config --global user.email "action@noreply.github.com"
+            git add "$DISABLED_DIR/"
+            git commit -m "🧹 Auto-disable official workflows after sync"
+            git push
+          else
+            echo "✅ 没有多余的 workflow 文件需要清理。"
+          fi
