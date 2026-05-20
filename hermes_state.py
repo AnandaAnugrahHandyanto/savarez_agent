@@ -25,7 +25,7 @@ from pathlib import Path
 
 from agent.memory_manager import sanitize_context
 from hermes_constants import get_hermes_home
-from typing import Any, Callable, Dict, List, Optional, TypeVar
+from typing import Any, Callable, Dict, List, Optional, Tuple, TypeVar
 
 logger = logging.getLogger(__name__)
 
@@ -246,7 +246,11 @@ CREATE TABLE IF NOT EXISTS messages (
     outbound_platform TEXT,
     outbound_chat_id TEXT,
     outbound_thread_id TEXT,
-    outbound_message_id TEXT
+    outbound_message_id TEXT,
+    -- v12: platform-side message id (e.g. yuanbao msg_id, telegram
+    -- update_id) so platform-specific flows like recall can match by
+    -- external identifier instead of falling back to content-match.
+    platform_message_id TEXT
 );
 
 CREATE TABLE IF NOT EXISTS state_meta (
@@ -267,6 +271,9 @@ CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, timestam
 DEFERRED_INDEX_SQL = """
 CREATE INDEX IF NOT EXISTS idx_messages_session_active
     ON messages(session_id, active, timestamp);
+CREATE INDEX IF NOT EXISTS idx_messages_platform_msg_id
+    ON messages(session_id, platform_message_id)
+    WHERE platform_message_id IS NOT NULL;
 """
 
 FTS_SQL = """
@@ -1504,12 +1511,19 @@ class SessionDB:
         reasoning_details: Any = None,
         codex_reasoning_items: Any = None,
         codex_message_items: Any = None,
+        platform_message_id: str = None,
     ) -> int:
         """
         Append a message to a session. Returns the message row ID.
 
         Also increments the session's message_count (and tool_call_count
         if role is 'tool' or tool_calls is present).
+
+        ``platform_message_id`` is the external messaging platform's own
+        message ID (e.g. Telegram update_id, Yuanbao msg_id).  It is
+        independent of the SQLite autoincrement primary key and is used by
+        platform-specific flows like yuanbao's recall guard to redact a
+        message by its platform-side identifier.
         """
         # Serialize structured fields to JSON before entering the write txn
         reasoning_details_json = (
@@ -1539,8 +1553,8 @@ class SessionDB:
                 """INSERT INTO messages (session_id, role, content, tool_call_id,
                    tool_calls, tool_name, timestamp, token_count, finish_reason,
                    reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
-                   codex_message_items)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   codex_message_items, platform_message_id)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     role,
@@ -1556,6 +1570,7 @@ class SessionDB:
                     reasoning_details_json,
                     codex_items_json,
                     codex_message_items_json,
+                    platform_message_id,
                 ),
             )
             msg_id = cursor.lastrowid
@@ -1617,13 +1632,18 @@ class SessionDB:
                     json.dumps(codex_message_items) if codex_message_items else None
                 )
                 tool_calls_json = json.dumps(tool_calls) if tool_calls else None
+                # Accept either `platform_message_id` (new explicit name) or
+                # `message_id` (yuanbao's existing convention on message dicts).
+                platform_msg_id = (
+                    msg.get("platform_message_id") or msg.get("message_id")
+                )
 
                 conn.execute(
                     """INSERT INTO messages (session_id, role, content, tool_call_id,
                        tool_calls, tool_name, timestamp, token_count, finish_reason,
                        reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
-                       codex_message_items)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                       codex_message_items, platform_message_id)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         session_id,
                         role,
@@ -1639,6 +1659,7 @@ class SessionDB:
                         reasoning_details_json,
                         codex_items_json,
                         codex_message_items_json,
+                        platform_msg_id,
                     ),
                 )
                 total_messages += 1
@@ -1658,7 +1679,7 @@ class SessionDB:
     def get_messages(
         self, session_id: str, include_inactive: bool = False
     ) -> List[Dict[str, Any]]:
-        """Load messages for a session, ordered by timestamp.
+        """Load messages for a session, ordered by insertion order.
 
         By default only active messages are returned. Pass
         ``include_inactive=True`` to load soft-deleted rows (e.g. for
@@ -1669,7 +1690,7 @@ class SessionDB:
         with self._lock:
             cursor = self._conn.execute(
                 "SELECT * FROM messages WHERE session_id = ?"
-                f"{active_clause} ORDER BY timestamp, id",
+                f"{active_clause} ORDER BY id",
                 (session_id,),
             )
             rows = cursor.fetchall()
@@ -1686,6 +1707,204 @@ class SessionDB:
                     msg["tool_calls"] = []
             result.append(msg)
         return result
+
+    def get_messages_around(
+        self,
+        session_id: str,
+        around_message_id: int,
+        window: int = 5,
+    ) -> Dict[str, Any]:
+        """Load a window of messages anchored on a specific message id.
+
+        Returns a dict with:
+          - ``window``: up to ``window`` messages before the anchor, the anchor
+            itself, and up to ``window`` messages after, ordered by id ascending.
+          - ``messages_before``: count of messages strictly before the anchor
+            still in the session (== window unless we hit the start).
+          - ``messages_after``: count of messages strictly after the anchor
+            still in the session (== window unless we hit the end).
+
+        Used by ``session_search`` for both the discovery shape (anchored on the
+        FTS5 match) and the scroll shape (anchored on any message id). The
+        ``messages_before`` / ``messages_after`` counts let the caller detect
+        session boundaries: when either is less than ``window``, the agent has
+        reached one end of the session.
+
+        Returns an empty window when ``around_message_id`` is not a real id in
+        ``session_id`` — callers decide how to surface that.
+        """
+        if window < 0:
+            window = 0
+        with self._lock:
+            # Confirm the anchor exists in this session.
+            anchor_exists = self._conn.execute(
+                "SELECT 1 FROM messages WHERE id = ? AND session_id = ? LIMIT 1",
+                (around_message_id, session_id),
+            ).fetchone()
+            if not anchor_exists:
+                return {"window": [], "messages_before": 0, "messages_after": 0}
+
+            # Two queries: anchor + before (DESC, take window+1), and after
+            # (ASC, take window). Final order is id ASC.
+            before_rows = self._conn.execute(
+                "SELECT * FROM messages "
+                "WHERE session_id = ? AND id <= ? "
+                "ORDER BY id DESC LIMIT ?",
+                (session_id, around_message_id, window + 1),
+            ).fetchall()
+            after_rows = self._conn.execute(
+                "SELECT * FROM messages "
+                "WHERE session_id = ? AND id > ? "
+                "ORDER BY id ASC LIMIT ?",
+                (session_id, around_message_id, window),
+            ).fetchall()
+
+        # before_rows is DESC; reverse so it's ASC, then concatenate after_rows.
+        rows = list(reversed(before_rows)) + list(after_rows)
+        result = []
+        for row in rows:
+            msg = dict(row)
+            if "content" in msg:
+                msg["content"] = self._decode_content(msg["content"])
+            if msg.get("tool_calls"):
+                try:
+                    msg["tool_calls"] = json.loads(msg["tool_calls"])
+                except (json.JSONDecodeError, TypeError):
+                    logger.warning(
+                        "Failed to deserialize tool_calls in get_messages_around, falling back to []"
+                    )
+                    msg["tool_calls"] = []
+            result.append(msg)
+
+        # before_rows includes the anchor itself; subtract 1 for the count of
+        # messages strictly before the anchor in the returned slice.
+        messages_before = max(0, len(before_rows) - 1)
+        messages_after = len(after_rows)
+        return {
+            "window": result,
+            "messages_before": messages_before,
+            "messages_after": messages_after,
+        }
+
+    def get_anchored_view(
+        self,
+        session_id: str,
+        around_message_id: int,
+        window: int = 5,
+        bookend: int = 3,
+        keep_roles: Optional[Tuple[str, ...]] = ("user", "assistant"),
+    ) -> Dict[str, Any]:
+        """Return an anchored window plus session bookends.
+
+        Built on top of ``get_messages_around``. Three slices:
+
+          - ``window``: messages immediately surrounding the anchor. Filtered
+            to ``keep_roles`` (tool-response noise dropped by default), EXCEPT
+            the anchor itself is always preserved regardless of role.
+          - ``bookend_start``: first ``bookend`` user/assistant messages of the
+            session — but only those whose id is strictly before the window's
+            first message id. Empty when the window already overlaps the
+            session head. Empty-content messages (tool-call-only assistant
+            turns) are skipped so they don't crowd out actual prose openings.
+          - ``bookend_end``: last ``bookend`` user/assistant messages of the
+            session, same non-overlap rule at the tail.
+
+        Bookends let an FTS5 hit anywhere in a long session yield the goal
+        (opening) and the resolution (closing) on a single call — without
+        loading the whole transcript.
+
+        Returns ``{"window": [], "messages_before": 0, "messages_after": 0,
+        "bookend_start": [], "bookend_end": []}`` when the anchor isn't in
+        the session.
+
+        ``keep_roles=None`` disables role filtering (raw window + raw
+        bookends).
+        """
+        if bookend < 0:
+            bookend = 0
+
+        # Reuse the primitive — handles anchor-existence, content decoding,
+        # tool_calls deserialisation, and boundary counts.
+        primitive = self.get_messages_around(
+            session_id, around_message_id, window=window
+        )
+        window_rows = primitive["window"]
+        if not window_rows:
+            return {
+                "window": [],
+                "messages_before": 0,
+                "messages_after": 0,
+                "bookend_start": [],
+                "bookend_end": [],
+            }
+
+        # Apply role filter to the window, but never drop the anchor itself.
+        if keep_roles is not None:
+            keep_set = set(keep_roles)
+            filtered_window = [
+                m for m in window_rows
+                if m.get("id") == around_message_id or m.get("role") in keep_set
+            ]
+        else:
+            filtered_window = window_rows
+
+        window_min_id = window_rows[0]["id"]
+        window_max_id = window_rows[-1]["id"]
+
+        # Fetch bookends only when there's room outside the window. SQL filters
+        # by id range, role, and non-empty content — tool-call-only assistant
+        # turns (content='' with tool_calls populated) are excluded so they
+        # don't crowd out actual prose openings/closings.
+        bookend_start_rows: List[Any] = []
+        bookend_end_rows: List[Any] = []
+        if bookend > 0:
+            with self._lock:
+                role_clause = ""
+                role_params: list = []
+                if keep_roles is not None:
+                    role_placeholders = ",".join("?" for _ in keep_roles)
+                    role_clause = f" AND role IN ({role_placeholders})"
+                    role_params = list(keep_roles)
+
+                bookend_start_rows = self._conn.execute(
+                    f"SELECT * FROM messages "
+                    f"WHERE session_id = ? AND id < ?{role_clause} "
+                    f"AND length(content) > 0 "
+                    f"ORDER BY id ASC LIMIT ?",
+                    (session_id, window_min_id, *role_params, bookend),
+                ).fetchall()
+
+                bookend_end_rows = self._conn.execute(
+                    f"SELECT * FROM messages "
+                    f"WHERE session_id = ? AND id > ?{role_clause} "
+                    f"AND length(content) > 0 "
+                    f"ORDER BY id DESC LIMIT ?",
+                    (session_id, window_max_id, *role_params, bookend),
+                ).fetchall()
+                # End rows came back DESC for the LIMIT cap; flip to ASC.
+                bookend_end_rows = list(reversed(bookend_end_rows))
+
+        def _hydrate(row) -> Dict[str, Any]:
+            msg = dict(row)
+            if "content" in msg:
+                msg["content"] = self._decode_content(msg["content"])
+            if msg.get("tool_calls"):
+                try:
+                    msg["tool_calls"] = json.loads(msg["tool_calls"])
+                except (json.JSONDecodeError, TypeError):
+                    logger.warning(
+                        "Failed to deserialize tool_calls in get_anchored_view, falling back to []"
+                    )
+                    msg["tool_calls"] = []
+            return msg
+
+        return {
+            "window": filtered_window,
+            "messages_before": primitive["messages_before"],
+            "messages_after": primitive["messages_after"],
+            "bookend_start": [_hydrate(r) for r in bookend_start_rows],
+            "bookend_end": [_hydrate(r) for r in bookend_end_rows],
+        }
 
     def resolve_resume_session_id(self, session_id: str) -> str:
         """Redirect a resume target to the descendant session that holds the messages.
@@ -1776,9 +1995,9 @@ class SessionDB:
             rows = self._conn.execute(
                 "SELECT role, content, tool_call_id, tool_calls, tool_name, "
                 "finish_reason, reasoning, reasoning_content, reasoning_details, "
-                "codex_reasoning_items, codex_message_items "
+                "codex_reasoning_items, codex_message_items, platform_message_id "
                 f"FROM messages WHERE session_id IN ({placeholders})"
-                f"{active_clause} ORDER BY timestamp, id",
+                f"{active_clause} ORDER BY id",
                 tuple(session_ids),
             ).fetchall()
 
@@ -1798,6 +2017,13 @@ class SessionDB:
                 except (json.JSONDecodeError, TypeError):
                     logger.warning("Failed to deserialize tool_calls in conversation replay, falling back to []")
                     msg["tool_calls"] = []
+            # Surface the platform-side message id (e.g. yuanbao msg_id,
+            # telegram update_id) so platform-specific flows like recall
+            # can match by external identifier instead of having to fall
+            # back to content-match heuristics.  Exposed as ``message_id``
+            # for backward compatibility with the JSONL transcript shape.
+            if row["platform_message_id"]:
+                msg["message_id"] = row["platform_message_id"]
             # Restore reasoning fields on assistant messages so providers
             # that replay reasoning (OpenRouter, OpenAI, Nous) receive
             # coherent multi-turn reasoning context.
@@ -2261,6 +2487,7 @@ class SessionDB:
         limit: int = 20,
         offset: int = 0,
         include_inactive: bool = False,
+        sort: str = None,
     ) -> List[Dict[str, Any]]:
         """
         Full-text search across session messages using FTS5.
@@ -2276,6 +2503,15 @@ class SessionDB:
 
         Rewound (``active=0``) rows are excluded by default. Pass
         ``include_inactive=True`` to search every row.
+
+        ``sort`` controls temporal ordering:
+          - ``None`` (default): FTS5 BM25 relevance only. Time-neutral.
+          - ``"newest"``: order by message timestamp DESC, then by rank.
+          - ``"oldest"``: order by message timestamp ASC, then by rank.
+
+        The short-CJK LIKE fallback already orders by timestamp DESC and
+        ignores ``sort``. The trigram CJK path honours ``sort`` like the main
+        FTS5 path.
         """
         if not query or not query.strip():
             return []
@@ -2283,6 +2519,25 @@ class SessionDB:
         query = self._sanitize_fts5_query(query)
         if not query:
             return []
+
+        # Normalise sort. Anything not in the allowed set falls back to None
+        # (FTS5 rank-only) so callers can pass through user input without
+        # validation.
+        if isinstance(sort, str):
+            sort_norm = sort.strip().lower()
+            if sort_norm not in ("newest", "oldest"):
+                sort_norm = None
+        else:
+            sort_norm = None
+
+        # ORDER BY shared across the main FTS5 path and trigram CJK path.
+        # With sort set, timestamp is primary and rank is the tiebreaker.
+        if sort_norm == "newest":
+            order_by_sql = "ORDER BY m.timestamp DESC, rank"
+        elif sort_norm == "oldest":
+            order_by_sql = "ORDER BY m.timestamp ASC, rank"
+        else:
+            order_by_sql = "ORDER BY rank"
 
         # Build WHERE clauses dynamically
         where_clauses = ["messages_fts MATCH ?"]
@@ -2324,7 +2579,7 @@ class SessionDB:
             JOIN messages m ON m.id = messages_fts.rowid
             JOIN sessions s ON s.id = m.session_id
             WHERE {where_sql}
-            ORDER BY rank
+            {order_by_sql}
             LIMIT ? OFFSET ?
         """
 
@@ -2395,7 +2650,7 @@ class SessionDB:
                     JOIN messages m ON m.id = messages_fts_trigram.rowid
                     JOIN sessions s ON s.id = m.session_id
                     WHERE {' AND '.join(tri_where)}
-                    ORDER BY rank
+                    {order_by_sql}
                     LIMIT ? OFFSET ?
                 """
                 tri_params.extend([limit, offset])
@@ -2982,6 +3237,51 @@ class SessionDB:
                     WHERE chat_id = ? AND thread_id = ?
                     """,
                     (str(chat_id), str(thread_id)),
+                ).fetchone()
+            except sqlite3.OperationalError:
+                return None
+        return dict(row) if row else None
+
+    def list_telegram_topic_bindings_for_chat(
+        self,
+        *,
+        chat_id: str,
+    ) -> List[Dict[str, Any]]:
+        """All Telegram DM topic bindings for one chat, newest first.
+
+        Read-only; returns [] if the bindings table doesn't exist yet
+        (does not trigger the topic-mode migration).
+        """
+        with self._lock:
+            try:
+                rows = self._conn.execute(
+                    "SELECT * FROM telegram_dm_topic_bindings "
+                    "WHERE chat_id = ? ORDER BY updated_at DESC",
+                    (str(chat_id),),
+                ).fetchall()
+            except sqlite3.OperationalError:
+                return []
+        return [dict(row) for row in rows]
+
+    def get_telegram_topic_binding_by_session(
+        self,
+        *,
+        session_id: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Return the Telegram DM topic binding for a given session_id, if present.
+
+        Uses the UNIQUE INDEX on telegram_dm_topic_bindings(session_id) for an
+        efficient reverse lookup. Returns None when the session has no binding or
+        the table does not exist yet.
+        """
+        with self._lock:
+            try:
+                row = self._conn.execute(
+                    """
+                    SELECT * FROM telegram_dm_topic_bindings
+                    WHERE session_id = ?
+                    """,
+                    (str(session_id),),
                 ).fetchone()
             except sqlite3.OperationalError:
                 return None
