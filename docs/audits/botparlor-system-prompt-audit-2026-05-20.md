@@ -369,3 +369,13 @@ Verification:
 - `./scripts/run_tests.sh tests/tui_gateway/test_make_agent_provider.py`
   - `8 passed in 1.72s`
 - `python3 -m py_compile tui_gateway/server.py`
+- Deployed to Ria at commit `5fa98933e` with
+  `HERMES_TUI_SKIP_CONTEXT_FILES=1` in
+  `tui-ws-bridge.service.d/botparlor-lazy-tools.conf`.
+- Non-chat prompt-build verification on Ria with the new env:
+  - `skip_context_files=True`
+  - `load_soul_identity=True`
+  - `skip_memory=False`
+  - `system_chars=9843`
+  - `has_project_context=False`
+  - `has_agents=False`
