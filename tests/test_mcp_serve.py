@@ -272,6 +272,22 @@ class TestImports:
         assert isinstance(mcp_serve._MCP_SERVER_AVAILABLE, bool)
 
 
+class TestEntryPoint:
+    def test_main_passes_verbose_flag(self, monkeypatch):
+        import mcp_serve
+
+        called = {}
+        monkeypatch.setattr(
+            mcp_serve,
+            "run_mcp_server",
+            lambda *, verbose=False: called.setdefault("verbose", verbose),
+        )
+
+        mcp_serve.main(["--verbose"])
+
+        assert called == {"verbose": True}
+
+
 class TestHelpers:
     def test_get_sessions_dir(self, tmp_path):
         from mcp_serve import _get_sessions_dir

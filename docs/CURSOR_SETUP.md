@@ -8,12 +8,12 @@
    - MCP package: installed
 
 2. **MCP launch script created**
-   - Script: `~/.hermes/hermes-agent/hermes-mcp-serve`
-   - Symlink: `~/.hermes/bin/hermes-mcp-serve`
+   - Script: `hermes-mcp-serve`
+   - Symlink from setup: `~/.local/bin/hermes-mcp-serve`
    - Auto-activates venv, starts MCP server
 
 3. **MCP config template created**
-   - Location: `~/.hermes/hermes-agent/cursor-mcp-config.json`
+   - Location: `.cursor/mcp.json`
 
 ---
 
@@ -35,7 +35,7 @@ Under **MCP > Servers**, add this JSON:
 ```json
 {
   "hermes": {
-    "command": "/home/arrenchulz/.hermes/bin/hermes-mcp-serve",
+    "command": "${workspaceFolder}/hermes-mcp-serve",
     "args": []
   }
 }
@@ -47,7 +47,7 @@ Under **MCP > Servers**, add this JSON:
 {
   "mcpServers": {
     "hermes": {
-      "command": "/home/arrenchulz/.hermes/bin/hermes-mcp-serve",
+      "command": "${workspaceFolder}/hermes-mcp-serve",
       "args": []
     }
   }
@@ -72,7 +72,7 @@ Close and reopen Cursor completely.
 Test the MCP server directly:
 
 ```bash
-~/.hermes/bin/hermes-mcp-serve
+./hermes-mcp-serve
 ```
 
 Should start with no errors and wait for requests. Press `Ctrl+C` to stop.
@@ -131,12 +131,12 @@ Cursor will access Hermes' tools and skills to execute this end-to-end.
 ## ❌ Troubleshooting
 
 ### "MCP server failed to start"
-- Check: `~/.hermes/bin/hermes-mcp-serve` is executable
+- Check: `hermes-mcp-serve` is executable
   ```bash
-  ls -l ~/.hermes/bin/hermes-mcp-serve
+  ls -l hermes-mcp-serve
   ```
-- Check venv exists: `ls -la ~/.hermes/hermes-agent/.venv/`
-- Try manual start: `~/.hermes/bin/hermes-mcp-serve`
+- Check venv exists: `ls -la .venv/ venv/`
+- Try manual start: `./hermes-mcp-serve`
 
 ### "Connection refused / timeout"
 - Hermes MCP server takes 5-10s to start on first run (venv warmup)
@@ -144,8 +144,8 @@ Cursor will access Hermes' tools and skills to execute this end-to-end.
 - Check Cursor logs: `Help → Toggle Developer Tools`
 
 ### "Command not found"
-- Use full path: `/home/arrenchulz/.hermes/bin/hermes-mcp-serve`
-- Or add to PATH: `export PATH="$HOME/.hermes/bin:$PATH"` in `~/.bashrc`
+- Use the project path: `${workspaceFolder}/hermes-mcp-serve`
+- Or run `./setup-hermes.sh` and add `~/.local/bin` to PATH
 
 ### "Unknown tools/skills"
 - Refresh Cursor MCP connection: 
@@ -157,10 +157,10 @@ Cursor will access Hermes' tools and skills to execute this end-to-end.
 ## 📁 Files Created
 
 ```
-~/.hermes/hermes-agent/hermes-mcp-serve          # Launch script
-~/.hermes/bin/hermes-mcp-serve                   # Symlink for easy access
-~/.hermes/hermes-agent/cursor-mcp-config.json    # Config template
-~/.hermes/CURSOR_SETUP.md                        # This file
+hermes-mcp-serve                 # Launch script
+.cursor/mcp.json                 # Project-level Cursor MCP config
+cursor-mcp-config.json           # Copyable config template
+docs/CURSOR_SETUP.md             # This file
 ```
 
 ---

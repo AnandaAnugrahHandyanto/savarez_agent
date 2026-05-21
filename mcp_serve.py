@@ -895,3 +895,29 @@ def run_mcp_server(verbose: bool = False) -> None:
         asyncio.run(_run())
     except KeyboardInterrupt:
         bridge.stop()
+
+
+def main(argv: Optional[List[str]] = None) -> None:
+    """Console-script entry point for MCP clients.
+
+    Keeping this thin wrapper here lets package installs expose a dedicated
+    ``hermes-mcp-serve`` command while preserving ``hermes mcp serve``.
+    """
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        prog="hermes-mcp-serve",
+        description="Run Hermes as a stdio MCP server.",
+    )
+    parser.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="Enable verbose logging on stderr",
+    )
+    args = parser.parse_args(argv)
+    run_mcp_server(verbose=args.verbose)
+
+
+if __name__ == "__main__":
+    main()
