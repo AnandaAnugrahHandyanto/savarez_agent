@@ -359,7 +359,13 @@ def test_register_wires_tools_cli_and_hook_on_linux():
         plugin.register(_Ctx())
 
     assert set(calls["tools"]) == {
-        "meet_join", "meet_status", "meet_transcript", "meet_leave", "meet_say",
+        "meet_join",
+        "meet_status",
+        "meet_transcript",
+        "meet_leave",
+        "meet_say",
+        "meet_chat",
+        "meet_react",
     }
     assert calls["cli"] == ["meet"]
     assert calls["hooks"] == ["on_session_end"]
@@ -760,7 +766,13 @@ def test_click_join_falls_back_to_dom_probe_when_role_lookup_misses():
 
     assert len(page.evaluate_calls) == 1
     _script, labels = page.evaluate_calls[0]
-    assert labels == ["Join now", "Ask to join", "Switch here"]
+    assert labels == [
+        "Join now",
+        "Ask to join",
+        "Use Companion Mode",
+        "Use Companion mode",
+        "Join here too",
+    ]
     assert state.calls == []
 
 
