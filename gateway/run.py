@@ -16976,6 +16976,20 @@ class GatewayRunner:
 
             if not final_response:
                 error_msg = f"⚠️ {result['error']}" if result.get("error") else ""
+                if error_msg:
+                    try:
+                        from gateway.pulse_voice_events import publish_voice_out
+                        publish_voice_out(
+                            "error",
+                            error_msg,
+                            session_id=session_id,
+                            platform=platform_key,
+                            chat_id=source.chat_id,
+                            thread_id=source.thread_id,
+                            source_message_id=event_message_id,
+                        )
+                    except Exception:
+                        pass
                 return {
                     "final_response": error_msg,
                     "messages": result.get("messages", []),
@@ -17037,6 +17051,19 @@ class GatewayRunner:
                     if has_voice_directive:
                         unique_tags.insert(0, "[[audio_as_voice]]")
                     final_response = final_response + "\n" + "\n".join(unique_tags)
+
+            try:
+                from gateway.pulse_voice_events import publish_completion_voice_out
+                publish_completion_voice_out(
+                    final_response,
+                    session_id=session_id,
+                    platform=platform_key,
+                    chat_id=source.chat_id,
+                    thread_id=source.thread_id,
+                    source_message_id=event_message_id,
+                )
+            except Exception:
+                pass
             
             # Sync session_id: the agent may have created a new session during
             # mid-run context compression (_compress_context splits sessions).
