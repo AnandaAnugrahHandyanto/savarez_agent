@@ -1175,13 +1175,39 @@ def test_recover_returns_none_for_known_topic(tmp_path):
     assert runner._recover_telegram_topic_thread_id(_make_source(thread_id="222")) is None
 
 
-def test_recover_rewrites_unknown_thread_id_to_most_recent(tmp_path):
-    # Cross-topic Reply leak: inbound thread_id is a Telegram-only id we never bound.
+def test_recover_leaves_unknown_topic_alone(tmp_path):
+    # A brand-new topic from "All Messages" — its thread_id exists
+    # in Telegram but we've never bound it yet.  It should be treated
+    # as a genuinely new topic lane, not redirected to an old one.
     db = SessionDB(db_path=tmp_path / "state.db")
     _seed_two_topic_bindings(db)
     runner = _make_runner(session_db=db)
 
-    assert runner._recover_telegram_topic_thread_id(_make_source(thread_id="9999")) == "222"
+    assert runner._recover_telegram_topic_thread_id(_make_source(thread_id="9999")) is None
+
+
+def test_recover_redirects_cross_topic_reply_to_known_topic(tmp_path):
+    # A reply that landed in a known (different) topic due to
+    # Telegram's cross-topic Reply leak: thread_id=111 (known).
+    # Should NOT be recovered — it's already in a valid lane.
+    db = SessionDB(db_path=tmp_path / "state.db")
+    _seed_two_topic_bindings(db)
+    runner = _make_runner(session_db=db)
+
+    # 111 is a known topic → not lobby, inbound in known → returns None
+    assert runner._recover_telegram_topic_thread_id(_make_source(thread_id="111")) is None
+
+
+def test_recover_rewrites_cross_topic_reply_to_unknown_topic(tmp_path):
+    # A cross-topic Reply that landed in an unknown foreign topic:
+    # thread_id=9999 (not bound).  Should NOT be recovered —
+    # treat it like a new topic lane.
+    db = SessionDB(db_path=tmp_path / "state.db")
+    _seed_two_topic_bindings(db)
+    runner = _make_runner(session_db=db)
+
+    # 9999 is unknown non-lobby → not lobby, not in known → returns None
+    assert runner._recover_telegram_topic_thread_id(_make_source(thread_id="9999")) is None
 
 
 def test_recover_rewrites_lobby_thread_id_to_most_recent(tmp_path):

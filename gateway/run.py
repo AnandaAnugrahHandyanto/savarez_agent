@@ -2077,6 +2077,15 @@ class GatewayRunner:
         known = {str(b.get("thread_id") or "") for b in bindings}
         if not is_lobby and inbound in known:
             return None
+        # A non-lobby, non-General thread_id that is NOT in known bindings
+        # is a genuinely new topic (e.g. user just created it via "All
+        # Messages").  Don't recover — let it get its own session lane.
+        # Only recover when the inbound id is lobby/General or unknown
+        # (cross-topic Reply leak).
+        if not is_lobby or not known:
+            return None
+        # Lobby/General thread_id with known bindings: recover to the
+        # user's most recent topic binding.
         user_id = str(source.user_id)
         for b in bindings:  # newest-first
             if str(b.get("user_id") or "") == user_id:

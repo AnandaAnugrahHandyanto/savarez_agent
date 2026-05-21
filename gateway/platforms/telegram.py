@@ -5278,8 +5278,45 @@ class TelegramAdapter(BasePlatformAdapter):
         if thread_id_raw is not None:
             if chat_type == "group" and (is_topic_message or is_forum_group):
                 thread_id_str = str(thread_id_raw)
-            elif chat_type == "dm" and is_topic_message:
-                thread_id_str = str(thread_id_raw)
+            elif chat_type == "dm":
+                if is_topic_message:
+                    thread_id_str = str(thread_id_raw)
+                else:
+                    # Telegram doesn't always set is_topic_message on the
+                    # very first message of a freshly-created DM topic.
+                    # When topic mode is enabled and this thread_id is
+                    # NOT already bound to a session (genuinely new),
+                    # preserve it so the new topic gets its own lane.
+                    # If the thread_id IS already known, this is likely a
+                    # cross-topic Reply leak — strip it and let the
+                    # recovery function handle routing.
+                    runner = getattr(
+                        getattr(self, "_message_handler", None), "__self__", None
+                    )
+                    if runner is None:
+                        pass
+                    elif not getattr(runner, "_telegram_topic_mode_enabled", lambda _s: False)(
+                        type("_Probe", (), {
+                            "platform": Platform.TELEGRAM,
+                            "chat_type": "dm",
+                            "chat_id": str(chat.id),
+                            "user_id": str(user.id) if user else "",
+                            "thread_id": str(thread_id_raw),
+                        })()
+                    ):
+                        pass
+                    else:
+                        try:
+                            session_db = getattr(runner, "_session_db", None)
+                            if session_db is not None:
+                                bindings = session_db.list_telegram_topic_bindings_for_chat(
+                                    chat_id=str(chat.id)
+                                )
+                                known = {int(b.get("thread_id") or 0) for b in (bindings or [])}
+                                if int(thread_id_raw) not in known:
+                                    thread_id_str = str(thread_id_raw)
+                        except Exception:
+                            pass
         # For forum groups without an explicit topic, default to the
         # General-topic id so the gateway routes back to the General topic
         # rather than dropping into the bot's main channel (#22423).
