@@ -518,3 +518,64 @@ Interpretation:
   very short `...` messages, and one Katie message looked like raw mood-tool
   text rather than a parsed tool call. These do not affect the context-size
   result but are worth watching in future group-chat behavior checks.
+
+## Assistant Lazy-Pack Canary
+
+Implemented assistant-oriented lazy packs in `tools/lazy_tool_loader.py`:
+
+- `coding`: coding, repo work, debugging, tests, GitHub workflows, and subagents.
+- `web_research`: web search/extraction, browser automation, X/Twitter,
+  YouTube, and PDF research.
+- `local_ops`: local machine, network, maps, and Home Assistant operations.
+- `hermes_admin`: Hermes internals, MCP work, skill authoring, and TUI
+  debugging.
+- `notes`: Obsidian and local knowledge capture.
+- `design`: web-design references and implementation support.
+- `persona`: bot personality, dogfood, and security-rule skills.
+
+Pack loads now return `suggested_skills` so the model can load only relevant
+skill docs with `skill_view` after the pack's tool schemas are available.
+
+Viper canary on `springlab2.st-el.com`:
+
+- Hermes checkout: branch `assistant/lazy-tool-canary`.
+- Base commit: `0f3bc4dcf`.
+- Preserved Viper's local `tools/approval.py` fan-out patch as an uncommitted
+  host-local change.
+- Viper active skills were pruned from `110` to Alex's `35`-skill assistant
+  keep list. Removed skills were moved to:
+  - `/home/alex/.hermes/skills-uninstalled-20260520-190702-viper-assistant`
+  - `/home/alex/.hermes/skills-uninstalled-20260520-191134-viper-reseeded`
+- Config backups:
+  - `/home/alex/.hermes/config.yaml.bak-before-viper-assistant-skill-prune-20260520-190702`
+  - `/home/alex/.hermes/config.yaml.bak-before-viper-reseed-cleanup-20260520-191134`
+- Standalone `tui-ws-bridge.py` was refreshed with the MCP startup-discovery
+  version after the first restart showed BotParlor MCP disconnected.
+
+Viper assistant floor:
+
+```text
+HERMES_TUI_TOOLSETS=botparlor,memory,session_search,tool_loader
+HERMES_TUI_VISIBLE_TOOLS=mcp_botparlor_set_mood,memory,session_search,load_tool_pack
+HERMES_TUI_SKIP_CONTEXT_FILES=1
+```
+
+Verification:
+
+- `python3 -m py_compile tools/lazy_tool_loader.py`
+- `./scripts/run_tests.sh tests/test_lazy_tool_loader.py tests/test_toolsets.py`
+  - `31 passed in 1.51s`
+- On Viper, `venv/bin/python -m py_compile tools/lazy_tool_loader.py
+  tools/approval.py tui_gateway/server.py tui-ws-bridge.py`.
+- `tui-ws-bridge.service` and `hermes-gateway.service` active.
+- Bridge `/health` returns OK.
+- BotParlor reports Viper connected.
+- Fresh Viper gateway session startup tools:
+  - `load_tool_pack`
+  - `mcp_botparlor_set_mood`
+  - `memory`
+  - `session_search`
+- BotParlor MCP status: connected, `12` tools registered.
+- Active visible skills after prune: `35`, exactly the assistant keep list.
+- Smoke prompt `Canary smoke test only. Reply exactly: assistant baseline ready`
+  completed in one model call with `6,750` input tokens and `4` output tokens.
