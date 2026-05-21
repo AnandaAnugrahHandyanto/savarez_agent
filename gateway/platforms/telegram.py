@@ -65,6 +65,7 @@ from pathlib import Path as _Path
 sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
 
 from gateway.config import Platform, PlatformConfig
+from gateway.credential_redaction import redact_credentials
 from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
@@ -4008,6 +4009,8 @@ class TelegramAdapter(BasePlatformAdapter):
         """
         if not content:
             return content
+
+        content = redact_credentials(content)
 
         placeholders: dict = {}
         counter = [0]

@@ -50,6 +50,7 @@ sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
 from gateway.config import Platform, PlatformConfig
 import re
 
+from gateway.credential_redaction import redact_credentials
 from gateway.platforms.helpers import MessageDeduplicator, ThreadParticipationTracker
 from utils import atomic_json_write
 from gateway.platforms.base import (
@@ -1435,7 +1436,7 @@ class DiscordAdapter(BasePlatformAdapter):
                     chunk_reference = reference if i == 0 else None
                 try:
                     msg = await channel.send(
-                        content=chunk,
+                        content=redact_credentials(chunk),
                         reference=chunk_reference,
                     )
                 except Exception as e:
@@ -1457,7 +1458,7 @@ class DiscordAdapter(BasePlatformAdapter):
                         )
                         reference = None
                         msg = await channel.send(
-                            content=chunk,
+                            content=redact_credentials(chunk),
                             reference=None,
                         )
                     else:

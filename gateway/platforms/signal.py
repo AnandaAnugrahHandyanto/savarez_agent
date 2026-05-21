@@ -27,6 +27,7 @@ from urllib.parse import quote, unquote
 import httpx
 
 from gateway.config import Platform, PlatformConfig
+from gateway.credential_redaction import redact_credentials
 from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
@@ -975,6 +976,8 @@ class SignalAdapter(BasePlatformAdapter):
     ) -> SendResult:
         """Send a text message with native Signal formatting."""
         await self._stop_typing_indicator(chat_id)
+
+        content = redact_credentials(content)
 
         plain_text, text_styles = self._markdown_to_signal(content)
 
