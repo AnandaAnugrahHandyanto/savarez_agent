@@ -1,0 +1,459 @@
+From fe80096f01779906bb0f549acd412d3a70ce2237 Mon Sep 17 00:00:00 2001
+From: Juniper Bevensee <juniperbevensee@users.noreply.github.com>
+Date: Fri, 22 May 2026 11:04:56 +1200
+Subject: [PATCH 1/3] feat: add context_id memory scoping for
+ per-channel/tenant isolation
+
+Adds an opaque context_id parameter to MemoryStore that routes memory
+writes to per-context subdirectories (memories/contexts/{context_id}/).
+Reads merge global + context-scoped entries. Backwards-compatible:
+context_id=None preserves existing single-tenant behavior exactly.
+
+Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
+---
+ agent/agent_init.py                |   3 +
+ gateway/run.py                     |  13 ++
+ run_agent.py                       |   2 +
+ tests/tools/test_memory_scoping.py | 237 +++++++++++++++++++++++++++++
+ tools/memory_tool.py               |  55 ++++++-
+ 5 files changed, 302 insertions(+), 8 deletions(-)
+ create mode 100644 tests/tools/test_memory_scoping.py
+
+diff --git a/agent/agent_init.py b/agent/agent_init.py
+index be9a09dd2..819da1fcb 100644
+--- a/agent/agent_init.py
++++ b/agent/agent_init.py
+@@ -192,6 +192,7 @@ def init_agent(
+     skip_context_files: bool = False,
+     load_soul_identity: bool = False,
+     skip_memory: bool = False,
++    context_id: Optional[str] = None,
+     session_db=None,
+     parent_session_id: str = None,
+     iteration_budget: "IterationBudget" = None,
+@@ -270,6 +271,7 @@ def init_agent(
+     agent._chat_name = chat_name
+     agent._chat_type = chat_type
+     agent._thread_id = thread_id
++    agent._context_id = context_id  # Per-channel/tenant memory scoping
+     agent._gateway_session_key = gateway_session_key  # Stable per-chat key (e.g. agent:main:telegram:dm:123)
+     # Pluggable print function — CLI replaces this with _cprint so that
+     # raw ANSI status lines are routed through prompt_toolkit's renderer
+@@ -1049,6 +1051,7 @@ def init_agent(
+                 agent._memory_store = MemoryStore(
+                     memory_char_limit=mem_config.get("memory_char_limit", 2200),
+                     user_char_limit=mem_config.get("user_char_limit", 1375),
++                    context_id=context_id,
+                 )
+                 agent._memory_store.load_from_disk()
+         except Exception:
+diff --git a/gateway/run.py b/gateway/run.py
+index 0f56ad61c..5e081521b 100644
+--- a/gateway/run.py
++++ b/gateway/run.py
+@@ -11417,6 +11417,11 @@ class GatewayRunner:
+                     except Exception as e:
+                         logger.warning("Background task vision enrichment failed: %s", e)
+ 
++            # Per-channel memory scoping for background tasks
++            _bg_context_id = None
++            if source.chat_type in ("group", "forum", "channel") and source.chat_id:
++                _bg_context_id = source.chat_id
++
+             def run_sync():
+                 agent = AIAgent(
+                     model=turn_route["model"],
+@@ -11443,6 +11448,7 @@ class GatewayRunner:
+                     chat_name=source.chat_name,
+                     chat_type=source.chat_type,
+                     thread_id=source.thread_id,
++                    context_id=_bg_context_id,
+                     session_db=self._session_db,
+                     fallback_model=self._fallback_model,
+                 )
+@@ -16281,6 +16287,12 @@ class GatewayRunner:
+                         logger.debug("Reusing cached agent for session %s", session_key)
+ 
+             if agent is None:
++                # Per-channel memory scoping: group/channel chats get scoped memory,
++                # DMs get global memory.
++                _context_id = None
++                if source.chat_type in ("group", "forum", "channel") and source.chat_id:
++                    _context_id = source.chat_id
++
+                 # Config changed or first message — create fresh agent
+                 agent = AIAgent(
+                     model=turn_route["model"],
+@@ -16310,6 +16322,7 @@ class GatewayRunner:
+                     chat_type=source.chat_type,
+                     thread_id=source.thread_id,
+                     gateway_session_key=session_key,
++                    context_id=_context_id,
+                     session_db=self._session_db,
+                     fallback_model=self._fallback_model,
+                 )
+diff --git a/run_agent.py b/run_agent.py
+index 001d03784..546d92cbc 100644
+--- a/run_agent.py
++++ b/run_agent.py
+@@ -402,6 +402,7 @@ class AIAgent:
+         skip_context_files: bool = False,
+         load_soul_identity: bool = False,
+         skip_memory: bool = False,
++        context_id: Optional[str] = None,
+         session_db=None,
+         parent_session_id: str = None,
+         iteration_budget: "IterationBudget" = None,
+@@ -471,6 +472,7 @@ class AIAgent:
+             skip_context_files=skip_context_files,
+             load_soul_identity=load_soul_identity,
+             skip_memory=skip_memory,
++            context_id=context_id,
+             session_db=session_db,
+             parent_session_id=parent_session_id,
+             iteration_budget=iteration_budget,
+diff --git a/tests/tools/test_memory_scoping.py b/tests/tools/test_memory_scoping.py
+new file mode 100644
+index 000000000..a37345426
+--- /dev/null
++++ b/tests/tools/test_memory_scoping.py
+@@ -0,0 +1,237 @@
++"""Tests for context_id-based memory scoping in MemoryStore.
++
++Validates that:
++- No context_id → global path (backward compatible)
++- context_id → writes to contexts/{id}/, reads merge global + scoped
++- Different contexts are isolated from each other
++- Concurrent writes to different contexts don't block each other
++"""
++
++import os
++import tempfile
++import threading
++from pathlib import Path
++from unittest.mock import patch
++
++import pytest
++
++from tools.memory_tool import MemoryStore, ENTRY_DELIMITER
++
++
++@pytest.fixture
++def mem_dir(tmp_path):
++    """Create a temporary memory directory and patch get_memory_dir to use it."""
++    with patch("tools.memory_tool.get_memory_dir", return_value=tmp_path):
++        yield tmp_path
++
++
++class TestNoContextId:
++    """Backward compatibility: context_id=None uses global paths."""
++
++    def test_no_context_id_uses_global_path(self, mem_dir):
++        store = MemoryStore()
++        path = store._path_for("memory")
++        assert path == mem_dir / "MEMORY.md"
++
++        path_user = store._path_for("user")
++        assert path_user == mem_dir / "USER.md"
++
++    def test_no_context_id_backward_compatible(self, mem_dir):
++        """Full round-trip: add, save, reload — same as upstream behavior."""
++        store = MemoryStore()
++        store.load_from_disk()
++
++        result = store.add("memory", "global note")
++        assert result["success"] is True
++
++        # Verify file was written to global path
++        assert (mem_dir / "MEMORY.md").exists()
++        assert "global note" in (mem_dir / "MEMORY.md").read_text()
++
++        # No context directory created
++        assert not (mem_dir / "contexts").exists()
++
++    def test_no_context_id_read_write_cycle(self, mem_dir):
++        """Write with no context, read back — identical to upstream."""
++        store = MemoryStore()
++        store.load_from_disk()
++        store.add("memory", "fact one")
++        store.add("user", "user pref")
++
++        # Fresh store, same dir
++        store2 = MemoryStore()
++        store2.load_from_disk()
++        assert "fact one" in store2.memory_entries
++        assert "user pref" in store2.user_entries
++
++
++class TestContextId:
++    """context_id routes writes to per-context subdirectory."""
++
++    def test_context_id_creates_scoped_directory(self, mem_dir):
++        store = MemoryStore(context_id="group-123")
++        store.load_from_disk()
++
++        result = store.add("memory", "scoped note")
++        assert result["success"] is True
++
++        scoped_path = mem_dir / "contexts" / "group-123" / "MEMORY.md"
++        assert scoped_path.exists()
++        assert "scoped note" in scoped_path.read_text()
++
++    def test_context_id_path_for_returns_scoped(self, mem_dir):
++        store = MemoryStore(context_id="chan-456")
++        assert store._path_for("memory") == mem_dir / "contexts" / "chan-456" / "MEMORY.md"
++        assert store._path_for("user") == mem_dir / "contexts" / "chan-456" / "USER.md"
++
++    def test_context_id_merges_global_and_scoped(self, mem_dir):
++        """Reads should include both global and context-scoped entries."""
++        # Write a global entry directly
++        (mem_dir / "MEMORY.md").write_text("global fact")
++
++        # Create scoped store and add a scoped entry
++        store = MemoryStore(context_id="grp-1")
++        store.load_from_disk()
++
++        # Should have loaded the global entry
++        assert "global fact" in store.memory_entries
++
++        # Add a scoped entry
++        store.add("memory", "scoped fact")
++
++        # Reload to verify merge
++        store2 = MemoryStore(context_id="grp-1")
++        store2.load_from_disk()
++        assert "global fact" in store2.memory_entries
++        assert "scoped fact" in store2.memory_entries
++
++    def test_scoped_write_does_not_modify_global(self, mem_dir):
++        """Writing with context_id should not touch global MEMORY.md."""
++        (mem_dir / "MEMORY.md").write_text("original global")
++
++        store = MemoryStore(context_id="grp-2")
++        store.load_from_disk()
++        store.add("memory", "scoped only")
++
++        # Global file unchanged
++        assert (mem_dir / "MEMORY.md").read_text() == "original global"
++
++    def test_global_path_for_helper(self, mem_dir):
++        store = MemoryStore(context_id="ctx-1")
++        assert store._global_path_for("memory") == mem_dir / "MEMORY.md"
++        assert store._global_path_for("user") == mem_dir / "USER.md"
++
++
++class TestContextIsolation:
++    """Different context_ids are isolated from each other."""
++
++    def test_different_contexts_are_isolated(self, mem_dir):
++        store_a = MemoryStore(context_id="group-A")
++        store_a.load_from_disk()
++        store_a.add("memory", "only for A")
++
++        store_b = MemoryStore(context_id="group-B")
++        store_b.load_from_disk()
++        store_b.add("memory", "only for B")
++
++        # Reload A — should not see B's entry
++        store_a2 = MemoryStore(context_id="group-A")
++        store_a2.load_from_disk()
++        assert "only for A" in store_a2.memory_entries
++        assert "only for B" not in store_a2.memory_entries
++
++        # Reload B — should not see A's entry
++        store_b2 = MemoryStore(context_id="group-B")
++        store_b2.load_from_disk()
++        assert "only for B" in store_b2.memory_entries
++        assert "only for A" not in store_b2.memory_entries
++
++    def test_both_see_global(self, mem_dir):
++        """Both contexts should see global entries."""
++        (mem_dir / "MEMORY.md").write_text("shared global")
++
++        store_a = MemoryStore(context_id="group-A")
++        store_a.load_from_disk()
++        assert "shared global" in store_a.memory_entries
++
++        store_b = MemoryStore(context_id="group-B")
++        store_b.load_from_disk()
++        assert "shared global" in store_b.memory_entries
++
++
++class TestReplaceAndRemove:
++    """Replace and remove operate on scoped files, not global."""
++
++    def test_replace_in_scoped_context(self, mem_dir):
++        store = MemoryStore(context_id="ctx-r")
++        store.load_from_disk()
++        store.add("memory", "old entry")
++        store.replace("memory", "old entry", "new entry")
++
++        store2 = MemoryStore(context_id="ctx-r")
++        store2.load_from_disk()
++        assert "new entry" in store2.memory_entries
++        assert "old entry" not in store2.memory_entries
++
++    def test_remove_from_scoped_context(self, mem_dir):
++        store = MemoryStore(context_id="ctx-rm")
++        store.load_from_disk()
++        store.add("memory", "to remove")
++        store.remove("memory", "to remove")
++
++        store2 = MemoryStore(context_id="ctx-rm")
++        store2.load_from_disk()
++        assert "to remove" not in store2.memory_entries
++
++
++class TestSystemPromptSnapshot:
++    """System prompt snapshot merges global + scoped at load time."""
++
++    def test_snapshot_includes_both(self, mem_dir):
++        (mem_dir / "MEMORY.md").write_text("global info")
++
++        # Write scoped entry
++        scoped_dir = mem_dir / "contexts" / "snap-ctx"
++        scoped_dir.mkdir(parents=True)
++        (scoped_dir / "MEMORY.md").write_text("scoped info")
++
++        store = MemoryStore(context_id="snap-ctx")
++        store.load_from_disk()
++
++        snapshot = store.format_for_system_prompt("memory")
++        assert snapshot is not None
++        assert "global info" in snapshot
++        assert "scoped info" in snapshot
++
++
++class TestConcurrentContextWrites:
++    """Different contexts use different lock files, so they don't block each other."""
++
++    def test_concurrent_context_writes_dont_block(self, mem_dir):
++        results = {}
++        errors = {}
++
++        def write_to_context(ctx_id, entry):
++            try:
++                store = MemoryStore(context_id=ctx_id)
++                store.load_from_disk()
++                result = store.add("memory", entry)
++                results[ctx_id] = result
++            except Exception as e:
++                errors[ctx_id] = e
++
++        t1 = threading.Thread(target=write_to_context, args=("ctx-1", "entry from 1"))
++        t2 = threading.Thread(target=write_to_context, args=("ctx-2", "entry from 2"))
++
++        t1.start()
++        t2.start()
++        t1.join(timeout=5)
++        t2.join(timeout=5)
++
++        assert not errors, f"Errors: {errors}"
++        assert results["ctx-1"]["success"] is True
++        assert results["ctx-2"]["success"] is True
++
++        # Verify isolation
++        assert (mem_dir / "contexts" / "ctx-1" / "MEMORY.md").exists()
++        assert (mem_dir / "contexts" / "ctx-2" / "MEMORY.md").exists()
+diff --git a/tools/memory_tool.py b/tools/memory_tool.py
+index 78d3a1549..a62b1dd65 100644
+--- a/tools/memory_tool.py
++++ b/tools/memory_tool.py
+@@ -115,21 +115,38 @@ class MemoryStore:
+         Tool responses always reflect this live state.
+     """
+ 
+-    def __init__(self, memory_char_limit: int = 2200, user_char_limit: int = 1375):
++    def __init__(self, memory_char_limit: int = 2200, user_char_limit: int = 1375,
++                 context_id: Optional[str] = None):
+         self.memory_entries: List[str] = []
+         self.user_entries: List[str] = []
+         self.memory_char_limit = memory_char_limit
+         self.user_char_limit = user_char_limit
++        self.context_id = context_id
+         # Frozen snapshot for system prompt -- set once at load_from_disk()
+         self._system_prompt_snapshot: Dict[str, str] = {"memory": "", "user": ""}
+ 
+     def load_from_disk(self):
+-        """Load entries from MEMORY.md and USER.md, capture system prompt snapshot."""
++        """Load entries from MEMORY.md and USER.md, capture system prompt snapshot.
++
++        When context_id is set, reads global entries first then merges in
++        context-scoped entries (deduplicating).  Writes always go to the
++        scoped path via _path_for().
++        """
+         mem_dir = get_memory_dir()
+         mem_dir.mkdir(parents=True, exist_ok=True)
+ 
+-        self.memory_entries = self._read_file(mem_dir / "MEMORY.md")
+-        self.user_entries = self._read_file(mem_dir / "USER.md")
++        # Always start with global entries
++        self.memory_entries = self._read_file(self._global_path_for("memory"))
++        self.user_entries = self._read_file(self._global_path_for("user"))
++
++        # Merge context-scoped entries when context_id is set
++        if self.context_id is not None:
++            scoped_dir = mem_dir / "contexts" / self.context_id
++            scoped_dir.mkdir(parents=True, exist_ok=True)
++            scoped_memory = self._read_file(scoped_dir / "MEMORY.md")
++            scoped_user = self._read_file(scoped_dir / "USER.md")
++            self.memory_entries.extend(scoped_memory)
++            self.user_entries.extend(scoped_user)
+ 
+         # Deduplicate entries (preserves order, keeps first occurrence)
+         self.memory_entries = list(dict.fromkeys(self.memory_entries))
+@@ -179,25 +196,47 @@ class MemoryStore:
+             fd.close()
+ 
+     @staticmethod
+-    def _path_for(target: str) -> Path:
++    def _global_path_for(target: str) -> Path:
++        """Return the global (unscoped) path for a memory target."""
+         mem_dir = get_memory_dir()
+         if target == "user":
+             return mem_dir / "USER.md"
+         return mem_dir / "MEMORY.md"
+ 
++    def _path_for(self, target: str) -> Path:
++        """Return the write path for a memory target.
++
++        When context_id is set, routes to contexts/{context_id}/ subdirectory.
++        When context_id is None, returns the global path (backward compatible).
++        """
++        if self.context_id is None:
++            return self._global_path_for(target)
++        mem_dir = get_memory_dir()
++        if target == "user":
++            return mem_dir / "contexts" / self.context_id / "USER.md"
++        return mem_dir / "contexts" / self.context_id / "MEMORY.md"
++
+     def _reload_target(self, target: str):
+         """Re-read entries from disk into in-memory state.
+ 
+         Called under file lock to get the latest state before mutating.
++        When context_id is set, merges global + scoped entries.
+         """
+-        fresh = self._read_file(self._path_for(target))
++        if self.context_id is not None:
++            # Merge global + scoped
++            global_entries = self._read_file(self._global_path_for(target))
++            scoped_entries = self._read_file(self._path_for(target))
++            fresh = global_entries + scoped_entries
++        else:
++            fresh = self._read_file(self._path_for(target))
+         fresh = list(dict.fromkeys(fresh))  # deduplicate
+         self._set_entries(target, fresh)
+ 
+     def save_to_disk(self, target: str):
+         """Persist entries to the appropriate file. Called after every mutation."""
+-        get_memory_dir().mkdir(parents=True, exist_ok=True)
+-        self._write_file(self._path_for(target), self._entries_for(target))
++        path = self._path_for(target)
++        path.parent.mkdir(parents=True, exist_ok=True)
++        self._write_file(path, self._entries_for(target))
+ 
+     def _entries_for(self, target: str) -> List[str]:
+         if target == "user":
+-- 
+2.50.1 (Apple Git-155)
+

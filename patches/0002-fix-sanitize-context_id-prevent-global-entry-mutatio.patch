@@ -1,0 +1,228 @@
+From 1b5d36bbcd61aa202cd0f9e7b50f58f9de6ca2f1 Mon Sep 17 00:00:00 2001
+From: Juniper Bevensee <juniperbevensee@users.noreply.github.com>
+Date: Fri, 22 May 2026 11:11:01 +1200
+Subject: [PATCH 2/3] fix: sanitize context_id, prevent global entry mutation
+ from scoped contexts
+
+- Sanitize context_id in MemoryStore.__init__: replace path separators
+  and parent-ref sequences so chat IDs from Telegram/Signal/etc. can't
+  escape the contexts/ directory via path traversal
+- Treat empty string context_id as None (routes to global path)
+- Track _global_entry_count in merged lists; replace() and remove()
+  return an error when targeting a global entry from a scoped context
+- Extract _context_id_for_source() static helper in GatewayRunner,
+  replacing two identical 3-line inline derivation blocks
+- Add tests: path traversal sanitization, empty context_id, replace/remove
+  on global entries from scoped context
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+---
+ gateway/run.py                     | 18 ++++++----
+ tests/tools/test_memory_scoping.py | 44 +++++++++++++++++++++++
+ tools/memory_tool.py               | 56 ++++++++++++++++++++++++++++--
+ 3 files changed, 109 insertions(+), 9 deletions(-)
+
+diff --git a/gateway/run.py b/gateway/run.py
+index 5e081521b..b97848505 100644
+--- a/gateway/run.py
++++ b/gateway/run.py
+@@ -1614,6 +1614,16 @@ class GatewayRunner:
+         # Track background tasks to prevent garbage collection mid-execution
+         self._background_tasks: set = set()
+ 
++    @staticmethod
++    def _context_id_for_source(source) -> Optional[str]:
++        """Derive memory context_id from message source.
++
++        Group/forum/channel chats get per-chat scoped memory; DMs get global
++        memory (None).  MemoryStore sanitizes the returned value before use.
++        """
++        if source.chat_type in ("group", "forum", "channel") and source.chat_id:
++            return str(source.chat_id)
++        return None
+ 
+     def _wire_teams_pipeline_runtime(self) -> None:
+         """Bind the Teams meeting pipeline runtime to Graph webhook ingress.
+@@ -11418,9 +11428,7 @@ class GatewayRunner:
+                         logger.warning("Background task vision enrichment failed: %s", e)
+ 
+             # Per-channel memory scoping for background tasks
+-            _bg_context_id = None
+-            if source.chat_type in ("group", "forum", "channel") and source.chat_id:
+-                _bg_context_id = source.chat_id
++            _bg_context_id = self._context_id_for_source(source)
+ 
+             def run_sync():
+                 agent = AIAgent(
+@@ -16289,9 +16297,7 @@ class GatewayRunner:
+             if agent is None:
+                 # Per-channel memory scoping: group/channel chats get scoped memory,
+                 # DMs get global memory.
+-                _context_id = None
+-                if source.chat_type in ("group", "forum", "channel") and source.chat_id:
+-                    _context_id = source.chat_id
++                _context_id = self._context_id_for_source(source)
+ 
+                 # Config changed or first message — create fresh agent
+                 agent = AIAgent(
+diff --git a/tests/tools/test_memory_scoping.py b/tests/tools/test_memory_scoping.py
+index a37345426..1ad2c5b42 100644
+--- a/tests/tools/test_memory_scoping.py
++++ b/tests/tools/test_memory_scoping.py
+@@ -204,6 +204,50 @@ class TestSystemPromptSnapshot:
+         assert "scoped info" in snapshot
+ 
+ 
++class TestPathTraversalAndEdgeCases:
++    """Security and edge-case tests for context_id handling."""
++
++    def test_context_id_path_traversal_sanitized(self, mem_dir):
++        """Path traversal in context_id is sanitized."""
++        store = MemoryStore(context_id="../../etc/passwd")
++        store.load_from_disk()
++        store.add("memory", "test entry")
++
++        # Should NOT escape the contexts directory
++        assert not (mem_dir.parent.parent / "etc" / "passwd" / "MEMORY.md").exists()
++        # Should be sanitized to a safe path under contexts/
++        contexts_dir = mem_dir / "contexts"
++        assert contexts_dir.exists()
++
++    def test_empty_context_id_treated_as_none(self, mem_dir):
++        """Empty string context_id behaves like None (global)."""
++        store = MemoryStore(context_id="")
++        assert store.context_id is None
++
++    def test_replace_global_entry_from_scoped_context_fails(self, mem_dir):
++        """Replacing a global entry from a scoped context returns error."""
++        # Write a global entry directly
++        (mem_dir / "MEMORY.md").write_text("The sky is blue")
++
++        store = MemoryStore(context_id="group-123")
++        store.load_from_disk()
++        # Try to replace a global entry
++        result = store.replace("memory", "sky is blue", "sky is green")
++        assert result["success"] is False
++        assert "global" in result["error"].lower()
++
++    def test_remove_global_entry_from_scoped_context_fails(self, mem_dir):
++        """Removing a global entry from a scoped context returns error."""
++        # Write a global entry directly
++        (mem_dir / "MEMORY.md").write_text("The sky is blue")
++
++        store = MemoryStore(context_id="group-123")
++        store.load_from_disk()
++        result = store.remove("memory", "sky is blue")
++        assert result["success"] is False
++        assert "global" in result["error"].lower()
++
++
+ class TestConcurrentContextWrites:
+     """Different contexts use different lock files, so they don't block each other."""
+ 
+diff --git a/tools/memory_tool.py b/tools/memory_tool.py
+index a62b1dd65..c38a127f3 100644
+--- a/tools/memory_tool.py
++++ b/tools/memory_tool.py
+@@ -121,7 +121,15 @@ class MemoryStore:
+         self.user_entries: List[str] = []
+         self.memory_char_limit = memory_char_limit
+         self.user_char_limit = user_char_limit
+-        self.context_id = context_id
++        # Sanitize context_id: treat empty/falsy as None; replace path separators
++        # and parent-ref sequences so chat IDs from any platform can't escape
++        # the contexts/ directory via path traversal.
++        if context_id:
++            safe_id = str(context_id).replace("/", "_").replace("\\", "_").replace("..", "_")
++            self.context_id: Optional[str] = safe_id
++        else:
++            self.context_id = None
++        self._global_entry_count: int = 0  # tracks how many entries came from global files
+         # Frozen snapshot for system prompt -- set once at load_from_disk()
+         self._system_prompt_snapshot: Dict[str, str] = {"memory": "", "user": ""}
+ 
+@@ -152,6 +160,16 @@ class MemoryStore:
+         self.memory_entries = list(dict.fromkeys(self.memory_entries))
+         self.user_entries = list(dict.fromkeys(self.user_entries))
+ 
++        # Track how many of the merged memory entries came from global files.
++        # Used by replace/remove to reject mutations targeting global entries
++        # when operating from a scoped context.
++        if self.context_id is not None:
++            global_raw = self._read_file(self._global_path_for("memory"))
++            global_set = set(global_raw)
++            self._global_entry_count = sum(1 for e in self.memory_entries if e in global_set)
++        else:
++            self._global_entry_count = 0
++
+         # Capture frozen snapshot for system prompt injection
+         self._system_prompt_snapshot = {
+             "memory": self._render_block("memory", self.memory_entries),
+@@ -220,16 +238,23 @@ class MemoryStore:
+         """Re-read entries from disk into in-memory state.
+ 
+         Called under file lock to get the latest state before mutating.
+-        When context_id is set, merges global + scoped entries.
++        When context_id is set, merges global + scoped entries and updates
++        _global_entry_count for the memory target (used by replace/remove
++        to block mutations on global entries from a scoped context).
+         """
+         if self.context_id is not None:
+             # Merge global + scoped
+             global_entries = self._read_file(self._global_path_for(target))
+             scoped_entries = self._read_file(self._path_for(target))
+             fresh = global_entries + scoped_entries
++            fresh = list(dict.fromkeys(fresh))  # deduplicate
++            if target == "memory":
++                # Recount global entries after dedup
++                global_set = set(global_entries)
++                self._global_entry_count = sum(1 for e in fresh if e in global_set)
+         else:
+             fresh = self._read_file(self._path_for(target))
+-        fresh = list(dict.fromkeys(fresh))  # deduplicate
++            fresh = list(dict.fromkeys(fresh))  # deduplicate
+         self._set_entries(target, fresh)
+ 
+     def save_to_disk(self, target: str):
+@@ -341,6 +366,20 @@ class MemoryStore:
+                 # All identical -- safe to replace just the first
+ 
+             idx = matches[0][0]
++
++            # Guard: refuse to mutate a global entry from a scoped context.
++            # Global entries occupy the first _global_entry_count positions in
++            # the merged list. Saving goes to the scoped file only, so any
++            # modification would be lost on the next reload.
++            if self.context_id is not None and idx < self._global_entry_count:
++                return {
++                    "success": False,
++                    "error": (
++                        "Cannot modify a global entry from a scoped context. "
++                        "Use scope='global' to modify global entries."
++                    ),
++                }
++
+             limit = self._char_limit(target)
+ 
+             # Check that replacement doesn't blow the budget
+@@ -391,6 +430,17 @@ class MemoryStore:
+                 # All identical -- safe to remove just the first
+ 
+             idx = matches[0][0]
++
++            # Guard: refuse to remove a global entry from a scoped context.
++            if self.context_id is not None and idx < self._global_entry_count:
++                return {
++                    "success": False,
++                    "error": (
++                        "Cannot modify a global entry from a scoped context. "
++                        "Use scope='global' to modify global entries."
++                    ),
++                }
++
+             entries.pop(idx)
+             self._set_entries(target, entries)
+             self.save_to_disk(target)
+-- 
+2.50.1 (Apple Git-155)
+
