@@ -1254,10 +1254,21 @@ class TestSend:
 
 class TestAdminNoticeFilter:
     """``_is_hermes_admin_notice`` is the last-line filter that keeps runtime
-    chatter (compression banners, token diagnostics, status callbacks) from
-    landing in a real user's mailbox or SMS thread.  These tests exercise the
-    three detection paths: metadata tag, glyph prefix, and substring/regex
-    body match.
+    chatter (status callbacks, "Still working…" pings, compression banners…)
+    out of real user channels.  The filter has two detection paths:
+
+    1. **Metadata tag**: producers explicitly opt in via ``notice_type``,
+       so the adapter doesn't have to guess from the body.  This is how
+       the new SMS/email-safe internal producers (status_callback,
+       interim_assistant, notify_interval) self-identify.
+    2. **Body inspection**: glyph prefixes (◐, ⚠️, 💾…) and a narrow set
+       of fixed substrings ("Still working", "Cronjob Response:"…)
+       catch un-tagged or legacy notices.
+
+    De-glyphed diagnostic catch-alls ("stack trace", "5,000 tokens", …)
+    deliberately live behind the metadata channel rather than the body
+    filter, so a real agent reply that happens to contain those phrases
+    survives.
     """
 
     @pytest.mark.parametrize(
@@ -1267,6 +1278,8 @@ class TestAdminNoticeFilter:
             "preflight",
             "preflight_compression",
             "context_rollover",
+            "interim_assistant",
+            "notify_interval",
             "status_callback",
             "tool_progress",
             "provider_diagnostic",
@@ -1304,48 +1317,45 @@ class TestAdminNoticeFilter:
     @pytest.mark.parametrize(
         "body",
         [
-            "Preflight compression: budget exceeded",
-            "We are compacting context now",
-            "Summarizing earlier conversation",
-            "session summary recorded",
-            "runtime diagnostics enabled",
-            "stack trace below for debugging",
+            # The body filter is intentionally narrow so it can't drop a
+            # real reply.  These phrases — plausible in an agent's reply
+            # when helping debug code, summarising context, or talking
+            # about quotas — must survive when no metadata tag is set.
+            "Here's the stack trace from your error: NameError at line 12.",
+            "Quick session summary: we tried three approaches.",
+            "Runtime diagnostics confirm the bug is in line 47.",
+            "Compacting context isn't the same as compression here.",
+            "We talked about summarizing earlier conversation threads.",
+            "You've used 5,000 tokens this month.",
+            "Threshold: 100000 sounds high for a user-facing setting.",
+            "Preflight compression of the asset takes ~2s.",
         ],
     )
-    def test_deglyphed_substrings_caught(self, body):
-        from gateway.platforms.inkbox import _is_hermes_admin_notice
-
-        assert _is_hermes_admin_notice(body)
-
-    @pytest.mark.parametrize(
-        "body",
-        [
-            "17,234 tokens used so far",
-            "Context: 8000 tokens remaining",
-            "threshold: 100000 reached",
-            "threshold >= 80000 — compacting",
-        ],
-    )
-    def test_token_and_threshold_regex_caught(self, body):
-        from gateway.platforms.inkbox import _is_hermes_admin_notice
-
-        assert _is_hermes_admin_notice(body)
-
-    @pytest.mark.parametrize(
-        "body",
-        [
-            # Numbers under 100 don't trip the "tokens" regex — those are
-            # plausible in a real user reply ("3 tokens left of trial").
-            "Hi, I had 3 tokens to use today.",
-            # Lowercase "compression" alone (no "preflight" anchor) stays
-            # user-ish; the substring matcher needs the full phrase.
-            "We can talk about compression algorithms.",
-        ],
-    )
-    def test_real_user_messages_pass_through(self, body):
+    def test_legitimate_replies_pass_through(self, body):
+        """The body filter must not drop these; they're real replies."""
         from gateway.platforms.inkbox import _is_hermes_admin_notice
 
         assert not _is_hermes_admin_notice(body)
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            "◐ Session automatically reset (1h idle).",
+            "⚠️ Something went wrong",
+            "💾 Self-improvement review: …",
+            "📋 todo: planning 3 task(s)",
+            "Still working — iteration 4/8",
+            "Cronjob Response: completed",
+            "Self-improvement review: profile updated",
+        ],
+    )
+    def test_existing_glyph_and_substring_filters_still_catch(self, body):
+        """The precedent-set filters (glyphs + fixed substrings) keep
+        running unconditionally; nothing in this PR changes their reach.
+        """
+        from gateway.platforms.inkbox import _is_hermes_admin_notice
+
+        assert _is_hermes_admin_notice(body)
 
     @pytest.mark.asyncio
     async def test_send_suppresses_metadata_tagged_notice_on_sms(self, monkeypatch):
@@ -1366,6 +1376,24 @@ class TestAdminNoticeFilter:
         assert result.message_id == "suppressed-admin-notice"
         identity = adapter._inkbox.get_identity.return_value
         identity.send_text.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_send_delivers_legitimate_stack_trace_reply_on_sms(self, monkeypatch):
+        """The motivating case for this redesign: an agent helping a user
+        debug their Python code replies with the actual stack trace, and
+        that reply must NOT be silently dropped.  No internal metadata tag
+        is set → only the narrow body filter runs → body passes.
+        """
+        adapter = _make_adapter(monkeypatch)
+        result = await adapter.send(
+            "+15555550101",
+            "Here's the stack trace: NameError on line 12 — 'foo' is undefined.",
+            metadata={"mode": "sms", "to_phone": "+15555550101"},
+        )
+        assert result.success is True
+        assert result.message_id != "suppressed-admin-notice"
+        identity = adapter._inkbox.get_identity.return_value
+        identity.send_text.assert_called_once()
 
 
 # ---------------------------------------------------------------------------

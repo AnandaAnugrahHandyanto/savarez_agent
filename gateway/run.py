@@ -16497,11 +16497,18 @@ class GatewayRunner:
                     _redact_gateway_user_facing_secrets(str(message or ""))[:160],
                 )
                 return
+            # Tag the send so adapters that filter internal chatter on
+            # end-user channels (Inkbox SMS/email) can drop the message
+            # without trying to guess from the body.  Without this tag,
+            # a status line containing legitimate-looking text would
+            # bypass the filter and land in the user's thread.
+            _status_meta = dict(_status_thread_metadata or {})
+            _status_meta["notice_type"] = "status_callback"
             _fut = safe_schedule_threadsafe(
                 _status_adapter.send(
                     _status_chat_id,
                     prepared_message,
-                    metadata=_status_thread_metadata,
+                    metadata=_status_meta,
                 ),
                 _loop_for_step,
                 logger=logger,
@@ -16672,11 +16679,16 @@ class GatewayRunner:
                     return
                 if already_streamed or not _status_adapter or not str(text or "").strip():
                     return
+                # Tag the send so end-user-channel adapters can drop
+                # mid-turn natural-language chatter without guessing
+                # from the body — see ``_status_callback_sync`` above.
+                _interim_meta = dict(_status_thread_metadata or {})
+                _interim_meta["notice_type"] = "interim_assistant"
                 safe_schedule_threadsafe(
                     _status_adapter.send(
                         _status_chat_id,
                         text,
-                        metadata=_status_thread_metadata,
+                        metadata=_interim_meta,
                     ),
                     _loop_for_step,
                     logger=logger,
@@ -17518,11 +17530,17 @@ class GatewayRunner:
                         _status_detail = " — " + ", ".join(_parts)
                     except Exception:
                         pass
+                # Tag the send so end-user-channel adapters can drop the
+                # ping without re-parsing the body.  The ⏳ prefix already
+                # trips body-based glyph filters, but the explicit tag is
+                # both cheaper and survives prefix stripping upstream.
+                _notify_meta = dict(_status_thread_metadata or {})
+                _notify_meta["notice_type"] = "notify_interval"
                 try:
                     _notify_res = await _notify_adapter.send(
                         source.chat_id,
                         f"⏳ Still working... ({_elapsed_mins} min elapsed{_status_detail})",
-                        metadata=_status_thread_metadata,
+                        metadata=_notify_meta,
                     )
                     if (
                         _cleanup_progress

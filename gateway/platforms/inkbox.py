@@ -203,6 +203,14 @@ _ADMIN_NOTICE_PREFIXES: Tuple[str, ...] = (
 # Substrings that mark CLI/TUI runtime chatter even when the leading glyph is
 # absent (some Hermes notices fold across sentences, e.g. the busy/queue tip
 # arrives mid-paragraph after the ⚡ banner).  Match any of these → suppress.
+#
+# Kept narrow on purpose: these patterns run on every outbound message body
+# (including real user replies), so each entry needs to be specific enough
+# that a legitimate agent reply can't reasonably contain it.  De-glyphed
+# diagnostic catch-alls (compression dumps, token counts, "stack trace"…)
+# live behind ``metadata['notice_type']`` instead — see
+# ``_ADMIN_NOTICE_METADATA_TYPES`` — so producers tag themselves and final
+# replies stay safe.
 _ADMIN_NOTICE_SUBSTRINGS: Tuple[str, ...] = (
     "Interrupting current task",
     "First-time tip",
@@ -217,33 +225,15 @@ _ADMIN_NOTICE_SUBSTRINGS: Tuple[str, ...] = (
     # Belt-and-suspenders: the self-improvement banner is sometimes
     # forwarded with the leading glyph stripped upstream of us.
     "Self-improvement review:",
-    # Compressor + provider diagnostics sometimes log a plain-text line
-    # without the 💾 / ⚡ prefix (e.g. when the message is reflowed by an
-    # upstream component before hitting the adapter).  Catching the
-    # well-known phrases keeps these out of real user channels.
-    "Preflight compression:",
-    "compacting context",
-    "summarizing earlier conversation",
-    "session summary",
-    "runtime diagnostics",
-    "stack trace",
 )
 
-# Regex matches for de-glyphed runtime diagnostics that vary in their numeric
-# payload — token counts, percent thresholds, etc. — and so can't be expressed
-# as fixed substrings.  Each pattern is case-insensitive and matches anywhere
-# in the body.  Keep this list short: every regex runs on every outbound msg.
-_ADMIN_NOTICE_REGEXES: Tuple["re.Pattern[str]", ...] = (
-    # "17,234 tokens" / "8000 tokens" — context-usage status lines.
-    re.compile(r"\b[0-9][0-9,]{2,}\s+tokens?\b", re.IGNORECASE),
-    # "threshold: 100000" / "threshold >= 80%" — compression / quota dumps.
-    re.compile(r"\bthreshold\s*(?:>=|>|=|:)\s*[0-9][0-9,]{2,}\b", re.IGNORECASE),
-)
-
-# Producers that explicitly tag mid-turn updates with ``metadata['notice_type']``
-# (or one of the legacy aliases below) can route their outputs around real user
-# channels without relying on the body-text filter at all.  Substring + regex
-# detection still runs as a backstop for untagged producers.
+# Internal producers (status_callback, interim assistant chatter, the
+# "Still working" notifier, the trajectory compressor…) tag their outbound
+# sends with ``metadata['notice_type']`` so the adapter can drop them
+# without inspecting the body.  This is what lets a *real* agent reply
+# containing the phrase "stack trace" or "5,000 tokens" survive — the body
+# filter above is intentionally narrow, and the broader catch-all happens
+# here via explicit producer opt-in.
 _ADMIN_NOTICE_METADATA_KEYS: Tuple[str, ...] = (
     "notice_type",
     "event_type",
@@ -255,6 +245,8 @@ _ADMIN_NOTICE_METADATA_TYPES: frozenset = frozenset({
     "admin_notice",
     "compression",
     "context_rollover",
+    "interim_assistant",
+    "notify_interval",
     "preflight",
     "preflight_compression",
     "provider_diagnostic",
@@ -283,11 +275,10 @@ def _is_hermes_admin_notice(
 
     Triggered when (a) ``metadata`` carries a recognized notice-type tag,
     (b) the message starts with one of the well-known glyphs Hermes uses
-    to flag system messages in the CLI/TUI, (c) the body contains any of
-    ``_ADMIN_NOTICE_SUBSTRINGS``, or (d) matches any of
-    ``_ADMIN_NOTICE_REGEXES``.  These have no business landing in a real
-    human's email inbox, SMS thread, or — worst of all — being read aloud
-    as TTS over a live phone call.
+    to flag system messages in the CLI/TUI, or (c) the body contains any
+    of ``_ADMIN_NOTICE_SUBSTRINGS``.  These have no business landing in a
+    real human's email inbox, SMS thread, or — worst of all — being read
+    aloud as TTS over a live phone call.
     """
     # Metadata tag wins outright — producers that opt in to the channel
     # don't need their body inspected.
@@ -299,9 +290,7 @@ def _is_hermes_admin_notice(
     head = (content or "").lstrip().lstrip("﻿")
     if head.startswith(_ADMIN_NOTICE_PREFIXES):
         return True
-    if any(s in head for s in _ADMIN_NOTICE_SUBSTRINGS):
-        return True
-    return any(pattern.search(head) for pattern in _ADMIN_NOTICE_REGEXES)
+    return any(s in head for s in _ADMIN_NOTICE_SUBSTRINGS)
 
 
 def _float_setting(extra: Dict[str, Any], key: str, env_name: str, default: float) -> float:
