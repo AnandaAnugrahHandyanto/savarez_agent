@@ -1387,8 +1387,38 @@ def _canonical_assignee(assignee: Optional[str]) -> Optional[str]:
     if assignee is None:
         return None
     from hermes_cli.profiles import normalize_profile_name
-
     return normalize_profile_name(assignee)
+
+
+def _resolve_subscribe_dict(
+    subscribe: Optional[dict],
+) -> Optional[dict[str, str]]:
+    """Normalise a ``subscribe`` dict from an explicit caller argument.
+
+    Returns ``None`` when the dict is missing or lacks required keys.
+    The dict may contain ``notifier_profile`` which is forwarded to the
+    subscription row.
+    """
+    if not isinstance(subscribe, dict):
+        return None
+    platform = str(subscribe.get("platform") or "").strip()
+    chat_id = str(subscribe.get("chat_id") or "").strip()
+    if not platform or not chat_id:
+        return None
+    resolved: dict[str, str] = {
+        "platform": platform,
+        "chat_id": chat_id,
+    }
+    thread_id = str(subscribe.get("thread_id") or "").strip()
+    if thread_id:
+        resolved["thread_id"] = thread_id
+    user_id = str(subscribe.get("user_id") or "").strip()
+    if user_id:
+        resolved["user_id"] = user_id
+    notifier_profile = str(subscribe.get("notifier_profile") or "").strip()
+    if notifier_profile:
+        resolved["notifier_profile"] = notifier_profile
+    return resolved
 
 
 def create_task(
@@ -1409,6 +1439,7 @@ def create_task(
     max_runtime_seconds: Optional[int] = None,
     skills: Optional[Iterable[str]] = None,
     max_retries: Optional[int] = None,
+    subscribe: Optional[dict] = None,
     initial_status: str = "running",
     session_id: Optional[str] = None,
     board: Optional[str] = None,
@@ -1526,6 +1557,11 @@ def create_task(
         if board_default:
             workspace_path = str(board_default)
 
+    # Resolve notification subscription from explicit caller argument.
+    resolved_subscribe: Optional[dict[str, str]] = None
+    if isinstance(subscribe, dict):
+        resolved_subscribe = _resolve_subscribe_dict(subscribe)
+
     # Retry once on the extremely unlikely id collision.
     for attempt in range(2):
         task_id = _new_task_id()
@@ -1610,6 +1646,16 @@ def create_task(
                         "skills": list(skills_list) if skills_list else None,
                     },
                 )
+                if resolved_subscribe:
+                    _add_notify_sub_inner(
+                        conn,
+                        task_id=task_id,
+                        platform=resolved_subscribe["platform"],
+                        chat_id=resolved_subscribe["chat_id"],
+                        thread_id=resolved_subscribe.get("thread_id"),
+                        user_id=resolved_subscribe.get("user_id"),
+                        notifier_profile=resolved_subscribe.get("notifier_profile"),
+                    )
             return task_id
         except sqlite3.IntegrityError:
             if attempt == 1:
@@ -5820,6 +5866,34 @@ def add_notify_sub(
                 """,
                 (notifier_profile, task_id, platform, chat_id, thread_id or ""),
             )
+
+
+def _add_notify_sub_inner(
+    conn: sqlite3.Connection,
+    *,
+    task_id: str,
+    platform: str,
+    chat_id: str,
+    thread_id: Optional[str] = None,
+    user_id: Optional[str] = None,
+    notifier_profile: Optional[str] = None,
+) -> None:
+    """Insert/update a notify sub — assumes caller already holds a write_txn."""
+    now = int(time.time())
+    conn.execute(
+        """INSERT OR IGNORE INTO kanban_notify_subs
+            (task_id, platform, chat_id, thread_id, user_id, notifier_profile, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        (task_id, platform, chat_id, thread_id or "", user_id, notifier_profile, now),
+    )
+    if notifier_profile:
+        conn.execute(
+            """UPDATE kanban_notify_subs
+                 SET notifier_profile = ?
+               WHERE task_id = ? AND platform = ? AND chat_id = ? AND thread_id = ?
+                 AND (notifier_profile IS NULL OR notifier_profile = '')""",
+            (notifier_profile, task_id, platform, chat_id, thread_id or ""),
+        )
 
 
 def list_notify_subs(

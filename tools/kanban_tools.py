@@ -682,6 +682,29 @@ def _handle_create(args: dict, **kw) -> str:
             f"parents must be a list of task ids, got {type(parents).__name__}"
         )
     board = args.get("board")
+    # Resolve notification subscription from gateway session context.
+    # Only works when running under the gateway (not CLI / test context).
+    _subscribe: Optional[dict[str, str]] = None
+    try:
+        from gateway.session_context import get_session_env
+        sub_platform = get_session_env("HERMES_SESSION_PLATFORM", "")
+        sub_chat_id = get_session_env("HERMES_SESSION_CHAT_ID", "")
+        if sub_platform and sub_chat_id:
+            _subscribe = {
+                "platform": sub_platform,
+                "chat_id": sub_chat_id,
+            }
+            sub_thread = get_session_env("HERMES_SESSION_THREAD_ID", "")
+            if sub_thread:
+                _subscribe["thread_id"] = sub_thread
+            sub_user = get_session_env("HERMES_SESSION_USER_ID", "")
+            if sub_user:
+                _subscribe["user_id"] = sub_user
+            notifier_profile = os.environ.get("HERMES_PROFILE", "")
+            if notifier_profile:
+                _subscribe["notifier_profile"] = notifier_profile
+    except ImportError:
+        pass  # CLI / test context — no gateway module available
     try:
         kb, conn = _connect(board=board)
         try:
@@ -705,6 +728,7 @@ def _handle_create(args: dict, **kw) -> str:
                 initial_status=str(initial_status),
                 created_by=os.environ.get("HERMES_PROFILE") or "worker",
                 session_id=session_id,
+                subscribe=_subscribe,
             )
             new_task = kb.get_task(conn, new_tid)
             return _ok(
