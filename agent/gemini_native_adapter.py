@@ -44,6 +44,30 @@ def is_native_gemini_base_url(base_url: str) -> bool:
     return not normalized.endswith("/openai")
 
 
+# Provider IDs whose default base_url routes through GeminiNativeClient.
+# Extend this set when adding a new ProviderProfile that targets one of
+# the URLs accepted by ``is_native_gemini_base_url``. Keeping the list
+# here (instead of hardcoding ``provider == "gemini"`` checks in core)
+# lets the gemini plugin own its own routing surface.
+NATIVE_GEMINI_PROVIDERS: frozenset[str] = frozenset({
+    "gemini",          # Google AI Studio (API key)
+})
+
+
+def is_gemini_native_provider(provider_id: Optional[str]) -> bool:
+    """Return True when the given provider routes through GeminiNativeClient.
+
+    This is the canonical check used by ``agent_runtime_helpers`` and
+    ``auxiliary_client`` to decide whether to instantiate the native
+    transport instead of the default OpenAI client. It keeps the routing
+    decision in one place so plugins can extend the gemini family
+    without touching core.
+    """
+    if not provider_id:
+        return False
+    return str(provider_id).lower() in NATIVE_GEMINI_PROVIDERS
+
+
 def probe_gemini_tier(
     api_key: str,
     base_url: str = DEFAULT_GEMINI_BASE_URL,
