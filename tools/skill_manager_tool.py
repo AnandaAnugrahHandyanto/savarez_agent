@@ -574,16 +574,8 @@ def _delete_skill(name: str, absorbed_into: Optional[str] = None) -> Dict[str, A
     if pinned_err:
         return {"success": False, "error": pinned_err}
 
-    # When the curator's background review fork calls this, refuse to delete
-    # a skill that an active cron job still references — removing it would
-    # break the job silently at next run time.  Manual user-directed deletes
-    # are never blocked (is_background_review() is False in those paths).
-    #
-    # tools.skill_provenance is always present (same package); no ImportError
-    # guard needed.  cron.jobs is an optional subsystem — absent means no cron
-    # jobs exist, so no protection is needed.  A runtime error reading the cron
-    # store is returned as a structured failure so the curator sees a clear
-    # error rather than an opaque exception from a tool call.
+    # Curator-fork-only guard: refuse to delete a skill still referenced by an
+    # active cron job.  cron.jobs is optional — ImportError means no cron jobs.
     from tools.skill_provenance import is_background_review
     if is_background_review():
         try:

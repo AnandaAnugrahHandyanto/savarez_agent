@@ -254,15 +254,11 @@ def should_run_now(now: Optional[datetime] = None) -> bool:
 # ---------------------------------------------------------------------------
 
 def _load_cron_protected() -> Optional[Set[str]]:
-    """Return skill names referenced by any enabled cron job.
+    """Return skill names referenced by enabled cron jobs, or None on error.
 
-    Returns an empty set when cron is not installed — no active jobs can
-    exist, so no skill needs protection.
-
-    Returns *None* on a runtime error (cron module present but store
-    unreadable).  The caller must treat None as "cannot determine — skip
-    archival" rather than proceeding with an empty protection set, which
-    would silently archive cron-dependent skills while the store is broken.
+    Empty set  — cron not installed; no jobs exist, no protection needed.
+    None       — cron store unreadable; caller must skip auto-archive
+                 transitions (fail-closed) rather than proceed unprotected.
     """
     try:
         from cron.jobs import get_active_skill_refs
@@ -301,9 +297,6 @@ def apply_automatic_transitions(
     archive_cutoff = now - timedelta(days=get_archive_after_days())
 
     if cron_protected is None:
-        # Standalone/test call: fail-open so the transition phase doesn't abort
-        # on a transient cron-store error.  run_curator_review() pre-computes
-        # this value and skips auto-transitions entirely when None is returned.
         cron_protected = _load_cron_protected() or set()
 
     counts = {"marked_stale": 0, "archived": 0, "reactivated": 0, "checked": 0}
@@ -1455,22 +1448,9 @@ def run_curator_review(
     can read what the curator WOULD have done.
     """
     start = datetime.now(timezone.utc)
-    # Snapshot active cron skill refs once so both the automatic transition
-    # phase and the LLM candidate list operate on a consistent view.
-    # _load_cron_protected() returns None when the cron store is present but
-    # unreadable; we treat that as fail-closed — skip auto-archive transitions
-    # rather than proceed with an empty protection set that would silently
-    # archive cron-dependent skills during a transient cron-store outage.
-    _cron_load_failed = False
+    # None = cron store present but unreadable; auto-archive transitions are
+    # skipped below.  See _load_cron_protected() for the full contract.
     cron_protected = _load_cron_protected()
-    if cron_protected is None:
-        # Warning already logged. Use empty set for the LLM candidate list so
-        # the prompt renders correctly; layer 3 (_delete_skill guard) still
-        # blocks individual deletions if the store recovers mid-run.
-        # Auto-archive transitions are skipped below to avoid moving skills
-        # whose cron dependency we couldn't verify.
-        _cron_load_failed = True
-        cron_protected = set()
     if dry_run:
         # Count candidates without mutating state.
         try:
@@ -1499,10 +1479,10 @@ def run_curator_review(
                     pass
         except Exception as e:
             logger.debug("Curator pre-run snapshot failed: %s", e, exc_info=True)
-        if _cron_load_failed:
-            counts = {"checked": 0, "marked_stale": 0, "archived": 0, "reactivated": 0}
-        else:
+        if cron_protected is not None:
             counts = apply_automatic_transitions(now=start, cron_protected=cron_protected)
+        else:
+            counts = {"checked": 0, "marked_stale": 0, "archived": 0, "reactivated": 0}
 
     auto_summary_parts = []
     if counts["marked_stale"]:
@@ -1537,7 +1517,7 @@ def run_curator_review(
 
         llm_meta: Dict[str, Any] = {}
         try:
-            candidate_list = _render_candidate_list(cron_protected=cron_protected)
+            candidate_list = _render_candidate_list(cron_protected=cron_protected or set())
             if "No agent-created skills" in candidate_list:
                 final_summary = f"{prefix}{auto_summary}; llm: skipped (no candidates)"
                 llm_meta = {

@@ -735,8 +735,7 @@ def get_active_skill_refs() -> Set[str]:
     skills: Set[str] = set()
     for job in list_jobs(include_disabled=False):
         for name in _normalize_skill_list(job.get("skill"), job.get("skills")):
-            if name:
-                skills.add(name)
+            skills.add(name)
     return skills
 
 
