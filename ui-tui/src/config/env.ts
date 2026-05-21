@@ -30,13 +30,17 @@ export const STARTUP_IMAGE = (process.env.HERMES_TUI_IMAGE ?? '').trim()
 
 // Mouse tracking mode resolution at startup. Per-mode selection (off|wheel|
 // buttons|all) lives in display.mouse_tracking in config.yaml — these env
-// vars only set the boot-time default before that config is applied:
+// vars only set the boot-time default before that config is applied.
 //
-// - HERMES_TUI_DISABLE_MOUSE=1 keeps its kill-switch semantics → 'off'.
-// - HERMES_TUI_MOUSE_TRACKING accepts truthy/falsy → 'all'/'off'.
-// - On Termux we default mouse tracking OFF so touch selection isn't
-//   intercepted by terminal mouse protocols. Desktop defaults to 'all'
-//   to preserve prior behavior.
+// Precedence (highest first):
+//
+// - HERMES_TUI_MOUSE_TRACKING (truthy/falsy) explicitly overrides everything.
+//   This is the "force a value" knob and intentionally beats the legacy
+//   kill-switch and the Termux default.
+// - HERMES_TUI_DISABLE_MOUSE=1 forces mouse off — the legacy kill switch.
+// - On Termux the default is mouse off so touch selection isn't intercepted
+//   by terminal mouse protocols. Desktop defaults to 'all' to preserve prior
+//   behavior.
 const mouseTrackingOverride = parseToggle(process.env.HERMES_TUI_MOUSE_TRACKING)
 const mouseTrackingDisabledLegacy = truthy(process.env.HERMES_TUI_DISABLE_MOUSE)
 const resolvedBootMouseEnabled =

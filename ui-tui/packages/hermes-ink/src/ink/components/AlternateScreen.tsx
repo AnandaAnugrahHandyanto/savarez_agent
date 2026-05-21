@@ -67,12 +67,19 @@ export function AlternateScreen(t0: Props) {
 
       const enableMouse = enableMouseTrackingFor(mouseTracking)
 
+      // Always reset every mouse mode before enabling the requested preset
+      // so the terminal lands in an exact state. If a previous instance
+      // (crash, another app, lingering DECSET from a debugger) left DEC
+      // 1003 hover events asserted, picking 'wheel' or 'buttons' without
+      // an unconditional DISABLE would silently leave hover on and defeat
+      // the point of the preset.
       writeRaw(
         ENTER_ALT_SCREEN +
           ERASE_SCROLLBACK +
           ERASE_SCREEN +
           CURSOR_HOME +
-          (enableMouse || DISABLE_MOUSE_TRACKING)
+          DISABLE_MOUSE_TRACKING +
+          enableMouse
       )
       ink?.setAltScreenActive(true, mouseTracking)
       ink?.setAltScreenMouseTracking(mouseTracking)
@@ -80,7 +87,11 @@ export function AlternateScreen(t0: Props) {
       return () => {
         ink?.setAltScreenActive(false)
         ink?.clearTextSelection()
-        writeRaw((enableMouse ? DISABLE_MOUSE_TRACKING : '') + EXIT_ALT_SCREEN)
+        // DISABLE_MOUSE_TRACKING is safe to send even when we never enabled
+        // tracking (it unconditionally resets all four modes). Sending it
+        // on every teardown means a crash mid-mount can't leak DEC modes
+        // back to the host shell.
+        writeRaw(DISABLE_MOUSE_TRACKING + EXIT_ALT_SCREEN)
       }
     }
 
