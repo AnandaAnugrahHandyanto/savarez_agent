@@ -1,6 +1,7 @@
 """Tests for tools/skills_hub.py — source adapters, lock file, taps, dedup logic."""
 
 import json
+import os
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
@@ -22,6 +23,7 @@ from tools.skills_hub import (
     bundle_content_hash,
     check_for_skill_updates,
     create_source_router,
+    uninstall_skill,
     unified_search,
     append_audit_log,
     _skill_meta_to_dict,
@@ -1168,6 +1170,95 @@ class TestHubLockFile:
         assert len(installed) == 2
         names = {e["name"] for e in installed}
         assert names == {"s1", "s2"}
+
+
+class TestUninstallSkillSafety:
+    def _lock_for(self, install_path: str):
+        lock = MagicMock()
+        lock.get_installed.return_value = {
+            "source": "github",
+            "trust_level": "community",
+            "install_path": install_path,
+        }
+        return lock
+
+    def test_uninstall_removes_valid_installed_skill(self, tmp_path):
+        import tools.skills_hub as hub
+
+        skills_dir = tmp_path / "skills"
+        install_dir = skills_dir / "productivity" / "demo"
+        install_dir.mkdir(parents=True)
+        (install_dir / "SKILL.md").write_text("---\nname: demo\n---\n")
+        lock = self._lock_for("productivity/demo")
+
+        with patch.object(hub, "SKILLS_DIR", skills_dir), \
+             patch.object(hub, "HubLockFile", return_value=lock), \
+             patch.object(hub, "append_audit_log"):
+            ok, message = uninstall_skill("demo")
+
+        assert ok is True
+        assert "productivity/demo" in message
+        assert not install_dir.exists()
+        lock.record_uninstall.assert_called_once_with("demo")
+
+    def test_uninstall_rejects_traversal_install_path(self, tmp_path):
+        import tools.skills_hub as hub
+
+        skills_dir = tmp_path / "skills"
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (outside / "keep.txt").write_text("keep")
+        lock = self._lock_for("../outside")
+
+        with patch.object(hub, "SKILLS_DIR", skills_dir), \
+             patch.object(hub, "HubLockFile", return_value=lock), \
+             patch.object(hub, "append_audit_log"):
+            ok, message = uninstall_skill("demo")
+
+        assert ok is False
+        assert "Unsafe lock install path" in message
+        assert outside.exists()
+        lock.record_uninstall.assert_not_called()
+
+    def test_uninstall_rejects_absolute_install_path(self, tmp_path):
+        import tools.skills_hub as hub
+
+        skills_dir = tmp_path / "skills"
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        lock = self._lock_for(str(outside))
+
+        with patch.object(hub, "SKILLS_DIR", skills_dir), \
+             patch.object(hub, "HubLockFile", return_value=lock), \
+             patch.object(hub, "append_audit_log"):
+            ok, message = uninstall_skill("demo")
+
+        assert ok is False
+        assert "Unsafe lock install path" in message
+        assert outside.exists()
+        lock.record_uninstall.assert_not_called()
+
+    @pytest.mark.skipif(not hasattr(os, "symlink"), reason="requires symlink support")
+    def test_uninstall_rejects_symlink_install_path_escape(self, tmp_path):
+        import tools.skills_hub as hub
+
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (outside / "keep.txt").write_text("keep")
+        os.symlink(outside, skills_dir / "linked")
+        lock = self._lock_for("linked")
+
+        with patch.object(hub, "SKILLS_DIR", skills_dir), \
+             patch.object(hub, "HubLockFile", return_value=lock), \
+             patch.object(hub, "append_audit_log"):
+            ok, message = uninstall_skill("demo")
+
+        assert ok is False
+        assert "Unsafe lock install path" in message
+        assert outside.exists()
+        lock.record_uninstall.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
