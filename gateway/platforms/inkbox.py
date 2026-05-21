@@ -234,12 +234,14 @@ _ADMIN_NOTICE_SUBSTRINGS: Tuple[str, ...] = (
 # containing the phrase "stack trace" or "5,000 tokens" survive — the body
 # filter above is intentionally narrow, and the broader catch-all happens
 # here via explicit producer opt-in.
-_ADMIN_NOTICE_METADATA_KEYS: Tuple[str, ...] = (
-    "notice_type",
-    "event_type",
-    "kind",
-    "source",
-)
+#
+# Only ``notice_type`` is honored.  Earlier revisions also accepted the
+# aliases ``event_type`` / ``kind`` / ``source``, but those keys are already
+# used elsewhere for unrelated purposes (e.g. ``event_type="state_changed"``
+# on Home Assistant, ``source="inkbox"`` in session data).  Sharing the
+# namespace risked silent suppression on future generic uses, so the alias
+# list was dropped — producers must opt in with ``notice_type`` explicitly.
+_ADMIN_NOTICE_METADATA_KEYS: Tuple[str, ...] = ("notice_type",)
 _ADMIN_NOTICE_METADATA_TYPES: frozenset = frozenset({
     "admin",
     "admin_notice",
@@ -267,8 +269,7 @@ def _is_hermes_admin_notice(
     Args:
         content: The outbound message body to inspect.
         metadata: Optional adapter metadata; when present, a recognized
-            ``notice_type`` (or legacy alias) short-circuits the body
-            inspection.
+            ``notice_type`` short-circuits the body inspection.
 
     Returns:
         bool: True if the message should be dropped before delivery.

@@ -1299,12 +1299,17 @@ class TestAdminNoticeFilter:
     @pytest.mark.parametrize(
         "alias_key", ["event_type", "kind", "source"],
     )
-    def test_metadata_legacy_aliases_recognized(self, alias_key):
-        """Older producers tag with ``event_type`` / ``kind`` / ``source``."""
+    def test_metadata_generic_keys_do_not_trigger_drop(self, alias_key):
+        """``event_type`` / ``kind`` / ``source`` are used elsewhere in the
+        codebase for unrelated purposes (Home Assistant events, session
+        data, …).  We deliberately do NOT honor them as notice-type
+        carriers — only the explicit ``notice_type`` key short-circuits.
+        """
         from gateway.platforms.inkbox import _is_hermes_admin_notice
 
-        assert _is_hermes_admin_notice(
-            "body", metadata={alias_key: "compression"},
+        assert not _is_hermes_admin_notice(
+            "ordinary reply text",
+            metadata={alias_key: "compression"},
         )
 
     def test_metadata_unrelated_tag_not_filtered(self):
