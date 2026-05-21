@@ -8,12 +8,21 @@ import pytest
 
 from agent.lsp.servers import (
     ServerContext,
+    _BSL_DIAGNOSTICS_DOCUMENT_WAIT,
+    _BSL_INITIALIZE_TIMEOUT,
     _find_bsl_jar,
     _root_bsl,
     _spawn_bsl_ls,
     find_server_for_file,
     language_id_for,
 )
+
+
+def test_bsl_server_def_uses_extended_timeouts():
+    srv = find_server_for_file("/x/module.bsl")
+    assert srv is not None
+    assert srv.initialize_timeout == _BSL_INITIALIZE_TIMEOUT
+    assert srv.diagnostics_document_wait == _BSL_DIAGNOSTICS_DOCUMENT_WAIT
 
 
 def test_find_server_for_bsl_and_os_extensions():
@@ -71,6 +80,8 @@ def test_spawn_bsl_ls_builds_java_jar_command(tmp_path, monkeypatch):
     spec = _spawn_bsl_ls(str(tmp_path), ctx)
     assert spec is not None
     assert spec.command == ["/usr/bin/java", "-jar", str(jar), "--lsp"]
+    assert spec.initialize_timeout == _BSL_INITIALIZE_TIMEOUT
+    assert spec.diagnostics_document_wait == _BSL_DIAGNOSTICS_DOCUMENT_WAIT
 
 
 def test_spawn_bsl_ls_uses_full_command_override(tmp_path, monkeypatch):

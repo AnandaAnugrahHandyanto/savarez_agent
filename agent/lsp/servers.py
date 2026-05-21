@@ -124,6 +124,13 @@ class SpawnSpec:
     env: Dict[str, str] = field(default_factory=dict)
     initialization_options: Dict[str, Any] = field(default_factory=dict)
     seed_diagnostics_on_first_push: bool = False
+    initialize_timeout: float = 45.0
+    diagnostics_document_wait: float = 5.0
+
+
+# BSL LS: JVM boot + first-pass analysis on large 1C trees is slow.
+_BSL_INITIALIZE_TIMEOUT = 120.0
+_BSL_DIAGNOSTICS_DOCUMENT_WAIT = 30.0
 
 
 @dataclass
@@ -146,6 +153,8 @@ class ServerDef:
     build_spawn: Callable[[str, "ServerContext"], Optional[SpawnSpec]]
     seed_first_push: bool = False
     description: str = ""
+    initialize_timeout: float = 45.0
+    diagnostics_document_wait: float = 5.0
 
     def matches(self, file_path: str) -> bool:
         """Return True iff this server handles ``file_path``."""
@@ -729,14 +738,21 @@ def _find_bsl_jar() -> Optional[str]:
 
 
 def _spawn_bsl_ls(root: str, ctx: ServerContext) -> Optional[SpawnSpec]:
+    env = ctx.env_overrides.get("bsl-language-server", {})
+    init_opts = ctx.init_overrides.get("bsl-language-server", {})
+    init_timeout = _BSL_INITIALIZE_TIMEOUT
+    diag_wait = _BSL_DIAGNOSTICS_DOCUMENT_WAIT
+
     override_cmd = _resolve_override_command(ctx, "bsl-language-server")
     if override_cmd is not None:
         return SpawnSpec(
             command=override_cmd,
             workspace_root=root,
             cwd=root,
-            env=ctx.env_overrides.get("bsl-language-server", {}),
-            initialization_options=ctx.init_overrides.get("bsl-language-server", {}),
+            env=env,
+            initialization_options=init_opts,
+            initialize_timeout=init_timeout,
+            diagnostics_document_wait=diag_wait,
         )
 
     jar = _resolve_override(ctx, "bsl-language-server") or _find_bsl_jar()
@@ -754,8 +770,10 @@ def _spawn_bsl_ls(root: str, ctx: ServerContext) -> Optional[SpawnSpec]:
         command=[java, "-jar", jar, "--lsp"],
         workspace_root=root,
         cwd=root,
-        env=ctx.env_overrides.get("bsl-language-server", {}),
-        initialization_options=ctx.init_overrides.get("bsl-language-server", {}),
+        env=env,
+        initialization_options=init_opts,
+        initialize_timeout=init_timeout,
+        diagnostics_document_wait=diag_wait,
     )
 
 
@@ -933,15 +951,59 @@ def _nearest_dir_root(
 def _root_bsl(file_path: str, workspace: str) -> Optional[str]:
     """1C:Enterprise / OneScript — Configuration.xml, DT-INF, or BSL LS config."""
     ceiling = os.path.dirname(workspace) if workspace else None
+    start_abs = normalize_path(file_path)
+    start_path = Path(start_abs)
+    walk_start = start_abs
+    start_kind = "unknown"
+    try:
+        if start_path.is_file():
+            walk_start = str(start_path.parent)
+            start_kind = "file"
+        elif start_path.is_dir():
+            walk_start = str(start_path)
+            start_kind = "dir"
+        else:
+            # New or not yet visible to Python — treat as file path for the walk.
+            walk_start = str(start_path.parent) if start_path.name else start_abs
+            start_kind = "missing"
+    except OSError as e:
+        logger.debug("[bsl root] cannot stat %s: %s", start_abs, e)
+        start_kind = "stat-error"
+
+    logger.debug(
+        "[bsl root] resolve file_path=%r workspace=%r ceiling=%r "
+        "walk_start=%r (%s) abspath_exists=%s process_cwd=%r",
+        file_path,
+        workspace,
+        ceiling,
+        walk_start,
+        start_kind,
+        os.path.exists(start_abs),
+        os.getcwd(),
+    )
+
     found = nearest_root(
         file_path,
         ["Configuration.xml", ".bsl-language-server.json"],
         ceiling=ceiling,
     )
     if found is not None:
+        logger.debug("[bsl root] matched config file marker at %s", found)
         return found
+
     found = _nearest_dir_root(file_path, ["DT-INF"], ceiling=ceiling)
-    return found or workspace
+    if found is not None:
+        logger.debug("[bsl root] matched DT-INF directory at %s", found)
+        return found
+
+    logger.debug(
+        "[bsl root] no Configuration.xml, .bsl-language-server.json, or DT-INF "
+        "above %s (ceiling=%s); fallback to git workspace %s",
+        walk_start,
+        ceiling,
+        workspace,
+    )
+    return workspace
 
 
 # ---------------------------------------------------------------------------
@@ -1138,6 +1200,8 @@ SERVERS: List[ServerDef] = [
         extensions=(".bsl", ".os"),
         resolve_root=_root_bsl,
         build_spawn=_spawn_bsl_ls,
+        initialize_timeout=_BSL_INITIALIZE_TIMEOUT,
+        diagnostics_document_wait=_BSL_DIAGNOSTICS_DOCUMENT_WAIT,
         description="1C:Enterprise / OneScript — BSL Language Server",
     ),
 ]
