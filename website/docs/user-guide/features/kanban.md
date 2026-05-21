@@ -622,6 +622,8 @@ hermes kanban tail <id>                                # follow a single task's 
 hermes kanban watch [--assignee P] [--tenant T]        # live stream ALL events to the terminal
         [--kinds completed,blocked,…] [--interval SECS]
 hermes kanban heartbeat <id> [--note "..."]            # worker liveness signal for long ops
+hermes kanban progress <id> [--json] [--log-tail N]    # read-only worker progress/evidence
+hermes kanban reviews [--lane L] [--json]              # review-required worker evidence queue
 hermes kanban runs <id> [--json]                       # attempt history (one row per run)
 hermes kanban assignees [--json]                       # profiles on disk + per-assignee task counts
 hermes kanban dispatch [--dry-run] [--max N]           # one-shot pass
@@ -672,7 +674,7 @@ This is the whole point of the separation:
 
 - A worker blocks waiting on a peer → you send `/kanban unblock t_abcd` from your phone and the dispatcher picks the peer up on its next tick. The blocked worker isn't interrupted — it just stops being blocked.
 - You spot a card that needs human context → `/kanban comment t_xyz "use the 2026 schema, not 2025"` lands on the task thread and the *next* run of that task will read it in `kanban_show()`.
-- You want to know what your fleet is doing without stopping the orchestrator → `/kanban list --mine` or `/kanban stats` inspects the board without touching your main conversation.
+- You want to know what your fleet is doing without stopping the orchestrator → `/kanban list --mine`, `/kanban progress t_xyz --json`, `/kanban reviews --json`, or `/kanban stats` inspects the board without touching your main conversation.
 
 ### Auto-subscribe on `/kanban create` (gateway only)
 

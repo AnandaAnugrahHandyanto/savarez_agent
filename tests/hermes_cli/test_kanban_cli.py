@@ -439,6 +439,45 @@ def test_run_slash_progress_json_is_read_only(kanban_home):
     assert after.claim_lock == before.claim_lock
 
 
+def test_run_slash_reviews_lists_review_required_evidence(
+    kanban_home, tmp_path,
+):
+    metadata = {
+        "worker_lane": {"name": "codex-deep", "kind": "codex_cli", "exit_code": 0},
+        "verification": {"commands": ["pytest -q"], "summary": "passed"},
+        "git": {"changed_files": ["hermes_cli/kanban.py"], "diff_summary": "+2 -0"},
+        "review": {"required": True, "reason": "Codex completed; Hermes review required"},
+    }
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="external review",
+            assignee="codex-deep",
+            workspace_kind="dir",
+            workspace_path=str(tmp_path),
+        )
+        task = kb.claim_task(conn, tid, claimer="worker:codex-deep")
+        assert task is not None
+        assert kb.block_task(
+            conn,
+            tid,
+            reason="review-required: Codex completed; Hermes review required",
+            expected_run_id=task.current_run_id,
+            metadata=metadata,
+        )
+
+    payload = json.loads(kc.run_slash("reviews --json"))
+    assert [item["task"]["id"] for item in payload] == [tid]
+    assert payload[0]["worker_lane"]["name"] == "codex-deep"
+    assert payload[0]["verification"]["commands"] == ["pytest -q"]
+    assert payload[0]["evidence"]["review"]["required"] is True
+
+    human = kc.run_slash("reviews --lane codex-deep")
+    assert tid in human
+    assert "codex-deep" in human
+    assert "review-required: Codex completed" in human
+
+
 def test_run_slash_worker_lane_request_validates_without_enabling(
     kanban_home, tmp_path,
 ):

@@ -411,6 +411,8 @@ Multi-profile, multi-project collaboration board. Each install can host many boa
 | `unblock <id>` | Return a blocked or scheduled task to ready (or `todo` if dependencies are still open). |
 | `archive <id>` | Hide from default list. `gc` will remove scratch workspaces. |
 | `tail <id>` | Follow a task's event stream. |
+| `progress <id>` | Read a task's latest worker progress, heartbeat, bounded evidence, and optional log tail without claiming or interrupting it. Flags: `--json`, `--log-tail`. |
+| `reviews` | List tasks whose latest worker run is waiting for Hermes review (`review.required: true`). Flags: `--assignee`, `--tenant`, `--lane`, `--limit`, `--log-tail`, `--json`. |
 | `dispatch` | One dispatcher pass on the active board. Flags: `--dry-run`, `--max N`, `--failure-limit N`, `--json`. |
 | `context <id>` | Print the full context a worker would see (title + body + parent results + comments). |
 | `specify <id>` / `specify --all` | Flesh out a triage-column task into a concrete spec (title + body with goal, approach, acceptance criteria) via the auxiliary LLM, then promote it to `todo`. Flags: `--tenant` (scope `--all` to one tenant), `--author`, `--json`. Configure the model under `auxiliary.triage_specifier` in `config.yaml`. |

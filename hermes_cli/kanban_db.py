@@ -2066,6 +2066,76 @@ def task_progress_snapshot(
     )
 
 
+def review_required_snapshots(
+    conn: sqlite3.Connection,
+    *,
+    assignee: Optional[str] = None,
+    tenant: Optional[str] = None,
+    worker_lane: Optional[str] = None,
+    limit: int = 100,
+    log_tail_bytes: Optional[int] = None,
+    board: Optional[str] = None,
+) -> list[TaskProgressSnapshot]:
+    """Return read-only snapshots for tasks waiting on Hermes review.
+
+    Review-required state is intentionally inferred from structured run
+    metadata, not from the full worker transcript. This lets controllers and
+    dashboards list Codex/external-worker handoffs without interrupting a
+    running worker or replaying its complete session.
+    """
+    clauses = ["t.status != 'archived'", "r.metadata IS NOT NULL"]
+    params: list[Any] = []
+    if assignee:
+        clauses.append("t.assignee = ?")
+        params.append(_canonical_assignee(assignee))
+    if tenant:
+        clauses.append("t.tenant = ?")
+        params.append(tenant)
+    max_rows = max(1, int(limit or 100))
+    q = (
+        "SELECT t.id, r.metadata, r.ended_at, r.started_at "
+        "FROM task_runs r "
+        "JOIN tasks t ON t.id = r.task_id "
+        "JOIN ("
+        "  SELECT task_id, MAX(id) AS max_id FROM task_runs GROUP BY task_id"
+        ") latest ON latest.task_id = r.task_id AND latest.max_id = r.id "
+        f"WHERE {' AND '.join(clauses)} "
+        "ORDER BY COALESCE(r.ended_at, r.started_at) DESC, r.id DESC "
+    )
+    snapshots: list[TaskProgressSnapshot] = []
+    lane_filter = (worker_lane or "").strip()
+    for row in conn.execute(q, tuple(params)):
+        try:
+            meta = json.loads(row["metadata"]) if row["metadata"] else {}
+        except Exception:
+            continue
+        if not isinstance(meta, dict):
+            continue
+        review = meta.get("review")
+        if not (isinstance(review, dict) and review.get("required")):
+            continue
+        if lane_filter:
+            lane_meta = meta.get("worker_lane") or {}
+            lane_name = (
+                lane_meta.get("name")
+                if isinstance(lane_meta, dict)
+                else None
+            )
+            if lane_name != lane_filter:
+                continue
+        snapshot = task_progress_snapshot(
+            conn,
+            row["id"],
+            log_tail_bytes=log_tail_bytes,
+            board=board,
+        )
+        if snapshot is not None and snapshot.review_required:
+            snapshots.append(snapshot)
+            if len(snapshots) >= max_rows:
+                break
+    return snapshots
+
+
 def _append_event(
     conn: sqlite3.Connection,
     task_id: str,

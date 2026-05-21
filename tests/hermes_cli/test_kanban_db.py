@@ -130,6 +130,71 @@ def test_task_progress_snapshot_surfaces_review_evidence(kanban_home, tmp_path):
     assert payload["verification"]["commands"] == ["pytest -q"]
 
 
+def test_review_required_snapshots_lists_bounded_evidence(
+    kanban_home, tmp_path,
+):
+    def make_review_task(title: str, lane: str, *, archived: bool = False) -> str:
+        metadata = {
+            "worker_lane": {"name": lane, "kind": "codex_cli", "exit_code": 0},
+            "verification": {"commands": ["pytest -q"], "summary": f"{title} ok"},
+            "git": {"changed_files": [f"{title}.py"], "diff_summary": "+1 -0"},
+            "review": {"required": True, "reason": f"{title} needs review"},
+        }
+        tid = kb.create_task(
+            conn,
+            title=title,
+            assignee=lane,
+            workspace_kind="dir",
+            workspace_path=str(tmp_path / title),
+        )
+        task = kb.claim_task(conn, tid, claimer=f"worker:{lane}")
+        assert task is not None
+        assert kb.block_task(
+            conn,
+            tid,
+            reason=f"review-required: {title} needs review",
+            expected_run_id=task.current_run_id,
+            metadata=metadata,
+        )
+        if archived:
+            assert kb.archive_task(conn, tid)
+        return tid
+
+    with kb.connect() as conn:
+        deep = make_review_task("deep-change", "codex-deep")
+        fast = make_review_task("fast-change", "codex-fast")
+        archived = make_review_task("archived-change", "codex-deep", archived=True)
+        # This newer non-review run should not consume the limit before the
+        # helper finds the older review-required task.
+        non_review = kb.create_task(
+            conn,
+            title="ordinary failure",
+            assignee="codex-deep",
+            workspace_kind="dir",
+            workspace_path=str(tmp_path / "ordinary"),
+        )
+        task = kb.claim_task(conn, non_review, claimer="worker:codex-deep")
+        assert task is not None
+        assert kb.block_task(
+            conn,
+            non_review,
+            reason="blocked without review metadata",
+            expected_run_id=task.current_run_id,
+            metadata={"review": {"required": False}},
+        )
+
+        all_snapshots = kb.review_required_snapshots(conn, limit=1)
+        deep_snapshots = kb.review_required_snapshots(conn, worker_lane="codex-deep")
+
+    assert [snapshot.task.id for snapshot in all_snapshots] == [fast]
+    deep_ids = {snapshot.task.id for snapshot in deep_snapshots}
+    assert deep in deep_ids
+    assert fast not in deep_ids
+    assert archived not in deep_ids
+    assert all(snapshot.review_required for snapshot in deep_snapshots)
+    assert deep_snapshots[0].to_dict()["verification"]["commands"] == ["pytest -q"]
+
+
 def test_connect_rejects_tls_record_in_sqlite_header(tmp_path, monkeypatch):
     """Kanban should classify TLS-looking page-0 clobbers before WAL setup."""
     home = tmp_path / ".hermes"

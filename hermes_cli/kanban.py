@@ -480,6 +480,24 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         help="Include the last N bytes of the worker log in the snapshot",
     )
 
+    # --- reviews ---
+    p_reviews = sub.add_parser(
+        "reviews",
+        help="List tasks with external-worker evidence waiting for Hermes review",
+    )
+    p_reviews.add_argument("--assignee", default=None)
+    p_reviews.add_argument("--tenant", default=None)
+    p_reviews.add_argument("--lane", default=None, help="Filter by worker lane name")
+    p_reviews.add_argument("--limit", type=int, default=100)
+    p_reviews.add_argument(
+        "--log-tail",
+        type=int,
+        default=None,
+        metavar="BYTES",
+        help="Include the last N bytes of each worker log in JSON output",
+    )
+    p_reviews.add_argument("--json", action="store_true")
+
     # --- assign ---
     p_assign = sub.add_parser("assign", help="Assign or reassign a task")
     p_assign.add_argument("task_id")
@@ -975,6 +993,7 @@ def kanban_command(args: argparse.Namespace) -> int:
         "ls":       _cmd_list,
         "show":     _cmd_show,
         "progress": _cmd_progress,
+        "reviews":  _cmd_reviews,
         "assign":   _cmd_assign,
         "reclaim":  _cmd_reclaim,
         "reassign": _cmd_reassign,
@@ -1878,6 +1897,42 @@ def _cmd_progress(args: argparse.Namespace) -> int:
         sys.stdout.write(payload["worker_log_tail"])
         if not payload["worker_log_tail"].endswith("\n"):
             sys.stdout.write("\n")
+    return 0
+
+
+def _cmd_reviews(args: argparse.Namespace) -> int:
+    with kb.connect() as conn:
+        snapshots = kb.review_required_snapshots(
+            conn,
+            assignee=getattr(args, "assignee", None),
+            tenant=getattr(args, "tenant", None),
+            worker_lane=getattr(args, "lane", None),
+            limit=getattr(args, "limit", 100),
+            log_tail_bytes=getattr(args, "log_tail", None),
+        )
+    payload = [_snapshot_to_dict(snapshot) for snapshot in snapshots]
+    if getattr(args, "json", False):
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+        return 0
+    if not payload:
+        print("(no review-required worker lane tasks)")
+        return 0
+    print(f"{'TASK':10s}  {'LANE':16s}  {'ASSIGNEE':16s}  {'RUN':>5s}  SUMMARY")
+    for item in payload:
+        task = item.get("task") or {}
+        run = item.get("run") or {}
+        lane_meta = item.get("worker_lane") or {}
+        lane = lane_meta.get("name") or lane_meta.get("worker_lane") or "-"
+        summary = (run.get("summary") or "").splitlines()[0] if run else ""
+        if not summary:
+            review = (item.get("evidence") or {}).get("review") or {}
+            summary = review.get("reason") if isinstance(review, dict) else ""
+        print(
+            f"{task.get('id', '-'):10s}  {lane[:16]:16s}  "
+            f"{(task.get('assignee') or '-')[:16]:16s}  "
+            f"{str(run.get('id') or '-'):>5s}  {summary[:120]}"
+        )
+    print("\nUse `hermes kanban progress <task_id> --json` for full bounded evidence.")
     return 0
 
 

@@ -217,12 +217,20 @@ For a standalone shell invocation, prefer `--persist` when a later dispatcher pr
 Progress queries should read Kanban state, events, logs, and run metadata:
 
 - `hermes kanban progress <task_id> --json`
+- `hermes kanban reviews --json`
 - `hermes kanban show <task_id>`
 - `hermes kanban tail <task_id>`
 - `hermes kanban log <task_id>`
 - `hermes kanban runs <task_id> --json`
 
 These reads do not interrupt a running external worker.
+
+`hermes kanban reviews` lists tasks whose latest run metadata says
+`review.required: true`, optionally filtered with `--assignee`, `--tenant`, or
+`--lane`. This is the review queue for Codex/external-worker handoffs: it reads
+the bounded evidence already written to `task_runs.metadata`, the latest
+progress event, and an optional worker-log tail without replaying the complete
+Codex session.
 
 ## Goal bridge
 
