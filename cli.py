@@ -1301,7 +1301,53 @@ def _prune_orphaned_branches(repo_root: str) -> None:
 _ACCENT_ANSI_DEFAULT = "\033[1;38;2;255;215;0m"  # True-color #FFD700 bold — fallback
 _BOLD = "\033[1m"
 _RST = "\033[0m"
-_STREAM_PAD = "    "  # 4-space indent for streamed response text (matches Panel padding)
+_STREAM_PAD = "│ "  # Stable rail for streamed response text; avoids ragged native soft-wraps
+
+
+def _stream_wrap_subsequent_indent(line: str) -> str:
+    """Return continuation indent for wrapped streamed markdown-ish lines."""
+    match = re.match(r"^(\s*)(?:[-*+]|\d+[.)])\s+", line or "")
+    if match:
+        return " " * len(match.group(0))
+    return ""
+
+
+def _format_stream_display_lines(
+    text: str,
+    *,
+    terminal_width: int | None = None,
+    rail: str = _STREAM_PAD,
+) -> list[str]:
+    """Pre-wrap streamed assistant text so every physical line keeps a rail.
+
+    Terminal-native soft wrapping drops custom prefixes on continuation lines.
+    This helper wraps logical stream lines before printing, including blank
+    lines and long tokens/paths, so the response box remains readable in narrow
+    terminals.
+    """
+    if terminal_width is None:
+        try:
+            terminal_width = shutil.get_terminal_size((80, 24)).columns - 2
+        except Exception:
+            terminal_width = 78
+    terminal_width = max(len(rail) + 10, int(terminal_width))
+    content_width = max(10, terminal_width - len(rail))
+
+    rendered: list[str] = []
+    for logical_line in str(text or "").split("\n"):
+        if logical_line == "":
+            rendered.append(rail)
+            continue
+        wrapper = textwrap.TextWrapper(
+            width=content_width,
+            subsequent_indent=_stream_wrap_subsequent_indent(logical_line),
+            break_long_words=True,
+            break_on_hyphens=False,
+            drop_whitespace=True,
+        )
+        parts = wrapper.wrap(logical_line) or [""]
+        rendered.extend(f"{rail}{part}" for part in parts)
+    return rendered
 
 
 def _hex_to_ansi(hex_color: str, *, bold: bool = False) -> str:
@@ -4113,7 +4159,11 @@ class HermesCLI:
         _tc = getattr(self, "_stream_text_ansi", "")
 
         def _emit_one(printed_line: str) -> None:
-            _cprint(f"{_STREAM_PAD}{_tc}{printed_line}{_RST}" if _tc else f"{_STREAM_PAD}{printed_line}")
+            for display_line in _format_stream_display_lines(
+                printed_line,
+                terminal_width=self._scrollback_box_width() - 2,
+            ):
+                _cprint(f"{_tc}{display_line}{_RST}" if _tc else display_line)
 
         def _flush_table_buf() -> None:
             buf = self._stream_table_buf
@@ -4195,11 +4245,19 @@ class HermesCLI:
                 joined = _strip_markdown_syntax(joined)
             block = realign_markdown_tables(joined, _terminal_width_for_streaming())
             for ln in block.split("\n"):
-                _cprint(f"{_STREAM_PAD}{_tc}{ln}{_RST}" if _tc else f"{_STREAM_PAD}{ln}")
+                for display_line in _format_stream_display_lines(
+                    ln,
+                    terminal_width=self._scrollback_box_width() - 2,
+                ):
+                    _cprint(f"{_tc}{display_line}{_RST}" if _tc else display_line)
 
         if self._stream_buf:
             line = _strip_markdown_syntax(self._stream_buf) if self.final_response_markdown == "strip" else self._stream_buf
-            _cprint(f"{_STREAM_PAD}{_tc}{line}{_RST}" if _tc else f"{_STREAM_PAD}{line}")
+            for display_line in _format_stream_display_lines(
+                line,
+                terminal_width=self._scrollback_box_width() - 2,
+            ):
+                _cprint(f"{_tc}{display_line}{_RST}" if _tc else display_line)
             self._stream_buf = ""
 
         # Close the response box

@@ -3,7 +3,7 @@ from io import StringIO
 from rich.console import Console
 from rich.markdown import Markdown
 
-from cli import _render_final_assistant_content
+from cli import _format_stream_display_lines, _render_final_assistant_content
 
 
 def _render_to_text(renderable) -> str:
@@ -20,6 +20,42 @@ def test_final_assistant_content_uses_markdown_renderable():
     assert "Title" in output
     assert "one" in output
     assert "two" in output
+
+
+def test_stream_display_lines_wrap_long_prose_with_stable_rail():
+    text = "This is a long streamed response line that should wrap before the terminal wraps it."
+
+    lines = _format_stream_display_lines(text, terminal_width=42)
+
+    assert len(lines) > 1
+    assert all(line.startswith("│ ") for line in lines)
+    assert all(len(line) <= 42 for line in lines)
+
+
+def test_stream_display_lines_preserve_blank_lines_inside_rail():
+    lines = _format_stream_display_lines("first\n\nsecond", terminal_width=32)
+
+    assert lines == ["│ first", "│ ", "│ second"]
+
+
+def test_stream_display_lines_break_long_tokens_before_terminal_wrap():
+    token = "/Users/andrewnoble/.hermes/backups/runtime-cleanup-20260521T071500Z/config.yaml.bak"
+
+    lines = _format_stream_display_lines(token, terminal_width=36)
+
+    assert len(lines) > 1
+    assert all(line.startswith("│ ") for line in lines)
+    assert all(len(line) <= 36 for line in lines)
+
+
+def test_stream_display_lines_indent_wrapped_bullet_continuations():
+    text = "- Paperclip itself is operational, not fully green, because the live green report returns WARN."
+
+    lines = _format_stream_display_lines(text, terminal_width=44)
+
+    assert len(lines) > 1
+    assert lines[0].startswith("│ - ")
+    assert all(line.startswith("│   ") for line in lines[1:])
 
 
 def test_final_assistant_content_preserves_windows_hidden_dir_paths():
