@@ -1010,7 +1010,6 @@ def switch_model(
         and target_provider in {"opencode-zen", "opencode-go"}
         and isinstance(base_url, str)
         and base_url
-        and (provider_changed or explicit_provider)
     ):
         base_url = re.sub(r"/v1/?$", "", base_url)
 
