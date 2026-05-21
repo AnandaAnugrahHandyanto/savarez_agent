@@ -513,6 +513,87 @@ def test_run_slash_worker_lane_request_rejects_shell_command(
     assert "may not include executable command fields" in out
 
 
+def test_run_slash_goal_creates_top_level_task(kanban_home):
+    payload = json.loads(kc.run_slash(
+        "goal 'refactor the worker lane bridge' "
+        "--session sess-goal-1 --assignee orchestrator --tenant dev --priority 3 --json"
+    ))
+
+    assert payload["task"]["status"] == "triage"
+    assert payload["task"]["assignee"] == "orchestrator"
+    assert payload["task"]["session_id"] == "sess-goal-1"
+    assert payload["task"]["tenant"] == "dev"
+    assert payload["task"]["priority"] == 3
+    assert payload["decompose"] is None
+    assert payload["child_ids"] == []
+
+    payload2 = json.loads(kc.run_slash(
+        "goal 'refactor the worker lane bridge' "
+        "--session sess-goal-1 --assignee orchestrator --json"
+    ))
+    assert payload2["task_id"] == payload["task_id"]
+
+
+def test_run_slash_goal_can_decompose_to_worker_lane(kanban_home, monkeypatch):
+    from unittest.mock import MagicMock
+    from hermes_cli.worker_lanes import WorkerLane, clear_worker_lanes, register_worker_lane
+
+    clear_worker_lanes()
+    register_worker_lane(WorkerLane(
+        name="codex-deep",
+        kind="codex_cli",
+        description="Codex CLI lane for implementation work",
+        spawn_fn=lambda *args, **kwargs: None,
+        source="test",
+    ))
+
+    resp = MagicMock()
+    resp.choices = [MagicMock()]
+    resp.choices[0].message.content = json.dumps({
+        "fanout": True,
+        "rationale": "implementation can go to codex",
+        "tasks": [
+            {
+                "title": "Implement worker lane bridge",
+                "body": "Change code and provide evidence.",
+                "assignee": "codex-deep",
+                "parents": [],
+            }
+        ],
+    })
+    fake_client = MagicMock()
+    fake_client.chat.completions.create = MagicMock(return_value=resp)
+    monkeypatch.setattr(
+        "agent.auxiliary_client.get_text_auxiliary_client",
+        lambda *a, **kw: (fake_client, "test-model"),
+    )
+    monkeypatch.setattr(
+        "agent.auxiliary_client.get_auxiliary_extra_body",
+        lambda *a, **kw: {},
+    )
+    monkeypatch.setattr(
+        "hermes_cli.kanban_decompose._load_config",
+        lambda: {"kanban": {"orchestrator_profile": "orchestrator", "default_assignee": "fallback"}},
+    )
+    monkeypatch.setattr("hermes_cli.profiles.list_profiles", lambda: [])
+    monkeypatch.setattr("hermes_cli.profiles.profile_exists", lambda name: name == "orchestrator")
+    monkeypatch.setattr("hermes_cli.profiles.get_active_profile_name", lambda: "orchestrator")
+
+    payload = json.loads(kc.run_slash(
+        "goal 'ship codex worker lane orchestration' "
+        "--assignee orchestrator --decompose --json"
+    ))
+
+    assert payload["task"]["status"] == "todo"
+    assert payload["decompose"]["ok"] is True
+    assert payload["decompose"]["fanout"] is True
+    assert len(payload["child_ids"]) == 1
+    with kb.connect() as conn:
+        child = kb.get_task(conn, payload["child_ids"][0])
+    assert child.assignee == "codex-deep"
+    assert child.status == "ready"
+
+
 # ---------------------------------------------------------------------------
 # /kanban specify — slash surface (same entry point CLI + gateway use)
 # ---------------------------------------------------------------------------

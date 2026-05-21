@@ -237,7 +237,14 @@ The intended `/goal` bridge is:
 -> Hermes reviews Kanban evidence and responds to the user
 ```
 
-The current `/goal` session-level semantics remain intact. The lane registry and assignee resolution are bridge points for a future goal-to-Kanban orchestrator.
+The current `/goal` session-level semantics remain intact. The opt-in bridge is available through Kanban today:
+
+```bash
+hermes kanban goal "complex objective" --assignee orchestrator --session <session-id>
+hermes kanban goal "complex objective" --assignee orchestrator --decompose
+```
+
+`--decompose` runs the existing Kanban decomposer immediately. Its child tasks can use worker lane assignees from the registry, such as `codex-deep`, and the dispatcher later starts those external workers.
 
 ## Failure modes the dispatcher handles
 

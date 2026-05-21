@@ -369,6 +369,30 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                                "to skip the brief running-to-blocked transition.")
     p_create.add_argument("--json", action="store_true", help="Emit JSON output")
 
+    # --- goal bridge ---
+    p_goal = sub.add_parser(
+        "goal",
+        help="Create or inspect a Kanban top-level task for a standing goal",
+    )
+    p_goal.add_argument("goal", help="Goal text / complex objective")
+    p_goal.add_argument("--session", default=None, help="Originating session id")
+    p_goal.add_argument("--assignee", default=None, help="Orchestrator assignee")
+    p_goal.add_argument("--tenant", default=None, help="Tenant namespace")
+    p_goal.add_argument("--priority", type=int, default=0, help="Priority tiebreaker")
+    p_goal.add_argument("--created-by", default="goal", help="Creator recorded on the task")
+    p_goal.add_argument("--idempotency-key", default=None, help="Dedup key for the top-level task")
+    p_goal.add_argument(
+        "--decompose",
+        action="store_true",
+        help="Immediately run the Kanban decomposer on the new triage task",
+    )
+    p_goal.add_argument(
+        "--author",
+        default=None,
+        help="Author name recorded on decomposition audit comments",
+    )
+    p_goal.add_argument("--json", action="store_true", help="Emit JSON output")
+
     # --- swarm ---
     p_swarm = sub.add_parser(
         "swarm",
@@ -945,6 +969,7 @@ def kanban_command(args: argparse.Namespace) -> int:
     handlers = {
         "init":     _cmd_init,
         "create":   _cmd_create,
+        "goal":     _cmd_goal,
         "swarm":    _cmd_swarm,
         "list":     _cmd_list,
         "ls":       _cmd_list,
@@ -1476,6 +1501,79 @@ def _cmd_create(args: argparse.Namespace) -> int:
             if not running and message:
                 print(f"\n⚠  {message}", file=sys.stderr)
     return 0
+
+
+def _cmd_goal(args: argparse.Namespace) -> int:
+    from hermes_cli.goals import create_kanban_task_from_goal
+
+    try:
+        task_id = create_kanban_task_from_goal(
+            args.goal,
+            session_id=getattr(args, "session", None),
+            assignee=getattr(args, "assignee", None),
+            tenant=getattr(args, "tenant", None),
+            priority=int(getattr(args, "priority", 0) or 0),
+            board=getattr(args, "board", None),
+            created_by=getattr(args, "created_by", None) or "goal",
+            idempotency_key=getattr(args, "idempotency_key", None),
+        )
+    except ValueError as exc:
+        print(f"kanban goal: {exc}", file=sys.stderr)
+        return 2
+
+    outcome = None
+    if getattr(args, "decompose", False):
+        try:
+            from hermes_cli.kanban_decompose import decompose_task
+
+            outcome = decompose_task(
+                task_id,
+                author=getattr(args, "author", None) or getattr(args, "created_by", None) or "goal",
+            )
+        except Exception as exc:
+            print(f"kanban goal: decomposer error: {exc}", file=sys.stderr)
+            return 1
+
+    with kb.connect(board=getattr(args, "board", None)) as conn:
+        task = kb.get_task(conn, task_id)
+        linked_child_ids = kb.child_ids(conn, task_id)
+    created_child_ids = (
+        list(outcome.child_ids or [])
+        if outcome is not None
+        else linked_child_ids
+    )
+    payload = {
+        "task_id": task_id,
+        "task": _task_to_dict(task) if task else None,
+        "decompose": (
+            None
+            if outcome is None
+            else {
+                "ok": outcome.ok,
+                "reason": outcome.reason,
+                "fanout": outcome.fanout,
+                "child_ids": outcome.child_ids or [],
+                "new_title": outcome.new_title,
+            }
+        ),
+        "child_ids": created_child_ids,
+    }
+    if getattr(args, "json", False):
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+        return 0 if outcome is None or outcome.ok else 1
+
+    if task is None:
+        print(f"Goal task {task_id} created, but could not be reloaded.")
+    else:
+        print(f"Goal task: {task_id}  ({task.status}, assignee={task.assignee or '-'})")
+    if outcome is not None:
+        status = "decomposed" if outcome.ok else "decompose failed"
+        print(f"Decompose: {status} — {outcome.reason}")
+        if outcome.child_ids:
+            print("Children: " + ", ".join(outcome.child_ids))
+    else:
+        print("Next: run `hermes kanban decompose {}` to create child tasks.".format(task_id))
+    return 0 if outcome is None or outcome.ok else 1
 
 
 def _cmd_swarm(args: argparse.Namespace) -> int:

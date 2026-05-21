@@ -654,6 +654,7 @@ Every `hermes kanban <action>` verb is also reachable as `/kanban <action>` — 
 /kanban list
 /kanban show t_abcd
 /kanban create "write launch post" --assignee writer --parent t_research
+/kanban goal "ship the new onboarding flow" --assignee orchestrator --decompose
 /kanban comment t_abcd "looks good, ship it"
 /kanban unblock t_abcd
 /kanban dispatch --max 3
