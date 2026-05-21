@@ -21,7 +21,7 @@ Your workspace kind determines how you should behave inside `$HERMES_KANBAN_WORK
 |---|---|---|
 | `scratch` | Fresh tmp dir, yours alone | Read/write freely; it gets GC'd when the task is archived. |
 | `dir:<path>` | Shared persistent directory | Other runs will read what you write. Treat it like long-lived state. Path is guaranteed absolute (the kernel rejects relative paths). |
-| `worktree` | Git worktree at the resolved path | If `.git` doesn't exist, run `git worktree add <path> ${HERMES_KANBAN_BRANCH:-wt/$HERMES_KANBAN_TASK}` from the main repo first, then cd and work normally. Commit work here. |
+| `worktree` | Git worktree at the resolved path | If `.git` doesn't exist, run `git worktree add <path> <branch>` from the main repo first, then cd and work normally. Commit work here. |
 
 ## Tenant isolation
 
@@ -49,7 +49,9 @@ kanban_complete(
 
 **Coding task that needs human review (review-required):**
 
-For most code-changing tasks, the work isn't truly *done* until a human reviewer has eyes on it. Block instead of complete, with `reason` prefixed `review-required: ` so the dashboard surfaces the row as needing review. Drop the structured metadata (changed files, test counts, diff/PR url) into a comment first, since `kanban_block` only carries the human-readable reason — comments are the durable annotation channel. Reviewer either approves and runs `hermes kanban unblock <id>` (which re-spawns you with the comment thread for any follow-ups) or asks for changes via another comment.
+For code-changing tasks with no explicit dependent Cato/reviewer task, the work often isn't truly *done* until a human reviewer has eyes on it. Block instead of complete, with `reason` prefixed `review-required: ` so the dashboard surfaces the row as needing review. Drop the structured metadata (changed files, test counts, diff/PR url) into a comment first, since `kanban_block` only carries the human-readable reason — comments are the durable annotation channel. Reviewer either approves and runs `hermes kanban unblock <id>` (which re-spawns you with the comment thread for any follow-ups) or asks for changes via another comment.
+
+If your task has an explicit dependent Cato/reviewer child, or Marcus instructed you to complete so a review child can promote, do **not** self-block `review-required` unless the task body explicitly asks for human approval first. Complete with structured metadata instead; the dependent reviewer task is the review gate.
 
 ```python
 import json
@@ -68,7 +70,7 @@ kanban_block(
 )
 ```
 
-Use `kanban_complete` only when the task is genuinely terminal — e.g. a one-line typo fix, a docs change with no functional consequences, or a research task where the artifact IS the writeup itself.
+Use `kanban_complete` when the task is genuinely terminal — e.g. a one-line typo fix, a docs change with no functional consequences, or a research task where the artifact IS the writeup itself — or when completion is needed to promote an explicit dependent review task.
 
 **Research task:**
 ```python
@@ -85,14 +87,23 @@ kanban_complete(
 **Review task:**
 ```python
 kanban_complete(
-    summary="reviewed PR #123; 2 blocking issues found (SQL injection in /search, missing CSRF on /settings)",
+    summary="reviewed PR #123; CHANGES_REQUIRED — 2 fixable blockers found (SQL injection in /search, missing CSRF on /settings)",
     metadata={
-        "pr_number": 123,
-        "findings": [
-            {"severity": "critical", "file": "api/search.py", "line": 42, "issue": "raw SQL concat"},
-            {"severity": "high", "file": "api/settings.py", "issue": "missing CSRF middleware"},
-        ],
-        "approved": False,
+        "review_outcome": {
+            "schema": "cato_review_outcome.v1",
+            "outcome": "CHANGES_REQUIRED",
+            "reviewer_profile": "cato",
+            "review_task_id": "t_review123",
+            "reviewed_task_id": "t_impl456",
+            "decision_summary": "CHANGES_REQUIRED: two fixable blockers remain; no human decision is needed.",
+            "findings": [
+                {"id": "F1", "severity": "CRITICAL", "category": "security", "location": "api/search.py:42", "issue": "raw SQL concat", "impact": "SQL injection risk", "detail": "Use parameterized queries", "owner": "vitruvius", "safety_gate": False, "human_decision_reason": None},
+                {"id": "F2", "severity": "MAJOR", "category": "security", "location": "api/settings.py", "issue": "missing CSRF middleware", "impact": "settings changes can be forged", "detail": "Add CSRF protection", "owner": "vitruvius", "safety_gate": False, "human_decision_reason": None},
+            ],
+            "evidence_refs": [],
+            "validation_performed": ["inspected diff"],
+            "residual_risks": [],
+        }
     },
 )
 ```
@@ -156,13 +167,6 @@ If you open the task and `kanban_show` returns `runs: [...]` with one or more cl
 - `outcome: "spawn_failed"` + `error: "..."` — usually a profile config issue (missing credential, bad PATH). Ask the human via `kanban_block` instead of retrying blindly.
 - `outcome: "reclaimed"` + `summary: "task archived..."` — operator archived the task out from under the previous run; you probably shouldn't be running at all, check status carefully.
 - `outcome: "blocked"` — a previous attempt blocked; the unblock comment should be in the thread by now.
-
-## Notification routing
-
-You can configure the gateway to receive cross-profile Kanban task notifications by adding `notification_sources` to `~/.hermes/config.yaml`.
-- `notification_sources: ['*']` accepts subscriptions from all profiles.
-- `notification_sources: ['default', 'zilor-ppt']` or `"default,zilor-ppt"` restricts subscriptions to specified profiles.
-- Omitting the key keeps the default behavior (profile isolation).
 
 ## Do NOT
 

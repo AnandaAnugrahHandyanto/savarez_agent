@@ -681,6 +681,217 @@ def test_block_then_unblock(kanban_home):
         assert kb.get_task(conn, t).status == "ready"
 
 
+def test_process_review_outcome_creates_fix_and_rereview_tasks_idempotently(kanban_home):
+    with kb.connect() as conn:
+        work = kb.create_task(conn, title="Implement feature", assignee="vitruvius")
+        kb.claim_task(conn, work)
+        assert kb.complete_task(conn, work, result="implementation done")
+        review = kb.create_task(
+            conn,
+            title="Cato final review for feature",
+            assignee="cato",
+            parents=[work],
+        )
+        kb.claim_task(conn, review)
+        assert kb.complete_task(
+            conn,
+            review,
+            summary="CHANGES_REQUIRED: add regression coverage",
+            metadata={
+                "review_outcome": {
+                    "schema": "cato_review_outcome.v1",
+                    "outcome": "CHANGES_REQUIRED",
+                    "findings": [
+                        {
+                            "id": "missing-tests",
+                            "title": "Add regression test coverage",
+                            "owner": "vitruvius",
+                            "detail": "The implementation needs deterministic regression coverage before approval.",
+                        }
+                    ],
+                }
+            },
+        )
+
+        dispatch = kb.dispatch_once(conn, max_spawn=0)
+        second = kb.process_review_outcomes(conn)
+
+        assert dispatch.review_outcomes_processed == [review]
+        assert second.processed == []
+        fix = kb.get_task(conn, dispatch.review_outcome_fix_tasks[0])
+        rereview = kb.get_task(conn, dispatch.review_outcome_rereview_tasks[0])
+        assert fix.assignee == "vitruvius"
+        assert fix.status == "ready"
+        assert "Cato review task: " + review in (fix.body or "")
+        assert "Add regression test coverage" in (fix.body or "")
+        assert rereview.assignee == "cato"
+        assert rereview.status == "todo"
+        assert kb.parent_ids(conn, fix.id) == [review]
+        assert kb.parent_ids(conn, rereview.id) == [fix.id]
+        handled = [event for event in kb.list_events(conn, review) if event.kind == "review_outcome_handled"]
+        assert len(handled) == 1
+        assert handled[0].payload["outcome"] == "CHANGES_REQUIRED"
+        assert len([task_id for task_id in kb.child_ids(conn, review) if task_id == fix.id]) == 1
+
+
+def test_process_review_outcome_blocks_human_decision_without_fix_tasks(kanban_home):
+    with kb.connect() as conn:
+        work = kb.create_task(conn, title="Touch client production system", assignee="vitruvius")
+        kb.claim_task(conn, work)
+        assert kb.complete_task(conn, work, result="needs external production approval")
+        review = kb.create_task(
+            conn,
+            title="Cato final review for unsafe action",
+            assignee="cato",
+            parents=[work],
+        )
+        kb.claim_task(conn, review)
+        assert kb.complete_task(
+            conn,
+            review,
+            summary="HUMAN_DECISION_REQUIRED: client production mutation approval needed",
+            metadata={
+                "review_outcome": {
+                    "schema": "cato_review_outcome.v1",
+                    "outcome": "HUMAN_DECISION_REQUIRED",
+                    "reason": "Client production mutation requires explicit approval.",
+                }
+            },
+        )
+
+        result = kb.process_review_outcomes(conn)
+
+        assert result.processed == [review]
+        assert result.fix_tasks == []
+        assert result.rereview_tasks == []
+        assert len(result.human_tasks) == 1
+        human_task = kb.get_task(conn, result.human_tasks[0])
+        assert human_task.status == "blocked"
+        assert human_task.assignee == "marcus"
+        assert "Needs Corey" in human_task.title
+        assert "Client production mutation requires explicit approval." in (human_task.body or "")
+        assert kb.parent_ids(conn, human_task.id) == [review]
+        handled = [event for event in kb.list_events(conn, review) if event.kind == "review_outcome_handled"]
+        assert handled[0].payload["outcome"] == "HUMAN_DECISION_REQUIRED"
+
+
+def test_process_review_outcome_accepts_canonical_schema_version_status_and_owner_hint(kanban_home):
+    with kb.connect() as conn:
+        work = kb.create_task(conn, title="Implement feature", assignee="vitruvius")
+        kb.claim_task(conn, work)
+        assert kb.complete_task(conn, work, result="implementation done")
+        review = kb.create_task(conn, title="Cato final review for feature", assignee="cato", parents=[work])
+        kb.claim_task(conn, review)
+        assert kb.complete_task(
+            conn,
+            review,
+            summary="CHANGES_REQUIRED: doctrine needs specialist routing",
+            metadata={
+                "review_outcome": {
+                    "schema_version": "cato_review_outcome.v1",
+                    "status": "CHANGES_REQUIRED",
+                    "findings": [
+                        {
+                            "id": "doctrine",
+                            "title": "Update doctrine",
+                            "owner_hint": "tacitus",
+                            "detail": "Tacitus should update reviewer doctrine.",
+                        }
+                    ],
+                }
+            },
+        )
+
+        result = kb.process_review_outcomes(conn)
+
+        assert result.processed == [review]
+        assert len(result.fix_tasks) == 1
+        assert len(result.rereview_tasks) == 1
+        fix = kb.get_task(conn, result.fix_tasks[0])
+        rereview = kb.get_task(conn, result.rereview_tasks[0])
+        assert fix.assignee == "tacitus"
+        assert kb.parent_ids(conn, fix.id) == [review]
+        assert kb.parent_ids(conn, rereview.id) == [fix.id]
+
+
+def test_process_review_outcome_groups_findings_by_owner_and_fans_into_one_rereview(kanban_home):
+    with kb.connect() as conn:
+        work = kb.create_task(conn, title="Implement feature", assignee="vitruvius")
+        kb.claim_task(conn, work)
+        assert kb.complete_task(conn, work, result="implementation done")
+        review = kb.create_task(conn, title="Cato final review for feature", assignee="cato", parents=[work])
+        kb.claim_task(conn, review)
+        assert kb.complete_task(
+            conn,
+            review,
+            summary="CHANGES_REQUIRED: code and doctrine fixes",
+            metadata={
+                "review_outcome": {
+                    "schema_version": "cato_review_outcome.v1",
+                    "status": "CHANGES_REQUIRED",
+                    "findings": [
+                        {"id": "code-1", "title": "Code issue one", "owner_hint": "vitruvius", "detail": "Fix code one."},
+                        {"id": "code-2", "title": "Code issue two", "owner_hint": "vitruvius", "detail": "Fix code two."},
+                        {"id": "doc", "title": "Doc issue", "owner_hint": "tacitus", "detail": "Fix docs."},
+                    ],
+                }
+            },
+        )
+
+        result = kb.process_review_outcomes(conn)
+
+        assert len(result.fix_tasks) == 2
+        assert len(result.rereview_tasks) == 1
+        fixes = [kb.get_task(conn, task_id) for task_id in result.fix_tasks]
+        assert sorted(fix.assignee for fix in fixes) == ["tacitus", "vitruvius"]
+        vitruvius_fix = next(fix for fix in fixes if fix.assignee == "vitruvius")
+        assert "Finding ids: code-1, code-2" in (vitruvius_fix.body or "")
+        rereview = kb.get_task(conn, result.rereview_tasks[0])
+        assert sorted(kb.parent_ids(conn, rereview.id)) == sorted(result.fix_tasks)
+
+
+def test_process_review_outcome_safety_flags_create_human_task_without_fixes(kanban_home):
+    with kb.connect() as conn:
+        work = kb.create_task(conn, title="Implement feature", assignee="vitruvius")
+        kb.claim_task(conn, work)
+        assert kb.complete_task(conn, work, result="implementation done")
+        review = kb.create_task(conn, title="Cato final review for feature", assignee="cato", parents=[work])
+        kb.claim_task(conn, review)
+        assert kb.complete_task(
+            conn,
+            review,
+            summary="CHANGES_REQUIRED: credentialed fix needs Corey",
+            metadata={
+                "review_outcome": {
+                    "schema_version": "cato_review_outcome.v1",
+                    "status": "CHANGES_REQUIRED",
+                    "human_action_required": True,
+                    "findings": [
+                        {
+                            "id": "credentials",
+                            "title": "Needs credentials",
+                            "owner_hint": "vitruvius",
+                            "detail": "Requires production credentials.",
+                            "requires_credentials": True,
+                        }
+                    ],
+                }
+            },
+        )
+
+        result = kb.process_review_outcomes(conn)
+
+        assert result.processed == [review]
+        assert result.fix_tasks == []
+        assert result.rereview_tasks == []
+        assert len(result.human_tasks) == 1
+        human_task = kb.get_task(conn, result.human_tasks[0])
+        assert human_task.status == "blocked"
+        assert human_task.assignee == "marcus"
+        assert kb.parent_ids(conn, human_task.id) == [review]
+
+
+
 def test_unblock_resets_failure_counters(kanban_home):
     """unblock_task must reset consecutive_failures and last_failure_error."""
     with kb.connect() as conn:
