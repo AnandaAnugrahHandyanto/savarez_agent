@@ -2786,6 +2786,8 @@ def generate_launchd_plist() -> str:
     hermes_home = str(get_hermes_home().resolve())
     log_dir = get_hermes_home() / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
+    launchd_log_dir = Path.home() / "Library" / "Logs" / "Hermes"
+    launchd_log_dir.mkdir(parents=True, exist_ok=True)
     label = get_launchd_label()
     profile_arg = _profile_arg(hermes_home)
     # Build a sane PATH for the launchd plist.  launchd provides only a
@@ -2858,10 +2860,10 @@ def generate_launchd_plist() -> str:
     </dict>
     
     <key>StandardOutPath</key>
-    <string>{log_dir}/gateway.log</string>
+    <string>{launchd_log_dir}/gateway.launchd.log</string>
     
     <key>StandardErrorPath</key>
-    <string>{log_dir}/gateway.error.log</string>
+    <string>{launchd_log_dir}/gateway.launchd.error.log</string>
 </dict>
 </plist>
 """
