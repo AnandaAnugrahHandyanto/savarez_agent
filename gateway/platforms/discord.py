@@ -3680,6 +3680,21 @@ class DiscordAdapter(BasePlatformAdapter):
             return bool(configured)
         return os.getenv("DISCORD_THREAD_REQUIRE_MENTION", "false").lower() in {"true", "1", "yes", "on"}
 
+    def _discord_auto_thread_free_response_channels(self) -> bool:
+        """Return whether free-response channels should use auto-threading.
+
+        Defaults to ``False`` to preserve the long-standing behavior where
+        free-response channels reply inline.  When enabled, normal top-level
+        messages in ``free_response_channels`` follow ``auto_thread`` and create
+        a thread unless the channel is also listed in ``no_thread_channels``.
+        """
+        configured = self.config.extra.get("auto_thread_free_response_channels")
+        if configured is not None:
+            if isinstance(configured, str):
+                return configured.lower() in {"true", "1", "yes", "on"}
+            return bool(configured)
+        return os.getenv("DISCORD_AUTO_THREAD_FREE_RESPONSE_CHANNELS", "false").lower() in {"true", "1", "yes", "on"}
+
     def _discord_history_backfill(self) -> bool:
         """Return whether history backfill is enabled for shared sessions."""
         configured = self.config.extra.get("history_backfill")
@@ -4550,7 +4565,9 @@ class DiscordAdapter(BasePlatformAdapter):
         if not is_thread and not isinstance(message.channel, discord.DMChannel):
             no_thread_channels_raw = os.getenv("DISCORD_NO_THREAD_CHANNELS", "")
             no_thread_channels = {ch.strip() for ch in no_thread_channels_raw.split(",") if ch.strip()}
-            skip_thread = bool(channel_ids & no_thread_channels) or is_free_channel
+            skip_thread = bool(channel_ids & no_thread_channels) or (
+                is_free_channel and not self._discord_auto_thread_free_response_channels()
+            )
             auto_thread = os.getenv("DISCORD_AUTO_THREAD", "true").lower() in {"true", "1", "yes"}
             is_reply_message = getattr(message, "type", None) == discord.MessageType.reply
             if auto_thread and not skip_thread and not is_voice_linked_channel and not is_reply_message:

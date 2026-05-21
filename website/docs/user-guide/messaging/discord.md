@@ -281,6 +281,7 @@ Discord behavior is controlled through two files: **`~/.hermes/.env`** for crede
 | `DISCORD_FREE_RESPONSE_CHANNELS` | No | — | Comma-separated channel IDs where the bot responds without requiring an `@mention`, even when `DISCORD_REQUIRE_MENTION` is `true`. |
 | `DISCORD_IGNORE_NO_MENTION` | No | `true` | When `true`, the bot stays silent if a message `@mentions` other users but does **not** mention the bot. Prevents the bot from jumping into conversations directed at other people. Only applies in server channels, not DMs. |
 | `DISCORD_AUTO_THREAD` | No | `true` | When `true`, automatically creates a new thread for every `@mention` in a text channel, so each conversation is isolated (similar to Slack behavior). Messages already inside threads or DMs are unaffected. |
+| `DISCORD_AUTO_THREAD_FREE_RESPONSE_CHANNELS` | No | `false` | When `true`, channels in `DISCORD_FREE_RESPONSE_CHANNELS` also auto-create threads for top-level messages. `DISCORD_NO_THREAD_CHANNELS` still overrides this and forces inline replies. |
 | `DISCORD_ALLOW_BOTS` | No | `"none"` | Controls how the bot handles messages from other Discord bots. `"none"` — ignore all other bots. `"mentions"` — only accept bot messages that `@mention` Hermes. `"all"` — accept all bot messages. |
 | `DISCORD_REACTIONS` | No | `true` | When `true`, the bot adds emoji reactions to messages during processing (👀 when starting, ✅ on success, ❌ on error). Set to `false` to disable reactions entirely. |
 | `DISCORD_IGNORED_CHANNELS` | No | — | Comma-separated channel IDs where the bot **never** responds, even when `@mentioned`. Takes priority over all other channel settings. |
@@ -310,6 +311,7 @@ discord:
   thread_require_mention: false   # If true, require @mention in threads too (multi-bot threads)
   free_response_channels: ""      # Comma-separated channel IDs (or YAML list)
   auto_thread: true               # Auto-create threads on @mention
+  auto_thread_free_response_channels: false  # Also auto-thread top-level messages in free-response channels
   reactions: true                 # Add emoji reactions during processing
   ignored_channels: []            # Channel IDs where bot never responds
   no_thread_channels: []          # Channel IDs where bot responds without threading
@@ -366,7 +368,7 @@ discord:
 
 If a thread's parent channel is in this list, the thread also becomes mention-free.
 
-Free-response channels also **skip auto-threading** — the bot replies inline rather than spinning off a new thread per message. This keeps the channel usable as a lightweight chat surface. If you want threading behavior, don't list the channel as free-response (use normal `@mention` flow instead).
+Free-response channels skip auto-threading by default — the bot replies inline rather than spinning off a new thread per message. This keeps the channel usable as a lightweight chat surface. To make free-response channels behave like mention-triggered channels and create a new thread for each top-level message, enable [`auto_thread_free_response_channels`](#discordauto_thread_free_response_channels).
 
 #### `discord.auto_thread`
 
@@ -374,7 +376,23 @@ Free-response channels also **skip auto-threading** — the bot replies inline r
 
 When enabled, every `@mention` in a regular text channel automatically creates a new thread for the conversation. This keeps the main channel clean and gives each conversation its own isolated session history. Once a thread is created, subsequent messages in that thread don't require `@mention` — the bot knows it's already participating. Set [`thread_require_mention`](#discordthread_require_mention) to `true` to disable this in-thread shortcut for multi-bot setups.
 
-Messages sent in existing threads or DMs are unaffected by this setting. Channels listed in `discord.free_response_channels` or `discord.no_thread_channels` also bypass auto-threading and get inline replies instead.
+Messages sent in existing threads or DMs are unaffected by this setting. Channels listed in `discord.free_response_channels` bypass auto-threading by default, and channels listed in `discord.no_thread_channels` always get inline replies instead.
+
+#### `discord.auto_thread_free_response_channels`
+
+**Type:** boolean — **Default:** `false`
+
+When enabled, top-level messages in `discord.free_response_channels` also create threads when `discord.auto_thread` is `true`. This is useful for channels where users should be able to talk to the bot without an `@mention`, but each request should still get its own isolated thread.
+
+```yaml
+discord:
+  free_response_channels:
+    - 1234567890
+  auto_thread: true
+  auto_thread_free_response_channels: true
+```
+
+`discord.no_thread_channels` remains the explicit override: if a channel appears in both lists, the bot replies inline and does not create a thread.
 
 #### `discord.reactions`
 
