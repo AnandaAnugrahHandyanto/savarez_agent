@@ -858,24 +858,47 @@ class OpenVikingMemoryProvider(MemoryProvider):
         if not content:
             return tool_error("content is required")
 
-        # Store as a session message that will be extracted during commit.
-        # The category hint helps OpenViking's extraction classify correctly.
         category = args.get("category", "")
-        text = f"[Remember] {content}"
-        if category:
-            text = f"[Remember — {category}] {content}"
 
-        self._client.post(f"/api/v1/sessions/{self._session_id}/messages", {
-            "role": "user",
-            "parts": [
-                {"type": "text", "text": text},
-            ],
-        })
+        # Map category to viking:// subdirectory
+        subdir_map = {
+            "preference": "preferences",
+            "entity": "entities",
+            "event": "events",
+            "case": "patterns",
+            "pattern": "patterns",
+        }
+        subdir = subdir_map.get(category, "preferences")
 
-        return json.dumps({
-            "status": "stored",
-            "message": "Memory recorded. Will be extracted and indexed on session commit.",
-        })
+        # Build a deterministic URI with UUID to avoid collisions
+        usr = self._user
+        slug = uuid.uuid4().hex[:12]
+        uri = f"viking://user/{usr}/memories/{subdir}/mem_{slug}.md"
+
+        # Write directly via content/write API — bypasses broken extraction pipeline
+        try:
+            result = self._client.post("/api/v1/content/write", {
+                "uri": uri,
+                "content": content,
+                "mode": "create",
+            })
+            written = result.get("result", {}).get("written_bytes", 0)
+            return json.dumps({
+                "status": "stored",
+                "message": f"Memory stored ({written}b) and queued for vector indexing.",
+            })
+        except Exception as e:
+            logger.warning("OpenViking direct write failed, falling back to session message: %s", e)
+            # Fall back to session message (original behavior)
+            text = f"[Remember{f' — {category}' if category else ''}] {content}"
+            self._client.post(f"/api/v1/sessions/{self._session_id}/messages", {
+                "role": "user",
+                "parts": [{"type": "text", "text": text}],
+            })
+            return json.dumps({
+                "status": "stored",
+                "message": "Memory recorded. Will be extracted and indexed on session commit.",
+            })
 
     def _tool_add_resource(self, args: dict) -> str:
         url = args.get("url", "")
