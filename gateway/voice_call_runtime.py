@@ -199,12 +199,12 @@ def _voice_realtime_api_key(provider: str) -> str:
 
 
 def _voice_realtime_model(provider: str) -> str:
-    default = "grok-voice-think-fast-1.0" if provider == "xai" else "gpt-realtime"
+    default = "grok-voice-think-fast-1.0" if provider == "xai" else "gpt-realtime-2"
     return os.environ.get("VOICE_CALL_REALTIME_MODEL", default).strip() or default
 
 
 def _voice_realtime_voice(provider: str) -> str:
-    default = "ara" if provider == "xai" else "alloy"
+    default = "ara" if provider == "xai" else "marin"
     return os.environ.get("VOICE_CALL_ASSISTANT_VOICE", default).strip() or default
 
 
@@ -1564,33 +1564,56 @@ class RealtimeVoiceBridge:
         assert self.session is not None
         self.ws = await self.session.ws_connect(
             f"wss://api.openai.com/v1/realtime?model={self.model}",
-            headers={"Authorization": f"Bearer {self.api_key}", "OpenAI-Beta": "realtime=v1"},
+            headers={"Authorization": f"Bearer {self.api_key}"},
             heartbeat=20,
         )
-        await self.ws.send_json(
-            {
-                "type": "session.update",
-                "session": {
-                    "modalities": ["text", "audio"],
-                    "instructions": self.instructions,
-                    "voice": self.voice,
-                    "temperature": float(os.environ.get("VOICE_CALL_REALTIME_TEMPERATURE", "0.4")),
-                    "input_audio_format": "g711_ulaw",
-                    "output_audio_format": "g711_ulaw",
-                    "input_audio_transcription": {
-                        "model": os.environ.get(
-                            "VOICE_CALL_REALTIME_TRANSCRIPTION_MODEL", "whisper-1"
-                        ),
-                        "language": self.language or "ru",
+        await self.ws.send_json(self._openai_session_update_event())
+
+    def _openai_session_update_event(self) -> dict[str, Any]:
+        return {
+            "type": "session.update",
+            "session": {
+                "type": "realtime",
+                "model": self.model,
+                "instructions": self.instructions,
+                "output_modalities": ["audio"],
+                "audio": {
+                    "input": {
+                        "format": {"type": "audio/pcmu"},
+                        "transcription": {
+                            "model": os.environ.get(
+                                "VOICE_CALL_REALTIME_TRANSCRIPTION_MODEL", "whisper-1"
+                            ),
+                            "language": self.language or "ru",
+                        },
+                        "turn_detection": {
+                            "type": "semantic_vad",
+                            "eagerness": _voice_vad_eagerness(),
+                            "create_response": True,
+                        },
                     },
-                    "turn_detection": {
-                        "type": "semantic_vad",
-                        "eagerness": _voice_vad_eagerness(),
-                        "create_response": True,
+                    "output": {
+                        "format": {"type": "audio/pcmu"},
+                        "voice": self.voice,
                     },
                 },
-            }
-        )
+            },
+        }
+
+    def _openai_response_create_event(self, instructions: str) -> dict[str, Any]:
+        return {
+            "type": "response.create",
+            "response": {
+                "output_modalities": ["audio"],
+                "audio": {
+                    "output": {
+                        "format": {"type": "audio/pcmu"},
+                        "voice": self.voice,
+                    },
+                },
+                "instructions": instructions,
+            },
+        }
 
     async def _connect_xai(self) -> None:
         assert self.session is not None
@@ -1647,15 +1670,7 @@ class RealtimeVoiceBridge:
         if self.provider == "xai":
             await self.ws.send_json({"type": "response.create", "instructions": instructions})
             return
-        await self.ws.send_json(
-            {
-                "type": "response.create",
-                "response": {
-                    "modalities": ["text", "audio"],
-                    "instructions": instructions,
-                },
-            }
-        )
+        await self.ws.send_json(self._openai_response_create_event(instructions))
 
     async def close(self) -> None:
         if self.reader_task:
@@ -1747,4 +1762,12 @@ class RealtimeVoiceBridge:
                 continue
             if event_type == "error":
                 self._mark_metric_once("first_realtime_error_at")
+                error = event.get("error")
+                if isinstance(error, dict):
+                    message = str(error.get("message") or error).strip()
+                    code = str(error.get("code") or error.get("type") or "").strip()
+                    self.call.error = f"realtime_error: {code}: {message}" if code else f"realtime_error: {message}"
+                else:
+                    self.call.error = f"realtime_error: {event}"
+                self.call.touch()
                 logger.warning("voice_call realtime error provider=%s event=%s", self.provider, event)
