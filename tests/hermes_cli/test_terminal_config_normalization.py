@@ -115,10 +115,10 @@ def test_cli_missing_cwd_resolves_to_invocation_cwd():
     assert resolve_cli_terminal_cwd(config, invocation_cwd="/tmp/invoked") == "/tmp/invoked"
 
 
-def test_explicit_cli_cwd_is_preserved_and_expanded():
-    config = normalize_terminal_config({"cwd": "~/project"})
+def test_explicit_local_cli_cwd_is_ignored_in_favor_of_invocation_cwd():
+    config = normalize_terminal_config({"backend": "local", "cwd": "~/project"})
 
-    assert resolve_cli_terminal_cwd(config) == str(Path("~/project").expanduser())
+    assert resolve_cli_terminal_cwd(config, invocation_cwd="/tmp/invoked") == "/tmp/invoked"
 
 
 @pytest.mark.parametrize("backend", ["ssh", "docker"])
@@ -139,9 +139,9 @@ def test_non_local_cli_missing_cwd_resolves_to_none(backend):
 
 @pytest.mark.parametrize("backend", ["ssh", "docker"])
 def test_non_local_cli_explicit_cwd_is_preserved(backend):
-    config = normalize_terminal_config({"backend": backend, "cwd": "/workspace"})
+    config = normalize_terminal_config({"backend": backend, "cwd": "~/project"})
 
-    assert resolve_cli_terminal_cwd(config, invocation_cwd="/tmp/invoked") == "/workspace"
+    assert resolve_cli_terminal_cwd(config, invocation_cwd="/tmp/invoked") == str(Path("~/project").expanduser())
 
 
 def test_gateway_placeholder_cwd_uses_messaging_cwd():
@@ -226,6 +226,12 @@ def test_terminal_env_values_uses_backend_for_terminal_env_when_env_type_absent(
 
     assert env["TERMINAL_ENV"] == "docker"
     assert env["TERMINAL_CWD"] == "/workspace"
+
+
+def test_terminal_env_values_prefers_backend_for_terminal_env_when_env_type_conflicts():
+    env = terminal_env_values({"backend": "ssh", "env_type": "docker"})
+
+    assert env["TERMINAL_ENV"] == "ssh"
 
 
 def test_terminal_env_values_serializes_config_to_environment_strings():

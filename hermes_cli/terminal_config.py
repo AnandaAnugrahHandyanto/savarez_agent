@@ -137,12 +137,13 @@ def resolve_cli_terminal_cwd(
 ) -> str | None:
     """Resolve CLI cwd placeholders against the process invocation cwd for local backends."""
 
+    backend = _stripped_nonempty(config.get("backend")) or _stripped_nonempty(config.get("env_type")) or "local"
+    if backend == "local":
+        return _expand_user(invocation_cwd or os.getcwd())
+
     cwd = config.get("cwd")
     if _is_placeholder_cwd(cwd):
-        backend = _stripped_nonempty(config.get("backend")) or _stripped_nonempty(config.get("env_type")) or "local"
-        if backend != "local":
-            return None
-        return _expand_user(invocation_cwd or os.getcwd())
+        return None
     return _expand_user(cwd)
 
 
@@ -170,14 +171,16 @@ def terminal_env_values(config: Mapping[str, Any], *, include_secrets: bool = Fa
     """Serialize terminal config values for process environment variables."""
 
     env: dict[str, str] = {}
-    if "env_type" not in config and config.get("backend") is not None:
-        env["TERMINAL_ENV"] = str(config["backend"])
+    backend = _stripped_nonempty(config.get("backend"))
+    if backend is not None:
+        env["TERMINAL_ENV"] = backend
 
     mappings = TERMINAL_ENV_MAPPINGS
     if include_secrets:
         mappings = {**TERMINAL_ENV_MAPPINGS, **SENSITIVE_TERMINAL_ENV_MAPPINGS}
-
     for config_key, env_key in mappings.items():
+        if env_key == "TERMINAL_ENV" and backend is not None:
+            continue
         if config_key not in config:
             continue
         value = config[config_key]
