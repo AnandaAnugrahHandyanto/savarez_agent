@@ -17,6 +17,7 @@ import subprocess
 import sys
 import uuid
 from abc import ABC, abstractmethod
+from pathlib import Path
 from urllib.parse import urlsplit
 
 from utils import normalize_proxy_url
@@ -32,6 +33,40 @@ _AUDIO_EXTS = frozenset({'.ogg', '.opus', '.mp3', '.wav', '.m4a', '.flac'})
 # delivered as a regular document.
 _TELEGRAM_AUDIO_ATTACHMENT_EXTS = frozenset({'.mp3', '.m4a'})
 _TELEGRAM_VOICE_EXTS = frozenset({'.ogg', '.opus'})
+_PROFILE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+
+
+class TopicProfileConfigError(ValueError):
+    """Raised when Telegram topic profile routing config is unsafe or invalid."""
+
+
+def _is_path_relative_to(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
+def _has_symlink_ancestor(path: Path, stop_at: Path | None = None) -> bool:
+    current = path
+    stop = stop_at.resolve(strict=False) if stop_at is not None else None
+    while True:
+        try:
+            if current.exists() and current.is_symlink():
+                return True
+        except OSError:
+            return True
+        if stop is not None:
+            try:
+                if current.resolve(strict=False) == stop:
+                    return False
+            except OSError:
+                return True
+        parent = current.parent
+        if parent == current:
+            return False
+        current = parent
 
 
 def _platform_name(platform) -> str:
@@ -54,7 +89,8 @@ def _thread_metadata_for_source(source, reply_to_message_id: str | None = None) 
     if thread_id is None:
         return None
     metadata = {"thread_id": thread_id}
-    if _platform_name(getattr(source, "platform", None)) == "telegram" and getattr(source, "chat_type", None) == "dm":
+    platform_name = _platform_name(getattr(source, "platform", None))
+    if platform_name == "telegram" and getattr(source, "chat_type", None) == "dm":
         metadata["telegram_dm_topic_reply_fallback"] = True
         tid = str(thread_id)
         if tid and tid not in {"", "1"}:
@@ -62,6 +98,9 @@ def _thread_metadata_for_source(source, reply_to_message_id: str | None = None) 
         anchor = reply_to_message_id or getattr(source, "message_id", None)
         if anchor is not None:
             metadata["telegram_reply_to_message_id"] = str(anchor)
+    routed_profile = str(getattr(source, "agent_profile", None) or "").strip()
+    if platform_name == "telegram" and routed_profile and routed_profile != "default":
+        metadata["disable_thread_fallback"] = True
     return metadata
 
 
@@ -981,6 +1020,10 @@ class MessageEvent:
     # Applied at API call time and never persisted to transcript history.
     channel_prompt: Optional[str] = None
 
+    # Optional profile routing chosen by a platform adapter.
+    agent_profile: Optional[str] = None
+    agent_hermes_home: Optional[str] = None
+
     # Channel context recovered by history backfill (e.g. messages between
     # bot turns that were missed due to require_mention).  Kept separate
     # from ``text`` so the sender-prefix logic in run.py can operate on the
@@ -1232,6 +1275,163 @@ def resolve_channel_prompt(
     return None
 
 
+def resolve_topic_profile(
+    config_extra: dict,
+    chat_id: str,
+    thread_id: str | None,
+) -> dict | None:
+    """Resolve Telegram topic-to-profile routing from platform config."""
+    routes = normalize_topic_profile_routes(config_extra)
+
+    chat_id_s = str(chat_id)
+    thread_id_s = str(thread_id) if thread_id is not None else None
+    for route in routes:
+        match = route["match"]
+        if str(match.get("chat_id", "")) != chat_id_s:
+            continue
+        expected_thread = str(match.get("thread_id"))
+        if expected_thread != thread_id_s:
+            continue
+        profile = route["profile"]
+        result = {"profile": profile}
+        home = route.get("profile_home")
+        if home:
+            result["profile_home"] = str(home)
+        return result
+    return None
+
+
+def normalize_topic_profile_routes(
+    config_extra: dict,
+    *,
+    hermes_home: str | Path | None = None,
+    require_identity: bool = False,
+) -> list[dict]:
+    """Validate and normalize Telegram topic-to-profile routing rules.
+
+    The public routing surface is deliberately small: exact chat/topic matches
+    map to existing Hermes profile names under a declared safe root.
+    """
+    routes = config_extra.get("topic_profiles") or []
+    if not routes:
+        return []
+    if not isinstance(routes, list):
+        raise TopicProfileConfigError("telegram.topic_profiles must be a list")
+
+    safe_root_raw = config_extra.get("topic_profiles_safe_root")
+    safe_root: Path | None = None
+    if not safe_root_raw:
+        raise TopicProfileConfigError(
+            "telegram.topic_profiles_safe_root is required when telegram.topic_profiles is set"
+        )
+    safe_root_candidate = Path(str(safe_root_raw)).expanduser()
+    if not safe_root_candidate.is_absolute():
+        base_home = Path(hermes_home).expanduser() if hermes_home else Path.cwd()
+        safe_root_candidate = base_home / safe_root_candidate
+    if safe_root_candidate.is_symlink() or _has_symlink_ancestor(safe_root_candidate):
+        raise TopicProfileConfigError(
+            "telegram.topic_profiles_safe_root must not be or contain a symlink"
+        )
+    safe_root = safe_root_candidate.resolve(strict=False)
+    default_home = (Path.home() / ".hermes").resolve(strict=False)
+    if safe_root == default_home:
+        raise TopicProfileConfigError(
+            "telegram.topic_profiles_safe_root must not be ~/.hermes"
+        )
+    if not safe_root.is_dir():
+        raise TopicProfileConfigError(
+            "telegram.topic_profiles_safe_root must exist and be a directory"
+        )
+    config_extra["topic_profiles_safe_root"] = str(safe_root)
+
+    normalized: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+    allowed_topics_raw = config_extra.get("allowed_topics")
+    allowed_topics: set[str] = set()
+    if isinstance(allowed_topics_raw, str):
+        allowed_topics = {part.strip() for part in allowed_topics_raw.split(",") if part.strip()}
+    elif isinstance(allowed_topics_raw, (list, tuple, set)):
+        allowed_topics = {str(part).strip() for part in allowed_topics_raw if str(part).strip()}
+
+    for idx, route in enumerate(routes):
+        if not isinstance(route, dict):
+            raise TopicProfileConfigError(f"telegram.topic_profiles[{idx}] must be a mapping")
+        match = route.get("match")
+        if not isinstance(match, dict):
+            raise TopicProfileConfigError(
+                f"telegram.topic_profiles[{idx}].match must be a mapping"
+            )
+
+        chat_id = str(match.get("chat_id") or "").strip()
+        thread_raw = match.get("thread_id")
+        thread_id = "" if thread_raw is None else str(thread_raw).strip()
+        if not chat_id or not thread_id:
+            raise TopicProfileConfigError(
+                f"telegram.topic_profiles[{idx}] requires match.chat_id and match.thread_id"
+            )
+        if allowed_topics and thread_id not in allowed_topics:
+            raise TopicProfileConfigError(
+                f"telegram.topic_profiles[{idx}] routes thread_id={thread_id!r}, "
+                "but telegram.allowed_topics would block it"
+            )
+
+        key = (chat_id, thread_id)
+        if key in seen:
+            raise TopicProfileConfigError(
+                f"Duplicate telegram.topic_profiles route for chat_id={chat_id!r} "
+                f"thread_id={thread_id!r}"
+            )
+        seen.add(key)
+
+        profile = str(route.get("profile") or "").strip()
+        if not profile or profile == "default" or not _PROFILE_ID_RE.match(profile):
+            raise TopicProfileConfigError(
+                f"Invalid telegram.topic_profiles[{idx}].profile: {profile!r}"
+            )
+
+        item = {"match": {"chat_id": chat_id, "thread_id": thread_id}, "profile": profile}
+
+        home_raw = route.get("profile_home") or route.get("home") or route.get("hermes_home")
+        if home_raw:
+            home_path = Path(str(home_raw)).expanduser()
+            if not home_path.is_absolute():
+                home_path = safe_root / home_path
+        else:
+            home_path = safe_root / profile
+
+        if home_path.is_symlink() or _has_symlink_ancestor(home_path, safe_root.parent):
+            raise TopicProfileConfigError(
+                f"telegram.topic_profiles[{idx}].profile_home must not be or contain a symlink"
+            )
+        resolved_home = home_path.resolve(strict=False)
+        if not _is_path_relative_to(resolved_home, safe_root):
+            raise TopicProfileConfigError(
+                f"telegram.topic_profiles[{idx}].profile_home must be inside "
+                "telegram.topic_profiles_safe_root"
+            )
+        if resolved_home == (Path.home() / ".hermes").resolve(strict=False):
+            raise TopicProfileConfigError(
+                f"telegram.topic_profiles[{idx}].profile_home must not be ~/.hermes"
+            )
+        if not resolved_home.is_dir():
+            raise TopicProfileConfigError(
+                f"telegram.topic_profiles[{idx}].profile_home must exist"
+            )
+        if require_identity:
+            try:
+                from hermes_cli.profiles import validate_profile_identity
+                validate_profile_identity(profile, resolved_home, safe_root)
+            except Exception as exc:
+                raise TopicProfileConfigError(
+                    f"telegram.topic_profiles[{idx}] profile identity is invalid: {exc}"
+                ) from exc
+        item["profile_home"] = str(resolved_home)
+
+        normalized.append(item)
+
+    return normalized
+
+
 def resolve_channel_skills(
     config_extra: dict,
     channel_id: str,
@@ -1330,6 +1530,7 @@ class BasePlatformAdapter(ABC):
         self._post_delivery_callbacks: Dict[str, Any] = {}
         self._expected_cancelled_tasks: set[asyncio.Task] = set()
         self._busy_session_handler: Optional[Callable[[MessageEvent, str], Awaitable[bool]]] = None
+        self._topic_profile_route_resolver: Optional[Callable[[MessageEvent], None]] = None
         # Auto-TTS on voice input: ``_auto_tts_default`` is the global default
         # (``voice.auto_tts`` in config.yaml, pushed by GatewayRunner on connect).
         # Per-chat overrides live in two sets populated from ``_voice_mode``:
@@ -1348,6 +1549,12 @@ class BasePlatformAdapter(ABC):
         # Chats where typing indicator is paused (e.g. during approval waits).
         # _keep_typing skips send_typing when the chat_id is in this set.
         self._typing_paused: set = set()
+
+    def _thread_metadata_for_event(self, event: MessageEvent) -> Optional[Dict[str, Any]]:
+        return _thread_metadata_for_source(
+            getattr(event, "source", None),
+            _reply_anchor_for_event(event),
+        )
 
     @property
     def message_len_fn(self) -> Callable[[str], int]:
@@ -1549,6 +1756,44 @@ class BasePlatformAdapter(ABC):
     def set_busy_session_handler(self, handler: Optional[Callable[[MessageEvent, str], Awaitable[bool]]]) -> None:
         """Set an optional handler for messages arriving during active sessions."""
         self._busy_session_handler = handler
+
+    def set_topic_profile_route_resolver(
+        self,
+        resolver: Optional[Callable[[MessageEvent], None]],
+    ) -> None:
+        """Set an optional resolver for adapter-early topic profile routing.
+
+        Adapters compute session keys before the gateway runner sees an event.
+        A runner-provided resolver lets those early keys include routed topic
+        profiles even when the platform adapter did not hydrate the source.
+        """
+        self._topic_profile_route_resolver = resolver
+
+    @staticmethod
+    def _copy_event_profile_to_source(event: MessageEvent) -> None:
+        source = getattr(event, "source", None)
+        if source is None:
+            return
+        if getattr(event, "agent_profile", None) and not getattr(source, "agent_profile", None):
+            source.agent_profile = event.agent_profile
+        if getattr(event, "agent_hermes_home", None) and not getattr(source, "agent_hermes_home", None):
+            source.agent_hermes_home = event.agent_hermes_home
+
+    def _hydrate_routed_event_source(self, event: MessageEvent) -> None:
+        """Ensure profile routing is present on ``event.source`` before keys.
+
+        The gateway runner also hydrates defensively, but adapter guards,
+        batching keys, and pending queues are all keyed before the runner gets
+        control. Keep this helper as the single adapter-side pre-key step.
+        """
+        source = getattr(event, "source", None)
+        if source is None:
+            return
+        self._copy_event_profile_to_source(event)
+        resolver = getattr(self, "_topic_profile_route_resolver", None)
+        if callable(resolver) and not getattr(source, "agent_profile", None):
+            resolver(event)
+            self._copy_event_profile_to_source(event)
     
     def set_session_store(self, session_store: Any) -> None:
         """
@@ -2875,6 +3120,7 @@ class BasePlatformAdapter(ABC):
             return
 
         coerce_plaintext_gateway_command(event)
+        self._hydrate_routed_event_source(event)
         
         session_key = build_session_key(
             event.source,

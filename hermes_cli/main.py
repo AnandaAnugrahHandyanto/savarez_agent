@@ -9621,6 +9621,9 @@ def cmd_profile(args):
         check_alias_collision,
         create_wrapper_script,
         remove_wrapper_script,
+        audit_profile_isolation,
+        format_profile_isolation_audit,
+        write_profile_identity_marker,
         _is_wrapper_dir_in_path,
         _get_wrapper_dir,
     )
@@ -9920,6 +9923,28 @@ def cmd_profile(args):
         if not all_flag:
             sys.exit(0 if ok_count == 1 else 1)
         sys.exit(0 if ok_count > 0 else 1)
+
+    elif action == "audit-isolation":
+        name = args.profile_name
+        try:
+            if getattr(args, "write_marker", False):
+                from hermes_cli.profiles import get_profile_dir
+                profile_dir = get_profile_dir(name)
+                safe_root = Path(getattr(args, "safe_root", None)).expanduser() if getattr(args, "safe_root", None) else profile_dir.parent
+                write_profile_identity_marker(name, profile_dir, safe_root, overwrite=True)
+            report = audit_profile_isolation(
+                name,
+                safe_root=getattr(args, "safe_root", None),
+            )
+            if getattr(args, "json", False):
+                print(json.dumps(report, indent=2, sort_keys=True))
+            else:
+                print(format_profile_isolation_audit(report))
+            if report.get("status") == "FAIL":
+                sys.exit(1)
+        except Exception as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            sys.exit(1)
 
     elif action == "show":
         name = args.profile_name
@@ -13015,6 +13040,27 @@ Examples:
         dest="all_missing",
         action="store_true",
         help="With --auto, run on every profile missing a description",
+    )
+
+    profile_audit = profile_subparsers.add_parser(
+        "audit-isolation",
+        help="Audit routed profile isolation without printing secrets",
+    )
+    profile_audit.add_argument("profile_name", help="Profile to audit")
+    profile_audit.add_argument(
+        "--safe-root",
+        default=None,
+        help="Expected topic_profiles_safe_root for routed profiles",
+    )
+    profile_audit.add_argument(
+        "--write-marker",
+        action="store_true",
+        help="Write or refresh .hermes_profile.json before auditing",
+    )
+    profile_audit.add_argument(
+        "--json",
+        action="store_true",
+        help="Print machine-readable audit output",
     )
 
     profile_show = profile_subparsers.add_parser("show", help="Show profile details")

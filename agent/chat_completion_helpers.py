@@ -752,21 +752,41 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         # falling through to OpenRouter defaults.
         fb_base_url_hint = (fb.get("base_url") or "").strip() or None
         fb_api_key_hint = (fb.get("api_key") or "").strip() or None
+        fb_key_env = ""
+        runtime_env = getattr(agent, "_runtime_env", None)
         if not fb_api_key_hint:
             # key_env and api_key_env are both documented aliases (see
             # _normalize_custom_provider_entry in hermes_cli/config.py).
             fb_key_env = (fb.get("key_env") or fb.get("api_key_env") or "").strip()
             if fb_key_env:
-                fb_api_key_hint = os.getenv(fb_key_env, "").strip() or None
+                if runtime_env is None:
+                    fb_api_key_hint = os.getenv(fb_key_env, "").strip() or None
+                else:
+                    fb_api_key_hint = str(runtime_env.get(fb_key_env, "")).strip() or None
         # For Ollama Cloud endpoints, pull OLLAMA_API_KEY from env
         # when no explicit key is in the fallback config. Host match
         # (not substring) — see GHSA-76xc-57q6-vm5m.
         if fb_base_url_hint and base_url_host_matches(fb_base_url_hint, "ollama.com") and not fb_api_key_hint:
-            fb_api_key_hint = os.getenv("OLLAMA_API_KEY") or None
+            if runtime_env is None:
+                fb_api_key_hint = os.getenv("OLLAMA_API_KEY") or None
+            else:
+                fb_api_key_hint = str(runtime_env.get("OLLAMA_API_KEY", "")).strip() or None
+        if runtime_env is not None and not fb_api_key_hint:
+            fb_provider_config = None
+            try:
+                from hermes_cli.auth import PROVIDER_REGISTRY
+                fb_provider_config = PROVIDER_REGISTRY.get(str(fb_provider))
+                for env_name in getattr(fb_provider_config, "api_key_env_vars", ()) or ():
+                    fb_api_key_hint = str(runtime_env.get(env_name, "")).strip() or None
+                    if fb_api_key_hint:
+                        break
+            except Exception:
+                fb_provider_config = None
         fb_client, _resolved_fb_model = resolve_provider_client(
             fb_provider, model=fb_model, raw_codex=True,
             explicit_base_url=fb_base_url_hint,
-            explicit_api_key=fb_api_key_hint)
+            explicit_api_key=fb_api_key_hint,
+            env=runtime_env)
         if fb_client is None:
             logging.warning(
                 "Fallback to %s failed: provider not configured",

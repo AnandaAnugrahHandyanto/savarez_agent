@@ -70,6 +70,7 @@ def check_compression_model_feasibility(agent: Any) -> None:
         client, aux_model = get_text_auxiliary_client(
             "compression",
             main_runtime=agent._current_main_runtime(),
+            env=getattr(agent, "_runtime_env", None),
         )
         # Best-effort aux provider label for the warning message. The
         # configured provider may be "auto", in which case we fall back
@@ -313,6 +314,10 @@ def compress_context(
             pass
 
     try:
+        try:
+            agent.context_compressor.runtime_env = getattr(agent, "_runtime_env", None)
+        except Exception:
+            pass
         compressed = agent.context_compressor.compress(messages, current_tokens=approx_tokens, focus_topic=focus_topic, force=force)
     except TypeError:
         # Plugin context engine with strict signature that doesn't accept

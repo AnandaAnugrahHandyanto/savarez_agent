@@ -178,11 +178,12 @@ class TestClientCacheBoundedGrowth:
         """When the loop changes, the old entry should be replaced, not duplicated."""
         from agent.auxiliary_client import (
             _client_cache,
+            _client_cache_key,
             _client_cache_lock,
             _get_cached_client,
         )
 
-        key = ("test_replace", True, "", "", "", (), False, "")
+        key = _client_cache_key("test_replace", async_mode=True)
 
         # Simulate a stale entry from a closed loop
         old_loop = asyncio.new_event_loop()
@@ -214,10 +215,11 @@ class TestClientCacheBoundedGrowth:
         """Multiple event loops for the same provider should NOT create multiple entries."""
         from agent.auxiliary_client import (
             _client_cache,
+            _client_cache_key,
             _client_cache_lock,
         )
 
-        key = ("test_no_grow", True, "", "", "", (), False)
+        key = _client_cache_key("test_no_grow", async_mode=True)
 
         loops = []
         try:

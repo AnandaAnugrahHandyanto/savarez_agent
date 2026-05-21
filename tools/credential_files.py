@@ -44,13 +44,20 @@ def _get_registered() -> Dict[str, str]:
         return val
 
 
-# Cache for config-based file list (loaded once per process).
-_config_files: List[Dict[str, str]] | None = None
+# Cache for config-based file lists, keyed by active HERMES_HOME.
+_config_files: Dict[str, List[Dict[str, str]]] | None = {}
 
 
 def _resolve_hermes_home() -> Path:
     from hermes_constants import get_hermes_home
     return get_hermes_home()
+
+
+def _config_cache_key() -> str:
+    try:
+        return str(_resolve_hermes_home().expanduser().resolve(strict=False))
+    except Exception:
+        return ""
 
 
 def register_credential_file(
@@ -131,8 +138,11 @@ def register_credential_files(
 def _load_config_files() -> List[Dict[str, str]]:
     """Load ``terminal.credential_files`` from config.yaml (cached)."""
     global _config_files
-    if _config_files is not None:
-        return _config_files
+    if not isinstance(_config_files, dict):
+        _config_files = {}
+    cache_key = _config_cache_key()
+    if cache_key in _config_files:
+        return _config_files[cache_key]
 
     result: List[Dict[str, str]] = []
     try:
@@ -169,8 +179,8 @@ def _load_config_files() -> List[Dict[str, str]]:
     except Exception as e:
         logger.warning("Could not read terminal.credential_files from config: %s", e)
 
-    _config_files = result
-    return _config_files
+    _config_files[cache_key] = result
+    return result
 
 
 def get_credential_file_mounts() -> List[Dict[str, str]]:
@@ -432,5 +442,4 @@ def iter_cache_files(
 def clear_credential_files() -> None:
     """Reset the skill-scoped registry (e.g. on session reset)."""
     _get_registered().clear()
-
 

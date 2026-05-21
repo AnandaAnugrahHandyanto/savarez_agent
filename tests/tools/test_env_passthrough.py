@@ -105,6 +105,30 @@ class TestConfigPassthrough:
         assert "CONFIG_KEY" in all_pt
         assert "SKILL_KEY" in all_pt
 
+    def test_config_cache_is_keyed_by_hermes_home(self, tmp_path, monkeypatch):
+        gateway_home = tmp_path / "gateway"
+        profile_home = tmp_path / "profiles" / "alpha-test"
+        gateway_home.mkdir()
+        profile_home.mkdir(parents=True)
+        (gateway_home / "config.yaml").write_text(
+            yaml.dump({"terminal": {"env_passthrough": ["GLOBAL_ONLY"]}}),
+            encoding="utf-8",
+        )
+        (profile_home / "config.yaml").write_text(
+            yaml.dump({"terminal": {"env_passthrough": ["PROFILE_ONLY"]}}),
+            encoding="utf-8",
+        )
+
+        from hermes_constants import hermes_home_context
+
+        monkeypatch.setenv("HERMES_HOME", str(gateway_home))
+        assert is_env_passthrough("GLOBAL_ONLY")
+        assert not is_env_passthrough("PROFILE_ONLY")
+
+        with hermes_home_context(profile_home):
+            assert is_env_passthrough("PROFILE_ONLY")
+            assert not is_env_passthrough("GLOBAL_ONLY")
+
 
 class TestExecuteCodeIntegration:
     """Verify that the passthrough is checked in execute_code's env filtering."""

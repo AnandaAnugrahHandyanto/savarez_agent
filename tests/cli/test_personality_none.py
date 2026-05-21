@@ -78,6 +78,7 @@ class TestGatewayPersonalityNone:
         event = MagicMock()
         event.get_command.return_value = "personality"
         event.get_command_args.return_value = args
+        event.source = MagicMock(agent_profile=None)
         return event
 
     def _make_runner(self, personalities=None):

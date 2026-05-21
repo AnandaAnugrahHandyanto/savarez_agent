@@ -100,6 +100,35 @@ class TestRegisterCredentialFiles:
         mounts = get_credential_file_mounts()
         assert "real.json" in mounts[0]["container_path"]
 
+    def test_config_cache_is_keyed_by_hermes_home(self, tmp_path, monkeypatch):
+        gateway_home = tmp_path / "gateway"
+        profile_home = tmp_path / "profiles" / "alpha-test"
+        gateway_home.mkdir()
+        profile_home.mkdir(parents=True)
+        (gateway_home / "global.json").write_text("{}")
+        (profile_home / "profile.json").write_text("{}")
+        (gateway_home / "config.yaml").write_text(
+            "terminal:\n  credential_files:\n    - global.json\n",
+            encoding="utf-8",
+        )
+        (profile_home / "config.yaml").write_text(
+            "terminal:\n  credential_files:\n    - profile.json\n",
+            encoding="utf-8",
+        )
+
+        from hermes_constants import hermes_home_context
+
+        monkeypatch.setenv("HERMES_HOME", str(gateway_home))
+        gateway_mounts = get_credential_file_mounts()
+        assert any(m["host_path"].endswith("global.json") for m in gateway_mounts)
+        assert not any(m["host_path"].endswith("profile.json") for m in gateway_mounts)
+
+        with hermes_home_context(profile_home):
+            profile_mounts = get_credential_file_mounts()
+
+        assert any(m["host_path"].endswith("profile.json") for m in profile_mounts)
+        assert not any(m["host_path"].endswith("global.json") for m in profile_mounts)
+
 
 class TestSkillsDirectoryMount:
     def test_returns_mount_when_skills_dir_exists(self, tmp_path):

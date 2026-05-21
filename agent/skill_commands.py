@@ -11,7 +11,7 @@ import re
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from hermes_constants import display_hermes_home
+from hermes_constants import display_hermes_home, get_hermes_home
 from agent.skill_preprocessing import (
     expand_inline_shell as _expand_inline_shell,
     load_skills_config as _load_skills_config,
@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 
 _skill_commands: Dict[str, Dict[str, Any]] = {}
 _skill_commands_platform: Optional[str] = None
+_skill_commands_home: Optional[str] = None
 # Patterns for sanitizing skill names into clean hyphen-separated slugs.
 _SKILL_INVALID_CHARS = re.compile(r"[^a-z0-9-]")
 _SKILL_MULTI_HYPHEN = re.compile(r"-{2,}")
@@ -57,13 +58,15 @@ def _load_skill_payload(skill_identifier: str, task_id: str | None = None) -> tu
         return None
 
     try:
-        from tools.skills_tool import SKILLS_DIR, skill_view
+        from tools.skills_tool import get_skills_dir, skill_view
         from agent.skill_utils import get_external_skills_dirs
+
+        skills_dir = get_skills_dir()
 
         identifier_path = Path(raw_identifier).expanduser()
         if identifier_path.is_absolute():
             normalized = None
-            trusted_roots = [SKILLS_DIR]
+            trusted_roots = [skills_dir]
             try:
                 trusted_roots.extend(get_external_skills_dirs())
             except Exception:
@@ -84,7 +87,7 @@ def _load_skill_payload(skill_identifier: str, task_id: str | None = None) -> tu
 
             if normalized is None:
                 try:
-                    normalized = str(identifier_path.resolve().relative_to(SKILLS_DIR.resolve()))
+                    normalized = str(identifier_path.resolve().relative_to(skills_dir.resolve()))
                 except Exception:
                     normalized = raw_identifier
         else:
@@ -111,7 +114,7 @@ def _load_skill_payload(skill_identifier: str, task_id: str | None = None) -> tu
         skill_dir = Path(abs_skill_dir)
     elif skill_path:
         try:
-            skill_dir = SKILLS_DIR / Path(skill_path).parent
+            skill_dir = get_skills_dir() / Path(skill_path).parent
         except Exception:
             skill_dir = None
 
@@ -166,9 +169,10 @@ def _build_skill_message(
     session_id: str | None = None,
 ) -> str:
     """Format a loaded skill into a user/system message payload."""
-    from tools.skills_tool import SKILLS_DIR
+    from tools.skills_tool import get_skills_dir
 
     content = str(loaded_skill.get("content") or "")
+    skills_dir = get_skills_dir()
 
     # ── Template substitution and inline-shell expansion ──
     # Done before anything else so downstream blocks (setup notes,
@@ -235,7 +239,7 @@ def _build_skill_message(
 
     if supporting and skill_dir:
         try:
-            skill_view_target = str(skill_dir.relative_to(SKILLS_DIR))
+            skill_view_target = str(skill_dir.relative_to(skills_dir))
         except ValueError:
             # Skill is from an external dir — use the skill name instead
             skill_view_target = skill_dir.name
@@ -266,19 +270,21 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
     Returns:
         Dict mapping "/skill-name" to {name, description, skill_md_path, skill_dir}.
     """
-    global _skill_commands, _skill_commands_platform
+    global _skill_commands, _skill_commands_platform, _skill_commands_home
     _skill_commands_platform = _resolve_skill_commands_platform()
+    _skill_commands_home = str(get_hermes_home())
     _skill_commands = {}
     try:
-        from tools.skills_tool import SKILLS_DIR, _parse_frontmatter, skill_matches_platform, _get_disabled_skill_names
+        from tools.skills_tool import get_skills_dir, _parse_frontmatter, skill_matches_platform, _get_disabled_skill_names
         from agent.skill_utils import get_external_skills_dirs, iter_skill_index_files
         disabled = _get_disabled_skill_names()
         seen_names: set = set()
 
         # Scan local dir first, then external dirs
         dirs_to_scan = []
-        if SKILLS_DIR.exists():
-            dirs_to_scan.append(SKILLS_DIR)
+        skills_dir = get_skills_dir()
+        if skills_dir.exists():
+            dirs_to_scan.append(skills_dir)
         dirs_to_scan.extend(get_external_skills_dirs())
 
         for scan_dir in dirs_to_scan:
@@ -336,6 +342,7 @@ def get_skill_commands() -> Dict[str, Dict[str, Any]]:
     if (
         not _skill_commands
         or _skill_commands_platform != _resolve_skill_commands_platform()
+        or _skill_commands_home != str(get_hermes_home())
     ):
         scan_skill_commands()
     return _skill_commands

@@ -234,7 +234,7 @@ class TestAuxiliaryClientIntegration:
 
         # Mock _read_nous_auth to return valid creds (would normally succeed)
         import agent.auxiliary_client as aux
-        monkeypatch.setattr(aux, "_read_nous_auth", lambda: {
+        monkeypatch.setattr(aux, "_read_nous_auth", lambda *args, **kwargs: {
             "access_token": "test-token",
             "inference_base_url": "https://api.nous.test/v1",
         })
@@ -248,7 +248,7 @@ class TestAuxiliaryClientIntegration:
         # No rate limit recorded — _try_nous should proceed normally
         # (will return None because no real creds, but won't be blocked
         # by the rate guard)
-        monkeypatch.setattr(aux, "_read_nous_auth", lambda: None)
+        monkeypatch.setattr(aux, "_read_nous_auth", lambda *args, **kwargs: None)
         result = aux._try_nous()
         assert result == (None, None)
 

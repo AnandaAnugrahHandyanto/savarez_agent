@@ -1,6 +1,10 @@
+import os
+import json
+
 import pytest
 
 from hermes_cli import runtime_provider as rp
+from hermes_constants import hermes_home_context
 
 
 def test_resolve_runtime_provider_uses_credential_pool(monkeypatch):
@@ -25,6 +29,165 @@ def test_resolve_runtime_provider_uses_credential_pool(monkeypatch):
     assert resolved["api_key"] == "pool-token"
     assert resolved["credential_pool"] is not None
     assert resolved["source"] == "manual"
+
+
+def test_scoped_openrouter_runtime_ignores_global_env_and_pool(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {"provider": "openrouter", "default": "openrouter/model"},
+    )
+    monkeypatch.setenv("OPENROUTER_API_KEY", "global-openrouter")
+    monkeypatch.setenv("OPENAI_API_KEY", "global-openai")
+
+    def _unexpected_global_pool(provider):
+        raise AssertionError(f"global pool should not be loaded for {provider}")
+
+    monkeypatch.setattr(rp, "load_pool", _unexpected_global_pool)
+
+    with hermes_home_context(tmp_path):
+        resolved = rp.resolve_runtime_provider(requested="openrouter", env={})
+
+    assert resolved["provider"] == "openrouter"
+    assert resolved["api_key"] == ""
+
+
+def test_scoped_openrouter_runtime_uses_profile_env(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {"provider": "openrouter", "default": "openrouter/model"},
+    )
+    monkeypatch.setenv("OPENROUTER_API_KEY", "global-openrouter")
+
+    with hermes_home_context(tmp_path):
+        resolved = rp.resolve_runtime_provider(
+            requested="openrouter",
+            env={"OPENROUTER_API_KEY": "profile-openrouter"},
+        )
+
+    assert resolved["provider"] == "openrouter"
+    assert resolved["api_key"] == "profile-openrouter"
+
+
+def test_scoped_api_key_provider_ignores_global_credential_pool(monkeypatch, tmp_path):
+    class _Entry:
+        access_token = "global-zai-pool-token"
+        runtime_api_key = ""
+
+    class _Pool:
+        def has_credentials(self):
+            return True
+
+        def peek(self):
+            return _Entry()
+
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "zai")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {"provider": "zai", "default": "zai/model"},
+    )
+    monkeypatch.setattr(rp, "_load_pool_for_env", lambda provider, env: None)
+
+    import agent.credential_pool as credential_pool
+
+    monkeypatch.setattr(credential_pool, "load_pool", lambda provider: _Pool())
+
+    with hermes_home_context(tmp_path):
+        resolved = rp.resolve_runtime_provider(requested="zai", env={})
+
+    assert resolved["provider"] == "zai"
+    assert resolved["api_key"] == ""
+
+
+def test_scoped_api_key_provider_uses_profile_auth_pool(monkeypatch, tmp_path):
+    profile_home = tmp_path / "profiles" / "zai-profile"
+    profile_home.mkdir(parents=True)
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "zai")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {"provider": "zai", "default": "zai/model"},
+    )
+    monkeypatch.setattr(
+        rp,
+        "load_pool",
+        lambda provider: pytest.fail("global pool should not be loaded"),
+    )
+    (profile_home / "auth.json").write_text(
+        json.dumps(
+            {
+                "credential_pool": {
+                    "zai": [
+                        {
+                            "id": "profile-zai",
+                            "source": "manual",
+                            "access_token": "profile-zai-pool-token",
+                        }
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with hermes_home_context(profile_home):
+        resolved = rp.resolve_runtime_provider(requested="zai", env={})
+
+    assert resolved["provider"] == "zai"
+    assert resolved["api_key"] == "profile-zai-pool-token"
+    assert resolved["credential_pool"] is not None
+
+
+def test_scoped_oauth_provider_fails_closed_without_profile_auth(monkeypatch, tmp_path):
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openai-codex")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {"provider": "openai-codex", "default": "codex/model"},
+    )
+    monkeypatch.setattr(rp, "_load_pool_for_env", lambda provider, env: None)
+    monkeypatch.setattr(
+        rp,
+        "resolve_codex_runtime_credentials",
+        lambda: pytest.fail("global Codex auth resolver should not be called"),
+    )
+
+    with hermes_home_context(tmp_path), pytest.raises(rp.AuthError):
+        rp.resolve_runtime_provider(requested="openai-codex", env={})
+
+
+def test_scoped_bedrock_fails_closed_without_profile_aws_credentials(monkeypatch):
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "bedrock")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {"provider": "bedrock", "default": "amazon.nova-lite-v1:0"},
+    )
+
+    with pytest.raises(rp.AuthError):
+        rp.resolve_runtime_provider(requested="bedrock", env={})
+
+
+def test_strict_profile_runtime_rejects_external_process_provider(monkeypatch):
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "copilot-acp")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {"provider": "copilot-acp", "default": "copilot/model"},
+    )
+
+    with pytest.raises(rp.AuthError) as exc_info:
+        rp.resolve_runtime_provider(
+            requested="copilot-acp",
+            env={
+                "HERMES_PROFILE_STRICT_AUTH": "1",
+                "HERMES_COPILOT_ACP_COMMAND": "/bin/echo",
+            },
+        )
+
+    assert exc_info.value.code == "profile_strict_external_process_disabled"
 
 
 def test_resolve_runtime_provider_anthropic_pool_respects_config_base_url(monkeypatch):
@@ -400,6 +563,44 @@ def test_resolve_runtime_provider_openrouter_explicit(monkeypatch):
     assert resolved["api_key"] == "test-key"
     assert resolved["base_url"] == "https://example.com/v1"
     assert resolved["source"] == "explicit"
+
+
+def test_resolve_runtime_provider_env_mapping_overrides_process_env(monkeypatch):
+    class _Pool:
+        def has_credentials(self):
+            return False
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "main-gateway-key")
+    monkeypatch.setattr(rp, "load_pool", lambda provider: _Pool())
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {"provider": "openrouter"})
+
+    resolved = rp.resolve_runtime_provider(
+        requested="openrouter",
+        env={"OPENROUTER_API_KEY": "profile-key"},
+    )
+
+    assert resolved["provider"] == "openrouter"
+    assert resolved["api_key"] == "profile-key"
+    assert os.environ["OPENROUTER_API_KEY"] == "main-gateway-key"
+
+
+def test_resolve_runtime_provider_env_mapping_does_not_inherit_main_env(monkeypatch):
+    class _Pool:
+        def has_credentials(self):
+            return False
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "main-gateway-key")
+    monkeypatch.setattr(rp, "load_pool", lambda provider: _Pool())
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {"provider": "openrouter"})
+
+    resolved = rp.resolve_runtime_provider(
+        requested="openrouter",
+        env={},
+    )
+
+    assert resolved["provider"] == "openrouter"
+    assert resolved["api_key"] == ""
+    assert os.environ["OPENROUTER_API_KEY"] == "main-gateway-key"
 
 
 def test_resolve_runtime_provider_auto_uses_openrouter_pool(monkeypatch):
@@ -835,6 +1036,72 @@ def test_named_custom_provider_uses_key_env_from_providers_dict(monkeypatch):
     assert resolved["requested_provider"] == "mycorp-proxy"
     assert resolved["source"] == "custom_provider:MyCorp Proxy"
     assert resolved["model"] == "acme-large"
+
+
+def test_named_custom_provider_uses_scoped_key_env_from_providers_dict(monkeypatch):
+    monkeypatch.setenv("MYCORP_API_KEY", "global-secret")
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {
+            "providers": {
+                "mycorp-proxy": {
+                    "base_url": "https://proxy.example.com/v1",
+                    "default_model": "acme-large",
+                    "key_env": "MYCORP_API_KEY",
+                    "name": "MyCorp Proxy",
+                }
+            }
+        },
+    )
+    monkeypatch.setattr(
+        rp,
+        "resolve_provider",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError(
+                "resolve_provider should not be called for named custom providers"
+            )
+        ),
+    )
+
+    resolved = rp.resolve_runtime_provider(
+        requested="mycorp-proxy",
+        env={"MYCORP_API_KEY": "profile-secret"},
+    )
+
+    assert resolved["provider"] == "custom"
+    assert resolved["api_key"] == "profile-secret"
+    assert resolved["requested_provider"] == "mycorp-proxy"
+
+
+def test_named_custom_provider_with_scoped_env_fails_closed_when_key_env_missing(monkeypatch):
+    monkeypatch.setenv("MYCORP_API_KEY", "global-secret")
+    monkeypatch.setenv("OPENAI_API_KEY", "global-openai")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "global-openrouter")
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {
+            "providers": {
+                "mycorp-proxy": {
+                    "base_url": "https://proxy.example.com/v1",
+                    "default_model": "acme-large",
+                    "key_env": "MYCORP_API_KEY",
+                    "name": "MyCorp Proxy",
+                }
+            }
+        },
+    )
+    monkeypatch.setattr(
+        rp,
+        "resolve_provider",
+        lambda *a, **k: (_ for _ in ()).throw(
+            rp.AuthError("unknown provider", provider="mycorp-proxy")
+        ),
+    )
+
+    with pytest.raises(rp.AuthError):
+        rp.resolve_runtime_provider(requested="mycorp-proxy", env={})
 
 
 def test_named_custom_provider_falls_back_to_openai_api_key(monkeypatch):

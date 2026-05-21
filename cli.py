@@ -11404,6 +11404,7 @@ class HermesCLI:
                             "api_key": self.api_key,
                             "api_mode": self.api_mode,
                         },
+                        env=getattr(self.agent, "_runtime_env", None) if self.agent else None,
                     )
                 except Exception:
                     pass

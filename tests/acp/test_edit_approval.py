@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import json
+import shutil
 import tempfile
 from pathlib import Path
+
+import pytest
 
 from acp_adapter.edit_approval import (
     EditProposal,
@@ -18,6 +21,15 @@ from model_tools import handle_function_call
 
 def teardown_function() -> None:
     clear_edit_approval_requester()
+
+
+@pytest.fixture
+def safe_write_dir():
+    root = Path(tempfile.mkdtemp(prefix=".acp-edit-", dir=Path.cwd()))
+    try:
+        yield root
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
 
 
 def test_acp_permission_tool_call_uses_edit_kind_and_diff_content():
@@ -41,8 +53,8 @@ def test_acp_permission_tool_call_uses_edit_kind_and_diff_content():
     assert diff.newText == "new\n"
 
 
-def test_write_file_rejection_does_not_mutate_existing_file(tmp_path):
-    target = tmp_path / "sample.txt"
+def test_write_file_rejection_does_not_mutate_existing_file(safe_write_dir):
+    target = safe_write_dir / "sample.txt"
     target.write_text("before\n", encoding="utf-8")
 
     set_edit_approval_requester(lambda _proposal: False)
@@ -60,8 +72,8 @@ def test_write_file_rejection_does_not_mutate_existing_file(tmp_path):
     assert target.read_text(encoding="utf-8") == "before\n"
 
 
-def test_write_file_approval_mutates_and_request_includes_diff(tmp_path):
-    target = tmp_path / "sample.txt"
+def test_write_file_approval_mutates_and_request_includes_diff(safe_write_dir):
+    target = safe_write_dir / "sample.txt"
     target.write_text("before\n", encoding="utf-8")
     proposals = []
 
@@ -89,8 +101,8 @@ def test_write_file_approval_mutates_and_request_includes_diff(tmp_path):
     assert proposal.new_text == "after\n"
 
 
-def test_write_file_new_file_request_has_empty_old_text(tmp_path):
-    target = tmp_path / "new.txt"
+def test_write_file_new_file_request_has_empty_old_text(safe_write_dir):
+    target = safe_write_dir / "new.txt"
     proposals = []
 
     set_edit_approval_requester(lambda proposal: proposals.append(proposal) or True)
@@ -109,8 +121,8 @@ def test_write_file_new_file_request_has_empty_old_text(tmp_path):
     assert proposals[0].new_text == "created\n"
 
 
-def test_requester_exception_denies_and_does_not_mutate(tmp_path):
-    target = tmp_path / "sample.txt"
+def test_requester_exception_denies_and_does_not_mutate(safe_write_dir):
+    target = safe_write_dir / "sample.txt"
     target.write_text("before\n", encoding="utf-8")
 
     def boom(_proposal):
@@ -131,8 +143,8 @@ def test_requester_exception_denies_and_does_not_mutate(tmp_path):
     assert target.read_text(encoding="utf-8") == "before\n"
 
 
-def test_patch_replace_rejection_does_not_mutate(tmp_path):
-    target = tmp_path / "sample.txt"
+def test_patch_replace_rejection_does_not_mutate(safe_write_dir):
+    target = safe_write_dir / "sample.txt"
     target.write_text("alpha\nbeta\n", encoding="utf-8")
 
     set_edit_approval_requester(lambda _proposal: False)
@@ -155,8 +167,8 @@ def test_patch_replace_rejection_does_not_mutate(tmp_path):
     assert target.read_text(encoding="utf-8") == "alpha\nbeta\n"
 
 
-def test_patch_replace_approval_request_includes_full_file_diff(tmp_path):
-    target = tmp_path / "sample.txt"
+def test_patch_replace_approval_request_includes_full_file_diff(safe_write_dir):
+    target = safe_write_dir / "sample.txt"
     target.write_text("alpha\nbeta\n", encoding="utf-8")
     proposals = []
 
