@@ -2,13 +2,89 @@
 
 Provides filesystem-level wiki introspection for native clients that
 render graph views or page detail. Reads from $WIKI_PATH (default ~/wiki).
+
+Multi-wiki support via ~/.hermes/wikis.yaml registry.
 """
 import os
 import re
 from pathlib import Path
 
+import yaml
 
 from typing import Optional
+
+
+def _load_wiki_registry() -> dict:
+    """Load ~/.hermes/wikis.yaml, returning {name: path} dict.
+    Returns empty dict if file doesn't exist or is unparseable.
+    """
+    registry_path = Path(os.path.expanduser("~/.hermes/wikis.yaml"))
+    if not registry_path.exists():
+        return {}
+    try:
+        with open(registry_path) as f:
+            data = yaml.safe_load(f) or {}
+    except Exception:
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    wikis = data.get("wikis", {})
+    if not isinstance(wikis, dict):
+        return {}
+    resolved = {}
+    for name, path in wikis.items():
+        if isinstance(path, str):
+            resolved[str(name)] = os.path.expanduser(path)
+    return resolved
+
+
+def resolve_wiki(name: Optional[str] = None) -> str:
+    """Resolve a wiki name to a filesystem path.
+
+    Resolution order:
+    1. If name matches a key in ~/.hermes/wikis.yaml -> use that path
+    2. If name looks like a path (~ or / prefix) -> expand and use directly
+    3. If name is None/empty -> use registry's 'default' key
+    4. Fall back to $WIKI_PATH env var
+    5. Final fallback: ~/wiki
+    """
+    registry = _load_wiki_registry()
+
+    if name:
+        # Try registry name match
+        if name in registry:
+            return registry[name]
+        # Try raw path
+        if name.startswith("~") or name.startswith("/"):
+            return os.path.expanduser(name)
+
+    # No name or name not found - use default
+    if registry:
+        # Read raw YAML to get the default key
+        registry_path = Path(os.path.expanduser("~/.hermes/wikis.yaml"))
+        try:
+            with open(registry_path) as f:
+                data = yaml.safe_load(f) or {}
+            default_name = data.get("default")
+            if default_name and default_name in registry:
+                return registry[default_name]
+        except Exception:
+            pass
+
+    # Fallbacks
+    env = os.environ.get("WIKI_PATH", "")
+    if env:
+        return env
+    return os.path.expanduser("~/wiki")
+
+
+def wiki_list() -> dict:
+    """Return list of available wikis from ~/.hermes/wikis.yaml."""
+    registry = _load_wiki_registry()
+    wikis = []
+    for name, path in registry.items():
+        wikis.append({"name": name, "path": path})
+    return {"wikis": wikis}
 
 def _default_wiki_path() -> str:
     env = os.environ.get("WIKI_PATH", "")
