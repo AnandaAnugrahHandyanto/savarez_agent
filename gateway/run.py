@@ -2484,6 +2484,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Track background tasks to prevent garbage collection mid-execution
         self._background_tasks: set = set()
 
+    @staticmethod
+    def _context_id_for_source(source) -> Optional[str]:
+        """Derive memory context_id from message source.
+
+        Group/forum/channel chats get per-chat scoped memory; DMs get global
+        memory (None).  MemoryStore sanitizes the returned value before use.
+        """
+        if source.chat_type in ("group", "forum", "channel") and source.chat_id:
+            return str(source.chat_id)
+        return None
 
     def _wire_teams_pipeline_runtime(self) -> None:
         """Bind the Teams meeting pipeline runtime to Graph webhook ingress.
@@ -10631,9 +10641,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         logger.warning("Background task vision enrichment failed: %s", e)
 
             # Per-channel memory scoping for background tasks
-            _bg_context_id = None
-            if source.chat_type in ("group", "forum", "channel") and source.chat_id:
-                _bg_context_id = source.chat_id
+            _bg_context_id = self._context_id_for_source(source)
 
             def run_sync():
                 agent = AIAgent(
@@ -14784,9 +14792,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if agent is None:
                 # Per-channel memory scoping: group/channel chats get scoped memory,
                 # DMs get global memory.
-                _context_id = None
-                if source.chat_type in ("group", "forum", "channel") and source.chat_id:
-                    _context_id = source.chat_id
+                _context_id = self._context_id_for_source(source)
 
                 # Config changed or first message — create fresh agent
                 agent = AIAgent(
