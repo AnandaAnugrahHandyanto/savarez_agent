@@ -1487,6 +1487,9 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             "imap_host": email_imap,
             "smtp_host": email_smtp,
         })
+        email_send_from = os.getenv("EMAIL_SEND_FROM_ADDRESS", "").strip()
+        if email_send_from:
+            config.platforms[Platform.EMAIL].extra["send_from_address"] = email_send_from
     email_home = os.getenv("EMAIL_HOME_ADDRESS")
     if email_home and Platform.EMAIL in config.platforms:
         config.platforms[Platform.EMAIL].home_channel = HomeChannel(

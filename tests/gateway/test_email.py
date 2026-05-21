@@ -43,6 +43,19 @@ class TestConfigEnvOverrides(unittest.TestCase):
         self.assertEqual(config.platforms[Platform.EMAIL].extra["address"], "hermes@test.com")
 
     @patch.dict(os.environ, {
+        "EMAIL_ADDRESS": "login@test.com",
+        "EMAIL_SEND_FROM_ADDRESS": "bot@test.com",
+        "EMAIL_PASSWORD": "secret",
+        "EMAIL_IMAP_HOST": "imap.test.com",
+        "EMAIL_SMTP_HOST": "smtp.test.com",
+    }, clear=False)
+    def test_email_send_from_override_loaded_from_env(self):
+        from gateway.config import GatewayConfig, Platform, _apply_env_overrides
+        config = GatewayConfig()
+        _apply_env_overrides(config)
+        self.assertEqual(config.platforms[Platform.EMAIL].extra["send_from_address"], "bot@test.com")
+
+    @patch.dict(os.environ, {
         "EMAIL_ADDRESS": "hermes@test.com",
         "EMAIL_PASSWORD": "secret",
         "EMAIL_IMAP_HOST": "imap.test.com",
@@ -268,6 +281,37 @@ class TestDispatchMessage(unittest.TestCase):
             "message_id": "<msg1@test.com>",
             "in_reply_to": "",
             "body": "Self message",
+            "attachments": [],
+            "date": "",
+        }
+
+        asyncio.run(adapter._dispatch_message(msg_data))
+        adapter._message_handler.assert_not_called()
+
+    def test_send_from_alias_filtered_as_self_message(self):
+        """Inbound copies from the configured visible sender should also be skipped."""
+        import asyncio
+        from gateway.config import PlatformConfig
+
+        with patch.dict(os.environ, {
+            "EMAIL_ADDRESS": "login@test.com",
+            "EMAIL_SEND_FROM_ADDRESS": "bot@test.com",
+            "EMAIL_PASSWORD": "secret",
+            "EMAIL_IMAP_HOST": "imap.test.com",
+            "EMAIL_SMTP_HOST": "smtp.test.com",
+        }):
+            from gateway.platforms.email import EmailAdapter
+            adapter = EmailAdapter(PlatformConfig(enabled=True))
+
+        adapter._message_handler = MagicMock()
+        msg_data = {
+            "uid": b"1a",
+            "sender_addr": "bot@test.com",
+            "sender_name": "Hermes Bot",
+            "subject": "Test",
+            "message_id": "<msg-alias@test.com>",
+            "in_reply_to": "",
+            "body": "Alias copy",
             "attachments": [],
             "date": "",
         }
@@ -593,6 +637,36 @@ class TestThreadContext(unittest.TestCase):
             self.assertEqual(send_call["Subject"], "Re: Project question")
             self.assertFalse(send_call["Subject"].startswith("Re: Re:"))
 
+    def test_reply_uses_send_from_header_but_auth_login(self):
+        """Visible sender overrides headers while SMTP auth stays on EMAIL_ADDRESS."""
+        from gateway.config import PlatformConfig
+
+        with patch.dict(os.environ, {
+            "EMAIL_ADDRESS": "login@test.com",
+            "EMAIL_SEND_FROM_ADDRESS": "bot@custom.example",
+            "EMAIL_PASSWORD": "secret",
+            "EMAIL_IMAP_HOST": "imap.test.com",
+            "EMAIL_SMTP_HOST": "smtp.test.com",
+        }):
+            from gateway.platforms.email import EmailAdapter
+            adapter = EmailAdapter(PlatformConfig(enabled=True))
+
+        adapter._thread_context["user@test.com"] = {
+            "subject": "Project question",
+            "message_id": "<original@test.com>",
+        }
+
+        with patch("smtplib.SMTP") as mock_smtp:
+            mock_server = MagicMock()
+            mock_smtp.return_value = mock_server
+
+            adapter._send_email("user@test.com", "Here is the answer.", None)
+
+            send_call = mock_server.send_message.call_args[0][0]
+            self.assertEqual(send_call["From"], "bot@custom.example")
+            self.assertTrue(send_call["Message-ID"].endswith("@custom.example>"))
+            mock_server.login.assert_called_once_with("login@test.com", "secret")
+
     def test_no_thread_context_uses_default_subject(self):
         """Without thread context, subject should be 'Re: Hermes Agent'."""
         adapter = self._make_adapter()
@@ -703,6 +777,39 @@ class TestSendMethods(unittest.TestCase):
                     for p in parts
                 )
                 self.assertTrue(has_attachment)
+        finally:
+            os.unlink(tmp_path)
+
+    def test_attachment_send_uses_send_from_header(self):
+        """Attachment sends should use the visible sender but auth with EMAIL_ADDRESS."""
+        import tempfile
+        from gateway.config import PlatformConfig
+
+        with patch.dict(os.environ, {
+            "EMAIL_ADDRESS": "login@test.com",
+            "EMAIL_SEND_FROM_ADDRESS": "bot@custom.example",
+            "EMAIL_PASSWORD": "secret",
+            "EMAIL_IMAP_HOST": "imap.test.com",
+            "EMAIL_SMTP_HOST": "smtp.test.com",
+        }):
+            from gateway.platforms.email import EmailAdapter
+            adapter = EmailAdapter(PlatformConfig(enabled=True))
+
+        with tempfile.NamedTemporaryFile(suffix=".txt", delete=False) as f:
+            f.write(b"Test document content")
+            tmp_path = f.name
+
+        try:
+            with patch("smtplib.SMTP") as mock_smtp:
+                mock_server = MagicMock()
+                mock_smtp.return_value = mock_server
+
+                adapter._send_email_with_attachment("user@test.com", "Here is the file", tmp_path)
+
+                send_call = mock_server.send_message.call_args[0][0]
+                self.assertEqual(send_call["From"], "bot@custom.example")
+                self.assertTrue(send_call["Message-ID"].endswith("@custom.example>"))
+                mock_server.login.assert_called_once_with("login@test.com", "secret")
         finally:
             os.unlink(tmp_path)
 
@@ -983,6 +1090,39 @@ class TestSendEmailStandalone(unittest.TestCase):
             self.assertEqual(send_call["From"], "hermes@test.com")
 
     @patch.dict(os.environ, {
+        "EMAIL_ADDRESS": "login@test.com",
+        "EMAIL_SEND_FROM_ADDRESS": "bot@custom.example",
+        "EMAIL_PASSWORD": "secret",
+        "EMAIL_SMTP_HOST": "smtp.test.com",
+        "EMAIL_SMTP_PORT": "587",
+    })
+    def test_send_email_tool_send_from_override(self):
+        """Standalone sends should keep SMTP auth on EMAIL_ADDRESS and override From."""
+        import asyncio
+        from tools.send_message_tool import _send_email
+
+        with patch("smtplib.SMTP") as mock_smtp:
+            mock_server = MagicMock()
+            mock_smtp.return_value = mock_server
+
+            result = asyncio.run(
+                _send_email(
+                    {
+                        "address": "login@test.com",
+                        "send_from_address": "bot@custom.example",
+                        "smtp_host": "smtp.test.com",
+                    },
+                    "user@test.com",
+                    "Hello",
+                )
+            )
+
+            self.assertTrue(result["success"])
+            send_call = mock_server.send_message.call_args[0][0]
+            self.assertEqual(send_call["From"], "bot@custom.example")
+            mock_server.login.assert_called_once_with("login@test.com", "secret")
+
+    @patch.dict(os.environ, {
         "EMAIL_ADDRESS": "hermes@test.com",
         "EMAIL_PASSWORD": "secret",
         "EMAIL_SMTP_HOST": "smtp.test.com",
@@ -1204,6 +1344,19 @@ class TestImapIdExtensionForNetEase(unittest.TestCase):
 
         _send_imap_id(mock_imap)
         mock_imap.xatom.assert_called_once()
+
+
+class TestEmailGatewaySetupMetadata(unittest.TestCase):
+    """Test the built-in Email gateway setup metadata."""
+
+    def test_email_setup_lists_send_from_override(self):
+        import hermes_cli.gateway as gateway_mod
+
+        email_platform = next(p for p in gateway_mod._PLATFORMS if p["key"] == "email")
+        var_names = [item["name"] for item in email_platform["vars"]]
+        self.assertIn("EMAIL_SEND_FROM_ADDRESS", var_names)
+        send_from_var = next(item for item in email_platform["vars"] if item["name"] == "EMAIL_SEND_FROM_ADDRESS")
+        self.assertIn("From address", send_from_var["help"])
 
 
 if __name__ == "__main__":

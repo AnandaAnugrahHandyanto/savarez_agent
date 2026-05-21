@@ -3466,7 +3466,9 @@ _PLATFORMS = [
         ],
         "vars": [
             {"name": "EMAIL_ADDRESS", "prompt": "Email address", "password": False,
-             "help": "The email address Hermes will use (e.g., hermes@gmail.com)."},
+             "help": "Mailbox/login identity Hermes will use for IMAP and SMTP auth (e.g., hermes@gmail.com)."},
+            {"name": "EMAIL_SEND_FROM_ADDRESS", "prompt": "Visible sender address (optional)", "password": False,
+             "help": "Optional From address for outbound email. Leave blank to send from EMAIL_ADDRESS."},
             {"name": "EMAIL_PASSWORD", "prompt": "Email password (or app password)", "password": True,
              "help": "For Gmail, use an App Password (not your regular password)."},
             {"name": "EMAIL_IMAP_HOST", "prompt": "IMAP host", "password": False,

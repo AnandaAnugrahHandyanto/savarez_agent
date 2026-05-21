@@ -51,7 +51,7 @@ The easiest way:
 hermes gateway setup
 ```
 
-Select **Email** from the platform menu. The wizard prompts for your email address, password, IMAP/SMTP hosts, and allowed senders.
+Select **Email** from the platform menu. The wizard prompts for your mailbox/login address, an optional visible sender override, password, IMAP/SMTP hosts, and allowed senders.
 
 ### Manual Configuration
 
@@ -59,7 +59,7 @@ Add to `~/.hermes/.env`:
 
 ```bash
 # Required
-EMAIL_ADDRESS=hermes@gmail.com
+EMAIL_ADDRESS=login@example.com
 EMAIL_PASSWORD=abcd efgh ijkl mnop    # App password (not your regular password)
 EMAIL_IMAP_HOST=imap.gmail.com
 EMAIL_SMTP_HOST=smtp.gmail.com
@@ -68,11 +68,14 @@ EMAIL_SMTP_HOST=smtp.gmail.com
 EMAIL_ALLOWED_USERS=your@email.com,colleague@work.com
 
 # Optional
+EMAIL_SEND_FROM_ADDRESS=bot@custom.example  # Visible From address; defaults to EMAIL_ADDRESS
 EMAIL_IMAP_PORT=993                    # Default: 993 (IMAP SSL)
 EMAIL_SMTP_PORT=587                    # Default: 587 (SMTP STARTTLS)
 EMAIL_POLL_INTERVAL=15                 # Seconds between inbox checks (default: 15)
 EMAIL_HOME_ADDRESS=your@email.com      # Default delivery target for cron jobs
 ```
+
+`EMAIL_ADDRESS` stays the IMAP/SMTP login identity and inbox address Hermes polls. When `EMAIL_SEND_FROM_ADDRESS` is set, Hermes still logs in with `EMAIL_ADDRESS` but uses the override for outgoing `From:` headers.
 
 ---
 
@@ -103,7 +106,7 @@ The adapter polls the IMAP inbox for UNSEEN messages at a configurable interval 
   - Images (JPEG, PNG, GIF, WebP) → available to the vision tool
   - Documents (PDF, ZIP, etc.) → available for file access
 - **HTML-only emails** have tags stripped for plain text extraction
-- **Self-messages** are filtered out to prevent reply loops
+- **Self-messages** are filtered out to prevent reply loops, including copies received from the configured send-from alias
 - **Automated/noreply senders** are silently ignored — `noreply@`, `mailer-daemon@`, `bounce@`, `no-reply@`, and emails with `Auto-Submitted`, `Precedence: bulk`, or `List-Unsubscribe` headers
 
 ### Sending Replies
@@ -112,7 +115,8 @@ Replies are sent via SMTP with proper email threading:
 
 - **In-Reply-To** and **References** headers maintain the thread
 - **Subject line** preserved with `Re:` prefix (no double `Re: Re:`)
-- **Message-ID** generated with the agent's domain
+- **From header** uses `EMAIL_SEND_FROM_ADDRESS` when set, otherwise `EMAIL_ADDRESS`
+- **Message-ID** generated with the visible sender domain when available
 - Responses are sent as plain text (UTF-8)
 
 ### File Attachments
@@ -178,7 +182,8 @@ Email access follows the same pattern as all other Hermes platforms:
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `EMAIL_ADDRESS` | Yes | — | Agent's email address |
+| `EMAIL_ADDRESS` | Yes | — | Mailbox/login address used for IMAP polling and SMTP auth |
+| `EMAIL_SEND_FROM_ADDRESS` | No | `EMAIL_ADDRESS` | Visible sender address for outbound mail |
 | `EMAIL_PASSWORD` | Yes | — | Email password or app password |
 | `EMAIL_IMAP_HOST` | Yes | — | IMAP server host (e.g., `imap.gmail.com`) |
 | `EMAIL_SMTP_HOST` | Yes | — | SMTP server host (e.g., `smtp.gmail.com`) |
