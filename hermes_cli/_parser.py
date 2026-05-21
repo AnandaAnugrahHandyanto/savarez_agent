@@ -231,7 +231,7 @@ def build_top_level_parser():
         "--no-gui",
         action="store_true",
         default=False,
-        help="Run in headless mode, bypassing TUI elements. Useful for background execution.",
+        help="Run in headless mode for non-graphical/background execution.",
     )
 
 
