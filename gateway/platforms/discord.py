@@ -68,6 +68,60 @@ from gateway.platforms.base import (
 from tools.url_safety import is_safe_url
 
 
+_DISCORD_BOT_LOOP_FUEL_EXACT = {
+    "ok",
+    "ack",
+    "acknowledged",
+    "understood",
+    "收到",
+    "明白",
+    "确认",
+    "等",
+    "等老大",
+    "等指令",
+    "等待",
+    "静默",
+    "静默等待",
+    "保持静默",
+    "不发消息",
+    "不发任何消息",
+    "不再回复",
+    "停止",
+    "暂停",
+}
+
+_DISCORD_BOT_LOOP_FUEL_SUBSTRINGS = (
+    "the model returned no response",
+    "codex response remained incomplete",
+    "interrupting current task",
+    "i'll respond to your message shortly",
+    "ill respond to your message shortly",
+)
+
+
+def _normalize_discord_loop_fuel_text(content: str) -> str:
+    """Normalize Discord text for bot-to-bot loop-fuel detection."""
+    normalized = (content or "").strip().lower()
+    normalized = re.sub(r"<@!?\d+>", "", normalized)
+    normalized = re.sub(r"[\s`*_~>\-:：。.!！,，]+", " ", normalized).strip()
+    normalized = normalized.strip("()（）[]【】")
+    return normalized.strip()
+
+
+def _is_discord_bot_loop_fuel(content: str) -> bool:
+    """Return True for bot-originated ack/wait/stop/error messages.
+
+    These messages contain no actionable user intent but can ping another bot
+    in shared Discord threads, causing bot-to-bot acknowledgement loops.
+    """
+    normalized = _normalize_discord_loop_fuel_text(content)
+    if not normalized:
+        return True
+    if normalized in _DISCORD_BOT_LOOP_FUEL_EXACT:
+        return True
+    return any(needle in normalized for needle in _DISCORD_BOT_LOOP_FUEL_SUBSTRINGS)
+
+
 def _clean_discord_id(entry: str) -> str:
     """Strip common prefixes from a Discord user ID or username entry.
 
@@ -748,13 +802,30 @@ class DiscordAdapter(BasePlatformAdapter):
                 # permitted by DISCORD_ALLOW_BOTS are not rejected for
                 # not being in DISCORD_ALLOWED_USERS (fixes #4466).
                 if getattr(message.author, "bot", False):
+                    if _is_discord_bot_loop_fuel(getattr(message, "content", "")):
+                        logger.debug(
+                            "[%s] Ignoring bot loop-fuel Discord message from %s",
+                            self.name,
+                            getattr(message.author, "id", "unknown"),
+                        )
+                        return
+                    # Bot-originated Discord messages must explicitly mention this
+                    # bot.  Do not let shared-thread participation or
+                    # DISCORD_ALLOW_BOTS=all turn another bot's status chatter into
+                    # a new agent run.
+                    client_user = self._client.user if self._client else None
+                    if not client_user or client_user not in message.mentions:
+                        logger.debug(
+                            "[%s] Ignoring bot Discord message without self mention from %s",
+                            self.name,
+                            getattr(message.author, "id", "unknown"),
+                        )
+                        return
                     allow_bots = os.getenv("DISCORD_ALLOW_BOTS", "none").lower().strip()
                     if allow_bots == "none":
                         return
-                    elif allow_bots == "mentions":
-                        if not self._client.user or self._client.user not in message.mentions:
-                            return
-                    # "all" falls through; bot is permitted — skip the
+                    # "mentions" and "all" both fall through after the explicit
+                    # self-mention requirement above; bot is permitted — skip the
                     # human-user allowlist below (bots aren't in it).
                 else:
                     # Non-bot: enforce the configured user/role allowlists.
@@ -4536,6 +4607,7 @@ class DiscordAdapter(BasePlatformAdapter):
             in_bot_thread = (
                 is_thread
                 and thread_id in self._threads
+                and not getattr(message.author, "bot", False)
                 and not self._discord_thread_require_mention()
             )
 

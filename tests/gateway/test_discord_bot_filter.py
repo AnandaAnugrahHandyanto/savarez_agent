@@ -5,6 +5,8 @@ import os
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from gateway.platforms.discord import _is_discord_bot_loop_fuel
+
 
 def _make_author(*, bot: bool = False, is_self: bool = False):
     """Create a mock Discord author."""
@@ -48,13 +50,14 @@ class TestDiscordBotFilter(unittest.TestCase):
             return False  # own messages always ignored
 
         if getattr(message.author, "bot", False):
+            if _is_discord_bot_loop_fuel(getattr(message, "content", "")):
+                return False
+            if not client_user or client_user not in message.mentions:
+                return False
             allow = allow_bots.lower().strip()
             if allow == "none":
                 return False
-            elif allow == "mentions":
-                if not client_user or client_user not in message.mentions:
-                    return False
-            # "all" falls through
+            # "mentions" and "all" both fall through after explicit self mention.
         
         return True  # message accepted
 
@@ -78,11 +81,19 @@ class TestDiscordBotFilter(unittest.TestCase):
         msg = _make_message(author=bot)
         self.assertFalse(self._run_filter(msg, "none"))
 
-    def test_allow_bots_all_accepts_bots(self):
-        """With allow_bots=all, all bot messages are accepted."""
+    def test_allow_bots_all_rejects_without_self_mention(self):
+        """Bot messages still require explicit self mention with allow_bots=all."""
+        our_user = _make_author(is_self=True)
         bot = _make_author(bot=True)
-        msg = _make_message(author=bot)
-        self.assertTrue(self._run_filter(msg, "all"))
+        msg = _make_message(author=bot, mentions=[])
+        self.assertFalse(self._run_filter(msg, "all", our_user))
+
+    def test_allow_bots_all_accepts_with_self_mention(self):
+        """With allow_bots=all, substantive bot messages with @mention are accepted."""
+        our_user = _make_author(is_self=True)
+        bot = _make_author(bot=True)
+        msg = _make_message(author=bot, content="Please review PR #123", mentions=[our_user])
+        self.assertTrue(self._run_filter(msg, "all", our_user))
 
     def test_allow_bots_mentions_rejects_without_mention(self):
         """With allow_bots=mentions, bot messages without @mention are rejected."""
@@ -99,18 +110,54 @@ class TestDiscordBotFilter(unittest.TestCase):
         self.assertTrue(self._run_filter(msg, "mentions", our_user))
 
     def test_default_is_none(self):
-        """Default behavior (no env var) should be 'none'."""
-        default = os.getenv("DISCORD_ALLOW_BOTS", "none")
+        """Document the adapter's code default when no env override is set."""
+        with patch.dict(os.environ, {}, clear=True):
+            default = os.getenv("DISCORD_ALLOW_BOTS", "none")
         self.assertEqual(default, "none")
 
     def test_case_insensitive(self):
         """Allow_bots value should be case-insensitive."""
+        our_user = _make_author(is_self=True)
         bot = _make_author(bot=True)
-        msg = _make_message(author=bot)
-        self.assertTrue(self._run_filter(msg, "ALL"))
-        self.assertTrue(self._run_filter(msg, "All"))
-        self.assertFalse(self._run_filter(msg, "NONE"))
-        self.assertFalse(self._run_filter(msg, "None"))
+        msg = _make_message(author=bot, content="Please review this", mentions=[our_user])
+        self.assertTrue(self._run_filter(msg, "ALL", our_user))
+        self.assertTrue(self._run_filter(msg, "All", our_user))
+        self.assertFalse(self._run_filter(msg, "NONE", our_user))
+        self.assertFalse(self._run_filter(msg, "None", our_user))
+
+    def test_bot_wait_ack_messages_are_loop_fuel(self):
+        """Bot wait/ack/stop chatter is ignored even when it mentions this bot."""
+        our_user = _make_author(is_self=True)
+        bot = _make_author(bot=True)
+        for content in [
+            "收到",
+            "等老大",
+            "（静默等待）",
+            "不发任何消息",
+            "⚠️ The model returned no response after processing tool results.",
+            "⚠️ Codex response remained incomplete after 3 continuation attempts",
+            "⚡ Interrupting current task (iteration 1/90). I'll respond to your message shortly.",
+        ]:
+            with self.subTest(content=content):
+                msg = _make_message(author=bot, content=content, mentions=[our_user])
+                self.assertFalse(self._run_filter(msg, "all", our_user))
+
+    def test_human_wait_text_is_not_bot_filtered(self):
+        """Humans can still send short wait/ack text; this gate only filters bots."""
+        human = _make_author(bot=False)
+        msg = _make_message(author=human, content="等老大")
+        self.assertTrue(self._run_filter(msg, "none"))
+
+    def test_substantive_bot_mention_is_not_loop_fuel(self):
+        """Substantive bot messages with self mention still support bot-to-bot review."""
+        our_user = _make_author(is_self=True)
+        bot = _make_author(bot=True)
+        msg = _make_message(
+            author=bot,
+            content="PR #123 is ready. Please review the diff and test plan.",
+            mentions=[our_user],
+        )
+        self.assertTrue(self._run_filter(msg, "all", our_user))
 
 
 if __name__ == "__main__":
