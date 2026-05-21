@@ -84,9 +84,10 @@ def test_kanban_notifier_dedupes_board_slugs_pointing_to_same_db(tmp_path, monke
 
     asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
 
-    assert len(adapter.sent) == 1
-    assert "Kanban" in adapter.sent[0]["text"]
-    assert tid in adapter.sent[0]["text"]
+    assert len(adapter.sent) == 2
+    assert "Kanban 已派单" in adapter.sent[0]["text"]
+    assert "Issue/任务完成" in adapter.sent[1]["text"]
+    assert all(tid in item["text"] for item in adapter.sent)
 
 
 def test_kanban_notifier_claim_prevents_second_watcher_send(tmp_path, monkeypatch):
@@ -102,7 +103,7 @@ def test_kanban_notifier_claim_prevents_second_watcher_send(tmp_path, monkeypatc
     asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter1)))
     asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter2)))
 
-    assert len(adapter1.sent) == 1
+    assert len(adapter1.sent) == 2
     assert adapter2.sent == []
 
 
@@ -203,9 +204,10 @@ def test_notifier_redelivers_same_kind_on_dispatch_cycle(tmp_path, monkeypatch):
     runner = _make_runner(adapter)
     asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
 
-    # First crash delivered.
-    assert len(adapter.sent) == 1
-    assert "crashed" in adapter.sent[0]["text"].lower()
+    # Initial assignment and first crash delivered.
+    assert len(adapter.sent) == 2
+    assert "Kanban 已派单" in adapter.sent[0]["text"]
+    assert "崩溃" in adapter.sent[1]["text"]
 
     # Subscription survives — the cursor advanced past event #1, but the
     # row is still there.
@@ -229,8 +231,39 @@ def test_notifier_redelivers_same_kind_on_dispatch_cycle(tmp_path, monkeypatch):
     runner = _make_runner(adapter)
     asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
 
-    assert len(adapter.sent) == 2, (
+    assert len(adapter.sent) == 3, (
         f"Second crashed event should also notify; got {len(adapter.sent)} "
         f"deliveries (texts: {[d['text'] for d in adapter.sent]})"
     )
-    assert "crashed" in adapter.sent[1]["text"].lower()
+    assert "崩溃" in adapter.sent[2]["text"]
+
+
+def test_kanban_notifier_sends_runtime_lifecycle_receipts(tmp_path, monkeypatch):
+    db_path = tmp_path / "runtime-lifecycle.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="runtime receipts", assignee="coder")
+        kb.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat-1")
+        kb.assign_task(conn, tid, "reviewer")
+        kb._append_event(conn, tid, "spawned", {"pid": 12345})
+        kb._append_event(conn, tid, "heartbeat", {"note": "halfway done"})
+        kb.complete_task(conn, tid, summary="finished handoff")
+    finally:
+        conn.close()
+
+    adapter = RecordingAdapter()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+
+    texts = [item["text"] for item in adapter.sent]
+    assert [text.splitlines()[0] for text in texts] == [
+        "📌 Kanban 已派单",
+        "📌 Kanban 已分配",
+        "▶️ Runtime 已开始",
+        "🔄 Runtime 进展",
+        "✅ Issue/任务完成",
+    ]
+    assert "@reviewer" in texts[-1]
+    assert "halfway done" in texts[3]
