@@ -59,6 +59,10 @@ optional_env:
     description: "Default user/group/room ID for cron / notification delivery"
     prompt: "Home channel ID (or empty)"
     password: false
+  - name: LINE_HOME_CHANNEL_NAME
+    description: "Display name for the LINE cron / notification delivery target"
+    prompt: "Home channel display name (or empty)"
+    password: false
   - name: LINE_SLOW_RESPONSE_THRESHOLD
     description: "Seconds before the slow-LLM postback button fires (default: 45; set 0 to disable and always Push-fallback)"
     prompt: "Slow response threshold (seconds)"

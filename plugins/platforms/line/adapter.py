@@ -1512,7 +1512,10 @@ def _env_enablement() -> Optional[Dict[str, Any]]:
     if os.getenv("LINE_PUBLIC_URL"):
         seeded["public_url"] = os.environ["LINE_PUBLIC_URL"]
     if os.getenv("LINE_HOME_CHANNEL"):
-        seeded["home_channel"] = os.environ["LINE_HOME_CHANNEL"]
+        seeded["home_channel"] = {
+            "chat_id": os.environ["LINE_HOME_CHANNEL"],
+            "name": os.getenv("LINE_HOME_CHANNEL_NAME") or "Home",
+        }
     return seeded or {}
 
 

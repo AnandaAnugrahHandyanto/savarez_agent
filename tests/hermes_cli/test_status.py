@@ -114,6 +114,49 @@ def test_show_status_reports_vercel_backend_contract(monkeypatch, capsys, tmp_pa
     assert "live processes do not survive" in output
 
 
+def test_show_status_discovers_plugin_platforms(monkeypatch, capsys, tmp_path):
+    from gateway.platform_registry import PlatformEntry, platform_registry
+    from hermes_cli import plugins as plugins_mod
+
+    from hermes_cli import status as status_mod
+    import hermes_cli.auth as auth_mod
+    import hermes_cli.gateway as gateway_mod
+
+    monkeypatch.setattr(status_mod, "get_env_path", lambda: tmp_path / ".env", raising=False)
+    monkeypatch.setattr(status_mod, "get_hermes_home", lambda: tmp_path, raising=False)
+    monkeypatch.setattr(status_mod, "load_config", lambda: {"model": "gpt-5.4"}, raising=False)
+    monkeypatch.setattr(status_mod, "resolve_requested_provider", lambda requested=None: "openai-codex", raising=False)
+    monkeypatch.setattr(status_mod, "resolve_provider", lambda requested=None, **kwargs: "openai-codex", raising=False)
+    monkeypatch.setattr(status_mod, "provider_label", lambda provider: "OpenAI Codex", raising=False)
+    monkeypatch.setattr(auth_mod, "get_nous_auth_status", lambda: {}, raising=False)
+    monkeypatch.setattr(auth_mod, "get_codex_auth_status", lambda: {}, raising=False)
+    monkeypatch.setattr(auth_mod, "get_qwen_auth_status", lambda: {}, raising=False)
+    monkeypatch.setattr(auth_mod, "get_xai_oauth_auth_status", lambda: {}, raising=False)
+    monkeypatch.setattr(gateway_mod, "find_gateway_pids", lambda exclude_pids=None: [], raising=False)
+
+    platform_registry.unregister("status_demo")
+
+    def _discover_status_demo():
+        platform_registry.register(
+            PlatformEntry(
+                name="status_demo",
+                label="StatusDemo",
+                adapter_factory=lambda cfg: None,
+                check_fn=lambda: True,
+                source="plugin",
+            )
+        )
+
+    monkeypatch.setattr(plugins_mod, "discover_plugins", _discover_status_demo)
+    try:
+        status_mod.show_status(SimpleNamespace(all=False, deep=False))
+        output = capsys.readouterr().out
+        assert "StatusDemo" in output
+        assert "(plugin)" in output
+    finally:
+        platform_registry.unregister("status_demo")
+
+
 # ---------------------------------------------------------------------------
 # Helpers shared by xAI OAuth status tests
 # ---------------------------------------------------------------------------

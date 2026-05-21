@@ -135,6 +135,23 @@ class TestGetConnectedPlatforms:
         assert Platform.DINGTALK not in config.get_connected_platforms()
 
 
+class TestLinePluginEnvEnablement:
+    def test_home_channel_seed_uses_home_channel_dict(self, monkeypatch):
+        from plugins.platforms.line.adapter import _env_enablement
+
+        monkeypatch.setenv("LINE_CHANNEL_ACCESS_TOKEN", "line-token")
+        monkeypatch.setenv("LINE_CHANNEL_SECRET", "line-secret")
+        monkeypatch.setenv("LINE_HOME_CHANNEL", "U1234567890abcdef")
+        monkeypatch.setenv("LINE_HOME_CHANNEL_NAME", "LINE Home")
+
+        seed = _env_enablement()
+
+        assert seed["home_channel"] == {
+            "chat_id": "U1234567890abcdef",
+            "name": "LINE Home",
+        }
+
+
 class TestSessionResetPolicy:
     def test_roundtrip(self):
         policy = SessionResetPolicy(mode="idle", at_hour=6, idle_minutes=120)

@@ -444,7 +444,10 @@ def show_status(args):
 
     # Plugin-registered platforms
     try:
+        from hermes_cli.plugins import discover_plugins
         from gateway.platform_registry import platform_registry
+
+        discover_plugins()  # idempotent; required before status-only registry reads
         for entry in platform_registry.plugin_entries():
             configured = entry.check_fn()
             status_str = "configured" if configured else "not configured"
