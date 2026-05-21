@@ -3,6 +3,8 @@ from agent.swarm_prompt import build_swarm_operator_prompt
 
 def test_disabled_config_does_not_alter_prompt():
     assert build_swarm_operator_prompt({"enabled": False}) == ""
+    assert build_swarm_operator_prompt({"enabled": "false"}) == ""
+    assert build_swarm_operator_prompt({"enabled": "not really"}) == ""
     assert build_swarm_operator_prompt({}) == ""
 
 

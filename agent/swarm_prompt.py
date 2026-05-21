@@ -28,6 +28,20 @@ def _get_config_value(config: Any, key: str, default: Any = None) -> Any:
     return getattr(config, key, default)
 
 
+def _strict_bool(value: Any, *, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"true", "1", "yes", "on"}:
+            return True
+        if lowered in {"false", "0", "no", "off"}:
+            return False
+    if isinstance(value, (int, float)) and value in {0, 1}:
+        return bool(value)
+    return default
+
+
 def swarm_operator_enabled(config: Optional[Dict[str, Any]] = None) -> bool:
     """Return whether the prompt contract should be injected."""
     if config is None:
@@ -37,7 +51,7 @@ def swarm_operator_enabled(config: Optional[Dict[str, Any]] = None) -> bool:
             config = cfg_get(load_config(), "swarm_operator", default={}) or {}
         except Exception:
             config = {}
-    return bool(_get_config_value(config, "enabled", False))
+    return _strict_bool(_get_config_value(config, "enabled", False), default=False)
 
 
 def build_swarm_operator_prompt(config: Optional[Dict[str, Any]] = None) -> str:

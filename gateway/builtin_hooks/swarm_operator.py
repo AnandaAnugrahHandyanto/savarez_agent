@@ -9,6 +9,7 @@ altering gateway response flow.
 from __future__ import annotations
 
 import logging
+import math
 from typing import Any, Dict, Optional
 
 from agent.swarm_honcho import persist_swarm_honcho_summary
@@ -21,6 +22,8 @@ logger = logging.getLogger(__name__)
 DEFAULT_CONFIG: Dict[str, Any] = {
     "enabled": False,
     "dry_run": True,
+    "live_delegation_enabled": False,
+    "live_delegation_timeout_seconds": 30.0,
     "max_children": 3,
     "persist_to_honcho": False,
     "honcho_summary_enabled": False,
@@ -33,20 +36,41 @@ def _get_value(config: Any, key: str, default: Any = None) -> Any:
     return getattr(config, key, default)
 
 
+def _strict_bool(value: Any, *, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"true", "1", "yes", "on"}:
+            return True
+        if lowered in {"false", "0", "no", "off"}:
+            return False
+    if isinstance(value, (int, float)) and value in {0, 1}:
+        return bool(value)
+    return default
+
+
 def _swarm_config(config: Any) -> Dict[str, Any]:
     raw = _get_value(config, "swarm_operator", {}) if config is not None else {}
     if not isinstance(raw, dict):
         raw = {}
     merged = dict(DEFAULT_CONFIG)
     merged.update(raw)
-    merged["enabled"] = bool(merged.get("enabled", False))
-    merged["dry_run"] = bool(merged.get("dry_run", True))
+    merged["enabled"] = _strict_bool(merged.get("enabled", False), default=False)
+    merged["dry_run"] = _strict_bool(merged.get("dry_run", True), default=True)
+    merged["live_delegation_enabled"] = _strict_bool(merged.get("live_delegation_enabled", False), default=False)
+    try:
+        merged["live_delegation_timeout_seconds"] = float(merged.get("live_delegation_timeout_seconds", 30.0))
+    except (TypeError, ValueError):
+        merged["live_delegation_timeout_seconds"] = 30.0
+    if not math.isfinite(merged["live_delegation_timeout_seconds"]) or not (0 < merged["live_delegation_timeout_seconds"] <= 30.0):
+        merged["live_delegation_timeout_seconds"] = 30.0
     try:
         merged["max_children"] = int(merged.get("max_children", 3))
     except (TypeError, ValueError):
         merged["max_children"] = 3
-    merged["persist_to_honcho"] = bool(merged.get("persist_to_honcho", False))
-    merged["honcho_summary_enabled"] = bool(merged.get("honcho_summary_enabled", False))
+    merged["persist_to_honcho"] = _strict_bool(merged.get("persist_to_honcho", False), default=False)
+    merged["honcho_summary_enabled"] = _strict_bool(merged.get("honcho_summary_enabled", False), default=False)
     return merged
 
 
@@ -59,7 +83,10 @@ def handle(event_type: str, context: Optional[Dict[str, Any]] = None) -> None:
         return
 
     try:
-        message = str(ctx.get("message") or "")
+        preview_message = str(ctx.get("message") or "")
+        full_message = ctx.get("message_full")
+        message = str(full_message) if isinstance(full_message, str) else preview_message
+        message_truncated = bool(ctx.get("message_truncated", False)) and not isinstance(full_message, str)
         job = SwarmJob.create(
             message,
             platform=str(ctx.get("platform") or ""),
@@ -68,10 +95,12 @@ def handle(event_type: str, context: Optional[Dict[str, Any]] = None) -> None:
             session_id=str(ctx.get("session_id") or ""),
             metadata={
                 "dry_run": cfg["dry_run"],
+                "live_delegation_enabled": cfg["live_delegation_enabled"],
                 "max_children": cfg["max_children"],
                 "persist_to_honcho": cfg["persist_to_honcho"],
                 "honcho_summary_enabled": cfg["honcho_summary_enabled"],
                 "message_id": ctx.get("message_id"),
+                "message_truncated": message_truncated,
             },
         )
         plan = route_request(
@@ -89,10 +118,59 @@ def handle(event_type: str, context: Optional[Dict[str, Any]] = None) -> None:
             AuditEvent(
                 "shadow_routed",
                 "Swarm operator shadow route recorded.",
-                metadata={"mode": plan.mode, "dry_run": cfg["dry_run"]},
+                metadata={
+                    "mode": plan.mode,
+                    "dry_run": cfg["dry_run"],
+                    "live_delegation_enabled": cfg["live_delegation_enabled"],
+                },
             )
         )
         store = ctx.get("swarm_store") or SwarmStore()
+
+        should_dispatch_live = bool(cfg["enabled"] and not cfg["dry_run"] and cfg["live_delegation_enabled"])
+        if should_dispatch_live:
+            delegate_fn = ctx.get("swarm_delegate_fn")
+            if message_truncated:
+                job.metadata["live_delegation_status"] = "blocked"
+                job.metadata["live_delegation_block_reason"] = "truncated_message"
+                job.audit.append(
+                    AuditEvent(
+                        "live_delegation_blocked",
+                        "Live delegation requires the full user message; only a truncated preview was available.",
+                        metadata={"reason": "truncated_message"},
+                    )
+                )
+            elif not callable(delegate_fn):
+                job.metadata["live_delegation_status"] = "blocked"
+                job.metadata["live_delegation_block_reason"] = "missing_delegate_fn"
+                job.audit.append(
+                    AuditEvent(
+                        "live_delegation_blocked",
+                        "Live delegation gate was enabled, but no delegate function was available.",
+                        metadata={"reason": "missing_delegate_fn"},
+                    )
+                )
+            else:
+                job.metadata["live_delegation_status"] = "blocked"
+                job.metadata["live_delegation_block_reason"] = "gateway_live_dispatch_disabled"
+                job.audit.append(
+                    AuditEvent(
+                        "live_delegation_blocked",
+                        "Live delegation passed the config gate, but gateway live dispatch remains disabled until a non-blocking killable runner is wired.",
+                        metadata={"reason": "gateway_live_dispatch_disabled"},
+                    )
+                )
+        elif not cfg["dry_run"]:
+            job.metadata["live_delegation_status"] = "blocked"
+            job.metadata["live_delegation_block_reason"] = "live_delegation_disabled"
+            job.audit.append(
+                AuditEvent(
+                    "live_delegation_blocked",
+                    "Swarm operator stayed shadow-only because live delegation is not explicitly enabled.",
+                    metadata={"reason": "live_delegation_disabled"},
+                )
+            )
+
         store.save_job(job)
         store.append_event(
             AuditEvent(
@@ -104,6 +182,10 @@ def handle(event_type: str, context: Optional[Dict[str, Any]] = None) -> None:
                     "platform": job.platform,
                     "session_id": job.session_id,
                     "dry_run": cfg["dry_run"],
+                    "live_delegation_enabled": cfg["live_delegation_enabled"],
+                    "job_status": job.status,
+                    "live_delegation_status": job.metadata.get("live_delegation_status"),
+                    "live_delegation_block_reason": job.metadata.get("live_delegation_block_reason"),
                 },
             )
         )

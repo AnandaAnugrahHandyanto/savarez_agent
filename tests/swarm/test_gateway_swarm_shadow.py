@@ -59,6 +59,103 @@ def test_hook_enabled_dry_run_writes_job_and_metrics_event(tmp_path):
     metrics = [json.loads(line) for line in (tmp_path / "swarm_operator_metrics.jsonl").read_text().splitlines()]
     assert metrics[-1]["event_type"] == "shadow_job_recorded"
     assert metrics[-1]["metadata"]["job_id"] == job["job_id"]
+    assert metrics[-1]["metadata"]["live_delegation_enabled"] is False
+
+
+def test_hook_non_dry_run_without_live_gate_still_does_not_dispatch(tmp_path):
+    calls = []
+    context = _context(tmp_path, enabled=True)
+    context["gateway_config"]["swarm_operator"]["dry_run"] = False
+    context["swarm_delegate_fn"] = lambda **kwargs: calls.append(kwargs)
+
+    swarm_operator.handle("agent:start", context)
+
+    assert calls == []
+    data = json.loads((tmp_path / "swarm_operator_state.json").read_text())
+    job = next(iter(data["jobs"].values()))
+    assert job["metadata"]["dry_run"] is False
+    assert job["metadata"]["live_delegation_enabled"] is False
+    assert any(event["event_type"] == "live_delegation_blocked" for event in job["audit"])
+    assert job["metadata"]["live_delegation_status"] == "blocked"
+    assert job["metadata"]["live_delegation_block_reason"] == "live_delegation_disabled"
+
+
+def test_hook_live_delegation_requires_explicit_double_opt_in_and_safe_runner(tmp_path):
+    calls = []
+    context = _context(tmp_path, enabled=True)
+    context["gateway_config"]["swarm_operator"].update({"dry_run": False, "live_delegation_enabled": True, "max_children": 2})
+    context["swarm_delegate_fn"] = lambda **kwargs: calls.append(kwargs)
+
+    swarm_operator.handle("agent:start", context)
+
+    assert calls == []
+    data = json.loads((tmp_path / "swarm_operator_state.json").read_text())
+    job = next(iter(data["jobs"].values()))
+    assert job["metadata"]["live_delegation_enabled"] is True
+    assert job["metadata"]["live_delegation_status"] == "blocked"
+    assert job["metadata"]["live_delegation_block_reason"] == "gateway_live_dispatch_disabled"
+    assert any(
+        event["event_type"] == "live_delegation_blocked"
+        and event["metadata"].get("reason") == "gateway_live_dispatch_disabled"
+        for event in job["audit"]
+    )
+
+
+def test_hook_live_delegation_enabled_without_delegate_fn_blocks_instead_of_crashing(tmp_path):
+    context = _context(tmp_path, enabled=True)
+    context["gateway_config"]["swarm_operator"].update({"dry_run": False, "live_delegation_enabled": True})
+
+    swarm_operator.handle("agent:start", context)
+
+    data = json.loads((tmp_path / "swarm_operator_state.json").read_text())
+    job = next(iter(data["jobs"].values()))
+    assert job["metadata"]["live_delegation_enabled"] is True
+    assert job["metadata"]["live_delegation_status"] == "blocked"
+    assert job["metadata"]["live_delegation_block_reason"] == "missing_delegate_fn"
+    assert any(
+        event["event_type"] == "live_delegation_blocked"
+        and event["metadata"].get("reason") == "missing_delegate_fn"
+        for event in job["audit"]
+    )
+
+
+
+def test_hook_live_delegation_blocks_when_only_truncated_message_preview_is_available(tmp_path):
+    calls = []
+    context = _context(tmp_path, enabled=True)
+    context["message"] = "Research docs and " + ("x" * 600)
+    context["message_truncated"] = True
+    context["gateway_config"]["swarm_operator"].update({"dry_run": False, "live_delegation_enabled": True})
+    context["swarm_delegate_fn"] = lambda **kwargs: calls.append(kwargs)
+
+    swarm_operator.handle("agent:start", context)
+
+    assert calls == []
+    data = json.loads((tmp_path / "swarm_operator_state.json").read_text())
+    job = next(iter(data["jobs"].values()))
+    assert job["metadata"]["message_truncated"] is True
+    assert job["metadata"]["live_delegation_status"] == "blocked"
+    assert job["metadata"]["live_delegation_block_reason"] == "truncated_message"
+
+
+def test_hook_live_delegation_uses_full_message_when_gateway_supplies_it(tmp_path):
+    calls = []
+    full_message = "Research docs and review code " + ("full-context " * 80)
+    context = _context(tmp_path, enabled=True)
+    context["message"] = full_message[:500]
+    context["message_full"] = full_message
+    context["message_truncated"] = True
+    context["gateway_config"]["swarm_operator"].update({"dry_run": False, "live_delegation_enabled": True})
+
+    context["swarm_delegate_fn"] = lambda **kwargs: calls.append(kwargs)
+
+    swarm_operator.handle("agent:start", context)
+
+    assert calls == []
+    data = json.loads((tmp_path / "swarm_operator_state.json").read_text())
+    job = next(iter(data["jobs"].values()))
+    assert job["original_request"] == full_message
+    assert job["metadata"]["message_truncated"] is False
 
 
 def test_hook_honcho_summary_uses_injected_writer_only_when_enabled(tmp_path):

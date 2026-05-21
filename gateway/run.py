@@ -8419,6 +8419,8 @@ class GatewayRunner:
                 "chat_id": source.chat_id or "",
                 "session_id": session_entry.session_id,
                 "message": message_text[:500],
+                "message_full": message_text,
+                "message_truncated": len(message_text) > 500,
                 "message_id": self._reply_anchor_for_event(event),
                 "gateway_config": self.config,
             }

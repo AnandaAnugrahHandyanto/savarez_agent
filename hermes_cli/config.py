@@ -512,6 +512,8 @@ DEFAULT_CONFIG = {
     "swarm_operator": {
         "enabled": False,
         "dry_run": True,
+        "live_delegation_enabled": False,
+        "live_delegation_timeout_seconds": 30.0,
         "max_children": 3,
         "persist_to_honcho": False,
         "honcho_summary_enabled": False,

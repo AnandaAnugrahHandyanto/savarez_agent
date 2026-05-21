@@ -67,10 +67,17 @@ def _suggested_tasks(text: str, mode: str) -> List[Dict[str, Any]]:
     chunks = [part.strip(" .") for part in re.split(r"\b(?:and|then|;|\n)\b", text, flags=re.IGNORECASE) if part.strip()]
     if len(chunks) < 2:
         chunks = [text.strip()]
-    return [
-        {"title": chunk[:80], "description": chunk, "mode": mode}
-        for chunk in chunks[:6]
-    ]
+    tasks: List[Dict[str, Any]] = []
+    for chunk in chunks[:6]:
+        lowered = chunk.lower()
+        permission_required = any(re.search(rf"\b{re.escape(word)}\b", lowered) for word in _PERMISSION_WORDS) or any(
+            word in lowered for word in _PIPE_WORDS
+        )
+        task: Dict[str, Any] = {"title": chunk[:80], "description": chunk, "mode": mode}
+        if permission_required:
+            task["permission_required"] = True
+        tasks.append(task)
+    return tasks
 
 
 def _bounded_score(value: int) -> int:

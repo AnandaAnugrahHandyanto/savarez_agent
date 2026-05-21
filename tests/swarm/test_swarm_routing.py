@@ -33,6 +33,15 @@ def test_external_send_deploy_destructive_wording_requires_permission():
     assert plan.verification_required is True
 
 
+def test_side_effect_suggested_tasks_are_marked_permission_required():
+    plan = route_request("Research docs and send an email update")
+
+    assert plan.permission_requests
+    assert len(plan.suggested_tasks) >= 2
+    assert plan.suggested_tasks[0].get("permission_required") is not True
+    assert plan.suggested_tasks[1]["permission_required"] is True
+
+
 def test_n8n_docker_wording_routes_pipe_with_permission_gate():
     plan = route_request("Run the n8n workflow in docker compose")
 

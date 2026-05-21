@@ -124,6 +124,16 @@ def _ensure_job_tasks(job: SwarmJob, routing_plan: RoutingPlan) -> None:
             toolsets=_coerce_toolsets(item.get("toolsets")),
             permission_required=_task_requires_permission(item),
         )
+    if not job.tasks and getattr(routing_plan, "permission_requests", None):
+        descriptions = "; ".join(grant.description for grant in routing_plan.permission_requests if getattr(grant, "description", ""))
+        job.add_task(
+            "Await human approval",
+            descriptions or "Permission required before live side effects",
+            task_id=f"{job.job_id}_permission_gate",
+            mode=str(routing_plan.mode),
+            permission_required=True,
+            metadata={"permission_ids": [grant.permission_id for grant in routing_plan.permission_requests]},
+        )
 
 
 def _parse_delegate_response(response: Any) -> List[Dict[str, Any]]:
