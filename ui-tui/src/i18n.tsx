@@ -3,9 +3,6 @@ import { createContext, type ReactNode, useContext, useMemo } from 'react'
 export const LOCALES = ['en', 'zh'] as const
 export type Locale = (typeof LOCALES)[number]
 
-type TranslationValue = string | string[] | Record<string, string>
-export type TranslationKey = keyof typeof EN
-
 export { TRAIL_PATTERNS } from './i18n-consts.js'
 
 export interface I18nApi {
@@ -26,10 +23,11 @@ import {
   STATUS_ZH,
   EN,
   ZH,
+  type TranslationKey,
 } from './i18n-strings.js'
 
 
-const CATALOGS: Record<Locale, Record<TranslationKey, TranslationValue>> = { en: EN, zh: ZH }
+const CATALOGS: Record<Locale, Record<TranslationKey, string | string[] | Record<string, string>>> = { en: EN, zh: ZH }
 const STATUS_CATALOGS: Record<Locale, Record<string, string>> = { en: STATUS_EN, zh: STATUS_ZH }
 const TOOL_VERB_CATALOGS: Record<Locale, Record<string, string>> = { en: TOOL_VERBS_EN, zh: TOOL_VERBS_ZH }
 const VERB_CATALOGS: Record<Locale, string[]> = { en: VERBS_EN, zh: VERBS_ZH }

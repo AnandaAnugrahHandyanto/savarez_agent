@@ -544,7 +544,9 @@ export const EN = {
   'debug.uptime': 'uptime'
 } as const satisfies Record<string, TranslationValue>
 
-export const ZH: Record<string, TranslationValue> = {
+export type TranslationKey = keyof typeof EN
+
+export const ZH: Record<TranslationKey, TranslationValue> = {
   'background.short': '后台',
   'common.chars': '字符',
   'common.lines': '行',

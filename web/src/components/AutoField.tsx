@@ -5,6 +5,10 @@ import { Label } from "@/components/ui/label";
 import { useI18n } from "@/i18n";
 import { SCHEMA_ZH_LABEL } from "@/i18n/schemaZh";
 
+const SCHEMA_LABELS: Partial<Record<string, Record<string, string>>> = {
+  zh: SCHEMA_ZH_LABEL,
+};
+
 function FieldHint({
   schema,
   schemaKey,
@@ -107,9 +111,6 @@ export function AutoField({
   const enLabel = rawLabel
     .replace(/_/g, " ")
     .replace(/\b\w/g, (c) => c.toUpperCase());
-  const SCHEMA_LABELS: Partial<Record<string, Record<string, string>>> = {
-  zh: SCHEMA_ZH_LABEL,
-};
 const label = SCHEMA_LABELS[locale]?.[schemaKey] ?? enLabel;
 
   if (isRecord(value) || (Array.isArray(value) && value.some((item) => isRecord(item)))) {
