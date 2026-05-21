@@ -576,7 +576,7 @@ def _delete_skill(name: str, absorbed_into: Optional[str] = None) -> Dict[str, A
 
     # Curator-fork-only guard: refuse to delete a skill still referenced by an
     # active cron job.  ModuleNotFoundError = not installed (skip).
-    # Other ImportError = cron present but broken (fail-closed).
+    # Other Exception = cron present but broken (fail-closed).
     from tools.skill_provenance import is_background_review
     if is_background_review():
         _get_refs = None
