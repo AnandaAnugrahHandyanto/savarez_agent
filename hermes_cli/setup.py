@@ -1409,7 +1409,7 @@ def setup_terminal_backend(config: dict):
         "SSH - run on a remote machine",
         "Daytona - persistent cloud development environment",
         "Vercel Sandbox - cloud microVM with snapshot filesystem persistence",
-        "Sprites - Fly.io cloud sandbox with checkpoints",
+        "Sprites - stateful Firecracker VM sandbox on Fly.io, with checkpoint & restore",
     ]
     idx_to_backend = {0: "local", 1: "docker", 2: "modal", 3: "ssh", 4: "daytona", 5: "vercel_sandbox", 6: "sprites"}
     backend_to_idx = {"local": 0, "docker": 1, "modal": 2, "ssh": 3, "daytona": 4, "vercel_sandbox": 5, "sprites": 6}
@@ -1695,7 +1695,7 @@ def setup_terminal_backend(config: dict):
 
     elif selected_backend == "sprites":
         print_success("Terminal backend: Sprites")
-        print_info("Fly.io-backed cloud sandboxes with native checkpoint support.")
+        print_info("Stateful Firecracker VM sandboxes on Fly.io, with checkpoint & restore.")
         print_info("Sprites persist between sessions and are reused by task_id.")
         print_info("Sign up at: https://sprites.dev")
 
@@ -1752,8 +1752,8 @@ def setup_terminal_backend(config: dict):
             remove_env_value("SPRITES_BASE_URL")
 
         print()
-        print_info("Note: Sprites uses platform-default compute sizing.")
-        print_info("CPU/memory/disk and region are not yet user-configurable.")
+        print_info("Note: Sprites allocates compute dynamically (up to 8 CPU / 16 GB RAM).")
+        print_info("Manual CPU/memory/disk/region knobs are not yet exposed.")
 
     elif selected_backend == "ssh":
         print_success("Terminal backend: SSH")

@@ -1,10 +1,11 @@
-"""Sprites cloud execution environment.
+"""Sprites execution environment.
 
 Uses the sprites-py SDK (https://github.com/superfly/sprites-py) to run
-commands in Fly.io-backed sprite sandboxes. Persistent by default — sprites
-outlive sessions and are reused via a deterministic ``hermes-{task_id}`` name.
-Cleanup leaves the sprite running when ``persistent_filesystem`` is True; the
-sprite is deleted otherwise.
+commands in Sprites — stateful Firecracker VM sandboxes on Fly.io, with
+checkpoint & restore. Persistent by default: each Sprite outlives the session
+and is reused via a deterministic ``hermes-{task_id}`` name. Cleanup leaves
+the Sprite running when ``persistent_filesystem`` is True; the Sprite is
+deleted otherwise.
 """
 
 import logging
@@ -26,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 
 class SpritesEnvironment(BaseEnvironment):
-    """Sprites (Fly.io) cloud sandbox backend.
+    """Sprites backend: stateful Firecracker VM sandboxes on Fly.io.
 
     Spawn-per-call via ``_ThreadedProcessHandle`` wrapping blocking
     ``sprite.command(...).combined_output()`` calls. The SDK timeout is
