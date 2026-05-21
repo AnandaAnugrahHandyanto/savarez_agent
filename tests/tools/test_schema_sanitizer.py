@@ -201,6 +201,18 @@ def test_items_sanitized_in_array_schema():
     assert items == {"type": "object", "properties": {}}
 
 
+def test_array_schema_without_items_gets_permissive_items():
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {
+            "bag": {"type": "array"},
+        },
+    })]
+    out = sanitize_tool_schemas(tools)
+    bag = out[0]["function"]["parameters"]["properties"]["bag"]
+    assert bag == {"type": "array", "items": {}}
+
+
 def test_empty_tools_list_returns_empty():
     assert sanitize_tool_schemas([]) == []
 

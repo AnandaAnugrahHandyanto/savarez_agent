@@ -10,6 +10,7 @@ in and return transformed results.
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import logging
@@ -202,6 +203,49 @@ def _derive_responses_function_call_id(
 # Schema conversion
 # ---------------------------------------------------------------------------
 
+_CODEX_FORBIDDEN_SCHEMA_KEYS = {"enum", "anyOf", "oneOf", "allOf", "not"}
+
+
+def _sanitize_codex_responses_schema(schema: Any) -> Dict[str, Any]:
+    """Return a Codex Responses-compatible function-parameters schema.
+
+    ChatGPT/Codex Responses is stricter than the Chat Completions schema
+    surface Hermes normally carries. Some MCP tools include validation
+    keywords Codex rejects, and some expose arrays without ``items``. Strip
+    validation-only constraints and inject permissive array items while
+    preserving the object/array/string shape that guides tool calls.
+    """
+    if not isinstance(schema, dict):
+        return {"type": "object", "properties": {}}
+
+    def scrub(node: Any) -> Any:
+        if isinstance(node, list):
+            return [scrub(item) for item in node]
+        if not isinstance(node, dict):
+            return copy.deepcopy(node)
+
+        out: Dict[str, Any] = {}
+        for key, value in node.items():
+            if key in _CODEX_FORBIDDEN_SCHEMA_KEYS:
+                continue
+            out[key] = scrub(value)
+
+        if out.get("type") == "object" and not isinstance(out.get("properties"), dict):
+            out["properties"] = {}
+        if out.get("type") == "array" and "items" not in out:
+            out["items"] = {}
+        return out
+
+    cleaned = scrub(schema)
+    if not isinstance(cleaned, dict):
+        return {"type": "object", "properties": {}}
+    if cleaned.get("type") != "object":
+        cleaned["type"] = "object"
+    if not isinstance(cleaned.get("properties"), dict):
+        cleaned["properties"] = {}
+    return cleaned
+
+
 def _responses_tools(tools: Optional[List[Dict[str, Any]]] = None) -> Optional[List[Dict[str, Any]]]:
     """Convert chat-completions tool schemas to Responses function-tool schemas."""
     if not tools:
@@ -218,7 +262,9 @@ def _responses_tools(tools: Optional[List[Dict[str, Any]]] = None) -> Optional[L
             "name": name,
             "description": fn.get("description", ""),
             "strict": False,
-            "parameters": fn.get("parameters", {"type": "object", "properties": {}}),
+            "parameters": _sanitize_codex_responses_schema(
+                fn.get("parameters", {"type": "object", "properties": {}})
+            ),
         })
     return converted or None
 

@@ -284,6 +284,12 @@ def _sanitize_node(node: Any, path: str) -> Any:
     if out.get("type") == "object" and not isinstance(out.get("properties"), dict):
         out["properties"] = {}
 
+    # Array nodes without items: inject permissive default. OpenAI Codex
+    # Responses rejects arrays missing items with HTTP 400, and MCP servers
+    # sometimes ship arrays without item schemas.
+    if out.get("type") == "array" and "items" not in out:
+        out["items"] = {}
+
     # Prune ``required`` entries that don't exist in properties (defense
     # against malformed MCP schemas; also caught upstream for MCP tools, but
     # built-in tools or plugin tools may not have been through that path).
