@@ -8478,6 +8478,7 @@ class HermesCLI:
         turn_route = self._resolve_turn_agent_config(prompt)
 
         def run_qq():
+            qq_agent = None
             set_sudo_password_callback(self._sudo_password_callback)
             set_approval_callback(self._approval_callback)
             try:
@@ -8563,6 +8564,22 @@ class HermesCLI:
                     set_secret_capture_callback(None)
                 except Exception:
                     pass
+                try:
+                    session_db = getattr(self, "_session_db", None)
+                    if session_db is not None:
+                        session_ids = []
+                        current_id = getattr(qq_agent, "session_id", None)
+                        if current_id:
+                            session_ids.append(str(current_id))
+                        if task_id not in session_ids:
+                            session_ids.append(task_id)
+                        for session_id in session_ids:
+                            session_db.delete_session(
+                                session_id,
+                                sessions_dir=get_hermes_home() / "sessions",
+                            )
+                except Exception:
+                    logger.debug("Failed to delete quick-question session %s", task_id, exc_info=True)
                 if not self._agent_running:
                     self._spinner_text = ""
                 if self._app:

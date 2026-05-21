@@ -2,6 +2,7 @@
 
 import io
 import json
+from pathlib import Path
 import sys
 import threading
 import time
@@ -504,6 +505,8 @@ def test_slash_exec_rejects_pending_input_commands(server, cmd):
 def test_prompt_background_quick_question_uses_qq_task_and_emits_kind(capture):
     server, buf = capture
     sid = "test-session"
+    db = MagicMock()
+    server._db = db
 
     class FakeAIAgent:
         def __init__(self, **kwargs):
@@ -536,7 +539,10 @@ def test_prompt_background_quick_question_uses_qq_task_and_emits_kind(capture):
         assert task_id.startswith("qq_")
 
         deadline = time.time() + 2
-        while "background.complete" not in buf.getvalue() and time.time() < deadline:
+        while (
+            "background.complete" not in buf.getvalue()
+            or not db.delete_session.called
+        ) and time.time() < deadline:
             time.sleep(0.01)
 
     frames = [json.loads(line) for line in buf.getvalue().splitlines() if line.strip()]
@@ -548,6 +554,10 @@ def test_prompt_background_quick_question_uses_qq_task_and_emits_kind(capture):
         "task_id": task_id,
         "text": "quick answer",
     }
+    db.delete_session.assert_called_once_with(
+        task_id,
+        sessions_dir=Path("/tmp/hermes_test") / "sessions",
+    )
 
 
 def test_command_dispatch_queue_sends_message(server):
