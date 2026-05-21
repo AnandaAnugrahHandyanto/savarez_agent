@@ -6911,7 +6911,12 @@ class GatewayRunner:
             # continuation prompt against the current turn.
             if _cmd_def_inner and _cmd_def_inner.name == "goal":
                 _goal_arg = (event.get_command_args() or "").strip().lower()
-                if not _goal_arg or _goal_arg in {"status", "pause", "resume", "clear", "stop", "done"}:
+                if (
+                    not _goal_arg
+                    or _goal_arg in {"status", "pause", "resume", "clear", "stop", "done"}
+                    or _goal_arg == "create"
+                    or _goal_arg.startswith("create ")
+                ):
                     return await self._handle_goal_command(event)
                 return "Agent is running — use /goal status / pause / clear mid-run, or /stop before setting a new goal."
 
@@ -10435,6 +10440,16 @@ class GatewayRunner:
 
         if not args or lower == "status":
             return mgr.status_line()
+
+        if lower == "create" or lower.startswith("create "):
+            try:
+                from hermes_cli.goals import run_kanban_goal_bridge
+
+                rest = args.split(None, 1)[1] if " " in args else ""
+                sid = getattr(session_entry, "session_id", None) or ""
+                return run_kanban_goal_bridge(rest, session_id=sid)
+            except Exception as exc:
+                return f"kanban goal bridge failed: {exc}"
 
         if lower == "pause":
             state = mgr.pause(reason="user-paused")

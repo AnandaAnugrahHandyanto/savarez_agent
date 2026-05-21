@@ -32,6 +32,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import shlex
 import time
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
@@ -326,6 +327,30 @@ def create_kanban_task_from_goal(
             session_id=session_id,
             board=board,
         )
+
+
+def run_kanban_goal_bridge(rest: str, *, session_id: Optional[str] = None) -> str:
+    """Run the opt-in ``/goal create`` -> Kanban bridge.
+
+    ``/goal <text>`` keeps its existing Ralph-loop meaning. This helper powers
+    only the explicit ``/goal create ...`` form by reusing the canonical
+    ``/kanban goal`` parser/handler, so CLI, gateway, and TUI surfaces stay in
+    sync with ``hermes kanban goal``.
+    """
+    text = (rest or "").strip()
+    if not text:
+        return "Usage: /goal create <objective> [--assignee NAME] [--decompose]"
+    tokens = shlex.split(text)
+    flag_start = next((i for i, token in enumerate(tokens) if token.startswith("-")), len(tokens))
+    objective = " ".join(tokens[:flag_start]).strip()
+    if not objective:
+        return "Usage: /goal create <objective> [--assignee NAME] [--decompose]"
+    tokens = [objective] + tokens[flag_start:]
+    if session_id and "--session" not in tokens:
+        tokens.extend(["--session", session_id])
+    from hermes_cli.kanban import run_slash as run_kanban_slash
+
+    return run_kanban_slash("goal " + shlex.join(tokens))
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -808,5 +833,6 @@ __all__ = [
     "save_goal",
     "clear_goal",
     "create_kanban_task_from_goal",
+    "run_kanban_goal_bridge",
     "judge_goal",
 ]

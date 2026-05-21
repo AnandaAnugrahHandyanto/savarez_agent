@@ -4877,6 +4877,15 @@ def _(rid, params: dict) -> dict:
         lower = arg.strip().lower()
         if not arg.strip() or lower == "status":
             return _ok(rid, {"type": "exec", "output": mgr.status_line()})
+        if lower == "create" or lower.startswith("create "):
+            try:
+                from hermes_cli.goals import run_kanban_goal_bridge
+
+                rest = arg.split(None, 1)[1] if " " in arg else ""
+                out = run_kanban_goal_bridge(rest, session_id=sid_key)
+            except Exception as exc:
+                out = f"kanban goal bridge failed: {exc}"
+            return _ok(rid, {"type": "exec", "output": out})
         if lower == "pause":
             state = mgr.pause(reason="user-paused")
             out = "No goal set." if state is None else f"⏸ Goal paused: {state.goal}"

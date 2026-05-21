@@ -388,6 +388,25 @@ def test_create_kanban_task_from_goal_bridge_is_opt_in_and_idempotent(hermes_hom
     assert "refactor worker lanes" in task.body
 
 
+def test_run_kanban_goal_bridge_creates_task_with_session(hermes_home):
+    from hermes_cli import kanban_db as kb
+    from hermes_cli.goals import run_kanban_goal_bridge
+
+    out = run_kanban_goal_bridge(
+        "'ship worker lanes' --assignee orchestrator --json",
+        session_id="goal-create-session",
+    )
+    payload = json.loads(out)
+
+    assert payload["task"]["status"] == "triage"
+    assert payload["task"]["assignee"] == "orchestrator"
+    assert payload["task"]["session_id"] == "goal-create-session"
+    with kb.connect() as conn:
+        task = kb.get_task(conn, payload["task_id"])
+    assert task is not None
+    assert "ship worker lanes" in task.body
+
+
 # ──────────────────────────────────────────────────────────────────────
 # Auto-pause on consecutive judge parse failures
 # ──────────────────────────────────────────────────────────────────────
