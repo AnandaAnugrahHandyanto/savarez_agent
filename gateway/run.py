@@ -2979,6 +2979,21 @@ class GatewayRunner:
                 _response_time, _api_calls, _resp_len,
             )
 
+            # S-0518-01 Phase G — Coach reply commitment validator
+            # (observe-only). Detects future-tense sub-agent commitments in
+            # Coach's outgoing reply that lack a matching enqueue_action
+            # tool call. Logs to agent.log so accuracy can be reviewed
+            # before promoting to a hard gate. Failures are silent.
+            try:
+                from agent.commitment_validator import check_unmet_commitment
+                check_unmet_commitment(
+                    reply_text=response,
+                    agent_messages=agent_messages,
+                    chat_id=source.chat_id or "",
+                )
+            except Exception as _cv_err:  # noqa: BLE001
+                logger.debug("commitment-check hook failed: %s", _cv_err)
+
             # Surface error details when the agent failed silently (final_response=None)
             if not response and agent_result.get("failed"):
                 error_detail = agent_result.get("error", "unknown error")
