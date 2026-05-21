@@ -771,6 +771,8 @@ DEFAULT_CONFIG = {
                                       # 0 for long-running rolling-compaction sessions
                                       # where you want nothing pinned except the
                                       # system prompt + rolling summary + recent tail.
+        "notify": True,              # push "Compacting context..." status to messaging platforms;
+                                      # set false to log only (no user-visible notification)
     },
 
     # Anthropic prompt caching (Claude via OpenRouter or native Anthropic API).

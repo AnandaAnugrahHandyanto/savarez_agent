@@ -441,6 +441,34 @@ class TestPreflightCompression:
         assert "Compacting context" in events[0][1]
         assert events[1] == ("compress", "started")
 
+    def test_compress_context_silent_when_notify_false(self, agent):
+        """When compression.notify is false, no lifecycle event is pushed to user."""
+        agent._compression_notify = False
+        events = []
+        agent.status_callback = lambda ev, msg: events.append((ev, msg))
+
+        def _fake_compress(messages, current_tokens=None, focus_topic=None):
+            events.append(("compress", "started"))
+            return [{"role": "user", "content": f"{SUMMARY_PREFIX}\nPrevious conversation"}]
+
+        with (
+            patch.object(agent.context_compressor, "compress", side_effect=_fake_compress),
+            patch.object(agent, "_build_system_prompt", return_value="new system prompt"),
+            patch("run_agent.estimate_request_tokens_rough", return_value=42),
+        ):
+            compressed, new_system_prompt = agent._compress_context(
+                [{"role": "user", "content": "hello"}],
+                "system prompt",
+                approx_tokens=1234,
+            )
+
+        assert compressed == [{"role": "user", "content": f"{SUMMARY_PREFIX}\nPrevious conversation"}]
+        assert new_system_prompt == "new system prompt"
+        # Compression itself still fires
+        assert ("compress", "started") in events
+        # But no lifecycle event was pushed to the user
+        assert not any(ev == "lifecycle" for ev, msg in events)
+
     def test_preflight_compresses_oversized_history(self, agent):
         """When loaded history exceeds the model's context threshold, compress before API call."""
         agent.compression_enabled = True

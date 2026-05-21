@@ -2136,6 +2136,7 @@ class AIAgent:
         compression_protect_first = max(
             0, int(_compression_cfg.get("protect_first_n", 3))
         )
+        compression_notify = str(_compression_cfg.get("notify", True)).lower() in {"true", "1", "yes"}
 
         # Read optional explicit context_length override for the auxiliary
         # compression model. Custom endpoints often cannot report this via
@@ -2352,6 +2353,7 @@ class AIAgent:
                 api_mode=self.api_mode,
             )
         self.compression_enabled = compression_enabled
+        self._compression_notify = compression_notify
 
         # Reject models whose context window is below the minimum required
         # for reliable tool-calling workflows (64K tokens).
@@ -10656,9 +10658,14 @@ class AIAgent:
             f"{approx_tokens:,}" if approx_tokens else "unknown", self.model,
             focus_topic,
         )
-        self._emit_status(
-            "🗜️ Compacting context — summarizing earlier conversation so I can continue..."
-        )
+        if self._compression_notify:
+            self._emit_status(
+                "🗜️ Compacting context — summarizing earlier conversation so I can continue..."
+            )
+        else:
+            logger.info(
+                "🗜️ Compacting context — summarizing earlier conversation so I can continue..."
+            )
 
         # Notify external memory provider before compression discards context
         if self._memory_manager:
