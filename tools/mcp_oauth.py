@@ -52,6 +52,13 @@ from hermes_constants import secure_parent_dir
 
 logger = logging.getLogger(__name__)
 
+# Bind the callback listener to the IPv4 loopback for reliable local accept(),
+# but advertise ``localhost`` in redirect URIs. Some OAuth providers accept
+# loopback redirects only as ``http://localhost:...`` and reject the equivalent
+# numeric form ``http://127.0.0.1:...``.
+CALLBACK_BIND_HOST = "127.0.0.1"
+CALLBACK_REDIRECT_HOST = "localhost"
+
 # ---------------------------------------------------------------------------
 # Lazy imports -- MCP SDK with OAuth support is optional
 # ---------------------------------------------------------------------------
@@ -121,7 +128,7 @@ def _safe_filename(name: str) -> str:
 def _find_free_port() -> int:
     """Find an available TCP port on localhost."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("127.0.0.1", 0))
+        s.bind((CALLBACK_BIND_HOST, 0))
         return s.getsockname()[1]
 
 
@@ -401,13 +408,13 @@ async def _redirect_handler(authorization_url: str) -> None:
     print(msg, file=sys.stderr)
 
     # On a remote SSH session the OAuth provider redirects to
-    # http://127.0.0.1:<port>/callback, which reaches the callback server on
+    # http://localhost:<port>/callback, which reaches the callback server on
     # the *remote* machine — not the user's local machine where the browser
     # opened.  Print a port-forward hint so the user knows to tunnel first.
     if _oauth_port and (os.getenv("SSH_CLIENT") or os.getenv("SSH_TTY")):
         print(
             f"  Remote session detected. The OAuth provider will redirect your browser to\n"
-            f"    http://127.0.0.1:{_oauth_port}/callback\n"
+            f"    http://{CALLBACK_REDIRECT_HOST}:{_oauth_port}/callback\n"
             f"  which the callback listener on THIS machine is waiting on. If your browser\n"
             f"  is on a different machine, forward the port first in a separate terminal:\n"
             f"\n"
@@ -456,7 +463,7 @@ async def _wait_for_callback() -> tuple[str, str | None]:
 
     # Start a temporary server on the known port
     try:
-        server = HTTPServer(("127.0.0.1", _oauth_port), handler_cls)
+        server = HTTPServer((CALLBACK_BIND_HOST, _oauth_port), handler_cls)
     except OSError:
         # Port already in use — the server from build_oauth_auth is running.
         # Fall back to polling the server started by build_oauth_auth.
@@ -546,7 +553,7 @@ def _build_client_metadata(cfg: dict) -> "OAuthClientMetadata":
         )
     client_name = cfg.get("client_name", "Hermes Agent")
     scope = cfg.get("scope")
-    redirect_uri = f"http://127.0.0.1:{port}/callback"
+    redirect_uri = f"http://{CALLBACK_REDIRECT_HOST}:{port}/callback"
 
     metadata_kwargs: dict[str, Any] = {
         "client_name": client_name,
@@ -573,7 +580,7 @@ def _maybe_preregister_client(
     if not client_id:
         return
     port = cfg["_resolved_port"]
-    redirect_uri = f"http://127.0.0.1:{port}/callback"
+    redirect_uri = f"http://{CALLBACK_REDIRECT_HOST}:{port}/callback"
 
     info_dict: dict[str, Any] = {
         "client_id": client_id,

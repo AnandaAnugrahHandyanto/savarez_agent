@@ -166,6 +166,10 @@ class TestBuildOAuthAuth:
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         auth = build_oauth_auth("test", "https://example.com/mcp")
         assert isinstance(auth, OAuthClientProvider)
+        assert auth.context.client_metadata is not None
+        redirect_uri = str(auth.context.client_metadata.redirect_uris[0])
+        assert redirect_uri.startswith("http://localhost:")
+        assert redirect_uri.endswith("/callback")
 
     def test_returns_none_without_sdk(self, monkeypatch):
         import tools.mcp_oauth as mod
@@ -191,6 +195,8 @@ class TestBuildOAuthAuth:
         data = json.loads(client_path.read_text())
         assert data["client_id"] == "my-app-id"
         assert data["client_secret"] == "my-secret"
+        assert data["redirect_uris"][0].startswith("http://localhost:")
+        assert data["redirect_uris"][0].endswith("/callback")
 
     def test_scope_passed_through(self, tmp_path, monkeypatch):
         try:
