@@ -208,6 +208,103 @@ def test_pinned_skill_is_never_touched(curator_env):
     assert rec["pinned"] is True
 
 
+def test_cron_referenced_skill_is_not_archived(curator_env, monkeypatch):
+    """A skill past archive_cutoff must not be archived when an active cron
+    job still references it. Regression for GitHub issue #29912."""
+    c = curator_env["curator"]
+    u = curator_env["usage"]
+    skills_dir = curator_env["home"] / "skills"
+    skill_dir = _write_skill(skills_dir, "daily-report")
+
+    super_old = (datetime.now(timezone.utc) - timedelta(days=120)).isoformat()
+    data = u.load_usage()
+    data["daily-report"] = u._empty_record()
+    data["daily-report"]["created_by"] = "agent"
+    data["daily-report"]["last_used_at"] = super_old
+    data["daily-report"]["created_at"] = super_old
+    u.save_usage(data)
+
+    # Patch the module attribute directly: apply_automatic_transitions() uses
+    # a lazy "from cron.jobs import get_active_skill_refs" inside the body of
+    # _load_cron_protected(), so patching the module attribute is the correct
+    # intercept point. If that import is ever hoisted to module level, this
+    # test will need to patch agent.curator.get_active_skill_refs instead.
+    import cron.jobs as cron_jobs
+    monkeypatch.setattr(cron_jobs, "get_active_skill_refs", lambda: {"daily-report"})
+
+    counts = c.apply_automatic_transitions()
+
+    assert counts["archived"] == 0
+    assert skill_dir.exists(), "cron-protected skill should not be moved to .archive/"
+
+
+def test_load_cron_protected_returns_empty_when_cron_unavailable(curator_env, monkeypatch):
+    """When the cron module is not installed, _load_cron_protected must return
+    an empty set silently — missing cron support is not a fatal error."""
+    import sys
+    c = curator_env["curator"]
+    # Setting a module to None in sys.modules makes 'from <mod> import ...'
+    # raise ModuleNotFoundError — the documented way to simulate a missing module.
+    monkeypatch.setitem(sys.modules, "cron.jobs", None)
+    result = c._load_cron_protected()
+    assert result == set()
+
+
+def test_load_cron_protected_returns_none_and_warns_on_runtime_error(
+    curator_env, monkeypatch, caplog
+):
+    """When get_active_skill_refs() raises a runtime error, _load_cron_protected
+    must return None (not an empty set) and emit a WARNING.  Callers treat None
+    as fail-closed: skip auto-archive transitions rather than proceed unprotected."""
+    import logging
+    import cron.jobs as cron_jobs
+
+    c = curator_env["curator"]
+
+    def _raise():
+        raise RuntimeError("disk error")
+
+    monkeypatch.setattr(cron_jobs, "get_active_skill_refs", _raise)
+
+    with caplog.at_level(logging.WARNING, logger="agent.curator"):
+        result = c._load_cron_protected()
+
+    assert result is None
+    assert any("auto-archive transitions will be skipped" in rec.message for rec in caplog.records)
+
+
+def test_apply_automatic_transitions_skips_when_cron_store_raises(
+    curator_env, monkeypatch
+):
+    """When apply_automatic_transitions fetches cron_protected internally and
+    get_active_skill_refs raises, it must return zero counts (fail-closed) rather
+    than archiving skills whose cron dependency cannot be verified."""
+    import cron.jobs as cron_jobs
+
+    c = curator_env["curator"]
+    u = curator_env["usage"]
+    skills_dir = curator_env["home"] / "skills"
+    skill_dir = _write_skill(skills_dir, "old-skill")
+
+    super_old = (datetime.now(timezone.utc) - timedelta(days=120)).isoformat()
+    data = u.load_usage()
+    data["old-skill"] = u._empty_record()
+    data["old-skill"]["created_by"] = "agent"
+    data["old-skill"]["last_used_at"] = super_old
+    data["old-skill"]["created_at"] = super_old
+    u.save_usage(data)
+
+    def _raise():
+        raise RuntimeError("io error")
+
+    monkeypatch.setattr(cron_jobs, "get_active_skill_refs", _raise)
+
+    counts = c.apply_automatic_transitions()
+
+    assert counts == {"marked_stale": 0, "archived": 0, "reactivated": 0, "checked": 0}
+    assert skill_dir.exists(), "skill must not be archived when cron store is unreadable"
+
+
 def test_stale_skill_reactivates_on_recent_use(curator_env):
     c = curator_env["curator"]
     u = curator_env["usage"]
