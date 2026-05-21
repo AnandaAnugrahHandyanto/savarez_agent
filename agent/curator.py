@@ -253,10 +253,44 @@ def should_run_now(now: Optional[datetime] = None) -> bool:
 # Automatic state transitions (pure function, no LLM)
 # ---------------------------------------------------------------------------
 
-def apply_automatic_transitions(now: Optional[datetime] = None) -> Dict[str, int]:
+def _load_cron_protected() -> Set[str]:
+    """Return skill names referenced by any enabled cron job.
+
+    Separates ImportError (cron module unavailable) from runtime errors
+    (e.g. corrupt jobs store) so callers can distinguish a missing cron
+    subsystem from an unexpected failure.  Both fall back to an empty set
+    so the curator continues rather than blocking on a cron-side issue,
+    but runtime failures are logged at WARNING so they are visible.
+    """
+    try:
+        from cron.jobs import get_active_skill_refs
+    except ImportError:
+        return set()
+    try:
+        return get_active_skill_refs()
+    except Exception as e:
+        logger.warning(
+            "curator: could not read cron job skill refs — "
+            "cron-protection guard skipped this run: %s", e,
+        )
+        return set()
+
+
+def apply_automatic_transitions(
+    now: Optional[datetime] = None,
+    cron_protected: Optional[Set[str]] = None,
+) -> Dict[str, int]:
     """Walk every agent-created skill and move active/stale/archived based on
     the latest real activity timestamp. Pinned skills are never touched.
-    Returns a counter dict describing what changed."""
+    Returns a counter dict describing what changed.
+
+    Args:
+        cron_protected: pre-computed set of skill names referenced by active
+            cron jobs.  When *None* (standalone or test use), the set is
+            fetched internally.  Pass an explicit value from
+            ``run_curator_review`` so both the pure phase and the LLM
+            candidate list operate on the same snapshot.
+    """
     from tools import skill_usage as _u
 
     if now is None:
@@ -264,12 +298,17 @@ def apply_automatic_transitions(now: Optional[datetime] = None) -> Dict[str, int
     stale_cutoff = now - timedelta(days=get_stale_after_days())
     archive_cutoff = now - timedelta(days=get_archive_after_days())
 
+    if cron_protected is None:
+        cron_protected = _load_cron_protected()
+
     counts = {"marked_stale": 0, "archived": 0, "reactivated": 0, "checked": 0}
 
     for row in _u.agent_created_report():
         counts["checked"] += 1
         name = row["name"]
         if row.get("pinned"):
+            continue
+        if name in cron_protected:
             continue
 
         last_activity = _parse_iso(row.get("last_activity_at"))
@@ -348,11 +387,14 @@ CURATOR_REVIEW_PROMPT = (
     "into ~/.hermes/skills/.archive/) is the maximum destructive action. "
     "Archives are recoverable; deletion is not.\n"
     "3. DO NOT touch skills shown as pinned=yes. Skip them entirely.\n"
-    "4. DO NOT use usage counters as a reason to skip consolidation. The "
+    "4. DO NOT touch skills listed under 'Cron-protected skills' below. "
+    "Active scheduled jobs depend on them; archiving would break those "
+    "jobs silently at next run time.\n"
+    "5. DO NOT use usage counters as a reason to skip consolidation. The "
     "counters are new and often mostly zero. Judge overlap on CONTENT, "
     "not on use_count. 'use=0' is not evidence a skill is valuable; it's "
     "absence of evidence either way.\n"
-    "5. DO NOT reject consolidation on the grounds that 'each skill has "
+    "6. DO NOT reject consolidation on the grounds that 'each skill has "
     "a distinct trigger'. Pairwise distinctness is the wrong bar. The "
     "right bar is: 'would a human maintainer write this as N separate "
     "skills, or as one skill with N labeled subsections?' When the "
@@ -1346,12 +1388,30 @@ def _render_report_markdown(p: Dict[str, Any]) -> str:
 # Orchestrator — spawn a forked AIAgent for the LLM review pass
 # ---------------------------------------------------------------------------
 
-def _render_candidate_list() -> str:
-    """Human/agent-readable list of agent-created skills with usage stats."""
+def _render_candidate_list(cron_protected: Optional[Set[str]] = None) -> str:
+    """Human/agent-readable list of agent-created skills with usage stats.
+
+    Args:
+        cron_protected: pre-computed set from ``_load_cron_protected()``.
+            When *None*, fetched internally (standalone / dry-run use).
+    """
     rows = skill_usage.agent_created_report()
     if not rows:
         return "No agent-created skills to review."
-    lines = [f"Agent-created skills ({len(rows)}):\n"]
+
+    if cron_protected is None:
+        cron_protected = _load_cron_protected()
+
+    lines = []
+
+    protected_names = sorted(cron_protected)
+    if protected_names:
+        lines.append("Cron-protected skills (do not archive — active jobs reference these):")
+        for name in protected_names:
+            lines.append(f"- {name}")
+        lines.append("")
+
+    lines.append(f"Agent-created skills ({len(rows)}):\n")
     for r in rows:
         lines.append(
             f"- {r['name']}  "
@@ -1390,6 +1450,9 @@ def run_curator_review(
     can read what the curator WOULD have done.
     """
     start = datetime.now(timezone.utc)
+    # Snapshot active cron skill refs once so both the automatic transition
+    # phase and the LLM candidate list operate on a consistent view.
+    cron_protected = _load_cron_protected()
     if dry_run:
         # Count candidates without mutating state.
         try:
@@ -1418,7 +1481,7 @@ def run_curator_review(
                     pass
         except Exception as e:
             logger.debug("Curator pre-run snapshot failed: %s", e, exc_info=True)
-        counts = apply_automatic_transitions(now=start)
+        counts = apply_automatic_transitions(now=start, cron_protected=cron_protected)
 
     auto_summary_parts = []
     if counts["marked_stale"]:
@@ -1453,7 +1516,7 @@ def run_curator_review(
 
         llm_meta: Dict[str, Any] = {}
         try:
-            candidate_list = _render_candidate_list()
+            candidate_list = _render_candidate_list(cron_protected=cron_protected)
             if "No agent-created skills" in candidate_list:
                 final_summary = f"{prefix}{auto_summary}; llm: skipped (no candidates)"
                 llm_meta = {

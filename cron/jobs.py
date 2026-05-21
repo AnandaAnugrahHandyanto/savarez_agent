@@ -17,7 +17,7 @@ import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
 from hermes_constants import get_hermes_home
-from typing import Optional, Dict, List, Any, Union
+from typing import Optional, Dict, List, Any, Set, Union
 
 logger = logging.getLogger(__name__)
 
@@ -724,6 +724,20 @@ def list_jobs(include_disabled: bool = False) -> List[Dict[str, Any]]:
     if not include_disabled:
         jobs = [j for j in jobs if j.get("enabled", True)]
     return jobs
+
+
+def get_active_skill_refs() -> Set[str]:
+    """Return skill names referenced by any enabled cron job.
+
+    Used by the curator to protect skills from archival when a live
+    scheduled job still depends on them.
+    """
+    skills: Set[str] = set()
+    for job in list_jobs(include_disabled=False):
+        for name in _normalize_skill_list(job.get("skill"), job.get("skills")):
+            if name:
+                skills.add(name)
+    return skills
 
 
 def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]:
