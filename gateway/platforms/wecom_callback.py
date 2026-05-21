@@ -18,7 +18,6 @@ import socket as _socket
 import time
 from typing import Any, Dict, List, Optional
 from defusedxml.ElementTree import fromstring as _safe_fromstring
-from xml.etree import ElementTree as ET
 
 try:
     from aiohttp import web
