@@ -3017,23 +3017,17 @@ class GatewayRunner:
         # merged follow-up as the next turn. Preserve explicit steer mode, and
         # preserve legacy interrupt behavior when display.busy_text_mode is
         # configured as "interrupt".
+        #
+        # Option B1: text follow-ups in queue mode are delegated to the
+        # adapter's handle_message busy path, which applies a short debounce
+        # window (default 0.6s) to collect rapid consecutive messages into
+        # one merged event before flushing to _pending_messages.
         if (
             event.message_type == MessageType.TEXT
             and busy_text_mode == "queue"
             and effective_mode != "steer"
         ):
-            logger.debug(
-                "Text message while session %s is active — queuing follow-up "
-                "(no interrupt, will cascade after current turn)",
-                session_key,
-            )
-            merge_pending_message_event(
-                adapter._pending_messages,
-                session_key,
-                event,
-                merge_text=True,
-            )
-            return True
+            return False  # let handle_message busy path handle it
 
         # Steer mode: inject mid-run via running_agent.steer() instead of
         # queueing + interrupting.  If the agent isn't running yet

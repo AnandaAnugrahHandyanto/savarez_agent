@@ -84,6 +84,9 @@ def _make_adapter(platform_val="telegram"):
     adapter.config = MagicMock()
     adapter.config.extra = {}
     adapter.platform = MagicMock(value=platform_val)
+    adapter._text_debounce_buffers = {}
+    adapter._text_debounce_tasks = {}
+    adapter._busy_text_debounce_seconds = 0.6
     return adapter
 
 
@@ -187,8 +190,9 @@ class TestBusySessionAck:
         assert "Interrupting" not in content
 
     @pytest.mark.asyncio
-    async def test_busy_text_mode_queue_silently_merges_text_without_interrupt(self):
-        """Default busy text behavior queues follow-ups silently like photos."""
+    async def test_busy_text_mode_queue_delegates_to_adapter_handle_message(self):
+        """busy_text_mode=queue returns False so the adapter's handle_message
+        busy path runs the text debounce, without interrupting or sending ack."""
         runner, sentinel = _make_runner()
         runner._busy_input_mode = "interrupt"
         runner._busy_text_mode = "queue"
@@ -206,9 +210,12 @@ class TestBusySessionAck:
         result1 = await runner._handle_active_session_busy_message(first, sk)
         result2 = await runner._handle_active_session_busy_message(second, sk)
 
-        assert result1 is True
-        assert result2 is True
-        assert adapter._pending_messages[sk].text == "part one\npart two"
+        # Gateway delegates to handle_message by returning False
+        assert result1 is False
+        assert result2 is False
+        # Gateway does NOT merge into pending (handle_message does that)
+        assert sk not in adapter._pending_messages
+        # No interrupt, no ack — the adapter handles it silently
         agent.interrupt.assert_not_called()
         adapter._send_with_retry.assert_not_called()
 
