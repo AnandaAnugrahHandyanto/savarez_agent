@@ -5,6 +5,7 @@ export const LIVE_RENDER_MAX_LINES = 240
 
 export const LONG_MSG = 300
 export const MAX_HISTORY = 800
+export const SYSTEM_COLLAPSE_CHARS = 400
 export const THINKING_COT_MAX = 160
 
 // Rows per wheel event (pre-accel). 1 keeps Ink's DECSTBM fast path live
