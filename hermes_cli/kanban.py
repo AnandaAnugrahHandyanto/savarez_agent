@@ -92,21 +92,8 @@ def _run_state_kwargs(args: argparse.Namespace) -> Optional[dict[str, str]]:
 
 
 def _infer_subscribe_from_env() -> Optional[dict[str, str]]:
-    platform = (os.environ.get("HERMES_NOTIFY_PLATFORM") or "").strip()
-    chat_id = (os.environ.get("HERMES_NOTIFY_CHAT_ID") or "").strip()
-    if not platform or not chat_id:
-        return None
-    subscribe = {
-        "platform": platform,
-        "chat_id": chat_id,
-    }
-    thread_id = (os.environ.get("HERMES_NOTIFY_THREAD_ID") or "").strip()
-    user_id = (os.environ.get("HERMES_NOTIFY_USER_ID") or "").strip()
-    if thread_id:
-        subscribe["thread_id"] = thread_id
-    if user_id:
-        subscribe["user_id"] = user_id
-    return subscribe
+    """Delegate to the canonical env-var resolution in ``kanban_db``."""
+    return kb._resolve_subscribe_from_env()
 
 
 def _parse_workspace_flag(value: str) -> tuple[str, Optional[str]]:

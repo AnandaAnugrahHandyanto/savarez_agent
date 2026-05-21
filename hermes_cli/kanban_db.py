@@ -1391,6 +1391,34 @@ def _canonical_assignee(assignee: Optional[str]) -> Optional[str]:
     return normalize_profile_name(assignee)
 
 
+def _resolve_subscribe_from_env() -> Optional[dict[str, str]]:
+    """Build a ``subscribe`` dict from ``HERMES_NOTIFY_*`` env vars.
+
+    Returns ``None`` when ``HERMES_NOTIFY_PLATFORM`` or
+    ``HERMES_NOTIFY_CHAT_ID`` is missing / empty.  Optional fields
+    (``thread_id``, ``user_id``) are included only when non-empty.
+
+    This is the single source of truth for env-var → subscribe
+    resolution, shared by :func:`create_task` and the CLI
+    ``kanban create`` handler.
+    """
+    platform = (os.environ.get("HERMES_NOTIFY_PLATFORM") or "").strip()
+    chat_id = (os.environ.get("HERMES_NOTIFY_CHAT_ID") or "").strip()
+    if not platform or not chat_id:
+        return None
+    subscribe: dict[str, str] = {
+        "platform": platform,
+        "chat_id": chat_id,
+    }
+    thread_id = (os.environ.get("HERMES_NOTIFY_THREAD_ID") or "").strip()
+    user_id = (os.environ.get("HERMES_NOTIFY_USER_ID") or "").strip()
+    if thread_id:
+        subscribe["thread_id"] = thread_id
+    if user_id:
+        subscribe["user_id"] = user_id
+    return subscribe
+
+
 def create_task(
     conn: sqlite3.Connection,
     *,
@@ -1537,16 +1565,7 @@ def create_task(
     # Resolve notification subscription from explicit arg or env vars.
     resolved_subscribe: Optional[dict[str, str]] = None
     if not subscribe:
-        sub_platform = os.environ.get("HERMES_NOTIFY_PLATFORM")
-        sub_chat_id = os.environ.get("HERMES_NOTIFY_CHAT_ID")
-        if sub_platform and sub_chat_id:
-            subscribe = {
-                "platform": sub_platform,
-                "chat_id": sub_chat_id,
-            }
-            sub_thread = os.environ.get("HERMES_NOTIFY_THREAD_ID")
-            if sub_thread:
-                subscribe["thread_id"] = sub_thread
+        subscribe = _resolve_subscribe_from_env()
     if isinstance(subscribe, dict):
         platform = str(subscribe.get("platform") or "").strip()
         chat_id = str(subscribe.get("chat_id") or "").strip()
