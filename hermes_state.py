@@ -1400,7 +1400,10 @@ class SessionDB:
                 for key in (
                     "id", "ended_at", "end_reason", "message_count",
                     "tool_call_count", "title", "last_active", "preview",
-                    "model", "system_prompt",
+                    "model", "system_prompt", "parent_session_id",
+                    "root_session_id", "session_kind", "creator_kind",
+                    "creator_tool_name", "creator_tool_call_id",
+                    "creator_task_index", "creator_command", "is_user_facing",
                 ):
                     if key in tip_row:
                         merged[key] = tip_row[key]
@@ -2247,7 +2250,16 @@ class SessionDB:
                 m.tool_name,
                 s.source,
                 s.model,
-                s.started_at AS session_started
+                s.started_at AS session_started,
+                s.parent_session_id,
+                s.root_session_id,
+                s.session_kind,
+                s.creator_kind,
+                s.creator_tool_name,
+                s.creator_tool_call_id,
+                s.creator_task_index,
+                s.creator_command,
+                s.is_user_facing
             FROM messages_fts
             JOIN messages m ON m.id = messages_fts.rowid
             JOIN sessions s ON s.id = m.session_id
@@ -2316,7 +2328,16 @@ class SessionDB:
                         m.tool_name,
                         s.source,
                         s.model,
-                        s.started_at AS session_started
+                        s.started_at AS session_started,
+                        s.parent_session_id,
+                        s.root_session_id,
+                        s.session_kind,
+                        s.creator_kind,
+                        s.creator_tool_name,
+                        s.creator_tool_call_id,
+                        s.creator_task_index,
+                        s.creator_command,
+                        s.is_user_facing
                     FROM messages_fts_trigram
                     JOIN messages m ON m.id = messages_fts_trigram.rowid
                     JOIN sessions s ON s.id = m.session_id
@@ -2366,7 +2387,12 @@ class SessionDB:
                                   max(1, instr(m.content, ?) - 40),
                                   120) AS snippet,
                            m.content, m.timestamp, m.tool_name,
-                           s.source, s.model, s.started_at AS session_started
+                           s.source, s.model, s.started_at AS session_started,
+                           s.parent_session_id, s.root_session_id,
+                           s.session_kind, s.creator_kind,
+                           s.creator_tool_name, s.creator_tool_call_id,
+                           s.creator_task_index, s.creator_command,
+                           s.is_user_facing
                     FROM messages m
                     JOIN sessions s ON s.id = m.session_id
                     WHERE {' AND '.join(like_where)}

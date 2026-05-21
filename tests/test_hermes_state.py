@@ -212,6 +212,61 @@ class TestSessionLifecycle:
         assert listed["creator_command"] == "/background"
         assert listed["is_user_facing"] == 0
 
+    def test_search_sessions_exposes_provenance_fields(self, db):
+        db.create_session(
+            session_id="s1",
+            source="cli",
+            session_kind="branch",
+            creator_kind="command",
+            creator_command="/branch",
+        )
+
+        sessions = db.search_sessions()
+        listed = next(s for s in sessions if s["id"] == "s1")
+        assert listed["session_kind"] == "branch"
+        assert listed["root_session_id"] == "s1"
+        assert listed["creator_kind"] == "command"
+        assert listed["creator_command"] == "/branch"
+
+    def test_search_messages_exposes_session_provenance_fields(self, db):
+        db.create_session(
+            session_id="s1",
+            source="cli",
+            session_kind="background_command",
+            creator_kind="command",
+            creator_command="/background",
+            is_user_facing=False,
+        )
+        db.append_message("s1", role="user", content="needle provenance search")
+
+        matches = db.search_messages("needle")
+        match = next(m for m in matches if m["session_id"] == "s1")
+        assert match["session_kind"] == "background_command"
+        assert match["root_session_id"] == "s1"
+        assert match["creator_kind"] == "command"
+        assert match["creator_command"] == "/background"
+        assert match["is_user_facing"] == 0
+
+    def test_list_sessions_rich_projects_compression_tip_provenance(self, db):
+        db.create_session("root", source="cli", session_kind="main")
+        db.append_message("root", role="user", content="root message")
+        db.end_session("root", "compression")
+        db.create_session(
+            "tip",
+            source="cli",
+            parent_session_id="root",
+            session_kind="continuation",
+            creator_kind="compression",
+        )
+        db.append_message("tip", role="user", content="tip message")
+
+        sessions = db.list_sessions_rich(include_children=False)
+        projected = next(s for s in sessions if s["id"] == "tip")
+        assert projected["_lineage_root_id"] == "root"
+        assert projected["session_kind"] == "continuation"
+        assert projected["root_session_id"] == "root"
+        assert projected["creator_kind"] == "compression"
+
 
 # =========================================================================
 # Message storage
