@@ -83,3 +83,37 @@ def test_status_exposes_missing_evidence_from_synthesis():
     assert "evidence:" in text
     assert "citation: missing" in text
     assert "safe to present complete: no" in text
+
+
+def test_status_distinguishes_missing_and_approved_human_approval_without_mutating_metadata():
+    missing_job = SwarmJob.create("send missing", created_at="2026-01-01T00:00:00+00:00")
+    missing_job.routing_plan = RoutingPlan(
+        mode="swarm",
+        reason="approval needed",
+        evidence_requirements=[
+            EvidenceRequirement("human_approval", "Approve send", metadata={"permission_id": "perm_send"})
+        ],
+        verification_required=True,
+    )
+    missing_task = missing_job.add_task("send", status="completed")
+    missing_task.result = {"summary": "sent", "claims": ["sent"], "evidence": []}
+
+    approved_job = SwarmJob.create("send approved", created_at="2026-01-01T00:00:00+00:00")
+    approved_job.routing_plan = RoutingPlan(
+        mode="swarm",
+        reason="approval needed",
+        evidence_requirements=[
+            EvidenceRequirement("human_approval", "Approve send", metadata={"permission_id": "perm_send"})
+        ],
+        verification_required=True,
+    )
+    approved_job.permissions.append(PermissionGrant("perm_send", "Approve send", status="approved"))
+    approved_task = approved_job.add_task("send", status="completed")
+    approved_task.result = {"summary": "sent", "claims": ["sent"], "evidence": []}
+    before_metadata = dict(approved_job.metadata)
+
+    text = format_swarm_status([missing_job, approved_job], include_completed=True)
+
+    assert "human_approval: missing" in text
+    assert "human_approval: approved" in text
+    assert approved_job.metadata == before_metadata

@@ -1,7 +1,7 @@
 import json
 
 from agent.swarm_executor import build_delegate_tasks, execute_swarm
-from agent.swarm_state import EvidenceRequirement, RoutingPlan, SwarmJob
+from agent.swarm_state import EvidenceRequirement, PermissionGrant, RoutingPlan, SwarmJob
 
 
 def _plan(tasks, mode="swarm"):
@@ -231,3 +231,28 @@ def test_synthesis_persists_when_all_tasks_are_blocked_before_dispatch():
     assert job.status == "awaiting_permission"
     assert job.metadata["swarm_synthesis"]["safe_to_present_complete"] is False
     assert job.metadata["swarm_synthesis"]["blocked_tasks"] == [job.tasks[0].task_id]
+
+
+def test_approved_parent_permission_prevents_human_approval_weak_output_in_execution():
+    job = SwarmJob.create("send report", created_at="2026-01-01T00:00:00+00:00")
+    job.permissions.append(PermissionGrant("perm_send", "Send report", status="approved"))
+    plan = RoutingPlan(
+        mode="swarm",
+        reason="approval needed",
+        suggested_tasks=[{"title": "send"}],
+        verification_required=True,
+        evidence_requirements=[
+            EvidenceRequirement("human_approval", "Garrett approves send", metadata={"permission_id": "perm_send"})
+        ],
+    )
+
+    def delegate_fn(**kwargs):
+        return {"results": [{"summary": "sent", "claims": ["Report sent"], "evidence": []}]}
+
+    execute_swarm(job, plan, delegate_fn, max_children=3)
+
+    assert job.status == "completed"
+    assert job.tasks[0].status == "completed"
+    assert "weak_output" not in job.tasks[0].result
+    assert job.tasks[0].result["evidence_validation"]["passed"] is True
+    assert job.metadata["swarm_synthesis"]["safe_to_present_complete"] is True

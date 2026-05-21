@@ -94,7 +94,10 @@ def format_swarm_status(jobs: Iterable[SwarmJob], *, include_completed: bool = F
             lines.append("  evidence:")
             for kind, count in sorted(synthesis.missing_evidence.items()):
                 lines.append(f"    - {kind}: missing ({count})")
-            if not synthesis.missing_evidence:
+            for kind, count in sorted(synthesis.satisfied_evidence.items()):
+                state = "approved" if kind == "human_approval" else "satisfied"
+                lines.append(f"    - {kind}: {state} ({count})")
+            if not synthesis.missing_evidence and not synthesis.satisfied_evidence:
                 lines.append("    - required evidence satisfied")
             lines.append(f"  safe to present complete: {'yes' if synthesis.safe_to_present_complete else 'no'}")
     return "\n".join(lines)

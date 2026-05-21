@@ -57,10 +57,21 @@ def test_cross_session_context_pressure_is_first_class_telemetry():
 def test_external_actions_add_human_approval_evidence_requirement():
     plan = route_request("Draft and send the client-facing email, then deploy the update")
 
-    kinds = [item.kind for item in plan.evidence_requirements]
-    assert "human_approval" in kinds
+    approval_requirements = [item for item in plan.evidence_requirements if item.kind == "human_approval"]
+    assert approval_requirements
+    assert approval_requirements[0].metadata["permission_ids"] == [grant.permission_id for grant in plan.permission_requests]
     assert plan.routing_telemetry.complexity_risk >= 2
     assert plan.routing_telemetry.required_scaffold == "approval"
+
+
+def test_multi_permission_routes_scope_human_approval_requirement_to_all_permissions():
+    plan = route_request("Send a message and run the docker workflow")
+
+    permission_ids = [grant.permission_id for grant in plan.permission_requests]
+    approval_requirement = next(item for item in plan.evidence_requirements if item.kind == "human_approval")
+    assert "perm_send" in permission_ids
+    assert "perm_pipe_execution" in permission_ids
+    assert approval_requirement.metadata["permission_ids"] == permission_ids
 
 
 def test_procedural_source_of_truth_work_adds_command_or_dry_run_evidence():

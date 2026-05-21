@@ -55,7 +55,12 @@ def _has_kind_evidence(result: Dict[str, Any], kind: str) -> bool:
     return any(result.get(key) for key in _KIND_KEYS.get(kind, (kind,)))
 
 
-def detect_weak_output(result: Dict[str, Any], evidence_requirements: Iterable[Any] = ()) -> Dict[str, Any]:
+def detect_weak_output(
+    result: Dict[str, Any],
+    evidence_requirements: Iterable[Any] = (),
+    *,
+    approval_grants: Iterable[Any] | None = None,
+) -> Dict[str, Any]:
     """Return weak-output annotation for a child result.
 
     Weak means the child result is not trustworthy enough for parent synthesis
@@ -64,15 +69,25 @@ def detect_weak_output(result: Dict[str, Any], evidence_requirements: Iterable[A
     """
 
     text = " ".join(str(result.get(key) or "") for key in ("summary", "content", "message", "status")).strip().lower()
+    evidence_requirements = list(evidence_requirements or [])
     required_kinds: List[str] = [_requirement_kind(item) for item in evidence_requirements if _requirement_required(item)]
     reasons: List[str] = []
+    overall_validation = validate_evidence_packet(
+        EvidencePacket.from_result(result),
+        evidence_requirements,
+        approval_grants=approval_grants,
+    )
 
-    if required_kinds and not _has_evidence(result):
+    if required_kinds and not _has_evidence(result) and not overall_validation.passed:
         reasons.append("no_evidence")
     if text in _VAGUE_SUCCESS_PHRASES or any(phrase in text for phrase in ("looks good", "should work", "seems fine")):
         reasons.append("vague_success_language")
     for kind in required_kinds:
-        validation = validate_evidence_packet(EvidencePacket.from_result(result), [item for item in evidence_requirements if _requirement_kind(item) == kind])
+        validation = validate_evidence_packet(
+            EvidencePacket.from_result(result),
+            [item for item in evidence_requirements if _requirement_kind(item) == kind],
+            approval_grants=approval_grants,
+        )
         if kind and not validation.passed:
             for reason in validation.reasons or [f"missing_{kind}"]:
                 if reason not in reasons:

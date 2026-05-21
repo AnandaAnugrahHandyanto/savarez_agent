@@ -8,7 +8,7 @@ kinds are actually present with kind-specific fields.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, Iterable, List
+from typing import Any, Dict, Iterable, List, Set
 
 from agent.swarm_state import EvidenceRequirement
 
@@ -152,6 +152,62 @@ def _requirement_required(requirement: Any) -> bool:
     return bool(getattr(requirement, "required", True))
 
 
+def _requirement_metadata(requirement: Any) -> Dict[str, Any]:
+    if isinstance(requirement, EvidenceRequirement):
+        return dict(requirement.metadata or {})
+    if isinstance(requirement, dict):
+        metadata = dict(requirement.get("metadata") or {}) if isinstance(requirement.get("metadata"), dict) else {}
+        for key in ("permission_id", "approval_id", "id", "permission_ids", "approval_ids"):
+            if key in requirement and key not in metadata:
+                metadata[key] = requirement[key]
+        return metadata
+    metadata = getattr(requirement, "metadata", {})
+    return dict(metadata) if isinstance(metadata, dict) else {}
+
+
+def _approval_grant_status(grant: Any) -> str:
+    if isinstance(grant, dict):
+        return str(grant.get("status") or "").lower().strip()
+    return str(getattr(grant, "status", "") or "").lower().strip()
+
+
+def _approval_grant_id(grant: Any) -> str:
+    if isinstance(grant, dict):
+        return str(grant.get("permission_id") or grant.get("approval_id") or grant.get("id") or "")
+    return str(getattr(grant, "permission_id", "") or getattr(grant, "approval_id", "") or getattr(grant, "id", "") or "")
+
+
+def _approval_ids_for_requirement(requirement: Any) -> Set[str]:
+    metadata = _requirement_metadata(requirement)
+    ids: Set[str] = set()
+    for key in ("permission_id", "approval_id", "id"):
+        value = metadata.get(key)
+        if value:
+            ids.add(str(value))
+    for key in ("permission_ids", "approval_ids"):
+        value = metadata.get(key)
+        if isinstance(value, str):
+            ids.add(value)
+        elif isinstance(value, (list, tuple, set)):
+            ids.update(str(item) for item in value if item)
+    for attr in ("permission_id", "approval_id"):
+        value = getattr(requirement, attr, "")
+        if value:
+            ids.add(str(value))
+    return ids
+
+
+def _parent_approval_satisfies(requirement: Any, approval_grants: Iterable[Any] | None) -> bool:
+    approved_grants = [grant for grant in approval_grants or [] if _approval_grant_status(grant) == "approved"]
+    if not approved_grants:
+        return False
+    required_ids = _approval_ids_for_requirement(requirement)
+    if not required_ids:
+        return False
+    approved_ids = {_approval_grant_id(grant) for grant in approved_grants if _approval_grant_id(grant)}
+    return required_ids.issubset(approved_ids)
+
+
 def _item_satisfies_kind(item: EvidenceItem, kind: str) -> bool:
     actual = item.kind.lower().strip()
     expected = kind.lower().strip()
@@ -175,19 +231,30 @@ def _item_satisfies_kind(item: EvidenceItem, kind: str) -> bool:
     return bool(text.strip())
 
 
-def validate_evidence_packet(packet: EvidencePacket | Dict[str, Any], requirements: Iterable[Any]) -> EvidenceValidationResult:
+def validate_evidence_packet(
+    packet: EvidencePacket | Dict[str, Any],
+    requirements: Iterable[Any],
+    *,
+    approval_grants: Iterable[Any] | None = None,
+) -> EvidenceValidationResult:
     packet = EvidencePacket.from_result(packet)
+    required_requirements = []
     required_kinds = []
     for requirement in requirements or []:
         kind = _requirement_kind(requirement)
         if kind and _requirement_required(requirement):
+            required_requirements.append(requirement)
             required_kinds.append(kind)
 
     satisfied: List[str] = []
     missing: List[str] = []
     reasons: List[str] = []
-    for kind in required_kinds:
-        if any(_item_satisfies_kind(item, kind) for item in packet.evidence):
+    for requirement, kind in zip(required_requirements, required_kinds):
+        if kind.lower().strip() == "human_approval":
+            kind_satisfied = _parent_approval_satisfies(requirement, approval_grants)
+        else:
+            kind_satisfied = any(_item_satisfies_kind(item, kind) for item in packet.evidence)
+        if kind_satisfied:
             if kind not in satisfied:
                 satisfied.append(kind)
         else:

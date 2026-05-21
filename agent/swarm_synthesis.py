@@ -21,6 +21,7 @@ class SwarmSynthesis:
     blocked_tasks: List[str] = field(default_factory=list)
     weak_tasks: List[str] = field(default_factory=list)
     missing_evidence: Dict[str, int] = field(default_factory=dict)
+    satisfied_evidence: Dict[str, int] = field(default_factory=dict)
     unresolved: List[str] = field(default_factory=list)
     risks: List[str] = field(default_factory=list)
     safe_to_present_complete: bool = True
@@ -33,6 +34,7 @@ class SwarmSynthesis:
             "blocked_tasks": list(self.blocked_tasks),
             "weak_tasks": list(self.weak_tasks),
             "missing_evidence": dict(self.missing_evidence),
+            "satisfied_evidence": dict(self.satisfied_evidence),
             "unresolved": list(self.unresolved),
             "risks": list(self.risks),
             "safe_to_present_complete": self.safe_to_present_complete,
@@ -47,7 +49,7 @@ def synthesize_swarm_result(job: SwarmJob, *, persist: bool = False) -> SwarmSyn
     for task in job.tasks:
         result = task.result or {}
         packet = EvidencePacket.from_result(result)
-        validation = validate_evidence_packet(packet, requirements)
+        validation = validate_evidence_packet(packet, requirements, approval_grants=job.permissions)
 
         if task.status in {"blocked", "awaiting_permission"} or task.permission_required:
             synthesis.blocked_tasks.append(task.task_id)
@@ -58,6 +60,8 @@ def synthesize_swarm_result(job: SwarmJob, *, persist: bool = False) -> SwarmSyn
         synthesis.risks.extend(packet.risks)
         for kind in validation.missing_required_kinds:
             synthesis.missing_evidence[kind] = synthesis.missing_evidence.get(kind, 0) + 1
+        for kind in validation.satisfied_kinds:
+            synthesis.satisfied_evidence[kind] = synthesis.satisfied_evidence.get(kind, 0) + 1
 
         claims = packet.claims or ([packet.summary] if packet.summary else [])
         if validation.passed:

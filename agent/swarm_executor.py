@@ -210,12 +210,16 @@ def execute_swarm(
         failed = _result_failed(result)
         requirements = getattr(routing_plan, "evidence_requirements", []) or []
         if requirements:
-            evidence_validation = validate_evidence_packet(EvidencePacket.from_result(result), requirements)
+            evidence_validation = validate_evidence_packet(
+                EvidencePacket.from_result(result),
+                requirements,
+                approval_grants=job.permissions,
+            )
             if isinstance(result, dict):
                 result = {**result, "evidence_validation": evidence_validation.to_dict()}
                 if index < len(results):
                     results[index] = result
-        weak_output = detect_weak_output(result, requirements)
+        weak_output = detect_weak_output(result, requirements, approval_grants=job.permissions)
         if weak_output["weak"]:
             result = {**result, "weak_output": weak_output}
             if index < len(results):

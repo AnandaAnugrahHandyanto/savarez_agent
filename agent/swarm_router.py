@@ -204,7 +204,14 @@ def _evidence_requirements(text: str, mode: str, permissions: List[PermissionGra
     if _contains_word(lowered, _CODE_WORDS):
         requirements.append(EvidenceRequirement("test", "Provide test/lint/typecheck evidence or explicit skipped-verification reason", source="router"))
     if permissions:
-        requirements.append(EvidenceRequirement("human_approval", "Get explicit human approval before external, destructive, or client-facing side effects", source="router"))
+        requirements.append(
+            EvidenceRequirement(
+                "human_approval",
+                "Get explicit human approval before external, destructive, or client-facing side effects",
+                source="router",
+                metadata={"permission_ids": [grant.permission_id for grant in permissions]},
+            )
+        )
     if telemetry.required_scaffold == "externalize_state":
         requirements.append(EvidenceRequirement("artifact", "Externalize state into a plan/checklist/artifact before synthesis", source="router"))
 
