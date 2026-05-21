@@ -35,13 +35,24 @@ DEFAULT_GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
 
 
 def is_native_gemini_base_url(base_url: str) -> bool:
-    """Return True when the endpoint speaks Gemini's native REST API."""
+    """Return True when the endpoint speaks Gemini's native REST API.
+
+    Recognizes both:
+    - generativelanguage.googleapis.com (Google AI Studio API-key endpoint)
+    - aiplatform.googleapis.com (Vertex AI express-mode API-key endpoint)
+
+    Returns False for ``/openai`` subpath (OpenAI-compat shim) on AI Studio,
+    since that path uses the standard OpenAI transport instead.
+    """
     normalized = str(base_url or "").strip().rstrip("/").lower()
     if not normalized:
         return False
-    if "generativelanguage.googleapis.com" not in normalized:
-        return False
-    return not normalized.endswith("/openai")
+    if "generativelanguage.googleapis.com" in normalized:
+        return not normalized.endswith("/openai")
+    if "aiplatform.googleapis.com" in normalized:
+        # Vertex express mode — same native REST shape, no /openai subpath
+        return True
+    return False
 
 
 # Provider IDs whose default base_url routes through GeminiNativeClient.
@@ -51,6 +62,7 @@ def is_native_gemini_base_url(base_url: str) -> bool:
 # lets the gemini plugin own its own routing surface.
 NATIVE_GEMINI_PROVIDERS: frozenset[str] = frozenset({
     "gemini",          # Google AI Studio (API key)
+    "gemini-vertex",   # Vertex AI Express Mode (API key)
 })
 
 
