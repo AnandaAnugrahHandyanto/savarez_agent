@@ -134,6 +134,54 @@ def test_start_refuses_missing_script(monkeypatch, tmp_path):
     assert harness_mod.start_harness_daemon(wait_seconds=0) is False
 
 
+def test_stop_terminates_process_when_status_endpoint_is_unhealthy(monkeypatch):
+    calls = []
+
+    class NoSuchProcess(Exception):
+        pass
+
+    class AccessDenied(Exception):
+        pass
+
+    class ZombieProcess(Exception):
+        pass
+
+    class FakeProc:
+        pid = 12345
+
+        def __init__(self):
+            self._running = True
+
+        def net_connections(self, kind):
+            assert kind == "inet"
+            return [Namespace(laddr=Namespace(port=18794))]
+
+        def terminate(self):
+            calls.append("terminate")
+            self._running = False
+
+        def kill(self):
+            calls.append("kill")
+            self._running = False
+
+        def is_running(self):
+            return self._running
+
+    proc = FakeProc()
+    fake_psutil = Namespace(
+        process_iter=lambda _attrs: [proc],
+        NoSuchProcess=NoSuchProcess,
+        AccessDenied=AccessDenied,
+        ZombieProcess=ZombieProcess,
+    )
+
+    monkeypatch.setitem(sys.modules, "psutil", fake_psutil)
+    monkeypatch.setattr(harness_mod, "is_harness_running", lambda: False)
+
+    assert harness_mod.stop_harness_daemon(timeout=0.1) is True
+    assert calls == ["terminate"]
+
+
 def test_main_accepts_harness_status(monkeypatch, tmp_path, capsys):
     import hermes_cli.main as main_mod
 

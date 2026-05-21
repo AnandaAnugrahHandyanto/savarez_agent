@@ -216,14 +216,13 @@ def _process_connections(proc):
 
 def stop_harness_daemon(timeout: float = 3.0) -> bool:
     """Stop any process listening on the configured harness port."""
-    if not is_harness_running():
-        return True
+    was_running = is_harness_running()
 
     try:
         import psutil
     except Exception:
         logger.exception("psutil is required to stop the harness daemon")
-        return False
+        return not was_running
 
     port = get_harness_port()
     found_processes: list[Any] = []
@@ -241,9 +240,19 @@ def stop_harness_daemon(timeout: float = 3.0) -> bool:
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             continue
 
+    if not found_processes:
+        return not was_running
+
     deadline = time.monotonic() + max(0.0, timeout)
     while time.monotonic() < deadline:
-        if not is_harness_running():
+        live_processes = []
+        for proc in found_processes:
+            try:
+                if proc.is_running():
+                    live_processes.append(proc)
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+        if not live_processes and not is_harness_running():
             return True
         time.sleep(0.25)
 
