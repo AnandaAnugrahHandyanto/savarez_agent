@@ -342,7 +342,7 @@ async def _resolve_update_prompt_via_sdk_impl(
         return
 
     user_name = (operator.name if operator else "") or operator_open_id
-    state = adapter._update_prompt_state.pop(prompt_id, None)
+    state = adapter._update_prompt_state.get(prompt_id)
     if not state:
         logger.debug("[Feishu] Update prompt %s already resolved or unknown", prompt_id)
         return
@@ -356,6 +356,7 @@ async def _resolve_update_prompt_via_sdk_impl(
     except Exception as exc:
         logger.error("Failed to resolve Feishu update prompt: %s", exc)
         return
+    adapter._update_prompt_state.pop(prompt_id, None)
 
     try:
         message_id = state.get("message_id") or action.message_id

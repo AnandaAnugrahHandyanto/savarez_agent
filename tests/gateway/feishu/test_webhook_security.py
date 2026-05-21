@@ -24,6 +24,7 @@ import dataclasses
 import hashlib
 import hmac
 import json
+import logging
 import time
 from unittest.mock import Mock
 
@@ -513,7 +514,7 @@ class TestUrlVerificationDoesNotResetAnomaly:
     """
 
     @pytest.mark.asyncio
-    async def test_url_verification_does_not_clear_anomaly_counter(self):
+    async def test_url_verification_does_not_clear_anomaly_counter(self, caplog):
         from gateway.platforms.feishu.webhook_guard import (
             _AnomalyTracker,
             _build_aiohttp_handler,
@@ -545,8 +546,12 @@ class TestUrlVerificationDoesNotResetAnomaly:
             headers={"Content-Type": "application/json"},
             body=b'{"type":"url_verification","challenge":"abc"}',
         )
-        response = await handler(request)
+        with caplog.at_level(
+            logging.INFO, logger="gateway.platforms.feishu.webhook_guard",
+        ):
+            response = await handler(request)
         assert response.status == 200
+        assert "Webhook URL verification challenge from 198.51.100.7" in caplog.text
 
         # Anomaly counter must still be 2 (not cleared by the url_verification path).
         assert anomaly._counts["198.51.100.7"][0] == 2, (

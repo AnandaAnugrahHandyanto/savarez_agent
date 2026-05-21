@@ -175,6 +175,49 @@ def test_card_action_with_update_prompt_writes_response_and_updates_card(
     assert updates[-1].body["card"]["header"]["template"] == "green"
 
 
+def test_card_action_with_update_prompt_keeps_state_when_write_fails(
+    adapter_harness, monkeypatch,
+):
+    """A transient update-response write failure must leave the card retryable."""
+    asyncio.run(adapter_harness.adapter.send_update_prompt(
+        chat_id="oc_test",
+        prompt="Continue update?",
+        session_key="sess_update",
+    ))
+    prompt_id = next(iter(adapter_harness.adapter._update_prompt_state.keys()))
+
+    sdk_action = CardActionEvent(
+        message_id="om_update_card",
+        chat_id="oc_test",
+        operator=EventOperator(open_id="ou_admin", name="Admin"),
+        action=CardActionPayload(
+            value={
+                "hermes_update_prompt_action": "y",
+                "update_prompt_id": prompt_id,
+            },
+            tag="button",
+        ),
+        raw={},
+    )
+
+    def _raise(_answer):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(
+        "gateway.platforms.feishu.approvals._write_update_prompt_response",
+        _raise,
+    )
+
+    asyncio.run(adapter_harness.adapter._on_sdk_card_action(sdk_action))
+
+    assert prompt_id in adapter_harness.adapter._update_prompt_state
+    updates = [
+        item for item in adapter_harness.captured_sends
+        if item.endpoint == "im.v1.message.card.update"
+    ]
+    assert not updates
+
+
 @pytest.mark.asyncio
 async def test_card_action_without_hermes_action_routes_as_command(adapter_harness):
     """Generic card action (no hermes_action) is delegated to handle_message

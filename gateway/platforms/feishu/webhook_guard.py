@@ -388,6 +388,7 @@ def _build_aiohttp_handler(
             return web.json_response({"code": 400, "msg": "invalid json"}, status=400)
 
         if payload.get("type") == "url_verification":
+            logger.info("[Feishu] Webhook URL verification challenge from %s", remote_ip)
             return web.json_response({"challenge": payload.get("challenge", "")})
 
         if verification_token:
