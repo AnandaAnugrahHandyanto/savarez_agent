@@ -60,6 +60,11 @@ def test_swarm_config_rejects_non_finite_or_excessive_live_timeout():
         assert cfg["live_delegation_timeout_seconds"] == 30.0
 
 
+def test_swarm_config_clamps_max_children():
+    assert _swarm_config({"swarm_operator": {"max_children": -5}})["max_children"] == 1
+    assert _swarm_config({"swarm_operator": {"max_children": 999}})["max_children"] == 10
+
+
 def test_load_gateway_config_bridges_top_level_swarm_operator_yaml():
     config_path = get_hermes_home() / "config.yaml"
     config_path.write_text("swarm_operator:\n  enabled: true\n  max_children: 2\n", encoding="utf-8")

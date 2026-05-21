@@ -13,6 +13,7 @@ import math
 from typing import Any, Dict, Optional
 
 from agent.swarm_honcho import persist_swarm_honcho_summary
+from agent.swarm_live_runner import start_live_swarm
 from agent.swarm_router import route_request
 from agent.swarm_state import AuditEvent, SwarmJob
 from agent.swarm_store import SwarmStore
@@ -69,6 +70,7 @@ def _swarm_config(config: Any) -> Dict[str, Any]:
         merged["max_children"] = int(merged.get("max_children", 3))
     except (TypeError, ValueError):
         merged["max_children"] = 3
+    merged["max_children"] = max(1, min(10, merged["max_children"]))
     merged["persist_to_honcho"] = _strict_bool(merged.get("persist_to_honcho", False), default=False)
     merged["honcho_summary_enabled"] = _strict_bool(merged.get("honcho_summary_enabled", False), default=False)
     return merged
@@ -128,6 +130,7 @@ def handle(event_type: str, context: Optional[Dict[str, Any]] = None) -> None:
         store = ctx.get("swarm_store") or SwarmStore()
 
         should_dispatch_live = bool(cfg["enabled"] and not cfg["dry_run"] and cfg["live_delegation_enabled"])
+        live_runner_started = False
         if should_dispatch_live:
             delegate_fn = ctx.get("swarm_delegate_fn")
             if message_truncated:
@@ -151,15 +154,25 @@ def handle(event_type: str, context: Optional[Dict[str, Any]] = None) -> None:
                     )
                 )
             else:
-                job.metadata["live_delegation_status"] = "blocked"
-                job.metadata["live_delegation_block_reason"] = "gateway_live_dispatch_disabled"
-                job.audit.append(
-                    AuditEvent(
-                        "live_delegation_blocked",
-                        "Live delegation passed the config gate, but gateway live dispatch remains disabled until a non-blocking killable runner is wired.",
-                        metadata={"reason": "gateway_live_dispatch_disabled"},
-                    )
+                handle = start_live_swarm(
+                    job,
+                    plan,
+                    delegate_fn,
+                    store=store,
+                    max_children=cfg["max_children"],
+                    timeout_seconds=cfg["live_delegation_timeout_seconds"],
                 )
+                live_runner_started = handle.started
+                if not handle.started:
+                    job.metadata["live_delegation_status"] = "blocked"
+                    job.metadata["live_delegation_block_reason"] = handle.reason
+                    job.audit.append(
+                        AuditEvent(
+                            "live_delegation_blocked",
+                            "Swarm live delegation runner could not start.",
+                            metadata=handle.to_dict(),
+                        )
+                    )
         elif not cfg["dry_run"]:
             job.metadata["live_delegation_status"] = "blocked"
             job.metadata["live_delegation_block_reason"] = "live_delegation_disabled"
@@ -171,7 +184,8 @@ def handle(event_type: str, context: Optional[Dict[str, Any]] = None) -> None:
                 )
             )
 
-        store.save_job(job)
+        if not live_runner_started:
+            store.save_job(job)
         store.append_event(
             AuditEvent(
                 "shadow_job_recorded",
@@ -189,7 +203,7 @@ def handle(event_type: str, context: Optional[Dict[str, Any]] = None) -> None:
                 },
             )
         )
-        if cfg["persist_to_honcho"] or cfg["honcho_summary_enabled"]:
+        if (cfg["persist_to_honcho"] or cfg["honcho_summary_enabled"]) and not live_runner_started:
             honcho_result = persist_swarm_honcho_summary(
                 job,
                 enabled=True,

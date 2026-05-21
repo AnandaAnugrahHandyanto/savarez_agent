@@ -1,5 +1,8 @@
 import json
 import logging
+import time
+
+import pytest
 
 from gateway.builtin_hooks import swarm_operator
 from gateway.hooks import HookRegistry
@@ -11,6 +14,28 @@ class FailingStore:
 
     def append_event(self, event):  # pragma: no cover - save fails first
         raise AssertionError("should not append")
+
+
+def live_delegate_success(**kwargs):
+    return {
+        "results": [
+            {
+                "summary": "researched",
+                "claims": ["docs reviewed"],
+                "evidence": [{"kind": "artifact", "path": "/tmp/research.md"}],
+            },
+            {
+                "summary": "reviewed",
+                "claims": ["code reviewed"],
+                "evidence": [{"kind": "artifact", "path": "/tmp/review.md"}],
+            },
+        ]
+    }
+
+
+def live_delegate_slow(**kwargs):
+    time.sleep(1.0)
+    return {"results": [{"summary": "late"}]}
 
 
 def _context(tmp_path, enabled=True):
@@ -26,6 +51,24 @@ def _context(tmp_path, enabled=True):
         "gateway_config": {"swarm_operator": {"enabled": enabled, "dry_run": True, "max_children": 3}},
         "swarm_store": SwarmStore(base_dir=tmp_path),
     }
+
+
+def _read_job(tmp_path):
+    data = json.loads((tmp_path / "swarm_operator_state.json").read_text())
+    return next(iter(data["jobs"].values()))
+
+
+def _wait_for_live_status(tmp_path, status, timeout=2.0):
+    deadline = time.monotonic() + timeout
+    last_job = None
+    while time.monotonic() < deadline:
+        last_job = _read_job(tmp_path)
+        if last_job["metadata"].get("live_delegation_status") == status:
+            return last_job
+        time.sleep(0.02)
+    assert last_job is not None
+    assert last_job["metadata"].get("live_delegation_status") == status
+    return last_job
 
 
 def test_hook_receives_inbound_metadata_and_message_text(tmp_path):
@@ -81,24 +124,19 @@ def test_hook_non_dry_run_without_live_gate_still_does_not_dispatch(tmp_path):
 
 
 def test_hook_live_delegation_requires_explicit_double_opt_in_and_safe_runner(tmp_path):
-    calls = []
     context = _context(tmp_path, enabled=True)
     context["gateway_config"]["swarm_operator"].update({"dry_run": False, "live_delegation_enabled": True, "max_children": 2})
-    context["swarm_delegate_fn"] = lambda **kwargs: calls.append(kwargs)
+    context["swarm_delegate_fn"] = live_delegate_success
 
+    started = time.monotonic()
     swarm_operator.handle("agent:start", context)
+    elapsed = time.monotonic() - started
 
-    assert calls == []
-    data = json.loads((tmp_path / "swarm_operator_state.json").read_text())
-    job = next(iter(data["jobs"].values()))
+    assert elapsed < 0.5
+    job = _wait_for_live_status(tmp_path, "executed")
     assert job["metadata"]["live_delegation_enabled"] is True
-    assert job["metadata"]["live_delegation_status"] == "blocked"
-    assert job["metadata"]["live_delegation_block_reason"] == "gateway_live_dispatch_disabled"
-    assert any(
-        event["event_type"] == "live_delegation_blocked"
-        and event["metadata"].get("reason") == "gateway_live_dispatch_disabled"
-        for event in job["audit"]
-    )
+    assert job["metadata"]["swarm_execution"]["status"] in {"completed", "partially_completed"}
+    assert any(event["event_type"] == "live_delegation_executed" for event in job["audit"])
 
 
 def test_hook_live_delegation_enabled_without_delegate_fn_blocks_instead_of_crashing(tmp_path):
@@ -118,6 +156,23 @@ def test_hook_live_delegation_enabled_without_delegate_fn_blocks_instead_of_cras
         for event in job["audit"]
     )
 
+
+@pytest.mark.live_system_guard_bypass
+def test_hook_live_delegation_timeout_kills_child_process(tmp_path):
+    context = _context(tmp_path, enabled=True)
+    context["gateway_config"]["swarm_operator"].update(
+        {"dry_run": False, "live_delegation_enabled": True, "live_delegation_timeout_seconds": 0.05}
+    )
+    context["swarm_delegate_fn"] = live_delegate_slow
+
+    started = time.monotonic()
+    swarm_operator.handle("agent:start", context)
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 0.5
+    job = _wait_for_live_status(tmp_path, "timeout", timeout=3.0)
+    assert job["metadata"]["live_delegation_timeout_seconds"] == 0.05
+    assert any(event["event_type"] == "live_delegation_timeout" for event in job["audit"])
 
 
 def test_hook_live_delegation_blocks_when_only_truncated_message_preview_is_available(tmp_path):
@@ -139,21 +194,17 @@ def test_hook_live_delegation_blocks_when_only_truncated_message_preview_is_avai
 
 
 def test_hook_live_delegation_uses_full_message_when_gateway_supplies_it(tmp_path):
-    calls = []
     full_message = "Research docs and review code " + ("full-context " * 80)
     context = _context(tmp_path, enabled=True)
     context["message"] = full_message[:500]
     context["message_full"] = full_message
     context["message_truncated"] = True
     context["gateway_config"]["swarm_operator"].update({"dry_run": False, "live_delegation_enabled": True})
-
-    context["swarm_delegate_fn"] = lambda **kwargs: calls.append(kwargs)
+    context["swarm_delegate_fn"] = live_delegate_success
 
     swarm_operator.handle("agent:start", context)
 
-    assert calls == []
-    data = json.loads((tmp_path / "swarm_operator_state.json").read_text())
-    job = next(iter(data["jobs"].values()))
+    job = _wait_for_live_status(tmp_path, "executed")
     assert job["original_request"] == full_message
     assert job["metadata"]["message_truncated"] is False
 
