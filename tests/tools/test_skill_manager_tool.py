@@ -1004,7 +1004,9 @@ class TestDeleteSkillCronGuard:
     def test_cron_store_error_returns_structured_failure_in_curator_fork(self, tmp_path):
         """When get_active_skill_refs raises, _delete_skill must return a
         structured error dict — not propagate the exception uncaught from a
-        tool handler, which would produce an opaque failure for the agent."""
+        tool handler, which would produce an opaque failure for the agent.
+        The raw exception is logged server-side; the error message returned to
+        the caller is generic to avoid leaking internal paths or store layout."""
         with _skill_dir(tmp_path), \
              patch("cron.jobs.get_active_skill_refs",
                    side_effect=RuntimeError("disk error")), \
@@ -1012,4 +1014,5 @@ class TestDeleteSkillCronGuard:
             _create_skill("my-skill", VALID_SKILL_CONTENT)
             result = _delete_skill("my-skill")
         assert result["success"] is False
-        assert "disk error" in result["error"]
+        assert "cron store error" in result["error"]
+        assert "disk error" not in result["error"]  # internal detail must not leak

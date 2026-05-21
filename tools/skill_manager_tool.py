@@ -594,10 +594,15 @@ def _delete_skill(name: str, absorbed_into: Optional[str] = None) -> Dict[str, A
             try:
                 _active_refs = _get_refs()
             except Exception as e:
+                logger.warning(
+                    "skill_manager: cron ref check failed for '%s': %s",
+                    name, e, exc_info=True,
+                )
                 return {
                     "success": False,
                     "error": (
-                        f"Cannot verify cron references for '{name}': {e}. "
+                        f"Cannot verify cron job references for '{name}' "
+                        "(cron store error — see server logs). "
                         "Resolve the cron store issue and retry."
                     ),
                 }

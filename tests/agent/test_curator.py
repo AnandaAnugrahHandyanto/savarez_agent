@@ -250,11 +250,12 @@ def test_load_cron_protected_returns_empty_when_cron_unavailable(curator_env, mo
     assert result == set()
 
 
-def test_load_cron_protected_returns_empty_and_warns_on_runtime_error(
+def test_load_cron_protected_returns_none_and_warns_on_runtime_error(
     curator_env, monkeypatch, caplog
 ):
     """When get_active_skill_refs() raises a runtime error, _load_cron_protected
-    must return an empty set and emit a WARNING so the issue is visible in logs."""
+    must return None (not an empty set) and emit a WARNING.  Callers treat None
+    as fail-closed: skip auto-archive transitions rather than proceed unprotected."""
     import logging
     import cron.jobs as cron_jobs
 
@@ -268,8 +269,8 @@ def test_load_cron_protected_returns_empty_and_warns_on_runtime_error(
     with caplog.at_level(logging.WARNING, logger="agent.curator"):
         result = c._load_cron_protected()
 
-    assert result == set()
-    assert any("cron-protection guard skipped" in rec.message for rec in caplog.records)
+    assert result is None
+    assert any("auto-archive transitions will be skipped" in rec.message for rec in caplog.records)
 
 
 def test_stale_skill_reactivates_on_recent_use(curator_env):
