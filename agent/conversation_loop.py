@@ -936,6 +936,7 @@ def run_conversation(
         finish_reason = "stop"
         response = None  # Guard against UnboundLocalError if all retries fail
         api_kwargs = None  # Guard against UnboundLocalError in except handler
+        _last_response_headers = None  # Track headers for proactive rate limit detection
 
         while retry_count < max_retries:
             # ── Nous Portal rate limit guard ──────────────────────
@@ -984,6 +985,42 @@ def run_conversation(
                     pass
                 except Exception:
                     pass  # Never let rate guard break the agent loop
+
+            # ── Proactive OpenRouter rate limit detection ──────────────────
+            # If previous response headers showed critically low headroom
+            # (<2 requests remaining), sleep until reset window to avoid 429s.
+            # This prevents hammering the provider when concurrency is high.
+            if _last_response_headers and agent.provider in {"openrouter", "nous-api"}:
+                _headroom_reset = check_rate_limit_headroom(
+                    _last_response_headers, threshold=2
+                )
+                if _headroom_reset and _headroom_reset > 0:
+                    _wait_until = time.time() + _headroom_reset
+                    agent._emit_status(
+                        f"⏳ Rate limit headroom critical. "
+                        f"Waiting {_headroom_reset:.1f}s for reset..."
+                    )
+                    agent._vprint(
+                        f"{agent.log_prefix}⏳ Proactive throttle: "
+                        f"x-ratelimit-remaining < 2, sleeping {_headroom_reset:.1f}s until reset",
+                        force=True,
+                    )
+                    while time.time() < _wait_until:
+                        if agent._interrupt_requested:
+                            agent._vprint(
+                                f"{agent.log_prefix}⚡ Interrupt during proactive throttle.",
+                                force=True,
+                            )
+                            agent.clear_interrupt()
+                            agent._persist_session(messages, conversation_history)
+                            return {
+                                "final_response": "Operation interrupted during rate limit wait.",
+                                "messages": messages,
+                                "api_calls": api_call_count,
+                                "completed": False,
+                                "interrupted": True,
+                            }
+                        time.sleep(0.2)
 
             try:
                 agent._reset_stream_delivery_tracking()
@@ -1661,6 +1698,16 @@ def run_conversation(
                         )
                 
                 has_retried_429 = False  # Reset on success
+
+                # Capture response headers for proactive rate limit detection
+                # on next iteration (used by check_rate_limit_headroom).
+                _last_response_headers = None
+                if response and hasattr(response, "headers"):
+                    _last_response_headers = response.headers
+                elif response and hasattr(response, "_response"):
+                    # Some transport wrappers nest the raw response
+                    _last_response_headers = getattr(response._response, "headers", None)
+
                 # Clear Nous rate limit state on successful request —
                 # proves the limit has reset and other sessions can
                 # resume hitting Nous.
