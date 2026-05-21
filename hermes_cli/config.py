@@ -779,6 +779,11 @@ DEFAULT_CONFIG = {
     "tool_loop_guardrails": {
         "warnings_enabled": True,
         "hard_stop_enabled": False,
+        # Forge-style prerequisite nudges warn when a tool is called before
+        # its recommended discovery/list/snapshot step. Hard-stop mode is
+        # separate and off by default to preserve legacy cross-turn workflows.
+        "prerequisite_checks_enabled": True,
+        "prerequisite_hard_stop_enabled": False,
         "warn_after": {
             "exact_failure": 2,
             "same_tool_failure": 3,
@@ -789,6 +794,16 @@ DEFAULT_CONFIG = {
             "same_tool_failure": 8,
             "idempotent_no_progress": 5,
         },
+    },
+
+    # Workflow guardrails add Forge-style required-step awareness above the
+    # raw tool loop. Default is opt-in/off to preserve legacy final-response
+    # text exactly. Set final_gate_mode to 'advisory', 'nudge', or 'block'
+    # for stricter autonomous/workflow sessions.
+    "workflow_guardrails": {
+        "enabled": False,
+        "final_gate_mode": "off",  # off | advisory | nudge | block
+        "max_nudges": 1,
     },
 
     "compression": {
