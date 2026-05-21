@@ -1086,6 +1086,17 @@ You can also change the reasoning effort at runtime with the `/reasoning` comman
 /reasoning hide      # Hide model thinking
 ```
 
+## OpenAI Responses Text Verbosity
+
+Control how terse or detailed final natural-language answers should be for OpenAI GPT models using the Responses API:
+
+```yaml
+agent:
+  text_verbosity: ""   # empty = provider default. Options: low, medium, high
+```
+
+This is a provider-native OpenAI Responses API request parameter. Hermes sends it as top-level `text: {"verbosity": ...}` only on Responses API requests, and does not send it to Anthropic, xAI/Grok, GitHub Models, or chat-completions providers.
+
 ## Tool-Use Enforcement
 
 Some models occasionally describe intended actions as text instead of making tool calls ("I would run the tests..." instead of actually calling the terminal). Tool-use enforcement injects system prompt guidance that steers the model back to actually calling tools.

@@ -4,6 +4,8 @@ import json
 import pytest
 from types import SimpleNamespace
 
+from agent.codex_responses_adapter import _preflight_codex_api_kwargs
+from agent.text_verbosity import parse_text_verbosity
 from agent.transports import get_transport
 from agent.transports.types import NormalizedResponse, ToolCall
 
@@ -53,6 +55,46 @@ class TestCodexBuildKwargs:
         assert kw["instructions"] == "You are helpful."
         assert "input" in kw
         assert kw["store"] is False
+
+    def test_text_verbosity_adds_top_level_text_for_openai_responses(self, transport):
+        messages = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="gpt-5.5",
+            messages=messages,
+            tools=[],
+            text_verbosity=" LOW ",
+        )
+        assert kw.get("text") == {"verbosity": "low"}
+
+    def test_text_verbosity_skips_non_openai_responses_backends(self, transport):
+        messages = [{"role": "user", "content": "Hi"}]
+        xai_kw = transport.build_kwargs(
+            model="grok-4.3",
+            messages=messages,
+            tools=[],
+            text_verbosity="low",
+            is_xai_responses=True,
+        )
+        github_kw = transport.build_kwargs(
+            model="gpt-5.4",
+            messages=messages,
+            tools=[],
+            text_verbosity="low",
+            is_github_responses=True,
+        )
+        assert "text" not in xai_kw
+        assert "text" not in github_kw
+
+    def test_text_verbosity_request_override_wins(self, transport):
+        messages = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="gpt-5.5",
+            messages=messages,
+            tools=[],
+            text_verbosity="low",
+            request_overrides={"text": {"verbosity": "high"}},
+        )
+        assert kw.get("text") == {"verbosity": "high"}
 
     def test_system_extracted_from_messages(self, transport):
         messages = [
@@ -339,6 +381,44 @@ class TestCodexBuildKwargs:
             reasoning_config={"effort": "high"},
         )
         assert "reasoning" not in kw
+
+
+class TestCodexTextVerbosity:
+
+    def test_parse_text_verbosity_accepts_only_openai_values(self):
+        assert parse_text_verbosity("") is None
+        assert parse_text_verbosity(" LOW ") == "low"
+        assert parse_text_verbosity("medium") == "medium"
+        assert parse_text_verbosity("high") == "high"
+        assert parse_text_verbosity("verbose") is None
+
+    def test_preflight_allows_and_normalizes_text_verbosity(self):
+        payload = _preflight_codex_api_kwargs(
+            {
+                "model": "gpt-5.5",
+                "instructions": "system",
+                "input": [
+                    {"role": "user", "content": [{"type": "input_text", "text": "hi"}]}
+                ],
+                "store": False,
+                "text": {"verbosity": "HIGH"},
+            }
+        )
+        assert payload["text"] == {"verbosity": "high"}
+
+    def test_preflight_rejects_invalid_text_verbosity(self):
+        with pytest.raises(ValueError, match="text.verbosity"):
+            _preflight_codex_api_kwargs(
+                {
+                    "model": "gpt-5.5",
+                    "instructions": "system",
+                    "input": [
+                        {"role": "user", "content": [{"type": "input_text", "text": "hi"}]}
+                    ],
+                    "store": False,
+                    "text": {"verbosity": "verbose"},
+                }
+            )
 
 
 class TestCodexValidateResponse:

@@ -142,6 +142,21 @@ class TestAgentConfigSignature:
         )
         assert sig1 != sig2
 
+    def test_text_verbosity_change_busts_cache(self):
+        """Editing agent.text_verbosity in config must produce a new signature."""
+        from gateway.run import GatewayRunner
+
+        runtime = {"api_key": "k", "base_url": "u", "provider": "p"}
+        sig1 = GatewayRunner._agent_config_signature(
+            "m", runtime, [], "",
+            cache_keys={"agent.text_verbosity": "low"},
+        )
+        sig2 = GatewayRunner._agent_config_signature(
+            "m", runtime, [], "",
+            cache_keys={"agent.text_verbosity": "high"},
+        )
+        assert sig1 != sig2
+
     def test_compression_threshold_change_busts_cache(self):
         from gateway.run import GatewayRunner
 
@@ -239,6 +254,14 @@ class TestExtractCacheBustingConfig:
         assert out["compression.threshold"] == 0.6
         assert out["compression.target_ratio"] == 0.3
         assert out["compression.protect_last_n"] == 25
+
+    def test_reads_agent_text_verbosity(self):
+        from gateway.run import GatewayRunner
+
+        out = GatewayRunner._extract_cache_busting_config(
+            {"agent": {"text_verbosity": "low", "some_other_key": "ignored"}}
+        )
+        assert out["agent.text_verbosity"] == "low"
 
     def test_missing_keys_yield_none(self):
         """Absent config keys must produce None values (still contribute to signature)."""
