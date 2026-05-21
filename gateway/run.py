@@ -4585,13 +4585,40 @@ class GatewayRunner:
                             sub["chat_id"], sub.get("thread_id") or "",
                         )
                         try:
-                            await adapter.send(
+                            send_result = await adapter.send(
                                 sub["chat_id"], msg, metadata=metadata,
                             )
                             logger.debug(
                                 "kanban notifier: delivered %s event for %s to %s/%s on board %s",
                                 kind, sub["task_id"], platform_str, sub["chat_id"], board_slug,
                             )
+                            evidence_payload = {
+                                "work_item_id": sub["task_id"],
+                                "task_id": sub["task_id"],
+                                "runtime_profile": who,
+                                "assignee": who,
+                                "notifier_profile": notifier_profile,
+                                "platform": platform_str,
+                                "chat_id": sub["chat_id"],
+                                "thread_id": sub.get("thread_id") or "",
+                                "message_id": self._kanban_send_message_id(send_result),
+                                "source_event_id": ev.id,
+                                "source_event_kind": kind,
+                                "board": board_slug,
+                            }
+                            try:
+                                await asyncio.to_thread(
+                                    self._kanban_record_delivery_evidence,
+                                    sub,
+                                    evidence_payload,
+                                    ev.run_id,
+                                    board_slug,
+                                )
+                            except Exception as evidence_exc:
+                                logger.warning(
+                                    "kanban notifier: delivery evidence record failed for %s event %s on board %s: %s",
+                                    sub["task_id"], ev.id, board_slug, evidence_exc,
+                                )
                             # Reset the failure counter on success.
                             sub_fail_counts.pop(sub_key, None)
                         except Exception as exc:
@@ -4705,6 +4732,36 @@ class GatewayRunner:
                 thread_id=sub.get("thread_id") or "",
                 claimed_cursor=claimed_cursor,
                 old_cursor=old_cursor,
+            )
+        finally:
+            conn.close()
+
+    @staticmethod
+    def _kanban_send_message_id(send_result: Any) -> Optional[str]:
+        """Extract a platform message id from adapter.send() results."""
+        if send_result is None:
+            return None
+        msg_id = getattr(send_result, "message_id", None)
+        if msg_id is None and isinstance(send_result, dict):
+            msg_id = send_result.get("message_id")
+        return str(msg_id) if msg_id is not None else None
+
+    def _kanban_record_delivery_evidence(
+        self,
+        sub: dict,
+        payload: dict,
+        run_id: Optional[int] = None,
+        board: Optional[str] = None,
+    ) -> None:
+        """Sync helper: append a kanban notification delivery evidence event."""
+        from hermes_cli import kanban_db as _kb
+        conn = _kb.connect(board=board)
+        try:
+            _kb.record_notify_delivery_evidence(
+                conn,
+                sub["task_id"],
+                payload,
+                run_id=run_id,
             )
         finally:
             conn.close()

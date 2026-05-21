@@ -1,9 +1,11 @@
 import asyncio
+import json
 from pathlib import Path
 
 import pytest
 
 from gateway.config import Platform
+from gateway.platforms.base import SendResult
 from gateway.run import GatewayRunner
 from hermes_cli import kanban_db as kb
 
@@ -14,6 +16,7 @@ class RecordingAdapter:
 
     async def send(self, chat_id, text, metadata=None):
         self.sent.append({"chat_id": chat_id, "text": text, "metadata": metadata or {}})
+        return SendResult(success=True, message_id=f"msg-{len(self.sent)}")
 
 
 class DisconnectedAdapters(dict):
@@ -267,3 +270,26 @@ def test_kanban_notifier_sends_runtime_lifecycle_receipts(tmp_path, monkeypatch)
     ]
     assert "@reviewer" in texts[-1]
     assert "halfway done" in texts[3]
+
+    conn = kb.connect()
+    try:
+        rows = conn.execute(
+            "SELECT payload FROM task_events "
+            "WHERE task_id = ? AND kind = 'notify_delivery_evidence' "
+            "ORDER BY id ASC",
+            (tid,),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    assert len(rows) == 5
+    payloads = [json.loads(row["payload"]) for row in rows]
+    assert payloads[-1]["work_item_id"] == tid
+    assert payloads[-1]["task_id"] == tid
+    assert payloads[-1]["runtime_profile"] == "reviewer"
+    assert payloads[-1]["assignee"] == "reviewer"
+    assert payloads[-1]["notifier_profile"] == "default"
+    assert payloads[-1]["chat_id"] == "chat-1"
+    assert payloads[-1]["thread_id"] == ""
+    assert payloads[-1]["message_id"] == "msg-5"
+    assert payloads[-1]["source_event_kind"] == "completed"
