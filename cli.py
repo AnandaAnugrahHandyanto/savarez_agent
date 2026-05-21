@@ -11209,14 +11209,25 @@ class HermesCLI:
         ]
 
     def _run_headless_loop(self, stdin=None):
+        """Process newline-delimited prompts from stdin for --no-gui mode."""
         input_stream = sys.stdin if stdin is None else stdin
         for line in input_stream:
             line = line.rstrip("\r\n")
             if not line:
                 continue
-            self.chat(line)
+            self._agent_running = True
+            try:
+                self.chat(line)
+            except (KeyboardInterrupt, BrokenPipeError, EOFError):
+                raise
+            except Exception:
+                self._agent_running = False
+                raise
+            else:
+                self._agent_running = False
 
     def _finalize_run(self):
+        """Release CLI resources and close the active session."""
         self._should_exit = True
         # Interrupt the agent immediately so its daemon thread stops making
         # API calls and exits promptly (agent_thread is daemon, so the
@@ -13405,8 +13416,7 @@ class HermesCLI:
                 "This can happen with certain Python installations (e.g. uv-managed cPython on macOS).\n"
                 "Try reinstalling Python via pyenv or Homebrew, then re-run: hermes setup"
             )
-            _run_cleanup()
-            self._print_exit_summary()
+            self._finalize_run()
             return
 
         # Run the application with patch_stdout for proper output handling
