@@ -303,6 +303,89 @@ class TestRunJobProfileContext:
         assert os.environ["HERMES_HOME"] == str(root)
         assert sched._get_hermes_home() == root
 
+    def test_profile_cron_keeps_noninteractive_approval_context_in_tool_thread(
+        self, isolated_cron_profile_home, monkeypatch
+    ):
+        import concurrent.futures
+        import contextvars
+        import sys
+
+        import cron.scheduler as sched
+
+        root, _profile_home = isolated_cron_profile_home
+        observed: dict = {}
+
+        class FakeAgent:
+            def __init__(self, **_kwargs):
+                pass
+
+            def run_conversation(self, *_a, **_kw):
+                from tools.approval import check_all_command_guards
+
+                # Simulate a terminal-tool worker thread where process-global
+                # env is missing the cron marker but ContextVars are preserved.
+                os.environ.pop("HERMES_CRON_SESSION", None)
+                os.environ["HERMES_EXEC_ASK"] = "1"
+
+                ctx = contextvars.copy_context()
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                    result = pool.submit(
+                        ctx.run,
+                        check_all_command_guards,
+                        "bash -lc 'echo cron-profile-smoke'",
+                        "local",
+                    ).result()
+
+                observed["approval_result"] = result
+                return {"final_response": "done", "messages": []}
+
+            def get_activity_summary(self):
+                return {"seconds_since_activity": 0.0}
+
+            def close(self):
+                pass
+
+        fake_mod = type(sys)("run_agent")
+        fake_mod.AIAgent = FakeAgent
+        monkeypatch.setitem(sys.modules, "run_agent", fake_mod)
+
+        from hermes_cli import runtime_provider as runtime_provider
+
+        monkeypatch.setattr(
+            runtime_provider,
+            "resolve_runtime_provider",
+            lambda **_kw: {
+                "provider": "test",
+                "api_key": "test-key",
+                "base_url": "http://test.local",
+                "api_mode": "chat_completions",
+            },
+        )
+        monkeypatch.setattr(sched, "_build_job_prompt", lambda job, prerun_script=None: "hi")
+        monkeypatch.setattr(sched, "_resolve_origin", lambda job: None)
+        monkeypatch.setattr(sched, "_resolve_delivery_target", lambda job: None)
+        monkeypatch.setattr(sched, "_resolve_cron_enabled_toolsets", lambda job, cfg: None)
+        monkeypatch.setattr(sched, "_hermes_home", None)
+        monkeypatch.setenv("HERMES_CRON_TIMEOUT", "0")
+        monkeypatch.setattr("dotenv.load_dotenv", lambda *_a, **_kw: True)
+
+        job = {
+            "id": "approval-profile",
+            "name": "approval-profile-job",
+            "profile": "support",
+            "schedule_display": "manual",
+        }
+
+        success, _output, _response, error = sched.run_job(job)
+
+        assert success is True, error
+        approval_result = observed["approval_result"]
+        assert approval_result.get("status") != "pending_approval"
+        assert approval_result.get("approval_pending") is not True
+        assert "HERMES_CRON_SESSION" not in os.environ
+        assert os.environ["HERMES_HOME"] == str(root)
+        assert sched._get_hermes_home() == root
+
     def test_no_agent_profile_uses_profile_scripts_dir_and_restores_env(
         self, isolated_cron_profile_home, monkeypatch
     ):
