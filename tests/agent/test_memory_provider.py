@@ -5,7 +5,7 @@ import pytest
 from unittest.mock import MagicMock, patch
 
 from agent.memory_provider import MemoryProvider
-from agent.memory_manager import MemoryManager
+from agent.memory_manager import MemoryManager, sanitize_context
 
 # ---------------------------------------------------------------------------
 # Concrete test provider
@@ -82,6 +82,27 @@ class MetadataMemoryProvider(FakeMemoryProvider):
 
     def on_memory_write(self, action, target, content, metadata=None):
         self.memory_writes.append((action, target, content, metadata or {}))
+
+
+# ---------------------------------------------------------------------------
+# Context sanitization tests
+# ---------------------------------------------------------------------------
+
+
+def test_sanitize_context_accepts_openai_content_parts():
+    content = [
+        {"type": "text", "text": "hello <memory-context>secret</memory-context>"},
+        {"type": "image_url", "image_url": {"url": "file:///tmp/example.png"}},
+        "plain tail",
+    ]
+
+    cleaned = sanitize_context(content)
+
+    assert "hello" in cleaned
+    assert "secret" not in cleaned
+    assert "plain tail" in cleaned
+    assert "[image_url content omitted]" in cleaned
+    assert "file:///tmp/example.png" not in cleaned
 
 
 # ---------------------------------------------------------------------------

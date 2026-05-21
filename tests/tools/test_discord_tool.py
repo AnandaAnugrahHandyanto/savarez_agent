@@ -476,6 +476,129 @@ class TestCreateThread:
 
 
 # ---------------------------------------------------------------------------
+# Actions: create_channel / create_role / edit_channel_permissions
+# ---------------------------------------------------------------------------
+
+class TestDiscordAdminManagement:
+    @patch("tools.discord_tool._discord_request")
+    def test_create_text_channel_with_parent_topic_and_overwrites(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.return_value = {"id": "22", "name": "ops", "type": 0, "parent_id": "10"}
+        overwrites = '[{"id":"1","type":0,"allow":"117760","deny":"0"}]'
+
+        result = json.loads(discord_admin_handler(
+            action="create_channel",
+            guild_id="111",
+            name="ops",
+            channel_type=0,
+            parent_id="10",
+            topic="Operations",
+            permission_overwrites_json=overwrites,
+        ))
+
+        assert result["success"] is True
+        assert result["channel_id"] == "22"
+        mock_req.assert_called_once_with(
+            "POST", "/guilds/111/channels", "test-token",
+            body={
+                "name": "ops",
+                "type": 0,
+                "parent_id": "10",
+                "topic": "Operations",
+                "permission_overwrites": [{"id": "1", "type": 0, "allow": "117760", "deny": "0"}],
+            },
+        )
+
+    @patch("tools.discord_tool._discord_request")
+    def test_create_role(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.return_value = {"id": "333", "name": "Hermes Friend"}
+
+        result = json.loads(discord_admin_handler(
+            action="create_role",
+            guild_id="111",
+            name="Hermes Friend",
+            color=65535,
+            hoist=True,
+            mentionable=True,
+        ))
+
+        assert result["success"] is True
+        assert result["role_id"] == "333"
+        mock_req.assert_called_once_with(
+            "POST", "/guilds/111/roles", "test-token",
+            body={"name": "Hermes Friend", "color": 65535, "hoist": True, "mentionable": True},
+        )
+
+    @patch("tools.discord_tool._discord_request")
+    def test_edit_channel_permissions(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.return_value = None
+
+        result = json.loads(discord_admin_handler(
+            action="edit_channel_permissions",
+            channel_id="22",
+            overwrite_id="1",
+            overwrite_type=0,
+            allow="117760",
+            deny="0",
+        ))
+
+        assert result["success"] is True
+        mock_req.assert_called_once_with(
+            "PUT", "/channels/22/permissions/1", "test-token",
+            body={"type": 0, "allow": "117760", "deny": "0"},
+        )
+
+    @patch("tools.discord_tool._discord_request")
+    def test_create_channel_rejects_invalid_channel_type(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+
+        result = json.loads(discord_admin_handler(
+            action="create_channel",
+            guild_id="111",
+            name="bad",
+            channel_type=2,
+        ))
+
+        assert "error" in result
+        assert "channel_type" in result["error"]
+        mock_req.assert_not_called()
+
+    @patch("tools.discord_tool._discord_request")
+    def test_edit_channel_permissions_rejects_non_numeric_bitfield(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+
+        result = json.loads(discord_admin_handler(
+            action="edit_channel_permissions",
+            channel_id="22",
+            overwrite_id="1",
+            overwrite_type=0,
+            allow="abc",
+        ))
+
+        assert "error" in result
+        assert "allow" in result["error"]
+        mock_req.assert_not_called()
+
+    @patch("tools.discord_tool._discord_request")
+    def test_permission_overwrites_rejects_path_like_id(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        overwrites = '[{"id":"../roles","type":0,"allow":"117760","deny":"0"}]'
+
+        result = json.loads(discord_admin_handler(
+            action="create_channel",
+            guild_id="111",
+            name="bad",
+            permission_overwrites_json=overwrites,
+        ))
+
+        assert "error" in result
+        assert "permission_overwrites_json[0].id" in result["error"]
+        mock_req.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
 # Actions: add_role / remove_role
 # ---------------------------------------------------------------------------
 

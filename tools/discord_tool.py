@@ -28,6 +28,7 @@ actionable guidance the model can relay to the user.
 import json
 import logging
 import os
+import re
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -53,6 +54,45 @@ _FLAG_GATEWAY_MESSAGE_CONTENT_LIMITED = 1 << 19
 def _get_bot_token() -> Optional[str]:
     """Resolve the Discord bot token from environment."""
     return os.getenv("DISCORD_BOT_TOKEN", "").strip() or None
+
+
+_DIGIT_ID_RE = re.compile(r"^[0-9]{1,20}$")
+_BITFIELD_RE = re.compile(r"^[0-9]+$")
+
+
+def _validate_discord_id(value: str, field_name: str) -> str:
+    """Validate IDs used in REST paths so tool input cannot alter endpoints."""
+    value = str(value or "").strip()
+    if not _DIGIT_ID_RE.fullmatch(value):
+        raise ValueError(f"{field_name} must be a Discord numeric ID")
+    return value
+
+
+def _validate_enum_int(value: Any, field_name: str, allowed: set[int]) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{field_name} must be one of {sorted(allowed)}") from exc
+    if parsed not in allowed:
+        raise ValueError(f"{field_name} must be one of {sorted(allowed)}")
+    return parsed
+
+
+def _validate_color(value: Any) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("color must be an integer between 0 and 16777215") from exc
+    if parsed < 0 or parsed > 0xFFFFFF:
+        raise ValueError("color must be an integer between 0 and 16777215")
+    return parsed
+
+
+def _validate_bitfield(value: Any, field_name: str) -> str:
+    value = str(value or "0").strip()
+    if not _BITFIELD_RE.fullmatch(value):
+        raise ValueError(f"{field_name} must be a numeric permission bitfield string")
+    return value
 
 
 def _discord_request(
@@ -454,6 +494,99 @@ def _create_thread(
     })
 
 
+def _parse_permission_overwrites(raw: str = "") -> Optional[List[Dict[str, Any]]]:
+    """Parse and validate a JSON permission-overwrites list supplied through the tool schema."""
+    if not raw:
+        return None
+    parsed = json.loads(raw)
+    if not isinstance(parsed, list):
+        raise ValueError("permission_overwrites_json must be a JSON list")
+    validated: list[dict[str, Any]] = []
+    for index, item in enumerate(parsed):
+        if not isinstance(item, dict):
+            raise ValueError(f"permission_overwrites_json[{index}] must be an object")
+        overwrite_id = _validate_discord_id(str(item.get("id", "")), f"permission_overwrites_json[{index}].id")
+        overwrite_type = _validate_enum_int(item.get("type", 0), f"permission_overwrites_json[{index}].type", {0, 1})
+        overwrite: dict[str, Any] = {"id": overwrite_id, "type": overwrite_type}
+        if "allow" in item:
+            overwrite["allow"] = _validate_bitfield(item.get("allow"), f"permission_overwrites_json[{index}].allow")
+        if "deny" in item:
+            overwrite["deny"] = _validate_bitfield(item.get("deny"), f"permission_overwrites_json[{index}].deny")
+        validated.append(overwrite)
+    return validated
+
+
+def _create_channel(
+    token: str,
+    guild_id: str,
+    name: str,
+    channel_type: int = 0,
+    parent_id: str = "",
+    topic: str = "",
+    permission_overwrites_json: str = "",
+    **_kwargs: Any,
+) -> str:
+    """Create a guild channel or category."""
+    guild_id = _validate_discord_id(guild_id, "guild_id")
+    channel_type = _validate_enum_int(channel_type, "channel_type", {0, 4})
+    body: Dict[str, Any] = {"name": name, "type": channel_type}
+    if parent_id:
+        body["parent_id"] = _validate_discord_id(parent_id, "parent_id")
+    if topic and channel_type == 0:
+        body["topic"] = topic
+    overwrites = _parse_permission_overwrites(permission_overwrites_json)
+    if overwrites is not None:
+        body["permission_overwrites"] = overwrites
+
+    channel = _discord_request("POST", f"/guilds/{guild_id}/channels", token, body=body)
+    return json.dumps({
+        "success": True,
+        "channel_id": channel.get("id"),
+        "name": channel.get("name"),
+        "type": channel.get("type"),
+        "parent_id": channel.get("parent_id"),
+    })
+
+
+def _create_role(
+    token: str,
+    guild_id: str,
+    name: str,
+    color: int = 0,
+    hoist: bool = False,
+    mentionable: bool = False,
+    **_kwargs: Any,
+) -> str:
+    """Create a guild role."""
+    guild_id = _validate_discord_id(guild_id, "guild_id")
+    body = {"name": name, "color": _validate_color(color), "hoist": bool(hoist), "mentionable": bool(mentionable)}
+    role = _discord_request("POST", f"/guilds/{guild_id}/roles", token, body=body)
+    return json.dumps({"success": True, "role_id": role.get("id"), "name": role.get("name")})
+
+
+def _edit_channel_permissions(
+    token: str,
+    channel_id: str,
+    overwrite_id: str,
+    overwrite_type: int = 0,
+    allow: str = "0",
+    deny: str = "0",
+    **_kwargs: Any,
+) -> str:
+    """Create or update a channel permission overwrite for a role or member."""
+    channel_id = _validate_discord_id(channel_id, "channel_id")
+    overwrite_id = _validate_discord_id(overwrite_id, "overwrite_id")
+    overwrite_type = _validate_enum_int(overwrite_type, "overwrite_type", {0, 1})
+    body = {"type": overwrite_type, "allow": _validate_bitfield(allow, "allow"), "deny": _validate_bitfield(deny, "deny")}
+    _discord_request("PUT", f"/channels/{channel_id}/permissions/{overwrite_id}", token, body=body)
+    return json.dumps({
+        "success": True,
+        "channel_id": channel_id,
+        "overwrite_id": overwrite_id,
+        "type": int(overwrite_type),
+    })
+
+
 def _add_role(token: str, guild_id: str, user_id: str, role_id: str, **_kwargs: Any) -> str:
     """Add a role to a guild member."""
     _discord_request("PUT", f"/guilds/{guild_id}/members/{user_id}/roles/{role_id}", token)
@@ -484,6 +617,9 @@ _ACTIONS = {
     "unpin_message": _unpin_message,
     "delete_message": _delete_message,
     "create_thread": _create_thread,
+    "create_channel": _create_channel,
+    "create_role": _create_role,
+    "edit_channel_permissions": _edit_channel_permissions,
     "add_role": _add_role,
     "remove_role": _remove_role,
 }
@@ -511,6 +647,9 @@ _ACTION_MANIFEST: List[Tuple[str, str, str]] = [
     ("unpin_message", "(channel_id, message_id)", "unpin a message"),
     ("delete_message", "(channel_id, message_id)", "delete a message"),
     ("create_thread", "(channel_id, name)", "create a public thread; optional message_id anchor"),
+    ("create_channel", "(guild_id, name)", "create a text channel/category; optional parent_id/topic/permission overwrites"),
+    ("create_role", "(guild_id, name)", "create a role"),
+    ("edit_channel_permissions", "(channel_id, overwrite_id)", "set a channel overwrite for a role/user"),
     ("add_role", "(guild_id, user_id, role_id)", "assign a role"),
     ("remove_role", "(guild_id, user_id, role_id)", "remove a role"),
 ]
@@ -532,6 +671,9 @@ _REQUIRED_PARAMS: Dict[str, List[str]] = {
     "unpin_message": ["channel_id", "message_id"],
     "delete_message": ["channel_id", "message_id"],
     "create_thread": ["channel_id", "name"],
+    "create_channel": ["guild_id", "name"],
+    "create_role": ["guild_id", "name"],
+    "edit_channel_permissions": ["channel_id", "overwrite_id"],
     "add_role": ["guild_id", "user_id", "role_id"],
     "remove_role": ["guild_id", "user_id", "role_id"],
 }
@@ -691,7 +833,53 @@ def _build_schema(
         },
         "name": {
             "type": "string",
-            "description": "New thread name (create_thread).",
+            "description": "Name for create_thread, create_channel, or create_role.",
+        },
+        "channel_type": {
+            "type": "integer",
+            "enum": [0, 4],
+            "description": "Channel type for create_channel: 0=text channel, 4=category.",
+        },
+        "parent_id": {
+            "type": "string",
+            "description": "Parent category channel ID for create_channel.",
+        },
+        "topic": {
+            "type": "string",
+            "description": "Topic for create_channel text channels.",
+        },
+        "permission_overwrites_json": {
+            "type": "string",
+            "description": "JSON list of Discord permission overwrites for create_channel, e.g. [{\"id\":\"role_id\",\"type\":0,\"allow\":\"1024\",\"deny\":\"0\"}].",
+        },
+        "overwrite_id": {
+            "type": "string",
+            "description": "Role or user ID for edit_channel_permissions.",
+        },
+        "overwrite_type": {
+            "type": "integer",
+            "enum": [0, 1],
+            "description": "Overwrite type for edit_channel_permissions: 0=role, 1=member.",
+        },
+        "allow": {
+            "type": "string",
+            "description": "Permission bitfield string to allow in edit_channel_permissions.",
+        },
+        "deny": {
+            "type": "string",
+            "description": "Permission bitfield string to deny in edit_channel_permissions.",
+        },
+        "color": {
+            "type": "integer",
+            "description": "Decimal RGB color for create_role (default 0).",
+        },
+        "hoist": {
+            "type": "boolean",
+            "description": "Whether create_role should display separately.",
+        },
+        "mentionable": {
+            "type": "boolean",
+            "description": "Whether create_role should be mentionable.",
         },
         "limit": {
             "type": "integer",
@@ -773,6 +961,15 @@ _ACTION_403_HINT = {
     "create_thread": (
         "Bot lacks CREATE_PUBLIC_THREADS in this channel, or cannot view it."
     ),
+    "create_channel": (
+        "Bot lacks MANAGE_CHANNELS permission, or cannot create channels in this guild."
+    ),
+    "edit_channel_permissions": (
+        "Bot lacks MANAGE_CHANNELS permission for this channel."
+    ),
+    "create_role": (
+        "Bot lacks MANAGE_ROLES permission in this guild."
+    ),
     "add_role": (
         "Either the bot lacks MANAGE_ROLES, or the target role sits higher "
         "than the bot's highest role. Roles can only be assigned below the "
@@ -839,6 +1036,17 @@ def _run_discord_action(
     before: str = "",
     after: str = "",
     auto_archive_duration: int = 1440,
+    channel_type: int = 0,
+    parent_id: str = "",
+    topic: str = "",
+    permission_overwrites_json: str = "",
+    overwrite_id: str = "",
+    overwrite_type: int = 0,
+    allow: str = "0",
+    deny: str = "0",
+    color: int = 0,
+    hoist: bool = False,
+    mentionable: bool = False,
 ) -> str:
     """Shared handler logic for both discord tools."""
     token = _get_bot_token()
@@ -872,6 +1080,7 @@ def _run_discord_action(
         "message_id": message_id,
         "query": query,
         "name": name,
+        "overwrite_id": overwrite_id,
     }
 
     missing = [p for p in _REQUIRED_PARAMS.get(action, []) if not local_vars.get(p)]
@@ -894,6 +1103,17 @@ def _run_discord_action(
             before=before,
             after=after,
             auto_archive_duration=auto_archive_duration,
+            channel_type=channel_type,
+            parent_id=parent_id,
+            topic=topic,
+            permission_overwrites_json=permission_overwrites_json,
+            overwrite_id=overwrite_id,
+            overwrite_type=overwrite_type,
+            allow=allow,
+            deny=deny,
+            color=color,
+            hoist=hoist,
+            mentionable=mentionable,
         )
     except DiscordAPIError as e:
         logger.warning("Discord API error in %s action '%s': %s", tool_label, action, e)
@@ -923,6 +1143,9 @@ _HANDLER_DEFAULTS = {
     "action": "", "guild_id": "", "channel_id": "", "user_id": "",
     "role_id": "", "message_id": "", "query": "", "name": "",
     "limit": 50, "before": "", "after": "", "auto_archive_duration": 1440,
+    "channel_type": 0, "parent_id": "", "topic": "", "permission_overwrites_json": "",
+    "overwrite_id": "", "overwrite_type": 0, "allow": "0", "deny": "0",
+    "color": 0, "hoist": False, "mentionable": False,
 }
 
 

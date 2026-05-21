@@ -3868,6 +3868,77 @@ class DiscordAdapter(BasePlatformAdapter):
     # Auto-thread helpers
     # ------------------------------------------------------------------
 
+    def _shared_thread_user_ids(self) -> List[str]:
+        """Return user IDs that should be pulled into every auto-created thread.
+
+        ``DISCORD_SHARED_THREAD_USERS`` is a pragmatic family/team-server knob:
+        when Hermes auto-threads a channel mention, try to add these users to the
+        thread and, if Discord permissions block that, post a tiny parent-channel
+        pointer that mentions them so they can jump in manually.
+        """
+        raw = os.getenv("DISCORD_SHARED_THREAD_USERS", "")
+        seen: set[str] = set()
+        ids: list[str] = []
+        for part in raw.split(","):
+            cleaned = _clean_discord_id(part)
+            if cleaned and cleaned not in seen:
+                seen.add(cleaned)
+                ids.append(cleaned)
+        return ids
+
+    async def _include_shared_thread_users(self, thread: Any, message: Any) -> None:
+        """Best-effort include configured shared users in an auto-created thread."""
+        user_ids = self._shared_thread_user_ids()
+        if not user_ids or not thread:
+            return
+
+        guild = getattr(message, "guild", None)
+        added_any = False
+        failed_user_ids: list[str] = []
+        for user_id in user_ids:
+            try:
+                member = None
+                if guild is not None:
+                    member = guild.get_member(int(user_id))
+                    if member is None:
+                        member = await guild.fetch_member(int(user_id))
+                if member is not None and hasattr(thread, "add_user"):
+                    await thread.add_user(member)
+                    added_any = True
+                else:
+                    failed_user_ids.append(user_id)
+            except Exception as exc:
+                failed_user_ids.append(user_id)
+                logger.debug(
+                    "[%s] Could not directly add shared user %s to Discord thread %s: %s",
+                    self.name,
+                    user_id,
+                    getattr(thread, "id", "unknown"),
+                    exc,
+                )
+
+        # Fallback: a parent-channel pointer is intentionally low-tech but more
+        # reliable than pretending a thread ping worked when Discord denied the
+        # add-member route. Keep it compact to avoid cluttering shared channels.
+        if failed_user_ids and hasattr(message.channel, "send"):
+            mentions = " ".join(f"<@{user_id}>" for user_id in failed_user_ids)
+            thread_ref = getattr(thread, "mention", None) or getattr(thread, "jump_url", None) or f"thread {getattr(thread, 'id', '')}"
+            try:
+                await message.channel.send(f"↳ {mentions} {thread_ref}")
+            except Exception as exc:
+                logger.debug(
+                    "[%s] Could not post shared-thread fallback pointer for thread %s: %s",
+                    self.name,
+                    getattr(thread, "id", "unknown"),
+                    exc,
+                )
+        elif added_any:
+            logger.debug(
+                "[%s] Added shared users to Discord thread %s",
+                self.name,
+                getattr(thread, "id", "unknown"),
+            )
+
     async def _auto_create_thread(self, message: 'DiscordMessage') -> Optional[Any]:
         """Create a thread from a user message for auto-threading.
 
@@ -3888,6 +3959,7 @@ class DiscordAdapter(BasePlatformAdapter):
 
         try:
             thread = await message.create_thread(name=thread_name, auto_archive_duration=1440)
+            await self._include_shared_thread_users(thread, message)
             return thread
         except Exception as direct_error:
             display_name = getattr(getattr(message, "author", None), "display_name", None) or "unknown user"
@@ -3899,6 +3971,7 @@ class DiscordAdapter(BasePlatformAdapter):
                     auto_archive_duration=1440,
                     reason=reason,
                 )
+                await self._include_shared_thread_users(thread, message)
                 return thread
             except Exception as fallback_error:
                 logger.warning(

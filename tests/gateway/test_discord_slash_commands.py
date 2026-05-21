@@ -97,7 +97,8 @@ class FakeTree:
 
 
 @pytest.fixture
-def adapter():
+def adapter(monkeypatch):
+    monkeypatch.delenv("DISCORD_SHARED_THREAD_USERS", raising=False)
     config = PlatformConfig(enabled=True, token="***")
     adapter = DiscordAdapter(config)
     adapter._client = SimpleNamespace(
@@ -552,6 +553,85 @@ async def test_auto_create_thread_falls_back_to_hermes_when_only_mentions(adapte
 
     name = message.create_thread.await_args[1]["name"]
     assert name == "Hermes"
+
+
+@pytest.mark.asyncio
+async def test_auto_create_thread_adds_configured_shared_users(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_SHARED_THREAD_USERS", "123, <@456>")
+    member_123 = SimpleNamespace(id=123)
+    member_456 = SimpleNamespace(id=456)
+    guild = SimpleNamespace(
+        get_member=MagicMock(side_effect=lambda user_id: member_123 if user_id == 123 else None),
+        fetch_member=AsyncMock(return_value=member_456),
+    )
+    thread = SimpleNamespace(id=999, mention="<#999>", add_user=AsyncMock())
+    message = SimpleNamespace(
+        content="Hello world",
+        create_thread=AsyncMock(return_value=thread),
+        channel=SimpleNamespace(send=AsyncMock()),
+        author=SimpleNamespace(display_name="Jezza"),
+        guild=guild,
+    )
+
+    result = await adapter._auto_create_thread(message)
+
+    assert result is thread
+    thread.add_user.assert_any_await(member_123)
+    thread.add_user.assert_any_await(member_456)
+    assert thread.add_user.await_count == 2
+    message.channel.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_auto_create_thread_posts_parent_pointer_for_shared_user_add_failures(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_SHARED_THREAD_USERS", "123,456")
+    member_123 = SimpleNamespace(id=123)
+    member_456 = SimpleNamespace(id=456)
+    guild = SimpleNamespace(
+        get_member=MagicMock(side_effect=lambda user_id: member_123 if user_id == 123 else member_456),
+        fetch_member=AsyncMock(),
+    )
+
+    async def add_user(member):
+        if member.id == 456:
+            raise RuntimeError("missing perms")
+
+    thread = SimpleNamespace(id=999, mention="<#999>", add_user=AsyncMock(side_effect=add_user))
+    message = SimpleNamespace(
+        content="Hello world",
+        create_thread=AsyncMock(return_value=thread),
+        channel=SimpleNamespace(send=AsyncMock()),
+        author=SimpleNamespace(display_name="Jezza"),
+        guild=guild,
+    )
+
+    result = await adapter._auto_create_thread(message)
+
+    assert result is thread
+    thread.add_user.assert_any_await(member_123)
+    thread.add_user.assert_any_await(member_456)
+    message.channel.send.assert_awaited_once_with("↳ <@456> <#999>")
+
+
+@pytest.mark.asyncio
+async def test_auto_create_thread_parent_pointer_for_unresolved_shared_user(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_SHARED_THREAD_USERS", "123,123")
+    guild = SimpleNamespace(get_member=MagicMock(return_value=None), fetch_member=AsyncMock(return_value=None))
+    thread = SimpleNamespace(id=999, mention="<#999>", add_user=AsyncMock())
+    message = SimpleNamespace(
+        content="Hello world",
+        create_thread=AsyncMock(return_value=thread),
+        channel=SimpleNamespace(send=AsyncMock()),
+        author=SimpleNamespace(display_name="Jezza"),
+        guild=guild,
+    )
+
+    result = await adapter._auto_create_thread(message)
+
+    assert result is thread
+    thread.add_user.assert_not_awaited()
+    guild.fetch_member.assert_awaited_once_with(123)
+    message.channel.send.assert_awaited_once_with("↳ <@123> <#999>")
 
 
 @pytest.mark.asyncio

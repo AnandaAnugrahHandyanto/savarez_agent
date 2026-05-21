@@ -51,8 +51,45 @@ _INTERNAL_NOTE_RE = re.compile(
 )
 
 
-def sanitize_context(text: str) -> str:
+def _stringify_context_value(value: Any) -> str:
+    """Convert provider-bound message content to text before regex scrubbing.
+
+    Gateway/model messages are usually plain strings, but multimodal or
+    provider-native turns can carry OpenAI-style content-part lists.  Memory
+    providers need a best-effort textual representation, not a TypeError from
+    ``re.sub``.
+    """
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        parts: list[str] = []
+        for item in value:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict):
+                text = item.get("text")
+                if isinstance(text, str):
+                    parts.append(text)
+                elif item.get("type"):
+                    parts.append(f"[{item.get('type')} content omitted]")
+            else:
+                parts.append(str(item))
+        return "\n".join(part for part in parts if part)
+    if isinstance(value, dict):
+        text = value.get("text")
+        if isinstance(text, str):
+            return text
+        if value.get("type"):
+            return f"[{value.get('type')} content omitted]"
+        return ""
+    return str(value)
+
+
+def sanitize_context(text: Any) -> str:
     """Strip fence tags, injected context blocks, and system notes from provider output."""
+    text = _stringify_context_value(text)
     text = _INTERNAL_CONTEXT_RE.sub('', text)
     text = _INTERNAL_NOTE_RE.sub('', text)
     text = _FENCE_TAG_RE.sub('', text)
