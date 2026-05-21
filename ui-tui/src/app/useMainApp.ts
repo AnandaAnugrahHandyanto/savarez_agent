@@ -3,7 +3,7 @@ import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { STARTUP_RESUME_ID } from '../config/env.js'
-import { MAX_HISTORY, WHEEL_SCROLL_STEP } from '../config/limits.js'
+import { FULL_RENDER_TAIL_ITEMS, MAX_HISTORY, WHEEL_SCROLL_STEP } from '../config/limits.js'
 import { SECTION_NAMES, sectionMode } from '../domain/details.js'
 import { attachedImageNotice, imageTokenMeta } from '../domain/messages.js'
 import { fmtCwdBranch, shortCwd } from '../domain/paths.js'
@@ -40,6 +40,7 @@ import { useInputHandlers } from './useInputHandlers.js'
 import { useLongRunToolCharms } from './useLongRunToolCharms.js'
 import { useSessionLifecycle } from './useSessionLifecycle.js'
 import { useSubmission } from './useSubmission.js'
+import { useI18n } from '../i18n/index.js'
 
 const GOOD_VIBES_RE = /\b(good bot|thanks|thank you|thx|ty|ily|love you)\b/i
 const BRACKET_PASTE_ON = '\x1b[?2004h'
@@ -113,6 +114,7 @@ export function useMainApp(gw: GatewayClient) {
 
   const ui = useStore($uiState)
   const overlay = useStore($overlayState)
+  const { t } = useI18n()
 
   const turnLiveTailActive = useTurnSelector(state =>
     Boolean(
@@ -529,8 +531,6 @@ export function useMainApp(gw: GatewayClient) {
     [rpc, sys]
   )
 
-  clipboardPasteRef.current = paste
-
   const { dispatchSubmission, send, sendQueued, submit } = useSubmission({
     appendMessage,
     composerActions,
@@ -863,7 +863,7 @@ export function useMainApp(gw: GatewayClient) {
       turnStartedAt: ui.sid ? turnStartedAt : null,
       // CLI parity: the classic prompt_toolkit status bar shows a red dot
       // on REC (cli.py:_get_voice_status_fragments line 2344).
-      voiceLabel: voiceRecording ? '● REC' : voiceProcessing ? '◉ STT' : `voice ${voiceEnabled ? 'on' : 'off'}${voiceTts ? ' [tts]' : ''}`
+      voiceLabel: voiceRecording ? t('statusBar.voiceRec') : voiceProcessing ? t('statusBar.voiceStt') : (voiceEnabled ? t('statusBar.voiceOn') : t('statusBar.voiceOff')) + (voiceTts ? ' [tts]' : '')
     }),
     [
       cwd,
@@ -876,7 +876,8 @@ export function useMainApp(gw: GatewayClient) {
       voiceEnabled,
       voiceProcessing,
       voiceRecording,
-      voiceTts
+      voiceTts,
+      t
     ]
   )
 
