@@ -169,3 +169,100 @@ async def test_initialize_records_elicitation_capability():
 
     assert agent._supports_elicitation_form() is True
     assert agent._client_capabilities is caps
+
+
+class NoopDb:
+    def get_session(self, *_args, **_kwargs):
+        return None
+
+    def create_session(self, *_args, **_kwargs):
+        return None
+
+    def replace_messages(self, *_args, **_kwargs):
+        return None
+
+
+class ToolSurfaceFakeAgent:
+    def __init__(self):
+        self.enabled_toolsets = ["hermes-acp"]
+        self.disabled_toolsets = []
+        self.tools = []
+        self.valid_tool_names = set()
+        self.invalidated = 0
+        self.model = "fake-model"
+        self.provider = "fake-provider"
+
+    def _invalidate_system_prompt(self):
+        self.invalidated += 1
+
+
+class ToolSurfaceConn:
+    async def session_update(self, *_args, **_kwargs):
+        return None
+
+
+def install_fake_model_tools(monkeypatch):
+    calls = []
+
+    def get_tool_definitions(*, enabled_toolsets, disabled_toolsets=None, quiet_mode=True):
+        calls.append(list(enabled_toolsets))
+        tools = []
+        for toolset in enabled_toolsets:
+            if toolset == "clarify":
+                tools.append({"function": {"name": "clarify"}})
+            elif toolset.startswith("mcp-"):
+                tools.append({"function": {"name": f"{toolset}-tool"}})
+            else:
+                tools.append({"function": {"name": f"{toolset}-tool"}})
+        return tools
+
+    module = ModuleType("model_tools")
+    setattr(module, "get_tool_definitions", get_tool_definitions)
+    monkeypatch.setitem(sys.modules, "model_tools", module)
+    return calls
+
+
+@pytest.mark.asyncio
+async def test_acp_toolsets_add_clarify_only_for_form_elicitation():
+    supported = HermesACPAgent()
+    await supported.initialize(client_capabilities=SimpleNamespace(elicitation={"form": {}}))
+    assert "clarify" in supported._acp_toolsets_for_client(["hermes-acp"])
+
+    unsupported = HermesACPAgent()
+    await unsupported.initialize(client_capabilities=SimpleNamespace(elicitation={"url": {}}))
+    assert "clarify" not in unsupported._acp_toolsets_for_client(["hermes-acp", "clarify"])
+
+
+@pytest.mark.asyncio
+async def test_refresh_agent_tool_surface_gates_clarify_and_preserves_mcp(monkeypatch):
+    calls = install_fake_model_tools(monkeypatch)
+    fake = ToolSurfaceFakeAgent()
+    manager = SessionManager(agent_factory=lambda: fake, db=NoopDb())
+    agent = HermesACPAgent(session_manager=manager)
+    await agent.initialize(client_capabilities=SimpleNamespace(elicitation={"form": {}}))
+    state = manager.create_session(cwd=".")
+
+    agent._refresh_agent_tool_surface(state, mcp_server_names=["demo"])
+
+    assert "clarify" in state.agent.enabled_toolsets
+    assert "mcp-demo" in state.agent.enabled_toolsets
+    assert "clarify" in state.agent.valid_tool_names
+    assert "mcp-demo-tool" in state.agent.valid_tool_names
+    assert state.agent.invalidated == 1
+    assert "clarify" in calls[-1]
+
+
+@pytest.mark.asyncio
+async def test_new_session_refreshes_supported_client_tool_surface(monkeypatch):
+    install_fake_model_tools(monkeypatch)
+    fake = ToolSurfaceFakeAgent()
+    manager = SessionManager(agent_factory=lambda: fake, db=NoopDb())
+    agent = HermesACPAgent(session_manager=manager)
+    agent.on_connect(ToolSurfaceConn())
+    await agent.initialize(client_capabilities=SimpleNamespace(elicitation={"form": {}}))
+
+    response = await agent.new_session(cwd=".")
+    state = manager.get_session(response.session_id)
+
+    assert state is not None
+    assert "clarify" in state.agent.valid_tool_names
