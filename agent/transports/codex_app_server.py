@@ -142,14 +142,17 @@ class CodexAppServerClient:
         self._codex_bin = codex_bin
         spawn_env = _build_codex_app_server_env(os.environ, env, codex_home=codex_home)
 
-        app_server_args = _codex_app_server_config_args(spawn_env)
+        is_kanban_worker = bool(spawn_env.get("HERMES_KANBAN_TASK"))
+        app_server_args = []
+        if not is_kanban_worker:
+            app_server_args.extend(_codex_app_server_config_args(spawn_env))
         app_server_args.extend(extra_args or [])
         # Kanban workers must be able to write their handoff/status back to
         # the board DB, which lives outside the per-task workspace. Keep the
         # Codex sandbox on, but add the Kanban root as the only extra writable
         # root. Without this, codex-runtime workers finish their actual work
         # but crash/block when kanban_complete/kanban_block writes SQLite.
-        if spawn_env.get("HERMES_KANBAN_TASK"):
+        if is_kanban_worker:
             kanban_db = spawn_env.get("HERMES_KANBAN_DB")
             kanban_root = (
                 os.path.dirname(kanban_db)
