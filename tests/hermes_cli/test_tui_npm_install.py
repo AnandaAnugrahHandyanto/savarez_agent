@@ -1,7 +1,6 @@
 """_tui_need_npm_install: auto npm when node_modules is behind the lockfile."""
 
 import os
-import types
 from pathlib import Path
 
 import pytest
@@ -172,7 +171,7 @@ def test_make_tui_argv_skips_build_only_on_termux_when_fresh(
     assert cwd == tmp_path
 
 
-def test_make_tui_argv_keeps_desktop_always_build_behaviour(
+def test_make_tui_argv_skips_build_when_bundle_is_fresh_on_desktop(
     tmp_path: Path, main_mod, monkeypatch
 ) -> None:
     _touch_tui_entry(tmp_path)
@@ -181,15 +180,22 @@ def test_make_tui_argv_keeps_desktop_always_build_behaviour(
     monkeypatch.setattr(main_mod, "_tui_need_npm_install", lambda _root: False)
     monkeypatch.setattr(main_mod, "_tui_need_rebuild", lambda _root: False)
     monkeypatch.setattr(main_mod.shutil, "which", lambda name: f"/bin/{name}")
-    calls = []
 
-    def fake_run(*args, **kwargs):
-        calls.append((args, kwargs))
-        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+    def fail_run(*_args, **_kwargs):
+        raise AssertionError("fresh warm TUI launch must not rebuild")
 
-    monkeypatch.setattr(main_mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(main_mod.subprocess, "run", fail_run)
 
-    main_mod._make_tui_argv(tmp_path, tui_dev=False)
+    argv, cwd = main_mod._make_tui_argv(tmp_path, tui_dev=False)
 
-    assert calls
-    assert calls[0][0][0] == ["/bin/npm", "run", "build"]
+    assert argv == ["/bin/node", str(tmp_path / "dist" / "entry.js")]
+    assert cwd == tmp_path
+
+
+def test_tui_initial_skin_env_serializes_configured_skin(main_mod) -> None:
+    raw = main_mod._tui_initial_skin_env({"display": {"skin": "mono"}})
+
+    assert raw
+    assert '"name":"mono"' in raw
+    assert '"colors"' in raw
+    assert '"branding"' in raw

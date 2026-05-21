@@ -1019,9 +1019,9 @@ def _tui_need_rebuild(root: Path) -> bool:
     """True when ``dist/entry.js`` is missing or older than TUI inputs.
 
     The TUI bundle is self-contained. Rebuilding it on every launch adds a
-    visible cold-start tax on slow Termux CPUs, while a simple mtime freshness
-    check still rebuilds immediately after source updates, dependency updates,
-    or local edits. Set ``HERMES_TUI_FORCE_BUILD=1`` to force the old behaviour.
+    visible warm-start tax, while a simple mtime freshness check still rebuilds
+    immediately after source updates, dependency updates, or local edits. Set
+    ``HERMES_TUI_FORCE_BUILD=1`` to force the old behaviour.
     """
     force = (os.environ.get("HERMES_TUI_FORCE_BUILD") or "").strip().lower()
     if force in {"1", "true", "yes", "on"}:
@@ -1130,6 +1130,43 @@ def _find_bundled_tui(hermes_cli_dir: Path | None = None) -> Path | None:
     return bundled if bundled.is_file() else None
 
 
+def _tui_skin_payload(config: Optional[dict] = None) -> Optional[dict]:
+    """Resolve the configured skin before Node starts so first paint is themed.
+
+    The gateway still sends ``gateway.ready.payload.skin`` as the authoritative
+    live value.  This tiny bootstrap payload only prevents the TUI from painting
+    the built-in gold theme and then visibly switching to the configured skin a
+    few seconds later.
+    """
+    try:
+        from hermes_cli.config import load_config
+        from hermes_cli.skin_engine import get_active_skin, init_skin_from_config
+
+        init_skin_from_config(config if config is not None else load_config())
+        skin = get_active_skin()
+        return {
+            "name": skin.name,
+            "colors": skin.colors,
+            "branding": skin.branding,
+            "banner_logo": skin.banner_logo,
+            "banner_hero": skin.banner_hero,
+            "tool_prefix": skin.tool_prefix,
+            "help_header": (skin.branding or {}).get("help_header", ""),
+        }
+    except Exception:
+        return None
+
+
+def _tui_initial_skin_env(config: Optional[dict] = None) -> Optional[str]:
+    payload = _tui_skin_payload(config)
+    if not payload:
+        return None
+    try:
+        return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    except (TypeError, ValueError):
+        return None
+
+
 def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
     """TUI: --dev → tsx src; else node dist (HERMES_TUI_DIR prebuilt or esbuild)."""
     _ensure_tui_node()
@@ -1232,12 +1269,11 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
             return [str(tsx), "src/entry.tsx"], tui_dir
         return [npm, "start"], tui_dir
 
-    # Desktop/dev launches retain the historical "always rebuild" behaviour.
-    # Termux cold starts use the freshness check because esbuild startup is
-    # expensive on old mobile CPUs.
-    should_build = True
-    if _is_termux_startup_environment():
-        should_build = did_install or _tui_need_rebuild(tui_dir)
+    # Warm-starts should not pay an esbuild tax when the checked-in bundle is
+    # already fresher than its inputs.  The freshness check still rebuilds after
+    # local source/package edits; HERMES_TUI_FORCE_BUILD keeps the explicit escape
+    # hatch for anyone who needs the old "always rebuild" behavior.
+    should_build = did_install or _tui_need_rebuild(tui_dir)
 
     if should_build:
         npm = _node_bin("npm")
@@ -1378,6 +1414,9 @@ def _launch_tui(
         env["HERMES_TUI_TOOL_PROGRESS"] = "off"
     if accept_hooks:
         env["HERMES_ACCEPT_HOOKS"] = "1"
+    initial_skin = _tui_initial_skin_env()
+    if initial_skin:
+        env["HERMES_TUI_INITIAL_SKIN"] = initial_skin
     # Guarantee an 8GB V8 heap + exposed GC for the TUI. Default node cap is
     # ~1.5–4GB depending on version and can fatal-OOM on long sessions with
     # large transcripts / reasoning blobs. Token-level merge: respect any
