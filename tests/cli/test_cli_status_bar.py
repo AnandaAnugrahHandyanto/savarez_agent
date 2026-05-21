@@ -80,6 +80,47 @@ class TestCLIStatusBar:
         assert "$0.06" not in text  # cost hidden by default
         assert "15m" in text
 
+    def test_build_status_bar_text_shows_fast_mode_when_enabled(self):
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+        )
+        cli_obj.service_tier = "priority"
+
+        wide = cli_obj._build_status_bar_text(width=120)
+        medium = cli_obj._build_status_bar_text(width=60)
+        narrow = cli_obj._build_status_bar_text(width=50)
+
+        assert "⚡ FAST" in wide
+        assert "⚡ FAST" in medium
+        assert "⚡ FAST" in narrow
+
+    def test_fast_mode_in_wide_fragments(self):
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+        )
+        cli_obj._status_bar_visible = True
+        cli_obj.service_tier = "priority"
+
+        mock_app = MagicMock()
+        mock_app.output.get_size.return_value = MagicMock(columns=160)
+        with patch("prompt_toolkit.application.get_app", return_value=mock_app):
+            frags = cli_obj._get_status_bar_fragments()
+        frag_styles = {text: style for style, text in frags}
+
+        assert frag_styles["⚡ FAST"] == "class:status-bar-fast"
+
     def test_input_height_counts_wide_characters_using_cell_width(self):
         cli_obj = _make_cli()
 
