@@ -574,8 +574,8 @@ def _delete_skill(name: str, absorbed_into: Optional[str] = None) -> Dict[str, A
     if pinned_err:
         return {"success": False, "error": pinned_err}
 
-    # When the curator's background review fork calls this, refuse to archive
-    # a skill that an active cron job still references — deleting it would
+    # When the curator's background review fork calls this, refuse to delete
+    # a skill that an active cron job still references — removing it would
     # break the job silently at next run time.  Manual user-directed deletes
     # are never blocked (is_background_review() is False in those paths).
     #
@@ -605,7 +605,7 @@ def _delete_skill(name: str, absorbed_into: Optional[str] = None) -> Dict[str, A
                 return {
                     "success": False,
                     "error": (
-                        f"Cannot archive '{name}': an active cron job references this skill. "
+                        f"Cannot delete '{name}': an active cron job references this skill. "
                         "Remove or update the cron job first, then retry."
                     ),
                 }
