@@ -12,6 +12,7 @@ or rewrite request/response bodies. It's a credential-attaching forwarder.
 from __future__ import annotations
 
 import asyncio
+import hmac
 import json
 import logging
 import signal
@@ -82,7 +83,10 @@ def _filter_response_headers(headers) -> dict:
     return out
 
 
-def create_app(adapter: UpstreamAdapter) -> "web.Application":
+def create_app(
+    adapter: UpstreamAdapter,
+    client_api_key: Optional[str] = None,
+) -> "web.Application":
     """Build the aiohttp application bound to a specific upstream adapter."""
     if not AIOHTTP_AVAILABLE:
         raise RuntimeError(
@@ -95,6 +99,15 @@ def create_app(adapter: UpstreamAdapter) -> "web.Application":
     # bare-string keys.
     _adapter_key = web.AppKey("adapter", UpstreamAdapter)
     app[_adapter_key] = adapter
+
+    def _authorized(request: "web.Request") -> bool:
+        if not client_api_key:
+            return True
+        auth = request.headers.get("Authorization", "")
+        scheme, _, supplied = auth.partition(" ")
+        if scheme.lower() != "bearer" or not supplied:
+            return False
+        return hmac.compare_digest(supplied, client_api_key)
 
     async def handle_health(request: "web.Request") -> "web.Response":
         return web.json_response(
@@ -117,6 +130,13 @@ def create_app(adapter: UpstreamAdapter) -> "web.Application":
         )
 
     async def handle_proxy(request: "web.Request") -> "web.StreamResponse":
+        if not _authorized(request):
+            return _json_error(
+                401,
+                "Invalid Hermes proxy API key",
+                code="invalid_proxy_api_key",
+            )
+
         # Extract the path *after* /v1
         rel_path = request.match_info.get("tail", "")
         rel_path = "/" + rel_path.lstrip("/")
@@ -257,6 +277,7 @@ async def run_server(
     host: str = DEFAULT_HOST,
     port: int = DEFAULT_PORT,
     shutdown_event: Optional[asyncio.Event] = None,
+    client_api_key: Optional[str] = None,
 ) -> None:
     """Run the proxy in the current event loop until shutdown_event is set.
 
@@ -268,7 +289,7 @@ async def run_server(
             "pip install 'hermes-agent[messaging]' or `pip install aiohttp`."
         )
 
-    app = create_app(adapter)
+    app = create_app(adapter, client_api_key=client_api_key)
     runner = web.AppRunner(app, access_log=None)
     await runner.setup()
     site = web.TCPSite(runner, host=host, port=port)

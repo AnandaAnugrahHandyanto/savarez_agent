@@ -46,7 +46,8 @@ hermes proxy start
 Starting Hermes proxy for Nous Portal
   Listening on:  http://127.0.0.1:8645/v1
   Forwarding to: (resolved per-request from your subscription)
-  Use any bearer token in the client — the proxy attaches your real credential.
+  Client token:  <generated-token>
+  Configure clients with this token as the API key.
 ```
 
 Leave this running in the foreground. Use `tmux`, `nohup`, or a systemd
@@ -58,13 +59,14 @@ Any OpenAI-compatible app config takes the same triple:
 
 ```
 Base URL:   http://127.0.0.1:8645/v1
-API key:    anything (e.g. "sk-unused")
+API key:    the generated client token printed by `hermes proxy start`
 Model:      Hermes-4-70B    # or Hermes-4.3-36B, Hermes-4-405B
 ```
 
-The proxy ignores the `Authorization` header from your app and attaches
-your real Portal credential to the upstream request. Refreshes happen
-automatically when the bearer approaches expiry.
+The proxy requires the configured client bearer before it forwards a
+request. After that check passes, it replaces the client bearer with
+your real Portal credential on the upstream request. Refreshes happen
+automatically when the upstream bearer approaches expiry.
 
 ## Available providers
 
@@ -124,7 +126,7 @@ Edit `~/.openviking/ov.conf`:
     "provider": "openai",
     "model": "Hermes-4-70B",
     "api_base": "http://127.0.0.1:8645/v1",
-    "api_key": "unused-proxy-attaches-real-creds"
+    "api_key": "paste-the-generated-client-token-here"
   }
 }
 ```
@@ -152,7 +154,7 @@ bookmark summarization. In its config:
 ```bash
 # Karakeep .env
 OPENAI_API_BASE_URL=http://127.0.0.1:8645/v1
-OPENAI_API_KEY=any-non-empty-string
+OPENAI_API_KEY=paste-the-generated-client-token-here
 INFERENCE_TEXT_MODEL=Hermes-4-70B
 ```
 
@@ -168,10 +170,10 @@ machines on your network use it:
 hermes proxy start --host 0.0.0.0 --port 8645
 ```
 
-⚠ **Be aware:** anyone on your network can now use your Portal
-subscription. The proxy has no auth of its own — it accepts any bearer.
-Use a firewall, VPN, or reverse proxy with proper auth if you expose
-this beyond your trusted network.
+⚠ **Be aware:** the proxy now requires a client bearer token before it
+forwards requests, but a listener on `0.0.0.0` is still reachable from
+your LAN. Prefer a firewall or VPN for non-local use, and pass a stable
+secret with `--api-key` if clients need to reconnect after restarts.
 
 ## Rate limits
 
@@ -185,9 +187,10 @@ subscription quota. Monitor usage at
 The proxy is intentionally minimal. Per request:
 
 1. Receive `POST /v1/chat/completions` from your app
-2. Look up the adapter's current credential (refresh if expiring)
-3. Forward the request body verbatim, with `Authorization: Bearer <minted-key>`
-4. Stream the response back unchanged (SSE preserved)
+2. Require the configured client bearer token
+3. Look up the adapter's current credential (refresh if expiring)
+4. Forward the request body verbatim with the upstream bearer token
+5. Stream the response back unchanged (SSE preserved)
 
 No transformation. No logging of request bodies. No agent loop. The
 proxy is a credential-attaching pass-through.

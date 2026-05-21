@@ -10914,6 +10914,11 @@ def main():
         default=None,
         help="Bind port (default: 8645)",
     )
+    proxy_start.add_argument(
+        "--api-key",
+        default=None,
+        help="Client bearer token required by the proxy (default: generated per start)",
+    )
 
     proxy_subparsers.add_parser(
         "status", help="Show which proxy upstreams are ready"

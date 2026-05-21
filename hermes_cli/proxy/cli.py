@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import secrets
 import sys
 from typing import Any
 
@@ -54,19 +55,28 @@ def cmd_proxy_start(args: Any) -> int:
 
     host = getattr(args, "host", None) or DEFAULT_HOST
     port = getattr(args, "port", None) or DEFAULT_PORT
+    client_api_key = getattr(args, "api_key", None) or secrets.token_urlsafe(24)
 
     print(
         f"Starting Hermes proxy for {adapter.display_name}\n"
         f"  Listening on:  http://{host}:{port}/v1\n"
         f"  Forwarding to: (resolved per-request from your subscription)\n"
-        f"  Use any bearer token in the client — the proxy attaches your real credential.\n"
+        f"  Client token:  {client_api_key}\n"
+        f"  Configure clients with this token as the API key.\n"
         f"\n"
         f"Press Ctrl+C to stop.",
         file=sys.stderr,
     )
 
     try:
-        asyncio.run(run_server(adapter, host=host, port=port))
+        asyncio.run(
+            run_server(
+                adapter,
+                host=host,
+                port=port,
+                client_api_key=client_api_key,
+            )
+        )
     except KeyboardInterrupt:
         print("\nproxy: stopped", file=sys.stderr)
     except OSError as exc:
