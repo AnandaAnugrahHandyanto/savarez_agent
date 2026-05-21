@@ -10,7 +10,9 @@ from __future__ import annotations
 
 from typing import Any
 
-__all__ = ["supports_form_elicitation"]
+__all__ = ["OTHER_LABEL", "build_clarify_requested_schema", "supports_form_elicitation"]
+
+OTHER_LABEL = "Other (type your answer)"
 
 
 def _get_attr_or_key(value: Any, key: str, default: Any = None) -> Any:
@@ -42,6 +44,44 @@ def _metadata_elicitation(client_capabilities: object) -> Any:
         if elicitation is not None:
             return elicitation
     return None
+
+
+def build_clarify_requested_schema(*, question: str, choices: list[str] | None) -> dict[str, Any]:
+    """Build a simple ACP form schema for Hermes clarify prompts."""
+    if choices:
+        cleaned_choices = [str(choice).strip() for choice in choices if str(choice).strip()]
+        enum_values = cleaned_choices[:4]
+        if OTHER_LABEL not in enum_values:
+            enum_values.append(OTHER_LABEL)
+        return {
+            "type": "object",
+            "properties": {
+                "answer": {
+                    "type": "string",
+                    "title": question,
+                    "enum": enum_values,
+                },
+                "other_answer": {
+                    "type": "string",
+                    "title": "Other answer",
+                    "description": "Fill this only if you selected Other.",
+                },
+            },
+            "required": ["answer"],
+        }
+
+    return {
+        "type": "object",
+        "properties": {
+            "answer": {
+                "type": "string",
+                "title": question,
+                "minLength": 1,
+                "maxLength": 4000,
+            }
+        },
+        "required": ["answer"],
+    }
 
 
 def supports_form_elicitation(client_capabilities: object) -> bool:

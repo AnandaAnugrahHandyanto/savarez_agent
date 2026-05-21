@@ -1,6 +1,9 @@
 from types import SimpleNamespace
 
-from acp_adapter.elicitation import supports_form_elicitation
+from acp_adapter.elicitation import (
+    build_clarify_requested_schema,
+    supports_form_elicitation,
+)
 
 
 def test_supports_form_elicitation_with_object_form():
@@ -27,3 +30,23 @@ def test_supports_form_elicitation_missing_is_false():
 def test_supports_form_elicitation_url_only_is_false():
     caps = SimpleNamespace(elicitation={"url": {}})
     assert supports_form_elicitation(caps) is False
+
+
+def test_open_ended_clarify_schema_has_required_answer_string():
+    schema = build_clarify_requested_schema(question="What branch?", choices=None)
+    assert schema["type"] == "object"
+    assert schema["required"] == ["answer"]
+    assert schema["properties"]["answer"]["type"] == "string"
+
+
+def test_choice_clarify_schema_preserves_other_path():
+    schema = build_clarify_requested_schema(
+        question="Which approach?",
+        choices=["Strict", "Fallback"],
+    )
+    props = schema["properties"]
+    assert "answer" in props
+    assert "other_answer" in props
+    assert "Strict" in props["answer"].get("enum", [])
+    assert "Fallback" in props["answer"].get("enum", [])
+    assert "Other (type your answer)" in props["answer"].get("enum", [])
