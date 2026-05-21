@@ -369,6 +369,7 @@ class FeishuAdapterSettings:
     encrypt_key: str
     verification_token: str
     group_policy: str
+    require_mention: bool
     allowed_group_users: frozenset[str]
     # Bot's own open_id (app-scoped) — returned by /bot/v3/info.  Used only for
     # @mention matching: Feishu puts this value in mentions[].id.open_id when
@@ -394,7 +395,6 @@ class FeishuAdapterSettings:
     default_group_policy: str = ""
     group_rules: Dict[str, FeishuGroupRule] = field(default_factory=dict)
     allow_bots: str = "none"  # "none" | "mentions" | "all"
-    require_mention: bool = True
 
 
 @dataclass
@@ -541,6 +541,19 @@ def _coerce_int(value: Any, default: Optional[int] = None, min_value: int = 0) -
 def _coerce_required_int(value: Any, default: int, min_value: int = 0) -> int:
     parsed = _coerce_int(value, default=default, min_value=min_value)
     return default if parsed is None else parsed
+
+
+def _coerce_bool(value: Any, default: bool = True) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    normalized = str(value).strip().lower()
+    if normalized in {"1", "true", "yes", "y", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "n", "off"}:
+        return False
+    return default
 
 
 # ---------------------------------------------------------------------------
@@ -1522,7 +1535,11 @@ class FeishuAdapter(BasePlatformAdapter):
             verification_token=str(
                 extra.get("verification_token") or os.getenv("FEISHU_VERIFICATION_TOKEN", "")
             ).strip(),
-            group_policy=os.getenv("FEISHU_GROUP_POLICY", "allowlist").strip().lower(),
+            group_policy=str(extra.get("group_policy") or os.getenv("FEISHU_GROUP_POLICY", "allowlist")).strip().lower(),
+            require_mention=_coerce_bool(
+                extra.get("require_mention", os.getenv("FEISHU_REQUIRE_MENTION", "true")),
+                default=True,
+            ),
             allowed_group_users=frozenset(
                 item.strip()
                 for item in os.getenv("FEISHU_ALLOWED_USERS", "").split(",")
@@ -1570,9 +1587,6 @@ class FeishuAdapter(BasePlatformAdapter):
             default_group_policy=default_group_policy,
             group_rules=group_rules,
             allow_bots=allow_bots,
-            require_mention=_to_boolean(
-                extra.get("require_mention", os.getenv("FEISHU_REQUIRE_MENTION", "true"))
-            ),
         )
 
     def _apply_settings(self, settings: FeishuAdapterSettings) -> None:
@@ -1583,6 +1597,7 @@ class FeishuAdapter(BasePlatformAdapter):
         self._encrypt_key = settings.encrypt_key
         self._verification_token = settings.verification_token
         self._group_policy = settings.group_policy
+        self._require_mention = settings.require_mention
         self._allowed_group_users = set(settings.allowed_group_users)
         self._admins = set(settings.admins)
         self._default_group_policy = settings.default_group_policy or settings.group_policy
@@ -3093,6 +3108,129 @@ class FeishuAdapter(BasePlatformAdapter):
     # Inbound processing pipeline
     # =========================================================================
 
+    @staticmethod
+    def _normalize_root_message_id(value: Any) -> Optional[str]:
+        candidate = str(value or "").strip()
+        if not candidate or candidate.startswith("omt_"):
+            return None
+        return candidate
+
+    @staticmethod
+    def _extract_topic_thread_id(message: Any) -> Optional[str]:
+        candidate = str(getattr(message, "thread_id", "") or "").strip()
+        return candidate if candidate.startswith("omt_") else None
+
+    @classmethod
+    def _extract_thread_context_id(cls, message: Any) -> Optional[str]:
+        return (
+            cls._normalize_root_message_id(getattr(message, "root_id", None))
+            or cls._normalize_root_message_id(getattr(message, "upper_message_id", None))
+            or None
+        )
+
+    async def _fetch_message_item(self, message_id: str) -> Optional[Any]:
+        if not self._client or not message_id:
+            return None
+        try:
+            request = self._build_get_message_request(message_id)
+            response = await asyncio.to_thread(self._client.im.v1.message.get, request)
+            if not response or getattr(response, "success", lambda: False)() is False:
+                code = getattr(response, "code", "unknown")
+                msg = getattr(response, "msg", "message lookup failed")
+                logger.warning("[Feishu] Failed to fetch message %s: [%s] %s", message_id, code, msg)
+                return None
+            items = getattr(getattr(response, "data", None), "items", None) or []
+            return items[0] if items else None
+        except Exception:
+            logger.warning("[Feishu] Failed to fetch message %s", message_id, exc_info=True)
+            return None
+
+    async def _resolve_thread_context_id(
+        self,
+        *,
+        message: Any = None,
+        message_id: Optional[str] = None,
+        fetch_current_message: bool = False,
+    ) -> Optional[str]:
+        thread_context_id = self._extract_thread_context_id(message) if message is not None else None
+        if thread_context_id:
+            return thread_context_id
+
+        lookup_message_id = str(message_id or getattr(message, "message_id", None) or "").strip()
+        topic_thread_id = self._extract_topic_thread_id(message) if message is not None else None
+        resolved_message = message
+
+        if lookup_message_id and (message is None or (fetch_current_message and topic_thread_id)):
+            resolved_message = await self._fetch_message_item(lookup_message_id)
+            thread_context_id = self._extract_thread_context_id(resolved_message) if resolved_message is not None else None
+            if thread_context_id:
+                return thread_context_id
+            topic_thread_id = topic_thread_id or self._extract_topic_thread_id(resolved_message)
+
+        if not topic_thread_id:
+            return None
+
+        parent_message_id = self._normalize_root_message_id(
+            getattr(resolved_message, "parent_id", None)
+            if resolved_message is not None
+            else None
+        )
+        if parent_message_id:
+            parent_message = await self._fetch_message_item(parent_message_id)
+            if parent_message is not None:
+                return (
+                    self._extract_thread_context_id(parent_message)
+                    or self._normalize_root_message_id(getattr(parent_message, "message_id", None))
+                )
+
+        current_message_id = self._normalize_root_message_id(
+            getattr(resolved_message, "message_id", None)
+            if resolved_message is not None
+            else lookup_message_id
+        )
+        if current_message_id:
+            logger.info(
+                "[Feishu] Treating message %s as thread root for topic %s because Feishu omitted root/upper/parent ids",
+                current_message_id,
+                topic_thread_id,
+            )
+            return current_message_id
+
+        logger.info(
+            "[Feishu] Unable to recover root message id for topic %s from message %s",
+            topic_thread_id,
+            lookup_message_id or "<unknown>",
+        )
+        return None
+
+    def _resolve_channel_skills(self, channel_id: str, parent_id: str | None = None) -> list[str] | None:
+        config_extra = getattr(getattr(self, "config", None), "extra", {}) or {}
+        bindings = config_extra.get("channel_skill_bindings", [])
+        if not bindings:
+            return None
+        ids_to_check = [channel_id]
+        if parent_id:
+            ids_to_check.append(parent_id)
+        for binding_id in ids_to_check:
+            for entry in bindings:
+                if not isinstance(entry, dict):
+                    continue
+                if str(entry.get("id", "")).strip() != binding_id:
+                    continue
+                skills = entry.get("skills") or entry.get("skill")
+                if isinstance(skills, str):
+                    skills = [skills]
+                if isinstance(skills, list):
+                    normalized = [str(skill).strip() for skill in skills if str(skill).strip()]
+                    return list(dict.fromkeys(normalized)) or None
+        return None
+
+    def _resolve_channel_prompt(self, channel_id: str, parent_id: str | None = None) -> str | None:
+        from gateway.platforms.base import resolve_channel_prompt
+
+        config_extra = getattr(getattr(self, "config", None), "extra", {}) or {}
+        return resolve_channel_prompt(config_extra, channel_id, parent_id)
+
     async def _process_inbound_message(
         self,
         *,
@@ -3148,6 +3286,15 @@ class FeishuAdapter(BasePlatformAdapter):
         )
 
         chat_id = getattr(message, "chat_id", "") or ""
+        thread_context_id = await self._resolve_thread_context_id(
+            message=message,
+            message_id=message_id,
+            fetch_current_message=True,
+        )
+        channel_binding_id = thread_context_id or chat_id
+        parent_binding_id = chat_id if thread_context_id else None
+        auto_skill = self._resolve_channel_skills(channel_binding_id, parent_binding_id)
+        channel_prompt = self._resolve_channel_prompt(channel_binding_id, parent_binding_id)
         chat_info = await self.get_chat_info(chat_id)
         sender_profile = await self._resolve_sender_profile(sender_id, is_bot=is_bot)
         source = self.build_source(
@@ -3156,7 +3303,7 @@ class FeishuAdapter(BasePlatformAdapter):
             chat_type=self._resolve_source_chat_type(chat_info=chat_info, event_chat_type=chat_type),
             user_id=sender_profile["user_id"],
             user_name=sender_profile["user_name"],
-            thread_id=thread_id,
+            thread_id=thread_context_id,
             user_id_alt=sender_profile["user_id_alt"],
             is_bot=is_bot,
         )
@@ -3170,6 +3317,8 @@ class FeishuAdapter(BasePlatformAdapter):
             media_types=media_types,
             reply_to_message_id=reply_to_message_id,
             reply_to_text=reply_to_text,
+            auto_skill=auto_skill,
+            channel_prompt=channel_prompt,
             timestamp=datetime.now(),
         )
         await self._dispatch_inbound_event(normalized)
@@ -4176,6 +4325,21 @@ class FeishuAdapter(BasePlatformAdapter):
 
         return bool(sender_ids and (sender_ids & self._allowed_group_users))
 
+    def _resolve_group_policy_rule(self, chat_id: str = "") -> tuple[str, set[str], set[str]]:
+        rule = self._group_rules.get(chat_id) if chat_id else None
+        if rule:
+            return rule.policy, rule.allowlist, rule.blacklist
+        return self._default_group_policy or self._group_policy, self._allowed_group_users, set()
+
+    def _should_accept_group_message(self, message: Any, sender_id: Any, chat_id: str = "") -> bool:
+        """Gate group messages by policy first, then mention requirement when needed."""
+        if not self._allow_group_message(sender_id, chat_id):
+            return False
+        policy, _, _ = self._resolve_group_policy_rule(chat_id)
+        if policy == "open" or not self._require_mention:
+            return True
+        return self._mentions_self(message)
+
     # --- Mention detection ----------------------------------------------------
 
     def _mentions_self(self, message: Any) -> bool:
@@ -4456,10 +4620,11 @@ class FeishuAdapter(BasePlatformAdapter):
         reply_to: Optional[str],
         metadata: Optional[Dict[str, Any]],
     ) -> Any:
+        metadata = metadata or {}
         effective_reply_to = reply_to
-        if not effective_reply_to and metadata and metadata.get("thread_id"):
-            effective_reply_to = metadata.get("reply_to_message_id")
-        reply_in_thread = bool((metadata or {}).get("thread_id"))
+        if not effective_reply_to and metadata.get("thread_id"):
+            effective_reply_to = metadata.get("reply_to_message_id") or metadata.get("thread_id")
+        reply_in_thread = bool(metadata.get("thread_id"))
         if effective_reply_to:
             body = self._build_reply_message_body(
                 content=payload,

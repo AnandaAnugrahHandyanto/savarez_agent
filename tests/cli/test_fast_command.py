@@ -334,6 +334,17 @@ class TestAnthropicFastMode(unittest.TestCase):
         result = resolve_fast_mode_overrides("gpt-5.4")
         assert result == {"service_tier": "priority"}
 
+    def test_resolve_overrides_returns_service_tier_for_custom_codex_runtime(self):
+        from hermes_cli.models import resolve_fast_mode_overrides, runtime_supports_priority_processing
+
+        assert runtime_supports_priority_processing("custom", "codex_responses") is True
+        result = resolve_fast_mode_overrides(
+            "gpt-5.3-codex",
+            provider="custom",
+            api_mode="codex_responses",
+        )
+        assert result == {"service_tier": "priority"}
+
     def test_is_anthropic_fast_model(self):
         """The speed=fast parameter is Opus 4.6 only — other Claude excluded."""
         from hermes_cli.models import _is_anthropic_fast_model

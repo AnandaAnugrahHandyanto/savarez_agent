@@ -1701,6 +1701,30 @@ def _format_gateway_process_notification(evt: dict) -> "str | None":
     return None
 
 
+def _history_has_conversation_messages(history: List[Dict[str, Any]]) -> bool:
+    """Return True when transcript history already contains real conversation."""
+    for msg in history or []:
+        role = msg.get("role")
+        if not role or role in ("session_meta", "system"):
+            continue
+        if role == "tool":
+            return True
+        if msg.get("tool_calls") or msg.get("tool_call_id"):
+            return True
+        if msg.get("content"):
+            return True
+    return False
+
+
+def _should_bootstrap_auto_skills(session_entry, history: List[Dict[str, Any]]) -> bool:
+    """Return True when bound auto-skills still need first-turn injection."""
+    is_new_session = (
+        session_entry.created_at == session_entry.updated_at
+        or getattr(session_entry, "was_auto_reset", False)
+    )
+    return is_new_session or not _history_has_conversation_messages(history)
+
+
 # Module-level weak reference to the active GatewayRunner instance.
 # Used by tools (e.g. send_message) that need to route through a live
 # adapter for plugin platforms.  Set in GatewayRunner.__init__().
@@ -2766,7 +2790,11 @@ class GatewayRunner:
             return route
 
         try:
-            overrides = resolve_fast_mode_overrides(route["model"])
+            overrides = resolve_fast_mode_overrides(
+                route["model"],
+                provider=runtime.get("provider"),
+                api_mode=runtime.get("api_mode"),
+            )
         except Exception:
             overrides = None
         route["request_overrides"] = overrides or {}
@@ -8986,6 +9014,7 @@ class GatewayRunner:
             self._set_session_reasoning_override(session_key, None)
             if hasattr(self, "_pending_model_notes"):
                 self._pending_model_notes.pop(session_key, None)
+        history = self.session_store.load_transcript(session_entry.session_id)
         
         # Emit session:start for new or auto-reset sessions
         _is_new_session = (
@@ -9088,10 +9117,12 @@ class GatewayRunner:
 
         # Auto-load skill(s) for topic/channel bindings (Telegram DM Topics,
         # Discord channel_skill_bindings).  Supports a single name or ordered list.
-        # Only inject on NEW sessions — ongoing conversations already have the
-        # skill content in their conversation history from the first message.
+        # Inject on session bootstrap. Most sessions are detected via timestamp
+        # metadata, but restarts can leave behind an existing session entry with
+        # no conversation history yet.
         _auto = getattr(event, "auto_skill", None)
-        if _is_new_session and _auto:
+        _needs_auto_skill_bootstrap = _should_bootstrap_auto_skills(session_entry, history)
+        if _needs_auto_skill_bootstrap and _auto:
             _skill_names = [_auto] if isinstance(_auto, str) else list(_auto)
             try:
                 from agent.skill_commands import _load_skill_payload, _build_skill_message
@@ -9122,9 +9153,6 @@ class GatewayRunner:
             except Exception as e:
                 logger.warning("[Gateway] Failed to auto-load skill(s) %s: %s", _skill_names, e)
 
-        # Load conversation history from transcript
-        history = self.session_store.load_transcript(session_entry.session_id)
-        
         # -----------------------------------------------------------------
         # Session hygiene: auto-compress pathologically large transcripts
         #
@@ -13020,9 +13048,9 @@ class GatewayRunner:
         return t("gateway.reasoning.set_session", effort=effort)
 
     async def _handle_fast_command(self, event: MessageEvent) -> str:
-        """Handle /fast — mirror the CLI Priority Processing toggle in gateway chats."""
+        """Handle /fast — mirror the CLI fast-mode toggle in gateway chats."""
         import yaml
-        from hermes_cli.models import model_supports_fast_mode
+        from hermes_cli.models import _is_anthropic_fast_model, model_supports_fast_mode, runtime_supports_priority_processing
 
         args = event.get_command_args().strip().lower()
         config_path = _hermes_home / "config.yaml"
@@ -13030,8 +13058,16 @@ class GatewayRunner:
 
         user_config = _load_gateway_config()
         model = _resolve_gateway_model(user_config)
-        if not model_supports_fast_mode(model):
+        try:
+            runtime_kwargs = _resolve_runtime_agent_kwargs()
+        except Exception:
+            runtime_kwargs = {}
+        if not model_supports_fast_mode(model) and not runtime_supports_priority_processing(
+            runtime_kwargs.get("provider"),
+            runtime_kwargs.get("api_mode"),
+        ):
             return t("gateway.fast.not_supported")
+        feature_name = "Anthropic Fast Mode" if _is_anthropic_fast_model(model) else "Priority Processing"
 
         def _save_config_key(key_path: str, value):
             """Save a dot-separated key to config.yaml."""
@@ -13055,7 +13091,7 @@ class GatewayRunner:
 
         if not args or args == "status":
             status = t("gateway.fast.status_fast") if self._service_tier == "priority" else t("gateway.fast.status_normal")
-            return t("gateway.fast.status", mode=status)
+            return t("gateway.fast.status", feature=feature_name, mode=status)
 
         if args in {"fast", "on"}:
             self._service_tier = "priority"
@@ -13069,8 +13105,8 @@ class GatewayRunner:
             return t("gateway.fast.unknown_arg", arg=args)
 
         if _save_config_key("agent.service_tier", saved_value):
-            return t("gateway.fast.saved", label=label)
-        return t("gateway.fast.session_only", label=label)
+            return t("gateway.fast.saved", feature=feature_name, label=label)
+        return t("gateway.fast.session_only", feature=feature_name, label=label)
 
     async def _handle_yolo_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:
         """Handle /yolo — toggle dangerous command approval bypass for this session only."""

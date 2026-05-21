@@ -377,6 +377,30 @@ class TestCodexMapFinishReason:
 
 class TestCodexNormalizeResponse:
 
+    def _response_with_message_items(self, *items, output_text=None):
+        kwargs = {
+            "output": list(items),
+            "status": "completed",
+            "incomplete_details": None,
+            "usage": SimpleNamespace(input_tokens=10, output_tokens=5,
+                                     input_tokens_details=None, output_tokens_details=None),
+        }
+        if output_text is not None:
+            kwargs["output_text"] = output_text
+        return SimpleNamespace(**kwargs)
+
+    def _message_item(self, text, *, phase=None, item_id="msg_abc"):
+        kwargs = {
+            "type": "message",
+            "role": "assistant",
+            "id": item_id,
+            "content": [SimpleNamespace(type="output_text", text=text)],
+            "status": "completed",
+        }
+        if phase is not None:
+            kwargs["phase"] = phase
+        return SimpleNamespace(**kwargs)
+
     def test_text_response(self, transport):
         """Normalize a simple text Codex response."""
         r = SimpleNamespace(
@@ -396,6 +420,100 @@ class TestCodexNormalizeResponse:
         nr = transport.normalize_response(r)
         assert isinstance(nr, NormalizedResponse)
         assert nr.content == "Hello world"
+        assert nr.finish_reason == "stop"
+
+    @pytest.mark.parametrize("phase", ["commentary", "analysis"])
+    def test_commentary_or_analysis_only_message_is_not_visible_and_incomplete(
+        self, transport, phase
+    ):
+        r = self._response_with_message_items(
+            self._message_item("Internal commentary", phase=phase),
+            output_text="Internal commentary",
+        )
+
+        nr = transport.normalize_response(r)
+
+        assert nr.content == ""
+        assert nr.finish_reason == "incomplete"
+        assert nr.provider_data["codex_message_items"] == [
+            {
+                "type": "message",
+                "role": "assistant",
+                "status": "completed",
+                "content": [{"type": "output_text", "text": "Internal commentary"}],
+                "id": "msg_abc",
+                "phase": phase,
+            }
+        ]
+
+    @pytest.mark.parametrize("phase", ["final_answer", "final", " Final "])
+    def test_final_answer_message_remains_visible_and_stops(self, transport, phase):
+        r = self._response_with_message_items(
+            self._message_item("Visible answer", phase=phase),
+        )
+
+        nr = transport.normalize_response(r)
+
+        assert nr.content == "Visible answer"
+        assert nr.finish_reason == "stop"
+
+    def test_unknown_phase_message_is_hidden_and_incomplete(self, transport):
+        r = self._response_with_message_items(
+            self._message_item("Unknown phase text", phase="future_phase"),
+            output_text="Unknown phase text",
+        )
+
+        nr = transport.normalize_response(r)
+
+        assert nr.content == ""
+        assert nr.finish_reason == "incomplete"
+        assert nr.codex_message_items[0]["phase"] == "future_phase"
+
+    def test_mixed_commentary_and_final_answer_only_shows_final(self, transport):
+        r = self._response_with_message_items(
+            self._message_item(
+                "Internal commentary",
+                phase="commentary",
+                item_id="msg_commentary",
+            ),
+            self._message_item(
+                "Visible answer",
+                phase="final_answer",
+                item_id="msg_final",
+            ),
+        )
+
+        nr = transport.normalize_response(r)
+
+        assert nr.content == "Visible answer"
+        assert nr.finish_reason == "stop"
+        assert nr.codex_message_items == [
+            {
+                "type": "message",
+                "role": "assistant",
+                "status": "completed",
+                "content": [{"type": "output_text", "text": "Internal commentary"}],
+                "id": "msg_commentary",
+                "phase": "commentary",
+            },
+            {
+                "type": "message",
+                "role": "assistant",
+                "status": "completed",
+                "content": [{"type": "output_text", "text": "Visible answer"}],
+                "id": "msg_final",
+                "phase": "final_answer",
+            },
+        ]
+
+    def test_no_phase_message_remains_visible_for_compatibility(self, transport):
+        r = self._response_with_message_items(
+            self._message_item("Legacy visible answer", phase=None),
+        )
+
+        nr = transport.normalize_response(r)
+
+        assert nr.content == "Legacy visible answer"
         assert nr.finish_reason == "stop"
 
     def test_message_items_preserved_in_provider_data(self, transport):

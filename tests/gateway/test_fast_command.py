@@ -121,6 +121,54 @@ def test_turn_route_skips_priority_processing_for_unsupported_models():
     assert route["request_overrides"] == {}
 
 
+def test_turn_route_injects_speed_for_anthropic_fast_mode():
+    runner = _make_runner()
+    runner._service_tier = "priority"
+    runtime_kwargs = {
+        "api_key": "sk-ant-test",
+        "base_url": "https://api.anthropic.com",
+        "provider": "anthropic",
+        "api_mode": "anthropic_messages",
+        "command": None,
+        "args": [],
+        "credential_pool": None,
+    }
+
+    route = gateway_run.GatewayRunner._resolve_turn_agent_config(
+        runner,
+        "hi",
+        "claude-opus-4-6",
+        runtime_kwargs,
+    )
+
+    assert route["runtime"]["provider"] == "anthropic"
+    assert route["request_overrides"] == {"speed": "fast"}
+
+
+def test_turn_route_injects_priority_for_custom_codex_runtime():
+    runner = _make_runner()
+    runner._service_tier = "priority"
+    runtime_kwargs = {
+        "api_key": "***",
+        "base_url": "https://codex.example/v1",
+        "provider": "custom",
+        "api_mode": "codex_responses",
+        "command": None,
+        "args": [],
+        "credential_pool": None,
+    }
+
+    route = gateway_run.GatewayRunner._resolve_turn_agent_config(
+        runner,
+        "hi",
+        "gpt-5.3-codex",
+        runtime_kwargs,
+    )
+
+    assert route["runtime"]["provider"] == "custom"
+    assert route["request_overrides"] == {"service_tier": "priority"}
+
+
 @pytest.mark.asyncio
 async def test_handle_fast_command_persists_config(monkeypatch, tmp_path):
     runner = _make_runner()
@@ -136,6 +184,55 @@ async def test_handle_fast_command_persists_config(monkeypatch, tmp_path):
 
     saved = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))
     assert saved["agent"]["service_tier"] == "fast"
+
+
+@pytest.mark.asyncio
+async def test_handle_fast_command_accepts_anthropic_fast_mode(monkeypatch, tmp_path):
+    runner = _make_runner()
+
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
+    monkeypatch.setattr(gateway_run, "_resolve_gateway_model", lambda config=None: "claude-opus-4-6")
+
+    response = await runner._handle_fast_command(_make_event("/fast fast"))
+
+    assert "Anthropic Fast Mode" in response
+    assert "FAST" in response
+    assert runner._service_tier == "priority"
+
+
+@pytest.mark.asyncio
+async def test_handle_fast_command_accepts_custom_codex_provider(monkeypatch, tmp_path):
+    runner = _make_runner()
+
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
+    monkeypatch.setattr(gateway_run, "_resolve_gateway_model", lambda config=None: "gpt-5.3-codex")
+    monkeypatch.setattr(
+        gateway_run,
+        "_resolve_runtime_agent_kwargs",
+        lambda: {"provider": "custom", "api_mode": "codex_responses", "base_url": "https://codex.example/v1"},
+    )
+
+    response = await runner._handle_fast_command(_make_event("/fast fast"))
+
+    assert "Priority Processing" in response
+    assert "FAST" in response
+    assert runner._service_tier == "priority"
+
+
+@pytest.mark.asyncio
+async def test_handle_fast_command_unsupported_message_mentions_both_fast_modes(monkeypatch, tmp_path):
+    runner = _make_runner()
+
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
+    monkeypatch.setattr(gateway_run, "_resolve_gateway_model", lambda config=None: "deepseek-chat")
+
+    response = await runner._handle_fast_command(_make_event("/fast fast"))
+
+    assert "OpenAI Priority Processing" in response
+    assert "Anthropic Fast Mode" in response
 
 
 @pytest.mark.asyncio

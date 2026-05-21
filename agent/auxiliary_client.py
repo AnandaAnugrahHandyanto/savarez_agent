@@ -1010,6 +1010,7 @@ class AsyncCodexAuxiliaryClient:
     """Async-compatible wrapper matching AsyncOpenAI.chat.completions.create()."""
 
     def __init__(self, sync_wrapper: "CodexAuxiliaryClient"):
+        self._sync_wrapper = sync_wrapper
         sync_adapter = sync_wrapper.chat.completions
         async_adapter = _AsyncCodexCompletionsAdapter(sync_adapter)
         self.chat = _AsyncCodexChatShim(async_adapter)
@@ -4487,6 +4488,73 @@ def _force_close_async_httpx(client: Any) -> None:
         pass
 
 
+def _is_client_closed(client: Any) -> bool:
+    """Return True when a cached auxiliary client is no longer usable.
+
+    The OpenAI SDK reports requests through a closed underlying httpx client as
+    ``APIConnectionError('Connection error.')``.  The Codex Responses timeout
+    watchdog intentionally closes the underlying client to unblock a stuck
+    stream, so the cache must not hand that wrapper back to later auxiliary
+    calls.
+
+    This is deliberately best-effort and side-effect free: if a provider
+    wrapper does not expose a closed flag, treat it as open.
+    """
+    if client is None:
+        return False
+
+    seen: set[int] = set()
+
+    def _check(obj: Any) -> bool:
+        if obj is None:
+            return False
+        oid = id(obj)
+        if oid in seen:
+            return False
+        seen.add(oid)
+
+        try:
+            closed_flag = getattr(obj, "is_closed", False)
+            if isinstance(closed_flag, bool) and closed_flag:
+                return True
+            if callable(closed_flag):
+                try:
+                    result = closed_flag()
+                except TypeError:
+                    result = False
+                if isinstance(result, bool) and result:
+                    return True
+        except Exception:
+            pass
+
+        try:
+            state = getattr(obj, "_state", None)
+            if state is not None and str(state).endswith(".CLOSED"):
+                return True
+        except Exception:
+            pass
+
+        # Wrapper chain examples:
+        #   CodexAuxiliaryClient._real_client -> OpenAI._client -> httpx.Client
+        #   AsyncCodexAuxiliaryClient._sync_wrapper -> CodexAuxiliaryClient
+        #   Anthropic/other adapters may expose _client directly.
+        # Only inspect explicitly stored attributes.  unittest.mock.MagicMock
+        # fabricates arbitrary attributes on access; recursing into those would
+        # make every mock look like a nested client and can produce false
+        # closed detections on cache-hit tests.
+        try:
+            obj_vars = vars(obj)
+        except TypeError:
+            obj_vars = {}
+        for attr in ("_sync_wrapper", "_real_client", "_client", "client"):
+            inner = obj_vars.get(attr)
+            if inner is not None and inner is not obj and _check(inner):
+                return True
+        return False
+
+    return _check(client)
+
+
 def shutdown_cached_clients() -> None:
     """Close all cached clients (sync and async) to prevent event-loop errors.
 
@@ -4607,7 +4675,18 @@ def _get_cached_client(
     with _client_cache_lock:
         if cache_key in _client_cache:
             cached_client, cached_default, cached_loop = _client_cache[cache_key]
-            if async_mode:
+            if _is_client_closed(cached_client):
+                # The Codex Responses timeout watchdog closes the underlying
+                # OpenAI/httpx client to unblock a stuck stream.  Do not reuse
+                # that wrapper: the next request would surface only as the
+                # misleading OpenAI SDK message "Connection error.".
+                logger.debug(
+                    "Auxiliary %s client cache entry is closed; evicting and rebuilding",
+                    provider,
+                )
+                _force_close_async_httpx(cached_client)
+                del _client_cache[cache_key]
+            elif async_mode:
                 # Validate: the cached client must be bound to the CURRENT,
                 # OPEN loop.  If the loop changed or was closed, the httpx
                 # transport inside is dead — force-close and replace.
@@ -4662,7 +4741,30 @@ def _get_cached_client(
                     del _client_cache[evict_key]
                 _client_cache[cache_key] = (client, default_model, bound_loop)
             else:
-                client, default_model, _ = _client_cache[cache_key]
+                cached_client, cached_default, cached_loop = _client_cache[cache_key]
+                reuse_cached = not _is_client_closed(cached_client)
+                if reuse_cached and async_mode:
+                    reuse_cached = (
+                        cached_loop is not None
+                        and cached_loop is current_loop
+                        and not cached_loop.is_closed()
+                    )
+
+                if reuse_cached:
+                    # Another thread populated an equivalent usable entry while
+                    # we were building outside the lock.  Use the winner and
+                    # close the loser so we do not leak connection pools.
+                    _force_close_async_httpx(client)
+                    try:
+                        close_fn = getattr(client, "close", None)
+                        if callable(close_fn):
+                            close_fn()
+                    except Exception:
+                        pass
+                    client, default_model = cached_client, cached_default
+                else:
+                    _force_close_async_httpx(cached_client)
+                    _client_cache[cache_key] = (client, default_model, bound_loop)
     return client, model or default_model
 
 

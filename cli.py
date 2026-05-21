@@ -5052,7 +5052,11 @@ class HermesCLI:
             return route
 
         try:
-            overrides = resolve_fast_mode_overrides(route["model"])
+            overrides = resolve_fast_mode_overrides(
+                route["model"],
+                provider=runtime.get("provider"),
+                api_mode=runtime.get("api_mode"),
+            )
         except Exception:
             overrides = None
         route["request_overrides"] = overrides
@@ -6307,12 +6311,15 @@ class HermesCLI:
     
     def _fast_command_available(self) -> bool:
         try:
-            from hermes_cli.models import model_supports_fast_mode
+            from hermes_cli.models import model_supports_fast_mode, runtime_supports_priority_processing
         except Exception:
             return False
         agent = getattr(self, "agent", None)
         model = getattr(agent, "model", None) or getattr(self, "model", None)
-        return model_supports_fast_mode(model)
+        return model_supports_fast_mode(model) or runtime_supports_priority_processing(
+            getattr(self, "provider", None) or getattr(self, "requested_provider", None),
+            getattr(self, "api_mode", None),
+        )
 
     def _command_available(self, slash_command: str) -> bool:
         if slash_command == "/fast":

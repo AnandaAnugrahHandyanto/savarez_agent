@@ -29,6 +29,11 @@ from agent.auxiliary_client import (
     _resolve_auto,
     _resolve_xai_oauth_for_aux,
     _CodexCompletionsAdapter,
+    _get_cached_client,
+    _client_cache,
+    _client_cache_key,
+    CodexAuxiliaryClient,
+    AsyncCodexAuxiliaryClient,
 )
 
 
@@ -2870,6 +2875,174 @@ class TestCodexAuxiliaryAdapterTimeout:
             )
 
         assert time.monotonic() - started < 0.14
+
+    def test_get_cached_client_rebuilds_closed_codex_wrapper(self):
+        class FakeHTTPXClient:
+            def __init__(self, is_closed=False):
+                self.is_closed = is_closed
+
+        class FakeOpenAIClient:
+            def __init__(self, is_closed=False):
+                self._client = FakeHTTPXClient(is_closed=is_closed)
+
+        closed_client = SimpleNamespace(
+            _real_client=FakeOpenAIClient(is_closed=True),
+            base_url="https://example.test/v1",
+        )
+        fresh_client = SimpleNamespace(
+            _real_client=FakeOpenAIClient(is_closed=False),
+            base_url="https://example.test/v1",
+        )
+
+        _client_cache.clear()
+        try:
+            with patch("agent.auxiliary_client.resolve_provider_client", return_value=(closed_client, "old-model")):
+                first_client, first_model = _get_cached_client(
+                    "custom", "gpt-5.5", base_url="https://example.test/v1", api_key="key"
+                )
+            assert first_client is closed_client
+            assert first_model == "gpt-5.5"
+
+            with patch("agent.auxiliary_client.resolve_provider_client", return_value=(fresh_client, "new-model")) as resolver:
+                second_client, second_model = _get_cached_client(
+                    "custom", "gpt-5.5", base_url="https://example.test/v1", api_key="key"
+                )
+
+            resolver.assert_called_once()
+            assert second_client is fresh_client
+            assert second_model == "gpt-5.5"
+        finally:
+            _client_cache.clear()
+
+    def test_get_cached_client_reuses_open_codex_wrapper(self):
+        class FakeHTTPXClient:
+            is_closed = False
+
+        cached_client = SimpleNamespace(
+            _real_client=SimpleNamespace(_client=FakeHTTPXClient()),
+            base_url="https://example.test/v1",
+        )
+
+        _client_cache.clear()
+        try:
+            with patch("agent.auxiliary_client.resolve_provider_client", return_value=(cached_client, "cached-model")):
+                first_client, _ = _get_cached_client(
+                    "custom", "gpt-5.5", base_url="https://example.test/v1", api_key="key"
+                )
+            with patch("agent.auxiliary_client.resolve_provider_client") as resolver:
+                second_client, _ = _get_cached_client(
+                    "custom", "gpt-5.5", base_url="https://example.test/v1", api_key="key"
+                )
+
+            resolver.assert_not_called()
+            assert first_client is cached_client
+            assert second_client is cached_client
+        finally:
+            _client_cache.clear()
+
+    def test_async_store_race_replaces_wrong_loop_cached_client(self):
+        class FakeLoop:
+            def __init__(self, closed=False):
+                self._closed = closed
+
+            def is_closed(self):
+                return self._closed
+
+        class FakeClient:
+            def __init__(self, name):
+                self.name = name
+                self.close_called = False
+
+            def close(self):
+                self.close_called = True
+
+        provider = "custom"
+        model = "gpt-5.5"
+        base_url = "https://example.test/v1"
+        api_key = "key"
+        current_loop = FakeLoop()
+        other_loop = FakeLoop()
+        stale_client = FakeClient("stale")
+        fresh_client = FakeClient("fresh")
+        cache_key = _client_cache_key(
+            provider,
+            async_mode=True,
+            base_url=base_url,
+            api_key=api_key,
+        )
+
+        def populate_racing_entry(*args, **kwargs):
+            _client_cache[cache_key] = (stale_client, "stale-model", other_loop)
+            return fresh_client, "fresh-model"
+
+        _client_cache.clear()
+        try:
+            with patch("asyncio.get_event_loop", return_value=current_loop), \
+                 patch("agent.auxiliary_client.resolve_provider_client", side_effect=populate_racing_entry):
+                client, resolved_model = _get_cached_client(
+                    provider,
+                    model,
+                    async_mode=True,
+                    base_url=base_url,
+                    api_key=api_key,
+                )
+
+            assert client is fresh_client
+            assert resolved_model == model
+            assert _client_cache[cache_key] == (fresh_client, "fresh-model", current_loop)
+        finally:
+            _client_cache.clear()
+
+    def test_get_cached_client_rebuilds_closed_async_codex_wrapper(self):
+        class FakeHTTPXClient:
+            is_closed = True
+
+        class FakeOpenAIClient:
+            api_key = "key"
+            base_url = "https://example.test/v1"
+
+            def __init__(self):
+                self._client = FakeHTTPXClient()
+
+            def close(self):
+                pass
+
+        provider = "custom"
+        model = "gpt-5.5"
+        base_url = "https://example.test/v1"
+        api_key = "key"
+        current_loop = SimpleNamespace(is_closed=lambda: False)
+        closed_async = AsyncCodexAuxiliaryClient(CodexAuxiliaryClient(FakeOpenAIClient(), model))
+        fresh_client = SimpleNamespace(base_url=base_url)
+
+        _client_cache.clear()
+        try:
+            with patch("asyncio.get_event_loop", return_value=current_loop), \
+                 patch("agent.auxiliary_client.resolve_provider_client", return_value=(closed_async, "old-model")):
+                first_client, _ = _get_cached_client(
+                    provider,
+                    model,
+                    async_mode=True,
+                    base_url=base_url,
+                    api_key=api_key,
+                )
+            assert first_client is closed_async
+
+            with patch("asyncio.get_event_loop", return_value=current_loop), \
+                 patch("agent.auxiliary_client.resolve_provider_client", return_value=(fresh_client, "fresh-model")) as resolver:
+                second_client, resolved_model = _get_cached_client(
+                    provider,
+                    model,
+                    async_mode=True,
+                    base_url=base_url,
+                    api_key=api_key,
+                )
+
+            resolver.assert_called_once()
+            assert second_client is fresh_client
+            assert resolved_model == model
+        finally:
+            _client_cache.clear()
 
 
 class TestCodexAuxiliaryAdapterNullOutputRecovery:

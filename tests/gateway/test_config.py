@@ -652,6 +652,31 @@ class TestLoadGatewayConfig:
             "C01ABC": "Code review mode",
         }
 
+    def test_bridges_feishu_channel_skill_bindings_from_config_yaml(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "feishu:\n"
+            "  channel_skill_bindings:\n"
+            "    - id: oc_chat\n"
+            "      skill: code\n"
+            "    - id: omt_thread\n"
+            "      skills:\n"
+            "        - review\n"
+            "        - test\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.platforms[Platform.FEISHU].extra["channel_skill_bindings"] == [
+            {"id": "oc_chat", "skill": "code"},
+            {"id": "omt_thread", "skills": ["review", "test"]},
+        ]
+
     def test_bridges_feishu_allow_bots_from_config_yaml_to_env(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
