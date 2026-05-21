@@ -51,7 +51,7 @@ hermes plugins disable disk-cleanup
 
 ## Currently shipped
 
-The repo ships these bundled plugins under `plugins/`. All are opt-in — enable them via `hermes plugins enable <name>`.
+The repo ships these bundled plugins under `plugins/`. General plugins are opt-in — enable them via `hermes plugins enable <name>`. `SIMPLICIO_PROMPT` also supports a one-boolean activation path (`SIMPLICIO_PROMPT=true` or `simplicio_prompt.enabled: true`) because it is inert until that flag is set.
 
 | Plugin | Kind | Purpose |
 |---|---|---|
@@ -59,6 +59,7 @@ The repo ships these bundled plugins under `plugins/`. All are opt-in — enable
 | `observability/langfuse` | hooks | Trace turns / LLM calls / tools to [Langfuse](https://langfuse.com) |
 | `spotify` | backend (7 tools) | Native Spotify playback, queue, search, playlists, albums, library |
 | `google_meet` | standalone | Join Meet calls, live-caption transcription, optional realtime duplex audio |
+| `SIMPLICIO_PROMPT` | hook overlay | Inject the SIMPLICIO_PROMPT V2 tuple-space policy into every main-agent turn when enabled |
 | `image_gen/openai` | image backend | OpenAI `gpt-image-2` image generation backend (alternative to FAL) |
 | `image_gen/openai-codex` | image backend | OpenAI image generation via Codex OAuth |
 | `image_gen/xai` | image backend | xAI `grok-2-image` backend |
@@ -169,6 +170,42 @@ Hermes-prefixed and standard SDK env vars (`LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECR
 **Performance:** the Langfuse client is cached after the first hook call. If credentials or SDK are missing, that decision is also cached — subsequent hooks fast-return without re-checking env vars or reloading config.
 
 **Disabling:** `hermes plugins disable observability/langfuse`. The plugin module is still discovered, but no module code runs until you re-enable.
+
+### SIMPLICIO_PROMPT
+
+Injects a compact SIMPLICIO_PROMPT V2 execution overlay into every main-agent turn through `pre_llm_call`. The user does not need to type "Implement"; when enabled, Hermes adds the tuple-space policy before the model call as ephemeral context.
+
+**Enable with one boolean:**
+
+```bash
+SIMPLICIO_PROMPT=true hermes chat
+```
+
+Or in `~/.hermes/config.yaml`:
+
+```yaml
+simplicio_prompt:
+  enabled: true
+```
+
+You can also opt in through the standard plugin allow-list:
+
+```bash
+hermes plugins enable SIMPLICIO_PROMPT
+```
+
+**What it does:**
+
+| V2 item | Behaviour in Hermes |
+|---|---|
+| Automatic pass-through | Every main-agent turn receives the overlay before the model call. |
+| Tuple-space decomposition | Work is framed as root tuple plus Hilbert/HAMT graph, lanes, authority, receipts, and source pointers. |
+| Massive-agent abstraction | `batch_spawn(depth, branching, compression_threshold)` is represented as a summarized hierarchy for 1,000,000+ subagents without enumerating them. |
+| Safer speed | The model is steered toward local deterministic work first, input-hash caching, batching, context compression, stable prefixes, adaptive lanes, jittered backoff, circuit breakers, and idempotent-only speculation. |
+| Rate-limit safety | The overlay explicitly preserves provider limits and terms; it is not a bypass. |
+| Stable report shape | The default output contract includes tuple-space snapshot, active agents, total agents, next yool, and partial result. |
+
+**Performance note:** the plugin is local-only. When disabled it is a no-op. When enabled, it adds a compact static context block; it does not make extra model calls. See `docs/simplicio-prompt-v2-benchmark.md` and run `python scripts/benchmark_simplicio_prompt.py` for the local token and preprocessing benchmark.
 
 ### google_meet
 
