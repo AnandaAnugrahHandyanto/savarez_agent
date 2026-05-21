@@ -9562,6 +9562,7 @@ def _coalesce_session_name_args(argv: list) -> list:
         "chat",
         "model",
         "gateway",
+        "harness",
         "setup",
         "whatsapp",
         "login",
@@ -10420,7 +10421,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "acp", "auth", "backup", "bundles", "checkpoints", "claw", "completion",
         "computer-use",
         "config", "cron", "curator", "dashboard", "debug", "doctor",
-        "dump", "fallback", "gateway", "hooks", "import", "insights",
+        "dump", "fallback", "gateway", "harness", "hooks", "import", "insights",
         "kanban", "login", "logout", "logs", "lsp", "mcp", "memory", "migrate",
         "model", "pairing", "plugins", "postinstall", "profile", "proxy",
         "send", "sessions", "setup",
@@ -12046,6 +12047,13 @@ Examples:
         plugins_command(args)
 
     plugins_parser.set_defaults(func=cmd_plugins)
+
+    # =========================================================================
+    # harness command
+    # =========================================================================
+    from hermes_cli.harness import register_harness_subparser
+
+    register_harness_subparser(subparsers)
 
     # =========================================================================
     # Plugin CLI commands — dynamically registered by memory/general plugins.

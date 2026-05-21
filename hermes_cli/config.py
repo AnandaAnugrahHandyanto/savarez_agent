@@ -1747,6 +1747,17 @@ DEFAULT_CONFIG = {
         "retries": 2,
     },
 
+    # Local Hypura Harness daemon management. The CLI command is explicit;
+    # auto_start remains off unless a user opts into a future caller that
+    # needs background daemon startup.
+    "harness": {
+        "enabled": True,
+        "auto_start": False,
+        "host": "127.0.0.1",
+        "port": 18794,
+        "script_path": "",
+    },
+
     # Config schema version - bump this when adding new required fields
     "_config_version": 23,
 }
