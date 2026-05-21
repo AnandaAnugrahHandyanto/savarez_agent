@@ -574,6 +574,42 @@ def _delete_skill(name: str, absorbed_into: Optional[str] = None) -> Dict[str, A
     if pinned_err:
         return {"success": False, "error": pinned_err}
 
+    # When the curator's background review fork calls this, refuse to archive
+    # a skill that an active cron job still references — deleting it would
+    # break the job silently at next run time.  Manual user-directed deletes
+    # are never blocked (is_background_review() is False in those paths).
+    #
+    # tools.skill_provenance is always present (same package); no ImportError
+    # guard needed.  cron.jobs is an optional subsystem — absent means no cron
+    # jobs exist, so no protection is needed.  A runtime error reading the cron
+    # store is returned as a structured failure so the curator sees a clear
+    # error rather than an opaque exception from a tool call.
+    from tools.skill_provenance import is_background_review
+    if is_background_review():
+        try:
+            from cron.jobs import get_active_skill_refs as _get_refs
+        except ImportError:
+            _get_refs = None  # cron not installed — no active jobs, guard not needed
+        if _get_refs is not None:
+            try:
+                _active_refs = _get_refs()
+            except Exception as e:
+                return {
+                    "success": False,
+                    "error": (
+                        f"Cannot verify cron references for '{name}': {e}. "
+                        "Resolve the cron store issue and retry."
+                    ),
+                }
+            if name in _active_refs:
+                return {
+                    "success": False,
+                    "error": (
+                        f"Cannot archive '{name}': an active cron job references this skill. "
+                        "Remove or update the cron job first, then retry."
+                    ),
+                }
+
     # Validate absorbed_into target when declared non-empty
     if absorbed_into is not None and isinstance(absorbed_into, str) and absorbed_into.strip():
         target_name = absorbed_into.strip()
