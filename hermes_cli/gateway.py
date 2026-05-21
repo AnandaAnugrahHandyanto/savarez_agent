@@ -3802,6 +3802,15 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False):
     _guard_official_docker_root_gateway()
     sys.path.insert(0, str(PROJECT_ROOT))
 
+    # Anchor cwd to HERMES_HOME so context-file discovery (AGENTS.md, etc.)
+    # always resolves against the correct profile directory rather than the
+    # incidental working directory of whatever shell launched the gateway.
+    try:
+        from hermes_constants import get_hermes_home
+        os.chdir(get_hermes_home())
+    except Exception:
+        pass  # best-effort; don't block gateway startup
+
     # Detached Windows gateway runs must ignore console-control broadcasts
     # from sibling CLI processes, but foreground `hermes gateway run` still
     # needs to obey the banner's "Press Ctrl+C to stop" contract.
@@ -3841,6 +3850,14 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False):
             kernel32.SetConsoleCtrlHandler(None, 1)
         except (OSError, AttributeError):
             pass
+    # Anchor cwd to HERMES_HOME so context-file discovery (AGENTS.md, etc.)
+    # always resolves against the correct profile directory rather than the
+    # incidental working directory of whatever shell launched the gateway.
+    try:
+        from hermes_constants import get_hermes_home
+        os.chdir(get_hermes_home())
+    except Exception:
+        pass  # best-effort; don't block gateway startup
 
     # Refresh the systemd unit definition on every boot so that restart
     # settings (RestartSec, StartLimitIntervalSec, etc.) stay current even
