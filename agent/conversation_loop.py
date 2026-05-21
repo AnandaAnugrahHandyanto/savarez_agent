@@ -61,7 +61,11 @@ from agent.nous_rate_guard import (
 )
 from agent.process_bootstrap import _install_safe_stdio
 from agent.prompt_caching import apply_anthropic_cache_control
-from agent.retry_utils import jittered_backoff
+from agent.retry_utils import (
+    check_rate_limit_headroom,
+    extract_rate_limit_reset_seconds,
+    jittered_backoff,
+)
 from agent.trajectory import has_incomplete_scratchpad
 from agent.usage_pricing import estimate_usage_cost, normalize_usage
 from hermes_constants import display_hermes_home as _dhh_fn
@@ -2840,18 +2844,28 @@ def run_conversation(
                         "error": _final_summary,
                     }
 
-                # For rate limits, respect the Retry-After header if present
-                _retry_after = None
+                # For rate limits, prefer x-ratelimit-reset-* headers over Retry-After
+                # x-ratelimit-reset-requests is more precise (OpenRouter-specific).
+                # Cap at 300s (5 min) to cover RPM windows but prevent indefinite waits.
+                _reset_wait = None
                 if is_rate_limited:
                     _resp_headers = getattr(getattr(api_error, "response", None), "headers", None)
-                    if _resp_headers and hasattr(_resp_headers, "get"):
-                        _ra_raw = _resp_headers.get("retry-after") or _resp_headers.get("Retry-After")
-                        if _ra_raw:
+                    if _resp_headers:
+                        # Try to parse Retry-After first (some providers only provide this)
+                        _retry_after_raw = None
+                        if hasattr(_resp_headers, "get"):
+                            _retry_after_raw = _resp_headers.get("retry-after") or _resp_headers.get("Retry-After")
+                        _retry_after = None
+                        if _retry_after_raw:
                             try:
-                                _retry_after = min(float(_ra_raw), 120)  # Cap at 2 minutes
+                                _retry_after = float(_retry_after_raw)
                             except (TypeError, ValueError):
                                 pass
-                wait_time = _retry_after if _retry_after else jittered_backoff(retry_count, base_delay=2.0, max_delay=60.0)
+                        # Prefer reset-requests header (more precise for OpenRouter)
+                        _reset_wait = extract_rate_limit_reset_seconds(
+                            _resp_headers, retry_after=_retry_after, max_cap=300.0
+                        )
+                wait_time = _reset_wait if _reset_wait else jittered_backoff(retry_count, base_delay=2.0, max_delay=60.0)
                 if is_rate_limited:
                     agent._emit_status(f"⏱️ Rate limited. Waiting {wait_time:.1f}s (attempt {retry_count + 1}/{max_retries})...")
                 else:
