@@ -115,15 +115,14 @@ def check_discord_requirements() -> bool:
     return True
 
 
-def _build_allowed_mentions():
+def _build_allowed_mentions(replied_user: Optional[bool] = None):
     """Build Discord ``AllowedMentions`` with safe defaults, overridable via env.
 
     Discord bots default to parsing ``@everyone``, ``@here``, role pings, and
     user pings when ``allowed_mentions`` is unset on the client — any LLM
     output or echoed user content that contains ``@everyone`` would therefore
     ping the whole server. We explicitly deny ``@everyone`` and role pings
-    by default and keep user / replied-user pings enabled so normal
-    conversation still works.
+    by default and keep user pings enabled so normal conversation still works.
 
     Override via environment variables (or ``discord.allow_mentions.*`` in
     config.yaml):
@@ -132,6 +131,14 @@ def _build_allowed_mentions():
         DISCORD_ALLOW_MENTION_ROLES         default false  — @role pings
         DISCORD_ALLOW_MENTION_USERS         default true   — @user pings
         DISCORD_ALLOW_MENTION_REPLIED_USER  default true   — reply-ping author
+
+    ``replied_user`` argument: when ``None`` (the default) the value comes
+    from ``DISCORD_ALLOW_MENTION_REPLIED_USER`` — this governs the
+    client-wide default used for non-reply sends. When an explicit bool is
+    passed it overrides the env entirely; the reply send path uses this to
+    suppress the implicit reply-ping by default (see ``send`` /
+    ``mention_replied_user``), which otherwise pings the author of every
+    message replied to and causes agent-to-agent loops in shared threads.
     """
     if not DISCORD_AVAILABLE:
         return None
@@ -146,7 +153,11 @@ def _build_allowed_mentions():
         everyone=_b("DISCORD_ALLOW_MENTION_EVERYONE", False),
         roles=_b("DISCORD_ALLOW_MENTION_ROLES", False),
         users=_b("DISCORD_ALLOW_MENTION_USERS", True),
-        replied_user=_b("DISCORD_ALLOW_MENTION_REPLIED_USER", True),
+        replied_user=(
+            replied_user
+            if replied_user is not None
+            else _b("DISCORD_ALLOW_MENTION_REPLIED_USER", True)
+        ),
     )
 
 
@@ -1373,7 +1384,8 @@ class DiscordAdapter(BasePlatformAdapter):
         chat_id: str,
         content: str,
         reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None
+        metadata: Optional[Dict[str, Any]] = None,
+        mention_replied_user: bool = False,
     ) -> SendResult:
         """Send a message to a Discord channel or thread.
 
@@ -1382,6 +1394,17 @@ class DiscordAdapter(BasePlatformAdapter):
 
         Forum channels (type 15) reject direct messages — a thread post is
         created automatically.
+
+        ``mention_replied_user`` controls the implicit reply-ping. When a
+        message is sent as a reply (``reply_to`` set, ``reply_to_mode`` not
+        "off"), Discord pings the author of the replied-to message unless
+        ``allowed_mentions.replied_user`` is False. This defaults to False
+        here: the implicit ping is what causes agent-to-agent loops in
+        shared threads (agent A replies, B is pinged and wakes, B replies,
+        A is pinged...). Pass ``mention_replied_user=True`` to opt back in
+        when a ping is genuinely wanted. Note this is a behavior change for
+        agent threads — to intentionally ping someone, put an explicit
+        ``<@id>`` in the message body (still honored via ``users=True``).
         """
         if not self._client:
             return SendResult(success=False, error="Not connected")
@@ -1418,6 +1441,14 @@ class DiscordAdapter(BasePlatformAdapter):
             message_ids = []
             reference = None
 
+            # Suppress the implicit reply-ping by default. A reply otherwise
+            # pings the replied-to author (allowed_mentions.replied_user),
+            # which causes agent-to-agent loops in shared threads. Explicit
+            # <@id> mentions in the body still ping via users=True.
+            reply_allowed_mentions = _build_allowed_mentions(
+                replied_user=mention_replied_user
+            )
+
             if reply_to and self._reply_to_mode != "off":
                 try:
                     ref_msg = await channel.fetch_message(int(reply_to))
@@ -1437,6 +1468,7 @@ class DiscordAdapter(BasePlatformAdapter):
                     msg = await channel.send(
                         content=chunk,
                         reference=chunk_reference,
+                        allowed_mentions=reply_allowed_mentions,
                     )
                 except Exception as e:
                     err_text = str(e)
@@ -1459,6 +1491,7 @@ class DiscordAdapter(BasePlatformAdapter):
                         msg = await channel.send(
                             content=chunk,
                             reference=None,
+                            allowed_mentions=reply_allowed_mentions,
                         )
                     else:
                         raise
