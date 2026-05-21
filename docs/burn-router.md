@@ -1,61 +1,80 @@
-# Optional Burn Tool Router Integration
+# Burn Router Plugin
 
-Hermes can now run a local Rust/Burn classifier as an **observe-only pre-router** for each user turn.
+The Burn Router integration is packaged as an optional Hermes plugin. It shells
+out to a local Rust/Burn sidecar (`hermes-burn-tool-router`) before a model call
+and logs the route prediction for telemetry.
 
-The goal is to collect cheap routing telemetry before any model call without risking tool starvation. In this first integration, the router logs what it would choose but does **not** change the live tool surface.
+The first implementation is deliberately conservative:
 
-## Why this exists
+- disabled unless the plugin is enabled
+- observe-only by default
+- fail-safe: missing binary/model, subprocess errors, timeouts, or malformed JSON
+  fall back to normal Hermes behavior
+- does **not** change the live tool surface or block model/tool access
 
-LLM tool schemas get large fast. A tiny local classifier can predict the likely tool family before the model request and eventually help Hermes:
+## Enable
 
-- reduce schema bloat for obvious turns,
-- bias tool ordering/toolset exposure,
-- collect tool-routing labels from real traffic,
-- keep full fallback when confidence is low.
-
-## Safety model
-
-Default config is disabled:
+Add the bundled plugin to `plugins.enabled` and configure the local binary/model:
 
 ```yaml
-routing:
-  burn_router:
-    enabled: false
-    mode: observe
-    binary: ""
-    model: ""
-    confidence_threshold: 0.72
-    timeout_seconds: 0.25
+plugins:
+  enabled:
+    - burn_router
+  entries:
+    burn_router:
+      enabled: true
+      mode: observe          # observe | hint | narrow; current hook is telemetry-only
+      binary: /path/to/hermes-burn-tool-router
+      model: /path/to/router-model
+      confidence_threshold: 0.72
+      timeout_seconds: 0.25
 ```
 
-Modes:
+Environment variables override config:
 
-- `observe`: log category/confidence only. No behavior change.
-- `hint`: return high-confidence `enabled_toolsets` hints to callers. Current conversation loop does not consume this yet.
-- `narrow`: reserved for future experiments; treated as advisory and should keep fallback.
+- `HERMES_BURN_ROUTER_ENABLED`
+- `HERMES_BURN_ROUTER_MODE`
+- `HERMES_BURN_ROUTER_BINARY`
+- `HERMES_BURN_ROUTER_MODEL`
+- `HERMES_BURN_ROUTER_CONFIDENCE`
+- `HERMES_BURN_ROUTER_TIMEOUT`
 
-Failures are safe:
+## Sidecar contract
 
-- missing binary/model → skip,
-- timeout → skip,
-- malformed JSON → skip,
-- non-zero router exit → skip.
-
-## Local smoke test
+Hermes invokes:
 
 ```bash
-export HERMES_BURN_ROUTER_ENABLED=true
-export HERMES_BURN_ROUTER_MODE=observe
-export HERMES_BURN_ROUTER_BINARY=/path/to/hermes-burn-tool-router/target/release/hermes-burn-tool-router
-export HERMES_BURN_ROUTER_MODEL=/path/to/hermes-burn-tool-router/tool_router.safetensors
-
-python - <<'PY'
-from agent.burn_router import BurnRouterConfig, get_burn_router_hint
-cfg = BurnRouterConfig.from_config({'routing': {'burn_router': {'enabled': True}}})
-print(get_burn_router_hint('search X for trending Base coins', cfg))
-PY
+$HERMES_BURN_ROUTER_BINARY predict "<user message>" "$HERMES_BURN_ROUTER_MODEL"
 ```
 
-## Next step
+Expected stdout JSON:
 
-After observe logs are collected, add a labeler that compares predicted category against actual first tool/toolset used. If precision is high enough, enable `hint` mode for obvious cases like `x_search`, `file`, `web`, and `terminal`.
+```json
+{
+  "category": "file",
+  "confidence": 0.91,
+  "time_us": 123,
+  "all": {"file": 0.91, "terminal": 0.04}
+}
+```
+
+`category` is mapped to Hermes toolset families for telemetry. In observe mode
+those mapped toolsets are logged as an empty list because the plugin is not yet
+allowed to narrow access.
+
+## Logs
+
+Successful predictions emit an info log like:
+
+```text
+burn_router prediction: {'category': 'file', 'confidence': 0.91, 'time_us': 123, 'enabled_toolsets': [], 'mode': 'observe'}
+```
+
+Failures are debug-level only and do not affect the user turn.
+
+## Why plugin instead of core?
+
+This is experimental routing telemetry, not a mandatory runtime dependency. A
+plugin keeps the Hermes core path unchanged, lets users opt in explicitly, and
+creates a safer path for future router experiments without imposing Rust/Burn
+requirements on every install.
