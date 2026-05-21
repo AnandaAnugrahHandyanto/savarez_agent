@@ -1,0 +1,226 @@
+"""Sprites cloud execution environment.
+
+Uses the sprites-py SDK (https://github.com/superfly/sprites-py) to run
+commands in Fly.io-backed sprite sandboxes. Persistent by default — sprites
+outlive sessions and are reused via a deterministic ``hermes-{task_id}`` name.
+Cleanup leaves the sprite running when ``persistent_filesystem`` is True; the
+sprite is deleted otherwise.
+"""
+
+import logging
+import os
+import shlex
+import threading
+from pathlib import Path
+
+from tools.environments.base import (
+    BaseEnvironment,
+    _ThreadedProcessHandle,
+)
+from tools.environments.file_sync import (
+    FileSyncManager,
+    iter_sync_files,
+)
+
+logger = logging.getLogger(__name__)
+
+
+class SpritesEnvironment(BaseEnvironment):
+    """Sprites (Fly.io) cloud sandbox backend.
+
+    Spawn-per-call via ``_ThreadedProcessHandle`` wrapping blocking
+    ``sprite.command(...).combined_output()`` calls. The SDK timeout is
+    used (rather than wrapping the shell), since the SDK already cancels
+    the underlying WebSocket exec on deadline.
+    """
+
+    _stdin_mode = "heredoc"
+
+    def __init__(
+        self,
+        cwd: str = "/root",
+        timeout: int = 60,
+        cpu: int = 1,
+        memory: int = 5120,
+        disk: int = 51200,
+        persistent_filesystem: bool = True,
+        task_id: str = "default",
+        region: str | None = None,
+    ):
+        requested_cwd = cwd
+        super().__init__(cwd=cwd, timeout=timeout)
+
+        try:
+            from tools.lazy_deps import ensure as _lazy_ensure
+            _lazy_ensure("terminal.sprites", prompt=False)
+        except ImportError:
+            pass
+        except Exception as e:
+            raise ImportError(str(e))
+
+        from sprites import SpritesClient
+        from sprites.exceptions import NotFoundError, SpriteError
+        from sprites.types import SpriteConfig
+
+        self._NotFoundError = NotFoundError
+        self._SpriteError = SpriteError
+
+        token = os.getenv("SPRITES_TOKEN") or os.getenv("SPRITE_TOKEN")
+        if not token:
+            raise ValueError(
+                "Sprites backend requires SPRITES_TOKEN. "
+                "Run `hermes setup terminal` or set SPRITES_TOKEN in .env."
+            )
+        base_url = os.getenv("SPRITES_BASE_URL", "https://api.sprites.dev")
+
+        self._client = SpritesClient(
+            token=token,
+            base_url=base_url,
+            timeout=max(30.0, float(timeout)),
+        )
+        self._persistent = persistent_filesystem
+        self._task_id = task_id
+        self._lock = threading.Lock()
+        self._sprite = None
+        self._cmd_timeout = float(timeout) if timeout and timeout > 0 else None
+
+        sprite_name = f"hermes-{task_id}"
+        config = SpriteConfig(
+            ram_mb=int(memory) if memory else None,
+            cpus=int(cpu) if cpu else None,
+            region=region or None,
+            storage_gb=max(1, int(disk) // 1024) if disk else None,
+        )
+
+        # Try to get an existing sprite first (no remote call); fall back
+        # to creating one when the first command surfaces NotFoundError.
+        # This mirrors Daytona's persistent-resume pattern but defers the
+        # round-trip until we actually need to talk to the sprite.
+        try:
+            self._sprite = self._client.get_sprite(sprite_name)
+            logger.info(
+                "Sprites: resumed existing sprite %s for task %s",
+                self._sprite.name, task_id,
+            )
+        except NotFoundError:
+            self._sprite = self._client.create_sprite(sprite_name, config=config)
+            logger.info(
+                "Sprites: created sprite %s for task %s",
+                self._sprite.name, task_id,
+            )
+
+        # Detect remote home dir for .hermes sync target.
+        self._remote_home = "/root"
+        try:
+            from sprites.exceptions import ExitError
+            cmd = self._sprite.command("bash", "-c", "echo $HOME", timeout=15)
+            home = cmd.combined_output().decode().strip()
+            if home:
+                self._remote_home = home
+                if requested_cwd in {"~", "/root"}:
+                    self.cwd = home
+        except Exception:
+            pass
+
+        self._fs = self._sprite.filesystem("/")
+        self._sync_manager = FileSyncManager(
+            get_files_fn=lambda: iter_sync_files(f"{self._remote_home}/.hermes"),
+            upload_fn=self._sprite_upload,
+            delete_fn=self._sprite_delete,
+        )
+        self._sync_manager.sync(force=True)
+        self.init_session()
+
+    # ------------------------------------------------------------------
+    # File sync callbacks
+    # ------------------------------------------------------------------
+
+    def _sprite_upload(self, host_path: str, remote_path: str) -> None:
+        """Upload a single file via the SpriteFilesystem API."""
+        data = Path(host_path).read_bytes()
+        remote = self._fs / remote_path
+        remote.parent.mkdir(parents=True, exist_ok=True)
+        remote.write_bytes(data)
+
+    def _sprite_delete(self, remote_paths: list[str]) -> None:
+        """Delete remote files; missing entries are tolerated."""
+        for rp in remote_paths:
+            try:
+                (self._fs / rp).unlink(missing_ok=True)
+            except Exception as e:
+                logger.debug("Sprites: delete %s failed: %s", rp, e)
+
+    # ------------------------------------------------------------------
+    # Execution
+    # ------------------------------------------------------------------
+
+    def _before_execute(self) -> None:
+        self._sync_manager.sync()
+
+    def _run_bash(self, cmd_string: str, *, login: bool = False,
+                  timeout: int = 120,
+                  stdin_data: str | None = None):
+        """Return a _ThreadedProcessHandle wrapping a blocking SDK call."""
+        sprite = self._sprite
+        from sprites.exceptions import ExitError, TimeoutError as SpritesTimeout
+
+        if login:
+            shell_cmd = ["bash", "-l", "-c", cmd_string]
+        else:
+            shell_cmd = ["bash", "-c", cmd_string]
+
+        # The SDK timeout cancels the WebSocket cleanly, so prefer it over
+        # the shell-level ``timeout`` wrapper used by other backends.
+        cmd_timeout = float(timeout) if timeout and timeout > 0 else None
+
+        def exec_fn() -> tuple[str, int]:
+            cmd = sprite.command(*shell_cmd, timeout=cmd_timeout)
+            try:
+                output = cmd.combined_output()
+                return (output.decode("utf-8", errors="replace"), 0)
+            except ExitError as e:
+                # ``e.stdout`` carries the combined output when raised from
+                # combined_output(); ``e.stderr`` is empty in that path.
+                buf = (e.stdout or b"") + (e.stderr or b"")
+                return (buf.decode("utf-8", errors="replace"),
+                        e.exit_code() if callable(getattr(e, "exit_code", None)) else 1)
+            except SpritesTimeout:
+                return (f"command timed out after {cmd_timeout}s\n", 124)
+
+        # No external cancel: the SDK does not expose a kill hook on a
+        # running Cmd. The deadline above is the cancellation path.
+        return _ThreadedProcessHandle(exec_fn, cancel_fn=None)
+
+    # ------------------------------------------------------------------
+    # Cleanup
+    # ------------------------------------------------------------------
+
+    def cleanup(self):
+        with self._lock:
+            if self._sprite is None:
+                return
+
+            if self._sync_manager:
+                logger.info("Sprites: syncing files from sprite...")
+                try:
+                    self._sync_manager.sync_back()
+                except Exception as e:
+                    logger.warning("Sprites: sync_back failed: %s", e)
+
+            try:
+                if self._persistent:
+                    logger.info(
+                        "Sprites: leaving sprite %s running (persistent)",
+                        self._sprite.name,
+                    )
+                else:
+                    self._sprite.delete()
+                    logger.info("Sprites: deleted sprite %s", self._sprite.name)
+            except Exception as e:
+                logger.warning("Sprites: cleanup failed: %s", e)
+            finally:
+                try:
+                    self._client.close()
+                except Exception:
+                    pass
+            self._sprite = None

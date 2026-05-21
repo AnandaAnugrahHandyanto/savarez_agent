@@ -1409,11 +1409,12 @@ def setup_terminal_backend(config: dict):
         "SSH - run on a remote machine",
         "Daytona - persistent cloud development environment",
         "Vercel Sandbox - cloud microVM with snapshot filesystem persistence",
+        "Sprites - Fly.io cloud sandbox with checkpoints",
     ]
-    idx_to_backend = {0: "local", 1: "docker", 2: "modal", 3: "ssh", 4: "daytona", 5: "vercel_sandbox"}
-    backend_to_idx = {"local": 0, "docker": 1, "modal": 2, "ssh": 3, "daytona": 4, "vercel_sandbox": 5}
+    idx_to_backend = {0: "local", 1: "docker", 2: "modal", 3: "ssh", 4: "daytona", 5: "vercel_sandbox", 6: "sprites"}
+    backend_to_idx = {"local": 0, "docker": 1, "modal": 2, "ssh": 3, "daytona": 4, "vercel_sandbox": 5, "sprites": 6}
 
-    next_idx = 6
+    next_idx = 7
     if is_linux:
         terminal_choices.append("Singularity/Apptainer - HPC-friendly container")
         idx_to_backend[next_idx] = "singularity"
@@ -1691,6 +1692,77 @@ def setup_terminal_backend(config: dict):
                     print_info(f"  Error: {result.stderr.strip().splitlines()[-1]}")
 
         _prompt_vercel_sandbox_settings(config)
+
+    elif selected_backend == "sprites":
+        print_success("Terminal backend: Sprites")
+        print_info("Fly.io-backed cloud sandboxes with native checkpoint support.")
+        print_info("Sprites persist between sessions and are reused by task_id.")
+        print_info("Sign up at: https://sprites.dev")
+
+        try:
+            __import__("sprites")
+        except ImportError:
+            print_info("Installing sprites-py SDK...")
+            import subprocess
+
+            uv_bin = shutil.which("uv")
+            if uv_bin:
+                result = subprocess.run(
+                    [uv_bin, "pip", "install", "--python", sys.executable, "sprites-py"],
+                    capture_output=True,
+                    text=True,
+                )
+            else:
+                result = subprocess.run(
+                    [sys.executable, "-m", "pip", "install", "sprites-py"],
+                    capture_output=True,
+                    text=True,
+                )
+            if result.returncode == 0:
+                print_success("sprites-py installed")
+            else:
+                print_warning("Install failed — run manually: pip install 'hermes-agent[sprites]'")
+                if result.stderr:
+                    print_info(f"  Error: {result.stderr.strip().splitlines()[-1]}")
+
+        # Sprites API token
+        print()
+        existing_token = get_env_value("SPRITES_TOKEN")
+        if existing_token:
+            print_info("  Sprites token: already configured")
+            if prompt_yes_no("  Update token?", False):
+                token = prompt("    Sprites token", password=True)
+                if token:
+                    save_env_value("SPRITES_TOKEN", token)
+                    print_success("    Updated")
+        else:
+            print_info("  Get a token with: sprite login  (or `sprite auth setup --token ...`)")
+            token = prompt("    Sprites token", password=True)
+            if token:
+                save_env_value("SPRITES_TOKEN", token)
+                print_success("    Configured")
+
+        # Optional custom API base URL
+        print()
+        current_base = get_env_value("SPRITES_BASE_URL") or ""
+        base = prompt("  Sprites API base URL (blank for default)", current_base)
+        if base:
+            save_env_value("SPRITES_BASE_URL", base)
+        elif current_base:
+            remove_env_value("SPRITES_BASE_URL")
+
+        # Region (passed to SpriteConfig at creation time)
+        print()
+        current_region = cfg_get(config, "terminal", "sprites_region", default="")
+        region = prompt("  Region (blank to let Sprites choose)", current_region)
+        if region:
+            config.setdefault("terminal", {})["sprites_region"] = region
+            save_env_value("TERMINAL_SPRITES_REGION", region)
+        elif current_region:
+            config["terminal"]["sprites_region"] = ""
+            remove_env_value("TERMINAL_SPRITES_REGION")
+
+        _prompt_container_resources(config)
 
     elif selected_backend == "ssh":
         print_success("Terminal backend: SSH")
