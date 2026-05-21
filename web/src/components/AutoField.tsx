@@ -107,10 +107,10 @@ export function AutoField({
   const enLabel = rawLabel
     .replace(/_/g, " ")
     .replace(/\b\w/g, (c) => c.toUpperCase());
-  const label =
-    locale === "zh" && SCHEMA_ZH_LABEL[schemaKey]
-      ? SCHEMA_ZH_LABEL[schemaKey]
-      : enLabel;
+  const SCHEMA_LABELS: Partial<Record<string, Record<string, string>>> = {
+  zh: SCHEMA_ZH_LABEL,
+};
+const label = SCHEMA_LABELS[locale]?.[schemaKey] ?? enLabel;
 
   if (isRecord(value) || (Array.isArray(value) && value.some((item) => isRecord(item)))) {
     return (
