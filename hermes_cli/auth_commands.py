@@ -35,6 +35,12 @@ from hermes_constants import OPENROUTER_BASE_URL
 # Providers that support OAuth login in addition to API keys.
 _OAUTH_CAPABLE_PROVIDERS = {"anthropic", "nous", "openai-codex", "xai-oauth", "qwen-oauth", "google-gemini-cli", "minimax-oauth"}
 
+# Search/web backends that use credential pools (api_key only — no OAuth).
+# Listed separately from PROVIDER_REGISTRY because they're not LLM providers
+# and don't share the per-provider config plumbing, but they do route through
+# load_pool(<name>) and benefit from the same pool rotation / round-robin.
+_WEB_POOL_PROVIDERS = {"tavily", "exa"}
+
 
 def _get_custom_provider_names() -> list:
     """Return list of (display_name, pool_key, provider_key) tuples."""
@@ -162,7 +168,12 @@ def _format_exhausted_status(entry) -> str:
 
 def auth_add_command(args) -> None:
     provider = _normalize_provider(getattr(args, "provider", ""))
-    if provider not in PROVIDER_REGISTRY and provider != "openrouter" and not provider.startswith(CUSTOM_POOL_PREFIX):
+    if (
+        provider not in PROVIDER_REGISTRY
+        and provider != "openrouter"
+        and provider not in _WEB_POOL_PROVIDERS
+        and not provider.startswith(CUSTOM_POOL_PREFIX)
+    ):
         raise SystemExit(f"Unknown provider: {provider}")
 
     requested_type = str(getattr(args, "auth_type", "") or "").strip().lower()
@@ -437,6 +448,7 @@ def auth_list_command(args) -> None:
         providers = sorted({
             *PROVIDER_REGISTRY.keys(),
             "openrouter",
+            *_WEB_POOL_PROVIDERS,
             *list_custom_pool_providers(),
         })
     for provider in providers:
@@ -649,7 +661,7 @@ def _interactive_auth() -> None:
 
 def _pick_provider(prompt: str = "Provider") -> str:
     """Prompt for a provider name with auto-complete hints."""
-    known = sorted(set(list(PROVIDER_REGISTRY.keys()) + ["openrouter"]))
+    known = sorted(set(list(PROVIDER_REGISTRY.keys()) + ["openrouter"] + list(_WEB_POOL_PROVIDERS)))
     custom_names = _get_custom_provider_names()
     if custom_names:
         custom_display = [name for name, _key, _provider_key in custom_names]
@@ -666,7 +678,12 @@ def _pick_provider(prompt: str = "Provider") -> str:
 
 def _interactive_add() -> None:
     provider = _pick_provider("Provider to add credential for")
-    if provider not in PROVIDER_REGISTRY and provider != "openrouter" and not provider.startswith(CUSTOM_POOL_PREFIX):
+    if (
+        provider not in PROVIDER_REGISTRY
+        and provider != "openrouter"
+        and provider not in _WEB_POOL_PROVIDERS
+        and not provider.startswith(CUSTOM_POOL_PREFIX)
+    ):
         raise SystemExit(f"Unknown provider: {provider}")
 
     # For OAuth-capable providers, ask which type

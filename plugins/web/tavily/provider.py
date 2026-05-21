@@ -34,23 +34,58 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, Tuple
 
+from agent.credential_pool import CredentialPool, PooledCredential, load_pool
 from agent.web_search_provider import WebSearchProvider
 
 logger = logging.getLogger(__name__)
+
+_POOL_PROVIDER = "tavily"
+_ROTATE_STATUSES = frozenset({401, 403, 429})
+
+
+def _load_tavily_pool() -> Optional[CredentialPool]:
+    """Return the Tavily credential pool, or ``None`` if the pool fails to load."""
+    try:
+        return load_pool(_POOL_PROVIDER)
+    except Exception as exc:  # noqa: BLE001 — pool failures must not break web_search
+        logger.warning("tavily: failed to load credential pool: %s", exc)
+        return None
+
+
+def _resolve_tavily_key() -> Tuple[Optional[str], Optional[CredentialPool], Optional[PooledCredential]]:
+    """Resolve a Tavily API key, preferring the credential pool over the env var.
+
+    Returns a ``(api_key, pool, entry)`` tuple. ``pool`` and ``entry`` are
+    both ``None`` when the key came from the environment; callers use that
+    to decide whether to attempt rotation on auth failures.
+    """
+    pool = _load_tavily_pool()
+    entry: Optional[PooledCredential] = None
+    if pool is not None and pool.has_credentials():
+        entry = pool.select()
+        if entry is not None:
+            api_key = getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "")
+            api_key = str(api_key).strip() if api_key else ""
+            if api_key:
+                return api_key, pool, entry
+
+    env_key = os.getenv("TAVILY_API_KEY", "").strip()
+    return (env_key or None), None, None
 
 
 def _tavily_request(endpoint: str, payload: Dict[str, Any]) -> Dict[str, Any]:
     """POST to the Tavily API and return the parsed JSON response.
 
-    Mirrors :func:`tools.web_tools._tavily_request`. Raises ``ValueError``
-    when ``TAVILY_API_KEY`` is unset; the caller catches and surfaces as
-    a typed error response.
+    Resolves credentials via :func:`_resolve_tavily_key` (pool-first, env
+    fallback). When the key came from the pool and the API responds with
+    401/403/429, marks the credential exhausted and retries once with the
+    rotated entry. Raises ``ValueError`` when no credential is available.
     """
     import httpx
 
-    api_key = os.getenv("TAVILY_API_KEY")
+    api_key, pool, entry = _resolve_tavily_key()
     if not api_key:
         raise ValueError(
             "TAVILY_API_KEY environment variable not set. "
@@ -58,18 +93,46 @@ def _tavily_request(endpoint: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         )
 
     base_url = os.getenv("TAVILY_BASE_URL", "https://api.tavily.com")
-    payload = dict(payload)  # don't mutate caller's dict
-    payload["api_key"] = api_key
     url = f"{base_url}/{endpoint.lstrip('/')}"
+    is_crawl = endpoint.strip("/") == "crawl"
     logger.info("Tavily %s request to %s", endpoint, url)
 
-    # Tavily /crawl requires Bearer header auth in addition to body auth;
-    # /search and /extract are body-only.
-    headers = {"Authorization": f"Bearer {api_key}"} if endpoint.strip("/") == "crawl" else {}
+    last_exc: Optional[httpx.HTTPStatusError] = None
+    for attempt in (1, 2):
+        request_payload = dict(payload)
+        request_payload["api_key"] = api_key
+        # /crawl requires Bearer header auth in addition to body auth.
+        headers = {"Authorization": f"Bearer {api_key}"} if is_crawl else {}
 
-    response = httpx.post(url, json=payload, headers=headers, timeout=60)
-    response.raise_for_status()
-    return response.json()
+        response = httpx.post(url, json=request_payload, headers=headers, timeout=60)
+        try:
+            response.raise_for_status()
+            return response.json()
+        except httpx.HTTPStatusError as exc:
+            status = getattr(exc.response, "status_code", None)
+            last_exc = exc
+            if (
+                attempt == 1
+                and pool is not None
+                and entry is not None
+                and status in _ROTATE_STATUSES
+            ):
+                rotated = pool.mark_exhausted_and_rotate(status_code=status)
+                if rotated is not None:
+                    new_key = getattr(rotated, "runtime_api_key", None) or getattr(rotated, "access_token", "")
+                    new_key = str(new_key).strip() if new_key else ""
+                    if new_key and new_key != api_key:
+                        logger.info(
+                            "tavily: rotating credential after HTTP %s and retrying", status
+                        )
+                        entry = rotated
+                        api_key = new_key
+                        continue
+            raise
+
+    # Defensive — unreachable: the retry loop either returns, continues, or raises.
+    assert last_exc is not None
+    raise last_exc
 
 
 def _normalize_tavily_search_results(response: Dict[str, Any]) -> Dict[str, Any]:
@@ -150,8 +213,11 @@ class TavilyWebSearchProvider(WebSearchProvider):
         return "Tavily"
 
     def is_available(self) -> bool:
-        """Return True when ``TAVILY_API_KEY`` is set to a non-empty value."""
-        return bool(os.getenv("TAVILY_API_KEY", "").strip())
+        """Return True when a Tavily credential is available via env or pool."""
+        if os.getenv("TAVILY_API_KEY", "").strip():
+            return True
+        pool = _load_tavily_pool()
+        return pool is not None and pool.has_credentials()
 
     def supports_search(self) -> bool:
         return True
