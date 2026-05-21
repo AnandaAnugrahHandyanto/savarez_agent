@@ -724,7 +724,9 @@ class MattermostAdapter(BasePlatformAdapter):
         chat_type = _CHANNEL_TYPE_MAP.get(channel_type_raw, "channel")
 
         # For DMs, user_id is sufficient.  For channels, check for @mention.
-        message_text = post.get("message", "")
+        # Normalize leading/trailing whitespace before mention stripping and
+        # command classification so commands pasted with padding still work.
+        message_text = post.get("message", "").strip()
 
         # Mention-gating for non-DM channels.
         # Config (config.yaml `mattermost.*` with env-var fallback):

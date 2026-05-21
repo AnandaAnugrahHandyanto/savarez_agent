@@ -66,6 +66,18 @@ class TestMessageEventIsCommand:
         event = MessageEvent(text="")
         assert event.is_command() is False
 
+    def test_leading_whitespace_slash_command(self):
+        event = MessageEvent(text="   /new")
+        assert event.is_command() is True
+
+    def test_leading_newline_slash_command(self):
+        event = MessageEvent(text="\n/new")
+        assert event.is_command() is True
+
+    def test_embedded_slash_not_command(self):
+        event = MessageEvent(text="hello /new")
+        assert event.is_command() is False
+
     def test_slash_only(self):
         event = MessageEvent(text="/")
         assert event.is_command() is True
@@ -79,6 +91,15 @@ class TestMessageEventGetCommand:
     def test_command_with_args(self):
         event = MessageEvent(text="/reset session")
         assert event.get_command() == "reset"
+
+    def test_leading_whitespace_command(self):
+        event = MessageEvent(text="   /new")
+        assert event.get_command() == "new"
+
+    def test_leading_newline_command_with_args(self):
+        event = MessageEvent(text="\n/new session name")
+        assert event.get_command() == "new"
+        assert event.get_command_args() == "session name"
 
     def test_not_a_command(self):
         event = MessageEvent(text="hello")
