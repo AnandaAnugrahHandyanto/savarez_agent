@@ -248,6 +248,10 @@ class TestTranscribeMegaASR:
                 "repo_dir": "/tmp/Mega-ASR",
                 "ckpt_dir": "/tmp/ckpt",
                 "language": "en",
+                "device_map": "mps",
+                "dtype": "float16",
+                "quality_device": "mps",
+                "enable_mps_fallback": True,
             },
         }
         with patch("tools.transcription_tools._load_stt_config", return_value=cfg), \
@@ -258,6 +262,34 @@ class TestTranscribeMegaASR:
 
         assert result == {"success": True, "transcript": "mega transcript", "provider": "mega_asr"}
         fake_model.infer.assert_called_once_with(sample_wav, language="en")
+
+    def test_load_model_passes_runtime_options(self):
+        fake_cls = MagicMock()
+        cfg = {
+            "provider": "mega-asr",
+            "mega_asr": {
+                "repo_dir": "",
+                "ckpt_dir": "/tmp/ckpt",
+                "device_map": "mps",
+                "dtype": "float16",
+                "quality_device": "mps",
+                "enable_mps_fallback": True,
+                "keep_delta_on_gpu": False,
+            },
+        }
+        with patch("tools.transcription_tools._mega_asr_model", None), \
+             patch("tools.transcription_tools._mega_asr_model_key", None), \
+             patch("tools.transcription_tools._safe_find_spec", return_value=True), \
+             patch("tools.transcription_tools._resolve_mega_asr_dtype", return_value="fake-float16"), \
+             patch.dict("sys.modules", {"MegaASR.model.megaASR": MagicMock(MegaASR=fake_cls)}):
+            from tools.transcription_tools import _load_mega_asr_model
+            _load_mega_asr_model(cfg)
+
+        kwargs = fake_cls.call_args.kwargs
+        assert kwargs["device_map"] == "mps"
+        assert kwargs["dtype"] == "fake-float16"
+        assert kwargs["quality_device"] == "mps"
+        assert kwargs["keep_delta_on_gpu"] is False
 
     def test_unavailable_backend_reports_reason(self, sample_wav):
         with patch("tools.transcription_tools._load_stt_config", return_value={}), \

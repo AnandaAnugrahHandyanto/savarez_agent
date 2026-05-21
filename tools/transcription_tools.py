@@ -204,10 +204,33 @@ def _resolve_mega_asr_paths(stt_config: Optional[dict] = None) -> dict:
         "routing_enabled": is_truthy_value(cfg.get("routing_enabled", True), default=True),
         "quality_threshold": float(cfg.get("quality_threshold", cfg.get("threshold", 0.5))),
         "device_map": cfg.get("device_map") or None,
+        "dtype": cfg.get("dtype") or None,
         "quality_device": cfg.get("quality_device") or None,
+        "enable_mps_fallback": is_truthy_value(cfg.get("enable_mps_fallback", True), default=True),
         "keep_delta_on_gpu": is_truthy_value(cfg.get("keep_delta_on_gpu", True), default=True),
         "language": cfg.get("language") or None,
     }
+
+
+def _resolve_mega_asr_dtype(dtype_name: Optional[str]) -> Any:
+    """Resolve an optional Mega-ASR torch dtype name from config."""
+    if not dtype_name:
+        return None
+    normalized = str(dtype_name).strip().lower().replace("torch.", "")
+    aliases = {
+        "fp16": "float16",
+        "half": "float16",
+        "fp32": "float32",
+        "bf16": "bfloat16",
+    }
+    attr = aliases.get(normalized, normalized)
+    try:
+        import torch
+    except Exception as exc:  # pragma: no cover - guarded by _has_mega_asr_backend
+        raise RuntimeError("Mega-ASR dtype requires torch to be installed") from exc
+    if not hasattr(torch, attr):
+        raise ValueError(f"Unsupported Mega-ASR dtype: {dtype_name}")
+    return getattr(torch, attr)
 
 
 def _has_mega_asr_backend(stt_config: Optional[dict] = None) -> tuple[bool, str]:
@@ -641,7 +664,9 @@ def _load_mega_asr_model(stt_config: dict) -> Any:
         paths["routing_enabled"],
         paths["quality_threshold"],
         paths["device_map"],
+        paths["dtype"],
         paths["quality_device"],
+        paths["enable_mps_fallback"],
         paths["keep_delta_on_gpu"],
     )
     if _mega_asr_model is not None and _mega_asr_model_key == key:
@@ -651,6 +676,9 @@ def _load_mega_asr_model(stt_config: dict) -> Any:
         src_dir = str(repo_dir / "src")
         if src_dir not in sys.path:
             sys.path.insert(0, src_dir)
+
+    if paths["enable_mps_fallback"] and str(paths["device_map"]).lower() == "mps":
+        os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
 
     from MegaASR.model.megaASR import MegaASR  # type: ignore[import-not-found]
 
@@ -662,6 +690,7 @@ def _load_mega_asr_model(stt_config: dict) -> Any:
         routing_enabled=paths["routing_enabled"],
         quality_threshold=paths["quality_threshold"],
         device_map=paths["device_map"],
+        dtype=_resolve_mega_asr_dtype(paths["dtype"]),
         quality_device=paths["quality_device"],
         keep_delta_on_gpu=paths["keep_delta_on_gpu"],
     )
