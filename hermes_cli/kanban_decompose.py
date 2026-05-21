@@ -2,7 +2,7 @@
 
 Invoked by ``hermes kanban decompose [task_id | --all]`` and the
 auto-decompose path in the gateway dispatcher loop. Reads the user's
-profile roster (with descriptions) and asks the auxiliary LLM to
+assignee roster (profiles plus trusted worker lanes) and asks the auxiliary LLM to
 return a task graph in JSON. Then atomically creates the children,
 links them under the root, and flips the root ``triage -> todo``.
 
@@ -18,20 +18,21 @@ Design notes
   client import inside the function, lenient response parse, never
   raises on expected failure modes.
 
-* The system prompt sees the *configured* profile roster — names plus
-  descriptions plus the default fallback. Profiles without a
-  description are still listed (with a note) so the orchestrator can
-  match on name as a fallback, but the user has an obvious incentive
-  to describe them.
+* The system prompt sees the *configured* assignee roster — Hermes profiles
+  plus trusted worker lanes, with descriptions and the default fallback.
+  Profiles without a description are still listed (with a note) so the
+  orchestrator can match on name as a fallback, but the user has an obvious
+  incentive to describe them.
 
 * ``fanout=false`` collapses to the same effect as ``kanban specify``:
   we tighten the body and flip ``triage -> todo`` as a single task,
   no children created. This makes ``decompose`` a strict superset of
   ``specify`` from the user's perspective.
 
-* If the LLM picks an assignee that doesn't exist as a profile, we
-  rewrite it to the configured ``default_assignee`` (or the default
-  profile if unset). A child task NEVER ends up with ``assignee=None``.
+* If the LLM picks an assignee that doesn't exist as a profile or registered
+  worker lane, we rewrite it to the configured ``default_assignee`` (or the
+  default profile if unset). A child task NEVER ends up with
+  ``assignee=None``.
 """
 
 from __future__ import annotations
@@ -53,12 +54,12 @@ _SYSTEM_PROMPT = """You are the Kanban decomposer for the Hermes Agent board.
 
 A user dropped a rough idea into the Triage column. Your job is to break it
 into a small graph of concrete child tasks and route each one to the best-
-matching profile from the available roster.
+matching assignee from the available roster.
 
 You will be given:
   - The original task title and body
-  - The list of available profiles (each with name + description)
-  - The fallback "default_assignee" used when no profile fits
+  - The list of available assignees (Hermes profiles and worker lanes)
+  - The fallback "default_assignee" used when no assignee fits
 
 Output a single JSON object with this exact shape:
 
@@ -69,7 +70,7 @@ Output a single JSON object with this exact shape:
       {
         "title": "<concrete task title, imperative voice, <= 80 chars>",
         "body":  "<detailed spec for the worker on this child task>",
-        "assignee": "<profile name from the roster, or null for default>",
+        "assignee": "<assignee name from the roster, or null for default>",
         "parents": [<int>, ...]
       },
       ...
@@ -84,9 +85,12 @@ Rules:
     them no parents so the dispatcher fans them out at once.
   - Use 2-6 tasks for normal work. Don't create 20 tiny tasks. Don't
     cram everything into 1 task.
-  - Pick assignees from the roster by matching the task to the profile's
+  - Pick assignees from the roster by matching the task to the assignee's
     DESCRIPTION (not just the name). When nothing matches well, use null
     and the system will route to the default_assignee.
+  - Worker lanes are trusted external execution lanes already registered in
+    Hermes. You may choose an existing worker lane by name, but do not invent
+    lane names and do not output worker lane configuration.
   - Each child task body is what a fresh worker will read with no other
     context — be specific about goal, approach, and acceptance criteria.
 
@@ -98,11 +102,11 @@ return:
     "rationale": "<one sentence>",
     "title": "<tightened title>",
     "body":  "<concrete spec for a single worker>",
-    "assignee": "<profile name from the roster, or null for default>"
+    "assignee": "<assignee name from the roster, or null for default>"
   }
 
 In that case the task stays as one work item, just with a tightened spec and
-a concrete assignee. If no profile fits, use null and the system will route to
+a concrete assignee. If no assignee fits, use null and the system will route to
 the default_assignee.
 
 No preamble, no closing remarks, no code fences. Output only the JSON object.
@@ -114,10 +118,10 @@ Title: {title}
 Body:
 {body}
 
-Available profiles (assignees you may pick from):
+Available assignees you may pick from:
 {roster}
 
-Default assignee (used when no profile fits a task): {default_assignee}
+Default assignee (used when no assignee fits a task): {default_assignee}
 """
 
 
@@ -217,9 +221,9 @@ def _resolve_default_assignee(cfg: dict) -> str:
 def _build_roster() -> tuple[list[dict], set[str]]:
     """Return (roster_for_prompt, valid_assignee_names).
 
-    Each roster entry is ``{name, description, has_description}``. The
-    valid-set is used after the LLM responds to rewrite invalid
-    assignees to the default fallback.
+    Each roster entry is ``{name, kind, description, has_description}``.
+    The valid-set is used after the LLM responds to rewrite invalid assignees
+    to the default fallback.
     """
     roster: list[dict] = []
     valid: set[str] = set()
@@ -227,25 +231,51 @@ def _build_roster() -> tuple[list[dict], set[str]]:
         all_profiles = profiles_mod.list_profiles()
     except Exception as exc:
         logger.warning("decompose: failed to list profiles: %s", exc)
-        return roster, valid
+        all_profiles = []
     for p in all_profiles:
         desc = (p.description or "").strip()
         roster.append({
             "name": p.name,
+            "kind": "profile",
             "description": desc or f"(no description; profile named {p.name!r})",
             "has_description": bool(desc),
         })
         valid.add(p.name)
+
+    try:
+        from hermes_cli.worker_lanes import list_worker_lanes, register_configured_worker_lanes
+
+        register_configured_worker_lanes()
+        for lane in list_worker_lanes():
+            desc = (lane.description or "").strip()
+            entry = {
+                "name": lane.name,
+                "kind": lane.kind or "worker_lane",
+                "description": desc or f"(worker lane named {lane.name!r})",
+                "has_description": bool(desc),
+            }
+            # Dispatcher resolution checks worker lanes before profiles. Match
+            # that behavior in the prompt when names overlap.
+            for i, existing in enumerate(roster):
+                if existing["name"] == lane.name:
+                    roster[i] = entry
+                    break
+            else:
+                roster.append(entry)
+            valid.add(lane.name)
+    except Exception as exc:
+        logger.warning("decompose: failed to list worker lanes: %s", exc)
     return roster, valid
 
 
 def _format_roster(roster: list[dict]) -> str:
     if not roster:
-        return "  (no profiles installed — decomposer cannot route work)"
+        return "  (no assignees installed — decomposer cannot route work)"
     lines = []
     for entry in roster:
         tag = "" if entry["has_description"] else " ⚠ undescribed"
-        lines.append(f"  - {entry['name']}{tag}: {entry['description']}")
+        kind = entry.get("kind") or "assignee"
+        lines.append(f"  - {entry['name']} [{kind}]{tag}: {entry['description']}")
     return "\n".join(lines)
 
 
