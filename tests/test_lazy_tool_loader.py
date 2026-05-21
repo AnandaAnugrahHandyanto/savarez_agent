@@ -1,7 +1,7 @@
 import json
 
 import model_tools
-from tools.lazy_tool_loader import load_tool_pack_for_agent
+from tools.lazy_tool_loader import TOOL_PACKS, ToolPack, load_tool_pack_for_agent
 from tools.registry import registry
 
 
@@ -109,5 +109,41 @@ def test_load_tool_pack_adds_registered_schemas_to_agent():
             for definition in agent.tools
         )
         assert "mcp_botparlor_create_avatar" in result["unavailable"]
+        assert result["suggested_skills"] == ["botparlor-avatar-maintenance"]
     finally:
         registry.deregister(tool_name)
+
+
+def test_assistant_pack_returns_skill_hints_and_loads_available_tools():
+    tool_name = "test_assistant_pack_tool"
+    pack_name = "test_assistant_pack"
+
+    class Agent:
+        def __init__(self):
+            self.tools = []
+            self.valid_tool_names = {"load_tool_pack"}
+
+    try:
+        TOOL_PACKS[pack_name] = ToolPack(
+            description="Assistant pack test.",
+            tools=[tool_name],
+            suggested_skills=["codex", "test-driven-development"],
+        )
+        registry.register(
+            name=tool_name,
+            toolset="test-assistant-pack",
+            schema=_make_schema(tool_name),
+            handler=_dummy_handler,
+        )
+
+        agent = Agent()
+        result = json.loads(load_tool_pack_for_agent(agent, pack_name))
+
+        assert result["success"] is True
+        assert tool_name in result["loaded"]
+        assert tool_name in agent.valid_tool_names
+        assert "codex" in result["suggested_skills"]
+        assert "test-driven-development" in result["suggested_skills"]
+    finally:
+        registry.deregister(tool_name)
+        TOOL_PACKS.pop(pack_name, None)
