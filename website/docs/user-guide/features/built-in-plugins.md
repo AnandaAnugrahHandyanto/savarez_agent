@@ -178,6 +178,8 @@ Injects a compact SIMPLICIO_PROMPT V2 execution overlay into every main-agent tu
 ![YOOL V2 Safe-Speed Runtime reference infographic](/img/simplicio-prompt/yool-v2-safe-speed-infographic-en.png)
 
 Canonical reference: [`wesleysimplicio/simplicio-prompt`](https://github.com/wesleysimplicio/simplicio-prompt).
+Here, V2 refers to SIMPLICIO_PROMPT/simplicio-prompt; benchmark comparisons are
+against normal/V1 baselines.
 
 **Enable with one boolean:**
 
@@ -200,7 +202,7 @@ hermes plugins enable SIMPLICIO_PROMPT
 
 **What it does:**
 
-| V2 item | Behaviour in Hermes |
+| SIMPLICIO_PROMPT V2 item | Behaviour in Hermes |
 |---|---|
 | Automatic pass-through | Every enabled main-agent turn receives the overlay before the model call; no trigger word such as "Implement", "Fix", or "Build" is required. |
 | Tuple-space decomposition | Work is framed as root tuple plus Hilbert/HAMT graph, lanes, authority, receipts, and source pointers. |
@@ -209,18 +211,20 @@ hermes plugins enable SIMPLICIO_PROMPT
 | Rate-limit safety | The overlay explicitly preserves provider limits and terms; it is not a bypass. |
 | Stable report shape | The default output contract includes tuple-space snapshot, active agents, total agents, next yool, and partial result. |
 
-**Canonical V2 report highlights:**
+**Canonical SIMPLICIO_PROMPT V2 report highlights (vs normal/V1):**
 
-| Area | Reported V2 result |
+| Area | Reported SIMPLICIO_PROMPT V2 result vs normal/V1 |
 |---|---:|
-| Scale representation | `2,833.75x` faster than normal instruction flow |
-| Active execution | `26.93x` faster than normal sequential execution |
+| Scale representation | `2,833.75x` faster than normal/V1 instruction flow |
+| Active execution | `26.93x` faster than normal/V1 sequential execution |
 | Receipt/input cache | `4x` fewer provider calls, a `75%` reduction |
 | Small-task batching | `32x` fewer small-task calls, a `96.88%` reduction |
 | Circuit breaker | `64x` fewer failure attempts, a `98.44%` reduction |
 | Token economy | `76.32%` estimated savings through context compression |
 
-The plugin carries these as reference policy data from the canonical V2 runtime. It does not bypass hosted-provider rate limits, quotas, latency, or terms.
+The plugin carries these as reference policy data from the canonical
+SIMPLICIO_PROMPT V2 runtime. It does not bypass hosted-provider rate limits,
+quotas, latency, or terms.
 
 **Activation semantics:** `SIMPLICIO_PROMPT` is gated only by Hermes config or
 environment flags, not by message text. After the plugin is enabled, normal chat,

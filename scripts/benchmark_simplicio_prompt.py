@@ -4,9 +4,9 @@
 This benchmark intentionally does not call a hosted model. It measures the
 local pre-LLM message preparation cost and rough token footprint for:
 
-1. a normal instruction with no overlay,
-2. a manually pasted V2 prompt,
-3. the compact SIMPLICIO_PROMPT plugin overlay.
+1. a normal/V1 instruction baseline with no overlay,
+2. a manually pasted SIMPLICIO_PROMPT V2 prompt,
+3. the compact automatic SIMPLICIO_PROMPT V2 plugin overlay.
 """
 
 from __future__ import annotations
@@ -41,11 +41,12 @@ route by out/in/rd, route_packet and scan_index, apply hookwall,
 compress_token and prune_idle, and use LaneWorkerPool respecting YOOL_TUPLE_*
 environment variables.
 
-V2 safe-speed policy: cache aggressively by receipt/input hash, use adaptive
-lane pools, apply backoff with jitter, maintain circuit breakers per provider,
-batch small tasks, compress prompt/context before expensive model calls, route
-simple deterministic work to local code before an LLM, and use speculative
-execution only for idempotent work. Respect rate limits and provider terms.
+SIMPLICIO_PROMPT V2 safe-speed policy: cache aggressively by receipt/input hash,
+use adaptive lane pools, apply backoff with jitter, maintain circuit breakers per
+provider, batch small tasks, compress prompt/context before expensive model
+calls, route simple deterministic work to local code before an LLM, and use
+speculative execution only for idempotent work. Respect rate limits and provider
+terms.
 
 Respond exactly with:
 [Tuple Space Snapshot]
@@ -118,6 +119,10 @@ def main() -> int:
 
     print("SIMPLICIO_PROMPT local benchmark")
     print(f"iterations: {args.iterations}")
+    print(
+        "baseline_note: V2 means SIMPLICIO_PROMPT/simplicio-prompt; comparisons "
+        "are against normal/V1 baselines."
+    )
     print("")
     print("| case | median ms/build | p95 ms/build | rough input tokens | chars |")
     print("|---|---:|---:|---:|---:|")

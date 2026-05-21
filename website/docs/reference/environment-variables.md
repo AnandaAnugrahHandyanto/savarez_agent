@@ -166,7 +166,7 @@ For native Anthropic auth, Hermes prefers Claude Code's own credential files whe
 
 | Variable | Description |
 |----------|-------------|
-| `SIMPLICIO_PROMPT` | `true` auto-loads the bundled SIMPLICIO_PROMPT plugin and injects the V2 tuple-space overlay into each main-agent turn. |
+| `SIMPLICIO_PROMPT` | `true` auto-loads the bundled SIMPLICIO_PROMPT plugin and injects the SIMPLICIO_PROMPT V2 tuple-space overlay into each main-agent turn. |
 | `HERMES_SIMPLICIO_PROMPT` | Alias for `SIMPLICIO_PROMPT`. |
 
 ### Langfuse Observability

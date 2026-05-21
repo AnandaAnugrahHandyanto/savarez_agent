@@ -51,23 +51,29 @@ the plugin injects the overlay into every main-agent `pre_llm_call` hook.
 
 This means normal chat, questions, layout edits, refactors, bug fixes,
 documentation work, benchmark requests, and implementation tasks all receive the
-same V2 execution policy automatically. The hook intentionally ignores the
-message body, so the user never has to write "Implement" to activate it.
+same SIMPLICIO_PROMPT V2 execution policy automatically. The hook intentionally
+ignores the message body, so the user never has to write "Implement" to
+activate it.
 
-## Canonical V2 Reference Data
+## Canonical SIMPLICIO_PROMPT V2 Reference Data
 
-The canonical `simplicio-prompt` README reports these local V2 benchmark highlights for the safe-speed runtime:
+The canonical `simplicio-prompt` README reports these local SIMPLICIO_PROMPT V2
+benchmark highlights for the safe-speed runtime. In this plugin documentation,
+V2 means SIMPLICIO_PROMPT/simplicio-prompt; the comparisons are against normal
+and V1 instruction baselines.
 
-| Area | Reported V2 result |
+| Area | Reported SIMPLICIO_PROMPT V2 result vs normal/V1 |
 |---|---:|
-| Scale representation | `2,833.75x` faster than normal instruction flow |
-| Active execution | `26.93x` faster than normal sequential execution |
+| Scale representation | `2,833.75x` faster than normal/V1 instruction flow |
+| Active execution | `26.93x` faster than normal/V1 sequential execution |
 | Receipt/input cache | `4x` fewer provider calls, a `75%` reduction |
 | Small-task batching | `32x` fewer small-task calls, a `96.88%` reduction |
 | Circuit breaker | `64x` fewer failure attempts, a `98.44%` reduction |
 | Token economy | `76.32%` estimated savings through context compression |
 
-Those numbers are reference data for the V2 execution policy. This Hermes plugin injects that policy automatically; it does not claim to bypass hosted-provider latency, quotas, or rate limits.
+Those numbers are reference data for the SIMPLICIO_PROMPT V2 execution policy.
+This Hermes plugin injects that policy automatically; it does not claim to
+bypass hosted-provider latency, quotas, or rate limits.
 
 ## High-Throughput Reference Knobs
 

@@ -19,7 +19,7 @@ Canonical repo: https://github.com/wesleysimplicio/simplicio-prompt. Apply to ev
 
 Plan as tuple-space: root tuple, Hilbert/HAMT work graph, out/in/rd routing, receipts, lane, authority, and source pointers. Use batch_spawn(depth, branching, compression_threshold) as summarized hierarchy for 1,000,000+ subagents; never enumerate. Use real spawn/delegate only when useful, route deterministic work to local tools first, then compress_token, weakref, hookwall, and prune_idle inactive branches.
 
-Safe speed V2: cache by receipt/input hash, batch tiny tasks, compress prompt/context, use stable prefixes, adaptive lanes, backoff+jitter, circuit breakers, and idempotent-only speculation. Respect provider limits and terms.
+SIMPLICIO_PROMPT V2 safe speed: cache by receipt/input hash, batch tiny tasks, compress prompt/context, use stable prefixes, adaptive lanes, backoff+jitter, circuit breakers, and idempotent-only speculation. Respect provider limits and terms.
 
 Default response:
 [Tuple Space Snapshot]
