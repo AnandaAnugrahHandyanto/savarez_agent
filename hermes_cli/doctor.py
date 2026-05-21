@@ -342,6 +342,7 @@ def run_doctor(args):
     # Doctor runs from the interactive CLI, so CLI-gated tool availability
     # checks (like cronjob management) should see the same context as `hermes`.
     os.environ.setdefault("HERMES_INTERACTIVE", "1")
+    from hermes_cli.config import get_env_value as _gev
 
     # Handle `hermes doctor --ack <id>` as a fast path. Persist the ack and
     # return without running the rest of the diagnostics — the user has
@@ -1075,7 +1076,7 @@ def run_doctor(args):
         check_info(f"Install for faster search: {_system_package_install_cmd('ripgrep')}")
     
     # Docker (optional)
-    terminal_env = os.getenv("TERMINAL_ENV", "local")
+    terminal_env = _gev("TERMINAL_ENV") or "local"
     if terminal_env == "docker":
         if _safe_which("docker"):
             # Check if docker daemon is running
@@ -1103,7 +1104,6 @@ def run_doctor(args):
     
     # SSH (if using ssh backend)
     if terminal_env == "ssh":
-        from hermes_cli.config import get_env_value as _gev
         ssh_host = _gev("TERMINAL_SSH_HOST")
         if ssh_host:
             ssh_user = _gev("TERMINAL_SSH_USER")
@@ -1163,7 +1163,7 @@ def run_doctor(args):
 
     # Vercel Sandbox (if using vercel_sandbox backend)
     if terminal_env == "vercel_sandbox":
-        runtime = os.getenv("TERMINAL_VERCEL_RUNTIME", "node24").strip() or "node24"
+        runtime = (_gev("TERMINAL_VERCEL_RUNTIME") or "node24").strip() or "node24"
         from tools.terminal_tool import _SUPPORTED_VERCEL_RUNTIMES
         if runtime in _SUPPORTED_VERCEL_RUNTIMES:
             check_ok("Vercel runtime", f"({runtime})")
@@ -1176,7 +1176,7 @@ def run_doctor(args):
                 issues,
             )
 
-        disk = os.getenv("TERMINAL_CONTAINER_DISK", "51200").strip()
+        disk = (_gev("TERMINAL_CONTAINER_DISK") or "51200").strip()
         if disk in {"", "0", "51200"}:
             check_ok("Vercel disk setting", "(uses platform default)")
         else:
@@ -1217,7 +1217,7 @@ def run_doctor(args):
         for line in auth_status.detail_lines:
             check_info(f"Vercel auth {line}")
 
-        persistent = os.getenv("TERMINAL_CONTAINER_PERSISTENT", "true").lower() in {"1", "true", "yes", "on"}
+        persistent = (_gev("TERMINAL_CONTAINER_PERSISTENT") or "true").lower() in {"1", "true", "yes", "on"}
         if persistent:
             check_info("Vercel persistence: snapshot filesystem only; live processes do not survive sandbox recreation")
         else:
