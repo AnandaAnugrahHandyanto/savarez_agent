@@ -37,6 +37,7 @@ import concurrent.futures
 import contextvars
 import copy
 import hashlib
+import inspect
 import json
 import logging
 logger = logging.getLogger(__name__)
@@ -2910,6 +2911,62 @@ class AIAgent:
             and not self.tool_progress_callback
             and getattr(self, "platform", "") == "cli"
         )
+
+    @staticmethod
+    def _callback_accepts_keyword_metadata(callback, metadata: dict) -> bool:
+        """Return True when a callback can receive the supplied keyword metadata."""
+        if not metadata:
+            return False
+        try:
+            signature = inspect.signature(callback)
+        except (TypeError, ValueError):
+            # Some callables do not expose a signature. Let the call path try
+            # keyword metadata and fall back to the legacy signature on TypeError.
+            return True
+
+        parameters = signature.parameters.values()
+        if any(param.kind == inspect.Parameter.VAR_KEYWORD for param in parameters):
+            return True
+
+        accepted = {
+            name
+            for name, param in signature.parameters.items()
+            if param.kind in {
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                inspect.Parameter.KEYWORD_ONLY,
+            }
+        }
+        return all(key in accepted for key in metadata)
+
+    def _emit_tool_progress_event(
+        self,
+        event_type: str,
+        tool_name: str = None,
+        preview: str = None,
+        args=None,
+        **metadata,
+    ) -> None:
+        """Emit tool progress while preserving the legacy callback signature."""
+        callback = self.tool_progress_callback
+        if not callback:
+            return
+
+        metadata = {key: value for key, value in metadata.items() if value is not None}
+        try:
+            if self._callback_accepts_keyword_metadata(callback, metadata):
+                callback(event_type, tool_name, preview, args, **metadata)
+            else:
+                callback(event_type, tool_name, preview, args)
+        except TypeError:
+            if not metadata:
+                logging.debug("Tool progress callback error", exc_info=True)
+                return
+            try:
+                callback(event_type, tool_name, preview, args)
+            except Exception:
+                logging.debug("Tool progress callback error", exc_info=True)
+        except Exception:
+            logging.debug("Tool progress callback error", exc_info=True)
 
     def _emit_status(self, message: str) -> None:
         """Emit a lifecycle status message to both CLI and gateway channels.
@@ -11126,7 +11183,13 @@ class AIAgent:
             if self.tool_progress_callback:
                 try:
                     preview = _build_tool_preview(name, args)
-                    self.tool_progress_callback("tool.started", name, preview, args)
+                    self._emit_tool_progress_event(
+                        "tool.started",
+                        name,
+                        preview,
+                        args,
+                        tool_call_id=tc.id,
+                    )
                 except Exception as cb_err:
                     logging.debug(f"Tool progress callback error: {cb_err}")
 
@@ -11350,9 +11413,10 @@ class AIAgent:
 
                 if not blocked and self.tool_progress_callback:
                     try:
-                        self.tool_progress_callback(
+                        self._emit_tool_progress_event(
                             "tool.completed", function_name, None, None,
                             duration=tool_duration, is_error=is_error,
+                            tool_call_id=tc.id,
                         )
                     except Exception as cb_err:
                         logging.debug(f"Tool progress callback error: {cb_err}")
@@ -11519,7 +11583,13 @@ class AIAgent:
             if not _execution_blocked and self.tool_progress_callback:
                 try:
                     preview = _build_tool_preview(function_name, function_args)
-                    self.tool_progress_callback("tool.started", function_name, preview, function_args)
+                    self._emit_tool_progress_event(
+                        "tool.started",
+                        function_name,
+                        preview,
+                        function_args,
+                        tool_call_id=tool_call.id,
+                    )
                 except Exception as cb_err:
                     logging.debug(f"Tool progress callback error: {cb_err}")
 
@@ -11784,9 +11854,10 @@ class AIAgent:
 
             if not _execution_blocked and self.tool_progress_callback:
                 try:
-                    self.tool_progress_callback(
+                    self._emit_tool_progress_event(
                         "tool.completed", function_name, None, None,
                         duration=tool_duration, is_error=_is_error_result,
+                        tool_call_id=tool_call.id,
                     )
                 except Exception as cb_err:
                     logging.debug(f"Tool progress callback error: {cb_err}")

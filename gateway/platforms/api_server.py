@@ -2791,29 +2791,46 @@ class APIServerAdapter(BasePlatformAdapter):
             if q is None:
                 return
             try:
-                loop.call_soon_threadsafe(q.put_nowait, event)
+                try:
+                    current_loop = asyncio.get_running_loop()
+                except RuntimeError:
+                    current_loop = None
+                if current_loop is loop:
+                    q.put_nowait(event)
+                else:
+                    future = asyncio.run_coroutine_threadsafe(q.put(event), loop)
+                    future.result(timeout=5)
             except Exception:
                 pass
 
         def _callback(event_type: str, tool_name: str = None, preview: str = None, args=None, **kwargs):
             ts = time.time()
+            tool_call_id = kwargs.get("tool_call_id") or kwargs.get("toolCallId")
             if event_type == "tool.started":
-                _push({
+                event = {
                     "event": "tool.started",
                     "run_id": run_id,
                     "timestamp": ts,
                     "tool": tool_name,
                     "preview": preview,
-                })
+                }
+                if tool_call_id:
+                    event["tool_call_id"] = tool_call_id
+                    event["toolCallId"] = tool_call_id
+                _push(event)
             elif event_type == "tool.completed":
-                _push({
+                event = {
                     "event": "tool.completed",
                     "run_id": run_id,
                     "timestamp": ts,
                     "tool": tool_name,
                     "duration": round(kwargs.get("duration", 0), 3),
                     "error": kwargs.get("is_error", False),
-                })
+                }
+                if tool_call_id:
+                    event["tool_call_id"] = tool_call_id
+                    event["toolCallId"] = tool_call_id
+                _push(event)
             elif event_type == "reasoning.available":
                 _push({
                     "event": "reasoning.available",

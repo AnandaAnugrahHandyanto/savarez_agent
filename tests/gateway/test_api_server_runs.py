@@ -54,6 +54,16 @@ def _create_runs_app(adapter: APIServerAdapter) -> web.Application:
     return app
 
 
+def _sse_data_events(body: str) -> list[dict]:
+    """Parse JSON SSE data lines from a test response body."""
+    events = []
+    for line in body.splitlines():
+        if not line.startswith("data: "):
+            continue
+        events.append(json.loads(line[len("data: "):]))
+    return events
+
+
 def _make_slow_agent(**kwargs):
     """Create a mock agent that blocks in run_conversation until interrupted.
 
@@ -306,6 +316,123 @@ class TestRunEvents:
                 assert "run.completed" in body
                 assert "Hello!" in body
 
+    @pytest.mark.asyncio
+    async def test_events_stream_tool_lifecycle_includes_stable_tool_call_id(self, adapter):
+        app = _create_runs_app(adapter)
+
+        class ToolProgressAgent:
+            session_prompt_tokens = 1
+            session_completion_tokens = 1
+            session_total_tokens = 2
+
+            def __init__(self, **kwargs):
+                self.tool_progress_callback = kwargs["tool_progress_callback"]
+
+            def run_conversation(self, user_message=None, conversation_history=None, task_id=None):
+                cb = self.tool_progress_callback
+                cb(
+                    "tool.started",
+                    "read_file",
+                    "read: README.md",
+                    {"path": "README.md"},
+                    tool_call_id="call_read_1",
+                )
+                cb("reasoning.available", "_thinking", "thinking", None)
+                cb(
+                    "tool.completed",
+                    "read_file",
+                    None,
+                    None,
+                    duration=0.1234,
+                    is_error=False,
+                    tool_call_id="call_read_1",
+                )
+                return {"final_response": "done"}
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent", side_effect=ToolProgressAgent):
+                resp = await cli.post("/v1/runs", json={"input": "read README"})
+                assert resp.status == 202
+                run_id = (await resp.json())["run_id"]
+
+                events_resp = await cli.get(f"/v1/runs/{run_id}/events")
+                assert events_resp.status == 200
+                events = _sse_data_events(await events_resp.text())
+
+        started = [event for event in events if event["event"] == "tool.started"]
+        completed = [event for event in events if event["event"] == "tool.completed"]
+        reasoning = [event for event in events if event["event"] == "reasoning.available"]
+
+        assert len(started) == 1
+        assert started[0]["tool"] == "read_file"
+        assert started[0]["tool_call_id"] == "call_read_1"
+        assert started[0]["toolCallId"] == "call_read_1"
+        assert len(completed) == 1
+        assert completed[0]["tool_call_id"] == "call_read_1"
+        assert completed[0]["toolCallId"] == "call_read_1"
+        assert completed[0]["error"] is False
+        assert completed[0]["duration"] == 0.123
+        assert len(reasoning) == 1
+        assert "tool_call_id" not in reasoning[0]
+
+    @pytest.mark.asyncio
+    async def test_events_stream_same_tool_calls_get_distinct_tool_call_ids(self, adapter):
+        app = _create_runs_app(adapter)
+
+        class TwoToolCallsAgent:
+            session_prompt_tokens = 1
+            session_completion_tokens = 1
+            session_total_tokens = 2
+
+            def __init__(self, **kwargs):
+                self.tool_progress_callback = kwargs["tool_progress_callback"]
+
+            def run_conversation(self, user_message=None, conversation_history=None, task_id=None):
+                cb = self.tool_progress_callback
+                for call_id, path in (
+                    ("call_read_1", "README.md"),
+                    ("call_read_2", "CONTRIBUTING.md"),
+                ):
+                    cb(
+                        "tool.started",
+                        "read_file",
+                        f"read: {path}",
+                        {"path": path},
+                        tool_call_id=call_id,
+                    )
+                    cb(
+                        "tool.completed",
+                        "read_file",
+                        None,
+                        None,
+                        duration=0.1,
+                        is_error=False,
+                        tool_call_id=call_id,
+                    )
+                return {"final_response": "done"}
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent", side_effect=TwoToolCallsAgent):
+                resp = await cli.post("/v1/runs", json={"input": "read docs"})
+                assert resp.status == 202
+                run_id = (await resp.json())["run_id"]
+
+                events_resp = await cli.get(f"/v1/runs/{run_id}/events")
+                assert events_resp.status == 200
+                events = _sse_data_events(await events_resp.text())
+
+        started_ids = [
+            event["tool_call_id"]
+            for event in events
+            if event["event"] == "tool.started"
+        ]
+        completed_ids = [
+            event["tool_call_id"]
+            for event in events
+            if event["event"] == "tool.completed"
+        ]
+        assert started_ids == ["call_read_1", "call_read_2"]
+        assert completed_ids == ["call_read_1", "call_read_2"]
 
 
     @pytest.mark.asyncio

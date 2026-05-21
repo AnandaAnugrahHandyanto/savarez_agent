@@ -1803,6 +1803,38 @@ class TestExecuteToolCalls:
         assert len(messages) == 1
         assert messages[0]["role"] == "tool"
 
+    def test_sequential_tool_progress_callback_includes_tool_call_id(self, agent):
+        tc = _mock_tool_call(name="web_search", arguments='{"query":"hello"}', call_id="call_seq_1")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc])
+        messages = []
+        progress = []
+        agent.tool_progress_callback = (
+            lambda event, name, preview, args, **kw: progress.append((event, name, kw))
+        )
+
+        with patch("run_agent.handle_function_call", return_value='{"success": true}'):
+            agent._execute_tool_calls_sequential(mock_msg, messages, "task-1")
+
+        assert progress[0] == ("tool.started", "web_search", {"tool_call_id": "call_seq_1"})
+        assert progress[1][0:2] == ("tool.completed", "web_search")
+        assert progress[1][2]["tool_call_id"] == "call_seq_1"
+
+    def test_tool_progress_callback_legacy_signature_still_works(self, agent):
+        tc = _mock_tool_call(name="web_search", arguments='{"query":"hello"}', call_id="call_legacy")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc])
+        messages = []
+        progress = []
+
+        def legacy_callback(event, name=None, preview=None, args=None):
+            progress.append((event, name, preview, args))
+
+        agent.tool_progress_callback = legacy_callback
+
+        with patch("run_agent.handle_function_call", return_value='{"success": true}'):
+            agent._execute_tool_calls_sequential(mock_msg, messages, "task-1")
+
+        assert [event[0] for event in progress] == ["tool.started", "tool.completed"]
+
     def test_vprint_suppressed_in_parseable_quiet_mode(self, agent):
         agent.suppress_status_output = True
 
@@ -2128,6 +2160,32 @@ class TestConcurrentToolExecution:
         assert len(completes) == 2
         assert {entry[0] for entry in completes} == {"c1", "c2"}
         assert {entry[3] for entry in completes} == {'{"id":1}', '{"id":2}'}
+
+    def test_concurrent_tool_progress_callback_uses_distinct_tool_call_ids(self, agent):
+        tc1 = _mock_tool_call(name="web_search", arguments='{"query":"one"}', call_id="call_same_tool_1")
+        tc2 = _mock_tool_call(name="web_search", arguments='{"query":"two"}', call_id="call_same_tool_2")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc1, tc2])
+        messages = []
+        progress = []
+        agent.tool_progress_callback = (
+            lambda event, name, preview, args, **kw: progress.append((event, name, kw))
+        )
+
+        with patch("run_agent.handle_function_call", side_effect=['{"id":1}', '{"id":2}']):
+            agent._execute_tool_calls_concurrent(mock_msg, messages, "task-1")
+
+        started_ids = [
+            kw["tool_call_id"]
+            for event, _name, kw in progress
+            if event == "tool.started"
+        ]
+        completed_ids = {
+            kw["tool_call_id"]
+            for event, _name, kw in progress
+            if event == "tool.completed"
+        }
+        assert started_ids == ["call_same_tool_1", "call_same_tool_2"]
+        assert completed_ids == {"call_same_tool_1", "call_same_tool_2"}
 
     def test_invoke_tool_handles_agent_level_tools(self, agent):
         """_invoke_tool should handle todo tool directly."""
