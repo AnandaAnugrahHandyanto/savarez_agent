@@ -1600,7 +1600,7 @@ class GatewayRunner:
         
         # Event hook system
         from gateway.hooks import HookRegistry
-        self.hooks = HookRegistry()
+        self.hooks = HookRegistry(include_builtins=True)
 
         # Per-chat voice reply mode: "off" | "voice_only" | "all"
         self._voice_mode: Dict[str, str] = self._load_voice_modes()
@@ -8419,6 +8419,8 @@ class GatewayRunner:
                 "chat_id": source.chat_id or "",
                 "session_id": session_entry.session_id,
                 "message": message_text[:500],
+                "message_id": self._reply_anchor_for_event(event),
+                "gateway_config": self.config,
             }
             await self.hooks.emit("agent:start", hook_ctx)
 
