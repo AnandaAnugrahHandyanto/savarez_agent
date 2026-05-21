@@ -12,7 +12,7 @@ Environment Selection (via TERMINAL_ENV environment variable):
 - "docker": Execute in Docker containers (isolated, requires Docker)
 - "modal": Execute in Modal cloud sandboxes (direct Modal or managed gateway)
 - "vercel_sandbox": Execute in Vercel Sandbox cloud sandboxes
-- "sprites": Execute in Sprites — stateful Firecracker VM sandboxes on Fly.io, with checkpoint & restore
+- "sprites": Execute in Sprites — stateful cloud sandboxes on Fly.io, with checkpoint & restore
 
 Features:
 - Multiple execution backends (local, docker, modal, vercel_sandbox, sprites)

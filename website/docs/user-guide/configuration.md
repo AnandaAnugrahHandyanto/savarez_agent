@@ -83,7 +83,7 @@ Leaving these unset keeps the legacy defaults (`HERMES_API_TIMEOUT=1800`s, `HERM
 
 ## Terminal Backend Configuration
 
-Hermes supports eight terminal backends. Each determines where the agent's shell commands actually execute — your local machine, a Docker container, a remote server via SSH, a Modal cloud sandbox (direct or via the Nous-managed gateway), a Daytona workspace, a Vercel Sandbox, a Sprite (Fly.io Firecracker VM), or a Singularity/Apptainer container.
+Hermes supports eight terminal backends. Each determines where the agent's shell commands actually execute — your local machine, a Docker container, a remote server via SSH, a Modal cloud sandbox (direct or via the Nous-managed gateway), a Daytona workspace, a Vercel Sandbox, a Sprite (Fly.io cloud sandbox), or a Singularity/Apptainer container.
 
 ```yaml
 terminal:
@@ -108,7 +108,7 @@ For cloud sandboxes such as Modal, Daytona, Vercel Sandbox, and Sprites, `contai
 | **modal** | Modal cloud sandbox | Full (cloud VM) | Ephemeral cloud compute, evals |
 | **daytona** | Daytona workspace | Full (cloud container) | Managed cloud dev environments |
 | **vercel_sandbox** | Vercel Sandbox | Full (cloud microVM) | Cloud execution with snapshot-backed filesystem persistence |
-| **sprites** | Sprite (Fly.io Firecracker VM) | Full (hardware-isolated microVM) | Stateful sandboxes with checkpoint & restore |
+| **sprites** | Sprite (Fly.io cloud sandbox) | Full (hardware-isolated VM) | Stateful sandboxes with checkpoint & restore |
 | **singularity** | Singularity/Apptainer container | Namespaces (--containall) | HPC clusters, shared machines |
 
 ### Local Backend
@@ -278,7 +278,7 @@ OIDC tokens are short-lived and should not be used as the documented deployment 
 
 ### Sprites Backend
 
-Runs commands in a [Sprite](https://sprites.dev) — a stateful Firecracker VM backed by Fly.io, with checkpoint & restore. Sprites persist between sessions by default and are reused by task identity: Hermes names them `hermes-{task_id}` and on each session start either resumes the existing Sprite or creates a fresh one.
+Runs commands in a [Sprite](https://sprites.dev) — a stateful cloud sandbox on Fly.io, with checkpoint & restore. Sprites persist between sessions by default and are reused by task identity: Hermes names them `hermes-{task_id}` and on each session start either resumes the existing Sprite or creates a fresh one.
 
 ```yaml
 terminal:
