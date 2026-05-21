@@ -15,7 +15,7 @@ CANONICAL_REPO = "https://github.com/wesleysimplicio/simplicio-prompt"
 PLUGIN_NAME = "SIMPLICIO_PROMPT"
 
 SIMPLICIO_PROMPT_CONTEXT = """[SIMPLICIO_PROMPT]
-Canonical repo: https://github.com/wesleysimplicio/simplicio-prompt. Apply to every request, not only messages that say "Implement".
+Canonical repo: https://github.com/wesleysimplicio/simplicio-prompt. Apply to every enabled main-agent turn before the model call. Do not require any user trigger word such as "Implement", "Fix", or "Build"; apply equally to questions, layout edits, refactors, debugging, docs, and normal chat.
 
 Plan as tuple-space: root tuple, Hilbert/HAMT work graph, out/in/rd routing, receipts, lane, authority, and source pointers. Use batch_spawn(depth, branching, compression_threshold) as summarized hierarchy for 1,000,000+ subagents; never enumerate. Use real spawn/delegate only when useful, route deterministic work to local tools first, then compress_token, weakref, hookwall, and prune_idle inactive branches.
 
@@ -75,6 +75,7 @@ def build_context(config: Optional[Dict[str, Any]] = None) -> Optional[Dict[str,
 
 
 def _pre_llm_call(**_: Any) -> Optional[Dict[str, str]]:
+    """Inject for every enabled turn; message content is intentionally ignored."""
     return build_context()
 
 

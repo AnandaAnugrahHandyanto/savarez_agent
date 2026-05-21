@@ -33,7 +33,7 @@ hermes plugins enable SIMPLICIO_PROMPT
 
 | Item | Behaviour |
 |---|---|
-| Automatic prompt pass-through | Every main-agent turn receives the overlay before the model call; the user does not need to type "Implement". |
+| Automatic prompt pass-through | Every enabled main-agent turn receives the overlay before the model call; the user does not need to type "Implement", "Fix", "Build", or any other trigger word. |
 | Tuple-space planning | Requests are framed as root tuple plus explicit work graph, lane, authority, receipts, and source pointers. |
 | Massive-agent abstraction | `batch_spawn(depth, branching, compression_threshold)` is used as a summarized hierarchy for 1,000,000+ subagents without enumerating them. |
 | Safe speed policy | Cache by receipt/input hash, batch small tasks, compress context, route deterministic work to local tools, and use speculative work only when idempotent. |
@@ -41,6 +41,18 @@ hermes plugins enable SIMPLICIO_PROMPT
 | Stable reporting | The default output contract keeps tuple-space state, active agents, totals, next yool, and partial result visible. |
 
 The plugin is intentionally lightweight. It does not call external services and does not bypass provider throttles. Its runtime work is a local boolean check plus a static context string returned from `pre_llm_call` when enabled.
+
+## Activation Semantics
+
+`SIMPLICIO_PROMPT` is gated only by Hermes configuration, not by message text.
+After `SIMPLICIO_PROMPT=true`, `HERMES_SIMPLICIO_PROMPT=true`,
+`simplicio_prompt.enabled: true`, or `hermes plugins enable SIMPLICIO_PROMPT`,
+the plugin injects the overlay into every main-agent `pre_llm_call` hook.
+
+This means normal chat, questions, layout edits, refactors, bug fixes,
+documentation work, benchmark requests, and implementation tasks all receive the
+same V2 execution policy automatically. The hook intentionally ignores the
+message body, so the user never has to write "Implement" to activate it.
 
 ## Canonical V2 Reference Data
 

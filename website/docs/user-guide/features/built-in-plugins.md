@@ -202,7 +202,7 @@ hermes plugins enable SIMPLICIO_PROMPT
 
 | V2 item | Behaviour in Hermes |
 |---|---|
-| Automatic pass-through | Every main-agent turn receives the overlay before the model call. |
+| Automatic pass-through | Every enabled main-agent turn receives the overlay before the model call; no trigger word such as "Implement", "Fix", or "Build" is required. |
 | Tuple-space decomposition | Work is framed as root tuple plus Hilbert/HAMT graph, lanes, authority, receipts, and source pointers. |
 | Massive-agent abstraction | `batch_spawn(depth, branching, compression_threshold)` is represented as a summarized hierarchy for 1,000,000+ subagents without enumerating them. |
 | Safer speed | The model is steered toward local deterministic work first, input-hash caching, batching, context compression, stable prefixes, adaptive lanes, jittered backoff, circuit breakers, and idempotent-only speculation. |
@@ -221,6 +221,12 @@ hermes plugins enable SIMPLICIO_PROMPT
 | Token economy | `76.32%` estimated savings through context compression |
 
 The plugin carries these as reference policy data from the canonical V2 runtime. It does not bypass hosted-provider rate limits, quotas, latency, or terms.
+
+**Activation semantics:** `SIMPLICIO_PROMPT` is gated only by Hermes config or
+environment flags, not by message text. After the plugin is enabled, normal chat,
+questions, layout edits, refactors, bug fixes, documentation tasks, benchmarks,
+and implementation requests all receive the same overlay automatically through
+`pre_llm_call`.
 
 **Performance note:** the plugin is local-only. When disabled it is a no-op. When enabled, it adds a compact static context block; it does not make extra model calls. See `docs/simplicio-prompt-v2-benchmark.md` and run `python scripts/benchmark_simplicio_prompt.py` for the local token and preprocessing benchmark.
 

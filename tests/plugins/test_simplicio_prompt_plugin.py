@@ -32,6 +32,28 @@ def test_simplicio_prompt_enabled_by_env(monkeypatch):
     assert "[Próximo Yool a executar]" in payload["context"]
 
 
+def test_simplicio_prompt_pre_llm_hook_ignores_trigger_words(monkeypatch):
+    _clear_flags(monkeypatch)
+    monkeypatch.setenv("SIMPLICIO_PROMPT", "true")
+
+    from plugins import simplicio_prompt as sp
+
+    payload = sp._pre_llm_call(
+        messages=[
+            {
+                "role": "user",
+                "content": "Can you explain the dashboard layout and summarize the tradeoffs?",
+            }
+        ]
+    )
+
+    assert payload is not None
+    assert (
+        'Do not require any user trigger word such as "Implement"' in payload["context"]
+    )
+    assert "layout edits" in payload["context"]
+
+
 def test_simplicio_prompt_enabled_by_config(monkeypatch):
     _clear_flags(monkeypatch)
 

@@ -18,15 +18,15 @@ python scripts/benchmark_simplicio_prompt.py --iterations 10000
 | Case | Median ms/build | p95 ms/build | Rough input tokens | Chars |
 |---|---:|---:|---:|---:|
 | normal_instruction | 0.000100 | 0.000200 | 28 | 112 |
-| manual_v2_prompt | 0.000300 | 0.000700 | 329 | 1,318 |
-| simplicio_prompt_plugin | 0.000300 | 0.000400 | 269 | 1,079 |
+| manual_v2_prompt | 0.000300 | 0.000400 | 329 | 1,318 |
+| simplicio_prompt_plugin | 0.000300 | 0.000400 | 310 | 1,241 |
 
 ## Deltas
 
 | Comparison | Result |
 |---|---:|
-| Plugin token savings vs manually pasted V2 prompt | 18.24% fewer rough input tokens |
-| Plugin token overhead vs normal instruction | 860.71% more rough input tokens |
+| Plugin token savings vs manually pasted V2 prompt | 5.78% fewer rough input tokens |
+| Plugin token overhead vs normal instruction | 1007.14% more rough input tokens |
 | Plugin local preprocessing overhead vs normal instruction | ~0.0002 ms median absolute delta |
 | Extra model calls introduced by plugin | 0 |
 
@@ -42,9 +42,11 @@ tokens.
 
 `simplicio_prompt_plugin` gives the model the same operating policy
 automatically through `pre_llm_call`, using a compact static overlay. It saves
-18.24% rough input tokens versus the manually pasted V2 prompt and adds no
+5.78% rough input tokens versus the manually pasted V2 prompt and adds no
 external calls. The local preprocessing cost is effectively noise relative to
-network/model latency.
+network/model latency. Activation is config-driven rather than text-driven: once
+enabled, the hook injects the overlay for every main-agent turn, including
+messages that do not contain "Implement" or any other trigger word.
 
 ## V2 Coverage
 
