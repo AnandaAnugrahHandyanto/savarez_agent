@@ -137,7 +137,7 @@ def skill_matches_platform(frontmatter: Dict[str, Any]) -> bool:
     If the field is absent or empty the skill is compatible with **all**
     platforms (backward-compatible default).
     """
-    platforms = frontmatter.get("platforms")
+    platforms = frontmatter.get("platforms") or frontmatter.get("metadata", {}).get("platforms")
     if not platforms:
         return True
     if not isinstance(platforms, list):
