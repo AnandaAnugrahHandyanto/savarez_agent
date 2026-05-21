@@ -249,6 +249,9 @@ class _CuaDriverSession:
         self._exit_stack = None
         self._session = None
 
+    def _is_closed(self) -> bool:
+        return self._exit_stack is None or self._session is None
+
     def start(self) -> None:
         with self._lock:
             if self._started:
@@ -272,7 +275,24 @@ class _CuaDriverSession:
 
     def call_tool(self, name: str, args: Dict[str, Any], timeout: float = 30.0) -> Dict[str, Any]:
         self._require_started()
-        return self._bridge.run(self._call_tool_async(name, args), timeout=timeout)
+        import anyio
+        try:
+            return self._bridge.run(self._call_tool_async(name, args), timeout=timeout)
+        except (anyio.ClosedResourceError, OSError, RuntimeError) as exc:
+            logger.warning("cua-driver connection lost (%s: %s). Reconnecting...",
+                           type(exc).__name__, exc)
+            # Full teardown: close session, then bridge (kills event loop).
+            try:
+                self._bridge.run(self._aexit(), timeout=5.0)
+            except Exception as e2:
+                logger.debug("aexit during reconnect: %s", e2)
+            self._bridge.stop()
+            self._started = False
+            # Re-init: new bridge thread + new MCP session.
+            self._bridge.start()
+            self._bridge.run(self._aenter(), timeout=15.0)
+            self._started = True
+            return self._bridge.run(self._call_tool_async(name, args), timeout=timeout)
 
 
 def _extract_tool_result(mcp_result: Any) -> Dict[str, Any]:
@@ -529,21 +549,28 @@ class CuaDriverBackend(ComputerUseBackend):
         return self._action("scroll", args)
 
     # ── Keyboard ───────────────────────────────────────────────────
-    def type_text(self, text: str) -> ActionResult:
-        pid = self._active_pid
+    def type_text(self, text: str, app: Optional[str] = None) -> ActionResult:
+        pid = self._resolve_pid(app)
         if pid is None:
+            err = "No active window — call capture() first."
+            if app:
+                err = f"Could not resolve PID for app '{app}'. Call focus_app or capture first."
             return ActionResult(ok=False, action="type_text",
-                                message="No active window — call capture() first.")
+                                message=err)
         # Safari WebKit AXTextField does not accept AX attribute writes (type_text),
-        # so use type_text_chars which synthesises individual key events instead.
+        # so use type_text which synthesises individual key events instead.
         # This works universally across all macOS apps in background mode.
-        return self._action("type_text_chars", {"pid": pid, "text": text})
+        # Note: cua-driver v0.1.5 calls this tool "type_text", not "type_text_chars".
+        return self._action("type_text", {"pid": pid, "text": text})
 
-    def key(self, keys: str) -> ActionResult:
-        pid = self._active_pid
+    def key(self, keys: str, app: Optional[str] = None) -> ActionResult:
+        pid = self._resolve_pid(app)
         if pid is None:
+            err = "No active window — call capture() first."
+            if app:
+                err = f"Could not resolve PID for app '{app}'. Call focus_app or capture first."
             return ActionResult(ok=False, action="key",
-                                message="No active window — call capture() first.")
+                                message=err)
 
         key_name, modifiers = _parse_key_combo(keys)
         if not key_name:
@@ -638,13 +665,46 @@ class CuaDriverBackend(ComputerUseBackend):
         return ActionResult(ok=False, action="focus_app",
                             message=f"No on-screen window found for app '{app}'.")
 
+    def _resolve_pid(self, app: Optional[str] = None) -> Optional[int]:
+        """Resolve a PID from _active_pid, or look up via list_apps as fallback."""
+        if self._active_pid is not None:
+            return self._active_pid
+        if not app:
+            return None
+        apps = self.list_apps()
+        app_lower = app.lower()
+        for a in apps:
+            name = a.get("name", "")
+            if app_lower in name.lower():
+                pid = a.get("pid")
+                if pid and pid > 0:
+                    self._active_pid = pid
+                    return pid
+        return None
+
     # ── Internal ───────────────────────────────────────────────────
+    _TOOL_ALIASES = {
+        "type_text_chars": "type_text",
+    }
+
     def _action(self, name: str, args: Dict[str, Any]) -> ActionResult:
         try:
             out = self._session.call_tool(name, args)
         except Exception as e:
-            logger.exception("cua-driver %s call failed", name)
-            return ActionResult(ok=False, action=name, message=f"cua-driver error: {e}")
+            err_str = str(e)
+            # Auto-retry with alias if the tool name doesn't exist on this version
+            if "Unknown tool" in err_str and name in self._TOOL_ALIASES:
+                alias = self._TOOL_ALIASES[name]
+                logger.warning("Tool '%s' not found, retrying as '%s'", name, alias)
+                try:
+                    out = self._session.call_tool(alias, args)
+                    name = alias  # use the working name for reporting
+                except Exception as e2:
+                    return ActionResult(ok=False, action=name,
+                                        message=f"cua-driver error: {e2}")
+            else:
+                logger.exception("cua-driver %s call failed", name)
+                return ActionResult(ok=False, action=name, message=f"cua-driver error: {e}")
         ok = not out["isError"]
         message = ""
         data = out["data"]

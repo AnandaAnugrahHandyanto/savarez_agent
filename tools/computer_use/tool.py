@@ -254,6 +254,20 @@ def handle_computer_use(args: Dict[str, Any], **kwargs) -> Any:
         return _dispatch(backend, action, args)
     except Exception as e:
         logger.exception("computer_use %s failed", action)
+        # Attempt automatic reconnect on connection-level errors
+        err_str = str(e)
+        if any(x in err_str for x in ("ClosedResource", "Resource closed", "BrokenPipe")):
+            import anyio
+            logger.warning("Attempting auto-reconnect after: %s", err_str)
+            try:
+                backend.stop()
+            except Exception:
+                pass
+            with _backend_lock:
+                _backend = None
+            backend = _get_backend()
+            logger.info("Auto-reconnect succeeded, retrying %s", action)
+            return _dispatch(backend, action, args)
         return json.dumps({"error": f"{action} failed: {e}"})
 
 
@@ -380,11 +394,17 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
         return _maybe_follow_capture(backend, res, capture_after)
 
     if action == "type":
-        res = backend.type_text(args.get("text", ""))
+        app = args.get("app")
+        if app:
+            backend.focus_app(app)
+        res = backend.type_text(args.get("text", ""), app=app)
         return _maybe_follow_capture(backend, res, capture_after)
 
     if action == "key":
-        res = backend.key(args.get("keys", ""))
+        app = args.get("app")
+        if app:
+            backend.focus_app(app)
+        res = backend.key(args.get("keys", ""), app=app)
         return _maybe_follow_capture(backend, res, capture_after)
 
     if action == "set_value":
