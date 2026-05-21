@@ -665,6 +665,13 @@ class TestCmdUpdateLaunchdRestart:
             "hermes_cli.gateway._graceful_restart_via_sigusr1",
             lambda pid, drain_timeout: False,
         )
+        ticks = {"n": 0}
+
+        def fast_monotonic():
+            ticks["n"] += 100
+            return ticks["n"]
+
+        monkeypatch.setattr(cli_main._time, "monotonic", fast_monotonic)
 
         with patch.object(gateway_cli, "find_gateway_pids", return_value=[]):
             cmd_update(mock_args)
@@ -1525,6 +1532,13 @@ class TestCmdUpdateResetFailedBeforeRestart:
             "hermes_cli.gateway._graceful_restart_via_sigusr1",
             lambda pid, drain_timeout: False,
         )
+        ticks = {"n": 0}
+
+        def fast_monotonic():
+            ticks["n"] += 100
+            return ticks["n"]
+
+        monkeypatch.setattr(cli_main._time, "monotonic", fast_monotonic)
 
         with patch.object(gateway_cli, "find_gateway_pids", return_value=[]):
             cmd_update(mock_args)
@@ -1612,6 +1626,13 @@ class TestCmdUpdateResetFailedBeforeRestart:
             "hermes_cli.gateway._graceful_restart_via_sigusr1",
             lambda pid, drain_timeout: False,
         )
+        ticks = {"n": 0}
+
+        def fast_monotonic():
+            ticks["n"] += 100
+            return ticks["n"]
+
+        monkeypatch.setattr(cli_main._time, "monotonic", fast_monotonic)
 
         with patch.object(gateway_cli, "find_gateway_pids", return_value=[]):
             cmd_update(mock_args)

@@ -38,6 +38,10 @@ class TestUserSystemdPrivateSocketPreflight:
 
 
 class TestSystemdServiceRefresh:
+    @pytest.fixture(autouse=True)
+    def _skip_user_systemd_preflight(self, monkeypatch):
+        monkeypatch.setattr(gateway_cli, "_preflight_user_systemd", lambda **_kwargs: None)
+
     def test_systemd_install_repairs_outdated_unit_without_force(self, tmp_path, monkeypatch):
         unit_path = tmp_path / "hermes-gateway.service"
         unit_path.write_text("old unit\n", encoding="utf-8")
@@ -488,14 +492,20 @@ class TestLaunchdServiceRecovery:
             return SimpleNamespace(returncode=0, stdout="", stderr="")
 
         monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+        monkeypatch.setattr(
+            gateway_cli,
+            "_wait_for_launchd_unloaded",
+            lambda label: calls.append(("wait-unloaded", label)) or True,
+        )
 
         gateway_cli.launchd_install()
 
         label = gateway_cli.get_launchd_label()
         domain = gateway_cli._launchd_domain()
         assert "--replace" in plist_path.read_text(encoding="utf-8")
-        assert calls[:2] == [
+        assert calls[:3] == [
             ["launchctl", "bootout", f"{domain}/{label}"],
+            ("wait-unloaded", label),
             ["launchctl", "bootstrap", domain, str(plist_path)],
         ]
 
@@ -737,6 +747,10 @@ class TestGatewayServiceDetection:
         assert gateway_cli._is_service_running() is False
 
 class TestGatewaySystemServiceRouting:
+    @pytest.fixture(autouse=True)
+    def _skip_user_systemd_preflight(self, monkeypatch):
+        monkeypatch.setattr(gateway_cli, "_preflight_user_systemd", lambda **_kwargs: None)
+
     def test_systemd_restart_gracefully_restarts_running_service_and_waits(self, monkeypatch, capsys):
         calls = []
 
@@ -998,6 +1012,25 @@ class TestGatewaySystemServiceRouting:
         )
 
         assert calls == [(False, False, True)]
+
+    def test_gateway_install_passes_system_flags(self, monkeypatch):
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: True)
+        monkeypatch.setattr(gateway_cli, "is_termux", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_macos", lambda: False)
+        monkeypatch.setattr(gateway_cli, "prompt_yes_no", lambda *args, **kwargs: False)
+
+        calls = []
+        monkeypatch.setattr(
+            gateway_cli,
+            "systemd_install",
+            lambda force=False, system=False, run_as_user=None, **kwargs: calls.append((force, system, run_as_user, kwargs)),
+        )
+
+        gateway_cli.gateway_command(
+            SimpleNamespace(gateway_command="install", force=True, system=True, run_as_user="alice")
+        )
+
+        assert calls == [(True, True, "alice", {"enable_on_startup": False})]
 
     def test_gateway_install_reports_termux_manual_mode(self, monkeypatch, capsys):
         monkeypatch.setattr(gateway_cli, "is_termux", lambda: True)
