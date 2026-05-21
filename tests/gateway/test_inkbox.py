@@ -1246,3 +1246,195 @@ class TestSend:
         assert result["fallback_allowed"] is False
         assert result["char_count"] == 1601
         assert result["max_chars"] == 1600
+
+
+# ---------------------------------------------------------------------------
+# Admin / system notice filtering
+# ---------------------------------------------------------------------------
+
+class TestAdminNoticeFilter:
+    """``_is_hermes_admin_notice`` is the last-line filter that keeps runtime
+    chatter (status callbacks, "Still working…" pings, compression banners…)
+    out of real user channels.  The filter has two detection paths:
+
+    1. **Metadata tag**: producers explicitly opt in via ``notice_type``,
+       so the adapter doesn't have to guess from the body.  This is how
+       the new SMS/email-safe internal producers (status_callback,
+       interim_assistant, notify_interval) self-identify.
+    2. **Body inspection**: glyph prefixes (◐, ⚠️, 💾…) and a narrow set
+       of fixed substrings ("Still working", "Cronjob Response:"…)
+       catch un-tagged or legacy notices.
+
+    De-glyphed diagnostic catch-alls ("stack trace", "5,000 tokens", …)
+    deliberately live behind the metadata channel rather than the body
+    filter, so a real agent reply that happens to contain those phrases
+    survives.
+    """
+
+    @pytest.mark.parametrize(
+        "notice_type",
+        [
+            "compression",
+            "preflight",
+            "preflight_compression",
+            "context_rollover",
+            "interim_assistant",
+            "notify_interval",
+            "status_callback",
+            "tool_progress",
+            "provider_diagnostic",
+            "runtime_diagnostic",
+            "system",
+            "admin",
+        ],
+    )
+    def test_metadata_notice_type_short_circuits(self, notice_type):
+        """A producer can opt in via metadata regardless of body content."""
+        from gateway.platforms.inkbox import _is_hermes_admin_notice
+
+        assert _is_hermes_admin_notice(
+            "Looks fine to a human", metadata={"notice_type": notice_type},
+        )
+
+    @pytest.mark.parametrize(
+        "alias_key", ["event_type", "kind", "source"],
+    )
+    def test_metadata_generic_keys_do_not_trigger_drop(self, alias_key):
+        """``event_type`` / ``kind`` / ``source`` are used elsewhere in the
+        codebase for unrelated purposes (Home Assistant events, session
+        data, …).  We deliberately do NOT honor them as notice-type
+        carriers — only the explicit ``notice_type`` key short-circuits.
+        """
+        from gateway.platforms.inkbox import _is_hermes_admin_notice
+
+        assert not _is_hermes_admin_notice(
+            "ordinary reply text",
+            metadata={alias_key: "compression"},
+        )
+
+    def test_metadata_unrelated_tag_not_filtered(self):
+        from gateway.platforms.inkbox import _is_hermes_admin_notice
+
+        assert not _is_hermes_admin_notice(
+            "Hi there", metadata={"notice_type": "user_reply"},
+        )
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            # The body filter is intentionally narrow so it can't drop a
+            # real reply.  These phrases — plausible in an agent's reply
+            # when helping debug code, summarising context, or talking
+            # about quotas — must survive when no metadata tag is set.
+            "Here's the stack trace from your error: NameError at line 12.",
+            "Quick session summary: we tried three approaches.",
+            "Runtime diagnostics confirm the bug is in line 47.",
+            "Compacting context isn't the same as compression here.",
+            "We talked about summarizing earlier conversation threads.",
+            "You've used 5,000 tokens this month.",
+            "Threshold: 100000 sounds high for a user-facing setting.",
+            "Preflight compression of the asset takes ~2s.",
+        ],
+    )
+    def test_legitimate_replies_pass_through(self, body):
+        """The body filter must not drop these; they're real replies."""
+        from gateway.platforms.inkbox import _is_hermes_admin_notice
+
+        assert not _is_hermes_admin_notice(body)
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            "◐ Session automatically reset (1h idle).",
+            "⚠️ Something went wrong",
+            "💾 Self-improvement review: …",
+            "📋 todo: planning 3 task(s)",
+            "Still working — iteration 4/8",
+            "Cronjob Response: completed",
+            "Self-improvement review: profile updated",
+        ],
+    )
+    def test_existing_glyph_and_substring_filters_still_catch(self, body):
+        """The precedent-set filters (glyphs + fixed substrings) keep
+        running unconditionally; nothing in this PR changes their reach.
+        """
+        from gateway.platforms.inkbox import _is_hermes_admin_notice
+
+        assert _is_hermes_admin_notice(body)
+
+    @pytest.mark.asyncio
+    async def test_send_suppresses_metadata_tagged_notice_on_sms(self, monkeypatch):
+        """End-to-end: a status_callback fired via adapter.send() with the
+        metadata tag is dropped, even when the body looks like a real reply.
+        """
+        adapter = _make_adapter(monkeypatch)
+        result = await adapter.send(
+            "+15555550101",
+            "Let me check on that…",
+            metadata={
+                "mode": "sms",
+                "to_phone": "+15555550101",
+                "notice_type": "status_callback",
+            },
+        )
+        assert result.success is True
+        assert result.message_id == "suppressed-admin-notice"
+        identity = adapter._inkbox.get_identity.return_value
+        identity.send_text.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_send_delivers_legitimate_stack_trace_reply_on_sms(self, monkeypatch):
+        """The motivating case for this redesign: an agent helping a user
+        debug their Python code replies with the actual stack trace, and
+        that reply must NOT be silently dropped.  No internal metadata tag
+        is set → only the narrow body filter runs → body passes.
+        """
+        adapter = _make_adapter(monkeypatch)
+        result = await adapter.send(
+            "+15555550101",
+            "Here's the stack trace: NameError on line 12 — 'foo' is undefined.",
+            metadata={"mode": "sms", "to_phone": "+15555550101"},
+        )
+        assert result.success is True
+        assert result.message_id != "suppressed-admin-notice"
+        identity = adapter._inkbox.get_identity.return_value
+        identity.send_text.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Capability hooks (per-chat opt-outs consumed by gateway/run.py)
+# ---------------------------------------------------------------------------
+
+class TestInterimMessageCapability:
+    """``supports_interim_messages`` mirrors the existing
+    ``supports_progress_updates`` knob: voice calls stream interim status
+    as TTS, SMS keeps the periodic mid-turn pings (silence on a slow
+    channel is worse than an extra short text), and email opts out
+    entirely (one mid-turn email per status_callback is unsendable UX).
+    """
+
+    def test_returns_true_for_active_voice_call(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        adapter._active_call_ws["contact-uuid-voice"] = MagicMock()
+        assert adapter.supports_interim_messages("contact-uuid-voice") is True
+
+    def test_returns_true_for_sms_modality(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        adapter._last_inbound_modality["+15555550101"] = "sms"
+        assert adapter.supports_interim_messages("+15555550101") is True
+
+    def test_returns_false_for_email_modality(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        adapter._last_inbound_modality["contact-uuid-mail"] = "email"
+        assert adapter.supports_interim_messages("contact-uuid-mail") is False
+
+    def test_unknown_modality_mirrors_progress_heuristic(self, monkeypatch):
+        """Unknown chats fall back to the E.164-or-email heuristic shared
+        with ``supports_progress_updates``: phone-shaped chat_id → SMS,
+        anything else → email and suppress.
+        """
+        adapter = _make_adapter(monkeypatch)
+        # E.164 → SMS — interim allowed.
+        assert adapter.supports_interim_messages("+15555550199") is True
+        # Contact UUID → email — suppressed.
+        assert adapter.supports_interim_messages("contact-uuid-unknown") is False
