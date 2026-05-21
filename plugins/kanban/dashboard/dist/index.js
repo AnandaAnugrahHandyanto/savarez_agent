@@ -2946,6 +2946,7 @@
           homeBusy: homeBusy,
           onToggleHomeSub: toggleHomeSubscription,
           onRefresh: props.onRefresh,
+          onReload: load,
         }) : null,
         data ? h("div", { className: "hermes-kanban-drawer-comment-row" },
           h(Input, {
@@ -3105,6 +3106,13 @@
         }),
       ),
       h(WorkerLogSection, { taskId: t.id, boardSlug: props.boardSlug }),
+      h(WorkerEvidenceSection, {
+        taskId: t.id,
+        boardSlug: props.boardSlug,
+        eventTick: events.length ? events[events.length - 1].id : 0,
+        onRefresh: props.onRefresh,
+        onReload: props.onReload,
+      }),
       h(RunHistorySection, { runs: props.data.runs || [] }),
     );
   }
@@ -3228,6 +3236,194 @@
             tx(t, "logTruncated", "(showing last 100 KB — full log at "),
             data.path,
             tx(t, "logAt", ")"))
+        : null,
+    );
+  }
+
+  // Bounded external-worker evidence. This reads the kanban progress snapshot
+  // endpoint only; it does not claim, heartbeat, or interrupt a running worker.
+  function WorkerEvidenceSection(props) {
+    const { t } = useI18n();
+    const [state, setState] = useState({ loading: false, data: null, err: null, busy: null });
+
+    const load = useCallback(function () {
+      setState(function (prev) {
+        return Object.assign({}, prev, { loading: true, err: null });
+      });
+      return SDK.fetchJSON(
+        withBoard(`${API}/tasks/${encodeURIComponent(props.taskId)}/progress?log_tail=65536`, props.boardSlug)
+      ).then(function (d) {
+        setState({ loading: false, data: d, err: null, busy: null });
+      }).catch(function (e) {
+        setState(function (prev) {
+          return Object.assign({}, prev, { loading: false, err: parseApiErrorMessage(e), busy: null });
+        });
+      });
+    }, [props.taskId, props.boardSlug]);
+
+    useEffect(function () { load(); }, [load, props.eventTick]);
+
+    const data = state.data;
+    const evidence = (data && data.evidence) || {};
+    const workerLane = (data && data.worker_lane) || evidence.worker_lane || null;
+    const progress = data && data.worker_progress;
+    const progressItems = progress && Array.isArray(progress.items) ? progress.items : [];
+    const verification = (data && data.verification) || evidence.verification || null;
+    const git = (data && data.git) || evidence.git || null;
+    const hasEvidence = !!(
+      workerLane ||
+      data && data.review_required ||
+      progressItems.length ||
+      verification ||
+      git ||
+      data && data.worker_log_tail
+    );
+
+    const doReview = function (decision) {
+      let body = { decision: decision };
+      if (decision === "approve") {
+        const summary = window.prompt(
+          tx(t, "workerEvidenceApproveSummary",
+            "Review summary for this worker handoff (optional):"),
+          "bounded evidence accepted",
+        );
+        if (summary === null) return;
+        if (summary.trim()) body.summary = summary.trim();
+      } else {
+        const comment = window.prompt(
+          tx(t, "workerEvidenceChangesComment",
+            "What should the worker change before approval?"),
+          "",
+        );
+        if (comment === null) return;
+        if (!comment.trim()) {
+          window.alert(tx(t, "workerEvidenceChangesRequired",
+            "A comment is required when requesting changes."));
+          return;
+        }
+        body.comment = comment.trim();
+      }
+      setState(function (prev) {
+        return Object.assign({}, prev, { busy: decision, err: null });
+      });
+      return SDK.fetchJSON(withBoard(`${API}/tasks/${encodeURIComponent(props.taskId)}/review`, props.boardSlug), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      }).then(function (d) {
+        setState({ loading: false, data: d, err: null, busy: null });
+        if (props.onReload) props.onReload();
+        if (props.onRefresh) props.onRefresh();
+      }).catch(function (e) {
+        setState(function (prev) {
+          return Object.assign({}, prev, { busy: null, err: parseApiErrorMessage(e) });
+        });
+      });
+    };
+
+    if (!state.loading && !state.err && !hasEvidence) return null;
+
+    return h("div", { className: "hermes-kanban-section hermes-kanban-worker-evidence" },
+      h("div", { className: "hermes-kanban-section-head-row" },
+        h("span", { className: "hermes-kanban-section-head" },
+          tx(t, "workerEvidence", "Worker evidence")),
+        data && data.review_required
+          ? h("span", { className: "hermes-kanban-review-pill" },
+              tx(t, "reviewRequired", "review required"))
+          : null,
+        h("button", {
+          type: "button",
+          onClick: load,
+          className: "hermes-kanban-edit-link",
+          title: tx(t, "refreshWorkerEvidence", "Refresh worker evidence"),
+        }, "refresh"),
+      ),
+      state.loading
+        ? h("div", { className: "text-xs text-muted-foreground" },
+            tx(t, "loadingWorkerEvidence", "Loading worker evidence…"))
+        : null,
+      state.err ? h("div", { className: "text-xs text-destructive" }, state.err) : null,
+      workerLane
+        ? h("div", { className: "hermes-kanban-worker-evidence-grid" },
+            h(MetaRow, { label: tx(t, "lane", "Lane"), value: workerLane.name || "(unknown)" }),
+            h(MetaRow, { label: tx(t, "kind", "Kind"), value: workerLane.kind || "(unknown)" }),
+            workerLane.exit_code !== undefined && workerLane.exit_code !== null
+              ? h(MetaRow, { label: tx(t, "exitCode", "Exit code"), value: String(workerLane.exit_code) })
+              : null,
+            workerLane.timed_out
+              ? h(MetaRow, { label: tx(t, "timedOut", "Timed out"), value: "true" })
+              : null,
+          )
+        : null,
+      progressItems.length
+        ? h("div", { className: "hermes-kanban-worker-progress-list" },
+            h("div", { className: "hermes-kanban-run-meta-label" },
+              tx(t, "progress", "Progress")),
+            progressItems.map(function (item, idx) {
+              const status = item.status || "pending";
+              return h("div", {
+                key: item.index || idx,
+                className: cn("hermes-kanban-worker-progress-item",
+                  `hermes-kanban-worker-progress-item--${status}`),
+              },
+                h("span", { className: "hermes-kanban-worker-progress-status" },
+                  status === "done" ? "[x]" : status === "running" ? "[>]" : "[ ]"),
+                h("span", null, item.text || ""));
+            }),
+          )
+        : null,
+      verification
+        ? h("details", { className: "hermes-kanban-run-meta-block", open: true },
+            h("summary", { className: "hermes-kanban-run-meta-label" },
+              tx(t, "verification", "Verification")),
+            Array.isArray(verification.commands) && verification.commands.length
+              ? h("ul", { className: "hermes-kanban-worker-command-list" },
+                  verification.commands.map(function (cmd, idx) {
+                    return h("li", { key: idx }, h("code", null, cmd));
+                  }))
+              : null,
+            verification.summary
+              ? h("pre", { className: "hermes-kanban-pre hermes-kanban-worker-evidence-pre" },
+                  verification.summary)
+              : null,
+          )
+        : null,
+      git
+        ? h("details", { className: "hermes-kanban-run-meta-block" },
+            h("summary", { className: "hermes-kanban-run-meta-label" },
+              tx(t, "gitEvidence", "Git evidence")),
+            h("pre", { className: "hermes-kanban-pre hermes-kanban-worker-evidence-pre" },
+              JSON.stringify(git, null, 2)),
+          )
+        : null,
+      data && data.worker_log_tail
+        ? h("details", { className: "hermes-kanban-run-meta-block" },
+            h("summary", { className: "hermes-kanban-run-meta-label" },
+              tx(t, "boundedLogTail", "Bounded log tail")),
+            h("pre", { className: "hermes-kanban-pre hermes-kanban-worker-evidence-pre" },
+              data.worker_log_tail),
+          )
+        : null,
+      data && data.review_required
+        ? h("div", { className: "hermes-kanban-worker-review-actions" },
+            h(Button, {
+              size: "sm",
+              onClick: function () { doReview("approve"); },
+              disabled: !!state.busy,
+              title: tx(t, "approveWorkerEvidence", "Approve bounded worker evidence"),
+            }, state.busy === "approve"
+              ? tx(t, "approving", "Approving…")
+              : tx(t, "approve", "Approve")),
+            h(Button, {
+              size: "sm",
+              variant: "outline",
+              onClick: function () { doReview("request_changes"); },
+              disabled: !!state.busy,
+              title: tx(t, "requestWorkerChanges", "Request changes from the worker"),
+            }, state.busy === "request_changes"
+              ? tx(t, "requestingChanges", "Requesting…")
+              : tx(t, "requestChanges", "Request changes")),
+          )
         : null,
     );
   }

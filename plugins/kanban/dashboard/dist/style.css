@@ -839,6 +839,69 @@
   line-height: 1.5;
 }
 
+/* ---- External worker evidence -------------------------------------- */
+
+.hermes-kanban-worker-evidence {
+  border-left: 2px solid color-mix(in srgb, #4a8cd1 70%, var(--color-border));
+  padding-left: 0.65rem;
+}
+.hermes-kanban-review-pill {
+  margin-left: auto;
+  border: 1px solid color-mix(in srgb, #d4b348 45%, var(--color-border));
+  border-radius: 9999px;
+  padding: 0.08rem 0.45rem;
+  font-size: 0.68rem;
+  color: #d4b348;
+  background: color-mix(in srgb, #d4b348 9%, transparent);
+}
+.hermes-kanban-worker-evidence-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
+  gap: 0.25rem 0.75rem;
+}
+.hermes-kanban-worker-progress-list {
+  display: grid;
+  gap: 0.25rem;
+  margin-top: 0.45rem;
+}
+.hermes-kanban-worker-progress-item {
+  display: grid;
+  grid-template-columns: 2.4rem minmax(0, 1fr);
+  gap: 0.35rem;
+  align-items: start;
+  font-size: 0.78rem;
+  line-height: 1.45;
+}
+.hermes-kanban-worker-progress-status {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  color: var(--color-muted-foreground);
+}
+.hermes-kanban-worker-progress-item--done .hermes-kanban-worker-progress-status {
+  color: #3fb97d;
+}
+.hermes-kanban-worker-progress-item--running .hermes-kanban-worker-progress-status {
+  color: #d4b348;
+}
+.hermes-kanban-worker-command-list {
+  margin: 0.2rem 0 0.45rem 1.1rem;
+  padding: 0;
+  font-size: 0.76rem;
+}
+.hermes-kanban-worker-command-list code {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.hermes-kanban-worker-evidence-pre {
+  max-height: 13rem;
+  overflow: auto;
+  font-size: 0.72rem;
+}
+.hermes-kanban-worker-review-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.6rem;
+}
 
 /* ---- Run history (per-attempt log in the drawer) ------------------- */
 

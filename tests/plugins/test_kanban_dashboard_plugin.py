@@ -2365,3 +2365,32 @@ def test_dashboard_failed_card_highlight_class_exists():
     assert "hermes-kanban-card--failed" in js
     assert "hermes-kanban-card--failed" in css
     assert "failedIds" in js
+
+
+def test_dashboard_drawer_renders_worker_evidence_review_controls():
+    """The dashboard must consume the bounded worker-evidence REST API.
+
+    Regression guard for external worker lanes: the backend can expose
+    progress/review endpoints, but operators still need the drawer to read
+    those snapshots and review a Codex handoff without opening the full log.
+    """
+    repo_root = Path(__file__).resolve().parents[2]
+    js = (repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js").read_text()
+
+    assert "function WorkerEvidenceSection(props)" in js
+    assert "/progress?log_tail=65536" in js
+    assert "`${API}/tasks/${encodeURIComponent(props.taskId)}/review`" in js
+    assert "review required" in js
+    assert "Bounded log tail" in js
+    assert "Request changes" in js
+
+
+def test_dashboard_worker_evidence_styles_exist():
+    """Worker evidence should render as a bounded drawer section, not raw JSON."""
+    repo_root = Path(__file__).resolve().parents[2]
+    css = (repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "style.css").read_text()
+
+    assert ".hermes-kanban-worker-evidence" in css
+    assert ".hermes-kanban-review-pill" in css
+    assert ".hermes-kanban-worker-progress-item" in css
+    assert ".hermes-kanban-worker-review-actions" in css
