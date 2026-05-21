@@ -1218,15 +1218,28 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
             node = _node_bin("node")
             return [node, str(bundled)], bundled.parent
 
-    # 2. Normal flow: npm install if needed, always esbuild, then node dist/entry.js.
+    # 2. Normal flow: install deps only when we actually need to build, then
+    #    run the self-contained bundle.  A fresh dist/entry.js does not need
+    #    node_modules at runtime, so dependency-cold launches can still start
+    #    immediately.
     #    --dev flow: npm install if needed, then tsx src/entry.tsx.
-    did_install = False
-    if _tui_need_npm_install(tui_dir):
+    should_build = (not tui_dev) and _tui_need_rebuild(tui_dir)
+    should_install = _tui_need_npm_install(tui_dir) if (tui_dev or should_build) else False
+
+    if should_install:
         npm = _node_bin("npm")
         if not os.environ.get("HERMES_QUIET"):
             print("Installing TUI dependencies…")
         result = subprocess.run(
-            [npm, "install", "--silent", "--no-fund", "--no-audit", "--progress=false"],
+            [
+                npm,
+                "install",
+                "--silent",
+                "--no-fund",
+                "--no-audit",
+                "--progress=false",
+                "--include=dev",
+            ],
             cwd=str(tui_dir),
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -1240,8 +1253,6 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
             if preview:
                 print(preview)
             sys.exit(1)
-        did_install = True
-
     if tui_dev:
         # Keep the local @hermes/ink package exports in sync with source.
         # --dev runs src/entry.tsx directly, but @hermes/ink resolves through
@@ -1268,12 +1279,6 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
         if tsx.exists():
             return [str(tsx), "src/entry.tsx"], tui_dir
         return [npm, "start"], tui_dir
-
-    # Warm-starts should not pay an esbuild tax when the checked-in bundle is
-    # already fresher than its inputs.  The freshness check still rebuilds after
-    # local source/package edits; HERMES_TUI_FORCE_BUILD keeps the explicit escape
-    # hatch for anyone who needs the old "always rebuild" behavior.
-    should_build = did_install or _tui_need_rebuild(tui_dir)
 
     if should_build:
         npm = _node_bin("npm")

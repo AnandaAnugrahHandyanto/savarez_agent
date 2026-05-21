@@ -192,6 +192,58 @@ def test_make_tui_argv_skips_build_when_bundle_is_fresh_on_desktop(
     assert cwd == tmp_path
 
 
+def test_make_tui_argv_skips_install_when_bundle_is_fresh_without_node_modules(
+    tmp_path: Path, main_mod, monkeypatch
+) -> None:
+    """dist/entry.js is self-contained, so dependency-cold launches can skip npm."""
+    _touch_tui_entry(tmp_path)
+    monkeypatch.setattr(main_mod, "_tui_need_npm_install", lambda _root: True)
+    monkeypatch.setattr(main_mod, "_tui_need_rebuild", lambda _root: False)
+    monkeypatch.setattr(main_mod.shutil, "which", lambda name: f"/bin/{name}")
+
+    def fail_run(*_args, **_kwargs):
+        raise AssertionError("fresh bundled TUI launch must not install or rebuild")
+
+    monkeypatch.setattr(main_mod.subprocess, "run", fail_run)
+
+    argv, cwd = main_mod._make_tui_argv(tmp_path, tui_dev=False)
+
+    assert argv == ["/bin/node", str(tmp_path / "dist" / "entry.js")]
+    assert cwd == tmp_path
+
+
+def test_make_tui_argv_installs_dev_deps_when_cold_building(
+    tmp_path: Path, main_mod, monkeypatch
+) -> None:
+    """Cold builds need esbuild/tsx even when parent NODE_ENV=production."""
+    calls = []
+    monkeypatch.setenv("NODE_ENV", "production")
+    monkeypatch.setattr(main_mod, "_tui_need_npm_install", lambda _root: True)
+    monkeypatch.setattr(main_mod, "_tui_need_rebuild", lambda _root: True)
+    monkeypatch.setattr(main_mod.shutil, "which", lambda name: f"/bin/{name}")
+
+    class Result:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    def record_run(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        return Result()
+
+    monkeypatch.setattr(main_mod.subprocess, "run", record_run)
+
+    argv, cwd = main_mod._make_tui_argv(tmp_path, tui_dev=False)
+
+    assert argv == ["/bin/node", str(tmp_path / "dist" / "entry.js")]
+    assert cwd == tmp_path
+    assert len(calls) == 2
+    assert calls[0][0][:2] == ["/bin/npm", "install"]
+    assert "--include=dev" in calls[0][0]
+    assert calls[0][1]["env"]["CI"] == "1"
+    assert calls[1][0] == ["/bin/npm", "run", "build"]
+
+
 def test_tui_initial_skin_env_serializes_configured_skin(main_mod) -> None:
     raw = main_mod._tui_initial_skin_env({"display": {"skin": "mono"}})
 
