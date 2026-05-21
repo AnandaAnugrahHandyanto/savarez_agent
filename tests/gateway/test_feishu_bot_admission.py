@@ -484,6 +484,34 @@ def test_admit_group_mention_checked_once_per_call():
     assert calls == 1
 
 
+def test_message_mentions_bot_accepts_bare_open_id_string():
+    adapter = make_adapter_skeleton(bot_open_id="ou_self")
+    mentions = [SimpleNamespace(id="ou_self", id_type="", name="ThreadWave Vault Updater")]
+
+    assert adapter._message_mentions_bot(mentions) is True
+
+
+def test_message_mentions_bot_accepts_bare_user_id_string():
+    adapter = make_adapter_skeleton(bot_open_id="", bot_user_id="u_self")
+    mentions = [SimpleNamespace(id="u_self", id_type="", name="ThreadWave Vault Updater")]
+
+    assert adapter._message_mentions_bot(mentions) is True
+
+
+def test_admit_group_bot_mention_accepts_bare_open_id_string():
+    adapter = make_adapter_skeleton(
+        bot_open_id="ou_self", allow_bots="mentions", require_mention=True,
+        group_policy="open",
+    )
+    sender = make_sender(sender_type="bot", open_id="ou_peer")
+    message = make_message(
+        chat_type="group",
+        mentions=[SimpleNamespace(id="ou_self", id_type="", name="ThreadWave Vault Updater")],
+    )
+
+    assert adapter._admit(sender, message) is None
+
+
 # --- Per-group require_mention override ------------------------------------
 
 

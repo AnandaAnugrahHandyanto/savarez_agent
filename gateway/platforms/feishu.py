@@ -1291,22 +1291,26 @@ def _unique_lines(lines: List[str]) -> List[str]:
 
 
 def _extract_mention_ids(mention: Any) -> tuple[str, str]:
-    # Returns (open_id, user_id). im.v1.message.get hands back id as a string
-    # plus id_type discriminator; event payloads hand back a nested UserId
-    # object carrying both fields.
+    # Returns (open_id, user_id). im.v1.message.get can hand back id as a
+    # string plus id_type discriminator; some Feishu event payloads hand back a
+    # bare string without id_type; other event payloads hand back a nested
+    # UserId object carrying both fields.
     mention_id = getattr(mention, "id", None)
     if isinstance(mention_id, str):
+        mention_id = mention_id.strip()
+        if not mention_id:
+            return "", ""
         id_type = str(getattr(mention, "id_type", "") or "").lower()
-        if id_type == "open_id":
+        if id_type == "open_id" or mention_id.startswith("ou_"):
             return mention_id, ""
-        if id_type == "user_id":
+        if id_type == "user_id" or mention_id.startswith("u_"):
             return "", mention_id
         return "", ""
     if mention_id is None:
         return "", ""
     return (
-        str(getattr(mention_id, "open_id", "") or ""),
-        str(getattr(mention_id, "user_id", "") or ""),
+        str(getattr(mention_id, "open_id", "") or "").strip(),
+        str(getattr(mention_id, "user_id", "") or "").strip(),
     )
 
 
@@ -4188,22 +4192,23 @@ class FeishuAdapter(BasePlatformAdapter):
     def _message_mentions_bot(self, mentions: List[Any]) -> bool:
         # IDs trump names: when both sides have open_id (or both user_id),
         # match requires equal IDs. Name fallback only when either side
-        # lacks an ID.
+        # lacks an ID. Use the same mention-id normalizer as post parsing so
+        # bare ``mention.id = "ou_..."`` payloads don't get misclassified as
+        # missing mentions under strict group admission.
+        bot = self._bot_identity()
         for mention in mentions:
-            mention_id = getattr(mention, "id", None)
-            mention_open_id = (getattr(mention_id, "open_id", None) or "").strip()
-            mention_user_id = (getattr(mention_id, "user_id", None) or "").strip()
+            mention_open_id, mention_user_id = _extract_mention_ids(mention)
             mention_name = (getattr(mention, "name", None) or "").strip()
 
             if mention_open_id and self._bot_open_id:
-                if mention_open_id == self._bot_open_id:
+                if bot.matches(open_id=mention_open_id, user_id="", name=mention_name):
                     return True
                 continue  # IDs differ — not the bot; skip name fallback.
             if mention_user_id and self._bot_user_id:
-                if mention_user_id == self._bot_user_id:
+                if bot.matches(open_id="", user_id=mention_user_id, name=mention_name):
                     return True
                 continue
-            if self._bot_name and mention_name == self._bot_name:
+            if bot.matches(open_id=mention_open_id, user_id=mention_user_id, name=mention_name):
                 return True
 
         return False
