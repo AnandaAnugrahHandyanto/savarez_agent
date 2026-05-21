@@ -760,6 +760,29 @@ class TestBangPrefixCommands:
         assert msg_event.source.thread_id == "1111111111.000001"
 
     @pytest.mark.asyncio
+    async def test_bang_command_thread_without_session_skips_context_prefix(self, adapter):
+        """Fetched thread context must not hide the leading slash command."""
+        evt = self._make_event(
+            "!status",
+            thread_ts="1111111111.000001",
+            channel_type="im",
+            channel="D123",
+        )
+        adapter._fetch_thread_context = AsyncMock(
+            return_value='[Thread context from earlier messages]\n'
+        )
+
+        await adapter._handle_slack_message(evt)
+
+        adapter._fetch_thread_context.assert_not_awaited()
+        adapter.handle_message.assert_called_once()
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.text.startswith("/status")
+        assert not msg_event.text.startswith("[Thread context")
+        assert msg_event.message_type == MessageType.COMMAND
+        assert msg_event.source.thread_id == "1111111111.000001"
+
+    @pytest.mark.asyncio
     async def test_bang_command_with_leading_newline_tab_works_inside_thread(self, adapter):
         """Leading newline/tab before ``!stop`` still dispatches in threads."""
         evt = self._make_event("\n\t!stop", thread_ts="1111111111.000001")

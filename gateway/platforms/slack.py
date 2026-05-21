@@ -1820,6 +1820,7 @@ class SlackAdapter(BasePlatformAdapter):
                 logger.warning("[Slack] Failed to rewrite bang-prefixed command", exc_info=True)
 
         text = original_text
+        msg_type = MessageType.COMMAND if original_text.startswith("/") else MessageType.TEXT
 
         # Extract quoted/forwarded content from Slack blocks.
         # Slack's modern composer embeds forwarded messages in the ``blocks``
@@ -2011,10 +2012,17 @@ class SlackAdapter(BasePlatformAdapter):
 
         # When entering a thread for the first time (no existing session),
         # fetch thread context so the agent understands the conversation.
-        if is_thread_reply and not self._has_active_session_for_thread(
-            channel_id=channel_id,
-            thread_ts=event_thread_ts,
-            user_id=user_id,
+        # Commands intentionally skip fetched context: gateway command parsing
+        # expects event.text to start with "/", and commands do not need LLM
+        # conversation context to dispatch.
+        if (
+            msg_type != MessageType.COMMAND
+            and is_thread_reply
+            and not self._has_active_session_for_thread(
+                channel_id=channel_id,
+                thread_ts=event_thread_ts,
+                user_id=user_id,
+            )
         ):
             thread_context = await self._fetch_thread_context(
                 channel_id=channel_id,
@@ -2024,11 +2032,6 @@ class SlackAdapter(BasePlatformAdapter):
             )
             if thread_context:
                 text = thread_context + text
-
-        # Determine message type
-        msg_type = MessageType.TEXT
-        if (original_text or "").startswith("/"):
-            msg_type = MessageType.COMMAND
 
         # Handle file attachments
         media_urls = []
