@@ -1,0 +1,13 @@
+name: whatsapp-platform-spike
+label: WhatsApp
+kind: platform
+version: 0.1.0
+description: >
+  Plugin-first WhatsApp override seam spike for Hermes Agent.
+  Registers a bundled platform plugin under the canonical `whatsapp`
+  platform name so the gateway can prefer a plugin-owned adapter before
+  the built-in fallback. The plugin reuses the existing core WhatsApp
+  adapter behavior, preserves the legacy fallback path when no registry
+  entry exists, and exposes a concrete local bridge health-check target
+  at `http://127.0.0.1:{bridge_port}/health` (default port 3000).
+author: Hermes Agent contributors
