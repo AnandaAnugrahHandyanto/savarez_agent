@@ -782,7 +782,7 @@ class HermesACPAgent(acp.Agent):
             mcp_server_names=mcp_server_names,
         )
         state.agent.enabled_toolsets = enabled_toolsets
-        disabled_toolsets = getattr(state.agent, "disabled_toolsets", None) or []
+        disabled_toolsets: Any = getattr(state.agent, "disabled_toolsets", None)
         state.agent.tools = get_tool_definitions(
             enabled_toolsets=enabled_toolsets,
             disabled_toolsets=disabled_toolsets,
