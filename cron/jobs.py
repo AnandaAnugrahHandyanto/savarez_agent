@@ -854,7 +854,35 @@ def remove_job(job_id: str) -> bool:
     return False
 
 
-def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
+def _reschedule_oneshot_repeat(job: dict, now: str) -> None:
+    """Reschedule a one-shot job with remaining repeats.
+
+    Advances ``schedule.run_at`` by the original offset (run_at - created_at)
+    so the repeat fires after the same interval.  Updates ``next_run_at``
+    in-place, or leaves it None if the schedule data is incomplete.
+    """
+    schedule = job.get("schedule", {})
+    run_at_str = schedule.get("run_at")
+    created_at_str = job.get("created_at")
+    last_run_str = job.get("last_run_at")
+    if not (run_at_str and created_at_str and last_run_str):
+        return
+    try:
+        run_dt = _ensure_aware(datetime.fromisoformat(run_at_str))
+        created_dt = _ensure_aware(datetime.fromisoformat(created_at_str))
+        last_dt = _ensure_aware(datetime.fromisoformat(last_run_str))
+        offset = run_dt - created_dt
+        if offset.total_seconds() <= 0:
+            return  # malformed: no forward offset
+        next_dt = last_dt + offset
+        next_str = next_dt.isoformat()
+        job["next_run_at"] = next_str
+        job["schedule"]["run_at"] = next_str
+    except (ValueError, OverflowError):
+        return
+
+
+def mark_job_run(job_id: str, success: bool = True, error: Optional[str] = None,
                  delivery_error: Optional[str] = None):
     """
     Mark a job as having been run.
@@ -900,6 +928,20 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
                 # schedule quietly goes off. See issue #16265.
                 if job["next_run_at"] is None:
                     kind = job.get("schedule", {}).get("kind")
+
+                    # One-shot schedule with remaining repeats — reschedule
+                    # by advancing run_at by the original offset rather than
+                    # marking the job as completed.  See issue #29392.
+                    if kind == "once" and job.get("repeat"):
+                        times = job["repeat"].get("times")
+                        completed = job["repeat"]["completed"]
+                        if times is None or completed < times:
+                            _reschedule_oneshot_repeat(job, now)
+                            if job["next_run_at"] is not None:
+                                job["state"] = "scheduled"
+                                save_jobs(jobs)
+                                return
+
                     if kind in {"cron", "interval"}:
                         job["state"] = "error"
                         if not job.get("last_error"):
