@@ -290,6 +290,57 @@ def test_lane_max_concurrency_and_instances_are_distinct(kanban_home):
     assert t3 in res.skipped_concurrency
 
 
+def test_worker_lane_statuses_report_capacity_and_active_instances(kanban_home):
+    calls = []
+
+    def spawn(task, workspace, *, board=None):
+        calls.append(task.id)
+        return 8100 + len(calls)
+
+    register_worker_lane(WorkerLane(
+        name="codex-deep",
+        kind="codex_cli",
+        description="deep lane",
+        spawn_fn=spawn,
+        max_concurrency=2,
+        source="test",
+        config={
+            "type": "codex_cli",
+            "model": "gpt-5.5",
+            "sandbox": "workspace-write",
+            "approval": "never",
+            "secret": "do-not-return",
+        },
+    ))
+    with kb.connect() as conn:
+        t1 = kb.create_task(conn, title="active", assignee="codex-deep")
+        t2 = kb.create_task(conn, title="queued", assignee="codex-deep")
+        res = kb.dispatch_once(conn, max_spawn=1)
+        assert res.spawned[0][0] == t1
+        kb.heartbeat_worker(
+            conn,
+            t1,
+            note="alive",
+            expected_run_id=kb.get_task(conn, t1).current_run_id,
+        )
+        lane = kb.worker_lane_statuses(conn)[0]
+
+    data = lane.to_dict()
+    assert data["name"] == "codex-deep"
+    assert data["max_concurrency"] == 2
+    assert data["active_count"] == 1
+    assert data["available_capacity"] == 1
+    assert data["counts"]["running"] == 1
+    assert data["counts"]["ready"] == 1
+    assert data["active"][0]["task_id"] == t1
+    assert data["active"][0]["run_id"] is not None
+    assert data["active"][0]["worker_pid"] == 8101
+    assert data["active"][0]["last_heartbeat_at"] is not None
+    assert data["config"]["model"] == "gpt-5.5"
+    assert "secret" not in data["config"]
+    assert t2 not in [item["task_id"] for item in data["active"]]
+
+
 def test_review_profile_lane_behavior_unchanged(kanban_home, monkeypatch):
     from hermes_cli import profiles
 

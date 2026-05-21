@@ -629,6 +629,22 @@ def list_review_required(
         conn.close()
 
 
+@router.get("/worker-lanes")
+def list_worker_lanes(board: Optional[str] = Query(None)):
+    """List registered worker lanes with current board occupancy."""
+    board = _resolve_board(board)
+    conn = _conn(board=board)
+    try:
+        lanes = kanban_db.worker_lane_statuses(conn)
+        return {
+            "lanes": [lane.to_dict() for lane in lanes],
+            "count": len(lanes),
+            "now": int(time.time()),
+        }
+    finally:
+        conn.close()
+
+
 class ReviewTaskBody(BaseModel):
     decision: str = Field(
         ...,

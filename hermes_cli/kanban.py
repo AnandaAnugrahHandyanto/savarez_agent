@@ -811,6 +811,14 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     )
     p_asg.add_argument("--json", action="store_true")
 
+    # --- worker-lanes ---
+    p_lanes = sub.add_parser(
+        "worker-lanes",
+        aliases=["lanes"],
+        help="List registered external worker lanes and active worker instances",
+    )
+    p_lanes.add_argument("--json", action="store_true")
+
     # --- worker-lane-request ---
     p_lane_req = sub.add_parser(
         "worker-lane-request",
@@ -1051,6 +1059,8 @@ def kanban_command(args: argparse.Namespace) -> int:
         "runs":     _cmd_runs,
         "heartbeat": _cmd_heartbeat,
         "assignees": _cmd_assignees,
+        "worker-lanes": _cmd_worker_lanes,
+        "lanes": _cmd_worker_lanes,
         "worker-lane-request": _cmd_worker_lane_request,
         "lane-request": _cmd_worker_lane_request,
         "notify-subscribe":   _cmd_notify_subscribe,
@@ -1407,6 +1417,41 @@ def _cmd_assignees(args: argparse.Namespace) -> int:
         counts = entry["counts"] or {}
         count_str = ", ".join(f"{k}={v}" for k, v in sorted(counts.items())) or "(idle)"
         print(f"{entry['name']:20s}  {entry_type:14s}  {count_str}")
+    return 0
+
+
+def _cmd_worker_lanes(args: argparse.Namespace) -> int:
+    with kb.connect() as conn:
+        lanes = [lane.to_dict() for lane in kb.worker_lane_statuses(conn)]
+    if getattr(args, "json", False):
+        print(json.dumps(lanes, indent=2, ensure_ascii=False))
+        return 0
+    if not lanes:
+        print("(no worker lanes registered)")
+        return 0
+    print(f"{'LANE':20s}  {'KIND':12s}  {'ACTIVE':>8s}  {'CAP':>5s}  COUNTS")
+    for lane in lanes:
+        counts = lane.get("counts") or {}
+        count_str = ", ".join(
+            f"{k}={v}" for k, v in sorted(counts.items())
+        ) or "(idle)"
+        max_concurrency = lane.get("max_concurrency")
+        active_count = int(lane.get("active_count") or 0)
+        cap = "-" if max_concurrency is None else str(max_concurrency)
+        print(
+            f"{lane.get('name', '-')[:20]:20s}  "
+            f"{lane.get('kind', '-')[:12]:12s}  "
+            f"{active_count:8d}  {cap:>5s}  {count_str}"
+        )
+        for inst in lane.get("active") or []:
+            run_id = inst.get("run_id") or "-"
+            pid = inst.get("worker_pid") or "-"
+            hb = _fmt_ts(inst["last_heartbeat_at"]) if inst.get("last_heartbeat_at") else "-"
+            model = inst.get("model") or (lane.get("config") or {}).get("model") or "-"
+            print(
+                f"  - {inst.get('task_id', '-'):<10s} "
+                f"run={run_id} pid={pid} model={model} heartbeat={hb}"
+            )
     return 0
 
 
@@ -3016,6 +3061,7 @@ Common subcommands:
   `assign <id> <profile>`  Reassign
   `boards list`         Show all boards
   `assignees`           Known profiles + counts
+  `worker-lanes`        External worker lane capacity + active instances
   `context <id>`        Full worker-context dump
   `runs <id>`           Attempt history
   `log <id>`            Worker log

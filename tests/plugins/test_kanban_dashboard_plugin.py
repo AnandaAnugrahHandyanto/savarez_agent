@@ -274,6 +274,24 @@ def test_dashboard_assignee_controls_use_worker_lane_details():
     assert "value: name }, assigneeLabel(a)" in js
 
 
+def test_dashboard_worker_lane_roster_uses_status_endpoint():
+    """The dashboard should surface lane capacity without touching workers."""
+    repo_root = Path(__file__).resolve().parents[2]
+    js = (
+        repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
+    ).read_text()
+    css = (
+        repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "style.css"
+    ).read_text()
+
+    assert "function WorkerLaneRoster(props)" in js
+    assert "`${API}/worker-lanes`" in js
+    assert "active / max concurrency" in js
+    assert "Registered external worker lanes. This view is read-only" in js
+    assert "hermes-kanban-worker-lanes" in css
+    assert "hermes-kanban-worker-lane-cap--full" in css
+
+
 def test_dashboard_initial_board_uses_backend_current_when_unpinned():
     """Fresh browsers should open the backend current board, not default.
 
@@ -1581,6 +1599,64 @@ def test_worker_lane_request_endpoint_persists_sanitized_config(client):
     assert stored["max_concurrency"] == 2
     assert "reason" not in stored
     assert "command" not in stored
+
+
+def test_worker_lanes_endpoint_lists_capacity_and_active_instances(client):
+    from hermes_cli.worker_lanes import WorkerLane, clear_worker_lanes, register_worker_lane
+
+    calls = []
+
+    def spawn(task, workspace, *, board=None):
+        calls.append(task.id)
+        return 6200 + len(calls)
+
+    clear_worker_lanes()
+    try:
+        register_worker_lane(WorkerLane(
+            name="codex-deep",
+            kind="codex_cli",
+            description="Deep Codex lane",
+            spawn_fn=spawn,
+            max_concurrency=2,
+            source="test",
+            config={
+                "type": "codex_cli",
+                "model": "gpt-5.5",
+                "sandbox": "workspace-write",
+                "approval": "never",
+                "secret": "hidden",
+            },
+        ))
+        active = client.post(
+            "/api/plugins/kanban/tasks",
+            json={"title": "active task", "assignee": "codex-deep"},
+        ).json()["task"]
+        client.post(
+            "/api/plugins/kanban/tasks",
+            json={"title": "queued task", "assignee": "codex-deep"},
+        )
+        dispatch = client.post("/api/plugins/kanban/dispatch?max=1")
+        assert dispatch.status_code == 200, dispatch.text
+
+        r = client.get("/api/plugins/kanban/worker-lanes")
+    finally:
+        clear_worker_lanes()
+
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["count"] == 1
+    lane = data["lanes"][0]
+    assert lane["name"] == "codex-deep"
+    assert lane["kind"] == "codex_cli"
+    assert lane["max_concurrency"] == 2
+    assert lane["active_count"] == 1
+    assert lane["available_capacity"] == 1
+    assert lane["counts"]["running"] == 1
+    assert lane["counts"]["ready"] == 1
+    assert lane["active"][0]["task_id"] == active["id"]
+    assert lane["active"][0]["worker_pid"] == 6201
+    assert lane["config"]["model"] == "gpt-5.5"
+    assert "secret" not in lane["config"]
 
 
 

@@ -880,6 +880,38 @@ class TaskProgressSnapshot:
         }
 
 
+@dataclass
+class WorkerLaneStatus:
+    """Read-only operational status for a registered worker lane."""
+
+    name: str
+    kind: str
+    description: str
+    source: str
+    success_policy: str
+    max_concurrency: Optional[int]
+    active_count: int
+    available_capacity: Optional[int]
+    counts: dict[str, int]
+    active: list[dict[str, Any]]
+    config: dict[str, Any]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "kind": self.kind,
+            "description": self.description,
+            "source": self.source,
+            "success_policy": self.success_policy,
+            "max_concurrency": self.max_concurrency,
+            "active_count": self.active_count,
+            "available_capacity": self.available_capacity,
+            "counts": self.counts,
+            "active": self.active,
+            "config": self.config,
+        }
+
+
 # ---------------------------------------------------------------------------
 # Schema
 # ---------------------------------------------------------------------------
@@ -6736,6 +6768,157 @@ def known_assignees(conn: sqlite3.Connection) -> list[dict]:
         }
         for name in names
     ]
+
+
+_WORKER_LANE_SAFE_CONFIG_KEYS = {
+    "type",
+    "model",
+    "sandbox",
+    "approval",
+    "timeout_seconds",
+}
+
+
+def _safe_worker_lane_config(config: Any) -> dict[str, Any]:
+    """Return non-secret, operator-useful lane config fields only."""
+    if not isinstance(config, dict):
+        return {}
+    return {
+        key: config[key]
+        for key in sorted(_WORKER_LANE_SAFE_CONFIG_KEYS)
+        if config.get(key) is not None
+    }
+
+
+def worker_lane_statuses(conn: sqlite3.Connection) -> list[WorkerLaneStatus]:
+    """Return registered worker lanes with current board occupancy.
+
+    This is a read-only operator view. It refreshes configured lanes, counts
+    tasks assigned to each lane, and exposes active run/task identity without
+    reading full worker logs or Codex sessions.
+    """
+    try:
+        from hermes_cli.worker_lanes import (
+            list_worker_lanes,
+            register_configured_worker_lanes,
+        )
+        register_configured_worker_lanes()
+        lanes = list_worker_lanes()
+    except Exception:
+        lanes = []
+
+    names = [lane.name for lane in lanes]
+    counts_by_lane: dict[str, dict[str, int]] = {name: {} for name in names}
+    active_by_lane: dict[str, list[dict[str, Any]]] = {name: [] for name in names}
+    if names:
+        placeholders = ",".join("?" for _ in names)
+        for row in conn.execute(
+            "SELECT assignee, status, COUNT(*) AS n FROM tasks "
+            "WHERE status != 'archived' AND assignee IN "
+            f"({placeholders}) GROUP BY assignee, status",
+            tuple(names),
+        ):
+            counts_by_lane.setdefault(row["assignee"], {})[row["status"]] = int(row["n"])
+
+        rows = conn.execute(
+            """
+            SELECT
+                t.id AS task_id,
+                t.title AS title,
+                t.assignee AS assignee,
+                t.status AS task_status,
+                t.workspace_kind AS workspace_kind,
+                t.workspace_path AS workspace_path,
+                t.worker_pid AS task_worker_pid,
+                t.current_run_id AS current_run_id,
+                t.last_heartbeat_at AS task_last_heartbeat_at,
+                r.id AS run_id,
+                r.status AS run_status,
+                r.outcome AS outcome,
+                r.worker_pid AS run_worker_pid,
+                r.claim_lock AS claim_lock,
+                r.claim_expires AS claim_expires,
+                r.started_at AS started_at,
+                r.last_heartbeat_at AS run_last_heartbeat_at,
+                r.max_runtime_seconds AS max_runtime_seconds,
+                r.metadata AS metadata
+            FROM tasks t
+            LEFT JOIN task_runs r ON r.id = t.current_run_id
+            WHERE t.status = 'running'
+              AND t.assignee IN ({})
+            ORDER BY t.started_at ASC, t.created_at ASC, t.id ASC
+            """.format(placeholders),
+            tuple(names),
+        ).fetchall()
+        for row in rows:
+            meta: dict[str, Any] = {}
+            if row["metadata"]:
+                try:
+                    parsed = json.loads(row["metadata"])
+                    if isinstance(parsed, dict):
+                        meta = parsed
+                except Exception:
+                    meta = {}
+            lane_meta = meta.get("worker_lane") if isinstance(meta, dict) else None
+            instance_meta = meta.get("worker_instance") if isinstance(meta, dict) else None
+            active_by_lane.setdefault(row["assignee"], []).append({
+                "task_id": row["task_id"],
+                "title": row["title"],
+                "status": row["task_status"],
+                "run_id": row["run_id"] or row["current_run_id"],
+                "run_status": row["run_status"],
+                "outcome": row["outcome"],
+                "worker_pid": (
+                    row["run_worker_pid"]
+                    if row["run_worker_pid"] is not None
+                    else row["task_worker_pid"]
+                ),
+                "claim_lock": row["claim_lock"],
+                "claim_expires": row["claim_expires"],
+                "started_at": row["started_at"],
+                "last_heartbeat_at": (
+                    row["run_last_heartbeat_at"]
+                    if row["run_last_heartbeat_at"] is not None
+                    else row["task_last_heartbeat_at"]
+                ),
+                "max_runtime_seconds": row["max_runtime_seconds"],
+                "workspace_kind": row["workspace_kind"],
+                "workspace_path": row["workspace_path"],
+                "model": (
+                    instance_meta.get("model")
+                    if isinstance(instance_meta, dict)
+                    else (
+                        lane_meta.get("model")
+                        if isinstance(lane_meta, dict)
+                        else None
+                    )
+                ),
+            })
+
+    statuses: list[WorkerLaneStatus] = []
+    for lane in lanes:
+        active = active_by_lane.get(lane.name, [])
+        max_concurrency = lane.max_concurrency
+        active_count = len(active)
+        available_capacity = (
+            None
+            if max_concurrency is None
+            else max(0, int(max_concurrency) - active_count)
+        )
+        statuses.append(WorkerLaneStatus(
+            name=lane.name,
+            kind=lane.kind,
+            description=lane.description,
+            source=lane.source,
+            success_policy=lane.success_policy,
+            max_concurrency=max_concurrency,
+            active_count=active_count,
+            available_capacity=available_capacity,
+            counts=counts_by_lane.get(lane.name, {}),
+            active=active,
+            config=_safe_worker_lane_config(lane.config),
+        ))
+    return statuses
 
 
 # ---------------------------------------------------------------------------

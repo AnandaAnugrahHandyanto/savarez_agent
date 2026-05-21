@@ -547,6 +547,7 @@ All routes are mounted under `/api/plugins/kanban/` and protected by the dashboa
 | `POST` | `/profiles/:name/describe-auto` | Generate a description for a profile via `auxiliary.profile_describer`. Persists with `description_auto: true` so the dashboard can surface a "review" badge. |
 | `GET` | `/orchestration` | Read the kanban orchestration settings (`orchestrator_profile`, `default_assignee`, `auto_decompose`) plus the *resolved* effective values after fallbacks. |
 | `PUT` | `/orchestration` | Update one or more of the three orchestration keys in `config.yaml`. Validates that non-empty profile names actually exist. |
+| `GET` | `/worker-lanes` | List registered external worker lanes, current capacity, per-status counts, and active task/run/pid instances without reading worker sessions |
 | `POST` | `/worker-lane-requests` | Validate and optionally enable/persist a skill-generated worker lane request through the deterministic allowlist validator. |
 | `GET` | `/reviews?lane=<name>&limit=<n>&log_tail=<bytes>` | List review-required external-worker handoffs, optionally filtered by assignee, tenant, or worker lane |
 | `POST` | `/links` | Add a dependency (`parent_id` → `child_id`) |
@@ -634,6 +635,7 @@ hermes kanban reviews [--lane L] [--json]              # review-required worker 
 hermes kanban review <id> approve|request-changes      # approve evidence or request fixes
 hermes kanban runs <id> [--json]                       # attempt history (one row per run)
 hermes kanban assignees [--json]                       # profiles on disk + per-assignee task counts
+hermes kanban worker-lanes [--json]                    # external lane capacity + active instances
 hermes kanban dispatch [--dry-run] [--max N]           # one-shot pass
         [--failure-limit N] [--json]
 hermes kanban daemon --force                           # DEPRECATED — standalone dispatcher (use `hermes gateway start` instead)

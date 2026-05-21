@@ -484,6 +484,7 @@
     const [showNewBoard, setShowNewBoard] = useState(false);
 
     const [kanbanBoard, setKanbanBoard] = useState(null);  // the grid data
+    const [workerLanes, setWorkerLanes] = useState(null);
     // Alias so the rest of the function can keep using `board` semantically
     // for the grid data (card columns + tenants + assignees) without
     // colliding with the selected-board slug above. History: the old
@@ -555,6 +556,16 @@
         .finally(function () { setLoading(false); });
     }, [tenantFilter, includeArchived, board]);
 
+    const loadWorkerLanes = useCallback(function () {
+      return SDK.fetchJSON(withBoard(`${API}/worker-lanes`, board))
+        .then(function (data) {
+          setWorkerLanes((data && data.lanes) || []);
+        })
+        .catch(function () {
+          setWorkerLanes([]);
+        });
+    }, [board]);
+
     // --- load list of boards for the switcher ------------------------------
     const loadBoardList = useCallback(function () {
       return SDK.fetchJSON(withBoard(`${API}/boards`, board))
@@ -597,6 +608,8 @@
       };
     }, [loadBoard]);
 
+    useEffect(function () { loadWorkerLanes(); }, [loadWorkerLanes]);
+
     // --- WebSocket ---------------------------------------------------------
     useEffect(function () {
       if (!boardData) return undefined;
@@ -626,6 +639,7 @@
             const msg = JSON.parse(ev.data);
             if (msg && Array.isArray(msg.events) && msg.events.length > 0) {
               cursorRef.current = msg.cursor || cursorRef.current;
+              loadWorkerLanes();
               // Stamp per-task signal so the TaskDrawer can reload itself.
               setTaskEventTick(function (prev) {
                 const next = Object.assign({}, prev);
@@ -1010,6 +1024,11 @@
           boardData,
           onOpen: setSelectedTaskId,
         }),
+        h(WorkerLaneRoster, {
+          lanes: workerLanes,
+          onRefresh: loadWorkerLanes,
+          timeAgo: timeAgo,
+        }),
         h(BoardToolbar, {
           board: boardData,
           tenantFilter, setTenantFilter,
@@ -1019,10 +1038,16 @@
           search, setSearch,
           onNudgeDispatch: function () {
             SDK.fetchJSON(withBoard(`${API}/dispatch?max=8`, board), { method: "POST" })
-              .then(loadBoard)
+              .then(function () {
+                loadBoard();
+                loadWorkerLanes();
+              })
               .catch(function (e) { setError(String(e.message || e)); });
           },
-          onRefresh: loadBoard,
+          onRefresh: function () {
+            loadBoard();
+            loadWorkerLanes();
+          },
         }),
        selectedIds.size > 0 ? h(BulkActionBar, {
          count: selectedIds.size,
@@ -2047,6 +2072,102 @@
         size: "sm",
         title: "Clear all active filters (search, tenant, assignee, archived).",
       }, tx(t, "clearFilters", "Clear filters")),
+    );
+  }
+
+  function WorkerLaneRoster(props) {
+    const { t } = useI18n();
+    const lanes = props.lanes;
+    const [expanded, setExpanded] = useState(false);
+    if (!lanes || lanes.length === 0) return null;
+    const visible = expanded ? lanes : lanes.slice(0, 3);
+    const totalActive = lanes.reduce(function (n, lane) {
+      return n + Number(lane.active_count || 0);
+    }, 0);
+    const fmtCounts = function (counts) {
+      counts = counts || {};
+      const parts = [];
+      ["ready", "running", "blocked", "review"].forEach(function (key) {
+        if (counts[key]) parts.push(`${key} ${counts[key]}`);
+      });
+      return parts.length ? parts.join(" · ") : "idle";
+    };
+    const fmtCap = function (lane) {
+      if (lane.max_concurrency === null || lane.max_concurrency === undefined) {
+        return `${lane.active_count || 0}/∞`;
+      }
+      return `${lane.active_count || 0}/${lane.max_concurrency}`;
+    };
+    return h("div", {
+      className: "hermes-kanban-worker-lanes",
+      title: "Registered external worker lanes. This view is read-only and never interrupts running workers.",
+    },
+      h("div", { className: "hermes-kanban-worker-lanes-head" },
+        h("div", null,
+          h("div", { className: "hermes-kanban-worker-lanes-title" },
+            tx(t, "workerLanes", "Worker lanes")),
+          h("div", { className: "hermes-kanban-worker-lanes-sub" },
+            `${lanes.length} lane${lanes.length === 1 ? "" : "s"} · ${totalActive} active`),
+        ),
+        h("div", { className: "hermes-kanban-worker-lanes-actions" },
+          lanes.length > 3
+            ? h("button", {
+                type: "button",
+                className: "hermes-kanban-edit-link",
+                onClick: function () { setExpanded(function (v) { return !v; }); },
+              }, expanded ? "show less" : `show ${lanes.length - 3} more`)
+            : null,
+          h("button", {
+            type: "button",
+            className: "hermes-kanban-edit-link",
+            onClick: props.onRefresh,
+            title: "Refresh worker lane status",
+          }, "refresh"),
+        ),
+      ),
+      h("div", { className: "hermes-kanban-worker-lanes-grid" },
+        visible.map(function (lane) {
+          const active = lane.active || [];
+          const model = lane.config && lane.config.model ? lane.config.model : "";
+          return h("div", { key: lane.name, className: "hermes-kanban-worker-lane-card" },
+            h("div", { className: "hermes-kanban-worker-lane-top" },
+              h("span", { className: "hermes-kanban-worker-lane-name" }, lane.name),
+              h("span", {
+                className: lane.available_capacity === 0
+                  ? "hermes-kanban-worker-lane-cap hermes-kanban-worker-lane-cap--full"
+                  : "hermes-kanban-worker-lane-cap",
+                title: "active / max concurrency",
+              }, fmtCap(lane)),
+            ),
+            h("div", { className: "hermes-kanban-worker-lane-meta" },
+              h("span", null, lane.kind || "worker_lane"),
+              model ? h("span", null, model) : null,
+              lane.success_policy ? h("span", null, lane.success_policy) : null,
+            ),
+            h("div", { className: "hermes-kanban-worker-lane-counts" },
+              fmtCounts(lane.counts)),
+            active.length
+              ? h("div", { className: "hermes-kanban-worker-lane-active" },
+                  active.slice(0, 3).map(function (inst) {
+                    const hb = inst.last_heartbeat_at && props.timeAgo
+                      ? props.timeAgo(inst.last_heartbeat_at)
+                      : "";
+                    return h("div", { key: `${inst.task_id}:${inst.run_id || ""}`, className: "hermes-kanban-worker-lane-instance" },
+                      h("code", null, inst.task_id || "-"),
+                      h("span", null, `run ${inst.run_id || "-"}`),
+                      inst.worker_pid ? h("span", null, `pid ${inst.worker_pid}`) : null,
+                      hb ? h("span", null, hb) : null,
+                    );
+                  }),
+                  active.length > 3
+                    ? h("div", { className: "hermes-kanban-worker-lane-more" },
+                        `+${active.length - 3} more active`)
+                    : null,
+                )
+              : null,
+          );
+        }),
+      ),
     );
   }
 

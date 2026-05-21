@@ -223,6 +223,108 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* ---- Worker lane roster --------------------------------------------- */
+
+.hermes-kanban-worker-lanes {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.55rem 0.65rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm, 0.25rem);
+  background: color-mix(in srgb, var(--color-card) 92%, transparent);
+}
+.hermes-kanban-worker-lanes-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+.hermes-kanban-worker-lanes-title {
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+.hermes-kanban-worker-lanes-sub {
+  font-size: 0.68rem;
+  color: var(--color-muted-foreground);
+}
+.hermes-kanban-worker-lanes-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+.hermes-kanban-worker-lanes-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 0.5rem;
+}
+.hermes-kanban-worker-lane-card {
+  border: 1px solid color-mix(in srgb, var(--color-border) 80%, transparent);
+  border-radius: var(--radius-sm, 0.25rem);
+  padding: 0.45rem 0.5rem;
+  min-width: 0;
+  background: color-mix(in srgb, var(--color-background) 35%, transparent);
+}
+.hermes-kanban-worker-lane-top,
+.hermes-kanban-worker-lane-meta,
+.hermes-kanban-worker-lane-instance {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  min-width: 0;
+}
+.hermes-kanban-worker-lane-top {
+  justify-content: space-between;
+}
+.hermes-kanban-worker-lane-name {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.76rem;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.hermes-kanban-worker-lane-cap {
+  flex: 0 0 auto;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.68rem;
+  padding: 0.05rem 0.32rem;
+  border: 1px solid color-mix(in srgb, #3fb97d 45%, var(--color-border));
+  border-radius: 999px;
+  background: color-mix(in srgb, #3fb97d 13%, transparent);
+}
+.hermes-kanban-worker-lane-cap--full {
+  border-color: color-mix(in srgb, var(--color-destructive, #d14a4a) 45%, var(--color-border));
+  background: color-mix(in srgb, var(--color-destructive, #d14a4a) 12%, transparent);
+}
+.hermes-kanban-worker-lane-meta,
+.hermes-kanban-worker-lane-counts,
+.hermes-kanban-worker-lane-instance,
+.hermes-kanban-worker-lane-more {
+  font-size: 0.66rem;
+  color: var(--color-muted-foreground);
+}
+.hermes-kanban-worker-lane-meta {
+  flex-wrap: wrap;
+  margin-top: 0.18rem;
+}
+.hermes-kanban-worker-lane-counts {
+  margin-top: 0.25rem;
+}
+.hermes-kanban-worker-lane-active {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  margin-top: 0.3rem;
+}
+.hermes-kanban-worker-lane-instance {
+  flex-wrap: wrap;
+}
+.hermes-kanban-worker-lane-instance code {
+  font-family: var(--font-mono, ui-monospace, monospace);
+}
+
 /* ---- Card ------------------------------------------------------------ */
 
 .hermes-kanban-card {

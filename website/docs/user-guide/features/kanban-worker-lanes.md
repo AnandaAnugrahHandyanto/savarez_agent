@@ -150,6 +150,14 @@ The command is not taken from model output and is not an arbitrary shell string.
 
 Each worker instance records the worker lane, kind, task id, run id, worker pid, claim lock, workspace, and model in events and metadata. Codex output is written to the normal worker log (`hermes kanban log <task_id>`).
 
+Operators can inspect the lane roster without interrupting workers:
+
+```bash
+hermes kanban worker-lanes --json
+```
+
+The dashboard also reads `GET /api/plugins/kanban/worker-lanes` and shows each registered external lane's kind, model, success policy, active/max concurrency, per-status counts, and active task/run/pid instances. This is a bounded status view; it does not read the full Codex session and does not claim, heartbeat, reclaim, or signal running workers.
+
 The wrapper also heartbeats the task and parses these progress formats into `task_events` as `worker_progress`:
 
 ```text

@@ -478,6 +478,40 @@ def test_run_slash_reviews_lists_review_required_evidence(
     assert "review-required: Codex completed" in human
 
 
+def test_run_slash_worker_lanes_lists_active_instances(kanban_home):
+    from hermes_cli.worker_lanes import WorkerLane, clear_worker_lanes, register_worker_lane
+
+    clear_worker_lanes()
+    register_worker_lane(WorkerLane(
+        name="codex-deep",
+        kind="codex_cli",
+        description="Deep Codex lane",
+        spawn_fn=lambda task, workspace, **kwargs: 5100,
+        max_concurrency=2,
+        source="test",
+        config={"type": "codex_cli", "model": "gpt-5.5", "secret": "hidden"},
+    ))
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="active lane task", assignee="codex-deep")
+        res = kb.dispatch_once(conn, max_spawn=1)
+        assert res.spawned[0][0] == tid
+
+    payload = json.loads(kc.run_slash("worker-lanes --json"))
+
+    assert payload[0]["name"] == "codex-deep"
+    assert payload[0]["active_count"] == 1
+    assert payload[0]["available_capacity"] == 1
+    assert payload[0]["active"][0]["task_id"] == tid
+    assert payload[0]["active"][0]["worker_pid"] == 5100
+    assert payload[0]["config"]["model"] == "gpt-5.5"
+    assert "secret" not in payload[0]["config"]
+
+    human = kc.run_slash("worker-lanes")
+    assert "codex-deep" in human
+    assert tid in human
+    assert "ACTIVE" in human
+
+
 def test_run_slash_review_approve_completes_review_required_task(
     kanban_home, tmp_path,
 ):
