@@ -73,9 +73,9 @@ export const zhHant: Translations = {
       config: "設定",
       cron: "排程任務",
       documentation: "文件",
-      achievements: "成就",
-      example: "示例",
-      kanban: "看板",
+      achievements: "Achievements",
+      example: "Example",
+      kanban: "Kanban",
       keys: "金鑰",
       logs: "日誌",
       models: "模型",
@@ -98,7 +98,7 @@ export const zhHant: Translations = {
     statusOverview: "狀態總覽",
     system: "系統",
     webUi: "管理面板",
-    loadingChat: "正在載入對話…",
+    loadingChat: "Loading chat\u2026",
   },
 
   chatSidebar: {
@@ -226,14 +226,14 @@ export const zhHant: Translations = {
     toolCalls: "工具呼叫",
     noModelsData: "此時間範圍內無模型使用資料",
     startSession: "開始工作階段後將於此處顯示模型資料",
-    overrideAuto: "（覆蓋 — 自動：{value}）",
-    autoDetected: "自動偵測",
-    loading: "正在載入模型資訊…",
-    contextWindow: "上下文視窗",
-    maxOutput: "最大輸出",
-    capabilityTools: "工具",
-    capabilityVision: "視覺",
-    capabilityReasoning: "推理",
+    overrideAuto: "(override \u2014 auto: {value})",
+    autoDetected: "Auto-detected",
+    loading: "Loading model info\u2026",
+    contextWindow: "Context Window",
+    maxOutput: "Max Output",
+    capabilityTools: "Tools",
+    capabilityVision: "Vision",
+    capabilityReasoning: "Reasoning",
   },
 
   logs: {
@@ -475,9 +475,10 @@ export const zhHant: Translations = {
       external: "外部 CLI",
     },
     expiresIn: "將在 {time} 後過期",
-    tokenExchangeFailed: "Token 交換失敗",
-    openDocs: "開啟 {provider} 文件",
-    disconnectDescription: "這將移除 {provider} 已儲存的 OAuth 權杖，需要重新授權才能繼續使用。",
+    tokenExchangeFailed: "Token exchange failed",
+    openDocs: "Open {provider} docs",
+    disconnectDescription:
+      "This will remove the stored OAuth token for {provider}. You will need to re-authorize to continue using it.",
   },
 
   language: {

@@ -1014,7 +1014,8 @@ export const normalizeLocale = (value: unknown): Locale => {
   if (typeof value !== 'string') return 'en'
   const raw = value.trim().toLowerCase()
   if (!raw) return 'en'
-  if (raw === 'zh' || raw === 'zh-cn' || raw === 'zh-tw' || raw === 'zh-hans' || raw === 'zh-hant' || raw === 'chinese') return 'zh'
+  if (raw === 'zh' || raw === 'zh-cn' || raw === 'zh-hans' || raw === 'chinese') return 'zh'
+  // zh-tw / zh-hant are separate languages — not mapped to zh. Fall through to en.
   return raw === 'en' || raw === 'en-us' || raw === 'en-gb' || raw === 'english' ? 'en' : 'en'
 }
 
