@@ -401,44 +401,58 @@ function PluginRowCard(props: PluginRowCardProps) {
   const badgeTone =
     row.runtime_status === "enabled"
       ? "success"
-      : row.runtime_status === "disabled"
-        ? "destructive"
-        : "outline";
+      : "outline";
+  const metaBadgeClass =
+    "max-w-full px-2 py-1 font-sans text-[0.68rem] font-medium leading-none tracking-normal normal-case";
+  const actionClass =
+    "min-h-8 justify-center rounded-md px-2.5 py-1.5 font-sans text-[0.72rem] font-medium leading-tight tracking-normal normal-case";
+  const textActionClass =
+    "inline-flex min-h-8 items-center justify-center rounded-md border border-current/20 bg-midground/[0.025] px-3 py-1.5 text-center font-sans text-[0.78rem] font-medium leading-tight tracking-normal normal-case text-midforeground/85 shadow-[0_1px_0_rgba(16,24,40,0.03)] transition-colors hover:border-current/35 hover:bg-midground/[0.055] hover:text-midground disabled:cursor-not-allowed disabled:border-current/10 disabled:bg-transparent disabled:text-midforeground/35";
 
   return (
 
-    <Card className={cn(busy ? "opacity-70" : undefined)}>
+    <Card className={cn("rounded-md", busy ? "opacity-70" : undefined)}>
 
 
-      <CardContent className="flex flex-col gap-4 px-6 py-4">
+      <CardContent className="flex flex-col gap-3 px-4 py-4 sm:px-5">
 
 
-        <div className="flex flex-wrap items-start justify-between gap-4">
+        <div className="flex min-w-0 flex-col gap-2">
 
-          <div className="flex min-w-0 flex-1 flex-wrap items-center gap-3">
+          <h4 className="min-w-0 text-[0.98rem] font-semibold leading-snug text-midground [overflow-wrap:anywhere]">
+            {row.name}
+          </h4>
 
-            <span className="truncate font-semibold">{row.name}</span>
+          <div className="flex min-w-0 flex-wrap items-center gap-1.5">
 
-            <Badge tone="outline">
-              {t.pluginsPage.sourceBadge}: {row.source}
+            <Badge className={metaBadgeClass} tone="outline">
+              {row.source}
             </Badge>
 
-            <Badge tone="outline">v{row.version || "—"}</Badge>
+            <Badge className={metaBadgeClass} tone="outline">v{row.version || "—"}</Badge>
 
-            <Badge tone={badgeTone}>{row.runtime_status}</Badge>
+            <Badge className={metaBadgeClass} tone={badgeTone}>
+              {row.runtime_status}
+            </Badge>
 
             {row.auth_required ? (
-              <Badge tone="destructive">{t.pluginsPage.authRequired}</Badge>
+              <Badge className={metaBadgeClass} tone="destructive">{t.pluginsPage.authRequired}</Badge>
             ) : null}
           </div>
+        </div>
 
-          <div className="flex flex-wrap items-center gap-2 shrink-0">
+        {row.description ? (
+          <p className="min-w-0 w-full text-[0.88rem] leading-6 text-midforeground/80 normal-case [overflow-wrap:anywhere]">
+            {row.description}
+          </p>
+        ) : null}
+
+        <div className="flex flex-wrap items-center gap-x-8 gap-y-2 sm:gap-x-6">
 
 
-            <Button
+            <button
+              className={textActionClass}
               disabled={busy || row.runtime_status === "enabled"}
-              ghost
-              size="sm"
               onClick={() => {
                 void setRuntimeLoading(row.name, async () => {
                   await api.enableAgentPlugin(row.name);
@@ -447,13 +461,12 @@ function PluginRowCard(props: PluginRowCardProps) {
               }}
             >
               {t.pluginsPage.enableRuntime}
-            </Button>
+            </button>
 
 
-            <Button
+            <button
+              className={textActionClass}
               disabled={busy || row.runtime_status === "disabled"}
-              ghost
-              size="sm"
               onClick={() => {
                 void setRuntimeLoading(row.name, async () => {
                   await api.disableAgentPlugin(row.name);
@@ -462,18 +475,19 @@ function PluginRowCard(props: PluginRowCardProps) {
               }}
             >
               {t.pluginsPage.disableRuntime}
-            </Button>
+            </button>
 
             {tabPath ? (
 
               <Link
                 className={cn(
-                  "inline-flex items-center rounded-none px-3 py-1.5",
+                  "inline-flex items-center justify-center rounded-md px-2.5 py-1.5",
                   "border border-current/25 hover:bg-current/10",
-                  "font-mondwest text-[0.65rem] tracking-[0.1em] uppercase",
+                  "font-sans text-[0.72rem] font-medium leading-tight tracking-normal normal-case",
                 )}
                 to={tabPath}
               >
+                <ExternalLink className="mr-1.5 h-3.5 w-3.5 shrink-0" />
                 {t.pluginsPage.openTab}
               </Link>
             ) : null}
@@ -481,6 +495,7 @@ function PluginRowCard(props: PluginRowCardProps) {
             {row.can_update_git ? (
 
               <Button
+                className={actionClass}
                 disabled={busy}
                 ghost
                 size="sm"
@@ -498,6 +513,7 @@ function PluginRowCard(props: PluginRowCardProps) {
 
             {row.has_dashboard_manifest ? (
               <Button
+                className={actionClass}
                 disabled={busy}
                 ghost
                 size="sm"
@@ -521,6 +537,7 @@ function PluginRowCard(props: PluginRowCardProps) {
 
 
               <Button
+                className={cn(actionClass, "px-2")}
                 destructive
                 disabled={busy}
                 ghost
@@ -532,17 +549,10 @@ function PluginRowCard(props: PluginRowCardProps) {
               </Button>
             ) : null}
           </div>
-        </div>
-
-        {row.description ? (
-          <p className="min-w-0 w-full text-[0.7rem] tracking-[0.06em] text-midforeground/75 normal-case break-words">
-            {row.description}
-          </p>
-        ) : null}
 
         {dm?.slots?.length ? (
 
-          <p className="text-[0.65rem] tracking-[0.05em] text-midforeground/55 normal-case">
+          <p className="text-[0.75rem] leading-5 text-midforeground/55 normal-case [overflow-wrap:anywhere]">
             {t.pluginsPage.dashboardSlots}: {dm.slots.join(", ")}
           </p>
         ) : null}
@@ -557,7 +567,7 @@ function PluginRowCard(props: PluginRowCardProps) {
         {!row.has_dashboard_manifest && !dm ? (
 
 
-          <p className="text-[0.65rem] italic text-midforeground/45 normal-case">
+          <p className="text-[0.82rem] italic leading-5 text-midforeground/50 normal-case">
             {t.pluginsPage.noDashboardTab}
           </p>
         ) : null}

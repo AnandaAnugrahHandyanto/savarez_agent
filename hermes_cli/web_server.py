@@ -4317,12 +4317,17 @@ async def post_agent_plugin_install(request: Request, body: _AgentPluginInstallB
 
 def _validate_plugin_name(name: str) -> str:
     """Reject path-traversal attempts in plugin name URL parameters."""
-    if not name or "/" in name or "\\" in name or ".." in name:
+    parts = name.split("/")
+    if (
+        not name
+        or "\\" in name
+        or any(not part or part in {".", ".."} for part in parts)
+    ):
         raise HTTPException(status_code=400, detail="Invalid plugin name.")
     return name
 
 
-@app.post("/api/dashboard/agent-plugins/{name}/enable")
+@app.post("/api/dashboard/agent-plugins/{name:path}/enable")
 async def post_agent_plugin_enable(request: Request, name: str):
     _require_token(request)
     name = _validate_plugin_name(name)
@@ -4334,7 +4339,7 @@ async def post_agent_plugin_enable(request: Request, name: str):
     return result
 
 
-@app.post("/api/dashboard/agent-plugins/{name}/disable")
+@app.post("/api/dashboard/agent-plugins/{name:path}/disable")
 async def post_agent_plugin_disable(request: Request, name: str):
     _require_token(request)
     name = _validate_plugin_name(name)
@@ -4346,7 +4351,7 @@ async def post_agent_plugin_disable(request: Request, name: str):
     return result
 
 
-@app.post("/api/dashboard/agent-plugins/{name}/update")
+@app.post("/api/dashboard/agent-plugins/{name:path}/update")
 async def post_agent_plugin_update(request: Request, name: str):
     _require_token(request)
     name = _validate_plugin_name(name)
@@ -4359,7 +4364,7 @@ async def post_agent_plugin_update(request: Request, name: str):
     return result
 
 
-@app.delete("/api/dashboard/agent-plugins/{name}")
+@app.delete("/api/dashboard/agent-plugins/{name:path}")
 async def delete_agent_plugin(request: Request, name: str):
     _require_token(request)
     name = _validate_plugin_name(name)
