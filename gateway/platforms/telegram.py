@@ -5236,6 +5236,43 @@ class TelegramAdapter(BasePlatformAdapter):
                 self.name, cache_key, thread_id,
             )
 
+    @staticmethod
+    def _extract_forward_prefix(message: Message) -> Optional[str]:
+        """Extract '[Forwarded from <name>]' prefix from a forwarded Telegram message.
+
+        Uses ``message.forward_origin`` (Telegram API v7+) to determine the
+        original sender and returns an attribution string.  Returns ``None``
+        when the message is not a forward or the origin cannot be determined.
+        """
+        forward_origin = getattr(message, "forward_origin", None)
+        if forward_origin is None:
+            return None
+        try:
+            origin_type = getattr(forward_origin, "type", None)
+            if origin_type is None:
+                return None
+            if origin_type == "user":
+                user = getattr(forward_origin, "sender_user", None)
+                if user:
+                    name = getattr(user, "full_name", None) or getattr(user, "first_name", None) or "Unknown"
+                    return f"[Forwarded from {name}]"
+            elif origin_type == "hidden_user":
+                name = getattr(forward_origin, "sender_user_name", None) or "Unknown"
+                return f"[Forwarded from {name}]"
+            elif origin_type == "channel":
+                chat = getattr(forward_origin, "chat", None)
+                if chat:
+                    name = getattr(chat, "title", None) or "Unknown channel"
+                    return f"[Forwarded from {name}]"
+            elif origin_type == "chat":
+                chat = getattr(forward_origin, "sender_chat", None)
+                if chat:
+                    name = getattr(chat, "title", None) or getattr(chat, "full_name", None) or "Unknown chat"
+                    return f"[Forwarded from {name}]"
+        except Exception:
+            pass
+        return None
+
     def _build_message_event(
         self,
         message: Message,
@@ -5371,8 +5408,25 @@ class TelegramAdapter(BasePlatformAdapter):
             _chat_id_str if thread_id_str else None,
         )
 
+        # Build message text with metadata annotations
+        text = message.text or ""
+        annotations = []
+
+        forward_prefix = self._extract_forward_prefix(message)
+        if forward_prefix:
+            annotations.append(forward_prefix)
+
+        if getattr(message, "is_automatic_forward", False):
+            annotations.append("[Auto-forwarded]")
+
+        if getattr(message, "edit_date", None) is not None:
+            annotations.append("[Edited]")
+
+        if annotations:
+            text = "\n".join(annotations) + "\n" + text
+
         return MessageEvent(
-            text=message.text or "",
+            text=text,
             message_type=msg_type,
             source=source,
             raw_message=message,
