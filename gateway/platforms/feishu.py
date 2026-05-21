@@ -4452,7 +4452,7 @@ class FeishuAdapter(BasePlatformAdapter):
         await self._webhook_site.start()
 
     def _build_lark_client(self, domain: Any) -> Any:
-        return (
+        client = (
             lark.Client.builder()
             .app_id(self._app_id)
             .app_secret(self._app_secret)
@@ -4460,6 +4460,18 @@ class FeishuAdapter(BasePlatformAdapter):
             .log_level(lark.LogLevel.WARNING)
             .build()
         )
+        # Share the pre-authenticated client with the doc/drive tools so
+        # DM / group-chat agents (which run in worker threads where the
+        # feishu_comment thread-local was never populated) can still reach
+        # the Feishu API. See #29760.
+        try:
+            from tools import feishu_doc_tool, feishu_drive_tool
+            feishu_doc_tool.set_default_client(client)
+            feishu_drive_tool.set_default_client(client)
+        except Exception:
+            # Tool modules are best-effort; never block adapter startup.
+            logger.debug("[Feishu] failed to share lark client with feishu tools", exc_info=True)
+        return client
 
     async def _feishu_send_with_retry(
         self,

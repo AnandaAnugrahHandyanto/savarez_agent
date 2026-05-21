@@ -14,7 +14,11 @@ from tools.registry import registry, tool_error, tool_result
 logger = logging.getLogger(__name__)
 
 # Thread-local storage for the lark client injected by feishu_comment handler.
+# The thread-local layer scopes a per-handler client (e.g. the comment-callback
+# path); the module-level default acts as the gateway-wide fallback so DM /
+# group-chat agents that run in worker threads still find a client.
 _local = threading.local()
+_default_client = None
 
 
 def set_client(client):
@@ -22,9 +26,20 @@ def set_client(client):
     _local.client = client
 
 
+def set_default_client(client):
+    """Register a process-wide fallback lark client.
+
+    Called by the Feishu gateway adapter at connect time so DM / group-chat
+    agents — which run in worker threads where ``set_client`` was never
+    called — can still reach the gateway's pre-authenticated client.
+    """
+    global _default_client
+    _default_client = client
+
+
 def get_client():
-    """Return the lark client for the current thread, or None."""
-    return getattr(_local, "client", None)
+    """Return the lark client for the current thread, or the gateway default."""
+    return getattr(_local, "client", None) or _default_client
 
 
 def _check_feishu():
