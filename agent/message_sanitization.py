@@ -269,6 +269,14 @@ def _repair_tool_call_arguments(raw_args: str, tool_name: str = "?") -> str:
     except (json.JSONDecodeError, TypeError, ValueError):
         pass
 
+    # write_file special recovery: extract path from malformed JSON so the
+    # model gets "content missing" error (suggesting execute_code) instead of
+    # "path missing" error which causes a stuck retry loop (#29597).
+    if tool_name == "write_file":
+        path_match = re.search(r'"path"\s*:\s*"([^"]+)"', raw_stripped)
+        if path_match:
+            return json.dumps({"path": path_match.group(1)})
+
     # Last resort: replace with empty object so the API request doesn't
     # crash the entire session.
     logger.warning(
