@@ -1846,6 +1846,48 @@ class FeishuAdapter(BasePlatformAdapter):
             logger.error("[Feishu] Failed to edit message %s: %s", message_id, exc, exc_info=True)
             return SendResult(success=False, error=str(exc))
 
+    @staticmethod
+    def _metadata_value(metadata: Optional[Dict[str, Any]], key: str) -> Optional[str]:
+        if not metadata:
+            return None
+        value = metadata.get(key)
+        if value is None:
+            return None
+        text = str(value).strip()
+        return text or None
+
+    def _mirror_interactive_card(
+        self,
+        *,
+        chat_id: str,
+        summary: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Best-effort mirror for Feishu cards sent outside normal agent replies."""
+        try:
+            from gateway.mirror import mirror_to_session
+
+            mirror_to_session(
+                "feishu",
+                chat_id,
+                summary,
+                source_label="gateway",
+                thread_id=self._metadata_value(metadata, "thread_id"),
+                user_id=self._metadata_value(metadata, "user_id"),
+            )
+        except Exception:
+            logger.debug("[Feishu] Failed to mirror interactive card summary", exc_info=True)
+
+    @staticmethod
+    def _extract_card_context_hint(action_value: Any) -> Optional[str]:
+        if not isinstance(action_value, dict):
+            return None
+        for key in ("hermes_card_context", "card_context", "context", "summary", "title"):
+            value = action_value.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        return None
+
     async def send_exec_approval(
         self, chat_id: str, command: str, session_key: str,
         description: str = "dangerous command",
@@ -1911,6 +1953,8 @@ class FeishuAdapter(BasePlatformAdapter):
                     "message_id": result.message_id or "",
                     "chat_id": chat_id,
                 }
+                summary = f"⚠️ Command Approval Required\nCommand:\n{cmd_preview}\nReason: {description}"
+                self._mirror_interactive_card(chat_id=chat_id, summary=summary, metadata=metadata)
             return result
         except Exception as exc:
             logger.warning("[Feishu] send_exec_approval failed: %s", exc)
@@ -1979,6 +2023,10 @@ class FeishuAdapter(BasePlatformAdapter):
                     "message_id": result.message_id or "",
                     "chat_id": chat_id,
                 }
+                summary = f"⚕ Update Needs Your Input\n{prompt}"
+                if default:
+                    summary += f"\nDefault: {default}"
+                self._mirror_interactive_card(chat_id=chat_id, summary=summary, metadata=metadata)
             return result
         except Exception as exc:
             logger.warning("[Feishu] send_update_prompt failed: %s", exc)
@@ -2746,6 +2794,9 @@ class FeishuAdapter(BasePlatformAdapter):
                 synthetic_text += f" {json.dumps(action_value, ensure_ascii=False)}"
             except Exception:
                 pass
+        context_hint = self._extract_card_context_hint(action_value)
+        if context_hint:
+            synthetic_text += f"\nCard context: {context_hint}"
 
         sender_id = SimpleNamespace(open_id=open_id, user_id=None, union_id=None)
         sender_profile = await self._resolve_sender_profile(sender_id)

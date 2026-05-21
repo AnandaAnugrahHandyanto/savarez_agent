@@ -154,6 +154,65 @@ class TestFeishuExecApproval:
         assert state["chat_id"] == "oc_12345"
 
     @pytest.mark.asyncio
+    async def test_mirrors_approval_card_summary(self):
+        adapter = _make_adapter()
+
+        mock_response = SimpleNamespace(
+            success=lambda: True,
+            data=SimpleNamespace(message_id="msg_004"),
+        )
+        with (
+            patch.object(
+                adapter, "_feishu_send_with_retry", new_callable=AsyncMock,
+                return_value=mock_response,
+            ),
+            patch("gateway.mirror.mirror_to_session", return_value=True) as mirror_mock,
+        ):
+            result = await adapter.send_exec_approval(
+                chat_id="oc_12345",
+                command="rm -rf /important",
+                session_key="agent:main:feishu:group:oc_12345",
+                description="dangerous deletion",
+                metadata={"thread_id": "thread_1"},
+            )
+
+        assert result.success is True
+        mirror_mock.assert_called_once()
+        assert mirror_mock.call_args.args[:3] == (
+            "feishu",
+            "oc_12345",
+            "⚠️ Command Approval Required\nCommand:\nrm -rf /important\nReason: dangerous deletion",
+        )
+        assert mirror_mock.call_args.kwargs == {
+            "source_label": "gateway",
+            "thread_id": "thread_1",
+            "user_id": None,
+        }
+
+    @pytest.mark.asyncio
+    async def test_approval_mirror_failure_is_non_fatal(self):
+        adapter = _make_adapter()
+
+        mock_response = SimpleNamespace(
+            success=lambda: True,
+            data=SimpleNamespace(message_id="msg_005"),
+        )
+        with (
+            patch.object(
+                adapter, "_feishu_send_with_retry", new_callable=AsyncMock,
+                return_value=mock_response,
+            ),
+            patch("gateway.mirror.mirror_to_session", side_effect=RuntimeError("no session")),
+        ):
+            result = await adapter.send_exec_approval(
+                chat_id="oc_12345",
+                command="echo test",
+                session_key="agent:main:feishu:group:oc_12345",
+            )
+
+        assert result.success is True
+
+    @pytest.mark.asyncio
     async def test_not_connected(self):
         adapter = _make_adapter()
         adapter._client = None
@@ -274,6 +333,38 @@ class TestFeishuUpdatePrompt:
         assert state["session_key"] == "my-session-key"
         assert state["message_id"] == "msg_up_002"
         assert state["chat_id"] == "oc_12345"
+
+    @pytest.mark.asyncio
+    async def test_mirrors_update_prompt_card_summary(self):
+        adapter = _make_adapter()
+
+        mock_response = SimpleNamespace(
+            success=lambda: True,
+            data=SimpleNamespace(message_id="msg_up_003"),
+        )
+        with (
+            patch.object(
+                adapter, "_feishu_send_with_retry", new_callable=AsyncMock,
+                return_value=mock_response,
+            ),
+            patch("gateway.mirror.mirror_to_session", return_value=True) as mirror_mock,
+        ):
+            result = await adapter.send_update_prompt(
+                chat_id="oc_12345",
+                prompt="Restore stashed changes after update?",
+                default="y",
+                session_key="agent:main:feishu:group:oc_12345",
+            )
+
+        assert result.success is True
+        mirror_mock.assert_called_once_with(
+            "feishu",
+            "oc_12345",
+            "⚕ Update Needs Your Input\nRestore stashed changes after update?\nDefault: y",
+            source_label="gateway",
+            thread_id=None,
+            user_id=None,
+        )
 
     @pytest.mark.asyncio
     async def test_not_connected(self):
@@ -405,6 +496,31 @@ class TestNonApprovalCardAction:
         mock_handle.assert_called_once()
         event = mock_handle.call_args[0][0]
         assert "/card button" in event.text
+
+    @pytest.mark.asyncio
+    async def test_routes_card_action_with_readable_context_hint(self):
+        adapter = _make_adapter()
+
+        data = _make_card_action_data(
+            action_value={
+                "custom_action": "something_else",
+                "hermes_card_context": "Deployment approval card for staging",
+            },
+            token="tok_context",
+        )
+
+        with (
+            patch.object(
+                adapter, "_resolve_sender_profile", new_callable=AsyncMock,
+                return_value={"user_id": "ou_u", "user_name": "Dave", "user_id_alt": None},
+            ),
+            patch.object(adapter, "get_chat_info", new_callable=AsyncMock, return_value={"name": "Test Chat"}),
+            patch.object(adapter, "_handle_message_with_guards", new_callable=AsyncMock) as mock_handle,
+        ):
+            await adapter._handle_card_action_event(data)
+
+        event = mock_handle.call_args[0][0]
+        assert "Card context: Deployment approval card for staging" in event.text
 
 
 # ===========================================================================
