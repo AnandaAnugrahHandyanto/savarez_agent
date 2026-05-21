@@ -1,5 +1,7 @@
 """Regression tests for gateway /model support of config.yaml custom_providers."""
 
+from types import SimpleNamespace
+
 import yaml
 import pytest
 
@@ -14,6 +16,10 @@ def _make_runner():
     runner.adapters = {}
     runner._voice_mode = {}
     runner._session_model_overrides = {}
+    runner._pending_one_turn_model_restores = {}
+    runner._pending_model_notes = {}
+    runner._agent_cache = {}
+    runner._agent_cache_lock = None
     return runner
 
 
@@ -61,3 +67,56 @@ async def test_handle_model_command_lists_saved_custom_provider(tmp_path, monkey
     assert "Local (127.0.0.1:4141)" in result
     assert "custom:local-(127.0.0.1:4141)" in result
     assert "rotator-openrouter-coding" in result
+
+
+@pytest.mark.asyncio
+async def test_handle_model_command_once_records_restore(tmp_path, monkeypatch):
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "model": {
+                    "default": "old/model",
+                    "provider": "openrouter",
+                    "base_url": "https://openrouter.ai/api/v1",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    import gateway.run as gateway_run
+
+    monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
+    monkeypatch.setattr(
+        "hermes_cli.model_switch.switch_model",
+        lambda **_kwargs: SimpleNamespace(
+            success=True,
+            new_model="claude-sonnet-4.6",
+            target_provider="anthropic",
+            api_key="sk-ant",
+            base_url="https://api.anthropic.com",
+            api_mode="anthropic_messages",
+            provider_label="Anthropic",
+            model_info=None,
+            warning_message="",
+        ),
+    )
+    monkeypatch.setattr(
+        "hermes_cli.model_switch.resolve_display_context_length",
+        lambda *args, **kwargs: None,
+    )
+
+    runner = _make_runner()
+    event = _make_event("/model claude-sonnet-4.6 --provider anthropic --once")
+
+    result = await runner._handle_model_command(event)
+    session_key = runner._session_key_for_source(event.source)
+
+    assert "next turn only" in result
+    assert runner._session_model_overrides[session_key]["model"] == "claude-sonnet-4.6"
+    assert runner._pending_one_turn_model_restores[session_key] == {
+        "had_override": False,
+        "override": None,
+    }

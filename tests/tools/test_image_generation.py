@@ -337,6 +337,12 @@ class TestModelResolution:
             mid, _ = image_tool._resolve_fal_model()
         assert mid == "fal-ai/nano-banana-pro"
 
+    def test_one_call_model_override_wins_over_config(self, image_tool):
+        with patch("hermes_cli.config.load_config",
+                   return_value={"image_gen": {"model": "fal-ai/flux-2-pro"}}):
+            mid, _ = image_tool._resolve_fal_model("fal-ai/gpt-image-2")
+        assert mid == "fal-ai/gpt-image-2"
+
 
 # ---------------------------------------------------------------------------
 # Aspect ratio handling
@@ -363,11 +369,12 @@ class TestAspectRatioNormalization:
 
 class TestRegistryIntegration:
 
-    def test_schema_exposes_only_prompt_and_aspect_ratio_to_agent(self, image_tool):
-        """The agent-facing schema must stay tight — model selection is a
-        user-level config choice, not an agent-level arg."""
+    def test_schema_exposes_optional_one_call_routing_to_agent(self, image_tool):
+        """The agent-facing schema keeps routing scoped to explicit optional
+        per-call fields."""
         props = image_tool.IMAGE_GENERATE_SCHEMA["parameters"]["properties"]
-        assert set(props.keys()) == {"prompt", "aspect_ratio"}
+        assert set(props.keys()) == {"prompt", "aspect_ratio", "provider", "model"}
+        assert image_tool.IMAGE_GENERATE_SCHEMA["parameters"]["required"] == ["prompt"]
 
     def test_aspect_ratio_enum_is_three_values(self, image_tool):
         enum = image_tool.IMAGE_GENERATE_SCHEMA["parameters"]["properties"]["aspect_ratio"]["enum"]

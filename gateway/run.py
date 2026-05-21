@@ -1503,6 +1503,7 @@ class GatewayRunner:
         # Per-session model overrides from /model command.
         # Key: session_key, Value: dict with model/provider/api_key/base_url/api_mode
         self._session_model_overrides: Dict[str, Dict[str, str]] = {}
+        self._pending_one_turn_model_restores: Dict[str, Dict[str, Any]] = {}
         # Per-session reasoning effort overrides from /reasoning.
         # Key: session_key, Value: parsed reasoning config dict.
         self._session_reasoning_overrides: Dict[str, Dict[str, Any]] = {}
@@ -7883,6 +7884,8 @@ class GatewayRunner:
             # or a queued "/model switched" note.
             self._session_model_overrides.pop(session_key, None)
             self._set_session_reasoning_override(session_key, None)
+            if hasattr(self, "_pending_one_turn_model_restores"):
+                self._pending_one_turn_model_restores.pop(session_key, None)
             if hasattr(self, "_pending_model_notes"):
                 self._pending_model_notes.pop(session_key, None)
         
@@ -8659,6 +8662,8 @@ class GatewayRunner:
                 self._evict_cached_agent(session_key)
                 self._session_model_overrides.pop(session_key, None)
                 self._set_session_reasoning_override(session_key, None)
+                if hasattr(self, "_pending_one_turn_model_restores"):
+                    self._pending_one_turn_model_restores.pop(session_key, None)
                 if hasattr(self, "_pending_model_notes"):
                     self._pending_model_notes.pop(session_key, None)
                 response = (response or "") + (
@@ -9035,6 +9040,8 @@ class GatewayRunner:
         # picks up configured defaults instead of previous session switches.
         self._session_model_overrides.pop(session_key, None)
         self._set_session_reasoning_override(session_key, None)
+        if hasattr(self, "_pending_one_turn_model_restores"):
+            self._pending_one_turn_model_restores.pop(session_key, None)
         if hasattr(self, "_pending_model_notes"):
             self._pending_model_notes.pop(session_key, None)
 
@@ -9863,13 +9870,14 @@ class GatewayRunner:
         Supports:
           /model                              — interactive picker (Telegram/Discord) or text list
           /model <name>                       — switch for this session only
+          /model <name> --once                — switch for the next turn only
           /model <name> --global              — switch and persist to config.yaml
           /model <name> --provider <provider> — switch provider + model
           /model --provider <provider>        — switch to provider, auto-detect model
         """
         import yaml
         from hermes_cli.model_switch import (
-            switch_model as _switch_model, parse_model_flags,
+            switch_model as _switch_model, parse_model_flags_detailed,
             list_authenticated_providers,
             list_picker_providers,
         )
@@ -9877,8 +9885,16 @@ class GatewayRunner:
 
         raw_args = event.get_command_args().strip()
 
-        # Parse --provider and --global flags
-        model_input, explicit_provider, persist_global = parse_model_flags(raw_args)
+        # Parse --provider, --global, and --once flags
+        parsed_flags = parse_model_flags_detailed(raw_args)
+        model_input = parsed_flags.model_input
+        explicit_provider = parsed_flags.explicit_provider
+        persist_global = parsed_flags.is_global
+        one_turn = parsed_flags.is_once
+        if persist_global and parsed_flags.is_once:
+            return "❌ /model --once cannot be combined with --global"
+        if one_turn and not model_input and not explicit_provider:
+            return "❌ /model --once requires a model or provider."
 
         # Read current model/provider from config
         current_model = ""
@@ -9909,6 +9925,9 @@ class GatewayRunner:
         source = event.source
         session_key = self._session_key_for_source(source)
         override = self._session_model_overrides.get(session_key, {})
+        restore_snapshot = (
+            self._snapshot_session_model_override(session_key) if one_turn else None
+        )
         if override:
             current_model = override.get("model", current_model)
             current_provider = override.get("provider", current_provider)
@@ -10128,6 +10147,7 @@ class GatewayRunner:
         self._pending_model_notes[session_key] = (
             f"[Note: model was just switched from {current_model} to {result.new_model} "
             f"via {result.provider_label or result.target_provider}. "
+            f"{'This override applies to the next turn only. ' if one_turn else ''}"
             f"Adjust your self-identification accordingly.]"
         )
 
@@ -10139,6 +10159,15 @@ class GatewayRunner:
             "base_url": result.base_url,
             "api_mode": result.api_mode,
         }
+        if one_turn:
+            if not hasattr(self, "_pending_one_turn_model_restores"):
+                self._pending_one_turn_model_restores = {}
+            self._pending_one_turn_model_restores[session_key] = restore_snapshot or {
+                "had_override": False,
+                "override": None,
+            }
+        elif hasattr(self, "_pending_one_turn_model_restores"):
+            self._pending_one_turn_model_restores.pop(session_key, None)
 
         # Evict cached agent so the next turn creates a fresh agent from the
         # override rather than relying on cache signature mismatch detection.
@@ -10212,6 +10241,8 @@ class GatewayRunner:
 
         if persist_global:
             lines.append(t("gateway.model.saved_global"))
+        elif one_turn:
+            lines.append("    (next turn only — restores after one response)")
         else:
             lines.append(t("gateway.model.session_only_hint"))
 
@@ -14745,6 +14776,24 @@ class GatewayRunner:
                 runtime_kwargs[key] = val
         return model, runtime_kwargs
 
+    def _snapshot_session_model_override(self, session_key: str) -> dict:
+        """Capture a gateway session override before a one-turn switch."""
+        override = self._session_model_overrides.get(session_key)
+        return {
+            "had_override": override is not None,
+            "override": dict(override) if override is not None else None,
+        }
+
+    def _restore_session_model_override(self, session_key: str, snapshot: dict) -> None:
+        """Restore the session override captured before a one-turn switch."""
+        if not session_key:
+            return
+        if snapshot.get("had_override"):
+            self._session_model_overrides[session_key] = dict(snapshot.get("override") or {})
+        else:
+            self._session_model_overrides.pop(session_key, None)
+        self._evict_cached_agent(session_key)
+
     def _is_intentional_model_switch(self, session_key: str, agent_model: str) -> bool:
         """Return True if *agent_model* matches an active /model session override."""
         override = self._session_model_overrides.get(session_key)
@@ -16707,6 +16756,10 @@ class GatewayRunner:
             _approval_session_key = session_key or ""
             _approval_session_token = set_current_session_key(_approval_session_key)
             register_gateway_notify(_approval_session_key, _approval_notify_sync)
+            _one_turn_model_restore = None
+            _pending_model_restores = getattr(self, "_pending_one_turn_model_restores", None)
+            if _pending_model_restores and session_key:
+                _one_turn_model_restore = _pending_model_restores.pop(session_key, None)
             try:
                 # If _prepare_inbound_message_text buffered image paths for native
                 # attachment, wrap the user turn as an OpenAI-style multimodal
@@ -16751,6 +16804,18 @@ class GatewayRunner:
                 except Exception:
                     pass
                 reset_current_session_key(_approval_session_token)
+                if (
+                    _one_turn_model_restore is not None
+                    and session_key
+                    and (
+                        run_generation is None
+                        or self._is_session_run_current(session_key, run_generation)
+                    )
+                ):
+                    self._restore_session_model_override(
+                        session_key,
+                        _one_turn_model_restore,
+                    )
             result_holder[0] = result
 
             # Signal the stream consumer that the agent is done

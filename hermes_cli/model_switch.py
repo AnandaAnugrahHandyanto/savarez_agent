@@ -279,6 +279,16 @@ class ModelSwitchResult:
     is_global: bool = False
 
 
+@dataclass(frozen=True)
+class ModelFlagParseResult:
+    """Parsed flags for a /model command."""
+
+    model_input: str
+    explicit_provider: str = ""
+    is_global: bool = False
+    is_once: bool = False
+
+
 @dataclass
 class CustomAutoResult:
     """Result of switching to bare 'custom' provider with auto-detect."""
@@ -294,38 +304,44 @@ class CustomAutoResult:
 # Flag parsing
 # ---------------------------------------------------------------------------
 
-def parse_model_flags(raw_args: str) -> tuple[str, str, bool]:
-    """Parse --provider and --global flags from /model command args.
+def parse_model_flags_detailed(raw_args: str) -> ModelFlagParseResult:
+    """Parse flags from /model command args.
 
-    Returns (model_input, explicit_provider, is_global).
+    Returns a :class:`ModelFlagParseResult`. ``--once`` is intentionally
+    parsed here but interpreted by the caller because each frontend has its
+    own live-session restore hook.
 
     Examples::
 
         "sonnet"                         -> ("sonnet", "", False)
         "sonnet --global"                -> ("sonnet", "", True)
+        "sonnet --once"                  -> is_once=True
         "sonnet --provider anthropic"    -> ("sonnet", "anthropic", False)
         "--provider my-ollama"           -> ("", "my-ollama", False)
         "sonnet --provider anthropic --global" -> ("sonnet", "anthropic", True)
     """
     is_global = False
+    is_once = False
     explicit_provider = ""
 
     # Normalize Unicode dashes (Telegram/iOS auto-converts -- to em/en dash)
     # A single Unicode dash before a flag keyword becomes "--"
     import re as _re
-    raw_args = _re.sub(r'[\u2012\u2013\u2014\u2015](provider|global)', r'--\1', raw_args)
+    raw_args = _re.sub(r'[\u2012\u2013\u2014\u2015](provider|global|once)', r'--\1', raw_args)
 
-    # Extract --global
-    if "--global" in raw_args:
-        is_global = True
-        raw_args = raw_args.replace("--global", "").strip()
-
-    # Extract --provider <name>
+    # Extract flags. Keep this hand-rolled because model IDs may contain
+    # colons/slashes and the historical parser did not require shell quoting.
     parts = raw_args.split()
     i = 0
     filtered: list[str] = []
     while i < len(parts):
-        if parts[i] == "--provider" and i + 1 < len(parts):
+        if parts[i] == "--global":
+            is_global = True
+            i += 1
+        elif parts[i] == "--once":
+            is_once = True
+            i += 1
+        elif parts[i] == "--provider" and i + 1 < len(parts):
             explicit_provider = parts[i + 1]
             i += 2
         else:
@@ -333,7 +349,23 @@ def parse_model_flags(raw_args: str) -> tuple[str, str, bool]:
             i += 1
 
     model_input = " ".join(filtered).strip()
-    return (model_input, explicit_provider, is_global)
+    return ModelFlagParseResult(
+        model_input=model_input,
+        explicit_provider=explicit_provider,
+        is_global=is_global,
+        is_once=is_once,
+    )
+
+
+def parse_model_flags(raw_args: str) -> tuple[str, str, bool]:
+    """Parse --provider and --global flags from /model command args.
+
+    Backward-compatible wrapper returning (model_input, explicit_provider,
+    is_global). New call sites that care about ``--once`` should use
+    :func:`parse_model_flags_detailed`.
+    """
+    parsed = parse_model_flags_detailed(raw_args)
+    return (parsed.model_input, parsed.explicit_provider, parsed.is_global)
 
 
 # ---------------------------------------------------------------------------
