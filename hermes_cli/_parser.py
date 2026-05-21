@@ -227,7 +227,6 @@ def build_top_level_parser():
     )
     _inherited_flag(
         parser,
-        "-y",
         "--no-gui",
         action="store_true",
         default=False,
