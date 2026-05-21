@@ -517,6 +517,8 @@ class HermesACPAgent(acp.Agent):
         super().__init__()
         self.session_manager = session_manager or SessionManager()
         self._conn: Optional[acp.Client] = None
+        self._client_capabilities: ClientCapabilities | None = None
+        self._client_info: Implementation | None = None
 
     # ---- Connection lifecycle -----------------------------------------------
 
@@ -525,6 +527,12 @@ class HermesACPAgent(acp.Agent):
         self._conn = conn
         logger.info("ACP client connected")
 
+
+    def _supports_elicitation_form(self) -> bool:
+        """Return whether the connected ACP client can answer form elicitations."""
+        from acp_adapter.elicitation import supports_form_elicitation
+
+        return supports_form_elicitation(self._client_capabilities)
 
     def _session_modes(self, state: SessionState) -> SessionModeState:
         """Return ACP session modes while preserving Zed's separate model picker.
@@ -829,6 +837,8 @@ class HermesACPAgent(acp.Agent):
             protocol_version if isinstance(protocol_version, int) else acp.PROTOCOL_VERSION
         )
         auth_methods = build_auth_methods()
+        self._client_capabilities = client_capabilities
+        self._client_info = client_info
 
         client_name = client_info.name if client_info else "unknown"
         logger.info(

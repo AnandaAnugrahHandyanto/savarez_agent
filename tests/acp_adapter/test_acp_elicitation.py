@@ -1,8 +1,10 @@
 import asyncio
+import sys
 import threading
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 
 import pytest
+from acp.schema import TextContentBlock
 
 from acp_adapter.elicitation import (
     build_clarify_requested_schema,
@@ -11,6 +13,8 @@ from acp_adapter.elicitation import (
     make_elicitation_clarify_callback,
     supports_form_elicitation,
 )
+from acp_adapter.server import HermesACPAgent
+from acp_adapter.session import SessionManager
 
 
 def test_supports_form_elicitation_with_object_form():
@@ -154,3 +158,14 @@ def test_elicitation_clarify_callback_schedules_on_loop():
         loop.call_soon_threadsafe(loop.stop)
         thread.join(timeout=2)
         loop.close()
+
+
+@pytest.mark.asyncio
+async def test_initialize_records_elicitation_capability():
+    agent = HermesACPAgent()
+    caps = SimpleNamespace(elicitation={"form": {}})
+
+    await agent.initialize(client_capabilities=caps)
+
+    assert agent._supports_elicitation_form() is True
+    assert agent._client_capabilities is caps
