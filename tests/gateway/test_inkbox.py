@@ -1246,3 +1246,158 @@ class TestSend:
         assert result["fallback_allowed"] is False
         assert result["char_count"] == 1601
         assert result["max_chars"] == 1600
+
+
+# ---------------------------------------------------------------------------
+# Admin / system notice filtering
+# ---------------------------------------------------------------------------
+
+class TestAdminNoticeFilter:
+    """``_is_hermes_admin_notice`` is the last-line filter that keeps runtime
+    chatter (compression banners, token diagnostics, status callbacks) from
+    landing in a real user's mailbox or SMS thread.  These tests exercise the
+    three detection paths: metadata tag, glyph prefix, and substring/regex
+    body match.
+    """
+
+    @pytest.mark.parametrize(
+        "notice_type",
+        [
+            "compression",
+            "preflight",
+            "preflight_compression",
+            "context_rollover",
+            "status_callback",
+            "tool_progress",
+            "provider_diagnostic",
+            "runtime_diagnostic",
+            "system",
+            "admin",
+        ],
+    )
+    def test_metadata_notice_type_short_circuits(self, notice_type):
+        """A producer can opt in via metadata regardless of body content."""
+        from gateway.platforms.inkbox import _is_hermes_admin_notice
+
+        assert _is_hermes_admin_notice(
+            "Looks fine to a human", metadata={"notice_type": notice_type},
+        )
+
+    @pytest.mark.parametrize(
+        "alias_key", ["event_type", "kind", "source"],
+    )
+    def test_metadata_legacy_aliases_recognized(self, alias_key):
+        """Older producers tag with ``event_type`` / ``kind`` / ``source``."""
+        from gateway.platforms.inkbox import _is_hermes_admin_notice
+
+        assert _is_hermes_admin_notice(
+            "body", metadata={alias_key: "compression"},
+        )
+
+    def test_metadata_unrelated_tag_not_filtered(self):
+        from gateway.platforms.inkbox import _is_hermes_admin_notice
+
+        assert not _is_hermes_admin_notice(
+            "Hi there", metadata={"notice_type": "user_reply"},
+        )
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            "Preflight compression: budget exceeded",
+            "We are compacting context now",
+            "Summarizing earlier conversation",
+            "session summary recorded",
+            "runtime diagnostics enabled",
+            "stack trace below for debugging",
+        ],
+    )
+    def test_deglyphed_substrings_caught(self, body):
+        from gateway.platforms.inkbox import _is_hermes_admin_notice
+
+        assert _is_hermes_admin_notice(body)
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            "17,234 tokens used so far",
+            "Context: 8000 tokens remaining",
+            "threshold: 100000 reached",
+            "threshold >= 80000 — compacting",
+        ],
+    )
+    def test_token_and_threshold_regex_caught(self, body):
+        from gateway.platforms.inkbox import _is_hermes_admin_notice
+
+        assert _is_hermes_admin_notice(body)
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            # Numbers under 100 don't trip the "tokens" regex — those are
+            # plausible in a real user reply ("3 tokens left of trial").
+            "Hi, I had 3 tokens to use today.",
+            # Lowercase "compression" alone (no "preflight" anchor) stays
+            # user-ish; the substring matcher needs the full phrase.
+            "We can talk about compression algorithms.",
+        ],
+    )
+    def test_real_user_messages_pass_through(self, body):
+        from gateway.platforms.inkbox import _is_hermes_admin_notice
+
+        assert not _is_hermes_admin_notice(body)
+
+    @pytest.mark.asyncio
+    async def test_send_suppresses_metadata_tagged_notice_on_sms(self, monkeypatch):
+        """End-to-end: a status_callback fired via adapter.send() with the
+        metadata tag is dropped, even when the body looks like a real reply.
+        """
+        adapter = _make_adapter(monkeypatch)
+        result = await adapter.send(
+            "+15555550101",
+            "Let me check on that…",
+            metadata={
+                "mode": "sms",
+                "to_phone": "+15555550101",
+                "notice_type": "status_callback",
+            },
+        )
+        assert result.success is True
+        assert result.message_id == "suppressed-admin-notice"
+        identity = adapter._inkbox.get_identity.return_value
+        identity.send_text.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Capability hooks (per-chat opt-outs consumed by gateway/run.py)
+# ---------------------------------------------------------------------------
+
+class TestInterimMessageCapability:
+    """``supports_interim_messages`` mirrors the existing
+    ``supports_progress_updates`` knob: voice-call chats stream interim
+    status as TTS; SMS and email get one final reply, nothing mid-turn.
+    """
+
+    def test_returns_true_for_active_voice_call(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        adapter._active_call_ws["contact-uuid-voice"] = MagicMock()
+        assert adapter.supports_interim_messages("contact-uuid-voice") is True
+
+    def test_returns_false_for_sms_modality(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        adapter._last_inbound_modality["+15555550101"] = "sms"
+        assert adapter.supports_interim_messages("+15555550101") is False
+
+    def test_returns_false_for_email_modality(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        adapter._last_inbound_modality["contact-uuid-mail"] = "email"
+        assert adapter.supports_interim_messages("contact-uuid-mail") is False
+
+    def test_unknown_modality_defaults_to_suppression(self, monkeypatch):
+        """Unlike ``supports_progress_updates`` (which keeps SMS hopeful),
+        interim messages stay off for unknown chats — the only "yes" case
+        is an active voice call, which we already handle above.
+        """
+        adapter = _make_adapter(monkeypatch)
+        assert adapter.supports_interim_messages("contact-uuid-unknown") is False
+        assert adapter.supports_interim_messages("+15555550199") is False

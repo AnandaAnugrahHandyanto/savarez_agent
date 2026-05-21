@@ -15879,6 +15879,27 @@ class GatewayRunner:
                 default=True,
             )
         )
+        # Per-chat opt-out for interim messages — same shape as the
+        # ``supports_progress_updates`` knob a few lines below: adapters
+        # that need to suppress mid-turn natural-language chatter on a
+        # per-chat basis (Inkbox SMS / email, where each status_callback
+        # would land as a fresh SMS or email) expose
+        # ``supports_interim_messages(chat_id) -> bool``.  Absence of the
+        # method preserves today's behavior for every other adapter.
+        if interim_assistant_messages_enabled:
+            _interim_adapter = self.adapters.get(source.platform)
+            _supports_interim = getattr(
+                _interim_adapter, "supports_interim_messages", None,
+            )
+            if callable(_supports_interim):
+                try:
+                    interim_assistant_messages_enabled = bool(
+                        _supports_interim(source.chat_id)
+                    )
+                except Exception:
+                    # Hook blew up — fall through to default rather than
+                    # silently muting on a chat that actually supports it.
+                    pass
         
         # Queue for progress messages (thread-safe)
         progress_queue = queue.Queue() if tool_progress_enabled else None

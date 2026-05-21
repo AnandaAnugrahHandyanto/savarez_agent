@@ -217,22 +217,91 @@ _ADMIN_NOTICE_SUBSTRINGS: Tuple[str, ...] = (
     # Belt-and-suspenders: the self-improvement banner is sometimes
     # forwarded with the leading glyph stripped upstream of us.
     "Self-improvement review:",
+    # Compressor + provider diagnostics sometimes log a plain-text line
+    # without the 💾 / ⚡ prefix (e.g. when the message is reflowed by an
+    # upstream component before hitting the adapter).  Catching the
+    # well-known phrases keeps these out of real user channels.
+    "Preflight compression:",
+    "compacting context",
+    "summarizing earlier conversation",
+    "session summary",
+    "runtime diagnostics",
+    "stack trace",
 )
 
+# Regex matches for de-glyphed runtime diagnostics that vary in their numeric
+# payload — token counts, percent thresholds, etc. — and so can't be expressed
+# as fixed substrings.  Each pattern is case-insensitive and matches anywhere
+# in the body.  Keep this list short: every regex runs on every outbound msg.
+_ADMIN_NOTICE_REGEXES: Tuple["re.Pattern[str]", ...] = (
+    # "17,234 tokens" / "8000 tokens" — context-usage status lines.
+    re.compile(r"\b[0-9][0-9,]{2,}\s+tokens?\b", re.IGNORECASE),
+    # "threshold: 100000" / "threshold >= 80%" — compression / quota dumps.
+    re.compile(r"\bthreshold\s*(?:>=|>|=|:)\s*[0-9][0-9,]{2,}\b", re.IGNORECASE),
+)
 
-def _is_hermes_admin_notice(content: str) -> bool:
+# Producers that explicitly tag mid-turn updates with ``metadata['notice_type']``
+# (or one of the legacy aliases below) can route their outputs around real user
+# channels without relying on the body-text filter at all.  Substring + regex
+# detection still runs as a backstop for untagged producers.
+_ADMIN_NOTICE_METADATA_KEYS: Tuple[str, ...] = (
+    "notice_type",
+    "event_type",
+    "kind",
+    "source",
+)
+_ADMIN_NOTICE_METADATA_TYPES: frozenset = frozenset({
+    "admin",
+    "admin_notice",
+    "compression",
+    "context_rollover",
+    "preflight",
+    "preflight_compression",
+    "provider_diagnostic",
+    "runtime_diagnostic",
+    "session_diagnostic",
+    "status_callback",
+    "system",
+    "tool_progress",
+})
+
+
+def _is_hermes_admin_notice(
+    content: str,
+    metadata: Optional[Dict[str, Any]] = None,
+) -> bool:
     """True when *content* is a Hermes-internal status/admin chatter line.
 
-    Triggered when the message starts with one of the well-known glyphs
-    Hermes uses to flag system messages in the CLI/TUI, or when the body
-    contains any of ``_ADMIN_NOTICE_SUBSTRINGS``.  These have no business
-    landing in a real human's email inbox, SMS thread, or — worst of all
-    — being read aloud as TTS over a live phone call.
+    Args:
+        content: The outbound message body to inspect.
+        metadata: Optional adapter metadata; when present, a recognized
+            ``notice_type`` (or legacy alias) short-circuits the body
+            inspection.
+
+    Returns:
+        bool: True if the message should be dropped before delivery.
+
+    Triggered when (a) ``metadata`` carries a recognized notice-type tag,
+    (b) the message starts with one of the well-known glyphs Hermes uses
+    to flag system messages in the CLI/TUI, (c) the body contains any of
+    ``_ADMIN_NOTICE_SUBSTRINGS``, or (d) matches any of
+    ``_ADMIN_NOTICE_REGEXES``.  These have no business landing in a real
+    human's email inbox, SMS thread, or — worst of all — being read aloud
+    as TTS over a live phone call.
     """
+    # Metadata tag wins outright — producers that opt in to the channel
+    # don't need their body inspected.
+    if metadata:
+        for key in _ADMIN_NOTICE_METADATA_KEYS:
+            tag = str(metadata.get(key) or "").lower().strip()
+            if tag and tag in _ADMIN_NOTICE_METADATA_TYPES:
+                return True
     head = (content or "").lstrip().lstrip("﻿")
     if head.startswith(_ADMIN_NOTICE_PREFIXES):
         return True
-    return any(s in head for s in _ADMIN_NOTICE_SUBSTRINGS)
+    if any(s in head for s in _ADMIN_NOTICE_SUBSTRINGS):
+        return True
+    return any(pattern.search(head) for pattern in _ADMIN_NOTICE_REGEXES)
 
 
 def _float_setting(extra: Dict[str, Any], key: str, env_name: str, default: float) -> float:
@@ -1033,7 +1102,7 @@ class InkboxAdapter(BasePlatformAdapter):
         these are CLI chatter that never belongs in a real user's email or
         SMS thread.  See ``_is_hermes_admin_notice`` for the prefix list.
         """
-        if _is_hermes_admin_notice(content):
+        if _is_hermes_admin_notice(content, metadata):
             logger.debug(
                 "[Inkbox] Suppressed admin notice for chat %s: %s…",
                 chat_id, (content or "")[:60].replace("\n", " "),
@@ -1264,6 +1333,37 @@ class InkboxAdapter(BasePlatformAdapter):
         # we haven't seen inbound yet) — mirror send()'s default heuristic:
         # E.164 → SMS, otherwise email.  Treat email as opt-out.
         return str(chat_id).startswith("+")
+
+    def supports_interim_messages(self, chat_id: str) -> bool:
+        """Return True when interim assistant messages should fire on this chat.
+
+        Args:
+            chat_id: The chat the gateway is about to dispatch an interim
+                assistant message to.
+
+        Returns:
+            True when the gateway should attempt to render mid-turn
+            assistant status (e.g. "Let me check on that…"), False to
+            suppress these updates entirely for this chat.
+
+        Tool-progress bubbles get one batched edit per turn on SMS (see
+        ``supports_progress_updates``), but natural-language assistant
+        chatter is a different path: every status_callback or interim
+        commentary line lands as a fresh ``adapter.send`` — one new SMS
+        or one new email per mid-turn musing.  That is unsendable UX on
+        either channel.  Allow it only for live voice calls, where the
+        text is streamed as TTS through ``edit_message``.
+        """
+        # Active voice call → interim status is streamed as TTS deltas.
+        if chat_id in self._active_call_ws:
+            return True
+        modality = self._last_inbound_modality.get(str(chat_id), "")
+        if modality in ("email", "sms"):
+            return False
+        # Unknown modality — fall back to send()'s E.164-or-email heuristic
+        # and suppress in both cases.  The only place we'd ever want this
+        # on is the active-call path handled above.
+        return False
 
     async def edit_message(
         self,
