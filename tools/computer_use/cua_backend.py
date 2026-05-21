@@ -106,6 +106,61 @@ def _parse_windows_from_text(text: str) -> List[Dict[str, Any]]:
     return windows
 
 
+def _normalize_windows_from_output(lw_out: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Return a normalized window list from cua-driver list_windows output."""
+    sc = lw_out.get("structuredContent") or {}
+    raw_windows = sc.get("windows") if sc else None
+    if raw_windows:
+        windows = [
+            {
+                "app_name": w.get("app_name", ""),
+                "pid": int(w["pid"]),
+                "window_id": int(w["window_id"]),
+                "off_screen": not w.get("is_on_screen", True),
+                "is_on_screen": bool(w.get("is_on_screen", True)),
+                "on_current_space": bool(w.get("on_current_space", False)),
+                "title": w.get("title", ""),
+                "z_index": w.get("z_index", 0),
+                "bounds": w.get("bounds") or {},
+            }
+            for w in raw_windows
+        ]
+        # In cua-driver/macOS output, lower z_index is closer to front.
+        windows.sort(key=lambda w: w["z_index"])
+        return windows
+
+    raw_text = lw_out["data"] if isinstance(lw_out.get("data"), str) else ""
+    return _parse_windows_from_text(raw_text)
+
+
+def _window_area(window: Dict[str, Any]) -> int:
+    bounds = window.get("bounds") or {}
+    if isinstance(bounds, dict):
+        return int(bounds.get("width", 0) or 0) * int(bounds.get("height", 0) or 0)
+    return 0
+
+
+def _best_window_for_app(windows: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Pick the most useful app window, including background/off-screen windows.
+
+    Some apps, notably DaVinci Resolve, report their automation-capable main
+    window as `is_on_screen=false` even when `get_window_state(pid, window_id)`
+    works. For explicit app targeting, prefer a titled, current-Space, large
+    window over tiny helper/menu windows.
+    """
+    if not windows:
+        return None
+    return sorted(
+        windows,
+        key=lambda w: (
+            not bool(w.get("on_current_space", False)),
+            not bool(w.get("title", "")),
+            -_window_area(w),
+            int(w.get("z_index", 0) or 0),
+        ),
+    )[0]
+
+
 def _parse_elements_from_tree(markdown: str) -> List[UIElement]:
     """Parse UIElement list from get_window_state AX tree markdown."""
     elements = []
@@ -117,6 +172,14 @@ def _parse_elements_from_tree(markdown: str) -> List[UIElement]:
             bounds=(0, 0, 0, 0),
         ))
     return elements
+
+
+def _parse_screenshot_size(text: str) -> Tuple[int, int]:
+    """Parse screenshot dimensions from cua-driver summary text."""
+    m = re.search(r'\b(\d+)x(\d+)\s+(?:png|jpe?g)\b', text, re.IGNORECASE)
+    if not m:
+        return 0, 0
+    return int(m.group(1)), int(m.group(2))
 
 
 def _split_tree_text(full_text: str) -> Tuple[str, str]:
@@ -348,44 +411,31 @@ class CuaDriverBackend(ComputerUseBackend):
         Maps hermes `capture(mode, app)` → cua-driver `list_windows` +
         `get_window_state` (ax/som) or `screenshot` (vision).
         """
-        # Step 1: enumerate on-screen windows to find target pid/window_id.
+        # Step 1: enumerate windows to find target pid/window_id. For the
+        # default case, keep this to on-screen windows so we don't capture a
+        # random background app. If an explicit app filter misses, retry with
+        # all windows because some apps (DaVinci Resolve) expose usable AX
+        # windows that report is_on_screen=false.
         lw_out = self._session.call_tool("list_windows", {"on_screen_only": True})
+        windows = _normalize_windows_from_output(lw_out)
 
-        # Prefer structuredContent.windows (MCP 2024-11-05+); fall back to
-        # text-line parsing for older cua-driver builds.
-        sc = lw_out.get("structuredContent") or {}
-        raw_windows = sc.get("windows") if sc else None
-        if raw_windows:
-            windows = [
-                {
-                    "app_name": w.get("app_name", ""),
-                    "pid": int(w["pid"]),
-                    "window_id": int(w["window_id"]),
-                    "off_screen": not w.get("is_on_screen", True),
-                    "title": w.get("title", ""),
-                    "z_index": w.get("z_index", 0),
-                }
-                for w in raw_windows
-            ]
-            # Sort by z_index descending (lowest z_index = frontmost on macOS).
-            windows.sort(key=lambda w: w["z_index"])
-        else:
-            raw_text = lw_out["data"] if isinstance(lw_out["data"], str) else ""
-            windows = _parse_windows_from_text(raw_text)
-
-        if not windows:
-            return CaptureResult(mode=mode, width=0, height=0, png_b64=None,
-                                 elements=[], app="", window_title="", png_bytes_len=0)
-
-        # Filter by app name (case-insensitive substring) if requested.
         if app:
             app_lower = app.lower()
             filtered = [w for w in windows if app_lower in w["app_name"].lower()]
-            if filtered:
-                windows = filtered
+            if not filtered:
+                lw_out = self._session.call_tool("list_windows", {})
+                windows = _normalize_windows_from_output(lw_out)
+                filtered = [w for w in windows if app_lower in w["app_name"].lower()]
+            if not filtered:
+                return CaptureResult(mode=mode, width=0, height=0, png_b64=None,
+                                     elements=[], app="", window_title="", png_bytes_len=0)
+            target = _best_window_for_app(filtered)
+        else:
+            target = next((w for w in windows if not w["off_screen"]), windows[0] if windows else None)
 
-        # Pick first on-screen window (sorted by z_index / z-order above).
-        target = next((w for w in windows if not w["off_screen"]), windows[0])
+        if not target:
+            return CaptureResult(mode=mode, width=0, height=0, png_b64=None,
+                                 elements=[], app="", window_title="", png_bytes_len=0)
         self._active_pid = target["pid"]
         self._active_window_id = target["window_id"]
         app_name = target["app_name"]
@@ -397,13 +447,15 @@ class CuaDriverBackend(ComputerUseBackend):
         window_title = ""
 
         if mode == "vision":
-            # screenshot tool: just the PNG, no AX walk.
+            # screenshot tool: just the image, no AX walk.
             sc_out = self._session.call_tool(
                 "screenshot",
                 {"window_id": self._active_window_id, "format": "jpeg", "quality": 85},
             )
             if sc_out["images"]:
                 png_b64 = sc_out["images"][0]
+                sc_text = sc_out["data"] if isinstance(sc_out["data"], str) else ""
+                width, height = _parse_screenshot_size(sc_text)
         else:
             # get_window_state: AX tree + optional screenshot.
             gws_out = self._session.call_tool(
@@ -413,13 +465,24 @@ class CuaDriverBackend(ComputerUseBackend):
             text = gws_out["data"] if isinstance(gws_out["data"], str) else ""
             summary, tree = _split_tree_text(text)
 
-            # Parse element count from summary e.g. "✅ AppName — 42 elements, turn 3..."
-            m = re.search(r'(\d+)\s+elements?', summary)
-            if tree and not gws_out["images"]:
-                # ax mode — no screenshot
-                elements = _parse_elements_from_tree(tree)
-            elif gws_out["images"]:
+            if gws_out["images"]:
                 png_b64 = gws_out["images"][0]
+                width, height = _parse_screenshot_size(summary)
+            elif mode == "som":
+                # cua-driver's persistent capture_mode may be `ax`, which makes
+                # get_window_state omit images even for a Hermes `mode="som"`
+                # request. Add the window screenshot explicitly without
+                # mutating driver config.
+                sc_out = self._session.call_tool(
+                    "screenshot",
+                    {"window_id": self._active_window_id, "format": "png"},
+                )
+                if sc_out["images"]:
+                    png_b64 = sc_out["images"][0]
+                    sc_text = sc_out["data"] if isinstance(sc_out["data"], str) else ""
+                    width, height = _parse_screenshot_size(sc_text)
+
+            if tree:
                 elements = _parse_elements_from_tree(tree)
 
             # Extract window title from the AX tree first AXWindow line.
@@ -607,26 +670,15 @@ class CuaDriverBackend(ComputerUseBackend):
         is exactly what this backend is designed to avoid.
         """
         lw_out = self._session.call_tool("list_windows", {"on_screen_only": True})
-        sc = lw_out.get("structuredContent") or {}
-        raw_windows = sc.get("windows") if sc else None
-        if raw_windows:
-            windows = [
-                {
-                    "app_name": w.get("app_name", ""),
-                    "pid": int(w["pid"]),
-                    "window_id": int(w["window_id"]),
-                    "z_index": w.get("z_index", 0),
-                }
-                for w in raw_windows
-            ]
-            windows.sort(key=lambda w: w["z_index"])
-        else:
-            raw_text = lw_out["data"] if isinstance(lw_out["data"], str) else ""
-            windows = _parse_windows_from_text(raw_text)
+        windows = _normalize_windows_from_output(lw_out)
 
         app_lower = app.lower()
         matched = [w for w in windows if app_lower in w["app_name"].lower()]
-        target = matched[0] if matched else (windows[0] if windows else None)
+        if not matched:
+            lw_out = self._session.call_tool("list_windows", {})
+            windows = _normalize_windows_from_output(lw_out)
+            matched = [w for w in windows if app_lower in w["app_name"].lower()]
+        target = _best_window_for_app(matched) if matched else None
         if target:
             self._active_pid = target["pid"]
             self._active_window_id = target["window_id"]
