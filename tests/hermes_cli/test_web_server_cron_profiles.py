@@ -132,6 +132,29 @@ async def test_cron_mutation_without_profile_finds_named_profile_job(isolated_pr
 
 
 @pytest.mark.asyncio
+async def test_cron_update_preserves_storage_profile_and_exposes_run_profile(isolated_profiles):
+    from hermes_cli import web_server
+
+    job = web_server._call_cron_for_profile(
+        "default",
+        "create_job",
+        prompt="default storage worker runtime",
+        schedule="every 1h",
+        name="profile-edit-job",
+    )
+
+    updated = await web_server.update_cron_job(
+        job["id"],
+        web_server.CronJobUpdate(updates={"profile": "worker_alpha"}),
+        profile="default",
+    )
+
+    assert updated["profile"] == "default"
+    assert updated["profile_name"] == "default"
+    assert updated["run_profile"] == "worker_alpha"
+
+
+@pytest.mark.asyncio
 async def test_cron_delete_with_profile_deletes_only_target_profile(isolated_profiles):
     from hermes_cli import web_server
 

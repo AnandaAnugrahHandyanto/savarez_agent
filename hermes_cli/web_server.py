@@ -2593,6 +2593,7 @@ def _cron_profile_home(profile: Optional[str]) -> Tuple[str, Path]:
 
 def _annotate_cron_job(job: Dict[str, Any], profile: str, home: Path) -> Dict[str, Any]:
     annotated = dict(job)
+    annotated["run_profile"] = annotated.get("profile")
     annotated["profile"] = profile
     annotated["profile_name"] = profile
     annotated["hermes_home"] = str(home)
@@ -2693,7 +2694,11 @@ async def update_cron_job(job_id: str, body: CronJobUpdate, profile: Optional[st
     selected = profile or _find_cron_job_profile(job_id)
     if not selected:
         raise HTTPException(status_code=404, detail="Job not found")
-    job = _call_cron_for_profile(selected, "update_job", job_id, body.updates)
+    try:
+        job = _call_cron_for_profile(selected, "update_job", job_id, body.updates)
+    except Exception as e:
+        _log.exception("PUT /api/cron/jobs/%s failed", job_id)
+        raise HTTPException(status_code=400, detail=str(e))
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     return job

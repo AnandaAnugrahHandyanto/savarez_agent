@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useLayoutEffect, useState } from "react";
-import { Clock, Pause, Play, Trash2, X, Zap } from "lucide-react";
+import { Clock, Pause, Pencil, Play, Plus, Save, Trash2, X, Zap } from "lucide-react";
 import { Badge } from "@nous-research/ui/ui/components/badge";
 import { Button } from "@nous-research/ui/ui/components/button";
+import { Checkbox } from "@nous-research/ui/ui/components/checkbox";
 import { Select, SelectOption } from "@nous-research/ui/ui/components/select";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { H2 } from "@/components/NouiTypography";
 import { api } from "@/lib/api";
-import type { CronJob, ProfileInfo } from "@/lib/api";
+import type { CronJob, CronJobUpdate, ProfileInfo } from "@/lib/api";
 import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
 import { useToast } from "@/hooks/useToast";
 import { useConfirmDelete } from "@/hooks/useConfirmDelete";
@@ -71,7 +72,11 @@ function getJobState(job: CronJob): string {
 }
 
 function getJobProfile(job: CronJob): string {
-  return asText(job.profile) || asText(job.profile_name) || "default";
+  return asText(job.profile_name) || asText(job.profile) || "default";
+}
+
+function getJobRunProfile(job: CronJob): string {
+  return asText(job.run_profile);
 }
 
 function getJobKey(job: CronJob): string {
@@ -96,6 +101,390 @@ const STATUS_TONE: Record<string, "success" | "warning" | "destructive"> = {
   completed: "destructive",
 };
 
+interface CronEditForm {
+  name: string;
+  prompt: string;
+  schedule: string;
+  deliver: string;
+  repeat: string;
+  skills: string;
+  script: string;
+  noAgent: boolean;
+  workdir: string;
+  runProfile: string;
+  model: string;
+  provider: string;
+  baseUrl: string;
+  contextFrom: string;
+  enabledToolsets: string;
+}
+
+function joinList(value: unknown): string {
+  if (Array.isArray(value)) return value.map(String).join("\n");
+  return asText(value);
+}
+
+function splitList(value: string): string[] {
+  return value
+    .split(/[\n,]/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function nullableText(value: string): string | null {
+  const trimmed = value.trim();
+  return trimmed ? trimmed : null;
+}
+
+function repeatTimes(job: CronJob): string {
+  const times = job.repeat?.times;
+  return typeof times === "number" && times > 0 ? String(times) : "";
+}
+
+function jobToEditForm(job: CronJob): CronEditForm {
+  return {
+    name: asText(job.name),
+    prompt: asText(job.prompt),
+    schedule: getJobScheduleDisplay(job),
+    deliver: asText(job.deliver) || "local",
+    repeat: repeatTimes(job),
+    skills: joinList(job.skills ?? job.skill ?? ""),
+    script: asText(job.script),
+    noAgent: job.no_agent === true,
+    workdir: asText(job.workdir),
+    runProfile: getJobRunProfile(job),
+    model: asText(job.model),
+    provider: asText(job.provider),
+    baseUrl: asText(job.base_url),
+    contextFrom: joinList(job.context_from),
+    enabledToolsets: joinList(job.enabled_toolsets),
+  };
+}
+
+function buildCronUpdate(job: CronJob, form: CronEditForm): CronJobUpdate {
+  const schedule = form.schedule.trim();
+  if (!schedule) throw new Error("Schedule is required");
+
+  const repeatRaw = form.repeat.trim();
+  let repeat: number | null = null;
+  if (repeatRaw) {
+    const parsed = Number(repeatRaw);
+    if (!Number.isInteger(parsed) || parsed < 1) {
+      throw new Error("Repeat count must be a positive integer");
+    }
+    repeat = parsed;
+  }
+
+  const script = nullableText(form.script);
+  if (form.noAgent && !script) {
+    throw new Error("No-agent mode requires a script");
+  }
+
+  const skills = splitList(form.skills);
+  const contextFrom = splitList(form.contextFrom);
+  const enabledToolsets = splitList(form.enabledToolsets);
+
+  return {
+    name: form.name.trim(),
+    prompt: form.prompt.trim(),
+    schedule,
+    deliver: form.deliver.trim() || "local",
+    repeat: {
+      times: repeat,
+      completed: job.repeat?.completed ?? 0,
+    },
+    skills,
+    skill: skills[0] ?? null,
+    script,
+    no_agent: form.noAgent,
+    workdir: nullableText(form.workdir),
+    profile: nullableText(form.runProfile),
+    model: nullableText(form.model),
+    provider: nullableText(form.provider),
+    base_url: nullableText(form.baseUrl),
+    context_from: contextFrom.length ? contextFrom : null,
+    enabled_toolsets: enabledToolsets.length ? enabledToolsets : null,
+  };
+}
+
+function CronJobEditModal({
+  job,
+  onClose,
+  onSaved,
+  profiles,
+  showToast,
+}: {
+  job: CronJob;
+  onClose(): void;
+  onSaved(): void;
+  profiles: ProfileInfo[];
+  showToast(message: string, tone: "success" | "error"): void;
+}) {
+  const { t } = useI18n();
+  const [form, setForm] = useState<CronEditForm>(() => jobToEditForm(job));
+  const [saving, setSaving] = useState(false);
+  const modalRef = useModalBehavior({ open: true, onClose });
+  const storageProfile = getJobProfile(job);
+
+  const setField = <K extends keyof CronEditForm>(key: K, value: CronEditForm[K]) => {
+    setForm((current) => ({ ...current, [key]: value }));
+  };
+
+  const handleSave = async () => {
+    setSaving(true);
+    try {
+      await api.updateCronJob(job.id, buildCronUpdate(job, form), storageProfile);
+      showToast(`${t.common.save} ✓`, "success");
+      onSaved();
+      onClose();
+    } catch (e) {
+      showToast(`${t.config.failedToSave}: ${e}`, "error");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const textAreaClass =
+    "flex min-h-[72px] w-full border border-border bg-background/40 px-3 py-2 text-sm font-courier shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-foreground/30 focus-visible:border-foreground/25";
+
+  return (
+    <div
+      ref={modalRef}
+      className="fixed inset-0 z-[100] flex items-center justify-center bg-background/85 backdrop-blur-sm p-4"
+      onClick={(e) => e.target === e.currentTarget && onClose()}
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="edit-cron-title"
+    >
+      <div className="relative w-full max-w-4xl max-h-[88vh] border border-border bg-card shadow-2xl flex flex-col">
+        <Button
+          ghost
+          size="icon"
+          onClick={onClose}
+          className="absolute right-2 top-2 text-muted-foreground hover:text-foreground"
+          aria-label={t.common.close}
+        >
+          <X />
+        </Button>
+
+        <header className="p-5 pb-3 border-b border-border">
+          <h2
+            id="edit-cron-title"
+            className="font-display text-base tracking-wider uppercase"
+          >
+            Edit Cron Job
+          </h2>
+          <p className="mt-1 text-xs text-muted-foreground">
+            ID <span className="font-mono">{job.id}</span> · stored in{" "}
+            <span className="font-mono">{storageProfile}</span>
+          </p>
+        </header>
+
+        <div className="p-5 overflow-y-auto grid gap-5">
+          <section className="grid gap-3">
+            <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+              Core
+            </h3>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div className="grid gap-2">
+                <Label htmlFor="edit-cron-name">{t.cron.nameOptional}</Label>
+                <Input
+                  id="edit-cron-name"
+                  autoFocus
+                  value={form.name}
+                  onChange={(e) => setField("name", e.target.value)}
+                />
+              </div>
+              <div className="grid gap-2">
+                <Label htmlFor="edit-cron-schedule">{t.cron.schedule}</Label>
+                <Input
+                  id="edit-cron-schedule"
+                  placeholder={t.cron.schedulePlaceholder}
+                  value={form.schedule}
+                  onChange={(e) => setField("schedule", e.target.value)}
+                />
+              </div>
+            </div>
+
+            <div className="grid gap-2">
+              <Label htmlFor="edit-cron-prompt">{t.cron.prompt}</Label>
+              <textarea
+                id="edit-cron-prompt"
+                className={textAreaClass}
+                value={form.prompt}
+                onChange={(e) => setField("prompt", e.target.value)}
+              />
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div className="grid gap-2">
+                <Label htmlFor="edit-cron-deliver">{t.cron.deliverTo}</Label>
+                <Input
+                  id="edit-cron-deliver"
+                  value={form.deliver}
+                  onChange={(e) => setField("deliver", e.target.value)}
+                />
+                <p className="text-[11px] text-muted-foreground">
+                  local, telegram, discord, signal, email, or platform:chat_id
+                </p>
+              </div>
+              <div className="grid gap-2">
+                <Label htmlFor="edit-cron-repeat">Repeat count</Label>
+                <Input
+                  id="edit-cron-repeat"
+                  inputMode="numeric"
+                  placeholder="blank = unlimited"
+                  value={form.repeat}
+                  onChange={(e) => setField("repeat", e.target.value)}
+                />
+              </div>
+            </div>
+          </section>
+
+          <section className="grid gap-3">
+            <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+              Execution
+            </h3>
+            <div className="grid gap-2">
+              <Label htmlFor="edit-cron-skills">Skills</Label>
+              <textarea
+                id="edit-cron-skills"
+                className={textAreaClass}
+                placeholder="one skill per line"
+                value={form.skills}
+                onChange={(e) => setField("skills", e.target.value)}
+              />
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div className="grid gap-2">
+                <Label htmlFor="edit-cron-script">Script</Label>
+                <Input
+                  id="edit-cron-script"
+                  placeholder="relative to ~/.hermes/scripts/"
+                  value={form.script}
+                  onChange={(e) => setField("script", e.target.value)}
+                />
+              </div>
+              <div className="grid gap-2">
+                <Label htmlFor="edit-cron-workdir">Workdir</Label>
+                <Input
+                  id="edit-cron-workdir"
+                  placeholder="/absolute/project/path"
+                  value={form.workdir}
+                  onChange={(e) => setField("workdir", e.target.value)}
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div className="flex items-center gap-2.5">
+                <Checkbox
+                  checked={form.noAgent}
+                  id="edit-cron-no-agent"
+                  onCheckedChange={(checked) =>
+                    setField("noAgent", checked === true)
+                  }
+                />
+                <Label
+                  className="font-sans normal-case tracking-normal text-sm cursor-pointer"
+                  htmlFor="edit-cron-no-agent"
+                >
+                  No-agent mode
+                </Label>
+              </div>
+              <div className="grid gap-2">
+                <Label htmlFor="edit-cron-run-profile">Run profile</Label>
+                <Input
+                  id="edit-cron-run-profile"
+                  list="cron-profile-options"
+                  placeholder="blank = scheduler default"
+                  value={form.runProfile}
+                  onChange={(e) => setField("runProfile", e.target.value)}
+                />
+                <datalist id="cron-profile-options">
+                  {profiles.map((profile) => (
+                    <option key={profile.name} value={profile.name} />
+                  ))}
+                </datalist>
+              </div>
+            </div>
+          </section>
+
+          <section className="grid gap-3">
+            <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+              Advanced model and context
+            </h3>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+              <div className="grid gap-2">
+                <Label htmlFor="edit-cron-provider">Provider</Label>
+                <Input
+                  id="edit-cron-provider"
+                  value={form.provider}
+                  onChange={(e) => setField("provider", e.target.value)}
+                />
+              </div>
+              <div className="grid gap-2">
+                <Label htmlFor="edit-cron-model">Model</Label>
+                <Input
+                  id="edit-cron-model"
+                  value={form.model}
+                  onChange={(e) => setField("model", e.target.value)}
+                />
+              </div>
+              <div className="grid gap-2">
+                <Label htmlFor="edit-cron-base-url">Base URL</Label>
+                <Input
+                  id="edit-cron-base-url"
+                  value={form.baseUrl}
+                  onChange={(e) => setField("baseUrl", e.target.value)}
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div className="grid gap-2">
+                <Label htmlFor="edit-cron-context-from">Context from</Label>
+                <textarea
+                  id="edit-cron-context-from"
+                  className={textAreaClass}
+                  placeholder="one job ID per line"
+                  value={form.contextFrom}
+                  onChange={(e) => setField("contextFrom", e.target.value)}
+                />
+              </div>
+              <div className="grid gap-2">
+                <Label htmlFor="edit-cron-toolsets">Enabled toolsets</Label>
+                <textarea
+                  id="edit-cron-toolsets"
+                  className={textAreaClass}
+                  placeholder="one toolset per line"
+                  value={form.enabledToolsets}
+                  onChange={(e) => setField("enabledToolsets", e.target.value)}
+                />
+              </div>
+            </div>
+          </section>
+        </div>
+
+        <footer className="p-4 border-t border-border flex justify-end gap-2">
+          <Button outlined size="sm" onClick={onClose} disabled={saving}>
+            {t.common.cancel}
+          </Button>
+          <Button
+            size="sm"
+            onClick={handleSave}
+            disabled={saving}
+            prefix={saving ? <Spinner /> : <Save className="h-3 w-3" />}
+          >
+            {saving ? t.common.saving : t.common.save}
+          </Button>
+        </footer>
+      </div>
+    </div>
+  );
+}
+
 export default function CronPage() {
   const [jobs, setJobs] = useState<CronJob[]>([]);
   const [profiles, setProfiles] = useState<ProfileInfo[]>([]);
@@ -117,6 +506,7 @@ export default function CronPage() {
   });
   const [deliver, setDeliver] = useState("local");
   const [creating, setCreating] = useState(false);
+  const [editingJob, setEditingJob] = useState<CronJob | null>(null);
   const createProfile = selectedProfile === "all" ? "default" : selectedProfile;
 
   const loadJobs = useCallback(() => {
@@ -272,6 +662,17 @@ export default function CronPage() {
         }
         loading={jobDelete.isDeleting}
       />
+
+      {editingJob && (
+        <CronJobEditModal
+          key={getJobKey(editingJob)}
+          job={editingJob}
+          onClose={() => setEditingJob(null)}
+          onSaved={loadJobs}
+          profiles={profiles}
+          showToast={showToast}
+        />
+      )}
 
       {/* Create job modal */}
       {createModalOpen && (
@@ -436,6 +837,7 @@ export default function CronPage() {
           const hasName = Boolean(getJobName(job));
           const deliver = asText(job.deliver);
           const profile = getJobProfile(job);
+          const runProfile = getJobRunProfile(job);
           const jobKey = getJobKey(job);
 
           return (
@@ -450,6 +852,9 @@ export default function CronPage() {
                       {state}
                     </Badge>
                     <Badge tone="outline">{profileLabel(profile)}</Badge>
+                    {runProfile && runProfile !== profile && (
+                      <Badge tone="outline">run: {profileLabel(runProfile)}</Badge>
+                    )}
                     {deliver && deliver !== "local" && (
                       <Badge tone="outline">{deliver}</Badge>
                     )}
@@ -476,6 +881,16 @@ export default function CronPage() {
                 </div>
 
                 <div className="flex items-center gap-1 shrink-0">
+                  <Button
+                    ghost
+                    size="icon"
+                    title="Edit"
+                    aria-label="Edit"
+                    onClick={() => setEditingJob(job)}
+                  >
+                    <Pencil />
+                  </Button>
+
                   <Button
                     ghost
                     size="icon"
