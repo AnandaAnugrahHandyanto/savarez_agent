@@ -156,8 +156,11 @@ def _simulate_note_injection(
             f"[System note: Your previous turn in this session was interrupted "
             f"by {reason_phrase}. The conversation history below is intact. "
             f"If it contains unfinished tool result(s), process them first and "
-            f"summarize what was accomplished, then address the user's new "
-            f"message below.]\n\n"
+            f"summarize what was accomplished. If the history contains a "
+            f"preserved active task list, treat any in_progress item as the "
+            f"current mission and resume or verify it before reacting to older "
+            f"conversation asks, unless the newest user message explicitly "
+            f"changes or cancels it. Then address the user's new message below.]\n\n"
             + message
         )
     elif has_fresh_tool_tail:
@@ -442,6 +445,41 @@ class TestResumePendingSystemNote:
         assert "[System note:" in result
         assert "gateway restart" in result
         assert "what happened?" in result
+
+    def test_resume_pending_note_prioritizes_preserved_active_task_list(self):
+        """A restart after context compression must resume the active task.
+
+        Regression for the Discord dogfood failure: the transcript contained a
+        preserved todo list with an in-progress engineering task, but the next
+        turn answered an older inbox ask instead.  The recovery note must tell
+        the model that the preserved active task list is authoritative unless
+        the newest user message explicitly changes or cancels it.
+        """
+        entry = self._pending_entry(reason="restart_timeout")
+        result = _simulate_note_injection(
+            history=[
+                {
+                    "role": "user",
+                    "content": "Any news in the inboxes?",
+                    "timestamp": time.time() - 30,
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        "[Your active task list was preserved across context compression]\n"
+                        "- [>] verify. Run targeted tests and runtime smoke checks (in_progress)\n"
+                        "- [ ] commit. Commit verified repo changes (pending)"
+                    ),
+                    "timestamp": time.time() - 5,
+                },
+            ],
+            user_message="Dude why the compaction issue?",
+            resume_entry=entry,
+        )
+        assert "preserved active task list" in result
+        assert "current mission" in result
+        assert "older" in result
+        assert "unless the newest user message explicitly changes or cancels it" in result
 
     def test_resume_pending_shutdown_note_mentions_shutdown(self):
         entry = self._pending_entry(reason="shutdown_timeout")

@@ -114,7 +114,20 @@ class TodoStore:
         if not active_items:
             return None
 
+        has_in_progress = any(item["status"] == "in_progress" for item in active_items)
         lines = ["[Your active task list was preserved across context compression]"]
+        if has_in_progress:
+            lines.append(
+                "Treat the [>] in_progress item as the current active task: "
+                "resume or verify it before older conversation asks, unless "
+                "the newest user message explicitly changes or cancels it."
+            )
+        else:
+            lines.append(
+                "No item is marked in_progress; use the pending items as next "
+                "tasks only if the newest user message does not explicitly "
+                "change or cancel them."
+            )
         for item in active_items:
             marker = markers.get(item["status"], "[?]")
             lines.append(f"- {marker} {item['id']}. {item['content']} ({item['status']})")

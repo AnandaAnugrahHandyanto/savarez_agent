@@ -16679,8 +16679,11 @@ class GatewayRunner:
                     f"[System note: Your previous turn in this session was interrupted "
                     f"by {_reason_phrase}. The conversation history below is intact. "
                     f"If it contains unfinished tool result(s), process them first and "
-                    f"summarize what was accomplished, then address the user's new "
-                    f"message below.]\n\n"
+                    f"summarize what was accomplished. If the history contains a "
+                    f"preserved active task list, treat any in_progress item as the "
+                    f"current mission and resume or verify it before reacting to older "
+                    f"conversation asks, unless the newest user message explicitly "
+                    f"changes or cancels it. Then address the user's new message below.]\n\n"
                     + message
                 )
             elif _has_fresh_tool_tail:

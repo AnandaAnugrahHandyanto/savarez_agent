@@ -71,6 +71,27 @@ class TestFormatForInjection:
         assert "Working" in text
         assert "context compression" in text.lower()
 
+    def test_injection_tells_model_to_resume_in_progress_task_first(self):
+        store = TodoStore()
+        store.write([
+            {"id": "verify", "content": "Run checks", "status": "in_progress"},
+            {"id": "commit", "content": "Commit changes", "status": "pending"},
+        ])
+        text = store.format_for_injection()
+        assert "current active task" in text
+        assert "resume" in text
+        assert "unless the newest user message explicitly changes or cancels it" in text
+
+    def test_injection_without_in_progress_does_not_reference_marker(self):
+        store = TodoStore()
+        store.write([
+            {"id": "commit", "content": "Commit changes", "status": "pending"},
+        ])
+        text = store.format_for_injection()
+        assert text is not None
+        assert "No item is marked in_progress" in text
+        assert "Treat the [>]" not in text
+
 
 class TestMergeMode:
     def test_update_existing_by_id(self):
