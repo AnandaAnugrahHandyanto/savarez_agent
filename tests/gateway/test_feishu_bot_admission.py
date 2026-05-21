@@ -50,6 +50,45 @@ def test_feishu_load_settings_allow_bots_defaults_to_none(monkeypatch):
     assert settings.allow_bots == "none"
 
 
+@pytest.mark.parametrize(
+    "env_value, expected",
+    [
+        (None, "open"),
+        ("open", "open"),
+        ("disabled", "disabled"),
+        ("  DISABLED  ", "disabled"),
+    ],
+)
+def test_feishu_load_settings_dm_policy(monkeypatch, env_value, expected):
+    from gateway.platforms.feishu import FeishuAdapter
+
+    monkeypatch.setenv("FEISHU_APP_ID", "cli_test")
+    monkeypatch.setenv("FEISHU_APP_SECRET", "secret_test")
+    if env_value is None:
+        monkeypatch.delenv("FEISHU_DM_POLICY", raising=False)
+    else:
+        monkeypatch.setenv("FEISHU_DM_POLICY", env_value)
+
+    settings = FeishuAdapter._load_settings(extra={})
+    assert settings.dm_policy == expected
+
+
+def test_feishu_load_settings_warns_on_unknown_dm_policy(monkeypatch, caplog):
+    import logging
+
+    from gateway.platforms.feishu import FeishuAdapter
+
+    monkeypatch.setenv("FEISHU_APP_ID", "cli_test")
+    monkeypatch.setenv("FEISHU_APP_SECRET", "secret_test")
+    monkeypatch.setenv("FEISHU_DM_POLICY", "closed")
+
+    with caplog.at_level(logging.WARNING, logger="gateway.platforms.feishu"):
+        settings = FeishuAdapter._load_settings(extra={})
+
+    assert settings.dm_policy == "open"
+    assert any("dm_policy" in r.message and "closed" in r.message for r in caplog.records)
+
+
 def test_feishu_load_settings_ignores_extra_allow_bots(monkeypatch):
     # extra is ignored — env is single source of truth (yaml is bridged to env).
     from gateway.platforms.feishu import FeishuAdapter
@@ -328,6 +367,24 @@ _ADMIT_CASES = [
             expected=None,
         ),
         id="human:p2p_admitted",
+    ),
+    pytest.param(
+        _admit_case(
+            adapter={"dm_policy": "disabled"},
+            sender={"sender_type": "user", "open_id": "ou_human"},
+            message={"message_id": "om_blocked", "chat_type": "p2p"},
+            expected="dm_disabled",
+        ),
+        id="human:p2p_rejected_when_dm_policy_disabled",
+    ),
+    pytest.param(
+        _admit_case(
+            adapter={"dm_policy": "disabled", "group_policy": "open", "require_mention": False},
+            sender={"sender_type": "user", "open_id": "ou_human"},
+            message={"message_id": "om_group", "chat_type": "group"},
+            expected=None,
+        ),
+        id="human:group_admitted_when_dm_policy_disabled",
     ),
     pytest.param(
         _admit_case(
