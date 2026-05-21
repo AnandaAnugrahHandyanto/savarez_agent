@@ -2822,7 +2822,7 @@ def _get_section_config_summary(config: dict, section_key: str) -> Optional[str]
         # has already started setup and we shouldn't force the section to rerun.
         configured = [
             _gateway_platform_short_label(plat["label"])
-            for plat in _all_platforms()
+            for plat in _all_platforms(include_hidden=True)
             if _platform_status(plat) and _platform_status(plat) != "not configured"
         ]
         if configured:
