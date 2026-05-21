@@ -548,7 +548,13 @@ _ensure_ssl_certs()
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 # Resolve Hermes home directory (respects HERMES_HOME override)
-from hermes_constants import get_hermes_home
+from hermes_constants import (
+    get_hermes_home,
+    get_hermes_home_override,
+    hermes_home_context,
+    reset_hermes_home_override,
+    set_hermes_home_override,
+)
 from utils import atomic_json_write, atomic_yaml_write, base_url_host_matches, is_truthy_value
 _hermes_home = get_hermes_home()
 
@@ -799,9 +805,11 @@ from gateway.config import (
     GatewayConfig,
     HomeChannel,
     PlatformConfig,
+    _validate_gateway_config,
     load_gateway_config,
 )
 from gateway.session import (
+    _PROFILE_ID_RE,
     SessionStore,
     SessionSource,
     SessionContext,
@@ -817,7 +825,9 @@ from gateway.platforms.base import (
     MessageEvent,
     MessageType,
     _reply_anchor_for_event,
+    _thread_metadata_for_source as _base_thread_metadata_for_source,
     merge_pending_message_event,
+    resolve_topic_profile,
 )
 from gateway.restart import (
     DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
@@ -843,7 +853,37 @@ logger = logging.getLogger(__name__)
 _AGENT_PENDING_SENTINEL = object()
 
 
-def _resolve_runtime_agent_kwargs() -> dict:
+class TopicProfileRoutingError(RuntimeError):
+    """Raised when a routed topic profile cannot be safely resolved."""
+
+
+def _env_get(runtime_env: Optional[dict], key: str, default: str = "") -> str:
+    if runtime_env is None:
+        return os.getenv(key, default)
+    value = runtime_env.get(key, default)
+    return "" if value is None else str(value)
+
+
+def _resolve_max_iterations(
+    *,
+    user_config: Optional[dict] = None,
+    runtime_env: Optional[dict] = None,
+    default: int = 90,
+) -> int:
+    agent_cfg = user_config.get("agent") if isinstance(user_config, dict) else None
+    if isinstance(agent_cfg, dict) and "max_turns" in agent_cfg:
+        try:
+            return int(agent_cfg["max_turns"])
+        except (TypeError, ValueError):
+            pass
+    raw = _env_get(runtime_env, "HERMES_MAX_ITERATIONS", str(default))
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return default
+
+
+def _resolve_runtime_agent_kwargs(runtime_env: Optional[dict] = None) -> dict:
     """Resolve provider credentials for gateway-created AIAgent instances.
 
     If the primary provider fails with an authentication error, attempt to
@@ -856,15 +896,34 @@ def _resolve_runtime_agent_kwargs() -> dict:
     )
     from hermes_cli.auth import AuthError
 
-    try:
-        runtime = resolve_runtime_provider(
-            requested=os.getenv("HERMES_INFERENCE_PROVIDER"),
+    def _runtime_has_credentials(runtime: dict) -> bool:
+        try:
+            from hermes_cli.auth import has_usable_secret
+        except Exception:
+            has_usable_secret = lambda value: bool(str(value or "").strip())  # type: ignore[assignment]
+
+        api_key = str(runtime.get("api_key") or "").strip()
+        return bool(
+            runtime.get("credential_pool")
+            or runtime.get("command")
+            or api_key == "no-key-required"
+            or has_usable_secret(api_key)
         )
+
+    try:
+        runtime_kwargs = {"requested": _env_get(runtime_env, "HERMES_INFERENCE_PROVIDER")}
+        if runtime_env is not None:
+            runtime_kwargs["env"] = runtime_env
+        runtime = resolve_runtime_provider(**runtime_kwargs)
+        if not _runtime_has_credentials(runtime):
+            fb_config = _try_resolve_fallback_provider(runtime_env=runtime_env)
+            if fb_config is not None:
+                return fb_config
     except AuthError as auth_exc:
         # Primary provider auth failed (expired token, revoked key, etc.).
         # Try the fallback provider chain before raising.
         logger.warning("Primary provider auth failed: %s — trying fallback", auth_exc)
-        fb_config = _try_resolve_fallback_provider()
+        fb_config = _try_resolve_fallback_provider(runtime_env=runtime_env)
         if fb_config is not None:
             return fb_config
         raise RuntimeError(format_runtime_provider_error(auth_exc)) from auth_exc
@@ -882,12 +941,14 @@ def _resolve_runtime_agent_kwargs() -> dict:
     }
 
 
-def _try_resolve_fallback_provider() -> dict | None:
+def _try_resolve_fallback_provider(runtime_env: Optional[dict] = None) -> dict | None:
     """Attempt to resolve credentials from the fallback_model/fallback_providers config."""
     from hermes_cli.runtime_provider import resolve_runtime_provider
     try:
         import yaml as _y
-        cfg_path = _hermes_home / "config.yaml"
+        cfg_path = get_hermes_home() / "config.yaml"
+        if not cfg_path.exists() and runtime_env is None:
+            cfg_path = _hermes_home / "config.yaml"
         if not cfg_path.exists():
             return None
         with open(cfg_path, encoding="utf-8") as _f:
@@ -901,11 +962,42 @@ def _try_resolve_fallback_provider() -> dict | None:
             if not isinstance(entry, dict):
                 continue
             try:
-                runtime = resolve_runtime_provider(
-                    requested=entry.get("provider"),
-                    explicit_base_url=entry.get("base_url"),
-                    explicit_api_key=entry.get("api_key"),
-                )
+                explicit_api_key = entry.get("api_key")
+                if not explicit_api_key:
+                    key_env = str(entry.get("key_env") or entry.get("api_key_env") or "").strip()
+                    if key_env:
+                        explicit_api_key = _env_get(runtime_env, key_env).strip() or None
+                        if runtime_env is not None and not explicit_api_key:
+                            logger.debug(
+                                "Fallback entry %s skipped: key_env %s is not present in scoped runtime env",
+                                entry.get("provider"),
+                                key_env,
+                            )
+                            continue
+                runtime_args = {
+                    "requested": entry.get("provider"),
+                    "explicit_base_url": entry.get("base_url"),
+                    "explicit_api_key": explicit_api_key,
+                }
+                if runtime_env is not None:
+                    runtime_args["env"] = runtime_env
+                runtime = resolve_runtime_provider(**runtime_args)
+                try:
+                    from hermes_cli.auth import has_usable_secret
+                except Exception:
+                    has_usable_secret = lambda value: bool(str(value or "").strip())  # type: ignore[assignment]
+                api_key = str(runtime.get("api_key") or "").strip()
+                if not (
+                    runtime.get("credential_pool")
+                    or runtime.get("command")
+                    or api_key == "no-key-required"
+                    or has_usable_secret(api_key)
+                ):
+                    logger.debug(
+                        "Fallback entry %s skipped: no usable scoped credentials resolved",
+                        entry.get("provider"),
+                    )
+                    continue
                 logger.info(
                     "Fallback provider resolved: %s model=%s",
                     runtime.get("provider"),
@@ -1158,6 +1250,50 @@ def _platform_config_key(platform: "Platform") -> str:
     return "cli" if platform == Platform.LOCAL else platform.value
 
 
+def _enabled_mcp_server_names(config: dict | None) -> set[str]:
+    servers = (config or {}).get("mcp_servers")
+    if not isinstance(servers, dict):
+        return set()
+    enabled: set[str] = set()
+    for name, server_cfg in servers.items():
+        if isinstance(server_cfg, dict) and server_cfg.get("enabled") is False:
+            continue
+        enabled.add(str(name))
+    return enabled
+
+
+def _has_explicit_platform_toolsets(config: dict | None, platform_key: str) -> bool:
+    toolsets = (config or {}).get("platform_toolsets")
+    return isinstance(toolsets, dict) and platform_key in toolsets
+
+
+def _topic_profile_tool_isolation_notice(
+    gateway_config: dict | None,
+    profile_config: dict | None,
+    platform_key: str,
+) -> Optional[str]:
+    """Return a diagnostic when gateway-only tool config will not be inherited."""
+    reasons: list[str] = []
+    if (
+        _has_explicit_platform_toolsets(gateway_config, platform_key)
+        and not _has_explicit_platform_toolsets(profile_config, platform_key)
+    ):
+        reasons.append(f"platform_toolsets.{platform_key}")
+
+    gateway_mcp = _enabled_mcp_server_names(gateway_config)
+    profile_mcp = _enabled_mcp_server_names(profile_config)
+    if gateway_mcp and not profile_mcp:
+        reasons.append("mcp_servers")
+
+    if not reasons:
+        return None
+    return (
+        "Routed profile tool isolation: gateway "
+        f"{', '.join(reasons)} config is not inherited by the routed profile. "
+        "Declare required toolsets or MCP servers in the profile config."
+    )
+
+
 def _teams_pipeline_plugin_enabled() -> bool:
     """Return True when the standalone Teams pipeline plugin is enabled."""
     config = _load_gateway_config()
@@ -1167,14 +1303,19 @@ def _teams_pipeline_plugin_enabled() -> bool:
     return "teams_pipeline" in enabled or "teams-pipeline" in enabled
 
 
-def _load_gateway_config() -> dict:
+def _load_gateway_config(hermes_home: Path | None = None) -> dict:
     """Load and parse ~/.hermes/config.yaml, returning {} on any error.
 
-    Uses the module-level ``_hermes_home`` (so tests that monkeypatch it
-    still see their fixture) and shares the mtime-keyed raw-yaml cache
-    from ``hermes_cli.config.read_raw_config`` when the paths match.
+    Uses the active ``get_hermes_home()`` value so topic-routed profile
+    contexts can read their own config while the gateway process stays in
+    its original home.
     """
-    config_path = _hermes_home / 'config.yaml'
+    if hermes_home is not None:
+        active_home = Path(hermes_home)
+    else:
+        override = get_hermes_home_override()
+        active_home = Path(override) if override else _hermes_home
+    config_path = active_home / 'config.yaml'
     try:
         from hermes_cli.config import get_config_path, read_raw_config
         # Fast path: if _hermes_home agrees with the canonical config
@@ -1243,7 +1384,7 @@ def _parse_session_key(session_key: str) -> "dict | None":
     """Parse a session key into its component parts.
 
     Session keys follow the format
-    ``agent:main:{platform}:{chat_type}:{chat_id}[:{extra}...]``.
+    ``agent:{profile}:{platform}:{chat_type}:{chat_id}[:{extra}...]``.
     Returns a dict with ``platform``, ``chat_type``, ``chat_id``, and
     optionally ``thread_id`` keys, or None if the key doesn't match.
 
@@ -1253,12 +1394,19 @@ def _parse_session_key(session_key: str) -> "dict | None":
     thread_id, so we leave ``thread_id`` out to avoid mis-routing.
     """
     parts = session_key.split(":")
-    if len(parts) >= 5 and parts[0] == "agent" and parts[1] == "main":
+    if (
+        len(parts) >= 5
+        and parts[0] == "agent"
+        and parts[1] != "cron"
+        and _PROFILE_ID_RE.match(parts[1])
+    ):
         result = {
             "platform": parts[2],
             "chat_type": parts[3],
             "chat_id": parts[4],
         }
+        if parts[1] != "main":
+            result["agent_profile"] = parts[1]
         if len(parts) > 5 and parts[3] in {"dm", "thread"}:
             result["thread_id"] = parts[5]
         return result
@@ -1822,6 +1970,189 @@ class GatewayRunner:
                 if mode in {"voice_only", "all"} and key.startswith(prefix)
             )
 
+    def _hydrate_topic_profile_for_event(self, event: MessageEvent) -> None:
+        """Hydrate routed Telegram topic profile data before session-key use."""
+        source = getattr(event, "source", None)
+        if source is None:
+            return
+
+        BasePlatformAdapter._copy_event_profile_to_source(event)
+        if getattr(source, "agent_profile", None):
+            return
+        if source.platform != Platform.TELEGRAM:
+            return
+
+        config = getattr(self, "config", None)
+        try:
+            platform_cfg = config.platforms.get(Platform.TELEGRAM) if config else None
+        except Exception:
+            platform_cfg = None
+        if not platform_cfg:
+            return
+
+        extra = getattr(platform_cfg, "extra", None) or {}
+        if not isinstance(extra, dict) or not extra.get("topic_profiles"):
+            return
+
+        chat_id = str(getattr(source, "chat_id", "") or "").strip()
+        if not chat_id:
+            return
+
+        thread_id = getattr(source, "thread_id", None)
+        thread_id_s = str(thread_id).strip() if thread_id is not None else None
+        if not thread_id_s:
+            raw_message = getattr(event, "raw_message", None)
+            raw_thread_id = getattr(raw_message, "message_thread_id", None)
+            if raw_thread_id is not None:
+                thread_id_s = str(raw_thread_id)
+            if thread_id_s:
+                source.thread_id = thread_id_s
+
+        route = resolve_topic_profile(extra, chat_id, thread_id_s)
+        if not route:
+            return
+
+        profile = route.get("profile")
+        home = route.get("profile_home")
+        if profile and not getattr(source, "agent_profile", None):
+            source.agent_profile = profile
+            event.agent_profile = getattr(event, "agent_profile", None) or profile
+        if home and not getattr(source, "agent_hermes_home", None):
+            source.agent_hermes_home = home
+            event.agent_hermes_home = getattr(event, "agent_hermes_home", None) or home
+
+    def _topic_profile_homes(self) -> list[Path]:
+        """Return concrete Hermes homes configured for routed topic profiles."""
+        homes: list[Path] = []
+        seen: set[str] = set()
+        config = getattr(self, "config", None)
+        if not config:
+            return homes
+        try:
+            platform_items = list((config.platforms or {}).items())
+        except Exception:
+            return homes
+
+        for platform, platform_cfg in platform_items:
+            extra = getattr(platform_cfg, "extra", None) or {}
+            if not isinstance(extra, dict):
+                continue
+            routes = extra.get("topic_profiles") or []
+            if not isinstance(routes, list):
+                continue
+            for route in routes:
+                if not isinstance(route, dict):
+                    continue
+                profile = str(route.get("profile") or "").strip()
+                if not profile or profile == "default":
+                    continue
+                match = route.get("match") if isinstance(route.get("match"), dict) else {}
+                try:
+                    source = SessionSource(
+                        platform=platform,
+                        chat_id=str(match.get("chat_id") or ""),
+                        chat_type="group",
+                        thread_id=str(match.get("thread_id") or ""),
+                        agent_profile=profile,
+                        agent_hermes_home=str(route.get("profile_home") or "").strip() or None,
+                    )
+                    home = self._profile_home_for_source(source)
+                except Exception:
+                    logger.debug(
+                        "Could not resolve routed topic profile home for %r",
+                        profile,
+                        exc_info=True,
+                    )
+                    continue
+                if home is None:
+                    continue
+                key = str(home)
+                if key not in seen:
+                    seen.add(key)
+                    homes.append(home)
+        return homes
+
+    def _process_checkpoint_paths_for_topic_profiles(self) -> list[Path]:
+        """Return profile-scoped process checkpoint paths configured for topic routes."""
+        return [home / "processes.json" for home in self._topic_profile_homes()]
+
+    def _session_store_for_profile_home(self, profile_home: Path):
+        cache = getattr(self, "_profile_session_stores", None)
+        if cache is None:
+            self._profile_session_stores = {}
+            cache = self._profile_session_stores
+        key = str(profile_home)
+        if key not in cache:
+            with hermes_home_context(profile_home):
+                cache[key] = SessionStore(
+                    profile_home / "sessions",
+                    getattr(self, "config", GatewayConfig()),
+                )
+        return cache[key]
+
+    def _known_session_stores(self) -> list:
+        stores = []
+        seen: set[int] = set()
+
+        def add(store) -> None:
+            if store is None:
+                return
+            marker = id(store)
+            if marker in seen:
+                return
+            seen.add(marker)
+            stores.append(store)
+
+        add(getattr(self, "session_store", None))
+        for store in (getattr(self, "_profile_session_stores", None) or {}).values():
+            add(store)
+        for home in self._topic_profile_homes():
+            try:
+                add(self._session_store_for_profile_home(home))
+            except Exception:
+                logger.debug("Could not open routed profile session store for %s", home, exc_info=True)
+        return stores
+
+    def _session_store_for_session_key(self, session_key: str):
+        source = self._get_cached_session_source(session_key)
+        if source is not None:
+            try:
+                return self._session_store_for_source(source)
+            except Exception:
+                logger.debug(
+                    "Could not resolve session store from cached source for %s",
+                    session_key,
+                    exc_info=True,
+                )
+
+        primary = getattr(self, "session_store", None)
+        for store in self._known_session_stores():
+            entries = getattr(store, "_entries", None)
+            if isinstance(entries, dict) and session_key in entries:
+                return store
+            try:
+                lock = getattr(store, "_lock")
+                with lock:
+                    store._ensure_loaded_locked()  # noqa: SLF001
+                    entries = getattr(store, "_entries", None)
+                    if isinstance(entries, dict) and session_key in entries:
+                        return store
+            except Exception:
+                continue
+        return primary
+
+    def _mark_resume_pending_for_session_key(self, session_key: str, reason: str) -> bool:
+        store = self._session_store_for_session_key(session_key)
+        if store is None:
+            return False
+        return bool(store.mark_resume_pending(session_key, reason))
+
+    def _clear_resume_pending_for_session_key(self, session_key: str) -> bool:
+        store = self._session_store_for_session_key(session_key)
+        if store is None:
+            return False
+        return bool(store.clear_resume_pending(session_key))
+
     async def _safe_adapter_disconnect(self, adapter, platform) -> None:
         """Call adapter.disconnect() defensively, swallowing any error.
 
@@ -1924,7 +2255,169 @@ class GatewayRunner:
             source,
             group_sessions_per_user=getattr(config, "group_sessions_per_user", True),
             thread_sessions_per_user=getattr(config, "thread_sessions_per_user", False),
+            profile=getattr(source, "agent_profile", None),
         )
+
+    def _profile_home_for_source(self, source: SessionSource) -> Optional[Path]:
+        profile = str(getattr(source, "agent_profile", None) or "").strip()
+        if not profile or profile == "default":
+            return None
+        try:
+            from hermes_cli.profiles import (
+                get_profile_dir,
+                profile_exists,
+                validate_profile_identity,
+                validate_profile_name,
+            )
+            validate_profile_name(profile)
+        except Exception as exc:
+            raise TopicProfileRoutingError(
+                f"Invalid routed Hermes profile name: {profile!r}"
+            ) from exc
+
+        safe_root = None
+        try:
+            platform_cfg = self.config.platforms.get(source.platform)
+            if platform_cfg:
+                safe_root_raw = platform_cfg.extra.get("topic_profiles_safe_root")
+                if safe_root_raw:
+                    safe_root = Path(str(safe_root_raw)).expanduser()
+                    if not safe_root.is_absolute():
+                        gateway_home = None
+                        try:
+                            sessions_dir = getattr(getattr(self, "session_store", None), "sessions_dir", None)
+                            if sessions_dir is not None:
+                                gateway_home = Path(sessions_dir).parent
+                        except Exception:
+                            gateway_home = None
+                        safe_root = (gateway_home or _hermes_home) / safe_root
+                    safe_root = safe_root.resolve(strict=False)
+        except Exception:
+            safe_root = None
+        if safe_root is None:
+            raise TopicProfileRoutingError(
+                "Routed topic profiles require telegram.topic_profiles_safe_root"
+            )
+        if safe_root == (Path.home() / ".hermes").resolve(strict=False):
+            raise TopicProfileRoutingError(
+                "telegram.topic_profiles_safe_root must not be ~/.hermes"
+            )
+
+        explicit = getattr(source, "agent_hermes_home", None)
+        if explicit:
+            explicit_path = Path(str(explicit)).expanduser()
+            if not explicit_path.is_absolute():
+                explicit_path = safe_root / explicit_path
+            if explicit_path.is_symlink():
+                raise TopicProfileRoutingError(
+                    f"Unsafe routed profile_home for {profile}: symlinks are not allowed"
+                )
+            try:
+                resolved = explicit_path.resolve(strict=False)
+                resolved.relative_to(safe_root)
+            except Exception as exc:
+                raise TopicProfileRoutingError(
+                    f"Unsafe routed profile_home for {profile}: path must stay inside "
+                    "topic_profiles_safe_root"
+                ) from exc
+            if resolved == (Path.home() / ".hermes").resolve(strict=False):
+                raise TopicProfileRoutingError(
+                    f"Unsafe routed profile_home for {profile}: ~/.hermes is forbidden"
+                )
+            if not resolved.is_dir():
+                raise TopicProfileRoutingError(
+                    f"Routed Hermes profile home does not exist for {profile}: {resolved}"
+                )
+            try:
+                validate_profile_identity(profile, resolved, safe_root)
+            except Exception as exc:
+                raise TopicProfileRoutingError(
+                    f"Routed Hermes profile identity failed for {profile}: {exc}"
+                ) from exc
+            return resolved
+
+        if not profile_exists(profile):
+            raise TopicProfileRoutingError(
+                f"Routed Hermes profile does not exist: {profile!r}. "
+                "Create it with `hermes profile create` or configure a safe profile_home."
+            )
+
+        resolved = get_profile_dir(profile).resolve(strict=False)
+        try:
+            resolved.relative_to(safe_root)
+        except Exception as exc:
+            raise TopicProfileRoutingError(
+                f"Routed Hermes profile home for {profile} is outside topic_profiles_safe_root"
+            ) from exc
+        try:
+            validate_profile_identity(profile, resolved, safe_root)
+        except Exception as exc:
+            raise TopicProfileRoutingError(
+                f"Routed Hermes profile identity failed for {profile}: {exc}"
+            ) from exc
+        return resolved
+
+    def _session_store_for_source(self, source: SessionSource):
+        profile_home = self._profile_home_for_source(source)
+        if profile_home is None:
+            store = getattr(self, "session_store", None)
+            if store is None:
+                store = SessionStore(_hermes_home / "sessions", getattr(self, "config", GatewayConfig()))
+                self.session_store = store
+            return store
+        return self._session_store_for_profile_home(profile_home)
+
+    def _session_db_for_source(self, source: SessionSource):
+        """Return the SQLite SessionDB associated with the source's active store."""
+        profile_home = self._profile_home_for_source(source)
+        if profile_home is None:
+            explicit = getattr(self, "_session_db", None)
+            if explicit is not None:
+                return explicit
+        try:
+            store = self._session_store_for_source(source)
+            db = getattr(store, "_db", None)
+            if db is not None:
+                return db
+        except Exception as exc:
+            if profile_home is not None:
+                raise TopicProfileRoutingError(
+                    f"Routed Hermes profile session DB is unavailable for {profile_home}"
+                ) from exc
+        if profile_home is not None:
+            raise TopicProfileRoutingError(
+                f"Routed Hermes profile session DB is unavailable for {profile_home}"
+            )
+        return getattr(self, "_session_db", None)
+
+    def _runtime_env_for_profile_home(self, profile_home: Path) -> dict:
+        """Read profile-local runtime env and mark auth fallbacks as forbidden."""
+        from hermes_cli.env_loader import read_hermes_dotenv_values
+        runtime_env = read_hermes_dotenv_values(hermes_home=profile_home)
+        runtime_env["HERMES_PROFILE_STRICT_AUTH"] = "1"
+        runtime_env["HERMES_HOME"] = str(profile_home)
+        return runtime_env
+
+    def _set_command_hermes_home_for_source(self, source: SessionSource):
+        """Install the routed profile HERMES_HOME for gateway-handled commands."""
+        profile_home = self._profile_home_for_source(source)
+        if profile_home is None:
+            return None
+        return set_hermes_home_override(profile_home)
+
+    def _resolved_agent_hermes_home_for_source(self, source: Optional[SessionSource]) -> str:
+        """Return the concrete routed HERMES_HOME for session-scoped tool context."""
+        if source is None:
+            return ""
+        try:
+            profile_home = self._profile_home_for_source(source)
+        except TopicProfileRoutingError:
+            raise
+        except Exception:
+            profile_home = None
+        if profile_home is not None:
+            return str(profile_home)
+        return str(getattr(source, "agent_hermes_home", None) or "")
 
     def _telegram_topic_mode_enabled(self, source: SessionSource) -> bool:
         """Return whether Telegram DM topic mode is active for this chat."""
@@ -2092,6 +2585,7 @@ class GatewayRunner:
         source: Optional[SessionSource] = None,
         session_key: Optional[str] = None,
         user_config: Optional[dict] = None,
+        runtime_env: Optional[dict] = None,
     ) -> tuple[str, dict]:
         """Resolve model/runtime for a session, honoring session-scoped /model overrides.
 
@@ -2105,6 +2599,17 @@ class GatewayRunner:
                 resolved_session_key = self._session_key_for_source(source)
             except Exception:
                 resolved_session_key = None
+
+        if runtime_env is None and source is not None and getattr(source, "agent_profile", None):
+            try:
+                profile_home = self._profile_home_for_source(source)
+                if profile_home is not None:
+                    runtime_env = self._runtime_env_for_profile_home(profile_home)
+            except TopicProfileRoutingError:
+                raise
+            except Exception as exc:
+                logger.debug("Could not read routed profile runtime env: %s", exc)
+                runtime_env = {}
 
         model = _resolve_gateway_model(user_config)
         override = self._session_model_overrides.get(resolved_session_key) if resolved_session_key else None
@@ -2136,7 +2641,12 @@ class GatewayRunner:
                 list(self._session_model_overrides.keys())[:5] if self._session_model_overrides else "[]",
             )
 
-        runtime_kwargs = _resolve_runtime_agent_kwargs()
+        try:
+            runtime_kwargs = _resolve_runtime_agent_kwargs(runtime_env=runtime_env)
+        except TypeError:
+            # Some tests monkeypatch this helper with the historical no-arg
+            # shape. Production helper accepts runtime_env.
+            runtime_kwargs = _resolve_runtime_agent_kwargs()
         runtime_model = runtime_kwargs.pop("model", None)
         if runtime_model:
             logger.info(
@@ -2521,21 +3031,30 @@ class GatewayRunner:
         return True
 
     @staticmethod
-    def _load_prefill_messages() -> List[Dict[str, Any]]:
+    def _load_prefill_messages(
+        *,
+        config: Optional[dict] = None,
+        hermes_home: Optional[Path] = None,
+        include_env: bool = True,
+    ) -> List[Dict[str, Any]]:
         """Load ephemeral prefill messages from config or env var.
         
-        Checks HERMES_PREFILL_MESSAGES_FILE env var first, then falls back to
-        the prefill_messages_file key in ~/.hermes/config.yaml.
-        Relative paths are resolved from ~/.hermes/.
+        Checks HERMES_PREFILL_MESSAGES_FILE env var first when ``include_env``
+        is true, then falls back to the prefill_messages_file key in the active
+        profile's config. Relative paths are resolved from that profile home.
         """
-        file_path = os.getenv("HERMES_PREFILL_MESSAGES_FILE", "")
+        base_home = Path(hermes_home) if hermes_home is not None else _hermes_home
+        file_path = os.getenv("HERMES_PREFILL_MESSAGES_FILE", "") if include_env else ""
         if not file_path:
             try:
-                import yaml as _y
-                cfg_path = _hermes_home / "config.yaml"
-                if cfg_path.exists():
-                    with open(cfg_path, encoding="utf-8") as _f:
-                        cfg = _y.safe_load(_f) or {}
+                cfg = config
+                if cfg is None:
+                    import yaml as _y
+                    cfg_path = base_home / "config.yaml"
+                    if cfg_path.exists():
+                        with open(cfg_path, encoding="utf-8") as _f:
+                            cfg = _y.safe_load(_f) or {}
+                if isinstance(cfg, dict):
                     file_path = cfg.get("prefill_messages_file", "")
             except Exception:
                 pass
@@ -2543,7 +3062,7 @@ class GatewayRunner:
             return []
         path = Path(file_path).expanduser()
         if not path.is_absolute():
-            path = _hermes_home / path
+            path = base_home / path
         if not path.exists():
             logger.warning("Prefill messages file not found: %s", path)
             return []
@@ -2559,28 +3078,42 @@ class GatewayRunner:
             return []
 
     @staticmethod
-    def _load_ephemeral_system_prompt() -> str:
+    def _load_ephemeral_system_prompt(
+        *,
+        config: Optional[dict] = None,
+        hermes_home: Optional[Path] = None,
+        include_env: bool = True,
+    ) -> str:
         """Load ephemeral system prompt from config or env var.
         
-        Checks HERMES_EPHEMERAL_SYSTEM_PROMPT env var first, then falls back to
-        agent.system_prompt in ~/.hermes/config.yaml.
+        Checks HERMES_EPHEMERAL_SYSTEM_PROMPT env var first when ``include_env``
+        is true, then falls back to agent.system_prompt in the active profile's
+        config.
         """
-        prompt = os.getenv("HERMES_EPHEMERAL_SYSTEM_PROMPT", "")
+        prompt = os.getenv("HERMES_EPHEMERAL_SYSTEM_PROMPT", "") if include_env else ""
         if prompt:
             return prompt
         try:
-            import yaml as _y
-            cfg_path = _hermes_home / "config.yaml"
-            if cfg_path.exists():
-                with open(cfg_path, encoding="utf-8") as _f:
-                    cfg = _y.safe_load(_f) or {}
+            cfg = config
+            if cfg is None:
+                import yaml as _y
+                base_home = Path(hermes_home) if hermes_home is not None else _hermes_home
+                cfg_path = base_home / "config.yaml"
+                if cfg_path.exists():
+                    with open(cfg_path, encoding="utf-8") as _f:
+                        cfg = _y.safe_load(_f) or {}
+            if isinstance(cfg, dict):
                 return (cfg_get(cfg, "agent", "system_prompt", default="") or "").strip()
         except Exception:
             pass
         return ""
 
     @staticmethod
-    def _load_reasoning_config() -> dict | None:
+    def _load_reasoning_config(
+        *,
+        config: Optional[dict] = None,
+        hermes_home: Optional[Path] = None,
+    ) -> dict | None:
         """Load reasoning effort from config.yaml.
 
         Reads agent.reasoning_effort from config.yaml. Valid: "none",
@@ -2590,11 +3123,15 @@ class GatewayRunner:
         from hermes_constants import parse_reasoning_effort
         effort = ""
         try:
-            import yaml as _y
-            cfg_path = _hermes_home / "config.yaml"
-            if cfg_path.exists():
-                with open(cfg_path, encoding="utf-8") as _f:
-                    cfg = _y.safe_load(_f) or {}
+            cfg = config
+            if cfg is None:
+                import yaml as _y
+                base_home = Path(hermes_home) if hermes_home is not None else _hermes_home
+                cfg_path = base_home / "config.yaml"
+                if cfg_path.exists():
+                    with open(cfg_path, encoding="utf-8") as _f:
+                        cfg = _y.safe_load(_f) or {}
+            if isinstance(cfg, dict):
                 effort = str(cfg_get(cfg, "agent", "reasoning_effort", default="") or "").strip()
         except Exception:
             pass
@@ -2634,6 +3171,8 @@ class GatewayRunner:
         *,
         source: Optional[SessionSource] = None,
         session_key: Optional[str] = None,
+        user_config: Optional[dict] = None,
+        hermes_home: Optional[Path] = None,
     ) -> dict | None:
         """Resolve reasoning effort for a session, honoring session overrides."""
         resolved_session_key = session_key
@@ -2646,7 +3185,7 @@ class GatewayRunner:
         overrides = getattr(self, "_session_reasoning_overrides", {}) or {}
         if resolved_session_key and resolved_session_key in overrides:
             return overrides[resolved_session_key]
-        return self._load_reasoning_config()
+        return self._load_reasoning_config(config=user_config, hermes_home=hermes_home)
 
     def _set_session_reasoning_override(
         self,
@@ -2664,7 +3203,11 @@ class GatewayRunner:
             self._session_reasoning_overrides[session_key] = dict(reasoning_config)
 
     @staticmethod
-    def _load_service_tier() -> str | None:
+    def _load_service_tier(
+        *,
+        config: Optional[dict] = None,
+        hermes_home: Optional[Path] = None,
+    ) -> str | None:
         """Load Priority Processing setting from config.yaml.
 
         Reads agent.service_tier from config.yaml. Accepted values mirror the CLI:
@@ -2673,11 +3216,15 @@ class GatewayRunner:
         """
         raw = ""
         try:
-            import yaml as _y
-            cfg_path = _hermes_home / "config.yaml"
-            if cfg_path.exists():
-                with open(cfg_path, encoding="utf-8") as _f:
-                    cfg = _y.safe_load(_f) or {}
+            cfg = config
+            if cfg is None:
+                import yaml as _y
+                base_home = Path(hermes_home) if hermes_home is not None else _hermes_home
+                cfg_path = base_home / "config.yaml"
+                if cfg_path.exists():
+                    with open(cfg_path, encoding="utf-8") as _f:
+                        cfg = _y.safe_load(_f) or {}
+            if isinstance(cfg, dict):
                 raw = str(cfg_get(cfg, "agent", "service_tier", default="") or "").strip()
         except Exception:
             pass
@@ -2789,14 +3336,22 @@ class GatewayRunner:
         return mode
 
     @staticmethod
-    def _load_provider_routing() -> dict:
+    def _load_provider_routing(
+        *,
+        config: Optional[dict] = None,
+        hermes_home: Optional[Path] = None,
+    ) -> dict:
         """Load OpenRouter provider routing preferences from config.yaml."""
         try:
-            import yaml as _y
-            cfg_path = _hermes_home / "config.yaml"
-            if cfg_path.exists():
-                with open(cfg_path, encoding="utf-8") as _f:
-                    cfg = _y.safe_load(_f) or {}
+            cfg = config
+            if cfg is None:
+                import yaml as _y
+                base_home = Path(hermes_home) if hermes_home is not None else _hermes_home
+                cfg_path = base_home / "config.yaml"
+                if cfg_path.exists():
+                    with open(cfg_path, encoding="utf-8") as _f:
+                        cfg = _y.safe_load(_f) or {}
+            if isinstance(cfg, dict):
                 return cfg.get("provider_routing", {}) or {}
         except Exception:
             pass
@@ -3095,9 +3650,10 @@ class GatewayRunner:
         for session_key in active:
             source = None
             try:
-                if getattr(self, "session_store", None) is not None:
-                    self.session_store._ensure_loaded()
-                    entry = self.session_store._entries.get(session_key)
+                store = self._session_store_for_session_key(session_key)
+                if store is not None:
+                    store._ensure_loaded()
+                    entry = store._entries.get(session_key)
                     source = getattr(entry, "origin", None) if entry else None
             except Exception as e:
                 logger.debug(
@@ -3515,16 +4071,18 @@ class GatewayRunner:
         message, or on the next gateway startup.
         """
         window = _auto_continue_freshness_window()
+        candidates = []
         try:
-            with self.session_store._lock:  # noqa: SLF001 — snapshot under lock
-                self.session_store._ensure_loaded_locked()  # noqa: SLF001
-                candidates = [
-                    entry for entry in self.session_store._entries.values()  # noqa: SLF001
-                    if entry.resume_pending
-                    and not entry.suspended
-                    and entry.origin is not None
-                    and entry.resume_reason in self._AUTO_RESUME_REASONS
-                ]
+            for store in self._known_session_stores():
+                with store._lock:  # noqa: SLF001 — snapshot under lock
+                    store._ensure_loaded_locked()  # noqa: SLF001
+                    candidates.extend(
+                        entry for entry in store._entries.values()  # noqa: SLF001
+                        if entry.resume_pending
+                        and not entry.suspended
+                        and entry.origin is not None
+                        and entry.resume_reason in self._AUTO_RESUME_REASONS
+                    )
         except Exception as exc:
             logger.warning("Failed to enumerate resume-pending sessions: %s", exc)
             return 0
@@ -3777,7 +4335,9 @@ class GatewayRunner:
         # Recover background processes from checkpoint (crash recovery)
         try:
             from tools.process_registry import process_registry
-            recovered = process_registry.recover_from_checkpoint()
+            recovered = process_registry.recover_from_checkpoint(
+                checkpoint_paths=self._process_checkpoint_paths_for_topic_profiles()
+            )
             if recovered:
                 logger.info("Recovered %s background process(es) from previous run", recovered)
         except Exception as e:
@@ -3849,6 +4409,8 @@ class GatewayRunner:
             adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
             adapter.set_session_store(self.session_store)
             adapter.set_busy_session_handler(self._handle_active_session_busy_message)
+            if hasattr(adapter, "set_topic_profile_route_resolver"):
+                adapter.set_topic_profile_route_resolver(self._hydrate_topic_profile_for_event)
             
             # Try to connect
             logger.info("Connecting to %s...", platform.value)
@@ -5456,6 +6018,8 @@ class GatewayRunner:
                     adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
                     adapter.set_session_store(self.session_store)
                     adapter.set_busy_session_handler(self._handle_active_session_busy_message)
+                    if hasattr(adapter, "set_topic_profile_route_resolver"):
+                        adapter.set_topic_profile_route_resolver(self._hydrate_topic_profile_for_event)
 
                     success = await self._connect_adapter_with_timeout(adapter, platform)
                     if success:
@@ -5617,7 +6181,7 @@ class GatewayRunner:
                 if _agent is _AGENT_PENDING_SENTINEL:
                     continue
                 try:
-                    self.session_store.mark_resume_pending(
+                    self._mark_resume_pending_for_session_key(
                         _sk,
                         "restart_timeout" if self._restart_requested else "shutdown_timeout",
                     )
@@ -5644,7 +6208,7 @@ class GatewayRunner:
                 for _sk in _pre_drain_keys:
                     if _sk not in self._running_agents:
                         try:
-                            self.session_store.clear_resume_pending(_sk)
+                            self._clear_resume_pending_for_session_key(_sk)
                         except Exception as _e:
                             logger.debug(
                                 "clear_resume_pending after drain failed for %s: %s",
@@ -5685,7 +6249,7 @@ class GatewayRunner:
                     if _agent is _AGENT_PENDING_SENTINEL:
                         continue
                     try:
-                        self.session_store.mark_resume_pending(_sk, _resume_reason)
+                        self._mark_resume_pending_for_session_key(_sk, _resume_reason)
                     except Exception as _e:
                         logger.debug(
                             "mark_resume_pending failed for %s: %s",
@@ -6431,6 +6995,12 @@ class GatewayRunner:
         7. Return response
         """
         source = event.source
+        self._hydrate_topic_profile_for_event(event)
+        source = event.source
+        routed_profile_topic = bool(
+            getattr(source, "agent_profile", None)
+            or getattr(source, "agent_hermes_home", None)
+        )
 
         # Internal events (e.g. background-process completion notifications)
         # are system-generated and must skip user authorization.
@@ -6443,7 +7013,7 @@ class GatewayRunner:
         #   {"action": "allow"}   /   None          -> normal dispatch
         # Hook runs BEFORE auth so plugins can handle unauthorized senders
         # (e.g. customer handover ingest) without triggering the pairing flow.
-        if not is_internal:
+        if not is_internal and not routed_profile_topic:
             try:
                 from hermes_cli.plugins import invoke_hook as _invoke_hook
                 _hook_results = _invoke_hook(
@@ -7064,16 +7634,32 @@ class GatewayRunner:
         # don't depend on the exact alias the user typed.
         _cmd_def = _resolve_cmd(command) if command else None
         canonical = _cmd_def.name if _cmd_def else command
+        if isinstance(self.config, dict):
+            quick_commands = self.config.get("quick_commands", {}) or {}
+        else:
+            quick_commands = getattr(self.config, "quick_commands", {}) or {}
+        if not isinstance(quick_commands, dict):
+            quick_commands = {}
+
+        if (
+            command
+            and (getattr(source, "agent_profile", None) or getattr(source, "agent_hermes_home", None))
+            and command in quick_commands
+        ):
+            return (
+                f"`/{command}` is disabled in routed profile topics. "
+                "Quick commands run in the gateway process."
+            )
+        routed_profile_topic = bool(
+            getattr(source, "agent_profile", None)
+            or getattr(source, "agent_hermes_home", None)
+        )
 
         # Expand alias quick commands before built-in dispatch so targets like
-        # /model openai/gpt-5.5 --provider openrouter reach the /model handler.
+        # /model provider/example-model --provider example reach the /model handler.
         # Preserve built-in precedence; aliases only need early handling when
         # the typed command is not already known.
         if command and _cmd_def is None:
-            if isinstance(self.config, dict):
-                quick_commands = self.config.get("quick_commands", {}) or {}
-            else:
-                quick_commands = getattr(self.config, "quick_commands", {}) or {}
             if isinstance(quick_commands, dict) and command in quick_commands:
                 qcmd = quick_commands[command]
                 if qcmd.get("type") == "alias":
@@ -7086,6 +7672,18 @@ class GatewayRunner:
                         command = target_command.split()[0] if target_command else target_command
                         _cmd_def = _resolve_cmd(command) if command else None
                         canonical = _cmd_def.name if _cmd_def else command
+
+        if command and routed_profile_topic:
+            try:
+                from hermes_cli.plugins import get_plugin_command_handler
+                plugin_handler = get_plugin_command_handler(command.replace("_", "-"))
+            except Exception:
+                plugin_handler = None
+            if plugin_handler:
+                return (
+                    f"`/{command}` is disabled in routed profile topics. "
+                    "Plugin slash commands run in the gateway process."
+                )
 
         # Per-platform slash command access control. Only kicks in when the
         # operator has set ``allow_admin_from`` for the source's scope (DM
@@ -7105,7 +7703,7 @@ class GatewayRunner:
         # the previous fire-and-forget emit(): return values are now
         # honored, but handlers that return nothing behave exactly as
         # before (telemetry-style hooks keep working).
-        if command and is_gateway_known_command(canonical):
+        if command and is_gateway_known_command(canonical) and not routed_profile_topic:
             raw_args = event.get_command_args().strip()
             hook_ctx = {
                 "platform": source.platform.value if source.platform else "",
@@ -7317,12 +7915,6 @@ class GatewayRunner:
 
         # User-defined quick commands (bypass agent loop, no LLM call)
         if command:
-            if isinstance(self.config, dict):
-                quick_commands = self.config.get("quick_commands", {}) or {}
-            else:
-                quick_commands = getattr(self.config, "quick_commands", {}) or {}
-            if not isinstance(quick_commands, dict):
-                quick_commands = {}
             if command in quick_commands:
                 qcmd = quick_commands[command]
                 if qcmd.get("type") == "exec":
@@ -7376,6 +7968,11 @@ class GatewayRunner:
                 # hyphens. See hermes_cli/commands.py:_build_telegram_menu.
                 plugin_handler = get_plugin_command_handler(command.replace("_", "-"))
                 if plugin_handler:
+                    if getattr(source, "agent_profile", None) or getattr(source, "agent_hermes_home", None):
+                        return (
+                            f"`/{command}` is disabled in routed profile topics. "
+                            "Plugin slash commands run in the gateway process."
+                        )
                     user_args = event.get_command_args().strip()
                     result = plugin_handler(user_args)
                     if asyncio.iscoroutine(result):
@@ -7392,7 +7989,11 @@ class GatewayRunner:
             # Skill bundles take precedence over individual skill commands —
             # /<bundle> loads multiple skills at once. Mirrors CLI dispatch.
             _bundle_handled = False
+            _bundle_home_token = None
             try:
+                _bundle_profile_home = self._profile_home_for_source(source)
+                if _bundle_profile_home is not None:
+                    _bundle_home_token = set_hermes_home_override(_bundle_profile_home)
                 from agent.skill_bundles import (
                     build_bundle_invocation_message,
                     resolve_bundle_command_key,
@@ -7411,13 +8012,22 @@ class GatewayRunner:
                             logger.info(
                                 "Bundle %s skipped missing skills: %s",
                                 bundle_key, ", ".join(missing),
-                            )
+                        )
                         # Fall through to normal message processing with bundle content
+            except TopicProfileRoutingError as exc:
+                return f"⚠️ Topic profile routing failed: {exc}"
             except Exception as exc:
                 logger.debug("Bundle dispatch failed (non-fatal): %s", exc)
+            finally:
+                if _bundle_home_token is not None:
+                    reset_hermes_home_override(_bundle_home_token)
 
         if command and not locals().get("_bundle_handled", False):
+            _skill_home_token = None
             try:
+                _skill_profile_home = self._profile_home_for_source(source)
+                if _skill_profile_home is not None:
+                    _skill_home_token = set_hermes_home_override(_skill_profile_home)
                 from agent.skill_commands import (
                     get_skill_commands,
                     build_skill_invocation_message,
@@ -7473,8 +8083,14 @@ class GatewayRunner:
                             f"or resend without the leading slash to send "
                             f"as a regular message."
                         )
+            except TopicProfileRoutingError as e:
+                logger.error("Topic profile routing failed closed for skill command: %s", e)
+                return f"⚠️ Topic profile routing failed: {e}"
             except Exception as e:
                 logger.debug("Skill command check failed (non-fatal): %s", e)
+            finally:
+                if _skill_home_token is not None:
+                    reset_hermes_home_override(_skill_home_token)
         
         # Pending exec approvals are handled by /approve and /deny commands above.
         # No bare text matching — "yes" in normal conversation must not trigger
@@ -7517,7 +8133,8 @@ class GatewayRunner:
                 # on error. Let the user drive the next turn.
                 if _final_text.strip():
                     try:
-                        session_entry = self.session_store.get_or_create_session(source)
+                        session_store = self._session_store_for_source(source)
+                        session_entry = session_store.get_or_create_session(source)
                     except Exception:
                         session_entry = None
                     if session_entry is not None:
@@ -7823,13 +8440,30 @@ class GatewayRunner:
 
     async def _handle_message_with_agent(self, event, source, _quick_key: str, run_generation: int):
         """Inner handler that runs under the _running_agents sentinel guard."""
+        _session_env_tokens = []
+        self._hydrate_topic_profile_for_event(event)
+        source = event.source
+        try:
+            _profile_home = self._profile_home_for_source(source)
+        except TopicProfileRoutingError as exc:
+            logger.error("Topic profile routing failed closed: %s", exc)
+            return f"⚠️ Topic profile routing failed: {exc}"
+        _profile_home_token = (
+            set_hermes_home_override(_profile_home)
+            if _profile_home is not None
+            else None
+        )
+        session_store = self._session_store_for_source(source)
+        session_db = self._session_db_for_source(source)
         _msg_start_time = time.time()
         _platform_name = source.platform.value if hasattr(source.platform, "value") else str(source.platform)
         _msg_preview = (event.text or "")[:80].replace("\n", " ")
         logger.info(
-            "inbound message: platform=%s user=%s chat=%s msg=%r",
+            "inbound message: platform=%s user=%s chat=%s profile=%s msg=%r",
             _platform_name, source.user_name or source.user_id or "unknown",
-            source.chat_id or "unknown", _msg_preview,
+            source.chat_id or "unknown",
+            getattr(source, "agent_profile", None) or "main",
+            _msg_preview,
         )
 
         # Get or create session
@@ -7848,15 +8482,15 @@ class GatewayRunner:
             except Exception:
                 pass
 
-        session_entry = self.session_store.get_or_create_session(source)
+        session_entry = session_store.get_or_create_session(source)
         session_key = session_entry.session_key
         self._cache_session_source(session_key, source)
         if self._is_telegram_topic_lane(source):
             try:
-                binding = self._session_db.get_telegram_topic_binding(
+                binding = session_db.get_telegram_topic_binding(
                     chat_id=str(source.chat_id),
                     thread_id=str(source.thread_id),
-                ) if self._session_db else None
+                ) if session_db else None
             except Exception:
                 logger.debug("Failed to read Telegram topic binding", exc_info=True)
                 binding = None
@@ -7868,7 +8502,7 @@ class GatewayRunner:
                     # lane session is ended cleanly. Mutating session_entry in
                     # place here created a split-brain state where the JSON
                     # index pointed at one id but code downstream used another.
-                    switched = self.session_store.switch_session(session_key, bound_session_id)
+                    switched = session_store.switch_session(session_key, bound_session_id)
                     if switched is not None:
                         session_entry = switched
             else:
@@ -7904,8 +8538,15 @@ class GatewayRunner:
                 "session_key": session_key,
             })
         
-        # Build session context
-        context = build_session_context(source, self.config, session_entry)
+        # Build session context. Routed profile turns must not inherit the
+        # gateway's global delivery/home-channel map into the agent prompt.
+        context_config = self.config
+        if _profile_home is not None:
+            context_config = dataclasses.replace(
+                self.config if not isinstance(self.config, dict) else GatewayConfig(),
+                platforms={},
+            )
+        context = build_session_context(source, context_config, session_entry)
         
         # Set session context variables for tools (task-local, concurrency-safe)
         _session_env_tokens = self._set_session_env(context)
@@ -7913,7 +8554,7 @@ class GatewayRunner:
         # Read privacy.redact_pii from config (re-read per message)
         _redact_pii = False
         try:
-            _pcfg = _load_gateway_config()
+            _pcfg = _load_gateway_config(_profile_home) if _profile_home is not None else _load_gateway_config()
             _redact_pii = bool((_pcfg.get("privacy") or {}).get("redact_pii", False))
         except Exception:
             pass
@@ -7938,7 +8579,7 @@ class GatewayRunner:
             # - the platform is excluded (e.g. api_server, webhook)
             # - the expired session had no activity (nothing was cleared)
             try:
-                policy = self.session_store.config.get_reset_policy(
+                policy = session_store.config.get_reset_policy(
                     platform=source.platform,
                     session_type=getattr(source, 'chat_type', 'dm'),
                 )
@@ -7970,7 +8611,7 @@ class GatewayRunner:
                             f"Adjust reset timing in config.yaml under session_reset."
                         )
                         try:
-                            session_info = self._format_session_info()
+                            session_info = self._format_session_info(source)
                             if session_info:
                                 notice = f"{notice}\n\n{session_info}"
                         except Exception:
@@ -8022,7 +8663,7 @@ class GatewayRunner:
                 logger.warning("[Gateway] Failed to auto-load skill(s) %s: %s", _skill_names, e)
 
         # Load conversation history from transcript
-        history = self.session_store.load_transcript(session_entry.session_id)
+        history = session_store.load_transcript(session_entry.session_id)
         
         # -----------------------------------------------------------------
         # Session hygiene: auto-compress pathologically large transcripts
@@ -8062,8 +8703,15 @@ class GatewayRunner:
             _hyg_base_url = None
             _hyg_api_key = None
             _hyg_data = {}
+            _hyg_runtime_env = None
             try:
                 _hyg_data = _load_gateway_config()
+                if _profile_home is not None:
+                    try:
+                        _hyg_runtime_env = self._runtime_env_for_profile_home(_profile_home)
+                    except Exception as exc:
+                        logger.debug("Could not read routed profile .env for session hygiene: %s", exc)
+                        _hyg_runtime_env = {}
                 if _hyg_data:
                     # Resolve model name (same logic as run_sync)
                     _model_cfg = _hyg_data.get("model", {})
@@ -8105,6 +8753,7 @@ class GatewayRunner:
                         source=source,
                         session_key=session_key,
                         user_config=_hyg_data if isinstance(_hyg_data, dict) else None,
+                        runtime_env=_hyg_runtime_env,
                     )
                     _hyg_provider = _hyg_runtime.get("provider") or _hyg_provider
                     _hyg_base_url = _hyg_runtime.get("base_url") or _hyg_base_url
@@ -8208,8 +8857,22 @@ class GatewayRunner:
                             source=source,
                             session_key=session_key,
                             user_config=_hyg_data if isinstance(_hyg_data, dict) else None,
+                            runtime_env=_hyg_runtime_env,
                         )
-                        if _hyg_runtime.get("api_key"):
+                        if _profile_home is not None:
+                            from hermes_cli.auth import has_usable_secret
+                            _hyg_has_provider = bool(
+                                _hyg_runtime.get("credential_pool")
+                                or _hyg_runtime.get("command")
+                                or has_usable_secret(str(_hyg_runtime.get("api_key") or ""))
+                            )
+                        else:
+                            _hyg_has_provider = bool(
+                                _hyg_runtime.get("api_key")
+                                or _hyg_runtime.get("credential_pool")
+                                or _hyg_runtime.get("command")
+                            )
+                        if _hyg_has_provider:
                             _hyg_msgs = [
                                 {"role": m.get("role"), "content": m.get("content")}
                                 for m in history
@@ -8226,13 +8889,18 @@ class GatewayRunner:
                                     skip_memory=True,
                                     enabled_toolsets=["memory"],
                                     session_id=session_entry.session_id,
+                                    session_db=session_db,
+                                    fallback_model=(
+                                        _hyg_data.get("fallback_providers")
+                                        or _hyg_data.get("fallback_model")
+                                        or (None if _profile_home is not None else getattr(self, "_fallback_model", None))
+                                    ),
+                                    runtime_env=_hyg_runtime_env,
                                 )
                                 try:
                                     _hyg_agent._print_fn = lambda *a, **kw: None
 
-                                    loop = asyncio.get_running_loop()
-                                    _compressed, _ = await loop.run_in_executor(
-                                        None,
+                                    _compressed, _ = await self._run_in_executor_with_context(
                                         lambda: _hyg_agent._compress_context(
                                             _hyg_msgs, "",
                                             approx_tokens=_approx_tokens,
@@ -8246,9 +8914,9 @@ class GatewayRunner:
                                     _hyg_new_sid = _hyg_agent.session_id
                                     if _hyg_new_sid != session_entry.session_id:
                                         session_entry.session_id = _hyg_new_sid
-                                        self.session_store._save()
+                                        session_store._save()
 
-                                    self.session_store.rewrite_transcript(
+                                    session_store.rewrite_transcript(
                                         session_entry.session_id, _compressed
                                     )
                                     # Reset stored token count — transcript was rewritten
@@ -8339,7 +9007,7 @@ class GatewayRunner:
                         )
 
         # First-message onboarding -- only on the very first interaction ever
-        if not history and not self.session_store.has_any_sessions():
+        if not history and not session_store.has_any_sessions():
             context_prompt += (
                 "\n\n[System note: This is the user's very first message ever. "
                 "Briefly introduce yourself and mention that /help shows available commands. "
@@ -8433,6 +9101,7 @@ class GatewayRunner:
                 run_generation=run_generation,
                 event_message_id=self._reply_anchor_for_event(event),
                 channel_prompt=event.channel_prompt,
+                session_db=session_db,
             )
 
             # Stop persistent typing indicator now that the agent is done
@@ -8493,7 +9162,7 @@ class GatewayRunner:
             if session_key and _should_clear_resume_pending_after_turn(agent_result):
                 self._clear_restart_failure_count(session_key)
                 try:
-                    self.session_store.clear_resume_pending(session_key)
+                    session_store.clear_resume_pending(session_key)
                 except Exception as _e:
                     logger.debug(
                         "clear_resume_pending failed for %s: %s",
@@ -8655,7 +9324,7 @@ class GatewayRunner:
                     "Auto-resetting session %s after compression exhaustion.",
                     session_entry.session_id,
                 )
-                self.session_store.reset_session(session_key)
+                session_store.reset_session(session_key)
                 self._evict_cached_agent(session_key)
                 self._session_model_overrides.pop(session_key, None)
                 self._set_session_reasoning_override(session_key, None)
@@ -8676,7 +9345,7 @@ class GatewayRunner:
                 pass  # Skip all transcript writes — don't grow a broken session
             elif not history:
                 tool_defs = agent_result.get("tools", [])
-                self.session_store.append_to_transcript(
+                session_store.append_to_transcript(
                     session_entry.session_id,
                     {
                         "role": "session_meta",
@@ -8701,7 +9370,7 @@ class GatewayRunner:
                 _user_entry = {"role": "user", "content": message_text, "timestamp": ts}
                 if event.message_id:
                     _user_entry["message_id"] = str(event.message_id)
-                self.session_store.append_to_transcript(
+                session_store.append_to_transcript(
                     session_entry.session_id,
                     _user_entry,
                 )
@@ -8714,12 +9383,12 @@ class GatewayRunner:
                     _user_entry = {"role": "user", "content": message_text, "timestamp": ts}
                     if event.message_id:
                         _user_entry["message_id"] = str(event.message_id)
-                    self.session_store.append_to_transcript(
+                    session_store.append_to_transcript(
                         session_entry.session_id,
                         _user_entry,
                     )
                     if response:
-                        self.session_store.append_to_transcript(
+                        session_store.append_to_transcript(
                             session_entry.session_id,
                             {"role": "assistant", "content": response, "timestamp": ts}
                         )
@@ -8728,7 +9397,7 @@ class GatewayRunner:
                     # _flush_messages_to_session_db(), so skip the DB write here
                     # to prevent the duplicate-write bug (#860).  We still write
                     # to JSONL for backward compatibility and as a backup.
-                    agent_persisted = self._session_db is not None
+                    agent_persisted = session_db is not None
                     # Attach the inbound platform message_id to the first user
                     # entry written this turn so platform-level quote-resolution
                     # (e.g. Yuanbao QuoteContextMiddleware's transcript fallback)
@@ -8748,7 +9417,7 @@ class GatewayRunner:
                         ):
                             entry["message_id"] = str(event.message_id)
                             _user_msg_id_attached = True
-                        self.session_store.append_to_transcript(
+                        session_store.append_to_transcript(
                             session_entry.session_id, entry,
                             skip_db=agent_persisted,
                         )
@@ -8756,7 +9425,7 @@ class GatewayRunner:
             # Token counts and model are now persisted by the agent directly.
             # Keep only last_prompt_tokens here for context-window tracking and
             # compression decisions.
-            self.session_store.update_session(
+            session_store.update_session(
                 session_entry.session_key,
                 last_prompt_tokens=agent_result.get("last_prompt_tokens", 0),
             )
@@ -8865,8 +9534,10 @@ class GatewayRunner:
         finally:
             # Restore session context variables to their pre-handler state
             self._clear_session_env(_session_env_tokens)
+            if _profile_home_token is not None:
+                reset_hermes_home_override(_profile_home_token)
 
-    def _format_session_info(self) -> str:
+    def _format_session_info(self, source: Optional[SessionSource] = None) -> str:
         """Resolve current model config and return a formatted info block.
 
         Surfaces model, provider, context length, and endpoint so gateway
@@ -8875,17 +9546,88 @@ class GatewayRunner:
         """
         from agent.model_metadata import get_model_context_length, DEFAULT_FALLBACK_CONTEXT
 
-        model = _resolve_gateway_model()
+        def _providers_equivalent(config_provider: Optional[str], runtime_provider: Optional[str]) -> bool:
+            configured = (config_provider or "").strip().lower()
+            runtime_name = (runtime_provider or "").strip().lower()
+            if not configured or not runtime_name:
+                return False
+            if configured == runtime_name:
+                return True
+            return configured.startswith("custom:") and runtime_name == "custom"
+
+        profile_home = None
+        runtime_env = None
+        if source is not None:
+            profile_home = self._profile_home_for_source(source)
+            if profile_home is not None:
+                try:
+                    runtime_env = self._runtime_env_for_profile_home(profile_home)
+                except Exception as exc:
+                    logger.debug(
+                        "Could not read routed profile runtime env for session info: %s",
+                        exc,
+                    )
+                    runtime_env = {}
+
+        data = _load_gateway_config(profile_home) if profile_home is not None else _load_gateway_config(_hermes_home)
+        configured_model = _resolve_gateway_model(data)
+        model = configured_model
         config_context_length = None
+        config_provider = None
+        config_base_url = None
         provider = None
         base_url = None
         api_key = None
         custom_provs = None
-        data = None
 
         try:
-            data = _load_gateway_config()
             if data:
+                model_cfg = data.get("model", {})
+                if isinstance(model_cfg, dict):
+                    config_provider = model_cfg.get("provider") or None
+                    config_base_url = model_cfg.get("base_url") or None
+                try:
+                    from hermes_cli.config import get_compatible_custom_providers
+                    custom_provs = get_compatible_custom_providers(data)
+                except Exception:
+                    custom_provs = data.get("custom_providers")
+        except Exception:
+            pass
+
+        # Resolve runtime credentials for probing. For routed profiles, keep
+        # all config/auth/fallback lookup under the profile's Hermes home so
+        # global gateway credentials cannot leak into the displayed session.
+        try:
+            if source is not None:
+                if profile_home is not None:
+                    with hermes_home_context(profile_home):
+                        model, runtime = self._resolve_session_agent_runtime(
+                            source=source,
+                            user_config=data,
+                            runtime_env=runtime_env,
+                        )
+                else:
+                    model, runtime = self._resolve_session_agent_runtime(
+                        source=source,
+                        user_config=data,
+                        runtime_env=runtime_env,
+                    )
+            else:
+                runtime = _resolve_runtime_agent_kwargs()
+            runtime_provider = runtime.get("provider")
+            provider = (
+                config_provider
+                if _providers_equivalent(config_provider, runtime_provider)
+                else (runtime_provider or config_provider)
+            )
+            base_url = runtime.get("base_url") or config_base_url
+            api_key = runtime.get("api_key")
+        except Exception:
+            provider = config_provider
+            base_url = config_base_url
+
+        try:
+            if data and model == configured_model:
                 model_cfg = data.get("model", {})
                 if isinstance(model_cfg, dict):
                     raw_ctx = model_cfg.get("context_length")
@@ -8894,13 +9636,6 @@ class GatewayRunner:
                             config_context_length = int(raw_ctx)
                         except (TypeError, ValueError):
                             pass
-                    provider = model_cfg.get("provider") or None
-                    base_url = model_cfg.get("base_url") or None
-                try:
-                    from hermes_cli.config import get_compatible_custom_providers
-                    custom_provs = get_compatible_custom_providers(data)
-                except Exception:
-                    custom_provs = data.get("custom_providers")
         except Exception:
             pass
 
@@ -8938,15 +9673,6 @@ class GatewayRunner:
                                     pass
             except Exception:
                 pass
-
-        # Resolve runtime credentials for probing
-        try:
-            runtime = _resolve_runtime_agent_kwargs()
-            provider = provider or runtime.get("provider")
-            base_url = base_url or runtime.get("base_url")
-            api_key = runtime.get("api_key")
-        except Exception:
-            pass
 
         context_length = get_model_context_length(
             model,
@@ -8995,7 +9721,9 @@ class GatewayRunner:
 
         # Snapshot the old entry so on_session_finalize can report the
         # expiring session id before reset_session() rotates it.
-        old_entry = self.session_store._entries.get(session_key)
+        active_session_store = self._session_store_for_source(source)
+        active_session_db = getattr(active_session_store, "_db", None)
+        old_entry = active_session_store._entries.get(session_key)
 
         # Close tool resources on the old agent (terminal sandboxes, browser
         # daemons, background processes) before evicting from cache.
@@ -9029,7 +9757,7 @@ class GatewayRunner:
             pass
 
         # Reset the session
-        new_entry = self.session_store.reset_session(session_key)
+        new_entry = active_session_store.reset_session(session_key)
 
         # Clear any session-scoped model/reasoning overrides so the next agent
         # picks up configured defaults instead of previous session switches.
@@ -9068,7 +9796,7 @@ class GatewayRunner:
 
         # Resolve session config info to surface to the user
         try:
-            session_info = self._format_session_info()
+            session_info = self._format_session_info(source)
         except Exception:
             session_info = ""
 
@@ -9076,13 +9804,13 @@ class GatewayRunner:
             header = self._telegram_topic_new_header(source) or t("gateway.reset.header_default")
         else:
             # No existing session, just create one
-            new_entry = self.session_store.get_or_create_session(source, force_new=True)
+            new_entry = active_session_store.get_or_create_session(source, force_new=True)
             header = self._telegram_topic_new_header(source) or t("gateway.reset.header_new")
 
         # Set session title if provided with /new <title>
         _title_arg = event.get_command_args().strip()
         _title_note = ""
-        if _title_arg and self._session_db and new_entry:
+        if _title_arg and active_session_db and new_entry:
             from hermes_state import SessionDB
             try:
                 sanitized = SessionDB.sanitize_title(_title_arg)
@@ -9091,7 +9819,7 @@ class GatewayRunner:
                 _title_note = t("gateway.reset.title_rejected", error=str(e))
             if sanitized:
                 try:
-                    self._session_db.set_session_title(new_entry.session_id, sanitized)
+                    active_session_db.set_session_title(new_entry.session_id, sanitized)
                     header = t("gateway.reset.header_titled", title=sanitized)
                 except ValueError as e:
                     _title_note = t("gateway.reset.title_error_untitled", error=str(e))
@@ -9138,8 +9866,19 @@ class GatewayRunner:
         from hermes_constants import display_hermes_home
         from hermes_cli.profiles import get_active_profile_name
 
-        display = display_hermes_home()
-        profile_name = get_active_profile_name()
+        source = event.source
+        routed_profile = str(getattr(source, "agent_profile", "") or "").strip()
+        routed_home = str(getattr(source, "agent_hermes_home", "") or "").strip()
+        if routed_profile or routed_home:
+            try:
+                profile_home = self._profile_home_for_source(source)
+            except TopicProfileRoutingError as exc:
+                return f"⚠️ Topic profile routing failed: {exc}"
+            profile_name = routed_profile or "routed"
+            display = str(profile_home) if profile_home is not None else (routed_home or display_hermes_home())
+        else:
+            display = display_hermes_home()
+            profile_name = get_active_profile_name()
 
         lines = [
             t("gateway.profile.header", profile=profile_name),
@@ -9345,7 +10084,9 @@ class GatewayRunner:
     async def _handle_status_command(self, event: MessageEvent) -> str:
         """Handle /status command."""
         source = event.source
-        session_entry = self.session_store.get_or_create_session(source)
+        session_store = self._session_store_for_source(source)
+        session_db = self._session_db_for_source(source)
+        session_entry = session_store.get_or_create_session(source)
 
         connected_platforms = [p.value for p in self.adapters.keys()]
 
@@ -9365,13 +10106,13 @@ class GatewayRunner:
         # single source of truth; reading it here keeps /status accurate
         # without duplicating token writes into two stores.
         db_total_tokens = 0
-        if self._session_db:
+        if session_db:
             try:
-                title = self._session_db.get_session_title(session_entry.session_id)
+                title = session_db.get_session_title(session_entry.session_id)
             except Exception:
                 title = None
             try:
-                row = self._session_db.get_session(session_entry.session_id)
+                row = session_db.get_session(session_entry.session_id)
                 if row:
                     db_total_tokens = (
                         (row.get("input_tokens") or 0)
@@ -9409,7 +10150,7 @@ class GatewayRunner:
         # one left off. Inspired by Claude Code 2.1.114's /recap.
         try:
             from hermes_cli.session_recap import build_recap
-            history = self.session_store.load_transcript(session_entry.session_id)
+            history = session_store.load_transcript(session_entry.session_id)
             recap = build_recap(
                 history,
                 session_title=title,
@@ -9428,13 +10169,17 @@ class GatewayRunner:
         from tools.process_registry import format_uptime_short, process_registry
 
         now = time.time()
-        current_session_key = self._session_key_for_source(event.source)
+        source = event.source
+        current_session_key = self._session_key_for_source(source)
+        current_prefix = ":".join(current_session_key.split(":", 2)[:2]) + ":"
 
         running_agents: dict = getattr(self, "_running_agents", {}) or {}
         running_started: dict = getattr(self, "_running_agents_ts", {}) or {}
 
         agent_rows: list[dict] = []
         for session_key, agent in running_agents.items():
+            if not str(session_key).startswith(current_prefix):
+                continue
             started = float(running_started.get(session_key, now))
             elapsed = max(0, int(now - started))
             is_pending = agent is _AGENT_PENDING_SENTINEL
@@ -9451,17 +10196,53 @@ class GatewayRunner:
         agent_rows.sort(key=lambda row: row["elapsed"], reverse=True)
 
         running_processes: list[dict] = []
+        _session_env_tokens = []
         try:
+            from gateway.session_context import set_session_vars, clear_session_vars
+            _session_env_tokens = set_session_vars(
+                platform=source.platform.value if source and source.platform else "",
+                chat_id=source.chat_id if source else "",
+                chat_name=source.chat_name or "" if source else "",
+                thread_id=str(source.thread_id) if source and source.thread_id else "",
+                user_id=str(source.user_id) if source and source.user_id else "",
+                user_name=str(source.user_name) if source and source.user_name else "",
+                session_key=current_session_key,
+                message_id=str(source.message_id) if source and source.message_id else "",
+                agent_profile=str(getattr(source, "agent_profile", None) or "") if source else "",
+                agent_hermes_home=self._resolved_agent_hermes_home_for_source(source) if source else "",
+                profile_strict_auth="1" if source and getattr(source, "agent_profile", None) else "",
+            )
             running_processes = [
                 p for p in process_registry.list_sessions()
                 if p.get("status") == "running"
             ]
         except Exception:
             running_processes = []
+        finally:
+            if _session_env_tokens:
+                try:
+                    clear_session_vars(_session_env_tokens)
+                except Exception:
+                    pass
+
+        current_profile = str(getattr(source, "agent_profile", "") or "")
+        current_home = self._resolved_agent_hermes_home_for_source(source)
+
+        def _background_task_in_scope(task) -> bool:
+            if not hasattr(task, "done") or task.done():
+                return False
+            task_profile = str(getattr(task, "_hermes_agent_profile", "") or "")
+            task_home = str(getattr(task, "_hermes_agent_hermes_home", "") or "")
+            if current_profile or current_home:
+                if current_home:
+                    return task_home == current_home
+                return bool(current_profile) and task_profile == current_profile
+            return not bool(task_profile or task_home)
 
         background_tasks = [
-            t for t in (getattr(self, "_background_tasks", set()) or set())
-            if hasattr(t, "done") and not t.done()
+            task
+            for task in (getattr(self, "_background_tasks", set()) or set())
+            if _background_task_in_scope(task)
         ]
 
         lines = [
@@ -9525,7 +10306,8 @@ class GatewayRunner:
         The session is preserved so the user can continue the conversation.
         """
         source = event.source
-        session_entry = self.session_store.get_or_create_session(source)
+        session_store = self._session_store_for_source(source)
+        session_entry = session_store.get_or_create_session(source)
         session_key = session_entry.session_key
 
         agent = self._running_agents.get(session_key)
@@ -9784,7 +10566,9 @@ class GatewayRunner:
             t("gateway.help.header"),
             *gateway_help_lines(),
         ]
+        profile_home_token = None
         try:
+            profile_home_token = self._set_command_hermes_home_for_source(event.source)
             from agent.skill_commands import get_skill_commands
             skill_cmds = get_skill_commands()
             if skill_cmds:
@@ -9795,8 +10579,13 @@ class GatewayRunner:
                     lines.append(f"`{cmd}` — {skill_cmds[cmd]['description']}")
                 if len(sorted_cmds) > 10:
                     lines.append(t("gateway.help.more_use_commands", count=len(sorted_cmds) - 10))
+        except TopicProfileRoutingError as exc:
+            return f"⚠️ Topic profile routing failed: {exc}"
         except Exception:
             pass
+        finally:
+            if profile_home_token is not None:
+                reset_hermes_home_override(profile_home_token)
         return _telegramize_command_mentions(
             "\n".join(lines),
             getattr(getattr(event, "source", None), "platform", None),
@@ -9816,7 +10605,9 @@ class GatewayRunner:
 
         # Build combined entry list: built-in commands + skill commands
         entries = list(gateway_help_lines())
+        profile_home_token = None
         try:
+            profile_home_token = self._set_command_hermes_home_for_source(event.source)
             from agent.skill_commands import get_skill_commands
             skill_cmds = get_skill_commands()
             if skill_cmds:
@@ -9825,8 +10616,13 @@ class GatewayRunner:
                 for cmd in sorted(skill_cmds):
                     desc = skill_cmds[cmd].get("description", "").strip() or t("gateway.commands.default_desc")
                     entries.append(f"`{cmd}` — {desc}")
+        except TopicProfileRoutingError as exc:
+            return f"⚠️ Topic profile routing failed: {exc}"
         except Exception:
             pass
+        finally:
+            if profile_home_token is not None:
+                reset_hermes_home_override(profile_home_token)
 
         if not entries:
             return t("gateway.commands.none")
@@ -9876,6 +10672,12 @@ class GatewayRunner:
         from hermes_cli.providers import get_label
 
         raw_args = event.get_command_args().strip()
+        source = event.source
+        if getattr(source, "agent_profile", None) or getattr(source, "agent_hermes_home", None):
+            return (
+                "`/model` is disabled in routed profile topics. "
+                "Change the routed profile configuration directly."
+            )
 
         # Parse --provider and --global flags
         model_input, explicit_provider, persist_global = parse_model_flags(raw_args)
@@ -9906,7 +10708,6 @@ class GatewayRunner:
             pass
 
         # Check for session override
-        source = event.source
         session_key = self._session_key_for_source(source)
         override = self._session_model_overrides.get(session_key, {})
         if override:
@@ -10231,6 +11032,13 @@ class GatewayRunner:
         (avoids prompt-cache invalidation mid-session)."""
         from hermes_cli import codex_runtime_switch as crs
 
+        source = event.source
+        if getattr(source, "agent_profile", None) or getattr(source, "agent_hermes_home", None):
+            return (
+                "`/codex-runtime` is disabled in routed profile topics. "
+                "Change the routed profile configuration directly."
+            )
+
         raw_args = event.get_command_args().strip() if event else ""
         new_value, errors = crs.parse_args(raw_args)
         if errors:
@@ -10267,6 +11075,11 @@ class GatewayRunner:
         from hermes_constants import display_hermes_home
 
         args = event.get_command_args().strip().lower()
+        if getattr(event.source, "agent_profile", None):
+            return (
+                "`/personality` is disabled in routed profile topics. "
+                "Edit that profile's SOUL.md or config.yaml directly."
+            )
         config_path = _hermes_home / 'config.yaml'
 
         try:
@@ -10334,8 +11147,9 @@ class GatewayRunner:
     async def _handle_retry_command(self, event: MessageEvent) -> str:
         """Handle /retry command - re-send the last user message."""
         source = event.source
-        session_entry = self.session_store.get_or_create_session(source)
-        history = self.session_store.load_transcript(session_entry.session_id)
+        session_store = self._session_store_for_source(source)
+        session_entry = session_store.get_or_create_session(source)
+        history = session_store.load_transcript(session_entry.session_id)
         
         # Find the last user message
         last_user_msg = None
@@ -10351,7 +11165,7 @@ class GatewayRunner:
         
         # Truncate history to before the last user message and persist
         truncated = history[:last_user_idx]
-        self.session_store.rewrite_transcript(session_entry.session_id, truncated)
+        session_store.rewrite_transcript(session_entry.session_id, truncated)
         # Reset stored token count — transcript was truncated
         session_entry.last_prompt_tokens = 0
         
@@ -10403,7 +11217,8 @@ class GatewayRunner:
             logger.debug("goal manager unavailable: %s", exc)
             return None, None
         try:
-            session_entry = self.session_store.get_or_create_session(event.source)
+            session_store = self._session_store_for_source(event.source)
+            session_entry = session_store.get_or_create_session(event.source)
         except Exception as exc:
             logger.debug("goal manager: session lookup failed: %s", exc)
             return None, None
@@ -10675,8 +11490,9 @@ class GatewayRunner:
     async def _handle_undo_command(self, event: MessageEvent) -> str:
         """Handle /undo command - remove the last user/assistant exchange."""
         source = event.source
-        session_entry = self.session_store.get_or_create_session(source)
-        history = self.session_store.load_transcript(session_entry.session_id)
+        session_store = self._session_store_for_source(source)
+        session_entry = session_store.get_or_create_session(source)
+        history = session_store.load_transcript(session_entry.session_id)
         
         # Find the last user message and remove everything from it onward
         last_user_idx = None
@@ -10690,7 +11506,7 @@ class GatewayRunner:
         
         removed_msg = history[last_user_idx].get("content", "")
         removed_count = len(history) - last_user_idx
-        self.session_store.rewrite_transcript(session_entry.session_id, history[:last_user_idx])
+        session_store.rewrite_transcript(session_entry.session_id, history[:last_user_idx])
         # Reset stored token count — transcript was truncated
         session_entry.last_prompt_tokens = 0
         
@@ -10700,6 +11516,11 @@ class GatewayRunner:
     async def _handle_set_home_command(self, event: MessageEvent) -> str:
         """Handle /sethome command -- set the current chat as the platform's home channel."""
         source = event.source
+        if getattr(source, "agent_profile", None) or getattr(source, "agent_hermes_home", None):
+            return (
+                "`/sethome` is disabled in routed profile topics. "
+                "Home-channel configuration belongs to the gateway profile."
+            )
         platform_name = source.platform.value if source.platform else "unknown"
         chat_id = source.chat_id
         chat_name = source.chat_name or chat_id
@@ -11342,6 +12163,9 @@ class GatewayRunner:
                 media_types=media_types,
             )
         )
+        setattr(_task, "_hermes_session_key", self._session_key_for_source(source))
+        setattr(_task, "_hermes_agent_profile", str(getattr(source, "agent_profile", "") or ""))
+        setattr(_task, "_hermes_agent_hermes_home", self._resolved_agent_hermes_home_for_source(source))
         self._background_tasks.add(_task)
         _task.add_done_callback(self._background_tasks.discard)
 
@@ -11370,13 +12194,60 @@ class GatewayRunner:
 
         _thread_metadata = self._thread_metadata_for_source(source, event_message_id)
 
+        _profile_home: Optional[Path] = None
+        _profile_home_token = None
+        _session_env_tokens = []
         try:
-            user_config = _load_gateway_config()
+            try:
+                _profile_home = self._profile_home_for_source(source)
+            except TopicProfileRoutingError as exc:
+                logger.error("Topic profile routing failed closed for background task: %s", exc)
+                await adapter.send(
+                    source.chat_id,
+                    f"⚠️ Background task {task_id} failed: topic profile routing failed: {exc}",
+                    metadata=_thread_metadata,
+                )
+                return
+            if _profile_home is not None:
+                _profile_home_token = set_hermes_home_override(_profile_home)
+            try:
+                from gateway.session_context import set_session_vars
+                background_session_key = self._session_key_for_source(source)
+                _session_env_tokens = set_session_vars(
+                    platform=source.platform.value if source and source.platform else "",
+                    chat_id=source.chat_id if source else "",
+                    chat_name=source.chat_name or "" if source else "",
+                    thread_id=str(source.thread_id) if source and source.thread_id else "",
+                    user_id=str(source.user_id) if source and source.user_id else "",
+                    user_name=str(source.user_name) if source and source.user_name else "",
+                    session_key=background_session_key,
+                    message_id=str(event_message_id or ""),
+                    session_id=task_id,
+                    agent_profile=str(getattr(source, "agent_profile", None) or ""),
+                    agent_hermes_home=str(_profile_home or getattr(source, "agent_hermes_home", None) or ""),
+                    profile_strict_auth="1" if getattr(source, "agent_profile", None) else "",
+                )
+            except Exception:
+                _session_env_tokens = []
+
+            user_config = _load_gateway_config(_profile_home) if _profile_home is not None else _load_gateway_config()
+            runtime_env = None
+            if _profile_home is not None:
+                try:
+                    runtime_env = self._runtime_env_for_profile_home(_profile_home)
+                except Exception as exc:
+                    logger.debug("Could not read routed profile .env from %s: %s", _profile_home, exc)
+                    runtime_env = {}
             model, runtime_kwargs = self._resolve_session_agent_runtime(
                 source=source,
                 user_config=user_config,
+                runtime_env=runtime_env,
             )
-            if not runtime_kwargs.get("api_key"):
+            if not (
+                runtime_kwargs.get("api_key")
+                or runtime_kwargs.get("credential_pool")
+                or runtime_kwargs.get("command")
+            ):
                 await adapter.send(
                     source.chat_id,
                     f"❌ Background task {task_id} failed: no provider credentials configured.",
@@ -11391,12 +12262,32 @@ class GatewayRunner:
             agent_cfg = user_config.get("agent") or {}
             disabled_toolsets = agent_cfg.get("disabled_toolsets") or None
 
-            pr = self._provider_routing
-            max_iterations = int(os.getenv("HERMES_MAX_ITERATIONS", "90"))
-            reasoning_config = self._resolve_session_reasoning_config(source=source)
+            pr = (
+                self._load_provider_routing(config=user_config, hermes_home=_profile_home)
+                if _profile_home is not None
+                else self._provider_routing
+            )
+            max_iterations = _resolve_max_iterations(
+                user_config=user_config,
+                runtime_env=runtime_env,
+            )
+            reasoning_config = self._resolve_session_reasoning_config(
+                source=source,
+                user_config=user_config if _profile_home is not None else None,
+                hermes_home=_profile_home,
+            )
             self._reasoning_config = reasoning_config
-            self._service_tier = self._load_service_tier()
+            self._service_tier = (
+                self._load_service_tier(config=user_config, hermes_home=_profile_home)
+                if _profile_home is not None
+                else self._load_service_tier()
+            )
             turn_route = self._resolve_turn_agent_config(prompt, model, runtime_kwargs)
+            session_db = (
+                self._session_db_for_source(source)
+                if _profile_home is not None
+                else self._session_db
+            )
 
             # Enrich the prompt with image descriptions so the background
             # agent can see user-attached images (same as the main flow).
@@ -11441,8 +12332,13 @@ class GatewayRunner:
                     chat_name=source.chat_name,
                     chat_type=source.chat_type,
                     thread_id=source.thread_id,
-                    session_db=self._session_db,
-                    fallback_model=self._fallback_model,
+                    session_db=session_db,
+                    fallback_model=(
+                        user_config.get("fallback_providers")
+                        or user_config.get("fallback_model")
+                        or (None if _profile_home is not None else self._fallback_model)
+                    ),
+                    runtime_env=runtime_env,
                 )
                 try:
                     return agent.run_conversation(
@@ -11519,6 +12415,15 @@ class GatewayRunner:
                 )
             except Exception:
                 pass
+        finally:
+            if _session_env_tokens:
+                try:
+                    from gateway.session_context import clear_session_vars
+                    clear_session_vars(_session_env_tokens)
+                except Exception:
+                    pass
+            if _profile_home_token is not None:
+                reset_hermes_home_override(_profile_home_token)
 
     async def _handle_reasoning_command(self, event: MessageEvent) -> str:
         """Handle /reasoning command — manage reasoning effort and display toggle.
@@ -11535,11 +12440,17 @@ class GatewayRunner:
 
         raw_args = event.get_command_args().strip()
         args, persist_global = self._parse_reasoning_command_args(raw_args)
+        source = event.source
+        if getattr(source, "agent_profile", None) or getattr(source, "agent_hermes_home", None):
+            return (
+                "`/reasoning` is disabled in routed profile topics. "
+                "Change the routed profile configuration directly."
+            )
         config_path = _hermes_home / "config.yaml"
-        session_key = self._session_key_for_source(event.source)
+        session_key = self._session_key_for_source(source)
         self._show_reasoning = self._load_show_reasoning()
         self._reasoning_config = self._resolve_session_reasoning_config(
-            source=event.source,
+            source=source,
             session_key=session_key,
         )
 
@@ -11591,7 +12502,7 @@ class GatewayRunner:
             )
 
         # Display toggle (per-platform)
-        platform_key = _platform_config_key(event.source.platform)
+        platform_key = _platform_config_key(source.platform)
         if args in {"show", "on"}:
             self._show_reasoning = True
             _save_config_key(f"display.platforms.{platform_key}.show_reasoning", True)
@@ -11641,10 +12552,26 @@ class GatewayRunner:
         from hermes_cli.models import model_supports_fast_mode
 
         args = event.get_command_args().strip().lower()
-        config_path = _hermes_home / "config.yaml"
-        self._service_tier = self._load_service_tier()
-
-        user_config = _load_gateway_config()
+        source = event.source
+        profile_home = self._profile_home_for_source(source)
+        config_home = profile_home if profile_home is not None else _hermes_home
+        config_path = config_home / "config.yaml"
+        profile_home_token = None
+        if profile_home is not None:
+            profile_home_token = set_hermes_home_override(profile_home)
+        try:
+            user_config = (
+                _load_gateway_config(profile_home)
+                if profile_home is not None
+                else _load_gateway_config()
+            )
+        finally:
+            if profile_home_token is not None:
+                reset_hermes_home_override(profile_home_token)
+        self._service_tier = self._load_service_tier(
+            config=user_config,
+            hermes_home=profile_home,
+        )
         model = _resolve_gateway_model(user_config)
         if not model_supports_fast_mode(model):
             return t("gateway.fast.not_supported")
@@ -11715,8 +12642,14 @@ class GatewayRunner:
         have its own verbosity level independently.
         """
 
+        source = event.source
+        if getattr(source, "agent_profile", None) or getattr(source, "agent_hermes_home", None):
+            return (
+                "`/verbose` is disabled in routed profile topics. "
+                "Change the routed profile configuration directly."
+            )
         config_path = _hermes_home / "config.yaml"
-        platform_key = _platform_config_key(event.source.platform)
+        platform_key = _platform_config_key(source.platform)
 
         # --- check config gate ------------------------------------------------
         try:
@@ -11783,8 +12716,14 @@ class GatewayRunner:
         """
         from gateway.runtime_footer import resolve_footer_config
 
+        source = event.source
+        if getattr(source, "agent_profile", None) or getattr(source, "agent_hermes_home", None):
+            return (
+                "`/footer` is disabled in routed profile topics. "
+                "Change the routed profile configuration directly."
+            )
         config_path = _hermes_home / "config.yaml"
-        platform_key = _platform_config_key(event.source.platform)
+        platform_key = _platform_config_key(source.platform)
 
         # --- parse argument -------------------------------------------------
         arg = ""
@@ -11860,8 +12799,10 @@ class GatewayRunner:
         more aggressive about discarding everything else.
         """
         source = event.source
-        session_entry = self.session_store.get_or_create_session(source)
-        history = self.session_store.load_transcript(session_entry.session_id)
+        session_store = self._session_store_for_source(source)
+        session_db = self._session_db_for_source(source)
+        session_entry = session_store.get_or_create_session(source)
+        history = session_store.load_transcript(session_entry.session_id)
 
         if not history or len(history) < 4:
             return t("gateway.compress.not_enough")
@@ -11875,29 +12816,97 @@ class GatewayRunner:
             from agent.model_metadata import estimate_request_tokens_rough
 
             session_key = self._session_key_for_source(source)
-            model, runtime_kwargs = self._resolve_session_agent_runtime(
-                source=source,
-                session_key=session_key,
-            )
-            if not runtime_kwargs.get("api_key"):
-                return t("gateway.compress.no_provider")
-
-            msgs = [
-                {"role": m.get("role"), "content": m.get("content")}
-                for m in history
-                if m.get("role") in {"user", "assistant"} and m.get("content")
-            ]
-
-            tmp_agent = AIAgent(
-                **runtime_kwargs,
-                model=model,
-                max_iterations=4,
-                quiet_mode=True,
-                skip_memory=True,
-                enabled_toolsets=["memory"],
-                session_id=session_entry.session_id,
-            )
+            profile_home = self._profile_home_for_source(source)
+            profile_home_token = None
+            runtime_env_token = None
+            session_env_tokens = []
+            tmp_agent = None
             try:
+                if profile_home is not None:
+                    profile_home_token = set_hermes_home_override(profile_home)
+                user_config = (
+                    _load_gateway_config(profile_home)
+                    if profile_home is not None
+                    else _load_gateway_config(_hermes_home)
+                )
+                runtime_env = None
+                if profile_home is not None:
+                    try:
+                        runtime_env = self._runtime_env_for_profile_home(profile_home)
+                    except Exception as exc:
+                        logger.debug("Could not read routed profile .env for /compress: %s", exc)
+                        runtime_env = {}
+                    try:
+                        from gateway.session_context import (
+                            clear_runtime_env,
+                            clear_session_vars,
+                            set_runtime_env,
+                            set_session_vars,
+                        )
+                        session_env_tokens = set_session_vars(
+                            platform=source.platform.value if source and source.platform else "",
+                            chat_id=getattr(source, "chat_id", "") or "",
+                            chat_name=getattr(source, "chat_name", "") or "",
+                            thread_id=getattr(source, "thread_id", "") or "",
+                            user_id=getattr(source, "user_id", "") or "",
+                            user_name=getattr(source, "user_name", "") or "",
+                            session_key=session_key or "",
+                            message_id=getattr(event, "message_id", "") or "",
+                            session_id=getattr(session_entry, "session_id", "") or "",
+                            agent_profile=getattr(source, "agent_profile", "") or "",
+                            agent_hermes_home=str(profile_home),
+                            profile_strict_auth="1",
+                        )
+                        runtime_env_token = set_runtime_env(runtime_env)
+                    except Exception:
+                        session_env_tokens = []
+                        runtime_env_token = None
+                model, runtime_kwargs = self._resolve_session_agent_runtime(
+                    source=source,
+                    session_key=session_key,
+                    user_config=user_config,
+                    runtime_env=runtime_env,
+                )
+                if profile_home is not None:
+                    from hermes_cli.auth import has_usable_secret
+                    if (
+                        not runtime_kwargs.get("credential_pool")
+                        and not runtime_kwargs.get("command")
+                        and not has_usable_secret(str(runtime_kwargs.get("api_key") or ""))
+                    ):
+                        return t("gateway.compress.no_provider")
+                elif not (
+                    runtime_kwargs.get("api_key")
+                    or runtime_kwargs.get("credential_pool")
+                    or runtime_kwargs.get("command")
+                ):
+                    return t("gateway.compress.no_provider")
+
+                msgs = [
+                    {"role": m.get("role"), "content": m.get("content")}
+                    for m in history
+                    if m.get("role") in {"user", "assistant"} and m.get("content")
+                ]
+
+                def _build_tmp_agent():
+                    return AIAgent(
+                        **runtime_kwargs,
+                        model=model,
+                        max_iterations=4,
+                        quiet_mode=True,
+                        skip_memory=True,
+                        enabled_toolsets=["memory"],
+                        session_id=session_entry.session_id,
+                        session_db=session_db,
+                        fallback_model=(
+                            user_config.get("fallback_providers")
+                            or user_config.get("fallback_model")
+                            or (None if profile_home is not None else getattr(self, "_fallback_model", None))
+                        ),
+                        runtime_env=runtime_env,
+                    )
+
+                tmp_agent = _build_tmp_agent()
                 tmp_agent._print_fn = lambda *a, **kw: None
 
                 # Estimate with system prompt + tool schemas included so the
@@ -11914,10 +12923,14 @@ class GatewayRunner:
                 if not compressor.has_content_to_compress(msgs):
                     return t("gateway.compress.nothing_to_do")
 
-                loop = asyncio.get_running_loop()
-                compressed, _ = await loop.run_in_executor(
-                    None,
-                    lambda: tmp_agent._compress_context(msgs, "", approx_tokens=approx_tokens, focus_topic=focus_topic, force=True)
+                compressed, _ = await self._run_in_executor_with_context(
+                    lambda: tmp_agent._compress_context(
+                        msgs,
+                        "",
+                        approx_tokens=approx_tokens,
+                        focus_topic=focus_topic,
+                        force=True,
+                    )
                 )
 
                 # _compress_context already calls end_session() on the old session
@@ -11927,11 +12940,11 @@ class GatewayRunner:
                 new_session_id = tmp_agent.session_id
                 if new_session_id != session_entry.session_id:
                     session_entry.session_id = new_session_id
-                    self.session_store._save()
+                    session_store._save()
 
-                self.session_store.rewrite_transcript(new_session_id, compressed)
+                session_store.rewrite_transcript(new_session_id, compressed)
                 # Reset stored token count — transcript changed, old value is stale
-                self.session_store.update_session(
+                session_store.update_session(
                     session_entry.session_key, last_prompt_tokens=0
                 )
                 new_tokens = estimate_request_tokens_rough(
@@ -11961,7 +12974,20 @@ class GatewayRunner:
                 # Evict cached agent so next turn rebuilds system prompt
                 # from current files (SOUL.md, memory, etc.).
                 self._evict_cached_agent(session_key)
-                self._cleanup_agent_resources(tmp_agent)
+                if tmp_agent is not None:
+                    self._cleanup_agent_resources(tmp_agent)
+                if runtime_env_token is not None:
+                    try:
+                        clear_runtime_env(runtime_env_token)
+                    except Exception:
+                        pass
+                if session_env_tokens:
+                    try:
+                        clear_session_vars(session_env_tokens)
+                    except Exception:
+                        pass
+                if profile_home_token is not None:
+                    reset_hermes_home_override(profile_home_token)
             lines = [f"🗜️ {summary['headline']}"]
             if focus_topic:
                 lines.append(t("gateway.compress.focus_line", topic=focus_topic))
@@ -12502,20 +13528,22 @@ class GatewayRunner:
     async def _handle_title_command(self, event: MessageEvent) -> str:
         """Handle /title command — set or show the current session's title."""
         source = event.source
-        session_entry = self.session_store.get_or_create_session(source)
+        session_store = self._session_store_for_source(source)
+        session_db = self._session_db_for_source(source)
+        session_entry = session_store.get_or_create_session(source)
         session_id = session_entry.session_id
 
-        if not self._session_db:
+        if not session_db:
             from hermes_state import format_session_db_unavailable
             return format_session_db_unavailable(prefix=t("gateway.shared.session_db_unavailable_prefix"))
 
         # Ensure session exists in SQLite DB (it may only exist in session_store
         # if this is the first command in a new session)
-        existing_title = self._session_db.get_session_title(session_id)
+        existing_title = session_db.get_session_title(session_id)
         if existing_title is None:
             # Session doesn't exist in DB yet — create it
             try:
-                self._session_db.create_session(
+                session_db.create_session(
                     session_id=session_id,
                     source=source.platform.value if source.platform else "unknown",
                     user_id=source.user_id,
@@ -12527,14 +13555,14 @@ class GatewayRunner:
         if title_arg:
             # Sanitize the title before setting
             try:
-                sanitized = self._session_db.sanitize_title(title_arg)
+                sanitized = session_db.sanitize_title(title_arg)
             except ValueError as e:
                 return t("gateway.shared.warn_passthrough", error=e)
             if not sanitized:
                 return t("gateway.title.empty_after_clean")
             # Set the title
             try:
-                if self._session_db.set_session_title(session_id, sanitized):
+                if session_db.set_session_title(session_id, sanitized):
                     return t("gateway.title.set_to", title=sanitized)
                 else:
                     return t("gateway.title.not_found")
@@ -12542,7 +13570,7 @@ class GatewayRunner:
                 return t("gateway.shared.warn_passthrough", error=e)
         else:
             # Show the current title and session ID
-            title = self._session_db.get_session_title(session_id)
+            title = session_db.get_session_title(session_id)
             if title:
                 return t("gateway.title.current_with_title", session_id=session_id, title=title)
             else:
@@ -12550,11 +13578,13 @@ class GatewayRunner:
 
     async def _handle_resume_command(self, event: MessageEvent) -> str:
         """Handle /resume command — switch to a previously-named session."""
-        if not self._session_db:
+        source = event.source
+        session_store = self._session_store_for_source(source)
+        session_db = self._session_db_for_source(source)
+        if not session_db:
             from hermes_state import format_session_db_unavailable
             return format_session_db_unavailable(prefix=t("gateway.shared.session_db_unavailable_prefix"))
 
-        source = event.source
         session_key = self._session_key_for_source(source)
         name = event.get_command_args().strip()
 
@@ -12562,7 +13592,7 @@ class GatewayRunner:
             # List recent titled sessions for this user/platform
             try:
                 user_source = source.platform.value if source.platform else None
-                sessions = self._session_db.list_sessions_rich(
+                sessions = session_db.list_sessions_rich(
                     source=user_source, limit=10
                 )
                 titled = [s for s in sessions if s.get("title")]
@@ -12581,18 +13611,18 @@ class GatewayRunner:
                 return t("gateway.resume.list_failed", error=e)
 
         # Resolve the name to a session ID.
-        target_id = self._session_db.resolve_session_by_title(name)
+        target_id = session_db.resolve_session_by_title(name)
         if not target_id:
             return t("gateway.resume.not_found", name=name)
         # Compression creates child continuations that hold the live transcript.
         # Follow that chain so gateway /resume matches CLI behavior (#15000).
         try:
-            target_id = self._session_db.resolve_resume_session_id(target_id)
+            target_id = session_db.resolve_resume_session_id(target_id)
         except Exception as e:
             logger.debug("Failed to resolve resume continuation for %s: %s", target_id, e)
 
         # Check if already on that session
-        current_entry = self.session_store.get_or_create_session(source)
+        current_entry = session_store.get_or_create_session(source)
         if current_entry.session_id == target_id:
             return t("gateway.resume.already_on", name=name)
 
@@ -12600,7 +13630,7 @@ class GatewayRunner:
         self._release_running_agent_state(session_key)
 
         # Switch the session entry to point at the old session
-        new_entry = self.session_store.switch_session(session_key, target_id)
+        new_entry = session_store.switch_session(session_key, target_id)
         if not new_entry:
             return t("gateway.resume.switch_failed")
         self._clear_session_boundary_security_state(session_key)
@@ -12613,10 +13643,10 @@ class GatewayRunner:
         self._evict_cached_agent(session_key)
 
         # Get the title for confirmation
-        title = self._session_db.get_session_title(target_id) or name
+        title = session_db.get_session_title(target_id) or name
 
         # Count messages for context
-        history = self.session_store.load_transcript(target_id)
+        history = session_store.load_transcript(target_id)
         msg_count = len([m for m in history if m.get("role") == "user"]) if history else 0
         if not msg_count:
             return t("gateway.resume.resumed_no_count", title=title)
@@ -12633,16 +13663,17 @@ class GatewayRunner:
         """
         import uuid as _uuid
 
-        if not self._session_db:
+        source = event.source
+        session_store = self._session_store_for_source(source)
+        session_db = self._session_db_for_source(source)
+        if not session_db:
             from hermes_state import format_session_db_unavailable
             return format_session_db_unavailable(prefix=t("gateway.shared.session_db_unavailable_prefix"))
-
-        source = event.source
         session_key = self._session_key_for_source(source)
 
         # Load the current session and its transcript
-        current_entry = self.session_store.get_or_create_session(source)
-        history = self.session_store.load_transcript(current_entry.session_id)
+        current_entry = session_store.get_or_create_session(source)
+        history = session_store.load_transcript(current_entry.session_id)
         if not history:
             return t("gateway.branch.no_conversation")
 
@@ -12659,15 +13690,15 @@ class GatewayRunner:
         if branch_name:
             branch_title = branch_name
         else:
-            current_title = self._session_db.get_session_title(current_entry.session_id)
+            current_title = session_db.get_session_title(current_entry.session_id)
             base = current_title or "branch"
-            branch_title = self._session_db.get_next_title_in_lineage(base)
+            branch_title = session_db.get_next_title_in_lineage(base)
 
         parent_session_id = current_entry.session_id
 
         # Create the new session with parent link
         try:
-            self._session_db.create_session(
+            session_db.create_session(
                 session_id=new_session_id,
                 source=source.platform.value if source.platform else "gateway",
                 model=(self.config.get("model", {}) or {}).get("default") if isinstance(self.config, dict) else None,
@@ -12680,7 +13711,7 @@ class GatewayRunner:
         # Copy conversation history to the new session
         for msg in history:
             try:
-                self._session_db.append_message(
+                session_db.append_message(
                     session_id=new_session_id,
                     role=msg.get("role", "user"),
                     content=msg.get("content"),
@@ -12699,12 +13730,12 @@ class GatewayRunner:
 
         # Set title
         try:
-            self._session_db.set_session_title(new_session_id, branch_title)
+            session_db.set_session_title(new_session_id, branch_title)
         except Exception:
             pass
 
         # Switch the session store entry to the new session
-        new_entry = self.session_store.switch_session(session_key, new_session_id)
+        new_entry = session_store.switch_session(session_key, new_session_id)
         if not new_entry:
             return t("gateway.branch.switch_failed")
         self._clear_session_boundary_security_state(session_key)
@@ -12724,6 +13755,8 @@ class GatewayRunner:
         available whenever the user asks, not only while the agent is running.
         """
         source = event.source
+        session_store = self._session_store_for_source(source)
+        session_db = self._session_db_for_source(source)
         session_key = self._session_key_for_source(source)
 
         # Try running agent first (mid-turn), then cached agent (between turns)
@@ -12744,10 +13777,10 @@ class GatewayRunner:
         provider = getattr(agent, "provider", None) if agent and agent is not _AGENT_PENDING_SENTINEL else None
         base_url = getattr(agent, "base_url", None) if agent and agent is not _AGENT_PENDING_SENTINEL else None
         api_key = getattr(agent, "api_key", None) if agent and agent is not _AGENT_PENDING_SENTINEL else None
-        if not provider and getattr(self, "_session_db", None) is not None:
+        if not provider and session_db is not None:
             try:
-                _entry_for_billing = self.session_store.get_or_create_session(source)
-                persisted = self._session_db.get_session(_entry_for_billing.session_id) or {}
+                _entry_for_billing = session_store.get_or_create_session(source)
+                persisted = session_db.get_session(_entry_for_billing.session_id) or {}
             except Exception:
                 persisted = {}
             provider = provider or persisted.get("billing_provider")
@@ -12833,8 +13866,8 @@ class GatewayRunner:
             return "\n".join(lines)
 
         # No agent at all -- check session history for a rough count
-        session_entry = self.session_store.get_or_create_session(source)
-        history = self.session_store.load_transcript(session_entry.session_id)
+        session_entry = session_store.get_or_create_session(source)
+        history = session_store.load_transcript(session_entry.session_id)
         if history:
             from agent.model_metadata import estimate_messages_tokens_rough
             msgs = [m for m in history if m.get("role") in {"user", "assistant"} and m.get("content")]
@@ -12861,7 +13894,7 @@ class GatewayRunner:
         args = re.sub(r'[\u2012\u2013\u2014\u2015](days|source)', r'--\1', args)
 
         days = 30
-        source = None
+        source_filter = None
 
         # Parse simple args: /insights 7  or  /insights --days 7
         if args:
@@ -12875,7 +13908,7 @@ class GatewayRunner:
                         return t("gateway.insights.invalid_days", value=parts[i + 1])
                     i += 2
                 elif parts[i] == "--source" and i + 1 < len(parts):
-                    source = parts[i + 1]
+                    source_filter = parts[i + 1]
                     i += 2
                 elif parts[i].isdigit():
                     days = int(parts[i])
@@ -12884,17 +13917,18 @@ class GatewayRunner:
                     i += 1
 
         try:
-            from hermes_state import SessionDB
             from agent.insights import InsightsEngine
 
             loop = asyncio.get_running_loop()
+            session_db = self._session_db_for_source(event.source)
+            if not session_db:
+                from hermes_state import format_session_db_unavailable
+                return format_session_db_unavailable(prefix=t("gateway.shared.session_db_unavailable_prefix"))
 
             def _run_insights():
-                db = SessionDB()
-                engine = InsightsEngine(db)
-                report = engine.generate(days=days, source=source)
+                engine = InsightsEngine(session_db)
+                report = engine.generate(days=days, source=source_filter)
                 result = engine.format_gateway(report)
-                db.close()
                 return result
 
             return await loop.run_in_executor(None, _run_insights)
@@ -12919,6 +13953,8 @@ class GatewayRunner:
         Users can also skip the confirm by flipping the config key directly.
         """
         source = event.source
+        if getattr(source, "agent_profile", None) or getattr(source, "agent_hermes_home", None):
+            return "⚠️ /reload-mcp is disabled in routed profile topics because MCP connections are process-global."
         session_key = self._session_key_for_source(source)
 
         # Read the gate fresh from disk so a prior "always" click takes
@@ -12973,7 +14009,9 @@ class GatewayRunner:
         button, text reply, or has the confirm gate disabled.
         """
         loop = asyncio.get_running_loop()
+        profile_home_token = None
         try:
+            profile_home_token = self._set_command_hermes_home_for_source(event.source)
             from tools.mcp_tool import shutdown_mcp_servers, discover_mcp_tools, _servers, _lock
 
             # Capture old server names before shutdown
@@ -12985,7 +14023,8 @@ class GatewayRunner:
             await loop.run_in_executor(None, shutdown_mcp_servers)
 
             # Reconnect by discovering tools (reads config.yaml fresh)
-            new_tools = await loop.run_in_executor(None, discover_mcp_tools)
+            ctx = copy_context()
+            new_tools = await loop.run_in_executor(None, lambda: ctx.run(discover_mcp_tools))
 
             # Compute what changed
             with _lock:
@@ -13024,8 +14063,9 @@ class GatewayRunner:
                 "content": f"[IMPORTANT: MCP servers have been reloaded. {change_detail}{tool_summary}. The tool list for this conversation has been updated accordingly.]",
             }
             try:
-                session_entry = self.session_store.get_or_create_session(event.source)
-                self.session_store.append_to_transcript(
+                session_store = self._session_store_for_source(event.source)
+                session_entry = session_store.get_or_create_session(event.source)
+                session_store.append_to_transcript(
                     session_entry.session_id, reload_msg
                 )
             except Exception:
@@ -13036,6 +14076,9 @@ class GatewayRunner:
         except Exception as e:
             logger.warning("MCP reload failed: %s", e)
             return t("gateway.reload_mcp.failed", error=e)
+        finally:
+            if profile_home_token is not None:
+                reset_hermes_home_override(profile_home_token)
 
     async def _handle_reload_skills_command(self, event: MessageEvent) -> str:
         """Handle /reload-skills — rescan skills dir, queue a note for next turn.
@@ -13053,10 +14096,13 @@ class GatewayRunner:
         alternation is preserved.
         """
         loop = asyncio.get_running_loop()
+        profile_home_token = None
         try:
+            profile_home_token = self._set_command_hermes_home_for_source(event.source)
             from agent.skill_commands import reload_skills
 
-            result = await loop.run_in_executor(None, reload_skills)
+            ctx = copy_context()
+            result = await loop.run_in_executor(None, lambda: ctx.run(reload_skills))
             added = result.get("added", [])      # [{"name", "description"}, ...]
             removed = result.get("removed", [])  # [{"name", "description"}, ...]
             total = result.get("total", 0)
@@ -13136,6 +14182,9 @@ class GatewayRunner:
         except Exception as e:
             logger.warning("Skills reload failed: %s", e)
             return t("gateway.reload_skills.failed", error=e)
+        finally:
+            if profile_home_token is not None:
+                reset_hermes_home_override(profile_home_token)
 
     async def _handle_bundles_command(self, event: MessageEvent) -> str:
         """Handle /bundles — list installed skill bundles.
@@ -13144,33 +14193,39 @@ class GatewayRunner:
         message suitable for any gateway adapter; bundles are loaded by
         invoking the bundle's own ``/<slug>`` command, not by this one.
         """
+        profile_home_token = None
         try:
-            from agent.skill_bundles import list_bundles, _bundles_dir
-        except Exception as exc:
-            logger.warning("Bundles command unavailable: %s", exc)
-            return f"Bundles subsystem unavailable: {exc}"
+            profile_home_token = self._set_command_hermes_home_for_source(event.source)
+            try:
+                from agent.skill_bundles import list_bundles, _bundles_dir
+            except Exception as exc:
+                logger.warning("Bundles command unavailable: %s", exc)
+                return f"Bundles subsystem unavailable: {exc}"
 
-        bundles = list_bundles()
-        if not bundles:
-            return (
-                "No skill bundles installed.\n"
-                "Create one on the host with:\n"
-                "  `hermes bundles create <name> --skill <s1> --skill <s2>`\n"
-                f"Directory: `{_bundles_dir()}`"
-            )
+            bundles = list_bundles()
+            if not bundles:
+                return (
+                    "No skill bundles installed.\n"
+                    "Create one on the host with:\n"
+                    "  `hermes bundles create <name> --skill <s1> --skill <s2>`\n"
+                    f"Directory: `{_bundles_dir()}`"
+                )
 
-        lines = [f"**Skill Bundles** ({len(bundles)} installed):", ""]
-        for info in bundles:
-            skill_count = len(info.get("skills", []))
-            desc = info.get("description") or f"Load {skill_count} skills"
-            lines.append(
-                f"• `/{info['slug']}` — {desc} _({skill_count} skills)_"
-            )
-            for s in info.get("skills", []):
-                lines.append(f"    · {s}")
-        lines.append("")
-        lines.append("Invoke a bundle with `/<slug>` to load all its skills.")
-        return "\n".join(lines)
+            lines = [f"**Skill Bundles** ({len(bundles)} installed):", ""]
+            for info in bundles:
+                skill_count = len(info.get("skills", []))
+                desc = info.get("description") or f"Load {skill_count} skills"
+                lines.append(
+                    f"• `/{info['slug']}` — {desc} _({skill_count} skills)_"
+                )
+                for s in info.get("skills", []):
+                    lines.append(f"    · {s}")
+            lines.append("")
+            lines.append("Invoke a bundle with `/<slug>` to load all its skills.")
+            return "\n".join(lines)
+        finally:
+            if profile_home_token is not None:
+                reset_hermes_home_override(profile_home_token)
 
     # ------------------------------------------------------------------
     # Slash-command confirmation primitive (generic)
@@ -13362,25 +14417,7 @@ class GatewayRunner:
         reply_to_message_id: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         """Build the metadata dict platforms need for thread-aware replies."""
-        thread_id = getattr(source, "thread_id", None)
-        if thread_id is None:
-            return None
-        metadata: Dict[str, Any] = {"thread_id": thread_id}
-        if (
-            getattr(source, "platform", None) == Platform.TELEGRAM
-            and getattr(source, "chat_type", None) == "dm"
-        ):
-            metadata["telegram_dm_topic_reply_fallback"] = True
-            # Telegram DM topic lanes need direct_messages_topic_id in metadata
-            # so synthetic/queued messages (goal continuations, status notices)
-            # route to the correct topic even when reply anchor is unavailable.
-            tid = str(thread_id)
-            if tid and tid not in {"", "1"}:
-                metadata["direct_messages_topic_id"] = tid
-            anchor = reply_to_message_id or getattr(source, "message_id", None)
-            if anchor is not None:
-                metadata["telegram_reply_to_message_id"] = str(anchor)
-        return metadata
+        return _base_thread_metadata_for_source(source, reply_to_message_id)
 
     @staticmethod
     def _reply_anchor_for_event(event: MessageEvent) -> Optional[str]:
@@ -14148,6 +15185,10 @@ class GatewayRunner:
             user_name=str(context.source.user_name) if context.source.user_name else "",
             session_key=context.session_key,
             message_id=str(context.source.message_id) if context.source.message_id else "",
+            session_id=context.session_id or "",
+            agent_profile=str(getattr(context.source, "agent_profile", None) or ""),
+            agent_hermes_home=self._resolved_agent_hermes_home_for_source(context.source),
+            profile_strict_auth="1" if getattr(context.source, "agent_profile", None) else "",
         )
 
     def _clear_session_env(self, tokens: list) -> None:
@@ -14409,7 +15450,7 @@ class GatewayRunner:
             )
             return None
 
-        return SessionSource(
+        source = SessionSource(
             platform=platform,
             chat_id=chat_id,
             chat_type=chat_type,
@@ -14417,6 +15458,9 @@ class GatewayRunner:
             user_id=str(evt.get("user_id") or "").strip() or None,
             user_name=str(evt.get("user_name") or "").strip() or None,
         )
+        source.agent_profile = str(evt.get("agent_profile") or "").strip() or None
+        source.agent_hermes_home = str(evt.get("agent_hermes_home") or "").strip() or None
+        return source
 
     async def _inject_watch_notification(self, synth_text: str, evt: dict) -> None:
         """Inject a watch-pattern notification as a synthetic message event.
@@ -14481,6 +15525,8 @@ class GatewayRunner:
         user_id = watcher.get("user_id", "")
         user_name = watcher.get("user_name", "")
         message_id = str(watcher.get("message_id") or "").strip() or None
+        agent_profile = watcher.get("agent_profile", "")
+        agent_hermes_home = watcher.get("agent_hermes_home", "")
         agent_notify = watcher.get("notify_on_complete", False)
         notify_mode = self._load_background_notifications_mode()
 
@@ -14543,6 +15589,8 @@ class GatewayRunner:
                         "thread_id": thread_id,
                         "user_id": user_id,
                         "user_name": user_name,
+                        "agent_profile": agent_profile,
+                        "agent_hermes_home": agent_hermes_home,
                     })
                     if not source:
                         logger.warning(
@@ -14589,15 +15637,46 @@ class GatewayRunner:
                         f"[Background process {session_id} finished with exit code {session.exit_code}~ "
                         f"Here's the final output:\n{new_output}]"
                     )
+                    source = self._build_process_event_source({
+                        "session_id": session_id,
+                        "session_key": session_key,
+                        "platform": platform_name,
+                        "chat_id": chat_id,
+                        "thread_id": thread_id,
+                        "user_id": user_id,
+                        "user_name": user_name,
+                        "agent_profile": agent_profile,
+                        "agent_hermes_home": agent_hermes_home,
+                    })
+                    if not source and (agent_profile or agent_hermes_home):
+                        logger.warning(
+                            "Dropping routed completion notification with no routing metadata for process %s",
+                            session_id,
+                        )
+                        break
                     adapter = None
-                    for p, a in self.adapters.items():
-                        if p.value == platform_name:
-                            adapter = a
-                            break
-                    if adapter and chat_id:
+                    if source:
+                        for p, a in self.adapters.items():
+                            if p == source.platform:
+                                adapter = a
+                                break
+                    else:
+                        for p, a in self.adapters.items():
+                            if p.value == platform_name:
+                                adapter = a
+                                break
+                    if adapter and (source.chat_id if source else chat_id):
                         try:
-                            send_meta = {"thread_id": thread_id} if thread_id else None
-                            await adapter.send(chat_id, message_text, metadata=send_meta)
+                            send_meta = (
+                                self._thread_metadata_for_source(source, message_id)
+                                if source
+                                else ({"thread_id": thread_id} if thread_id else None)
+                            )
+                            await adapter.send(
+                                source.chat_id if source else chat_id,
+                                message_text,
+                                metadata=send_meta,
+                            )
                         except Exception as e:
                             logger.error("Watcher delivery error: %s", e)
                 break
@@ -14610,15 +15689,46 @@ class GatewayRunner:
                     f"[Background process {session_id} is still running~ "
                     f"New output:\n{new_output}]"
                 )
+                source = self._build_process_event_source({
+                    "session_id": session_id,
+                    "session_key": session_key,
+                    "platform": platform_name,
+                    "chat_id": chat_id,
+                    "thread_id": thread_id,
+                    "user_id": user_id,
+                    "user_name": user_name,
+                    "agent_profile": agent_profile,
+                    "agent_hermes_home": agent_hermes_home,
+                })
+                if not source and (agent_profile or agent_hermes_home):
+                    logger.warning(
+                        "Dropping routed progress notification with no routing metadata for process %s",
+                        session_id,
+                    )
+                    continue
                 adapter = None
-                for p, a in self.adapters.items():
-                    if p.value == platform_name:
-                        adapter = a
-                        break
-                if adapter and chat_id:
+                if source:
+                    for p, a in self.adapters.items():
+                        if p == source.platform:
+                            adapter = a
+                            break
+                else:
+                    for p, a in self.adapters.items():
+                        if p.value == platform_name:
+                            adapter = a
+                            break
+                if adapter and (source.chat_id if source else chat_id):
                     try:
-                        send_meta = {"thread_id": thread_id} if thread_id else None
-                        await adapter.send(chat_id, message_text, metadata=send_meta)
+                        send_meta = (
+                            self._thread_metadata_for_source(source, message_id)
+                            if source
+                            else ({"thread_id": thread_id} if thread_id else None)
+                        )
+                        await adapter.send(
+                            source.chat_id if source else chat_id,
+                            message_text,
+                            metadata=send_meta,
+                        )
                     except Exception as e:
                         logger.error("Watcher delivery error: %s", e)
 
@@ -14642,6 +15752,7 @@ class GatewayRunner:
         ("compression", "target_ratio"),
         ("compression", "protect_last_n"),
         ("agent", "disabled_toolsets"),
+        ("agent", "max_turns"),
     )
 
     @classmethod
@@ -14673,6 +15784,29 @@ class GatewayRunner:
         except Exception:
             out["tools.registry_generation"] = None
         return out
+
+    @staticmethod
+    def _stable_config_digest(value: Any) -> str:
+        """Return a stable short digest for cache-sensitive config fragments."""
+        import hashlib
+
+        try:
+            payload = json.dumps(value, sort_keys=True, default=str)
+        except Exception:
+            payload = repr(value)
+        return hashlib.sha256(payload.encode()).hexdigest()[:16]
+
+    @staticmethod
+    def _file_content_digest(path: Path) -> str:
+        """Return a cache-safe digest for a file that may not exist."""
+        import hashlib
+
+        try:
+            if not path.is_file():
+                return "missing"
+            return hashlib.sha256(path.read_bytes()).hexdigest()[:16]
+        except Exception as exc:
+            return f"error:{type(exc).__name__}"
 
     @staticmethod
     def _agent_config_signature(
@@ -15202,7 +16336,7 @@ class GatewayRunner:
             _scfg = StreamingConfig()
 
         platform_key = _platform_config_key(source.platform)
-        user_config = _load_gateway_config()
+        user_config = _load_gateway_config(_hermes_home)
         from gateway.display_config import resolve_display_setting
         _plat_streaming = resolve_display_setting(
             user_config, platform_key, "streaming"
@@ -15406,6 +16540,7 @@ class GatewayRunner:
         _interrupt_depth: int = 0,
         event_message_id: Optional[str] = None,
         channel_prompt: Optional[str] = None,
+        session_db: Any = None,
     ) -> Dict[str, Any]:
         """
         Run the agent with the given message and context.
@@ -15419,8 +16554,30 @@ class GatewayRunner:
         This is run in a thread pool to not block the event loop.
         Supports interruption via new messages.
         """
+        # Resolve the routed profile's SessionStore/SessionDB once so every
+        # post-turn write inside _run_agent (compression split entry update,
+        # auto-title, resume_pending lookup) targets the profile that owns
+        # this conversation. Without this, lines below silently fell back
+        # to self.session_store / self._session_db — the gateway-global
+        # stores — which caused routed compressed sessions to become
+        # unreachable on the next turn and routed auto-titles to land in
+        # the wrong DB (bug E in the topic-profile-routing review).
+        session_store = self._session_store_for_source(source)
+        if session_db is None:
+            session_db = self._session_db_for_source(source)
+
         # ---- Proxy mode: delegate to remote API server ----
         if self._get_proxy_url():
+            if getattr(source, "agent_profile", None) or getattr(source, "agent_hermes_home", None):
+                return {
+                    "final_response": (
+                        "⚠️ Proxy mode is disabled in routed profile topics because "
+                        "the remote API does not carry profile-scoped runtime state."
+                    ),
+                    "messages": [],
+                    "api_calls": 0,
+                    "tools": [],
+                }
             return await self._run_agent_via_proxy(
                 message=message,
                 context_prompt=context_prompt,
@@ -15439,9 +16596,47 @@ class GatewayRunner:
             if run_generation is None or not session_key:
                 return True
             return self._is_session_run_current(session_key, run_generation)
-        
-        user_config = _load_gateway_config()
+
+        try:
+            _profile_home = self._profile_home_for_source(source)
+        except TopicProfileRoutingError as exc:
+            logger.error("Topic profile routing failed closed before agent run: %s", exc)
+            return {
+                "final_response": f"⚠️ Topic profile routing failed: {exc}",
+                "messages": [],
+                "api_calls": 0,
+                "tools": [],
+            }
+
+        user_config = _load_gateway_config(_profile_home or _hermes_home)
         platform_key = _platform_config_key(source.platform)
+
+        if _profile_home is not None:
+            try:
+                gateway_sessions = getattr(
+                    getattr(self, "session_store", None),
+                    "sessions_dir",
+                    None,
+                )
+                gateway_home = (
+                    gateway_sessions.parent
+                    if gateway_sessions is not None
+                    else _hermes_home
+                )
+                notice = _topic_profile_tool_isolation_notice(
+                    _load_gateway_config(gateway_home),
+                    user_config,
+                    platform_key,
+                )
+                if notice:
+                    logger.info(
+                        "%s profile=%s home=%s",
+                        notice,
+                        getattr(source, "agent_profile", ""),
+                        _profile_home,
+                    )
+            except Exception:
+                logger.debug("Could not evaluate routed profile tool isolation notice", exc_info=True)
 
         from hermes_cli.tools_config import _get_platform_tools
         enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
@@ -15665,7 +16860,6 @@ class GatewayRunner:
             if source.platform in (Platform.FEISHU, Platform.MATTERMOST) and source.thread_id and event_message_id
             else None
         )
-
         async def send_progress_messages():
             if not progress_queue:
                 return
@@ -16098,9 +17292,6 @@ class GatewayRunner:
             # (concurrency-safe). Keep os.environ as fallback for CLI/cron.
             os.environ["HERMES_SESSION_KEY"] = session_key or ""
 
-            # Read from env var or use default (same as CLI)
-            max_iterations = int(os.getenv("HERMES_MAX_ITERATIONS", "90"))
-            
             # Map platform enum to the platform hint key the agent understands.
             # Platform.LOCAL ("local") maps to "cli"; others pass through as-is.
             platform_key = "cli" if source.platform == Platform.LOCAL else source.platform.value
@@ -16111,20 +17302,67 @@ class GatewayRunner:
             event_channel_prompt = (channel_prompt or "").strip()
             if event_channel_prompt:
                 combined_ephemeral = (combined_ephemeral + "\n\n" + event_channel_prompt).strip()
-            if self._ephemeral_system_prompt:
-                combined_ephemeral = (combined_ephemeral + "\n\n" + self._ephemeral_system_prompt).strip()
+            turn_ephemeral_prompt = self._ephemeral_system_prompt
+            if _profile_home is not None:
+                turn_ephemeral_prompt = self._load_ephemeral_system_prompt(
+                    config=user_config,
+                    hermes_home=_profile_home,
+                    include_env=True,
+                )
+            if turn_ephemeral_prompt:
+                combined_ephemeral = (combined_ephemeral + "\n\n" + turn_ephemeral_prompt).strip()
 
-            # Re-read .env and config for fresh credentials (gateway is long-lived,
-            # keys may change without restart). Keep config.yaml authoritative for
-            # runtime budget settings bridged into env vars.
-            _reload_runtime_env_preserving_config_authority()
+            pr = (
+                self._load_provider_routing(config=user_config, hermes_home=_profile_home)
+                if _profile_home is not None
+                else self._provider_routing
+            )
+            turn_prefill_messages = (
+                self._load_prefill_messages(
+                    config=user_config,
+                    hermes_home=_profile_home,
+                    include_env=False,
+                )
+                if _profile_home is not None
+                else self._prefill_messages
+            )
+
+            runtime_env = None
+            if _profile_home is not None:
+                try:
+                    runtime_env = self._runtime_env_for_profile_home(_profile_home)
+                except Exception as exc:
+                    logger.debug("Could not read routed profile .env from %s: %s", _profile_home, exc)
+                    runtime_env = {}
+            else:
+                # Re-read .env and config for fresh credentials (gateway is long-lived,
+                # keys may change without restart). Keep config.yaml authoritative for
+                # runtime budget settings bridged into env vars.
+                _reload_runtime_env_preserving_config_authority()
+            max_iterations = _resolve_max_iterations(
+                user_config=user_config,
+                runtime_env=runtime_env,
+            )
 
             try:
                 model, runtime_kwargs = self._resolve_session_agent_runtime(
                     source=source,
                     session_key=session_key,
                     user_config=user_config,
+                    runtime_env=runtime_env,
                 )
+                if _profile_home is not None:
+                    from hermes_cli.auth import has_usable_secret
+                    if (
+                        not runtime_kwargs.get("credential_pool")
+                        and not runtime_kwargs.get("command")
+                        and not has_usable_secret(str(runtime_kwargs.get("api_key") or ""))
+                    ):
+                        raise RuntimeError(
+                            f"Routed profile {getattr(source, 'agent_profile', '')!r} has no "
+                            "profile-scoped provider credentials. Add the API key to that "
+                            "profile's .env/config/auth store; gateway credentials are not reused."
+                        )
                 logger.debug(
                     "run_agent resolved: model=%s provider=%s session=%s",
                     model, runtime_kwargs.get("provider"), session_key or "",
@@ -16137,13 +17375,18 @@ class GatewayRunner:
                     "tools": [],
                 }
 
-            pr = self._provider_routing
             reasoning_config = self._resolve_session_reasoning_config(
                 source=source,
                 session_key=session_key,
+                user_config=user_config if _profile_home is not None else None,
+                hermes_home=_profile_home,
             )
             self._reasoning_config = reasoning_config
-            self._service_tier = self._load_service_tier()
+            self._service_tier = (
+                self._load_service_tier(config=user_config, hermes_home=_profile_home)
+                if _profile_home is not None
+                else self._load_service_tier()
+            )
             # Set up stream consumer for token streaming or interim commentary.
             _stream_consumer = None
             _stream_delta_cb = None
@@ -16207,11 +17450,11 @@ class GatewayRunner:
                             chat_type=getattr(source, "chat_type", "") or "",
                         )
                         _stream_consumer = GatewayStreamConsumer(
-                            adapter=_adapter,
-                            chat_id=source.chat_id,
-                            config=_consumer_cfg,
-                            metadata=_status_thread_metadata,
-                            on_new_message=(
+                        adapter=_adapter,
+                        chat_id=source.chat_id,
+                        config=_consumer_cfg,
+                        metadata=_status_thread_metadata,
+                        on_new_message=(
                                 (lambda: progress_queue.put(("__reset__",)))
                                 if progress_queue is not None
                                 else None
@@ -16249,6 +17492,19 @@ class GatewayRunner:
                 )
 
             turn_route = self._resolve_turn_agent_config(message, model, runtime_kwargs)
+            cache_keys = self._extract_cache_busting_config(user_config)
+            active_home = _profile_home or get_hermes_home()
+            cache_keys["hermes_home"] = str(active_home)
+            cache_keys["soul_md.digest"] = self._file_content_digest(active_home / "SOUL.md")
+            cache_keys["provider_routing.digest"] = self._stable_config_digest(pr)
+            cache_keys["prefill_messages.digest"] = self._stable_config_digest(
+                turn_prefill_messages or []
+            )
+            cache_keys["fallback.digest"] = self._stable_config_digest(
+                user_config.get("fallback_providers") or user_config.get("fallback_model")
+            )
+            if runtime_env is not None:
+                cache_keys["runtime_env.digest"] = self._stable_config_digest(runtime_env)
 
             # Check agent cache — reuse the AIAgent from the previous message
             # in this session to preserve the frozen system prompt and tool
@@ -16258,7 +17514,7 @@ class GatewayRunner:
                 turn_route["runtime"],
                 enabled_toolsets,
                 combined_ephemeral,
-                cache_keys=self._extract_cache_busting_config(user_config),
+                cache_keys=cache_keys,
             )
             agent = None
             _cache_lock = getattr(self, "_agent_cache_lock", None)
@@ -16289,7 +17545,7 @@ class GatewayRunner:
                     enabled_toolsets=enabled_toolsets,
                     disabled_toolsets=disabled_toolsets,
                     ephemeral_system_prompt=combined_ephemeral or None,
-                    prefill_messages=self._prefill_messages or None,
+                    prefill_messages=turn_prefill_messages or None,
                     reasoning_config=reasoning_config,
                     service_tier=self._service_tier,
                     request_overrides=turn_route.get("request_overrides"),
@@ -16308,8 +17564,13 @@ class GatewayRunner:
                     chat_type=source.chat_type,
                     thread_id=source.thread_id,
                     gateway_session_key=session_key,
-                    session_db=self._session_db,
-                    fallback_model=self._fallback_model,
+                    session_db=session_db if session_db is not None else self._session_db,
+                    fallback_model=(
+                        user_config.get("fallback_providers")
+                        or user_config.get("fallback_model")
+                        or (None if _profile_home is not None else self._fallback_model)
+                    ),
+                    runtime_env=runtime_env,
                 )
                 if _cache_lock and _cache is not None:
                     with _cache_lock:
@@ -16652,7 +17913,7 @@ class GatewayRunner:
             _resume_entry = None
             if session_key:
                 try:
-                    _resume_entry = self.session_store._entries.get(session_key)
+                    _resume_entry = session_store._entries.get(session_key)
                 except Exception:
                     _resume_entry = None
             _is_resume_pending = bool(
@@ -16849,10 +18110,10 @@ class GatewayRunner:
                     "Session split detected: %s → %s (compression)",
                     session_id, agent.session_id,
                 )
-                entry = self.session_store._entries.get(session_key)
+                entry = session_store._entries.get(session_key)
                 if entry:
                     entry.session_id = agent.session_id
-                    self.session_store._save()
+                    session_store._save()
 
                 # If this is a Telegram DM and source.thread_id was lost during
                 # the session split (synthetic / recovered event), restore it
@@ -16865,10 +18126,10 @@ class GatewayRunner:
                     getattr(source, "platform", None) == Platform.TELEGRAM
                     and getattr(source, "chat_type", None) == "dm"
                     and getattr(source, "thread_id", None) is None
-                    and self._session_db is not None
+                    and session_db is not None
                 ):
                     try:
-                        _binding = self._session_db.get_telegram_topic_binding_by_session(
+                        _binding = session_db.get_telegram_topic_binding_by_session(
                             session_id=agent.session_id,
                         )
                         if _binding and _binding.get("thread_id"):
@@ -16895,7 +18156,7 @@ class GatewayRunner:
             _effective_history_offset = 0 if _session_was_split else len(agent_history)
 
             # Auto-generate session title after first exchange (non-blocking)
-            if final_response and self._session_db:
+            if final_response and session_db:
                 try:
                     from agent.title_generator import maybe_auto_title
                     all_msgs = result_holder[0].get("messages", []) if result_holder[0] else []
@@ -16918,6 +18179,7 @@ class GatewayRunner:
                             "api_key": getattr(agent, "api_key", None),
                             "api_mode": getattr(agent, "api_mode", None),
                         } if agent else None,
+                        "env": getattr(agent, "_runtime_env", None) if agent else None,
                     }
                     if self._is_telegram_topic_lane(source):
                         maybe_auto_title_kwargs["title_callback"] = lambda title: self._schedule_telegram_topic_title_rename(
@@ -16926,7 +18188,7 @@ class GatewayRunner:
                             title,
                         )
                     maybe_auto_title(
-                        self._session_db,
+                        session_db,
                         effective_session_id,
                         message,
                         final_response,
@@ -17507,6 +18769,7 @@ class GatewayRunner:
                     _interrupt_depth=_interrupt_depth + 1,
                     event_message_id=next_message_id,
                     channel_prompt=next_channel_prompt,
+                    session_db=session_db,
                 )
                 return _preserve_queued_followup_history_offset(result, followup_result)
         finally:
@@ -18169,6 +19432,16 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     return True
 
 
+def _load_gateway_config_from_file(path: str | Path) -> GatewayConfig:
+    import yaml
+
+    with open(path, encoding="utf-8") as f:
+        data = yaml.safe_load(f) or {}
+    config = GatewayConfig.from_dict(data)
+    _validate_gateway_config(config)
+    return config
+
+
 def main():
     """CLI entry point for the gateway."""
     # Force UTF-8 stdio on Windows — gateway logs and startup banner would
@@ -18189,10 +19462,7 @@ def main():
     
     config = None
     if args.config:
-        import yaml
-        with open(args.config, encoding="utf-8") as f:
-            data = yaml.safe_load(f) or {}
-            config = GatewayConfig.from_dict(data)
+        config = _load_gateway_config_from_file(args.config)
     
     # Run the gateway - exit with code 1 if no platforms connected,
     # so systemd Restart=on-failure will retry on transient errors (e.g. DNS)

@@ -358,3 +358,50 @@ def test_write_credential_pool_targets_profile_not_global(profile_env):
 
     # Subsequent read returns profile (shadows global).
     assert [e["id"] for e in read_credential_pool("openrouter")] == ["prof-new"]
+
+
+def test_strict_profile_auth_disables_global_pool_fallback(profile_env, monkeypatch):
+    from hermes_cli.auth import read_credential_pool
+
+    _write(profile_env["global"] / "auth.json", _make_auth_store(pool={
+        "openrouter": [{
+            "id": "glob-1",
+            "auth_type": "api_key",
+            "access_token": "sk-global",
+        }],
+    }))
+    _write(profile_env["profile"] / "auth.json", _make_auth_store(pool={}))
+    monkeypatch.setenv("HERMES_PROFILE_STRICT_AUTH", "1")
+
+    assert read_credential_pool("openrouter") == []
+    assert read_credential_pool(None) == {}
+
+
+def test_strict_profile_auth_disables_global_provider_state_fallback(profile_env, monkeypatch):
+    from hermes_cli.auth import get_provider_auth_state
+
+    _write(profile_env["global"] / "auth.json", _make_auth_store(providers={
+        "nous": {"access_token": "global-token", "refresh_token": "global-refresh"},
+    }))
+    _write(profile_env["profile"] / "auth.json", _make_auth_store(providers={}))
+    monkeypatch.setenv("HERMES_PROFILE_STRICT_AUTH", "1")
+
+    assert get_provider_auth_state("nous") is None
+
+
+def test_strict_profile_auth_disables_external_process_credentials(profile_env):
+    from hermes_cli.auth import (
+        AuthError,
+        resolve_external_process_provider_credentials,
+    )
+
+    with pytest.raises(AuthError) as exc_info:
+        resolve_external_process_provider_credentials(
+            "copilot-acp",
+            env={
+                "HERMES_PROFILE_STRICT_AUTH": "1",
+                "HERMES_COPILOT_ACP_COMMAND": "/bin/echo",
+            },
+        )
+
+    assert exc_info.value.code == "profile_strict_external_process_disabled"

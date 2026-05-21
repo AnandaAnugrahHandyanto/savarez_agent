@@ -406,6 +406,7 @@ class AIAgent:
         parent_session_id: str = None,
         iteration_budget: "IterationBudget" = None,
         fallback_model: Dict[str, Any] = None,
+        runtime_env: Dict[str, Any] = None,
         credential_pool=None,
         checkpoints_enabled: bool = False,
         checkpoint_max_snapshots: int = 20,
@@ -475,6 +476,7 @@ class AIAgent:
             parent_session_id=parent_session_id,
             iteration_budget=iteration_budget,
             fallback_model=fallback_model,
+            runtime_env=runtime_env,
             credential_pool=credential_pool,
             checkpoints_enabled=checkpoints_enabled,
             checkpoint_max_snapshots=checkpoint_max_snapshots,
@@ -523,6 +525,49 @@ class AIAgent:
             logger.warning(
                 "Session DB creation failed (will retry next turn): %s", e
             )
+
+    @staticmethod
+    def _system_prompt_identity_digest() -> str:
+        """Fingerprint profile files that affect persisted system prompt reuse."""
+        home = get_hermes_home()
+        h = hashlib.sha256()
+        h.update(str(home).encode("utf-8", errors="ignore"))
+        for name in ("SOUL.md", "config.yaml"):
+            path = home / name
+            h.update(b"\0")
+            h.update(name.encode("utf-8"))
+            try:
+                if path.is_file():
+                    h.update(b"\0present\0")
+                    h.update(path.read_bytes())
+                else:
+                    h.update(b"\0missing")
+            except Exception as exc:
+                h.update(f"\0error\0{type(exc).__name__}".encode("utf-8"))
+        return h.hexdigest()[:16]
+
+    def _stored_system_prompt_identity_matches(self, session_row: Optional[Dict[str, Any]]) -> bool:
+        """Return whether a stored prompt snapshot matches current identity."""
+        if not session_row:
+            return False
+        try:
+            cfg_raw = session_row.get("model_config") or ""
+            cfg = json.loads(cfg_raw) if isinstance(cfg_raw, str) and cfg_raw else {}
+        except Exception:
+            cfg = {}
+        stored = cfg.get("system_prompt_identity_digest") if isinstance(cfg, dict) else None
+        current = getattr(self, "_system_prompt_identity_fingerprint", None)
+        return bool(stored and current and stored == current)
+
+    def _persist_current_system_prompt_identity(self) -> None:
+        """Persist current identity digest in the session's model_config metadata."""
+        if not self._session_db:
+            return
+        try:
+            if hasattr(self._session_db, "update_model_config"):
+                self._session_db.update_model_config(self.session_id, self._session_init_model_config)
+        except Exception as exc:
+            logger.debug("Session DB update_model_config failed: %s", exc)
 
     def reset_session_state(self):
         """Reset all session-scoped token counters to 0 for a fresh session.

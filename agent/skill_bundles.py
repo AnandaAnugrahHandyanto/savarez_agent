@@ -61,6 +61,7 @@ _BUNDLE_MULTI_HYPHEN = re.compile(r"-{2,}")
 
 _bundles_cache: Dict[str, Dict[str, Any]] = {}
 _bundles_cache_mtime: Optional[float] = None
+_bundles_cache_dir: Optional[str] = None
 
 
 def _bundles_dir() -> Path:
@@ -172,8 +173,12 @@ def scan_bundles() -> Dict[str, Dict[str, Any]]:
     bundle info dict. Later bundles with a duplicate slug are skipped with
     a warning (first wins, alphabetical order).
     """
-    global _bundles_cache, _bundles_cache_mtime
+    global _bundles_cache, _bundles_cache_mtime, _bundles_cache_dir
     files = _iter_bundle_files()
+    try:
+        _bundles_cache_dir = str(_bundles_dir().expanduser().resolve(strict=False))
+    except Exception:
+        _bundles_cache_dir = str(_bundles_dir())
     out: Dict[str, Dict[str, Any]] = {}
     for f in files:
         info = _load_bundle_file(f)
@@ -200,7 +205,15 @@ def get_skill_bundles() -> Dict[str, Dict[str, Any]]:
     """
     files = _iter_bundle_files()
     current_mtime = _max_mtime(files)
-    if not _bundles_cache or _bundles_cache_mtime != current_mtime:
+    try:
+        current_dir = str(_bundles_dir().expanduser().resolve(strict=False))
+    except Exception:
+        current_dir = str(_bundles_dir())
+    if (
+        not _bundles_cache
+        or _bundles_cache_mtime != current_mtime
+        or _bundles_cache_dir != current_dir
+    ):
         scan_bundles()
     return _bundles_cache
 
@@ -228,7 +241,7 @@ def reload_bundles() -> Dict[str, Any]:
     def _snapshot(cmds: Dict[str, Dict[str, Any]]) -> Dict[str, str]:
         return {k.lstrip("/"): (v or {}).get("description", "") for k, v in cmds.items()}
 
-    before = _snapshot(_bundles_cache)
+    before = _snapshot(get_skill_bundles())
     new = scan_bundles()
     after = _snapshot(new)
 

@@ -174,6 +174,7 @@ class TestTelegramModelPicker:
         )
 
         assert result.success is True
-        assert len(call_log) == 2
+        assert len(call_log) == 3
         assert call_log[0]["message_thread_id"] == 99999
-        assert "message_thread_id" not in call_log[1] or call_log[1]["message_thread_id"] is None
+        assert call_log[1]["message_thread_id"] == 99999
+        assert "message_thread_id" not in call_log[2] or call_log[2]["message_thread_id"] is None

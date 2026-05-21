@@ -6,9 +6,9 @@ without risk of circular imports.
 
 import os
 import sysconfig
+from contextlib import contextmanager
 from contextvars import ContextVar, Token
 from pathlib import Path
-
 
 _profile_fallback_warned: bool = False
 _UNSET = object()
@@ -101,6 +101,16 @@ def get_hermes_home() -> Path:
     return Path.home() / ".hermes"
 
 
+@contextmanager
+def hermes_home_context(path: str | Path | None):
+    """Context manager for task/thread-local Hermes home routing."""
+    token = set_hermes_home_override(path)
+    try:
+        yield
+    finally:
+        reset_hermes_home_override(token)
+
+
 def get_default_hermes_root() -> Path:
     """Return the root Hermes directory for profile-level operations.
 
@@ -118,12 +128,12 @@ def get_default_hermes_root() -> Path:
     Import-safe — no dependencies beyond stdlib.
     """
     native_home = Path.home() / ".hermes"
+    active_home = get_hermes_home()
     env_home = os.environ.get("HERMES_HOME", "")
-    if not env_home:
+    if not env_home and get_hermes_home_override() is None:
         return native_home
-    env_path = Path(env_home)
     try:
-        env_path.resolve().relative_to(native_home.resolve())
+        active_home.resolve().relative_to(native_home.resolve())
         # HERMES_HOME is under ~/.hermes (normal or profile mode)
         return native_home
     except ValueError:
@@ -133,11 +143,11 @@ def get_default_hermes_root() -> Path:
     # Check if this is a profile path: <root>/profiles/<name>
     # If the immediate parent dir is named "profiles", the root is
     # the grandparent — this covers Docker profiles correctly.
-    if env_path.parent.name == "profiles":
-        return env_path.parent.parent
+    if active_home.parent.name == "profiles":
+        return active_home.parent.parent
 
     # Not a profile path — HERMES_HOME itself is the root
-    return env_path
+    return active_home
 
 
 def _get_packaged_data_dir(name: str) -> Path | None:
@@ -272,10 +282,8 @@ def get_subprocess_home() -> str | None:
     Activation is directory-based: if the ``home/`` subdirectory doesn't
     exist, returns ``None`` and behavior is unchanged.
     """
-    hermes_home = get_hermes_home_override() or os.getenv("HERMES_HOME")
-    if not hermes_home:
-        return None
-    profile_home = os.path.join(hermes_home, "home")
+    active_home = get_hermes_home()
+    profile_home = os.path.join(str(active_home), "home")
     if os.path.isdir(profile_home):
         return profile_home
     return None

@@ -714,6 +714,26 @@ def load_gateway_config() -> GatewayConfig:
             with open(config_yaml_path, encoding="utf-8") as f:
                 yaml_cfg = yaml.safe_load(f) or {}
 
+            ui_cfg = yaml_cfg.get("ui")
+            ui_platforms = ui_cfg.get("platforms") if isinstance(ui_cfg, dict) else None
+            ui_telegram = ui_platforms.get("telegram") if isinstance(ui_platforms, dict) else None
+            ui_telegram_extra = ui_telegram.get("extra") if isinstance(ui_telegram, dict) else None
+            if (
+                isinstance(ui_telegram, dict)
+                and (
+                    "topic_profiles" in ui_telegram
+                    or (
+                        isinstance(ui_telegram_extra, dict)
+                        and "topic_profiles" in ui_telegram_extra
+                    )
+                )
+            ):
+                logger.warning(
+                    "Ignoring ui.platforms.telegram.topic_profiles; configure "
+                    "Telegram topic profiles under "
+                    "platforms.telegram.extra.topic_profiles or telegram.topic_profiles"
+                )
+
             # Map config.yaml keys → GatewayConfig.from_dict() schema.
             # Each key overwrites whatever gateway.json may have set.
             sr = yaml_cfg.get("session_reset")
@@ -868,6 +888,10 @@ def load_gateway_config() -> GatewayConfig:
                         bridged["channel_prompts"] = channel_prompts
                 if "gateway_restart_notification" in platform_cfg:
                     bridged["gateway_restart_notification"] = platform_cfg["gateway_restart_notification"]
+                if "topic_profiles" in platform_cfg:
+                    bridged["topic_profiles"] = platform_cfg["topic_profiles"]
+                if "topic_profiles_safe_root" in platform_cfg:
+                    bridged["topic_profiles_safe_root"] = platform_cfg["topic_profiles_safe_root"]
                 enabled_was_explicit = "enabled" in platform_cfg
                 if not bridged and not enabled_was_explicit:
                     continue
@@ -1285,6 +1309,16 @@ def _validate_gateway_config(config: "GatewayConfig") -> None:
                 )
                 pconfig.enabled = False
 
+    telegram_cfg = config.platforms.get(Platform.TELEGRAM)
+    if telegram_cfg and telegram_cfg.extra.get("topic_profiles"):
+        from gateway.platforms.base import normalize_topic_profile_routes
+
+        telegram_cfg.extra["topic_profiles"] = normalize_topic_profile_routes(
+            telegram_cfg.extra,
+            hermes_home=get_hermes_home(),
+            require_identity=True,
+        )
+
 
 def _apply_env_overrides(config: GatewayConfig) -> None:
     """Apply environment variable overrides to config."""
@@ -1310,6 +1344,14 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             config.platforms[Platform.TELEGRAM] = PlatformConfig()
         config.platforms[Platform.TELEGRAM].extra["fallback_ips"] = [
             ip.strip() for ip in telegram_fallback_ips.split(",") if ip.strip()
+        ]
+
+    telegram_allowed_topics = os.getenv("TELEGRAM_ALLOWED_TOPICS", "")
+    if telegram_allowed_topics:
+        if Platform.TELEGRAM not in config.platforms:
+            config.platforms[Platform.TELEGRAM] = PlatformConfig()
+        config.platforms[Platform.TELEGRAM].extra["allowed_topics"] = [
+            part.strip() for part in telegram_allowed_topics.split(",") if part.strip()
         ]
 
     telegram_home = os.getenv("TELEGRAM_HOME_CHANNEL")

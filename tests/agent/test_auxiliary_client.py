@@ -1092,6 +1092,44 @@ class TestTryPaymentFallback:
         assert model is None
         assert label == ""
 
+    def test_uses_profile_env_for_env_aware_chain_entries(self, monkeypatch):
+        """Payment fallback must use routed profile env, not process env."""
+        monkeypatch.setenv("OPENROUTER_API_KEY", "global-openrouter")
+        with patch("agent.auxiliary_client._read_main_provider", return_value="nous"), \
+             patch("agent.auxiliary_client._is_provider_unhealthy", return_value=False), \
+             patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)), \
+             patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            mock_openai.return_value.base_url = "https://openrouter.ai/api/v1"
+            client, model, label = _try_payment_fallback(
+                "nous",
+                task="compression",
+                env={"OPENROUTER_API_KEY": "profile-openrouter"},
+            )
+
+        assert client is mock_openai.return_value
+        assert label == "openrouter"
+        assert mock_openai.call_args.kwargs["api_key"] == "profile-openrouter"
+
+    def test_empty_profile_env_blocks_global_env_chain_entries(self, monkeypatch):
+        monkeypatch.setenv("OPENROUTER_API_KEY", "global-openrouter")
+        with patch("agent.auxiliary_client._read_main_provider", return_value="nous"), \
+             patch("agent.auxiliary_client._is_provider_unhealthy", return_value=False), \
+             patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)), \
+             patch("agent.auxiliary_client._mark_provider_unhealthy"), \
+             patch("agent.auxiliary_client._try_custom_endpoint", return_value=(None, None)), \
+             patch("agent.auxiliary_client._resolve_api_key_provider", return_value=(None, None)), \
+             patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            client, model, label = _try_payment_fallback(
+                "nous",
+                task="compression",
+                env={},
+            )
+
+        assert client is None
+        assert model is None
+        assert label == ""
+        mock_openai.assert_not_called()
+
 
 class TestCallLlmPaymentFallback:
     """call_llm() retries with a different provider on 402 / payment / rate-limit errors."""
@@ -1159,6 +1197,46 @@ class TestAuxiliaryFallbackLayering:
         exc = Exception("Payment Required: insufficient credits")
         exc.status_code = 402
         return exc
+
+    def test_configured_chain_uses_profile_env(self, monkeypatch):
+        from agent.auxiliary_client import _try_configured_fallback_chain
+
+        monkeypatch.setenv("OPENROUTER_API_KEY", "global-openrouter")
+        with patch("agent.auxiliary_client._get_auxiliary_task_config", return_value={
+            "fallback_chain": [{"provider": "openrouter", "model": "anthropic/claude-sonnet-4"}]
+        }), patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)), \
+             patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            mock_openai.return_value.base_url = "https://openrouter.ai/api/v1"
+            client, model, label = _try_configured_fallback_chain(
+                "compression",
+                "zai",
+                env={"OPENROUTER_API_KEY": "profile-openrouter"},
+            )
+
+        assert client is mock_openai.return_value
+        assert model == "anthropic/claude-sonnet-4"
+        assert label == "fallback_chain[0](openrouter)"
+        assert mock_openai.call_args.kwargs["api_key"] == "profile-openrouter"
+
+    def test_configured_chain_ignores_global_env_when_profile_env_empty(self, monkeypatch):
+        from agent.auxiliary_client import _try_configured_fallback_chain
+
+        monkeypatch.setenv("OPENROUTER_API_KEY", "global-openrouter")
+        with patch("agent.auxiliary_client._get_auxiliary_task_config", return_value={
+            "fallback_chain": [{"provider": "openrouter", "model": "anthropic/claude-sonnet-4"}]
+        }), patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)), \
+             patch("agent.auxiliary_client._mark_provider_unhealthy"), \
+             patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            client, model, label = _try_configured_fallback_chain(
+                "compression",
+                "zai",
+                env={},
+            )
+
+        assert client is None
+        assert model is None
+        assert label == ""
+        mock_openai.assert_not_called()
 
     def test_explicit_provider_uses_configured_chain_first(self, monkeypatch, caplog):
         """When a user has fallback_chain configured, it's tried BEFORE the main agent model."""
@@ -1786,7 +1864,7 @@ class TestAuxiliaryAuthRefreshRetry:
             )
 
         assert resp.choices[0].message.content == "fresh-sync"
-        mock_refresh.assert_called_once_with("openai-codex")
+        mock_refresh.assert_called_once_with("openai-codex", env=None)
 
     def test_call_llm_refreshes_codex_on_401_for_non_vision(self):
         stale_client = MagicMock()
@@ -1810,7 +1888,7 @@ class TestAuxiliaryAuthRefreshRetry:
             )
 
         assert resp.choices[0].message.content == "fresh-non-vision"
-        mock_refresh.assert_called_once_with("openai-codex")
+        mock_refresh.assert_called_once_with("openai-codex", env=None)
         assert stale_client.chat.completions.create.call_count == 1
         assert fresh_client.chat.completions.create.call_count == 1
 
@@ -1836,7 +1914,7 @@ class TestAuxiliaryAuthRefreshRetry:
             )
 
         assert resp.choices[0].message.content == "fresh-anthropic"
-        mock_refresh.assert_called_once_with("anthropic")
+        mock_refresh.assert_called_once_with("anthropic", env=None)
         assert stale_client.chat.completions.create.call_count == 1
         assert fresh_client.chat.completions.create.call_count == 1
 
@@ -1865,7 +1943,7 @@ class TestAuxiliaryAuthRefreshRetry:
             )
 
         assert resp.choices[0].message.content == "fresh-async"
-        mock_refresh.assert_called_once_with("openai-codex")
+        mock_refresh.assert_called_once_with("openai-codex", env=None)
 
     def test_refresh_provider_credentials_force_refreshes_anthropic_oauth_and_evicts_cache(self, monkeypatch):
         stale_client = MagicMock()
@@ -1897,6 +1975,56 @@ class TestAuxiliaryAuthRefreshRetry:
         mock_write.assert_called_once_with("fresh-token", "refresh-token-2", 9999999999999)
         stale_client.close.assert_called_once()
 
+    def test_refresh_provider_credentials_scoped_nous_ignores_default_auth_store(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "auth.json").write_text(json.dumps({
+            "version": 2,
+            "active_provider": "nous",
+            "providers": {
+                "nous": {
+                    "access_token": "global-access",
+                    "agent_key": "global-agent-key",
+                },
+            },
+        }))
+
+        from agent.auxiliary_client import _refresh_provider_credentials
+
+        with patch(
+            "hermes_cli.auth.resolve_nous_runtime_credentials",
+            side_effect=AssertionError("scoped refresh must not use default/global auth"),
+        ):
+            assert _refresh_provider_credentials("nous", env={}) is False
+
+    def test_refresh_provider_credentials_scoped_nous_uses_profile_auth_store(self, monkeypatch, tmp_path):
+        profile_home = tmp_path / "profiles" / "profile-a"
+        profile_home.mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(profile_home))
+        (profile_home / "auth.json").write_text(json.dumps({
+            "version": 2,
+            "active_provider": "nous",
+            "providers": {
+                "nous": {
+                    "access_token": "profile-access",
+                    "agent_key": "profile-agent-key",
+                },
+            },
+        }))
+
+        from agent.auxiliary_client import _refresh_provider_credentials
+
+        with (
+            patch("hermes_cli.auth.resolve_nous_runtime_credentials", return_value={
+                "api_key": "fresh-profile-key",
+                "base_url": "https://inference-api.nousresearch.com/v1",
+            }) as mock_refresh,
+            patch("agent.auxiliary_client._evict_cached_clients") as mock_evict,
+        ):
+            assert _refresh_provider_credentials("nous", env={}) is True
+
+        mock_refresh.assert_called_once()
+        mock_evict.assert_called_once_with("nous")
+
     @pytest.mark.asyncio
     async def test_async_call_llm_refreshes_anthropic_on_401_for_non_vision(self):
         stale_client = MagicMock()
@@ -1920,7 +2048,7 @@ class TestAuxiliaryAuthRefreshRetry:
             )
 
         assert resp.choices[0].message.content == "fresh-async-anthropic"
-        mock_refresh.assert_called_once_with("anthropic")
+        mock_refresh.assert_called_once_with("anthropic", env=None)
         assert stale_client.chat.completions.create.await_count == 1
         assert fresh_client.chat.completions.create.await_count == 1
 
@@ -2215,7 +2343,7 @@ class TestVisionAutoSkipsKimiCoding:
             "agent.auxiliary_client.resolve_provider_client", rpc_mock,
         )
 
-        def fake_strict(provider, model=None):
+        def fake_strict(provider, model=None, **kwargs):
             if provider == "openrouter":
                 return fake_or_client, "google/gemini-3-flash-preview"
             if provider == "nous":
@@ -2251,7 +2379,7 @@ class TestVisionAutoSkipsKimiCoding:
         )
         monkeypatch.setattr(
             "agent.auxiliary_client._resolve_strict_vision_backend",
-            lambda p, m=None: (fake_or_client, "gemini")
+            lambda p, m=None, **kwargs: (fake_or_client, "gemini")
             if p == "openrouter"
             else (None, None),
         )
@@ -2401,6 +2529,45 @@ class TestAuxiliaryClientPoisonedCacheEviction:
         finally:
             with _client_cache_lock:
                 _client_cache.clear()
+
+    def test_cache_key_separates_profile_runtime_env(self):
+        from agent.auxiliary_client import (
+            _client_cache, _client_cache_lock, _get_cached_client,
+        )
+
+        def _fake_resolve(provider, model=None, async_mode=False, **kwargs):
+            env = kwargs.get("env") or {}
+            return SimpleNamespace(
+                api_key=env.get("OPENROUTER_API_KEY", ""),
+                base_url="https://openrouter.ai/api/v1",
+                close=lambda: None,
+            ), "fallback-model"
+
+        with _client_cache_lock:
+            _client_cache.clear()
+        try:
+            with patch("agent.auxiliary_client.resolve_provider_client", side_effect=_fake_resolve) as mock_resolve:
+                first, _ = _get_cached_client(
+                    "openrouter",
+                    env={"OPENROUTER_API_KEY": "profile-one"},
+                )
+                second, _ = _get_cached_client(
+                    "openrouter",
+                    env={"OPENROUTER_API_KEY": "profile-two"},
+                )
+                first_again, _ = _get_cached_client(
+                    "openrouter",
+                    env={"OPENROUTER_API_KEY": "profile-one"},
+                )
+        finally:
+            with _client_cache_lock:
+                _client_cache.clear()
+
+        assert first is not second
+        assert first_again is first
+        assert first.api_key == "profile-one"
+        assert second.api_key == "profile-two"
+        assert mock_resolve.call_count == 2
 
     def test_evict_cached_client_instance_walks_codex_wrapper(self):
         """Closing the underlying OpenAI client must evict the Codex shim."""

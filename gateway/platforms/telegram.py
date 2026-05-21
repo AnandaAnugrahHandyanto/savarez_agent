@@ -674,6 +674,8 @@ class TelegramAdapter(BasePlatformAdapter):
         """
         if not (metadata and metadata.get("telegram_dm_topic_reply_fallback")):
             return False
+        if metadata.get("disable_thread_fallback"):
+            return False
         if not cls._is_bad_request_error(error):
             return False
         err_lower = str(error).lower()
@@ -1703,6 +1705,9 @@ class TelegramAdapter(BasePlatformAdapter):
             thread_id = self._metadata_thread_id(metadata)
             requested_thread_id = self._message_thread_id_for_send(thread_id)
             used_thread_fallback = False
+            disable_thread_fallback = bool(
+                isinstance(metadata, dict) and metadata.get("disable_thread_fallback")
+            )
             
             try:
                 from telegram.error import NetworkError as _NetErr
@@ -1797,6 +1802,12 @@ class TelegramAdapter(BasePlatformAdapter):
                                         self.name, effective_thread_id,
                                     )
                                     continue
+                                if disable_thread_fallback:
+                                    logger.warning(
+                                        "[%s] Thread %s not found for routed profile; not retrying in main chat",
+                                        self.name, effective_thread_id,
+                                    )
+                                    raise
                                 # Second failure: the thread is genuinely gone.
                                 # Retry without ``message_thread_id`` so the
                                 # message still reaches the chat.
@@ -1810,6 +1821,12 @@ class TelegramAdapter(BasePlatformAdapter):
                                 continue
                             err_lower = str(send_err).lower()
                             if "message to be replied not found" in err_lower and reply_to_id is not None:
+                                if disable_thread_fallback:
+                                    logger.warning(
+                                        "[%s] Reply target deleted for routed profile; not retrying in main chat",
+                                        self.name,
+                                    )
+                                    raise
                                 # Original message was deleted before we
                                 # could reply. For private-topic fallback
                                 # sends, message_thread_id is only valid with
@@ -2147,6 +2164,13 @@ class TelegramAdapter(BasePlatformAdapter):
                     break
                 except Exception as send_err:
                     if "reply message not found" in str(send_err).lower():
+                        if metadata and metadata.get("disable_thread_fallback"):
+                            logger.warning(
+                                "[%s] Overflow continuation reply target deleted for routed profile; not retrying in main chat",
+                                self.name,
+                            )
+                            sent_msg = None
+                            break
                         # Drop the reply anchor and try again.  Private DM
                         # topic fallback needs the anchor and topic id together;
                         # forum topics can still safely keep message_thread_id.
@@ -2304,7 +2328,12 @@ class TelegramAdapter(BasePlatformAdapter):
             )
             return SendResult(success=False, error=str(e))
 
-    async def _send_message_with_thread_fallback(self, **kwargs):
+    async def _send_message_with_thread_fallback(
+        self,
+        *,
+        metadata: Optional[Dict[str, Any]] = None,
+        **kwargs,
+    ):
         """Send a Telegram message, retrying once without message_thread_id
         if Telegram returns 'Message thread not found'.
 
@@ -2318,14 +2347,35 @@ class TelegramAdapter(BasePlatformAdapter):
             raise RuntimeError("Not connected")
 
         message_thread_id = kwargs.get("message_thread_id")
-        try:
-            return await self._bot.send_message(**kwargs)
-        except Exception as send_err:
-            if (
-                message_thread_id is not None
-                and self._is_bad_request_error(send_err)
-                and self._is_thread_not_found_error(send_err)
-            ):
+        disable_thread_fallback = bool(
+            metadata and metadata.get("disable_thread_fallback")
+        )
+        retried_same_thread = False
+        while True:
+            try:
+                return await self._bot.send_message(**kwargs)
+            except Exception as send_err:
+                if not (
+                    message_thread_id is not None
+                    and self._is_bad_request_error(send_err)
+                    and self._is_thread_not_found_error(send_err)
+                ):
+                    raise
+                if not retried_same_thread:
+                    retried_same_thread = True
+                    logger.warning(
+                        "[%s] Thread %s not found for control message, retrying once with same thread_id",
+                        self.name,
+                        message_thread_id,
+                    )
+                    continue
+                if disable_thread_fallback:
+                    logger.warning(
+                        "[%s] Thread %s not found for routed profile control message; not retrying in main chat",
+                        self.name,
+                        message_thread_id,
+                    )
+                    raise
                 logger.warning(
                     "[%s] Thread %s not found for control message, retrying without message_thread_id",
                     self.name,
@@ -2334,7 +2384,6 @@ class TelegramAdapter(BasePlatformAdapter):
                 retry_kwargs = dict(kwargs)
                 retry_kwargs.pop("message_thread_id", None)
                 return await self._bot.send_message(**retry_kwargs)
-            raise
 
     async def send_update_prompt(
         self, chat_id: str, prompt: str, default: str = "",
@@ -2360,6 +2409,7 @@ class TelegramAdapter(BasePlatformAdapter):
             thread_id = self._metadata_thread_id(metadata)
             reply_to_id = self._reply_to_message_id_for_send(None, metadata, reply_to_mode=self._reply_to_mode)
             msg = await self._send_message_with_thread_fallback(
+                metadata=metadata,
                 chat_id=int(chat_id),
                 text=text,
                 parse_mode=ParseMode.MARKDOWN_V2,
@@ -2441,7 +2491,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
             )
 
-            msg = await self._send_message_with_thread_fallback(**kwargs)
+            msg = await self._send_message_with_thread_fallback(metadata=metadata, **kwargs)
 
             # Store session_key keyed by approval_id for the callback handler
             self._approval_state[approval_id] = session_key
@@ -2492,7 +2542,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
             )
 
-            msg = await self._send_message_with_thread_fallback(**kwargs)
+            msg = await self._send_message_with_thread_fallback(metadata=metadata, **kwargs)
             self._slash_confirm_state[confirm_id] = session_key
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
@@ -2574,7 +2624,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
             )
 
-            msg = await self._send_message_with_thread_fallback(**kwargs)
+            msg = await self._send_message_with_thread_fallback(metadata=metadata, **kwargs)
             self._clarify_state[clarify_id] = session_key
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
@@ -2635,6 +2685,7 @@ class TelegramAdapter(BasePlatformAdapter):
             thread_id = metadata.get("thread_id") if metadata else None
             reply_to_id = self._reply_to_message_id_for_send(None, metadata, reply_to_mode=self._reply_to_mode)
             msg = await self._send_message_with_thread_fallback(
+                metadata=metadata,
                 chat_id=int(chat_id),
                 text=text,
                 parse_mode=ParseMode.MARKDOWN_V2,
@@ -3069,31 +3120,47 @@ class TelegramAdapter(BasePlatformAdapter):
                             str(ChatType.PRIVATE).lower(),
                             str(getattr(ChatType.PRIVATE, "value", ChatType.PRIVATE)).lower(),
                         }
+                        _session_key_parts = str(session_key or "").split(":", 2)
+                        _routed_profile_callback = (
+                            len(_session_key_parts) >= 2
+                            and _session_key_parts[0] == "agent"
+                            and _session_key_parts[1] not in {"", "main", "cron"}
+                        )
+                        followup_metadata = None
                         if thread_id is not None and is_private_chat and prompt_message_id is not None:
                             reply_to_id = int(prompt_message_id)
+                            followup_metadata = {
+                                "thread_id": str(thread_id),
+                                "telegram_dm_topic_reply_fallback": True,
+                            }
+                            if _routed_profile_callback:
+                                followup_metadata["disable_thread_fallback"] = True
                             send_kwargs["reply_to_message_id"] = reply_to_id
                             send_kwargs.update(
                                 self._thread_kwargs_for_send(
                                     str(query.message.chat_id),
                                     str(thread_id),
-                                    {
-                                        "thread_id": str(thread_id),
-                                        "telegram_dm_topic_reply_fallback": True,
-                                    },
+                                    followup_metadata,
                                     reply_to_message_id=reply_to_id,
                                     reply_to_mode=self._reply_to_mode
                                 )
                             )
                         elif thread_id is not None:
+                            followup_metadata = {"thread_id": str(thread_id)}
+                            if _routed_profile_callback:
+                                followup_metadata["disable_thread_fallback"] = True
                             send_kwargs.update(
                                 self._thread_kwargs_for_send(
                                     str(query.message.chat_id),
                                     str(thread_id),
-                                    {"thread_id": str(thread_id)},
+                                    followup_metadata,
                                     reply_to_mode=self._reply_to_mode
                                 )
                             )
-                        await self._send_message_with_thread_fallback(**send_kwargs)
+                        await self._send_message_with_thread_fallback(
+                            metadata=followup_metadata,
+                            **send_kwargs,
+                        )
                 except Exception as exc:
                     logger.error("[%s] slash-confirm callback failed: %s", self.name, exc, exc_info=True)
             return
@@ -3934,6 +4001,8 @@ class TelegramAdapter(BasePlatformAdapter):
             _is_dm_topic: bool = False
             message_thread_id: Optional[int] = None
             try:
+                if metadata and metadata.get("telegram_dm_topic_reply_fallback"):
+                    return
                 _typing_thread = self._metadata_thread_id(metadata)
                 _is_dm_topic = bool(metadata and metadata.get("telegram_dm_topic_reply_fallback"))
                 message_thread_id = self._message_thread_id_for_typing(_typing_thread)
@@ -4824,6 +4893,7 @@ class TelegramAdapter(BasePlatformAdapter):
     def _text_batch_key(self, event: MessageEvent) -> str:
         """Session-scoped key for text message batching."""
         from gateway.session import build_session_key
+        self._hydrate_routed_event_source(event)
         return build_session_key(
             event.source,
             group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
@@ -4913,6 +4983,7 @@ class TelegramAdapter(BasePlatformAdapter):
     def _photo_batch_key(self, event: MessageEvent, msg: Message) -> str:
         """Return a batching key for Telegram photos/albums."""
         from gateway.session import build_session_key
+        self._hydrate_routed_event_source(event)
         session_key = build_session_key(
             event.source,
             group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
@@ -5225,6 +5296,17 @@ class TelegramAdapter(BasePlatformAdapter):
 
         await self.handle_message(event)
 
+    def _media_group_batch_key(self, event: MessageEvent, media_group_id: str) -> str:
+        """Return a session-scoped key for Telegram albums."""
+        from gateway.session import build_session_key
+        self._hydrate_routed_event_source(event)
+        session_key = build_session_key(
+            event.source,
+            group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
+            thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
+        )
+        return f"{session_key}:album:{media_group_id}"
+
     async def _queue_media_group_event(self, media_group_id: str, event: MessageEvent) -> None:
         """Buffer Telegram media-group items so albums arrive as one logical event.
 
@@ -5233,33 +5315,34 @@ class TelegramAdapter(BasePlatformAdapter):
         new user message and interrupts the first. We debounce briefly and merge the
         attachments into a single MessageEvent.
         """
-        existing = self._media_group_events.get(media_group_id)
+        batch_key = self._media_group_batch_key(event, media_group_id)
+        existing = self._media_group_events.get(batch_key)
         if existing is None:
-            self._media_group_events[media_group_id] = event
+            self._media_group_events[batch_key] = event
         else:
             existing.media_urls.extend(event.media_urls)
             existing.media_types.extend(event.media_types)
             if event.text:
                 existing.text = self._merge_caption(existing.text, event.text)
 
-        prior_task = self._media_group_tasks.get(media_group_id)
+        prior_task = self._media_group_tasks.get(batch_key)
         if prior_task:
             prior_task.cancel()
 
-        self._media_group_tasks[media_group_id] = asyncio.create_task(
-            self._flush_media_group_event(media_group_id)
+        self._media_group_tasks[batch_key] = asyncio.create_task(
+            self._flush_media_group_event(batch_key)
         )
 
-    async def _flush_media_group_event(self, media_group_id: str) -> None:
+    async def _flush_media_group_event(self, batch_key: str) -> None:
         try:
             await asyncio.sleep(self.MEDIA_GROUP_WAIT_SECONDS)
-            event = self._media_group_events.pop(media_group_id, None)
+            event = self._media_group_events.pop(batch_key, None)
             if event is not None:
                 await self.handle_message(event)
         except asyncio.CancelledError:
             return
         finally:
-            self._media_group_tasks.pop(media_group_id, None)
+            self._media_group_tasks.pop(batch_key, None)
 
     async def _handle_sticker(self, msg: Message, event: "MessageEvent") -> None:
         """
@@ -5447,6 +5530,16 @@ class TelegramAdapter(BasePlatformAdapter):
         # python-telegram-bot enum values both work (``ChatType.CHANNEL`` is
         # string-like, but mocks often provide plain strings).
         telegram_chat_type = str(getattr(chat, "type", "")).split(".")[-1].lower()
+        # Test doubles and older PTB enum representations may stringify as
+        # "<Mock ... SUPERGROUP ...>" rather than the raw Bot API value.
+        if "supergroup" in telegram_chat_type:
+            telegram_chat_type = "supergroup"
+        elif "group" in telegram_chat_type:
+            telegram_chat_type = "group"
+        elif "channel" in telegram_chat_type:
+            telegram_chat_type = "channel"
+        elif "private" in telegram_chat_type:
+            telegram_chat_type = "private"
         chat_type = "dm"
         if telegram_chat_type in {"group", "supergroup"}:
             chat_type = "group"
@@ -5553,14 +5646,21 @@ class TelegramAdapter(BasePlatformAdapter):
                     or None
                 )
 
-        # Per-channel/topic ephemeral prompt
-        from gateway.platforms.base import resolve_channel_prompt
+        # Per-channel/topic ephemeral prompt and optional profile routing.
+        from gateway.platforms.base import resolve_channel_prompt, resolve_topic_profile
         _chat_id_str = str(chat.id)
         _channel_prompt = resolve_channel_prompt(
             self.config.extra,
             thread_id_str or _chat_id_str,
             _chat_id_str if thread_id_str else None,
         )
+        _topic_profile = resolve_topic_profile(self.config.extra, _chat_id_str, thread_id_str)
+        _agent_profile = (_topic_profile or {}).get("profile")
+        _agent_hermes_home = (_topic_profile or {}).get("profile_home")
+        if _agent_profile:
+            source.agent_profile = _agent_profile
+        if _agent_hermes_home:
+            source.agent_hermes_home = _agent_hermes_home
 
         return MessageEvent(
             text=message.text or "",
@@ -5573,6 +5673,8 @@ class TelegramAdapter(BasePlatformAdapter):
             reply_to_text=reply_to_text,
             auto_skill=topic_skill,
             channel_prompt=_channel_prompt,
+            agent_profile=_agent_profile,
+            agent_hermes_home=_agent_hermes_home,
             timestamp=message.date,
         )
 

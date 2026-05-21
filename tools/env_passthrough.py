@@ -41,8 +41,16 @@ def _get_allowed() -> set[str]:
         return val
 
 
-# Cache for the config-based allowlist (loaded once per process).
-_config_passthrough: frozenset[str] | None = None
+# Cache for the config-based allowlist, keyed by active HERMES_HOME.
+_config_passthrough: dict[str, frozenset[str]] | None = {}
+
+
+def _config_cache_key() -> str:
+    try:
+        from hermes_constants import get_hermes_home
+        return str(get_hermes_home().expanduser().resolve(strict=False))
+    except Exception:
+        return ""
 
 
 def _is_hermes_provider_credential(name: str) -> bool:
@@ -103,8 +111,11 @@ def register_env_passthrough(var_names: Iterable[str]) -> None:
 def _load_config_passthrough() -> frozenset[str]:
     """Load ``tools.env_passthrough`` from config.yaml (cached)."""
     global _config_passthrough
-    if _config_passthrough is not None:
-        return _config_passthrough
+    if not isinstance(_config_passthrough, dict):
+        _config_passthrough = {}
+    cache_key = _config_cache_key()
+    if cache_key in _config_passthrough:
+        return _config_passthrough[cache_key]
 
     result: set[str] = set()
     try:
@@ -118,8 +129,9 @@ def _load_config_passthrough() -> frozenset[str]:
     except Exception as e:
         logger.debug("Could not read tools.env_passthrough from config: %s", e)
 
-    _config_passthrough = frozenset(result)
-    return _config_passthrough
+    cached = frozenset(result)
+    _config_passthrough[cache_key] = cached
+    return cached
 
 
 def is_env_passthrough(var_name: str) -> bool:
@@ -141,5 +153,4 @@ def get_all_passthrough() -> frozenset[str]:
 def clear_env_passthrough() -> None:
     """Reset the skill-scoped allowlist (e.g. on session reset)."""
     _get_allowed().clear()
-
 

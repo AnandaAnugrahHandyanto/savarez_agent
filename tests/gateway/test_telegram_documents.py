@@ -484,8 +484,9 @@ class TestMediaGroups:
         with patch("gateway.platforms.telegram.cache_image_from_bytes", return_value="/tmp/one.jpg"):
             await adapter._handle_media_message(_make_update(msg), MagicMock())
 
-        assert "album-2" in adapter._media_group_events
-        assert "album-2" in adapter._media_group_tasks
+        batch_key = "agent:main:telegram:dm:100:album:album-2"
+        assert batch_key in adapter._media_group_events
+        assert batch_key in adapter._media_group_tasks
 
         await adapter.disconnect()
         await asyncio.sleep(adapter.MEDIA_GROUP_WAIT_SECONDS + 0.05)

@@ -203,6 +203,7 @@ class TestMaybeAutoTitle:
                 "hi there",
                 failure_callback=None,
                 main_runtime=None,
+                env=None,
                 title_callback=None,
             )
 
@@ -229,6 +230,7 @@ class TestMaybeAutoTitle:
                 "hi there",
                 failure_callback=_cb,
                 main_runtime=None,
+                env=None,
                 title_callback=None,
             )
 

@@ -37,7 +37,7 @@ needs to replace the import + call site:
 """
 
 from contextvars import ContextVar
-from typing import Any
+from typing import Any, Optional
 
 # Sentinel to distinguish "never set in this context" from "explicitly set to empty".
 # When a contextvar holds _UNSET, we fall back to os.environ (CLI/cron compat).
@@ -60,6 +60,10 @@ _SESSION_ID: ContextVar = ContextVar("HERMES_SESSION_ID", default=_UNSET)
 # so background-process notifications stay inside the originating Telegram
 # private-chat topic (those lanes route only with thread id + reply anchor).
 _SESSION_MESSAGE_ID: ContextVar = ContextVar("HERMES_SESSION_MESSAGE_ID", default=_UNSET)
+_SESSION_AGENT_PROFILE: ContextVar = ContextVar("HERMES_SESSION_AGENT_PROFILE", default=_UNSET)
+_SESSION_AGENT_HERMES_HOME: ContextVar = ContextVar("HERMES_SESSION_AGENT_HERMES_HOME", default=_UNSET)
+_SESSION_PROFILE_STRICT_AUTH: ContextVar = ContextVar("HERMES_PROFILE_STRICT_AUTH", default=_UNSET)
+_SESSION_RUNTIME_ENV: ContextVar = ContextVar("HERMES_SESSION_RUNTIME_ENV", default=_UNSET)
 
 # Cron auto-delivery vars — set per-job in run_job() so concurrent jobs
 # don't clobber each other's delivery targets.
@@ -77,6 +81,9 @@ _VAR_MAP = {
     "HERMES_SESSION_KEY": _SESSION_KEY,
     "HERMES_SESSION_ID": _SESSION_ID,
     "HERMES_SESSION_MESSAGE_ID": _SESSION_MESSAGE_ID,
+    "HERMES_SESSION_AGENT_PROFILE": _SESSION_AGENT_PROFILE,
+    "HERMES_SESSION_AGENT_HERMES_HOME": _SESSION_AGENT_HERMES_HOME,
+    "HERMES_PROFILE_STRICT_AUTH": _SESSION_PROFILE_STRICT_AUTH,
     "HERMES_CRON_AUTO_DELIVER_PLATFORM": _CRON_AUTO_DELIVER_PLATFORM,
     "HERMES_CRON_AUTO_DELIVER_CHAT_ID": _CRON_AUTO_DELIVER_CHAT_ID,
     "HERMES_CRON_AUTO_DELIVER_THREAD_ID": _CRON_AUTO_DELIVER_THREAD_ID,
@@ -92,6 +99,10 @@ def set_session_vars(
     user_name: str = "",
     session_key: str = "",
     message_id: str = "",
+    session_id: str = "",
+    agent_profile: str = "",
+    agent_hermes_home: str = "",
+    profile_strict_auth: str = "",
 ) -> list:
     """Set all session context variables and return reset tokens.
 
@@ -110,6 +121,10 @@ def set_session_vars(
         _SESSION_USER_NAME.set(user_name),
         _SESSION_KEY.set(session_key),
         _SESSION_MESSAGE_ID.set(message_id),
+        _SESSION_ID.set(session_id),
+        _SESSION_AGENT_PROFILE.set(agent_profile),
+        _SESSION_AGENT_HERMES_HOME.set(agent_hermes_home),
+        _SESSION_PROFILE_STRICT_AUTH.set(profile_strict_auth),
     ]
     return tokens
 
@@ -134,8 +149,13 @@ def clear_session_vars(tokens: list) -> None:
         _SESSION_USER_NAME,
         _SESSION_KEY,
         _SESSION_MESSAGE_ID,
+        _SESSION_ID,
+        _SESSION_AGENT_PROFILE,
+        _SESSION_AGENT_HERMES_HOME,
+        _SESSION_PROFILE_STRICT_AUTH,
     ):
         var.set("")
+    _SESSION_RUNTIME_ENV.set({})
 
 
 def get_session_env(name: str, default: str = "") -> str:
@@ -162,3 +182,32 @@ def get_session_env(name: str, default: str = "") -> str:
             return value
     # Fall back to os.environ for CLI, cron, and test compatibility
     return os.getenv(name, default)
+
+
+def set_runtime_env(runtime_env: Optional[dict[str, Any]]) -> Any:
+    """Set the current turn's scoped runtime env and return a reset token."""
+    value = None if runtime_env is None else dict(runtime_env)
+    return _SESSION_RUNTIME_ENV.set(value)
+
+
+def clear_runtime_env(token: Any = None) -> None:
+    """Clear the runtime env without falling back to process-global secrets."""
+    if token is not None:
+        try:
+            _SESSION_RUNTIME_ENV.reset(token)
+            return
+        except Exception:
+            pass
+    _SESSION_RUNTIME_ENV.set({})
+
+
+def get_runtime_env(default: Optional[dict[str, Any]] = None) -> Optional[dict[str, Any]]:
+    """Return the scoped runtime env for this context, if one was set."""
+    value = _SESSION_RUNTIME_ENV.get()
+    if value is _UNSET:
+        return default
+    if value is None:
+        return None
+    if isinstance(value, dict):
+        return dict(value)
+    return default
