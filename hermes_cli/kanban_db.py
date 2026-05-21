@@ -3184,6 +3184,126 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
         return True
 
 
+def _parent_counts_as_done_for_rerun(
+    conn: sqlite3.Connection,
+    parent_id: str,
+) -> bool:
+    """Return True when ``parent_id`` should satisfy rerun parent gates."""
+    row = conn.execute(
+        "SELECT status FROM tasks WHERE id = ?",
+        (parent_id,),
+    ).fetchone()
+    if row is None:
+        return False
+    status = row["status"]
+    if status in ("done", "archived"):
+        return True
+    if status != "blocked":
+        return False
+    event = conn.execute(
+        "SELECT kind, payload FROM task_events "
+        "WHERE task_id = ? AND kind IN ('blocked', 'unblocked') "
+        "ORDER BY id DESC LIMIT 1",
+        (parent_id,),
+    ).fetchone()
+    if not event or event["kind"] != "blocked" or not event["payload"]:
+        return False
+    try:
+        payload = json.loads(event["payload"])
+    except Exception:
+        payload = None
+    reason = payload.get("reason") if isinstance(payload, dict) else None
+    return isinstance(reason, str) and reason.startswith("review-required")
+
+
+def rerun_task(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    reason: Optional[str] = None,
+    new_assignee: Optional[str] = None,
+) -> bool:
+    """Reset a completed/blocked task to ready for another attempt.
+
+    Clears claim state, the active run pointer, and the failure counter.
+    Parent gates are re-evaluated: undone parents send the task to
+    ``todo``; ``review-required`` blocked parents count as satisfied for
+    this rerun decision.
+
+    Returns True when the task was reset, False when the task is not in
+    a rerunnable state.
+    """
+    with write_txn(conn):
+        task = get_task(conn, task_id)
+        if not task:
+            return False
+        if task.status not in ("done", "blocked", "archived", "gave_up"):
+            return False
+
+        parent_rows = conn.execute(
+            "SELECT parent_id FROM task_links WHERE child_id = ? ORDER BY parent_id",
+            (task_id,),
+        ).fetchall()
+        new_status = "ready"
+        for row in parent_rows:
+            if not _parent_counts_as_done_for_rerun(conn, row["parent_id"]):
+                new_status = "todo"
+                break
+
+        # Defensive invariant recovery: terminal tasks should not carry
+        # an open run pointer, but clear it safely if some external path
+        # leaked one.
+        if task.current_run_id is not None:
+            _end_run(
+                conn,
+                task_id,
+                outcome="reclaimed",
+                status="reclaimed",
+                summary="invariant recovery on rerun",
+            )
+
+        assignee = _canonical_assignee(new_assignee) if new_assignee is not None else task.assignee
+        cur = conn.execute(
+            """
+            UPDATE tasks
+               SET assignee             = ?,
+                   status               = ?,
+                   started_at           = NULL,
+                   completed_at         = NULL,
+                   claim_lock           = NULL,
+                   claim_expires        = NULL,
+                   worker_pid           = NULL,
+                   last_heartbeat_at    = NULL,
+                   consecutive_failures = 0,
+                   last_failure_error   = NULL,
+                   current_run_id       = NULL
+             WHERE id = ?
+            """,
+            (assignee, new_status, task_id),
+        )
+        if cur.rowcount != 1:
+            return False
+        _append_event(
+            conn,
+            task_id,
+            "rerun",
+            {
+                "reason": reason,
+                "status": new_status,
+                "assignee": assignee,
+            },
+        )
+        max_event_id = conn.execute(
+            "SELECT COALESCE(MAX(id), 0) AS max_id FROM task_events WHERE task_id = ?",
+            (task_id,),
+        ).fetchone()["max_id"]
+        conn.execute(
+            "UPDATE kanban_notify_subs SET last_event_id = ? WHERE task_id = ?",
+            (int(max_event_id), task_id),
+        )
+        return True
+
+
 def specify_triage_task(
     conn: sqlite3.Connection,
     task_id: str,

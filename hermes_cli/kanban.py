@@ -576,6 +576,13 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_unblock = sub.add_parser("unblock", help="Return one or more blocked/scheduled tasks to ready")
     p_unblock.add_argument("task_ids", nargs="+")
 
+    p_rerun = sub.add_parser("rerun", help="Reset a completed/blocked task for another attempt")
+    p_rerun.add_argument("task_id")
+    p_rerun.add_argument("--reason", default=None,
+                         help="Optional reason recorded on the rerun event")
+    p_rerun.add_argument("--reassign-to", dest="new_assignee", default=None,
+                         help="Optional assignee profile to use for the rerun")
+
     p_archive = sub.add_parser("archive", help="Archive one or more tasks")
     p_archive.add_argument("task_ids", nargs="*",
                            help="Task ids to archive (default mode)")
@@ -925,6 +932,7 @@ def kanban_command(args: argparse.Namespace) -> int:
         "block":    _cmd_block,
         "schedule": _cmd_schedule,
         "unblock":  _cmd_unblock,
+        "rerun":    _cmd_rerun,
         "archive":  _cmd_archive,
         "tail":     _cmd_tail,
         "dispatch": _cmd_dispatch,
@@ -2002,6 +2010,26 @@ def _cmd_unblock(args: argparse.Namespace) -> int:
             else:
                 print(f"Unblocked {tid}")
     return 0 if not failed else 1
+
+
+def _cmd_rerun(args: argparse.Namespace) -> int:
+    with kb.connect() as conn:
+        ok = kb.rerun_task(
+            conn,
+            args.task_id,
+            reason=getattr(args, "reason", None),
+            new_assignee=getattr(args, "new_assignee", None),
+        )
+        if not ok:
+            print(
+                f"cannot rerun {args.task_id} (not completed/blocked/archived?)",
+                file=sys.stderr,
+            )
+            return 1
+        task = kb.get_task(conn, args.task_id)
+    status = task.status if task else "?"
+    print(f"Rerun {args.task_id} ({status})")
+    return 0
 
 
 def _cmd_archive(args: argparse.Namespace) -> int:
