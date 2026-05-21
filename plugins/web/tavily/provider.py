@@ -34,13 +34,10 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
-from agent.credential_pool import load_pool
+from agent.credential_pool import CredentialPool, PooledCredential, load_pool
 from agent.web_search_provider import WebSearchProvider
-
-if TYPE_CHECKING:
-    from agent.credential_pool import CredentialPool, PooledCredential
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +45,7 @@ _POOL_PROVIDER = "tavily"
 _ROTATE_STATUSES = frozenset({401, 403, 429})
 
 
-def _load_tavily_pool() -> Optional["CredentialPool"]:
+def _load_tavily_pool() -> Optional[CredentialPool]:
     """Return the Tavily credential pool, or ``None`` if the pool fails to load."""
     try:
         return load_pool(_POOL_PROVIDER)
@@ -64,7 +61,7 @@ def _pool_runtime_api_key(entry: Any) -> str:
     return str(key or "").strip()
 
 
-def _resolve_tavily_key() -> Tuple[Optional[str], Optional["CredentialPool"], Optional["PooledCredential"]]:
+def _resolve_tavily_key() -> Tuple[Optional[str], Optional[CredentialPool], Optional[PooledCredential]]:
     """Resolve a Tavily API key (pool-first, env fallback). ``pool``/``entry`` are ``None`` for env."""
     pool = _load_tavily_pool()
     if pool is not None and pool.has_credentials():

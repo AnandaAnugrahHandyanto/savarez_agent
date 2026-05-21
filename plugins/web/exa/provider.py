@@ -27,13 +27,10 @@ from __future__ import annotations
 import logging
 import os
 import re
-from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple, TypeVar
+from typing import Any, Callable, Dict, List, Optional, Tuple, TypeVar
 
-from agent.credential_pool import load_pool
+from agent.credential_pool import CredentialPool, PooledCredential, load_pool
 from agent.web_search_provider import WebSearchProvider
-
-if TYPE_CHECKING:
-    from agent.credential_pool import CredentialPool, PooledCredential
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +47,7 @@ T = TypeVar("T")
 # that public module (see :func:`_get_exa_client`).
 
 
-def _load_exa_pool() -> Optional["CredentialPool"]:
+def _load_exa_pool() -> Optional[CredentialPool]:
     """Return the Exa credential pool, or ``None`` if loading fails."""
     try:
         return load_pool(_POOL_PROVIDER)
@@ -66,7 +63,7 @@ def _pool_runtime_api_key(entry: Any) -> str:
     return str(key or "").strip()
 
 
-def _resolve_exa_key() -> Tuple[Optional[str], Optional["CredentialPool"], Optional["PooledCredential"]]:
+def _resolve_exa_key() -> Tuple[Optional[str], Optional[CredentialPool], Optional[PooledCredential]]:
     """Resolve an Exa API key (pool-first, env fallback). ``pool``/``entry`` are ``None`` for env."""
     pool = _load_exa_pool()
     if pool is not None and pool.has_credentials():
@@ -93,8 +90,8 @@ def _pool_has_entries() -> bool:
 
 def _build_exa_client(
     api_key: str,
-    pool: Optional["CredentialPool"] = None,
-    entry: Optional["PooledCredential"] = None,
+    pool: Optional[CredentialPool] = None,
+    entry: Optional[PooledCredential] = None,
 ) -> Any:
     """Build, cache, and return an Exa SDK client; stash pool state for rotation."""
     import tools.web_tools as _wt
