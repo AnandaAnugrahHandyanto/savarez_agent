@@ -102,6 +102,7 @@ else:
 
 # Import our tool system
 from model_tools import (
+    get_tool_catalog,
     get_tool_definitions,
     get_toolset_for_tool,
     handle_function_call,

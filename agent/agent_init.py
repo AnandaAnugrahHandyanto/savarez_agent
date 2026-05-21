@@ -52,7 +52,6 @@ from agent.tool_guardrails import (
 from hermes_cli.config import cfg_get
 from hermes_cli.timeouts import get_provider_request_timeout
 from hermes_constants import get_hermes_home
-from model_tools import check_toolset_requirements, get_tool_definitions
 from utils import base_url_host_matches
 
 # Use the same logger name as run_agent so tests patching ``run_agent.logger``
@@ -814,17 +813,23 @@ def init_agent(
             print(f"🔄 Fallback chain ({len(agent._fallback_chain)} providers): " +
                   " → ".join(f"{f['model']} ({f['provider']})" for f in agent._fallback_chain))
 
-    # Get available tools with filtering
-    agent.tools = _ra().get_tool_definitions(
-        enabled_toolsets=enabled_toolsets,
-        disabled_toolsets=disabled_toolsets,
-        quiet_mode=agent.quiet_mode,
-    )
+    def _assign_tool_catalog(memory_manager=None, context_engine=None) -> None:
+        agent._tool_catalog = _ra().get_tool_catalog(
+            enabled_toolsets=enabled_toolsets,
+            disabled_toolsets=disabled_toolsets,
+            quiet_mode=agent.quiet_mode,
+            memory_manager=memory_manager,
+            context_engine=context_engine,
+        )
+        agent.tools = agent._tool_catalog.to_openai_tools()
+        agent.valid_tool_names = set(agent._tool_catalog.valid_names)
+
+    # Get available registry tools with filtering. Runtime adapters are folded
+    # into this same catalog later, after memory and context engines exist.
+    _assign_tool_catalog()
     
     # Show tool configuration and store valid tool names for validation
-    agent.valid_tool_names = set()
     if agent.tools:
-        agent.valid_tool_names = {tool["function"]["name"] for tool in agent.tools}
         tool_names = sorted(agent.valid_tool_names)
         if not agent.quiet_mode:
             print(f"🛠️  Loaded {len(agent.tools)} tools: {', '.join(tool_names)}")
@@ -1054,27 +1059,10 @@ def init_agent(
             _ra().logger.warning("Memory provider plugin init failed: %s", _mpe)
             agent._memory_manager = None
 
-    # Inject memory provider tool schemas into the tool surface.
-    # Skip tools whose names already exist (plugins may register the
-    # same tools via ctx.register_tool(), which lands in agent.tools
-    # through _ra().get_tool_definitions()).  Duplicate function names cause
-    # 400 errors on providers that enforce unique names (e.g. Xiaomi
-    # MiMo via Nous Portal).
-    if agent._memory_manager and agent.tools is not None:
-        _existing_tool_names = {
-            t.get("function", {}).get("name")
-            for t in agent.tools
-            if isinstance(t, dict)
-        }
-        for _schema in agent._memory_manager.get_all_tool_schemas():
-            _tname = _schema.get("name", "")
-            if _tname and _tname in _existing_tool_names:
-                continue  # already registered via plugin path
-            _wrapped = {"type": "function", "function": _schema}
-            agent.tools.append(_wrapped)
-            if _tname:
-                agent.valid_tool_names.add(_tname)
-                _existing_tool_names.add(_tname)
+    # Fold memory-provider tool schemas through the catalog so dedup,
+    # source metadata, and copy isolation stay in one implementation.
+    if agent._memory_manager:
+        _assign_tool_catalog(memory_manager=agent._memory_manager)
 
     # Skills config: nudge interval for skill creation reminders
     agent._skill_nudge_interval = 10
@@ -1361,31 +1349,19 @@ def init_agent(
             f"model.context_length in config.yaml to override."
         )
 
-    # Inject context engine tool schemas (e.g. lcm_grep, lcm_describe, lcm_expand).
-    # Skip names that are already present — the _ra().get_tool_definitions()
-    # quiet_mode cache returned a shared list pre-#17335, so a stray
-    # mutation here would poison subsequent agent inits in the same
-    # Gateway process and trip provider-side 'duplicate tool name'
-    # errors. Even with the cache fix, dedup is the right defense
-    # against plugin paths that may register the same schemas via
-    # ctx.register_tool(). Mirrors the memory tools dedup above.
+    # Fold context-engine tool schemas (e.g. lcm_grep, lcm_describe,
+    # lcm_expand) through the same catalog path as registry and memory tools.
     agent._context_engine_tool_names: set = set()
-    if hasattr(agent, "context_compressor") and agent.context_compressor and agent.tools is not None:
-        _existing_tool_names = {
-            t.get("function", {}).get("name")
-            for t in agent.tools
-            if isinstance(t, dict)
+    if hasattr(agent, "context_compressor") and agent.context_compressor:
+        _assign_tool_catalog(
+            memory_manager=agent._memory_manager,
+            context_engine=agent.context_compressor,
+        )
+        agent._context_engine_tool_names = {
+            name
+            for name, metadata in agent._tool_catalog.source_metadata.items()
+            if metadata.source_type == "context_engine"
         }
-        for _schema in agent.context_compressor.get_tool_schemas():
-            _tname = _schema.get("name", "")
-            if _tname and _tname in _existing_tool_names:
-                continue  # already registered via plugin/cache path
-            _wrapped = {"type": "function", "function": _schema}
-            agent.tools.append(_wrapped)
-            if _tname:
-                agent.valid_tool_names.add(_tname)
-                agent._context_engine_tool_names.add(_tname)
-                _existing_tool_names.add(_tname)
 
     # Notify context engine of session start
     if hasattr(agent, "context_compressor") and agent.context_compressor:
