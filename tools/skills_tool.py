@@ -620,6 +620,22 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
                 )
                 continue
 
+    try:
+        from plugins.memory import register_active_memory_skill_providers
+        from agent.skill_providers import list_provider_skill_metadata
+
+        register_active_memory_skill_providers()
+        for provider_skill in list_provider_skill_metadata():
+            name = provider_skill.get("name")
+            if not name or name in seen_names:
+                continue
+            if name in disabled:
+                continue
+            seen_names.add(name)
+            skills.append(provider_skill)
+    except Exception:
+        logger.debug("Failed to load active memory skill provider metadata", exc_info=True)
+
     return skills
 
 
@@ -888,6 +904,56 @@ def skill_view(
                     },
                     ensure_ascii=False,
                 )
+
+            try:
+                from plugins.memory import register_active_memory_skill_providers
+                from agent.skill_providers import (
+                    read_provider_supporting_file,
+                    resolve_provider_skill,
+                )
+
+                register_active_memory_skill_providers()
+                if file_path:
+                    provider_file = read_provider_supporting_file(namespace, bare, file_path)
+                    if provider_file is not None:
+                        content = provider_file.get("content") if isinstance(provider_file, dict) else str(provider_file)
+                        return json.dumps(
+                            {
+                                "success": True,
+                                "name": name,
+                                "file_path": file_path,
+                                "content": content,
+                                "provider": namespace,
+                            },
+                            ensure_ascii=False,
+                        )
+                provider_payload = resolve_provider_skill(namespace, bare)
+                if provider_payload is not None:
+                    if isinstance(provider_payload, dict):
+                        payload_data = dict(provider_payload)
+                    else:
+                        payload_data = {
+                            "name": getattr(provider_payload, "name", bare),
+                            "content": getattr(provider_payload, "content", ""),
+                            "description": getattr(provider_payload, "description", ""),
+                            "linked_files": getattr(provider_payload, "linked_files", None),
+                            "readiness_status": getattr(
+                                provider_payload,
+                                "readiness_status",
+                                SkillReadinessStatus.AVAILABLE.value,
+                            ),
+                            "metadata": getattr(provider_payload, "metadata", None),
+                        }
+                    payload_data.update(
+                        {
+                            "success": True,
+                            "name": name,
+                            "provider": namespace,
+                        }
+                    )
+                    return json.dumps(payload_data, ensure_ascii=False)
+            except Exception:
+                logger.debug("Failed to resolve memory provider skill %s", name, exc_info=True)
 
             discover_plugins()  # idempotent
             pm = get_plugin_manager()

@@ -1,9 +1,22 @@
 """Tests for _ThreadedProcessHandle — the adapter for SDK backends."""
 
+import os
 import threading
 import time
 
-from tools.environments.base import _ThreadedProcessHandle
+from tools.environments.base import (
+    RESOURCE_LIFETIME_POLICY,
+    BaseEnvironment,
+    _ThreadedProcessHandle,
+)
+
+
+class _DummyEnvironment(BaseEnvironment):
+    def _run_bash(self, *args, **kwargs):
+        raise NotImplementedError
+
+    def cleanup(self):
+        pass
 
 
 class TestBasicExecution:
@@ -89,6 +102,24 @@ class TestCancelFn:
         handle.kill()
         assert called.is_set()
 
+    def test_kill_closes_synthetic_stdout_writer_without_waiting_for_worker(self):
+        """SDK-backed handles must not hold pipe fds forever when
+        cancellation does not immediately stop the worker thread.
+        """
+        started = threading.Event()
+
+        def exec_fn():
+            started.set()
+            time.sleep(10)
+            return ("late output", 0)
+
+        handle = _ThreadedProcessHandle(exec_fn, cancel_fn=None)
+        assert started.wait(timeout=1)
+
+        handle.kill()
+
+        assert handle.stdout.read() == ""
+
     def test_cancel_fn_none_is_safe(self):
         def exec_fn():
             return ("ok", 0)
@@ -142,3 +173,35 @@ class TestStdoutPipe:
         output = handle.stdout.read()
         assert "世界" in output
         assert "🌍" in output
+
+
+class TestWaitForProcessFdCleanup:
+    def test_resource_lifetime_policy_is_explicit_and_versioned(self):
+        assert RESOURCE_LIFETIME_POLICY.version == 1
+        assert RESOURCE_LIFETIME_POLICY.drain_join_timeout_seconds == 2.0
+        assert RESOURCE_LIFETIME_POLICY.poll_interval_seconds == 0.2
+
+    class _NeverExitsProc:
+        def __init__(self):
+            self.read_fd, self.write_fd = os.pipe()
+            self.stdout = os.fdopen(self.read_fd, "rb", buffering=0)
+            self.returncode = None
+
+        def poll(self):
+            return self.returncode
+
+        def kill(self):
+            self.returncode = -9
+            try:
+                os.close(self.write_fd)
+            except OSError:
+                pass
+
+    def test_wait_for_process_closes_stdout_on_timeout(self):
+        env = _DummyEnvironment(cwd=".", timeout=1)
+        proc = self._NeverExitsProc()
+
+        result = env._wait_for_process(proc, timeout=0)
+
+        assert result["returncode"] == 124
+        assert proc.stdout.closed

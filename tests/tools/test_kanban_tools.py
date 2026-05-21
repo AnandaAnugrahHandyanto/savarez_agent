@@ -899,6 +899,11 @@ def test_kanban_guidance_in_worker_prompt(monkeypatch, tmp_path):
     assert "kanban_create" in prompt
     # Anti-shell guidance
     assert "Do not shell out" in prompt or "tools — they work" in prompt
+    # Regression: workers must not self-block completed coding work solely
+    # because a human may review it later; that left finished tasks blocked
+    # instead of continuing the board.
+    assert "Do not block merely because human review may happen later" in prompt
+    assert "review-required" not in prompt
 
 
 def test_kanban_guidance_prompt_size_bounded(monkeypatch, tmp_path):

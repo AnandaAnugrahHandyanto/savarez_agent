@@ -17,6 +17,7 @@ import threading
 import time
 import uuid
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from pathlib import Path
 from typing import IO, Callable, Protocol
 
@@ -24,6 +25,33 @@ from hermes_constants import get_hermes_home
 from tools.interrupt import is_interrupted
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class ResourceLifetimePolicy:
+    """Versioned resource-lifetime contract for environment process handles.
+
+    Bump ``version`` whenever these cleanup guarantees change in a way tests or
+    backend adapters may need to reason about.  The current contract is:
+
+    * subprocess stdout is closed by the owning wait loop before returning;
+    * synthetic SDK stdout pipe writers are closed immediately on ``kill()``;
+    * drain threads are given a bounded grace period, then ownership cleanup
+      continues instead of holding file descriptors indefinitely;
+    * process polling uses a bounded cadence so timeout/interrupt paths observe
+      the deadline predictably.
+    """
+
+    version: int
+    drain_join_timeout_seconds: float
+    poll_interval_seconds: float
+
+
+RESOURCE_LIFETIME_POLICY = ResourceLifetimePolicy(
+    version=1,
+    drain_join_timeout_seconds=2.0,
+    poll_interval_seconds=0.2,
+)
 
 # Opt-in debug tracing for the interrupt/activity/poll machinery.  Set
 # HERMES_DEBUG_INTERRUPT=1 to log loop entry/exit, periodic heartbeats, and
@@ -220,11 +248,12 @@ class _ThreadedProcessHandle:
         self._done = threading.Event()
         self._returncode: int | None = None
         self._error: Exception | None = None
+        self._fd_lock = threading.Lock()
 
         # Pipe for stdout — drain thread in _wait_for_process reads the read end.
         read_fd, write_fd = os.pipe()
         self._stdout = os.fdopen(read_fd, "r", encoding="utf-8", errors="replace")
-        self._write_fd = write_fd
+        self._write_fd: int | None = write_fd
 
         def _worker():
             try:
@@ -232,21 +261,31 @@ class _ThreadedProcessHandle:
                 self._returncode = exit_code
                 # Write output into the pipe so drain thread picks it up.
                 try:
-                    os.write(self._write_fd, output.encode("utf-8", errors="replace"))
+                    with self._fd_lock:
+                        write_fd = self._write_fd
+                        if write_fd is not None:
+                            os.write(write_fd, output.encode("utf-8", errors="replace"))
                 except OSError:
                     pass
             except Exception as exc:
                 self._error = exc
                 self._returncode = 1
             finally:
-                try:
-                    os.close(self._write_fd)
-                except OSError:
-                    pass
+                self._close_write_fd()
                 self._done.set()
 
         t = threading.Thread(target=_worker, daemon=True)
         t.start()
+
+    def _close_write_fd(self) -> None:
+        with self._fd_lock:
+            write_fd = self._write_fd
+            self._write_fd = None
+        if write_fd is not None:
+            try:
+                os.close(write_fd)
+            except OSError:
+                pass
 
     @property
     def stdout(self):
@@ -265,6 +304,11 @@ class _ThreadedProcessHandle:
                 self._cancel_fn()
             except Exception:
                 pass
+        # Bound the lifetime of the synthetic stdout pipe even if the SDK
+        # worker/cancel path stalls. _wait_for_process owns the read end;
+        # closing our write end lets its drain loop observe EOF instead of
+        # keeping an fd open until the worker thread eventually returns.
+        self._close_write_fd()
 
     def wait(self, timeout: float | None = None) -> int:
         self._done.wait(timeout=timeout)
@@ -608,6 +652,12 @@ class BaseEnvironment(ABC):
                 is_interrupted(),
             )
 
+        def _close_proc_stdout() -> None:
+            try:
+                proc.stdout.close()
+            except Exception:
+                pass
+
         try:
             while proc.poll() is None:
                 _iter_count += 1
@@ -619,7 +669,8 @@ class BaseEnvironment(ABC):
                             _tid, _pid, _iter_count, time.monotonic() - _activity_state["start"],
                         )
                     self._kill_process(proc)
-                    drain_thread.join(timeout=2)
+                    drain_thread.join(timeout=RESOURCE_LIFETIME_POLICY.drain_join_timeout_seconds)
+                    _close_proc_stdout()
                     return {
                         "output": "".join(output_chunks) + "\n[Command interrupted]",
                         "returncode": 130,
@@ -632,7 +683,8 @@ class BaseEnvironment(ABC):
                             _tid, _pid, _iter_count, timeout,
                         )
                     self._kill_process(proc)
-                    drain_thread.join(timeout=2)
+                    drain_thread.join(timeout=RESOURCE_LIFETIME_POLICY.drain_join_timeout_seconds)
+                    _close_proc_stdout()
                     partial = "".join(output_chunks)
                     timeout_msg = f"\n[Command timed out after {timeout}s]"
                     return {
@@ -662,7 +714,7 @@ class BaseEnvironment(ABC):
                     _last_heartbeat = time.monotonic()
                     _cb_was_none = _cb_now_none
 
-                time.sleep(0.2)
+                time.sleep(RESOURCE_LIFETIME_POLICY.poll_interval_seconds)
         except (KeyboardInterrupt, SystemExit):
             # Signal arrived (SIGTERM/SIGHUP/SIGINT) or sys.exit() was called
             # while we were polling.  The local backend spawns subprocesses
@@ -680,7 +732,8 @@ class BaseEnvironment(ABC):
                 )
             try:
                 self._kill_process(proc)
-                drain_thread.join(timeout=2)
+                drain_thread.join(timeout=RESOURCE_LIFETIME_POLICY.drain_join_timeout_seconds)
+                _close_proc_stdout()
             except Exception:
                 pass  # cleanup is best-effort
             raise
@@ -688,12 +741,9 @@ class BaseEnvironment(ABC):
         # Drain thread now exits promptly after bash does (~300ms idle
         # check).  A short join is enough; a long one would be a bug since
         # it means the non-blocking loop itself stopped cooperating.
-        drain_thread.join(timeout=2)
+        drain_thread.join(timeout=RESOURCE_LIFETIME_POLICY.drain_join_timeout_seconds)
 
-        try:
-            proc.stdout.close()
-        except Exception:
-            pass
+        _close_proc_stdout()
 
         if _DEBUG_INTERRUPT:
             logger.info(

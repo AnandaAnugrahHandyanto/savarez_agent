@@ -130,6 +130,136 @@ export const monoTheme: DashboardTheme = {
   },
 };
 
+export const ferrosaTheme: DashboardTheme = {
+  name: "ferrosa",
+  label: "Ferrosa",
+  description: "Restrained Ferrosa brand system — dark graphite, rust accents, thin rules",
+  palette: {
+    background: { hex: "#0a0a0f", alpha: 1 },
+    midground: { hex: "#e8e8ed", alpha: 1 },
+    foreground: { hex: "#e2725b", alpha: 0.12 },
+    warmGlow: "rgba(226, 114, 91, 0.12)",
+    noiseOpacity: 0.28,
+  },
+  typography: {
+    ...DEFAULT_TYPOGRAPHY,
+    fontSans: `"Inter", ${SYSTEM_SANS}`,
+    fontMono: `"JetBrains Mono", "Fira Code", ${SYSTEM_MONO}`,
+    fontUrl:
+      "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap",
+    lineHeight: "1.62",
+    letterSpacing: "-0.006em",
+  },
+  layout: {
+    ...DEFAULT_LAYOUT,
+    radius: "0.375rem",
+    density: "comfortable",
+  },
+  colorOverrides: {
+    card: "#16161f",
+    cardForeground: "#e8e8ed",
+    popover: "#16161f",
+    popoverForeground: "#e8e8ed",
+    primary: "#e2725b",
+    primaryForeground: "#0a0a0f",
+    secondary: "#111118",
+    secondaryForeground: "#e8e8ed",
+    muted: "#111118",
+    mutedForeground: "#9494a3",
+    accent: "#d4a574",
+    accentForeground: "#0a0a0f",
+    destructive: "#d46a58",
+    destructiveForeground: "#0a0a0f",
+    success: "#6bc9a0",
+    warning: "#d4a574",
+    border: "#1e1e2a",
+    input: "#1e1e2a",
+    ring: "#e2725b",
+  },
+  componentStyles: {
+    page: {
+      background:
+        "linear-gradient(180deg, rgba(10,10,15,0.98) 0%, rgba(17,17,24,0.96) 100%)",
+    },
+    header: {
+      background: "rgba(10, 10, 15, 0.96)",
+      borderImage: "linear-gradient(90deg, #1e1e2a, rgba(226,114,91,0.32), #1e1e2a) 1",
+    },
+    sidebar: {
+      background: "rgba(10, 10, 15, 0.96)",
+      borderImage: "linear-gradient(180deg, #1e1e2a, rgba(226,114,91,0.32), #1e1e2a) 1",
+    },
+    card: {
+      background: "rgba(22, 22, 31, 0.82)",
+      borderImage: "linear-gradient(135deg, rgba(232,232,237,0.12), rgba(226,114,91,0.16), rgba(232,232,237,0.06)) 1",
+      boxShadow: "0 18px 60px rgba(0, 0, 0, 0.28)",
+    },
+    tab: {
+      background: "transparent",
+    },
+    badge: {
+      background: "rgba(226, 114, 91, 0.12)",
+      borderColor: "rgba(226, 114, 91, 0.32)",
+    },
+    backdrop: {
+      opacity: "0.42",
+    },
+  },
+  customCSS: `
+#root > div {
+  font-family: var(--theme-font-sans);
+  text-transform: none;
+  background: #0a0a0f;
+  letter-spacing: var(--theme-letter-spacing);
+}
+
+#root .font-mondwest,
+#root [class*="font-mondwest"] {
+  font-family: var(--theme-font-sans) !important;
+}
+
+#root .uppercase {
+  text-transform: none !important;
+}
+
+#root aside,
+#root header,
+#root [class*="backdrop-blur"] {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+#root aside nav a {
+  letter-spacing: 0.015em;
+  font-weight: 600;
+}
+
+#root aside nav a[aria-current="page"]::before {
+  content: "";
+  position: absolute;
+  left: 0.75rem;
+  width: 2px;
+  height: 1.15rem;
+  background: #e2725b;
+  border-radius: 999px;
+}
+
+#root h1,
+#root h2,
+#root h3,
+#root [class*="tracking-"] {
+  letter-spacing: -0.01em;
+}
+
+#root button,
+#root input,
+#root select,
+#root textarea {
+  font-family: var(--theme-font-sans);
+}
+`,
+};
+
 export const cyberpunkTheme: DashboardTheme = {
   name: "cyberpunk",
   label: "Cyberpunk",
@@ -210,6 +340,7 @@ export const BUILTIN_THEMES: Record<string, DashboardTheme> = {
   midnight: midnightTheme,
   ember: emberTheme,
   mono: monoTheme,
+  ferrosa: ferrosaTheme,
   cyberpunk: cyberpunkTheme,
   rose: roseTheme,
 };

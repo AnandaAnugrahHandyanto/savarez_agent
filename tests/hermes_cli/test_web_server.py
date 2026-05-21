@@ -1514,6 +1514,20 @@ class TestStatusRemoteGateway:
 
 
 # ---------------------------------------------------------------------------
+# Dashboard theme registry tests
+# ---------------------------------------------------------------------------
+
+
+class TestDashboardThemeRegistry:
+    def test_ferrosa_theme_is_registered_server_side(self):
+        from hermes_cli.web_server import _BUILTIN_DASHBOARD_THEMES, _SCHEMA_OVERRIDES
+
+        builtin_names = [theme["name"] for theme in _BUILTIN_DASHBOARD_THEMES]
+        assert "ferrosa" in builtin_names
+        assert "ferrosa" in _SCHEMA_OVERRIDES["dashboard.theme"]["options"]
+
+
+# ---------------------------------------------------------------------------
 # Dashboard theme normaliser tests
 # ---------------------------------------------------------------------------
 
@@ -1856,17 +1870,18 @@ class TestPluginAPIAuth:
     def test_plugin_route_allows_auth(self):
         """Plugin API routes should work with a valid session token.
 
-        Use ``/api/plugins/example/hello`` from the example-dashboard plugin —
-        a stable, side-effect-free GET that's always loaded in tests. With a
-        valid token the handler should run (200); without one the middleware
-        should 401 before the handler is reached.
+        Use ``/api/plugins/kanban/board`` from the bundled Kanban plugin: it is
+        a real shipped dashboard plugin and its GET handler is side-effect-free
+        aside from initializing the empty board database in the isolated test
+        HERMES_HOME. With a valid token the handler should run (200); without
+        one the middleware should 401 before the handler is reached.
         """
         # Without auth: middleware blocks before reaching the handler.
-        resp = self.client.get("/api/plugins/example/hello")
+        resp = self.client.get("/api/plugins/kanban/board")
         assert resp.status_code == 401
 
         # With auth: handler runs.
-        resp = self.auth_client.get("/api/plugins/example/hello")
+        resp = self.auth_client.get("/api/plugins/kanban/board")
         assert resp.status_code == 200
 
     def test_plugin_post_requires_auth(self):
@@ -1940,6 +1955,18 @@ class TestPluginAPIAuth:
 class TestDashboardPluginManifestExtensions:
     """Tests for the extended plugin manifest fields (tab.override,
     tab.hidden, slots) read by _discover_dashboard_plugins()."""
+
+    def test_example_fixture_is_not_bundled_dashboard_plugin(self, tmp_path, monkeypatch):
+        """The API-auth example fixture must not leak into the live dashboard."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        from hermes_cli import web_server
+
+        web_server._dashboard_plugins_cache = None
+        plugins = web_server._get_dashboard_plugins(force_rescan=True)
+        names = {p["name"] for p in plugins}
+
+        assert "example" not in names
+        assert "kanban" in names
 
     def _write_plugin(self, tmp_path, name, manifest):
         import json

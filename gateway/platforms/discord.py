@@ -85,6 +85,33 @@ def _clean_discord_id(entry: str) -> str:
     return entry.strip()
 
 
+def _format_discord_user_mentions(entries: Any) -> str:
+    """Return Discord user mentions for configured approver IDs.
+
+    Accepts comma-separated strings or lists. Entries may be raw numeric IDs,
+    ``<@123>``, ``<@!123>``, or ``user:123``. Non-numeric entries are ignored so
+    this never turns usernames or arbitrary LLM text into pings.
+    """
+    if entries is None:
+        return ""
+    if isinstance(entries, str):
+        candidates = entries.split(",")
+    elif isinstance(entries, (list, tuple, set)):
+        candidates = [str(entry) for entry in entries]
+    else:
+        candidates = [str(entries)]
+
+    seen: set[str] = set()
+    mentions: list[str] = []
+    for raw in candidates:
+        user_id = _clean_discord_id(str(raw))
+        if not user_id.isdigit() or user_id in seen:
+            continue
+        seen.add(user_id)
+        mentions.append(f"<@{user_id}>")
+    return " ".join(mentions)
+
+
 def check_discord_requirements() -> bool:
     """Check if Discord dependencies are available.
 
@@ -594,6 +621,21 @@ class DiscordAdapter(BasePlatformAdapter):
         # scanning channel.history() on cache miss (cold start / restart).
         self._last_self_message_id: Dict[str, str] = {}
 
+    def _approval_mention_text(self) -> str:
+        """Mention configured approvers at the top of Discord approval prompts."""
+        raw = os.getenv("DISCORD_APPROVAL_MENTIONS", "").strip()
+        if raw:
+            return _format_discord_user_mentions(raw)
+
+        raw = self.config.extra.get("approval_mentions")
+        if raw:
+            return _format_discord_user_mentions(raw)
+
+        # Sensible default: ping numeric DISCORD_ALLOWED_USERS approvers. If the
+        # allowlist contains usernames, _resolve_allowed_usernames() will replace
+        # them with numeric IDs after on_ready; before that they are safely ignored.
+        return _format_discord_user_mentions(self._allowed_user_ids)
+
     async def connect(self) -> bool:
         """Connect to Discord and start receiving events."""
         if not DISCORD_AVAILABLE:
@@ -751,7 +793,7 @@ class DiscordAdapter(BasePlatformAdapter):
                     if allow_bots == "none":
                         return
                     elif allow_bots == "mentions":
-                        if not self._client.user or self._client.user not in message.mentions:
+                        if not adapter_self._message_mentions_self(message):
                             return
                     # "all" falls through; bot is permitted — skip the
                     # human-user allowlist below (bots aren't in it).
@@ -780,10 +822,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 # with bot-aware filtering that works correctly when multiple
                 # agents share a channel.
                 if not isinstance(message.channel, discord.DMChannel) and message.mentions:
-                    _self_mentioned = (
-                        self._client.user is not None
-                        and self._client.user in message.mentions
-                    )
+                    _self_mentioned = adapter_self._message_mentions_self(message)
                     _other_bots_mentioned = any(
                         m.bot and m != self._client.user
                         for m in message.mentions
@@ -3564,6 +3603,38 @@ class DiscordAdapter(BasePlatformAdapter):
             return bool(configured)
         return os.getenv("DISCORD_REQUIRE_MENTION", "true").lower() not in {"false", "0", "no", "off"}
 
+    def _discord_auto_thread(self) -> bool:
+        """Return whether new Discord channel triggers should auto-create threads."""
+        configured = self.config.extra.get("auto_thread")
+        if configured is not None:
+            if isinstance(configured, str):
+                return configured.lower() in {"true", "1", "yes", "on"}
+            return bool(configured)
+        return os.getenv("DISCORD_AUTO_THREAD", "true").lower() in {"true", "1", "yes", "on"}
+
+    def _discord_mention_role_ids(self) -> set[str]:
+        """Return role IDs that should count as explicit bot mentions."""
+        raw = self.config.extra.get("mention_role_ids")
+        if raw is None:
+            raw = os.getenv("DISCORD_MENTION_ROLE_IDS", "")
+        if isinstance(raw, list):
+            return {str(part).strip() for part in raw if str(part).strip()}
+        s = str(raw).strip() if raw is not None else ""
+        if s:
+            return {part.strip() for part in s.split(",") if part.strip()}
+        return set()
+
+    def _message_mentions_configured_role(self, message: DiscordMessage) -> bool:
+        """Return True if the message mentions a configured bot-trigger role."""
+        mention_role_ids = self._discord_mention_role_ids()
+        if not mention_role_ids:
+            return False
+        for role in getattr(message, "role_mentions", []) or []:
+            if str(getattr(role, "id", "")) in mention_role_ids:
+                return True
+        content = getattr(message, "content", "") or ""
+        return any(f"<@&{role_id}>" in content for role_id in mention_role_ids)
+
     def _discord_free_response_channels(self) -> set:
         """Return Discord channel IDs where no bot mention is required.
 
@@ -3990,7 +4061,12 @@ class DiscordAdapter(BasePlatformAdapter):
                 allowed_role_ids=self._allowed_role_ids,
             )
 
-            msg = await channel.send(embed=embed, view=view)
+            mention_text = self._approval_mention_text()
+            msg = await channel.send(
+                content=mention_text or None,
+                embed=embed,
+                view=view,
+            )
             return SendResult(success=True, message_id=str(msg.id))
 
         except Exception as e:
@@ -4374,6 +4450,22 @@ class DiscordAdapter(BasePlatformAdapter):
                     raise Exception(f"HTTP {resp.status}")
                 return await resp.read()
 
+    def _message_mentions_self(self, message: DiscordMessage) -> bool:
+        """Return True when a message explicitly mentions this Discord bot.
+
+        discord.py objects compare by identity in some test/mocked paths; use
+        the stable snowflake ID so mention filtering and mention stripping do
+        not depend on object instance equality.
+        """
+        if not self._client or not self._client.user:
+            return False
+        self_id = str(getattr(self._client.user, "id", ""))
+        for mention in getattr(message, "mentions", []) or []:
+            if str(getattr(mention, "id", "")) == self_id:
+                return True
+        content = getattr(message, "content", "") or ""
+        return f"<@{self_id}>" in content or f"<@!{self_id}>" in content
+
     async def _handle_message(self, message: DiscordMessage) -> None:
         """Handle incoming Discord messages."""
         # In server channels (not DMs), require the bot to be @mentioned
@@ -4413,10 +4505,16 @@ class DiscordAdapter(BasePlatformAdapter):
             if snapshot_text_parts and not raw_content:
                 raw_content = "\n".join(snapshot_text_parts)
                 normalized_content = raw_content
-        if self._client.user and self._client.user in message.mentions:
+        if self._message_mentions_self(message):
             mention_prefix = True
-            normalized_content = normalized_content.replace(f"<@{self._client.user.id}>", "").strip()
-            normalized_content = normalized_content.replace(f"<@!{self._client.user.id}>", "").strip()
+            if self._client.user:
+                normalized_content = normalized_content.replace(f"<@{self._client.user.id}>", "").strip()
+                normalized_content = normalized_content.replace(f"<@!{self._client.user.id}>", "").strip()
+            message.content = normalized_content
+        if self._message_mentions_configured_role(message):
+            mention_prefix = True
+            for role_id in self._discord_mention_role_ids():
+                normalized_content = normalized_content.replace(f"<@&{role_id}>", "").strip()
             message.content = normalized_content
         if not isinstance(message.channel, discord.DMChannel):
             channel_ids = {str(message.channel.id)}
@@ -4466,7 +4564,7 @@ class DiscordAdapter(BasePlatformAdapter):
             )
 
             if require_mention and not is_free_channel and not in_bot_thread:
-                if self._client.user not in message.mentions and not mention_prefix:
+                if not self._message_mentions_self(message) and not mention_prefix:
                     return
         # Auto-thread: when enabled, automatically create a thread for every
         # @mention in a text channel so each conversation is isolated (like Slack).
@@ -4476,8 +4574,9 @@ class DiscordAdapter(BasePlatformAdapter):
         if not is_thread and not isinstance(message.channel, discord.DMChannel):
             no_thread_channels_raw = os.getenv("DISCORD_NO_THREAD_CHANNELS", "")
             no_thread_channels = {ch.strip() for ch in no_thread_channels_raw.split(",") if ch.strip()}
-            skip_thread = bool(channel_ids & no_thread_channels) or is_free_channel
-            auto_thread = os.getenv("DISCORD_AUTO_THREAD", "true").lower() in {"true", "1", "yes"}
+            explicit_mention = mention_prefix
+            skip_thread = bool(channel_ids & no_thread_channels) or (is_free_channel and not explicit_mention)
+            auto_thread = self._discord_auto_thread()
             is_reply_message = getattr(message, "type", None) == discord.MessageType.reply
             if auto_thread and not skip_thread and not is_voice_linked_channel and not is_reply_message:
                 thread = await self._auto_create_thread(message)

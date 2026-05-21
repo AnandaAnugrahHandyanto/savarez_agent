@@ -131,6 +131,7 @@ def make_message(*, channel, content: str, mentions=None, msg_type=None):
         id=123,
         content=content,
         mentions=list(mentions or []),
+        role_mentions=[],
         attachments=[],
         reference=None,
         created_at=datetime.now(timezone.utc),
@@ -519,15 +520,7 @@ async def test_discord_voice_linked_channel_skips_mention_requirement_and_auto_t
 
 @pytest.mark.asyncio
 async def test_discord_free_response_channel_skips_auto_thread(adapter, monkeypatch):
-    """Free-response channels should reply inline, never spawn a new thread.
-
-    Without this, every message in a free-response channel would auto-create
-    a fresh thread (since the channel bypasses the @mention gate, every
-    message looks like a fresh trigger).  That turns a "lightweight chat"
-    channel into a thread-spawning machine — see the docs at
-    website/docs/user-guide/messaging/discord.md which already describe
-    this as the intended behavior.
-    """
+    """Ambient free-response chat replies inline without spawning a new thread."""
     monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
     monkeypatch.setenv("DISCORD_FREE_RESPONSE_CHANNELS", "789")
     monkeypatch.delenv("DISCORD_AUTO_THREAD", raising=False)  # default true
@@ -548,6 +541,81 @@ async def test_discord_free_response_channel_skips_auto_thread(adapter, monkeypa
     assert event.source.chat_type == "group"
 
 
+@pytest.mark.asyncio
+async def test_discord_free_response_channel_bot_mention_starts_auto_thread(adapter, monkeypatch):
+    """Explicit bot mentions in free-response channels still start isolated threads."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_FREE_RESPONSE_CHANNELS", "789")
+    monkeypatch.delenv("DISCORD_AUTO_THREAD", raising=False)  # default true
+
+    fake_thread = FakeThread(channel_id=999, name="auto-thread")
+    adapter._auto_create_thread = AsyncMock(return_value=fake_thread)
+
+    bot_user = adapter._client.user
+    message = make_message(
+        channel=FakeTextChannel(channel_id=789),
+        content=f"<@{bot_user.id}> start a thread for this",
+        mentions=[bot_user],
+    )
+
+    await adapter._handle_message(message)
+
+    adapter._auto_create_thread.assert_awaited_once()
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.text == "start a thread for this"
+    assert event.source.chat_id == "999"
+    assert event.source.thread_id == "999"
+    assert event.source.chat_type == "thread"
+
+
+@pytest.mark.asyncio
+async def test_discord_configured_role_mention_starts_auto_thread(adapter, monkeypatch):
+    """Configured role mentions should behave like mentioning the bot user."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_MENTION_ROLE_IDS", raising=False)
+    monkeypatch.delenv("DISCORD_AUTO_THREAD", raising=False)
+    adapter.config.extra["mention_role_ids"] = "123456"
+
+    fake_thread = FakeThread(channel_id=999, name="auto-thread")
+    adapter._auto_create_thread = AsyncMock(return_value=fake_thread)
+
+    role = SimpleNamespace(id=123456)
+    message = make_message(
+        channel=FakeTextChannel(channel_id=789),
+        content="<@&123456> start a role thread",
+    )
+    message.role_mentions = [role]
+
+    await adapter._handle_message(message)
+
+    adapter._auto_create_thread.assert_awaited_once()
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.text == "start a role thread"
+    assert event.source.chat_id == "999"
+    assert event.source.thread_id == "999"
+    assert event.source.chat_type == "thread"
+
+
+@pytest.mark.asyncio
+async def test_discord_auto_thread_honors_config_extra_false(adapter, monkeypatch):
+    """discord.auto_thread=false in config should disable thread creation."""
+    monkeypatch.delenv("DISCORD_AUTO_THREAD", raising=False)
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+    adapter.config.extra["auto_thread"] = False
+
+    adapter._auto_create_thread = AsyncMock()
+
+    message = make_message(channel=FakeTextChannel(channel_id=123), content="hello")
+
+    await adapter._handle_message(message)
+
+    adapter._auto_create_thread.assert_not_awaited()
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.source.chat_type == "group"
 
 
 @pytest.mark.asyncio

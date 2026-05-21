@@ -182,6 +182,29 @@ def load_memory_provider(name: str) -> Optional["MemoryProvider"]:
         return None
 
 
+def register_active_memory_skill_providers() -> List[str]:
+    """Register virtual skill providers exposed by the active memory plugin.
+
+    Memory plugins can expose skills backed by the same remote memory store as
+    the active provider. Skill listing/view paths call this lazily so fmem
+    skills are available without importing every memory plugin at startup.
+    """
+    active_provider = _get_active_memory_provider()
+    if not active_provider:
+        return []
+
+    provider_dir = find_provider_dir(active_provider)
+    if not provider_dir:
+        return []
+
+    _load_provider_from_dir(provider_dir)
+    try:
+        from agent.skill_providers import list_skill_provider_names
+        return list_skill_provider_names()
+    except Exception:
+        return []
+
+
 def _load_provider_from_dir(provider_dir: Path) -> Optional["MemoryProvider"]:
     """Import a provider module and extract the MemoryProvider instance.
 
@@ -293,6 +316,10 @@ class _ProviderCollector:
 
     def register_memory_provider(self, provider):
         self.provider = provider
+
+    def register_skill_provider(self, provider, namespace: str | None = None):
+        from agent.skill_providers import register_skill_provider
+        register_skill_provider(provider, namespace=namespace)
 
     # No-op for other registration methods
     def register_tool(self, *args, **kwargs):

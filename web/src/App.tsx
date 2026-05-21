@@ -47,7 +47,6 @@ import { Button } from "@nous-research/ui/ui/components/button";
 import { ListItem } from "@nous-research/ui/ui/components/list-item";
 import { SelectionSwitcher } from "@nous-research/ui/ui/components/selection-switcher";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
-import { Typography } from "@/components/NouiTypography";
 import { cn } from "@/lib/utils";
 import { Backdrop } from "@/components/Backdrop";
 import { SidebarFooter } from "@/components/SidebarFooter";
@@ -76,6 +75,7 @@ import type { PluginManifest } from "@/plugins";
 import { useTheme } from "@/themes";
 import { isDashboardEmbeddedChatEnabled } from "@/lib/dashboard-flags";
 import { api } from "@/lib/api";
+import ferrosaLogoUrl from "@/assets/ferrosa-logo.svg";
 
 function RootRedirect() {
   return <Navigate to="/sessions" replace />;
@@ -447,12 +447,11 @@ export default function App() {
           <Menu />
         </Button>
 
-        <Typography
-          className="font-bold text-[0.95rem] leading-[0.95] tracking-[0.05em] text-midground"
-          style={{ mixBlendMode: "plus-lighter" }}
-        >
-          {t.app.brand}
-        </Typography>
+        <img
+          src={ferrosaLogoUrl}
+          alt="Ferrosa"
+          className="h-8 w-auto max-w-[9rem] object-contain"
+        />
       </header>
 
       {mobileOpen && (
@@ -497,14 +496,11 @@ export default function App() {
               <div className="flex items-center gap-2">
                 <PluginSlot name="header-left" />
 
-                <Typography
-                  className="font-bold text-[1.125rem] leading-[0.95] tracking-[0.0525rem] text-midground"
-                  style={{ mixBlendMode: "plus-lighter" }}
-                >
-                  Hermes
-                  <br />
-                  Agent
-                </Typography>
+                <img
+                  src={ferrosaLogoUrl}
+                  alt="Ferrosa"
+                  className="h-10 w-auto max-w-[11rem] object-contain"
+                />
               </div>
 
               <Button

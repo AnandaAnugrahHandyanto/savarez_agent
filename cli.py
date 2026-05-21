@@ -510,6 +510,9 @@ def load_cli_config() -> Dict[str, Any]:
         "singularity_image": "TERMINAL_SINGULARITY_IMAGE",
         "modal_image": "TERMINAL_MODAL_IMAGE",
         "daytona_image": "TERMINAL_DAYTONA_IMAGE",
+        "sprite_org": "TERMINAL_SPRITE_ORG",
+        "sprite": "TERMINAL_SPRITE",
+        "sprite_http_post": "TERMINAL_SPRITE_HTTP_POST",
         "vercel_runtime": "TERMINAL_VERCEL_RUNTIME",
         # SSH config
         "ssh_host": "TERMINAL_SSH_HOST",

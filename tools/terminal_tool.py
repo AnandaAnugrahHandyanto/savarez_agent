@@ -3,7 +3,7 @@
 Terminal Tool Module
 
 A terminal tool that executes commands in local, Docker, Modal, SSH,
-Singularity, Daytona, and Vercel Sandbox environments. Supports local
+Singularity, Daytona, Sprite, and Vercel Sandbox environments. Supports local
 execution, containerized backends, and cloud sandboxes, including managed
 Modal mode.
 
@@ -11,6 +11,7 @@ Environment Selection (via TERMINAL_ENV environment variable):
 - "local": Execute directly on the host machine (default, fastest)
 - "docker": Execute in Docker containers (isolated, requires Docker)
 - "modal": Execute in Modal cloud sandboxes (direct Modal or managed gateway)
+- "sprite": Execute in Sprite persistent microVMs via the sprite CLI
 - "vercel_sandbox": Execute in Vercel Sandbox cloud sandboxes
 
 Features:
@@ -1042,7 +1043,7 @@ def _get_env_config() -> Dict[str, Any]:
         ):
             host_cwd = candidate
             cwd = "/workspace"
-    elif env_type in {"modal", "docker", "singularity", "daytona", "vercel_sandbox"} and cwd:
+    elif env_type in {"modal", "docker", "singularity", "daytona", "sprite", "vercel_sandbox"} and cwd:
         # Host paths and relative paths that won't work inside containers
         is_host_path = any(cwd.startswith(p) for p in host_prefixes)
         is_relative = not os.path.isabs(cwd)  # e.g. "." or "src/"
@@ -1060,6 +1061,9 @@ def _get_env_config() -> Dict[str, Any]:
         "singularity_image": os.getenv("TERMINAL_SINGULARITY_IMAGE", f"docker://{default_image}"),
         "modal_image": os.getenv("TERMINAL_MODAL_IMAGE", default_image),
         "daytona_image": os.getenv("TERMINAL_DAYTONA_IMAGE", default_image),
+        "sprite_org": os.getenv("TERMINAL_SPRITE_ORG", ""),
+        "sprite": os.getenv("TERMINAL_SPRITE", os.getenv("TERMINAL_SPRITE_NAME", "")),
+        "sprite_http_post": os.getenv("TERMINAL_SPRITE_HTTP_POST", "false").lower() in {"true", "1", "yes"},
         "vercel_runtime": os.getenv("TERMINAL_VERCEL_RUNTIME", "").strip(),
         "cwd": cwd,
         "host_cwd": host_cwd,
@@ -1111,7 +1115,7 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
     
     Args:
         env_type: One of "local", "docker", "singularity", "modal",
-            "daytona", "vercel_sandbox", "ssh"
+            "daytona", "sprite", "vercel_sandbox", "ssh"
         image: Docker/Singularity/Modal image name (ignored for local/ssh/vercel)
         cwd: Working directory
         timeout: Default command timeout
@@ -1218,6 +1222,16 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
             persistent_filesystem=persistent, task_id=task_id,
         )
 
+    elif env_type == "sprite":
+        from tools.environments.sprite import SpriteEnvironment as _SpriteEnvironment
+        return _SpriteEnvironment(
+            cwd=cwd,
+            timeout=timeout,
+            org=cc.get("sprite_org", ""),
+            sprite=cc.get("sprite", ""),
+            http_post=cc.get("sprite_http_post", False),
+        )
+
     elif env_type == "vercel_sandbox":
         from tools.environments.vercel_sandbox import (
             VercelSandboxEnvironment as _VercelSandboxEnvironment,
@@ -1248,7 +1262,7 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
     else:
         raise ValueError(
             f"Unknown environment type: {env_type}. Use 'local', 'docker', "
-            f"'singularity', 'modal', 'daytona', 'vercel_sandbox', or 'ssh'"
+            f"'singularity', 'modal', 'daytona', 'sprite', 'vercel_sandbox', or 'ssh'"
         )
 
 
@@ -1807,7 +1821,7 @@ def terminal_tool(
                             }
 
                         container_config = None
-                        if env_type in {"docker", "singularity", "modal", "daytona", "vercel_sandbox"}:
+                        if env_type in {"docker", "singularity", "modal", "daytona", "sprite", "vercel_sandbox"}:
                             container_config = {
                                 "container_cpu": config.get("container_cpu", 1),
                                 "container_memory": config.get("container_memory", 5120),
@@ -1815,6 +1829,9 @@ def terminal_tool(
                                 "container_persistent": config.get("container_persistent", True),
                                 "modal_mode": config.get("modal_mode", "auto"),
                                 "vercel_runtime": config.get("vercel_runtime", ""),
+                                "sprite_org": config.get("sprite_org", ""),
+                                "sprite": config.get("sprite", ""),
+                                "sprite_http_post": config.get("sprite_http_post", False),
                                 "docker_volumes": config.get("docker_volumes", []),
                                 "docker_mount_cwd_to_workspace": config.get("docker_mount_cwd_to_workspace", False),
                                 "docker_forward_env": config.get("docker_forward_env", []),
@@ -2240,10 +2257,31 @@ def check_terminal_requirements() -> bool:
             from daytona import Daytona  # noqa: F401 — SDK presence check
             return os.getenv("DAYTONA_API_KEY") is not None
 
+        elif env_type == "sprite":
+            from tools.environments.sprite import ensure_sprite_available
+            ensure_sprite_available()
+            # Auth is managed by the Sprite CLI (~/.sprites/sprites.json,
+            # keyring, or SPRITE_TOKEN).  `sprite org list` is the cheapest
+            # documented non-interactive auth sanity check.
+            result = subprocess.run(
+                ["sprite", "org", "list"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if result.returncode != 0:
+                logger.error(
+                    "Sprite backend selected but `sprite org list` failed. "
+                    "Authenticate with `sprite org auth` or `sprite auth setup --token ...`: %s",
+                    (result.stderr or result.stdout).strip(),
+                )
+                return False
+            return True
+
         else:
             logger.error(
                 "Unknown TERMINAL_ENV '%s'. Use one of: local, docker, singularity, "
-                "modal, daytona, vercel_sandbox, ssh.",
+                "modal, daytona, sprite, vercel_sandbox, ssh.",
                 env_type,
             )
             return False

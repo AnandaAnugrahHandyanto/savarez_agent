@@ -255,6 +255,42 @@ def test_list_dedupes_dict_model_matching_singular_default(monkeypatch):
     assert ds_rows[0]["models"] == ["deepseek-chat", "deepseek-reasoner"]
 
 
+def test_lmstudio_overlay_uses_configured_models_when_not_current(monkeypatch):
+    """LM Studio is an overlay-backed canonical provider with no static catalog.
+
+    When it is configured but not the current provider, live discovery is not
+    attempted. The overlay row must still use the saved ``providers.lmstudio``
+    model list instead of shadowing it with an empty canonical row.
+    """
+    monkeypatch.delenv("LM_API_KEY", raising=False)
+    monkeypatch.delenv("LM_BASE_URL", raising=False)
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr(
+        "hermes_cli.auth._load_auth_store",
+        lambda: {"providers": {"lmstudio": {}}},
+    )
+
+    providers = list_authenticated_providers(
+        current_provider="openai-codex",
+        user_providers={
+            "lmstudio": {
+                "base_url": "http://127.0.0.1:1234/v1",
+                "default_model": "qwen/qwen3.6-27b",
+                "models": {
+                    "qwen/qwen3.6-27b": {},
+                    "laguna-xs.2-mxfp8": {},
+                },
+            }
+        },
+        custom_providers=[],
+        max_models=50,
+    )
+
+    lmstudio = next(p for p in providers if p["slug"] == "lmstudio")
+    assert lmstudio["models"] == ["qwen/qwen3.6-27b", "laguna-xs.2-mxfp8"]
+    assert lmstudio["total_models"] == 2
+    assert lmstudio["source"] == "hermes"
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # #9210: group custom_providers by (base_url, api_key) in /model picker

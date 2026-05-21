@@ -1,6 +1,7 @@
 """Local execution environment — spawn-per-call with session snapshot."""
 
 import logging
+import json
 import os
 import platform
 import re
@@ -16,6 +17,46 @@ from tools.environments.base import BaseEnvironment, _pipe_stdin
 _IS_WINDOWS = platform.system() == "Windows"
 
 logger = logging.getLogger(__name__)
+
+
+def _preserve_host_podman_connection(env: dict[str, str], host_home: str | None) -> None:
+    """Expose the host's default Podman machine to profile-isolated subprocesses.
+
+    Profile HOME isolation hides ``~/.config/containers/podman-connections.json``.
+    On macOS that makes ``podman`` ignore the already-running machine and fall
+    back to a missing local socket.  Preserve only the resolved connection env
+    instead of pointing every XDG-aware tool back at the host config directory.
+    """
+    if not host_home or "CONTAINER_HOST" in env:
+        return
+
+    connections_path = os.path.join(host_home, ".config", "containers", "podman-connections.json")
+    try:
+        with open(connections_path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError, TypeError):
+        return
+
+    connection = data.get("Connection") if isinstance(data, dict) else None
+    if not isinstance(connection, dict):
+        return
+
+    default_name = connection.get("Default")
+    connections = connection.get("Connections")
+    if not default_name or not isinstance(connections, dict):
+        return
+
+    default = connections.get(default_name)
+    if not isinstance(default, dict):
+        return
+
+    uri = default.get("URI")
+    if isinstance(uri, str) and uri:
+        env["CONTAINER_HOST"] = uri
+
+    identity = default.get("Identity")
+    if isinstance(identity, str) and identity and "CONTAINER_SSHKEY" not in env:
+        env["CONTAINER_SSHKEY"] = identity
 
 
 def _resolve_safe_cwd(cwd: str) -> str:
@@ -167,6 +208,19 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
             sanitized[key] = value
 
     # Per-profile HOME isolation for background processes (same as _make_run_env).
+    # Preserve host GitHub auth discovery before HOME is rewritten: profile HOMEs
+    # intentionally isolate tool config, but git/gh should still be able to use
+    # the user's configured GitHub auth for requested repo operations.
+    _host_home = sanitized.get("HOME") or os.environ.get("HOME")
+    if _host_home:
+        _host_gh_config = os.path.join(_host_home, ".config", "gh")
+        if "GH_CONFIG_DIR" not in sanitized and os.path.isdir(_host_gh_config):
+            sanitized["GH_CONFIG_DIR"] = _host_gh_config
+        _host_gitconfig = os.path.join(_host_home, ".gitconfig")
+        if "GIT_CONFIG_GLOBAL" not in sanitized and os.path.isfile(_host_gitconfig):
+            sanitized["GIT_CONFIG_GLOBAL"] = _host_gitconfig
+        _preserve_host_podman_connection(sanitized, _host_home)
+
     from hermes_constants import get_subprocess_home
     _profile_home = get_subprocess_home()
     if _profile_home:
@@ -269,6 +323,19 @@ def _make_run_env(env: dict) -> dict:
     # Per-profile HOME isolation: redirect system tool configs (git, ssh, gh,
     # npm …) into {HERMES_HOME}/home/ when that directory exists.  Only the
     # subprocess sees the override — the Python process keeps the real HOME.
+    # Preserve host GitHub auth discovery before rewriting HOME so profile
+    # workers can still push requested branches without copying credentials
+    # into each profile home.
+    _host_home = run_env.get("HOME") or os.environ.get("HOME")
+    if _host_home:
+        _host_gh_config = os.path.join(_host_home, ".config", "gh")
+        if "GH_CONFIG_DIR" not in run_env and os.path.isdir(_host_gh_config):
+            run_env["GH_CONFIG_DIR"] = _host_gh_config
+        _host_gitconfig = os.path.join(_host_home, ".gitconfig")
+        if "GIT_CONFIG_GLOBAL" not in run_env and os.path.isfile(_host_gitconfig):
+            run_env["GIT_CONFIG_GLOBAL"] = _host_gitconfig
+        _preserve_host_podman_connection(run_env, _host_home)
+
     from hermes_constants import get_subprocess_home
     _profile_home = get_subprocess_home()
     if _profile_home:

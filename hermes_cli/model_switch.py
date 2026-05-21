@@ -1156,6 +1156,36 @@ def list_authenticated_providers(
         except Exception:
             return False
 
+    def _configured_provider_models(slug: str) -> list[str]:
+        """Return explicitly saved models for a keyed ``providers:`` row.
+
+        Overlay-backed providers such as LM Studio are emitted before the
+        generic user-provider section below. Without this bridge, a configured
+        ``providers.lmstudio.models`` list can be shadowed by the overlay row
+        and the picker shows LM Studio with zero models whenever live discovery
+        is unavailable in the current process.
+        """
+        if not user_providers or not isinstance(user_providers, dict):
+            return []
+        cfg = user_providers.get(slug) or user_providers.get(slug.lower())
+        if not isinstance(cfg, dict):
+            return []
+        models: list[str] = []
+        default_model = cfg.get("default_model", "") or cfg.get("model", "")
+        if default_model:
+            models.append(str(default_model))
+        cfg_models = cfg.get("models", [])
+        if isinstance(cfg_models, dict):
+            candidates = cfg_models.keys()
+        elif isinstance(cfg_models, list):
+            candidates = cfg_models
+        else:
+            candidates = []
+        for model_id in candidates:
+            if model_id and model_id not in models:
+                models.append(str(model_id))
+        return models
+
     data = fetch_models_dev()
 
     # Build curated model lists keyed by hermes provider ID
@@ -1370,6 +1400,8 @@ def list_authenticated_providers(
             # Merge with models.dev for preferred providers (same rationale as above).
             if hermes_slug in _MODELS_DEV_PREFERRED:
                 model_ids = _merge_with_models_dev(hermes_slug, model_ids)
+        if hermes_slug == "lmstudio" and not model_ids:
+            model_ids = _configured_provider_models("lmstudio")
         total = len(model_ids)
         top = model_ids[:max_models]
 
