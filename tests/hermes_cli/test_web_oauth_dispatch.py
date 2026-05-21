@@ -316,27 +316,38 @@ def test_xai_oauth_provider_appears_in_catalog():
     assert providers["xai-oauth"]["cli_command"] == "hermes auth add xai-oauth"
 
 
-def test_xai_start_uses_xai_branch_not_anthropic():
-    """Click 'Login' on xAI → MUST route to the xAI-specific PKCE start helper."""
-    fake_response = {
-        "session_id": "xai-session",
-        "flow": "pkce",
-        "auth_url": "https://auth.x.ai/oauth/authorize?code=true&...",
-        "expires_in": 600,
-    }
-    with patch(
-        "hermes_cli.web_server._start_xai_pkce",
-        return_value=fake_response,
-    ) as patched:
-        resp = client.post(
-            "/api/providers/oauth/xai-oauth/start",
-            headers=HEADERS,
-        )
+def test_xai_start_runs_in_executor(monkeypatch):
+    """xAI PKCE discovery should be dispatched off the FastAPI event loop."""
+    from hermes_cli import web_server as ws
 
-    assert resp.status_code == 200, resp.text
-    assert resp.json() == fake_response
-    patched.assert_called_once_with()
-    assert "claude.ai" not in resp.text.lower()
+    called = {}
+
+    class _FakeLoop:
+        async def run_in_executor(self, executor, func, *args):
+            called["executor"] = executor
+            called["func"] = func
+            called["args"] = args
+            return func(*args)
+
+    monkeypatch.setattr(ws, "_require_token", lambda _request: None)
+    monkeypatch.setattr(ws.asyncio, "get_running_loop", lambda: _FakeLoop())
+    monkeypatch.setattr(
+        ws,
+        "_start_xai_pkce",
+        lambda: {
+            "session_id": "xai-session",
+            "flow": "pkce",
+            "auth_url": "https://auth.x.ai/oauth/authorize?code=true&...",
+            "expires_in": 600,
+        },
+    )
+
+    result = asyncio.run(ws.start_oauth_login("xai-oauth", object()))
+
+    assert result["flow"] == "pkce"
+    assert called["executor"] is None
+    assert called["func"] is ws._start_xai_pkce
+    assert called["args"] == ()
 
 
 def test_xai_submit_uses_xai_submitter():
@@ -415,6 +426,37 @@ def test_xai_submit_parses_callback_and_persists_tokens():
     assert saved["tokens"]["refresh_token"] == "refresh-123"
     assert saved["redirect_uri"] == "http://127.0.0.1:56121/callback"
     assert saved["discovery"]["token_endpoint"] == "https://auth.x.ai/oauth/token"
+
+
+def test_xai_submit_bad_paste_is_retryable_and_keeps_session_pending():
+    """Bare-code pastes should not poison the session; the user can correct and retry."""
+    from hermes_cli import web_server as ws
+
+    session_id = "xai-pkce-retryable-test"
+    ws._oauth_sessions[session_id] = {
+        "session_id": session_id,
+        "provider": "xai-oauth",
+        "flow": "pkce",
+        "created_at": time.time(),
+        "status": "pending",
+        "error_message": None,
+        "token_endpoint": "https://auth.x.ai/oauth/token",
+        "redirect_uri": "http://127.0.0.1:56121/callback",
+        "code_verifier": "verifier-123",
+        "code_challenge": "challenge-123",
+        "state": "state-123",
+        "discovery": {"token_endpoint": "https://auth.x.ai/oauth/token"},
+    }
+
+    try:
+        result = ws._submit_xai_pkce(session_id, "auth-code-only")
+        assert result["ok"] is False
+        assert result["status"] == "error"
+        assert result["retryable"] is True
+        assert "full xAI callback URL" in result["message"]
+        assert ws._oauth_sessions[session_id]["status"] == "pending"
+    finally:
+        ws._oauth_sessions.pop(session_id, None)
 
 
 def test_unknown_pkce_provider_rejected_cleanly():

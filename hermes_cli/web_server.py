@@ -1888,37 +1888,33 @@ def _submit_xai_pkce(session_id: str, code_input: str) -> Dict[str, Any]:
     if sess["status"] != "pending":
         return {"ok": False, "status": sess["status"], "message": sess.get("error_message")}
 
+    def _retryable(message: str) -> Dict[str, Any]:
+        return {
+            "ok": False,
+            "status": "error",
+            "message": message,
+            "retryable": True,
+        }
+
     callback = hauth._parse_pasted_callback(code_input)
     if callback.get("error"):
-        with _oauth_sessions_lock:
-            sess["status"] = "error"
-            sess["error_message"] = (
-                "xAI authorization failed: "
-                f"{callback.get('error_description') or callback.get('error')}"
-            )
-        return {"ok": False, "status": "error", "message": sess["error_message"]}
+        return _retryable(
+            "xAI authorization failed: "
+            f"{callback.get('error_description') or callback.get('error')}"
+        )
 
     state = str(callback.get("state") or "").strip()
     if not state:
-        with _oauth_sessions_lock:
-            sess["status"] = "error"
-            sess["error_message"] = (
-                "Paste the full xAI callback URL (or ?code=...&state=...) "
-                "so Hermes can verify the returned state."
-            )
-        return {"ok": False, "status": "error", "message": sess["error_message"]}
+        return _retryable(
+            "Paste the full xAI callback URL (or ?code=...&state=...) "
+            "so Hermes can verify the returned state."
+        )
     if state != sess["state"]:
-        with _oauth_sessions_lock:
-            sess["status"] = "error"
-            sess["error_message"] = "xAI authorization failed: state mismatch."
-        return {"ok": False, "status": "error", "message": sess["error_message"]}
+        return _retryable("xAI authorization failed: state mismatch.")
 
     code = str(callback.get("code") or "").strip()
     if not code:
-        with _oauth_sessions_lock:
-            sess["status"] = "error"
-            sess["error_message"] = "xAI authorization failed: missing authorization code."
-        return {"ok": False, "status": "error", "message": sess["error_message"]}
+        return _retryable("xAI authorization failed: missing authorization code.")
 
     try:
         payload = hauth._xai_oauth_exchange_code_for_tokens(
@@ -1932,6 +1928,10 @@ def _submit_xai_pkce(session_id: str, code_input: str) -> Dict[str, Any]:
         refresh_token = str(payload.get("refresh_token", "") or "").strip()
         if not access_token or not refresh_token:
             raise RuntimeError("xAI token exchange did not return both access and refresh tokens.")
+    except Exception as e:
+        return _retryable(f"xAI token exchange failed: {e}")
+
+    try:
         hauth._save_xai_oauth_tokens(
             {
                 "access_token": access_token,
@@ -1947,7 +1947,7 @@ def _submit_xai_pkce(session_id: str, code_input: str) -> Dict[str, Any]:
     except Exception as e:
         with _oauth_sessions_lock:
             sess["status"] = "error"
-            sess["error_message"] = f"xAI token exchange failed: {e}"
+            sess["error_message"] = f"xAI token save failed: {e}"
         return {"ok": False, "status": "error", "message": sess["error_message"]}
 
     with _oauth_sessions_lock:
@@ -2436,7 +2436,9 @@ async def start_oauth_login(provider_id: str, request: Request):
             if provider_id == "anthropic":
                 return _start_anthropic_pkce()
             if provider_id == "xai-oauth":
-                return _start_xai_pkce()
+                return await asyncio.get_running_loop().run_in_executor(
+                    None, _start_xai_pkce,
+                )
         if catalog_entry["flow"] == "device_code":
             return await _start_device_code_flow(provider_id)
     except HTTPException:

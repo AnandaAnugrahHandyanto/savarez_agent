@@ -715,6 +715,7 @@ export interface OAuthSubmitResponse {
   ok: boolean;
   status: "approved" | "error";
   message?: string;
+  retryable?: boolean;
 }
 
 export interface OAuthPollResponse {
