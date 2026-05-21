@@ -43,6 +43,25 @@ EXCLUDED_SKILL_DIRS = frozenset(
     )
 )
 
+
+def is_excluded_skill_path(path) -> bool:
+    """True if any component of *path* is in EXCLUDED_SKILL_DIRS.
+
+    Use this on every SKILL.md path produced by ``rglob`` to prune
+    dependency, virtualenv, VCS, and cache directories. Centralising the
+    check here keeps every skill-scanning site in sync with the shared
+    exclusion set.
+
+    Accepts a Path or string.
+    """
+    try:
+        parts = path.parts  # Path
+    except AttributeError:
+        from pathlib import PurePath
+        parts = PurePath(str(path)).parts
+    return any(part in EXCLUDED_SKILL_DIRS for part in parts)
+
+
 # ── Lazy YAML loader ─────────────────────────────────────────────────────
 
 _yaml_load_fn = None
