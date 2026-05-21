@@ -239,10 +239,13 @@ class TestIsAvailable:
         env-clear alone is not sufficient.
         """
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        # Nuke any cached home path the config module may hold.
+        # Reset any cached home path the config module may hold; using
+        # monkeypatch.setattr (rather than direct assignment) so pytest
+        # restores the original cache value on teardown and the test can't
+        # leak a None into subsequent tests' resolve path.
         import hermes_cli.config as _cfg
         if hasattr(_cfg, "_HERMES_HOME_CACHE"):
-            _cfg._HERMES_HOME_CACHE = None  # type: ignore[attr-defined]
+            monkeypatch.setattr(_cfg, "_HERMES_HOME_CACHE", None, raising=False)
 
         _ensure_plugins_loaded()
         from agent.web_search_registry import get_provider
