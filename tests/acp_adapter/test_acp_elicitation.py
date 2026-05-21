@@ -274,7 +274,7 @@ async def test_new_session_refreshes_supported_client_tool_surface(monkeypatch):
 class ClarifyFakeAgent(ToolSurfaceFakeAgent):
     def __init__(self):
         super().__init__()
-        self.clarify_callback = None
+        self.clarify_callback: object = None
         self.clarify_answers = []
 
     def run_conversation(self, *, user_message, conversation_history, task_id, **kwargs):
@@ -327,4 +327,61 @@ async def test_prompt_wires_clarify_callback_to_elicitation(monkeypatch):
 
     assert fake.clarify_answers == ["Elicited"]
     assert conn.requests[0][0] == "elicitation/create"
+    assert fake.clarify_callback is original_callback
+
+
+@pytest.mark.asyncio
+async def test_unsupported_client_new_session_has_no_clarify_tool(monkeypatch):
+    install_fake_model_tools(monkeypatch)
+    fake = ToolSurfaceFakeAgent()
+    manager = SessionManager(agent_factory=lambda: fake, db=NoopDb())
+    agent = HermesACPAgent(session_manager=manager)
+    agent.on_connect(ToolSurfaceConn())
+    await agent.initialize(client_capabilities=None)
+
+    response = await agent.new_session(cwd=".")
+    state = manager.get_session(response.session_id)
+
+    assert state is not None
+    assert "clarify" not in state.agent.enabled_toolsets
+    assert "clarify" not in state.agent.valid_tool_names
+
+
+@pytest.mark.asyncio
+async def test_url_only_elicitation_client_has_no_clarify_tool(monkeypatch):
+    install_fake_model_tools(monkeypatch)
+    fake = ToolSurfaceFakeAgent()
+    manager = SessionManager(agent_factory=lambda: fake, db=NoopDb())
+    agent = HermesACPAgent(session_manager=manager)
+    agent.on_connect(ToolSurfaceConn())
+    await agent.initialize(client_capabilities=SimpleNamespace(elicitation={"url": {}}))
+
+    response = await agent.new_session(cwd=".")
+    state = manager.get_session(response.session_id)
+
+    assert state is not None
+    assert "clarify" not in state.agent.enabled_toolsets
+    assert "clarify" not in state.agent.valid_tool_names
+
+
+@pytest.mark.asyncio
+async def test_unsupported_client_does_not_overwrite_existing_clarify_callback(monkeypatch):
+    install_fake_model_tools(monkeypatch)
+    fake = ClarifyFakeAgent()
+    original_callback = lambda _q, _c: "original"
+    fake.clarify_callback = original_callback
+    manager = SessionManager(agent_factory=lambda: fake, db=NoopDb())
+    agent = HermesACPAgent(session_manager=manager)
+    conn = ElicitationConn()
+    agent.on_connect(conn)
+    await agent.initialize(client_capabilities=SimpleNamespace(elicitation={"url": {}}))
+    response = await agent.new_session(cwd=".")
+
+    await agent.prompt(
+        session_id=response.session_id,
+        prompt=[TextContentBlock(type="text", text="ask normally if needed")],
+    )
+
+    assert fake.clarify_answers == ["original"]
+    assert conn.requests == []
     assert fake.clarify_callback is original_callback
