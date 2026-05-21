@@ -1,7 +1,9 @@
 """Tests for HermesCLI initialization -- catches configuration bugs
 that only manifest at runtime (not in mocked unit tests)."""
 
+import io
 import os
+import pytest
 import sys
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -160,6 +162,45 @@ class TestBusyInputMode:
             cli._interrupt_queue.put(text)
         assert cli._interrupt_queue.get_nowait() == "redirect"
         assert cli._pending_input.empty()
+
+
+class TestHeadlessRun:
+    def test_run_headless_loop_preserves_prompt_spaces(self):
+        cli = _make_cli()
+        cli.chat = MagicMock()
+
+        cli._run_headless_loop(io.StringIO("  keep leading and trailing spaces  \r\n"))
+
+        cli.chat.assert_called_once_with("  keep leading and trailing spaces  ")
+
+    def test_run_headless_loop_skips_blank_lines(self):
+        cli = _make_cli()
+        cli.chat = MagicMock()
+
+        cli._run_headless_loop(io.StringIO("\n\r\nprompt\n"))
+
+        cli.chat.assert_called_once_with("prompt")
+
+    def test_run_headless_finalizes_when_loop_completes(self, capsys):
+        cli = _make_cli(headless=True)
+
+        with patch.object(cli, "_run_headless_loop") as loop, \
+             patch.object(cli, "_finalize_run") as finalize:
+            cli.run()
+
+        loop.assert_called_once_with()
+        finalize.assert_called_once_with()
+        assert "Running in headless mode" not in capsys.readouterr().out
+
+    def test_run_headless_finalizes_when_loop_raises(self):
+        cli = _make_cli(headless=True)
+
+        with patch.object(cli, "_run_headless_loop", side_effect=RuntimeError("boom")), \
+             patch.object(cli, "_finalize_run") as finalize, \
+             pytest.raises(RuntimeError):
+            cli.run()
+
+        finalize.assert_called_once_with()
 
 
 class TestPromptToolkitTerminalCompatibility:
