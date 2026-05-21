@@ -144,6 +144,49 @@ def _make_hermes_provider_class() -> Optional[type]:
             remaining TTL we compute here reflects real wall-clock age.
             """
             await super()._initialize()
+
+            # Fix Supabase/DPR client auth method: when DCR returns a 
+            # ``client_secret`` but the MCP SDK defaults 
+            # ``token_endpoint_auth_method`` to ``none``, subsequent token 
+            # exchange omits ``client_secret`` and fails with 422 (#29680). 
+            # The MCP SDK doesn't re-evaluate auth method after DCR — it uses 
+            # the value from client_metadata at construction time. We patch 
+            # the stored client info to coerce missing/none auth method to 
+            # ``client_secret_post`` when a secret is present, then reset 
+            # _initialized so the SDK's next refresh/reconnect reads the fixed value.
+            storage = self.context.storage
+            try:
+                if hasattr(storage, "get_client_info"):
+                    stored_info = await storage.get_client_info()
+                    if (stored_info
+                            and stored_info.client_secret
+                            and (not stored_info.token_endpoint_auth_method 
+                                 or stored_info.token_endpoint_auth_method == "none")):
+                        from mcp.types import OAuthClientInformationFull
+                        patched = OAuthClientInformationFull(
+                            client_id=stored_info.client_id,
+                            client_secret=stored_info.client_secret,
+                            token_endpoint_auth_method="client_secret_post",
+                            client_name=stored_info.client_name,
+                            grant_types=stored_info.grant_types,
+                            redirect_uris=stored_info.redirect_uris,
+                        )
+                        await storage.set_client_info(patched)
+                        # Reset _initialized so the SDK's next auth flow 
+                        # re-reads the corrected client info from disk.
+                        if hasattr(self, "_initialized"):
+                            self._initialized = False  # noqa: SLF001
+                        logger.info(
+                            "MCP OAuth '%s': patched stored client auth method "
+                            "(client_secret present, none → client_secret_post) — #29680",
+                            self._hermes_server_name,
+                        )
+            except Exception as exc:  # pragma: no cover — defensive
+                logger.debug(
+                    "MCP OAuth '%s': client auth method patch failed (non-fatal): %s",
+                    self._hermes_server_name, exc,
+                )
+
             tokens = self.context.current_tokens
             if tokens is not None and tokens.expires_in is not None:
                 self.context.update_token_expiry(tokens)
