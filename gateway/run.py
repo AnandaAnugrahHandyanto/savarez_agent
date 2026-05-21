@@ -16925,6 +16925,29 @@ class GatewayRunner:
                             effective_session_id,
                             title,
                         )
+                    elif (
+                        source.platform.value == "discord"
+                        and source.thread_id
+                    ):
+                        _discord_adapter = self.adapters.get(source.platform)
+                        _discord_thread_id = source.thread_id
+                        def _discord_title_callback(title: str, _adapter=_discord_adapter, _tid=_discord_thread_id) -> None:
+                            if _adapter is None:
+                                return
+                            rename_fn = getattr(_adapter, "_auto_rename_thread", None)
+                            if rename_fn is None:
+                                return
+                            try:
+                                loop = asyncio.get_running_loop()
+                            except RuntimeError:
+                                loop = getattr(self, "_gateway_loop", None)
+                            if loop is None or loop.is_closed():
+                                return
+                            asyncio.run_coroutine_threadsafe(
+                                rename_fn(_tid, title, already_titled=True),
+                                loop,
+                            )
+                        maybe_auto_title_kwargs["title_callback"] = _discord_title_callback
                     maybe_auto_title(
                         self._session_db,
                         effective_session_id,

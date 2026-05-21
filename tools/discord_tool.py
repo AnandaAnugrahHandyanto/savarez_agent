@@ -454,6 +454,19 @@ def _create_thread(
     })
 
 
+def _edit_thread(token: str, thread_id: str, name: str, **_kwargs: Any) -> str:
+    """Rename an existing thread via PATCH /channels/{thread_id}."""
+    name = name.strip()[:100]  # Discord thread name max 100 chars
+    if not name:
+        return json.dumps({"success": False, "error": "Thread name cannot be empty."})
+    result = _discord_request("PATCH", f"/channels/{thread_id}", token, body={"name": name})
+    return json.dumps({
+        "success": True,
+        "thread_id": result.get("id", thread_id),
+        "name": result.get("name", name),
+    })
+
+
 def _add_role(token: str, guild_id: str, user_id: str, role_id: str, **_kwargs: Any) -> str:
     """Add a role to a guild member."""
     _discord_request("PUT", f"/guilds/{guild_id}/members/{user_id}/roles/{role_id}", token)
@@ -484,6 +497,7 @@ _ACTIONS = {
     "unpin_message": _unpin_message,
     "delete_message": _delete_message,
     "create_thread": _create_thread,
+    "edit_thread": _edit_thread,
     "add_role": _add_role,
     "remove_role": _remove_role,
 }
@@ -511,6 +525,7 @@ _ACTION_MANIFEST: List[Tuple[str, str, str]] = [
     ("unpin_message", "(channel_id, message_id)", "unpin a message"),
     ("delete_message", "(channel_id, message_id)", "delete a message"),
     ("create_thread", "(channel_id, name)", "create a public thread; optional message_id anchor"),
+    ("edit_thread", "(thread_id, name)", "rename an existing thread"),
     ("add_role", "(guild_id, user_id, role_id)", "assign a role"),
     ("remove_role", "(guild_id, user_id, role_id)", "remove a role"),
 ]
@@ -532,6 +547,7 @@ _REQUIRED_PARAMS: Dict[str, List[str]] = {
     "unpin_message": ["channel_id", "message_id"],
     "delete_message": ["channel_id", "message_id"],
     "create_thread": ["channel_id", "name"],
+    "edit_thread": ["thread_id", "name"],
     "add_role": ["guild_id", "user_id", "role_id"],
     "remove_role": ["guild_id", "user_id", "role_id"],
 }
