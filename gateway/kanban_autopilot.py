@@ -37,6 +37,513 @@ _READY_GATE_REQUIREMENTS: tuple[tuple[str, tuple[str, ...], str], ...] = (
 _PR_URL_RE = re.compile(r"^https://github\.com/(?P<owner>[^/\s]+)/(?P<repo>[^/\s]+)/pull/\d+/?$")
 _SHA_RE = re.compile(r"^[0-9a-f]{7,40}$", re.IGNORECASE)
 _RELEASE_ONLY_BASES = {"prod", "production"}
+_CLOSED_LOOP_ALLOWED_STATES = [
+    "disabled",
+    "dry_run",
+    "single_flight",
+    "bounded_multi_tick",
+    "parent_scoped",
+    "lane_scoped",
+    "paused",
+    "hard_stopped",
+    "needs_human",
+]
+_DEFAULT_CLOSED_LOOP_CAPS = {
+    "max_active_flights": 1,
+    "max_dispatches_per_tick": 1,
+    "max_tasks_per_run_single_flight": 1,
+    "max_tasks_per_run_early_bounded_multi_tick": 2,
+    "max_new_prs_per_run": 1,
+    "max_open_autopilot_prs": 2,
+    "max_consecutive_failures": 1,
+    "max_no_progress_ticks": 1,
+    "max_same_card_retries": 1,
+    "max_runtime_minutes": 60,
+    "max_daily_autopilot_tasks": 3,
+    "require_clean_closeout_per_task": True,
+    "require_review_ready_contract_before_next_task": True,
+}
+
+
+def get_closed_loop_operating_contract() -> dict[str, Any]:
+    """Return the BO-091 closed-loop Autopilot ADR/operating contract.
+
+    The contract is intentionally data-shaped so later slices can validate
+    policy/config files against the same invariants instead of relying on prose.
+    It grants no runtime authority: dispatcher handoff and worker completion
+    remain separate later slices and explicit approval gates.
+    """
+
+    return {
+        "adr": "bounded_controller_not_executor",
+        "authority_ceiling": "review_ready_pr",
+        "state_machine": {
+            "allowed_states": list(_CLOSED_LOOP_ALLOWED_STATES),
+            "promotion_ladder": [
+                ["dry_run", "single_flight"],
+                ["single_flight", "bounded_multi_tick"],
+                ["bounded_multi_tick", "parent_scoped"],
+                ["bounded_multi_tick", "lane_scoped"],
+            ],
+            "terminal_or_human_states": ["paused", "hard_stopped", "needs_human"],
+        },
+        "default_caps": dict(_DEFAULT_CLOSED_LOOP_CAPS),
+        "dispatcher_boundary": {
+            "execution_owner": "existing_kanban_dispatcher",
+            "autopilot_role": "controller_policy_evidence_layer",
+            "autopilot_may_directly_claim_or_spawn": False,
+            "second_dispatcher_allowed": False,
+            "handoff_success_is_worker_completion": False,
+            "worker_done_truth_source": "kanban_dispatcher_worker_done_evidence",
+        },
+        "scope_model": {
+            "selectors": ["parent_public_id", "lane_tenant", "repo_project", "labels", "assignee_or_profile"],
+            "scope_can_silently_widen": False,
+            "scope_escape_result": "needs_human_or_activation_rejected",
+        },
+        "forbidden_without_current_approval": [
+            "gateway_restart_reload",
+            "config_env_secret_provider_billing_pricing_mutation",
+            "worker_dispatch_claim_spawn_live_side_effect_before_activation_slice",
+            "fork_push_or_pr_before_child_range_worker_done",
+            "upstream_pr",
+            "merge_release_deploy_prod_customer_visible_action",
+            "canonical_main_sync_or_materialization",
+        ],
+        "stop_conditions": [
+            "forbidden_action_requested",
+            "scope_ambiguity",
+            "stale_kanban_state",
+            "dependency_or_blocker_detected",
+            "verification_failure_threshold_exceeded",
+            "worker_crash_or_timeout_repeated",
+            "dispatcher_unavailable",
+            "kanban_read_unavailable",
+            "policy_file_invalid_or_stale",
+            "worker_completion_evidence_missing",
+            "budget_or_cap_exceeded",
+            "pr_backlog_cap_exceeded",
+            "disk_ci_runtime_safety_threshold_exceeded",
+            "current_turn_approval_required_or_expired",
+        ],
+        "future_ralplan_required_for": [
+            "merge_release_deploy_prod_customer_visible_authority",
+            "gateway_restart_reload_automation",
+            "config_env_secret_provider_billing_pricing_mutation",
+            "replace_or_bypass_existing_dispatcher",
+            "new_dispatcher_worker_lifecycle_ownership",
+            "global_queue_draining_autonomy",
+            "cross_repo_lane_parent_scope_expansion",
+            "customer_facing_automation",
+            "destructive_cleanup_authority",
+            "security_auth_payment_billing_policy_mutation",
+        ],
+        "docs": "docs/closed-loop-kanban-autopilot.md",
+    }
+
+
+def validate_closed_loop_policy_contract(contract: dict[str, Any]) -> dict[str, Any]:
+    """Validate that a proposed closed-loop policy preserves BO-091 invariants."""
+
+    reason_codes: list[str] = []
+    if contract.get("adr") != "bounded_controller_not_executor":
+        reason_codes.append("adr_must_be_bounded_controller_not_executor")
+    if contract.get("authority_ceiling") != "review_ready_pr":
+        reason_codes.append("authority_ceiling_must_be_review_ready_pr")
+    states = (contract.get("state_machine") or {}).get("allowed_states") or []
+    for state in _CLOSED_LOOP_ALLOWED_STATES:
+        if state not in states:
+            reason_codes.append(f"missing_state_{state}")
+    caps = contract.get("default_caps") or {}
+    if caps.get("max_dispatches_per_tick") != 1:
+        reason_codes.append("max_dispatches_per_tick_must_be_one")
+    if caps.get("max_active_flights") != 1:
+        reason_codes.append("max_active_flights_must_be_one")
+    boundary = contract.get("dispatcher_boundary") or {}
+    if boundary.get("execution_owner") != "existing_kanban_dispatcher":
+        reason_codes.append("execution_owner_must_be_existing_dispatcher")
+    if boundary.get("autopilot_may_directly_claim_or_spawn") is not False:
+        reason_codes.append("direct_claim_or_spawn_not_allowed")
+    if boundary.get("second_dispatcher_allowed") is not False:
+        reason_codes.append("second_dispatcher_not_allowed")
+    if boundary.get("handoff_success_is_worker_completion") is not False:
+        reason_codes.append("handoff_success_must_not_equal_worker_completion")
+    scope = contract.get("scope_model") or {}
+    if scope.get("scope_can_silently_widen") is not False:
+        reason_codes.append("scope_must_not_silently_widen")
+    forbidden = set(contract.get("forbidden_without_current_approval") or [])
+    for required in {"gateway_restart_reload", "config_env_secret_provider_billing_pricing_mutation"}:
+        if required not in forbidden:
+            reason_codes.append(f"missing_forbidden_{required}")
+    future = set(contract.get("future_ralplan_required_for") or [])
+    if "merge_release_deploy_prod_customer_visible_authority" not in future:
+        reason_codes.append("future_ralplan_gate_missing_merge_release_prod")
+    return {"ok": not reason_codes, "reason_codes": reason_codes}
+
+
+def simulate_closed_loop_ticks(candidates: list[dict[str, Any]], *, max_ticks: Optional[int] = None) -> dict[str, Any]:
+    """Simulate closed-loop candidate selection without side effects.
+
+    This is BO-092's read-only simulator: it reuses the same Ready-gate and
+    dispatcher-eligibility contract as the live path, but returns only
+    ``would_*`` facts. It does not dispatch, claim, spawn, or mutate Kanban.
+    """
+
+    state = _read_state()
+    effective = _effective_mode(str(state.get("desired_mode") or "disabled"), state)
+    cap = max(1, int(max_ticks or _DEFAULT_CLOSED_LOOP_CAPS["max_tasks_per_run_early_bounded_multi_tick"]))
+    selected: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+    handoffs: list[dict[str, Any]] = []
+    pauses: list[dict[str, Any]] = []
+
+    if effective == "hard_stop":
+        pauses.append({"reason_code": "hard_stop", "human_reason": "Autopilot hard-stop is active; no simulated handoff is allowed."})
+        for candidate in candidates:
+            skipped.append({
+                "public_id": candidate.get("public_id"),
+                "task_id": candidate.get("id"),
+                "status": "rejected",
+                "reason_codes": ["autopilot_hard_stop_active"],
+            })
+        return {
+            "mode": "read_only_simulation",
+            "controller_effective_mode": effective,
+            "would_select": selected,
+            "would_skip": skipped,
+            "would_pause": pauses,
+            "would_handoff": handoffs,
+            "next_state": "hard_stopped",
+            "dry_run_side_effects": {"claimed": 0, "spawned": 0, "mutated": 0, "dispatched": 0},
+            "mutations_attempted": list(_MUTATIONS_ATTEMPTED),
+        }
+
+    verdict = evaluate_dispatcher_eligibility(candidates)
+    for item in verdict.get("ineligible") or []:
+        skipped.append({
+            "public_id": item.get("public_id"),
+            "task_id": item.get("task_id"),
+            "status": item.get("status"),
+            "reason_codes": item.get("reason_codes") or [],
+            "human_reason": item.get("human_reason"),
+        })
+    for item in (verdict.get("eligible") or [])[:cap]:
+        selected_item = {
+            "public_id": item.get("public_id"),
+            "task_id": item.get("task_id"),
+            "reason_codes": [],
+            "decision": "would_select",
+        }
+        selected.append(selected_item)
+        handoffs.append({
+            "public_id": item.get("public_id"),
+            "task_id": item.get("task_id"),
+            "target": "existing_kanban_dispatcher",
+            "check_only": True,
+            "would_dispatch": False,
+            "handoff_success_is_worker_completion": False,
+        })
+    if len(verdict.get("eligible") or []) > cap:
+        for item in (verdict.get("eligible") or [])[cap:]:
+            skipped.append({
+                "public_id": item.get("public_id"),
+                "task_id": item.get("task_id"),
+                "status": "skipped",
+                "reason_codes": ["max_ticks_cap_reached"],
+                "human_reason": f"simulation cap reached: max_ticks={cap}",
+            })
+    if not selected:
+        pauses.append({"reason_code": "no_progress", "human_reason": "No eligible candidate would be selected in this simulation tick."})
+    return {
+        "mode": "read_only_simulation",
+        "controller_effective_mode": verdict.get("controller_effective_mode", effective),
+        "max_ticks": cap,
+        "would_select": selected,
+        "would_skip": skipped,
+        "would_pause": pauses,
+        "would_handoff": handoffs,
+        "next_state": "continue" if selected else "needs_human",
+        "dry_run_side_effects": {"claimed": 0, "spawned": 0, "mutated": 0, "dispatched": 0},
+        "mutations_attempted": list(_MUTATIONS_ATTEMPTED),
+    }
+
+def activate_single_flight(
+    candidates: list[dict[str, Any]],
+    *,
+    check_only_handoff: Optional[Any] = None,
+) -> dict[str, Any]:
+    """Run the BO-093 single-flight activation gate without live dispatch.
+
+    The function selects at most one eligible candidate, performs a caller-
+    supplied check-only handoff probe, and returns explicit non-completion
+    evidence. It never directly dispatches, claims, spawns, or mutates Kanban.
+    """
+
+    simulation = simulate_closed_loop_ticks(candidates, max_ticks=1)
+    selected = (simulation.get("would_select") or [])[:1]
+    skipped = []
+    for item in simulation.get("would_skip") or []:
+        reason_codes = item.get("reason_codes") or []
+        if reason_codes == ["max_ticks_cap_reached"]:
+            item = {**item, "reason_codes": ["single_flight_limit_reached"], "human_reason": "single-flight activation may select at most one candidate"}
+        skipped.append(item)
+    for extra in (simulation.get("would_select") or [])[1:]:
+        skipped.append({
+            "public_id": extra.get("public_id"),
+            "task_id": extra.get("task_id"),
+            "status": "skipped",
+            "reason_codes": ["single_flight_limit_reached"],
+            "human_reason": "single-flight activation may select at most one candidate",
+        })
+    if not selected:
+        return {
+            "status": "no_candidate",
+            "selected": None,
+            "skipped": skipped,
+            "handoff": None,
+            "next_state": simulation.get("next_state", "needs_human"),
+            "handoff_success_is_worker_completion": False,
+            "worker_done_observed": False,
+            "dry_run_side_effects": {"claimed": 0, "spawned": 0, "mutated": 0, "dispatched": 0},
+            "mutations_attempted": list(_MUTATIONS_ATTEMPTED),
+        }
+    candidate = selected[0]
+    payload = {
+        "public_id": candidate.get("public_id"),
+        "task_id": candidate.get("task_id"),
+        "target": "existing_kanban_dispatcher",
+        "check_only": True,
+        "would_dispatch": False,
+        "handoff_success_is_worker_completion": False,
+    }
+    check = check_only_handoff(payload) if check_only_handoff else {"allowed": True, "reason": "no_check_callback_supplied"}
+    allowed = bool((check or {}).get("allowed"))
+    return {
+        "status": "handoff_check_passed" if allowed else "handoff_check_blocked",
+        "selected": candidate,
+        "skipped": skipped,
+        "handoff": payload,
+        "check": check,
+        "next_state": "pause_for_worker_observation" if allowed else "needs_human",
+        "handoff_success_is_worker_completion": False,
+        "worker_done_observed": False,
+        "dry_run_side_effects": {"claimed": 0, "spawned": 0, "mutated": 0, "dispatched": 0},
+        "mutations_attempted": list(_MUTATIONS_ATTEMPTED),
+    }
+
+
+def evaluate_autopilot_closeout_progress(
+    evidence: dict[str, Any],
+    *,
+    open_autopilot_prs: int = 0,
+    max_open_autopilot_prs: int = 2,
+) -> dict[str, Any]:
+    """Decide whether Autopilot may continue after a worker result.
+
+    BO-094 keeps worker_done observation, review-ready/no-code evidence, and PR
+    backlog caps distinct. It never grants merge/release authority.
+    """
+
+    reason_codes: list[str] = []
+    worker_done = evidence.get("kanban_worker_done") is True
+    if not worker_done:
+        reason_codes.append("worker_done_not_observed")
+    no_code = evidence.get("no_code_task") is True
+    review_contract: dict[str, Any] | None = None
+    review_equivalent = None
+    if no_code:
+        if not str(evidence.get("artifact_path") or "").strip():
+            reason_codes.append("missing_no_code_artifact")
+        if not str(evidence.get("verification") or "").strip():
+            reason_codes.append("missing_no_code_verification")
+        if evidence.get("boundaries_confirmed") is not True:
+            reason_codes.append("missing_boundaries_confirmed")
+        if not reason_codes:
+            review_equivalent = "no_code_evidence"
+    else:
+        review_contract = evaluate_review_ready_contract(evidence)
+        if not review_contract.get("review_ready"):
+            reason_codes.append("missing_review_ready_contract")
+    if open_autopilot_prs >= max_open_autopilot_prs:
+        reason_codes.append("pr_backlog_cap_reached")
+    return {
+        "may_continue": not reason_codes,
+        "reason_codes": reason_codes,
+        "worker_done_observed": worker_done,
+        "review_ready_contract": review_contract,
+        "review_ready_equivalent": review_equivalent,
+        "open_autopilot_prs": open_autopilot_prs,
+        "max_open_autopilot_prs": max_open_autopilot_prs,
+        "merge_allowed": False,
+        "release_allowed": False,
+        "prod_customer_visible_allowed": False,
+        "next_state": "continue" if not reason_codes else "needs_human",
+    }
+
+
+def run_bounded_multi_tick(
+    candidates: list[dict[str, Any]],
+    *,
+    max_tasks: int = 2,
+    closeout_results: Optional[list[dict[str, Any]]] = None,
+) -> dict[str, Any]:
+    """Simulate bounded multi-tick continuation without live side effects."""
+
+    cap = max(1, max_tasks)
+    simulation = simulate_closed_loop_ticks(candidates, max_ticks=cap)
+    executed: list[dict[str, Any]] = []
+    pauses = list(simulation.get("would_pause") or [])
+    skipped = []
+    for item in simulation.get("would_skip") or []:
+        reason_codes = item.get("reason_codes") or []
+        if reason_codes == ["max_ticks_cap_reached"]:
+            item = {**item, "reason_codes": ["max_tasks_per_run_reached"], "human_reason": f"bounded run cap reached: max_tasks={cap}"}
+        skipped.append(item)
+    closeouts = closeout_results or []
+    for idx, selected in enumerate(simulation.get("would_select") or []):
+        if idx >= cap:
+            skipped.append({**selected, "status": "skipped", "reason_codes": ["max_tasks_per_run_reached"]})
+            continue
+        executed.append({**selected, "tick": idx + 1, "handoff": "check_only"})
+        if idx < len(closeouts) and closeouts[idx].get("may_continue") is False:
+            pauses.append({"reason_code": "closeout_blocked", "human_reason": ",".join(closeouts[idx].get("reason_codes") or [])})
+            return {
+                "mode": "bounded_multi_tick_simulation",
+                "executed": executed,
+                "skipped": skipped,
+                "would_pause": pauses,
+                "next_state": "needs_human",
+                "dry_run_side_effects": {"claimed": 0, "spawned": 0, "mutated": 0, "dispatched": 0},
+            }
+    if not executed and not pauses:
+        pauses.append({"reason_code": "no_progress", "human_reason": "No eligible work executed in bounded run."})
+    return {
+        "mode": "bounded_multi_tick_simulation",
+        "executed": executed,
+        "skipped": skipped,
+        "would_pause": pauses,
+        "next_state": "paused" if executed else "needs_human",
+        "dry_run_side_effects": {"claimed": 0, "spawned": 0, "mutated": 0, "dispatched": 0},
+    }
+
+
+def filter_candidates_for_scope(candidates: list[dict[str, Any]], scope: dict[str, Any]) -> dict[str, Any]:
+    """Filter candidates to an explicit parent/lane/repo/label scope."""
+
+    in_scope: list[dict[str, Any]] = []
+    out: list[dict[str, Any]] = []
+    required_labels = set(scope.get("labels") or [])
+    for candidate in candidates:
+        reasons: list[str] = []
+        if scope.get("parent_public_id") and candidate.get("parent_public_id") != scope.get("parent_public_id"):
+            reasons.append("parent_scope_mismatch")
+        if scope.get("tenant") and candidate.get("tenant") != scope.get("tenant"):
+            reasons.append("lane_scope_mismatch")
+        if scope.get("repo_full_name") and candidate.get("repo_full_name") != scope.get("repo_full_name"):
+            reasons.append("repo_scope_mismatch")
+        if required_labels and not required_labels.issubset(set(candidate.get("labels") or [])):
+            reasons.append("label_scope_mismatch")
+        if candidate.get("relation_type") == "dependency":
+            reasons.append("hierarchy_dependency_ambiguous")
+        if reasons:
+            out.append({"public_id": candidate.get("public_id"), "task_id": candidate.get("id"), "reason_codes": reasons})
+        else:
+            in_scope.append(candidate)
+    return {
+        "in_scope": in_scope,
+        "out_of_scope": out,
+        "scope_can_silently_widen": False,
+        "next_state": "continue" if in_scope else "needs_human",
+    }
+
+
+def generate_autopilot_run_report(run: dict[str, Any]) -> dict[str, Any]:
+    """Generate a compact operator-readable Autopilot run report."""
+
+    executed = run.get("executed") or run.get("would_select") or []
+    skipped = run.get("skipped") or run.get("would_skip") or []
+    blocked = run.get("would_pause") or []
+    open_prs = run.get("open_prs") or []
+    next_state = run.get("next_state") or "unknown"
+    lines = ["Autopilot run report", f"next_state={next_state}"]
+    if executed:
+        lines.append("executed=" + ",".join(str(item.get("public_id") or item.get("task_id")) for item in executed))
+    else:
+        lines.append("zero work executed")
+    if skipped:
+        lines.append("skipped=" + ",".join(f"{item.get('public_id') or item.get('task_id')}:{'/'.join(item.get('reason_codes') or [])}" for item in skipped))
+    if blocked:
+        lines.append("blocked=" + ",".join(str(item.get("reason_code")) for item in blocked))
+    if open_prs:
+        lines.append("open_prs=" + ",".join(open_prs))
+    if run.get("caps"):
+        lines.append("caps=" + json.dumps(run.get("caps"), sort_keys=True))
+    return {
+        "summary": {
+            "executed_count": len(executed),
+            "skipped_count": len(skipped),
+            "blocked_count": len(blocked),
+            "open_pr_count": len(open_prs),
+            "next_state": next_state,
+            "zero_work": len(executed) == 0,
+        },
+        "text": "\n".join(lines),
+    }
+
+
+def harden_autopilot_policy(contract: dict[str, Any]) -> dict[str, Any]:
+    """Fail-closed policy hardening gate for closed-loop Autopilot."""
+
+    validation = validate_closed_loop_policy_contract(contract)
+    accepted = bool(validation.get("ok"))
+    return {
+        "accepted": accepted,
+        "reason_codes": validation.get("reason_codes") or [],
+        "next_state": "continue" if accepted else "hard_stopped",
+        "recovery_required": not accepted,
+        "merge_allowed": False,
+        "release_allowed": False,
+        "prod_customer_visible_allowed": False,
+        "dry_run_side_effects": {"claimed": 0, "spawned": 0, "mutated": 0, "dispatched": 0},
+    }
+
+
+_RECOVERY_ACTIONS = {
+    "stale_kanban_state": "pause_and_reread_kanban",
+    "kanban_read_unavailable": "pause_and_reread_kanban",
+    "worker_crash_or_timeout_repeated": "pause_and_require_worker_evidence",
+    "worker_completion_evidence_missing": "pause_and_require_worker_evidence",
+    "policy_file_invalid_or_stale": "hard_stop_and_require_recovery_ack",
+    "forbidden_action_requested": "hard_stop_and_require_recovery_ack",
+    "scope_ambiguity": "pause_and_require_scope_confirmation",
+    "budget_or_cap_exceeded": "pause_and_report_cap",
+    "pr_backlog_cap_exceeded": "pause_and_report_pr_backlog",
+}
+
+
+def run_autopilot_recovery_drill(scenarios: list[dict[str, Any]]) -> dict[str, Any]:
+    """Exercise fail-closed recovery decisions without executing side effects."""
+
+    drills: list[dict[str, Any]] = []
+    passed = True
+    for scenario in scenarios:
+        trigger = str(scenario.get("trigger") or "")
+        action = _RECOVERY_ACTIONS.get(trigger)
+        if action is None:
+            passed = False
+            action = "hard_stop_and_require_human_triage"
+        drills.append({
+            "name": scenario.get("name"),
+            "trigger": trigger,
+            "action": action,
+            "side_effects": {"claimed": 0, "spawned": 0, "mutated": 0, "dispatched": 0},
+        })
+    return {
+        "passed": passed,
+        "drills": drills,
+        "next_state": "recovered" if passed else "needs_human",
+        "dry_run_side_effects": {"claimed": 0, "spawned": 0, "mutated": 0, "dispatched": 0},
+    }
 
 
 @dataclass(frozen=True)
@@ -341,6 +848,60 @@ def _format_queue_message(decision: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _closed_loop_dry_run_decision(command: AutopilotCommand, *, actor: Optional[str], candidates: Optional[list[dict[str, Any]]]) -> dict[str, Any]:
+    closed_loop = simulate_closed_loop_ticks(candidates or [])
+    return {
+        "action": command.action,
+        "actor": actor,
+        "read_only": True,
+        "status": "DRY_RUN",
+        "reason": "closed_loop_simulator_no_execution_authority",
+        "closed_loop": closed_loop,
+        "dry_run_side_effects": {"claimed": 0, "spawned": 0, "mutated": 0, "dispatched": 0},
+        "mutations_attempted": list(_MUTATIONS_ATTEMPTED),
+    }
+
+
+def _format_closed_loop_dry_run_message(decision: dict[str, Any]) -> str:
+    report = decision.get("closed_loop") or {}
+    return "\n".join([
+        "Autopilot closed-loop dry-run",
+        f"would_select={len(report.get('would_select') or [])}",
+        f"would_skip={len(report.get('would_skip') or [])}",
+        f"would_pause={len(report.get('would_pause') or [])}",
+        f"next_state={report.get('next_state')}",
+        "No dispatch, claim, worker spawn, or Kanban mutation was attempted.",
+    ])
+
+
+def _once_decision(command: AutopilotCommand, *, actor: Optional[str], candidates: Optional[list[dict[str, Any]]]) -> dict[str, Any]:
+    single_flight = activate_single_flight(candidates or [])
+    status = "CHECK_ONLY_HANDOFF_READY" if single_flight.get("status") == "handoff_check_passed" else "CHECK_ONLY_HANDOFF_BLOCKED"
+    return {
+        "action": command.action,
+        "actor": actor,
+        "read_only": False,
+        "status": status,
+        "reason": "single_flight_check_only_no_dispatch",
+        "single_flight": single_flight,
+        "dry_run_side_effects": {"claimed": 0, "spawned": 0, "mutated": 0, "dispatched": 0},
+        "mutations_attempted": list(_MUTATIONS_ATTEMPTED),
+    }
+
+
+def _format_once_message(decision: dict[str, Any]) -> str:
+    sf = decision.get("single_flight") or {}
+    selected = sf.get("selected") or {}
+    return "\n".join([
+        "Autopilot single-flight check-only",
+        f"status={decision.get('status')}",
+        f"selected={selected.get('public_id') or selected.get('task_id')}",
+        f"worker_done_observed={sf.get('worker_done_observed')}",
+        "handoff_success_is_worker_completion=False",
+        "No dispatch, claim, worker spawn, or Kanban mutation was attempted.",
+    ])
+
+
 def _status_decision(command: AutopilotCommand, *, actor: Optional[str] = None) -> dict[str, Any]:
     state = _read_state()
     desired_mode = str(state.get("desired_mode") or "disabled")
@@ -491,9 +1052,17 @@ def handle_autopilot_command(
         decision = _queue_decision(command, actor=actor, candidates=candidates)
         return AutopilotResult(True, command, _format_queue_message(decision), decision, False)
 
-    if command.action in _READ_ONLY_ACTIONS:
+    if command.action == "dry-run":
+        decision = _closed_loop_dry_run_decision(command, actor=actor, candidates=candidates)
+        return AutopilotResult(True, command, _format_closed_loop_dry_run_message(decision), decision, False)
+
+    if command.action in {"status"}:
         decision = _status_decision(command, actor=actor)
         return AutopilotResult(True, command, _format_status_message(decision), decision, False)
+
+    if command.action == "once":
+        decision = _once_decision(command, actor=actor, candidates=candidates)
+        return AutopilotResult(True, command, _format_once_message(decision), decision, False)
 
     if command.action in _CONTROL_ACTIONS:
         decision = _control_decision(command, actor=actor)
