@@ -221,7 +221,7 @@ def sync_skills(quiet: bool = False) -> dict:
                         print(
                             f"  ⚠ {skill_name}: bundled version shipped but you "
                             f"already have a local skill by this name — yours "
-                            f"was kept. Run `hermes skills reset {skill_name}` "
+                            f"was kept. Run `hermes skills reset {skill_name} --restore` "
                             f"to replace it with the bundled version."
                         )
                 else:
@@ -405,11 +405,23 @@ def reset_bundled_skill(name: str, restore: bool = False) -> dict:
         action = "restored"
         message = f"Restored '{name}' (no prior user copy, re-copied from bundled)."
     else:
-        action = "manifest_cleared"
-        message = (
-            f"Cleared manifest entry for '{name}'. Future `hermes update` runs "
-            f"will re-baseline against your current copy and accept upstream changes."
-        )
+        # Non-restore path: if the user's local copy still exists, baseline it
+        # in the manifest so future syncs can detect upstream changes properly.
+        dest = _compute_relative_dest(bundled_by_name[name], bundled_dir) if is_bundled else SKILLS_DIR / name
+        if dest.exists():
+            user_hash = _dir_hash(dest)
+            manifest[name] = user_hash
+            _write_manifest(manifest)
+            action = "manifest_rebased"
+            message = (
+                f"Re-based manifest for '{name}' using your current copy. "
+                f"Future `hermes update` runs will detect upstream changes "
+                f"against this baseline."
+            )
+        else:
+            # No local copy — manifest was cleared, next sync will re-copy from bundled
+            action = "manifest_cleared"
+            message = f"Cleared manifest entry for '{name}'. Next sync will re-copy from bundled."
 
     return {"ok": True, "action": action, "message": message, "synced": synced}
 
