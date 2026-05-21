@@ -1500,6 +1500,89 @@ def test_review_endpoint_approve_and_request_changes(client, tmp_path):
     assert any(e.kind == "worker_review_changes_requested" for e in events)
 
 
+def test_worker_lane_request_endpoint_validates_without_enabling(client):
+    from hermes_cli.worker_lanes import clear_worker_lanes, get_worker_lane
+
+    clear_worker_lanes()
+    r = client.post(
+        "/api/plugins/kanban/worker-lane-requests",
+        json={
+            "worker_lane_request": {
+                "name": "codex-long-context",
+                "type": "codex_cli",
+                "model": "gpt-5.5",
+                "sandbox": "workspace-write",
+                "approval": "never",
+                "max_concurrency": 1,
+                "success_policy": "block_for_review",
+                "reason": "large refactor",
+            }
+        },
+    )
+
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["valid"] is True
+    assert data["enabled"] is False
+    assert data["persisted"] is False
+    assert data["lane"] is None
+    assert data["config"]["name"] == "codex-long-context"
+    assert get_worker_lane("codex-long-context") is None
+
+
+def test_worker_lane_request_endpoint_rejects_shell_command(client):
+    r = client.post(
+        "/api/plugins/kanban/worker-lane-requests",
+        json={
+            "worker_lane_request": {
+                "name": "codex-unsafe",
+                "type": "codex_cli",
+                "command": "rm -rf /",
+            }
+        },
+    )
+
+    assert r.status_code == 400
+    assert "command" in r.json()["detail"]
+
+
+def test_worker_lane_request_endpoint_persists_sanitized_config(client):
+    from hermes_cli.config import read_raw_config
+    from hermes_cli.worker_lanes import clear_worker_lanes, get_worker_lane
+
+    clear_worker_lanes()
+    r = client.post(
+        "/api/plugins/kanban/worker-lane-requests",
+        json={
+            "persist": True,
+            "worker_lane_request": {
+                "name": "codex-approved",
+                "type": "codex_cli",
+                "model": "gpt-5.4-mini",
+                "sandbox": "workspace-write",
+                "approval": "never",
+                "max_concurrency": 2,
+                "success_policy": "block_for_review",
+                "reason": "operator approved",
+            },
+        },
+    )
+
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["enabled"] is True
+    assert data["persisted"] is True
+    assert data["lane"]["name"] == "codex-approved"
+    assert data["lane"]["source"] == "config"
+    assert get_worker_lane("codex-approved") is not None
+    stored = read_raw_config()["kanban"]["worker_lanes"]["codex-approved"]
+    assert stored["type"] == "codex_cli"
+    assert stored["model"] == "gpt-5.4-mini"
+    assert stored["max_concurrency"] == 2
+    assert "reason" not in stored
+    assert "command" not in stored
+
+
 
 # ---------------------------------------------------------------------------
 # Per-task force-loaded skills via REST

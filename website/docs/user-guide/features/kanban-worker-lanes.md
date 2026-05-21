@@ -202,6 +202,16 @@ Operators can validate a request without enabling it:
 hermes kanban worker-lane-request request.yaml --json
 ```
 
+Dashboard/plugin clients can use the same validator through:
+
+```text
+POST /api/plugins/kanban/worker-lane-requests
+```
+
+By default the endpoint only validates. Pass `enable=true` to register the
+lane for the current process, or `persist=true` to write the sanitized adapter
+fields under `kanban.worker_lanes`.
+
 After approval, enable it for the current Hermes process, or persist the sanitized config to `config.yaml`:
 
 ```bash

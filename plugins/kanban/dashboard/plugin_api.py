@@ -640,6 +640,16 @@ class ReviewTaskBody(BaseModel):
     summary: Optional[str] = None
 
 
+class WorkerLaneRequestBody(BaseModel):
+    worker_lane_request: dict[str, Any] = Field(
+        ...,
+        description="Skill/operator proposed worker lane request object",
+    )
+    enable: bool = False
+    persist: bool = False
+    replace: bool = False
+
+
 @router.post("/tasks/{task_id}/review")
 def review_task_evidence(
     task_id: str,
@@ -667,6 +677,50 @@ def review_task_evidence(
         return snapshot.to_dict()
     finally:
         conn.close()
+
+
+@router.post("/worker-lane-requests")
+def submit_worker_lane_request(payload: WorkerLaneRequestBody):
+    """Validate and optionally enable/persist a worker lane request.
+
+    Model/skill output is accepted only as a request object. Execution config
+    still goes through the deterministic worker-lane validator; arbitrary shell
+    commands remain rejected.
+    """
+    from hermes_cli.worker_lanes import enable_worker_lane_request, validate_worker_lane_request
+
+    try:
+        valid = validate_worker_lane_request(payload.worker_lane_request)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    enabled = False
+    lane_info = None
+    if payload.enable or payload.persist:
+        try:
+            lane = enable_worker_lane_request(
+                payload.worker_lane_request,
+                persist=payload.persist,
+                replace=payload.replace,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        enabled = True
+        lane_info = {
+            "name": lane.name,
+            "kind": lane.kind,
+            "source": lane.source,
+            "success_policy": lane.success_policy,
+            "max_concurrency": lane.max_concurrency,
+        }
+
+    return {
+        "valid": True,
+        "enabled": enabled,
+        "persisted": payload.persist,
+        "lane": lane_info,
+        "config": valid,
+    }
 
 
 # ---------------------------------------------------------------------------
