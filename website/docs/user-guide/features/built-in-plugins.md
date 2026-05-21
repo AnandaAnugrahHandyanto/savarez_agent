@@ -175,6 +175,10 @@ Hermes-prefixed and standard SDK env vars (`LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECR
 
 Injects a compact SIMPLICIO_PROMPT V2 execution overlay into every main-agent turn through `pre_llm_call`. The user does not need to type "Implement"; when enabled, Hermes adds the tuple-space policy before the model call as ephemeral context.
 
+![YOOL V2 Safe-Speed Runtime reference infographic](/img/simplicio-prompt/yool-v2-safe-speed-infographic-en.png)
+
+Canonical reference: [`wesleysimplicio/simplicio-prompt`](https://github.com/wesleysimplicio/simplicio-prompt).
+
 **Enable with one boolean:**
 
 ```bash
@@ -204,6 +208,19 @@ hermes plugins enable SIMPLICIO_PROMPT
 | Safer speed | The model is steered toward local deterministic work first, input-hash caching, batching, context compression, stable prefixes, adaptive lanes, jittered backoff, circuit breakers, and idempotent-only speculation. |
 | Rate-limit safety | The overlay explicitly preserves provider limits and terms; it is not a bypass. |
 | Stable report shape | The default output contract includes tuple-space snapshot, active agents, total agents, next yool, and partial result. |
+
+**Canonical V2 report highlights:**
+
+| Area | Reported V2 result |
+|---|---:|
+| Scale representation | `2,833.75x` faster than normal instruction flow |
+| Active execution | `26.93x` faster than normal sequential execution |
+| Receipt/input cache | `4x` fewer provider calls, a `75%` reduction |
+| Small-task batching | `32x` fewer small-task calls, a `96.88%` reduction |
+| Circuit breaker | `64x` fewer failure attempts, a `98.44%` reduction |
+| Token economy | `76.32%` estimated savings through context compression |
+
+The plugin carries these as reference policy data from the canonical V2 runtime. It does not bypass hosted-provider rate limits, quotas, latency, or terms.
 
 **Performance note:** the plugin is local-only. When disabled it is a no-op. When enabled, it adds a compact static context block; it does not make extra model calls. See `docs/simplicio-prompt-v2-benchmark.md` and run `python scripts/benchmark_simplicio_prompt.py` for the local token and preprocessing benchmark.
 

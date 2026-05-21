@@ -1,5 +1,7 @@
 # SIMPLICIO_PROMPT V2 Benchmark
 
+![YOOL V2 Safe-Speed Runtime reference infographic](../website/static/img/simplicio-prompt/yool-v2-safe-speed-infographic-en.png)
+
 This report compares three local message-preparation paths for the Hermes
 SIMPLICIO_PROMPT plugin. It does not call a hosted model, so it does not claim
 provider-side latency, quality, or tool-success improvements. It measures the
@@ -16,7 +18,7 @@ python scripts/benchmark_simplicio_prompt.py --iterations 10000
 | Case | Median ms/build | p95 ms/build | Rough input tokens | Chars |
 |---|---:|---:|---:|---:|
 | normal_instruction | 0.000100 | 0.000200 | 28 | 112 |
-| manual_v2_prompt | 0.000300 | 0.000500 | 329 | 1,318 |
+| manual_v2_prompt | 0.000300 | 0.000700 | 329 | 1,318 |
 | simplicio_prompt_plugin | 0.000300 | 0.000400 | 269 | 1,079 |
 
 ## Deltas
@@ -59,3 +61,25 @@ network/model latency.
 
 The plugin is an execution-policy overlay, not a provider throttle bypass. It
 does not attempt to evade rate limits, account limits, or terms of service.
+
+## Canonical V2 Report Data
+
+The canonical `wesleysimplicio/simplicio-prompt` README describes the broader
+V2 safe-speed runtime as a tuple-space execution policy with lazy `batch_spawn`,
+adaptive lanes, cache, batching, circuit breakers, backoff with jitter, context
+compression, local yool routing, and idempotent-only speculation.
+
+Canonical README highlights:
+
+| Area | Reported V2 result |
+|---|---:|
+| Scale representation | `2,833.75x` faster than a normal instruction flow |
+| Active execution | `26.93x` faster than normal sequential execution |
+| Cache | `4x` fewer provider calls, a `75%` reduction |
+| Batching | `32x` fewer small-task calls, a `96.88%` reduction |
+| Circuit breaker | `64x` fewer failure attempts, a `98.44%` reduction |
+| Token economy | `76.32%` estimated savings through context compression |
+
+Those broader numbers are included as reference data for the policy this plugin
+injects. The Hermes benchmark above remains intentionally narrower: it measures
+the automatic pre-LLM overlay path introduced by this PR.
