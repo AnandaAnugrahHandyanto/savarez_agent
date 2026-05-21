@@ -209,9 +209,23 @@ class CuaDriverBackend(ComputerUseBackend):
         if _is_macos():
             open_bin = shutil.which("open") or "/usr/bin/open"
             subprocess.run([open_bin, "-n", "-g", "-a", "CuaDriver", "--args", "serve"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
+        try:
+            self.apply_runtime_config()
+        except Exception:
+            logger.debug("apply_runtime_config failed during start", exc_info=True)
 
     def stop(self) -> None:
-        pass
+        if not _is_macos():
+            return
+        # Best-effort daemon shutdown so a fresh `start()` re-applies runtime config
+        # against a clean process. The CuaDriver app is otherwise quiet.
+        try:
+            subprocess.run(
+                ["/usr/bin/pkill", "-x", "CuaDriver"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=3,
+            )
+        except Exception:
+            logger.debug("CuaDriver stop pkill failed", exc_info=True)
 
     def is_available(self) -> bool:
         return _is_macos() and cua_driver_binary_available()
@@ -557,3 +571,54 @@ class CuaDriverBackend(ComputerUseBackend):
             res.message = res.message or f"Launched {launched_name or target}."
             res.meta = {**res.meta, "app": launched_name, "bundle_id": target, "background": background}
         return res
+
+    # ── Daemon lifecycle / runtime config ──────────────────────────────
+    def _show_cursor_setting(self) -> Optional[bool]:
+        """Resolve the `display.show_cursor` config flag.
+
+        Order: HERMES_CUA_SHOW_CURSOR env (1/true/on / 0/false/off) → user config
+        `computer_use.show_cursor` → None (leave driver default).
+        """
+        env = os.environ.get("HERMES_CUA_SHOW_CURSOR")
+        if env is not None:
+            return env.strip().lower() in {"1", "true", "yes", "on"}
+        try:
+            from hermes_cli.config import load_config_readonly
+            cfg = load_config_readonly() or {}
+        except Exception:
+            cfg = {}
+        section = (cfg.get("computer_use") or {}) if isinstance(cfg, dict) else {}
+        if isinstance(section, dict) and "show_cursor" in section:
+            return bool(section["show_cursor"])
+        return None
+
+    def apply_runtime_config(self) -> None:
+        show_cursor = self._show_cursor_setting()
+        if show_cursor is not None:
+            try:
+                self._action("set_agent_cursor_enabled", {"enabled": bool(show_cursor)})
+            except Exception:
+                logger.debug("set_agent_cursor_enabled failed", exc_info=True)
+
+    def daemon_status(self) -> Dict[str, Any]:
+        exe = cua_driver_executable()
+        version_status = cua_driver_version_status() if exe else {"actual": "", "minimum": PINNED_CUA_DRIVER_VERSION, "ok": False}
+        permissions = cua_driver_permissions_status() if exe else {"available": False, "ok": False, "message": cua_driver_install_hint()}
+        running = False
+        if _is_macos() and exe:
+            try:
+                proc = subprocess.run(["/usr/bin/pgrep", "-x", "CuaDriver"], capture_output=True, text=True, timeout=2)
+                running = proc.returncode == 0 and bool(proc.stdout.strip())
+            except Exception:
+                running = False
+        return {
+            "binary_installed": bool(exe),
+            "binary_path": exe or "",
+            "version": version_status.get("actual") or "",
+            "minimum_version": version_status.get("minimum") or "",
+            "version_ok": bool(version_status.get("ok")),
+            "running": running,
+            "permissions": "ok" if permissions.get("ok") is True else ("not_ready" if permissions.get("ok") is False else "unknown"),
+            "permissions_message": (permissions.get("message") or "").strip(),
+            "show_cursor": self._show_cursor_setting(),
+        }

@@ -60,6 +60,7 @@ _TYPE_TEXT_DESCRIPTION = "Type text into the targeted app/window."
 _SET_VALUE_DESCRIPTION = "Set a value on an element, including text fields, selects, popups, and sliders."
 _PRESS_KEY_DESCRIPTION = "Press a key or key combo in the targeted app/window."
 _SELECT_TEXT_DESCRIPTION = "Select text in an element or text field."
+_DAEMON_DESCRIPTION = "Manage the Computer Use driver/daemon (status, start, stop) without shelling out."
 
 registry.register(
     name="computer_use_list_apps",
@@ -229,6 +230,27 @@ registry.register(
     check_fn=check_computer_use_requirements,
     requires_env=[],
     description=_SELECT_TEXT_DESCRIPTION,
+    override=True,
+)
+
+def _handle_daemon(args: Dict[str, Any], **kwargs):
+    payload = dict(args or {})
+    if "subaction" not in payload:
+        payload["subaction"] = payload.get("action") or "status"
+    payload["action"] = "daemon"
+    return handle_computer_use(payload, **kwargs)
+
+
+registry.register(
+    name="computer_use_daemon",
+    toolset="computer_use",
+    schema=_schema("computer_use_daemon", _DAEMON_DESCRIPTION, {
+        "action": {"type": "string", "enum": ["status", "start", "stop"], "description": "Lifecycle action — status reports installation/version/permissions/running, start launches the driver, stop terminates it. Defaults to status."},
+    }, []),
+    handler=_handle_daemon,
+    check_fn=check_computer_use_requirements,
+    requires_env=[],
+    description=_DAEMON_DESCRIPTION,
     override=True,
 )
 

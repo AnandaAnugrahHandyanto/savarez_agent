@@ -43,6 +43,7 @@ class TestRegistration:
     EXPECTED = {
         "computer_use_list_apps",
         "computer_use_launch_app",
+        "computer_use_daemon",
         "computer_use_get_app_state",
         "computer_use_click",
         "computer_use_perform_secondary_action",
@@ -712,6 +713,82 @@ class TestCodexStyleToolSurface:
 
 
 class TestCodexParityImprovements:
+    def test_daemon_status_tool_is_registered_and_reports_state(self):
+        import tools.computer_use_tool  # noqa: F401
+        from tools.registry import registry
+        assert "computer_use_daemon" in registry._tools
+        schema = registry._tools["computer_use_daemon"].schema["parameters"]
+        assert set(schema["properties"]) >= {"action"}
+        assert schema["properties"]["action"]["enum"] == ["status", "start", "stop"]
+
+    def test_computer_use_daemon_status_returns_structured_payload(self, noop_backend):
+        from tools.computer_use.tool import handle_computer_use
+
+        out = handle_computer_use({"action": "daemon", "subaction": "status"})
+        parsed = json.loads(out)
+
+        assert parsed["action"] == "daemon"
+        assert "daemon" in parsed
+        assert {"binary_installed", "permissions", "version"} <= set(parsed["daemon"])
+
+    def test_daemon_lifecycle_routes_through_backend(self):
+        from tools.computer_use import tool as cu_tool
+        from tools.computer_use.backend import ActionResult
+
+        class FakeBackend:
+            def __init__(self): self.calls = []
+            def start(self):
+                self.calls.append(("start",)); return None
+            def stop(self):
+                self.calls.append(("stop",)); return None
+            def daemon_status(self):
+                self.calls.append(("status",))
+                return {"binary_installed": True, "version": "0.2.0", "permissions": "ok", "running": True}
+
+        fake = FakeBackend()
+        with patch.object(cu_tool, "_get_backend", return_value=fake):
+            stop_out = cu_tool.handle_computer_use({"action": "daemon", "subaction": "stop"})
+            start_out = cu_tool.handle_computer_use({"action": "daemon", "subaction": "start"})
+            status_out = cu_tool.handle_computer_use({"action": "daemon", "subaction": "status"})
+
+        ops = [c[0] for c in fake.calls]
+        assert "stop" in ops and "start" in ops and "status" in ops
+        for out in (stop_out, start_out, status_out):
+            assert "error" not in json.loads(out)
+
+    def test_show_cursor_config_applied_on_backend_start(self):
+        from tools.computer_use.cua_backend import CuaDriverBackend
+
+        backend = CuaDriverBackend()
+        calls = []
+        def fake_action(name, args):
+            calls.append((name, args))
+            from tools.computer_use.backend import ActionResult
+            return ActionResult(ok=True, action=name)
+        backend._action = fake_action  # type: ignore[method-assign]
+
+        with patch.dict(os.environ, {"HERMES_CUA_SHOW_CURSOR": "1"}, clear=False):
+            backend.apply_runtime_config()
+
+        assert calls and calls[0][0] == "set_agent_cursor_enabled"
+        assert calls[0][1]["enabled"] is True
+
+    def test_show_cursor_off_passes_disabled_flag(self):
+        from tools.computer_use.cua_backend import CuaDriverBackend
+
+        backend = CuaDriverBackend()
+        calls = []
+        def fake_action(name, args):
+            calls.append((name, args))
+            from tools.computer_use.backend import ActionResult
+            return ActionResult(ok=True, action=name)
+        backend._action = fake_action  # type: ignore[method-assign]
+
+        with patch.dict(os.environ, {"HERMES_CUA_SHOW_CURSOR": "0"}, clear=False):
+            backend.apply_runtime_config()
+
+        assert calls[0][1]["enabled"] is False
+
     def test_mutating_schemas_require_app_and_element_where_needed(self):
         import tools.computer_use_tool  # noqa: F401
         from tools.registry import registry

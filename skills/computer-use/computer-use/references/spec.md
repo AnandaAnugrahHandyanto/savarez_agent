@@ -17,6 +17,7 @@ Expose explicit Hermes tools only:
 - `computer_use_set_value`
 - `computer_use_press_key`
 - `computer_use_select_text`
+- `computer_use_daemon`
 
 Expose explicit greenfield Hermes tools only. Tool names should encode intent so policy, approvals, logging, TUI display, and Swift app UX can reason over them directly.
 

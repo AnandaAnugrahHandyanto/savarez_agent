@@ -33,6 +33,7 @@ Use only the small native surface:
 - `computer_use_set_value`
 - `computer_use_press_key`
 - `computer_use_select_text`
+- `computer_use_daemon`
 
 Do not use or document a catch-all action-dispatch tool. Greenfield Hermes Computer Use is explicit tools all the way down.
 

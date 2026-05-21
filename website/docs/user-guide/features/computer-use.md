@@ -19,6 +19,7 @@ The `computer_use` toolset exposes explicit first-class tools:
 - `computer_use_set_value`
 - `computer_use_press_key`
 - `computer_use_select_text`
+- `computer_use_daemon`
 
 There is no catch-all action-dispatch Computer Use tool in the greenfield path. Each tool name carries intent for policy, approvals, logs, and the native app UX.
 
@@ -66,6 +67,11 @@ Different agents can usually operate different apps/windows concurrently. Mutati
 - **Tool unavailable:** run `hermes tools` and enable Computer Use, or run `hermes computer-use install`.
 - **Click no-op:** re-read state; a modal or stale element index probably blocked the action.
 - **Text-only model:** use `mode="ax"`, or switch to a vision-capable model for screenshot-heavy work.
+- **Daemon stuck:** the agent can call `computer_use_daemon(action="status"|"start"|"stop")` to inspect or restart the driver without shelling out via terminal.
+
+## Configuration
+
+- `computer_use.show_cursor` (bool) — show the agent-cursor overlay when actions fire. Useful for demos. Set with `hermes config set computer_use.show_cursor true`, or override per-process with `HERMES_CUA_SHOW_CURSOR=1`. Defaults to the driver's built-in setting.
 
 ## See also
 

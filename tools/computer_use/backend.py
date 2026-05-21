@@ -161,6 +161,14 @@ class ComputerUseBackend(ABC):
     def launch_app(self, app: str = "", bundle_id: str = "", background: bool = True) -> ActionResult:
         return ActionResult(ok=False, action="launch_app", message="backend does not support launch_app")
 
+    def daemon_status(self) -> Dict[str, Any]:
+        """Return a structured snapshot of the underlying driver/daemon state."""
+        return {"binary_installed": False, "running": False, "permissions": "unknown", "version": ""}
+
+    def apply_runtime_config(self) -> None:
+        """Apply Hermes config (cursor visibility, etc.) to the live backend."""
+        return None
+
     @abstractmethod
     def focus_app(self, app: str, raise_window: bool = False) -> ActionResult:
         """Route input to `app` (by name or bundle ID). Default: focus without raise."""

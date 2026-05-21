@@ -68,7 +68,7 @@ def set_approval_callback(cb) -> None:
 
 
 # Actions that read or perform low-impact setup. Always allowed.
-_SAFE_ACTIONS = frozenset({"capture", "get_app_state", "wait", "list_apps", "launch_app"})
+_SAFE_ACTIONS = frozenset({"capture", "get_app_state", "wait", "list_apps", "launch_app", "daemon"})
 
 # Actions that mutate user-visible state. Go through approval.
 _DESTRUCTIVE_ACTIONS = frozenset({
@@ -207,6 +207,14 @@ class _NoopBackend(ComputerUseBackend):  # pragma: no cover
     def launch_app(self, app: str = "", bundle_id: str = "", background: bool = True) -> ActionResult:
         self.calls.append(("launch_app", {"app": app, "bundle_id": bundle_id, "background": background}))
         return ActionResult(ok=True, action="launch_app")
+
+    def daemon_status(self) -> Dict[str, Any]:
+        self.calls.append(("daemon_status", {}))
+        return {"binary_installed": True, "running": True, "version": "test", "permissions": "ok"}
+
+    def apply_runtime_config(self) -> None:
+        self.calls.append(("apply_runtime_config", {}))
+        return None
 
     def focus_app(self, app: str, raise_window: bool = False) -> ActionResult:
         self.calls.append(("focus_app", {"app": app, "raise": raise_window}))
@@ -430,6 +438,24 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
         res = backend.launch_app(app=app, bundle_id=bundle_id, background=bool(args.get("background", True)))
         target = str(res.meta.get("app") or app or bundle_id) if getattr(res, "meta", None) else (app or bundle_id)
         return _maybe_follow_capture(backend, res, capture_after, app=target)
+
+    if action == "daemon":
+        subaction = str(args.get("subaction") or args.get("op") or "status").lower()
+        if subaction not in {"status", "start", "stop"}:
+            return json.dumps({"error": f"daemon: unknown subaction {subaction!r}; use status|start|stop"})
+        if subaction == "stop":
+            try:
+                backend.stop()
+            except Exception as e:
+                logger.warning("daemon stop failed: %s", e)
+        if subaction == "start":
+            try:
+                backend.start()
+            except Exception as e:
+                logger.warning("daemon start failed: %s", e)
+                return json.dumps({"action": "daemon", "subaction": subaction, "error": str(e)})
+        payload = backend.daemon_status() if hasattr(backend, "daemon_status") else {}
+        return json.dumps({"action": "daemon", "subaction": subaction, "daemon": payload})
 
     if action == "focus_app":
         app = args.get("app")

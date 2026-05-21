@@ -114,6 +114,8 @@ Scoped to the Feishu document-comment handler. Drives comment read/write operati
 | `computer_use_set_value` | Set a control value directly. | Computer Use installed/enabled on macOS. |
 | `computer_use_press_key` | Press a key or combo in the targeted app/window. | Computer Use installed/enabled on macOS. |
 | `computer_use_select_text` | Select text in an element or field. | Computer Use installed/enabled on macOS. |
+| `computer_use_daemon` | Status/start/stop the cua-driver daemon without shelling out. | Computer Use installed/enabled on macOS. |
+
 
 
 :::note
