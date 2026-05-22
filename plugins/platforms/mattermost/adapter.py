@@ -708,9 +708,8 @@ class MattermostAdapter(BasePlatformAdapter):
         if post.get("user_id") == self._bot_user_id:
             return
 
-        # Ignore system posts.
-        if post.get("type"):
-            return
+        # Allow system posts through (join/leave/header changes) — they
+        # provide useful conversational context for the agent.
 
         post_id = post.get("id", "")
 

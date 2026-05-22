@@ -323,13 +323,14 @@ class TestMattermostWebSocketParsing:
         assert not self.adapter.handle_message.called
 
     @pytest.mark.asyncio
-    async def test_ignore_system_posts(self):
-        """Posts with a 'type' field (system messages) should be ignored."""
+    async def test_system_posts_pass_through(self):
+        """Posts with a 'type' field (system messages) should be passed through
+        as context for the agent, not dropped."""
         post_data = {
             "id": "sys_post",
             "user_id": "user_123",
             "channel_id": "chan_456",
-            "message": "user joined",
+            "message": "@hermes-bot user joined",
             "type": "system_join_channel",
         }
         event = {
@@ -337,11 +338,12 @@ class TestMattermostWebSocketParsing:
             "data": {
                 "post": json.dumps(post_data),
                 "channel_type": "O",
+                "sender_name": "@system",
             },
         }
 
         await self.adapter._handle_ws_event(event)
-        assert not self.adapter.handle_message.called
+        assert self.adapter.handle_message.called
 
     @pytest.mark.asyncio
     async def test_channel_type_mapping(self):
