@@ -525,6 +525,65 @@ def test_weekly_digest_via_api_endpoint(isolate_home):
     assert response_404.status_code == 404
 
 
+def test_draft_checklist_x_channel_signals(isolate_home):
+    """Phase 16: per-channel checklist computes correct passed/failed for X drafts."""
+    from plugins.marketing_factory.pipeline import draft_checklist
+
+    app = {
+        "slug": "pupular", "name": "Pupular",
+        "channels": ["x"], "links": ["https://apps.apple.com/us/app/pupular"],
+        "tone": "cute warm playful",
+    }
+    short_x_with_link = {
+        "channel": "x",
+        "body": "find your new best friend 🐾 download pupular https://apps.apple.com/us/app/pupular",
+    }
+    items = draft_checklist(short_x_with_link, app)
+    labels_passed = {item["label"]: item["passed"] for item in items}
+    assert labels_passed["≤280 chars"] is True
+    assert labels_passed["has link"] is True
+    assert labels_passed["hashtags ≤2"] is True
+    assert labels_passed["has emoji"] is True
+
+    no_link_no_emoji = {"channel": "x", "body": "Pupular helps you discover adoptable pets near you. #adoption #pets #shelter #rescue"}
+    items = draft_checklist(no_link_no_emoji, app)
+    labels_passed = {item["label"]: item["passed"] for item in items}
+    assert labels_passed["has link"] is False
+    assert labels_passed["hashtags ≤2"] is False
+    assert labels_passed["has emoji"] is False
+
+
+def test_draft_checklist_instagram_requires_image(isolate_home):
+    from plugins.marketing_factory.pipeline import draft_checklist
+
+    app = {"slug": "pupular", "channels": ["instagram"], "links": [], "tone": ""}
+    no_image = {"channel": "instagram", "body": "x" * 500, "images": []}
+    items = draft_checklist(no_image, app)
+    has_image_check = next(i for i in items if i["label"] == "has image")
+    assert has_image_check["passed"] is False
+    assert has_image_check["severity"] == "error"
+
+    with_image = {"channel": "instagram", "body": "x" * 500, "images": [{"kind": "image_prompt", "url": "https://example.com/x.png"}]}
+    items = draft_checklist(with_image, app)
+    has_image_check = next(i for i in items if i["label"] == "has image")
+    assert has_image_check["passed"] is True
+
+
+def test_draft_checklist_email_subject_line(isolate_home):
+    from plugins.marketing_factory.pipeline import draft_checklist
+
+    app = {"slug": "setvenue", "channels": ["email"], "links": [], "tone": ""}
+    bad = {"channel": "email", "body": "Hey there\n\nWelcome to SetVenue."}
+    items = draft_checklist(bad, app)
+    subject_check = next(i for i in items if i["label"] == "has Subject:")
+    assert subject_check["passed"] is False
+
+    good = {"channel": "email", "body": "Subject: Welcome to SetVenue\n\nHey there..."}
+    items = draft_checklist(good, app)
+    subject_check = next(i for i in items if i["label"] == "has Subject:")
+    assert subject_check["passed"] is True
+
+
 def test_auto_generate_default_off_means_poll_does_not_generate(isolate_home):
     """Phase 15: by default, poll() never auto-generates — opt-in only to avoid runaway spend."""
     from plugins.marketing_factory.pipeline import MarketingFactoryPipeline

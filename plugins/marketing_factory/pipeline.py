@@ -1180,6 +1180,92 @@ def _draft_body(app: Dict[str, Any], item: Dict[str, Any]) -> str:
 
 _FRESHNESS_COMPARE_AGAINST = 20
 
+_EMOJI_PATTERN = None
+try:
+    import re as _re_emoji
+    _EMOJI_PATTERN = _re_emoji.compile(
+        "["
+        "\U0001F300-\U0001F5FF"
+        "\U0001F600-\U0001F64F"
+        "\U0001F680-\U0001F6FF"
+        "\U0001F900-\U0001F9FF"
+        "☀-⛿"
+        "✀-➿"
+        "]"
+    )
+except Exception:
+    _EMOJI_PATTERN = None
+
+
+def _count_hashtags(body: str) -> int:
+    return sum(1 for word in (body or "").split() if word.startswith("#") and len(word) > 1)
+
+
+def _count_emoji(body: str) -> int:
+    if _EMOJI_PATTERN is None or not body:
+        return 0
+    return len(_EMOJI_PATTERN.findall(body))
+
+
+def _has_link(body: str, app: Dict[str, Any]) -> bool:
+    """True if body contains a brand-owned link or any http URL."""
+    if not body:
+        return False
+    if "http://" in body or "https://" in body:
+        return True
+    for link in app.get("links") or []:
+        if link and link in body:
+            return True
+    return False
+
+
+def draft_checklist(draft: Dict[str, Any], app: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Mechanically-computed per-channel quality signals.
+
+    Each item: {label, passed: bool, severity: "info"|"warn"|"error", note}.
+    Severity "warn" = brand best-practice; "error" = platform constraint
+    violation (already caught by safety, but surfaced here for clarity).
+    """
+    body = draft.get("body") or ""
+    channel = draft.get("channel") or ""
+    length = len(body)
+    items: List[Dict[str, Any]] = []
+    has_link = _has_link(body, app)
+    hashtags = _count_hashtags(body)
+    emoji = _count_emoji(body)
+
+    if channel == "x":
+        items.append({"label": "≤280 chars", "passed": length <= 280, "severity": "error", "note": f"{length}/280"})
+        items.append({"label": "has link", "passed": has_link, "severity": "warn", "note": "X posts benefit from a single CTA link" if not has_link else "ok"})
+        items.append({"label": "hashtags ≤2", "passed": hashtags <= 2, "severity": "warn", "note": f"{hashtags} hashtags — X reads spammy past 2"})
+    elif channel == "instagram":
+        items.append({"label": "has image", "passed": bool(draft.get("images")), "severity": "error", "note": "IG posts require a visual" if not draft.get("images") else "ok"})
+        items.append({"label": "100-2200 chars", "passed": 100 <= length <= 2200, "severity": "warn", "note": f"{length} chars (IG sweet spot is 100-2200)"})
+        items.append({"label": "hashtags 3-10", "passed": 3 <= hashtags <= 10, "severity": "warn", "note": f"{hashtags} hashtags (3-10 is IG sweet spot)"})
+        items.append({"label": "has CTA", "passed": has_link or "download" in body.lower() or "shop" in body.lower(), "severity": "warn", "note": "missing call-to-action" if not has_link else "ok"})
+    elif channel == "tiktok":
+        items.append({"label": "≤2200 chars", "passed": length <= 2200, "severity": "error", "note": f"{length}/2200"})
+        items.append({"label": "has hook", "passed": length > 0 and len(body.split()[0]) >= 3, "severity": "warn", "note": "short hook in first line is critical"})
+    elif channel == "linkedin":
+        items.append({"label": "≤3000 chars", "passed": length <= 3000, "severity": "error", "note": f"{length}/3000"})
+        items.append({"label": "multi-paragraph", "passed": body.count("\n") >= 1, "severity": "warn", "note": "LinkedIn rewards 2-5 short paragraphs"})
+    elif channel == "blog":
+        items.append({"label": "has H2 sections", "passed": "##" in body, "severity": "warn", "note": "outline should include H2s"})
+        items.append({"label": "≤5000 chars", "passed": length <= 5000, "severity": "error", "note": f"{length}/5000"})
+    elif channel == "email":
+        items.append({"label": "has Subject:", "passed": body.lstrip().lower().startswith("subject:"), "severity": "warn", "note": "first line should be Subject: ..."})
+        items.append({"label": "100-1200 chars", "passed": 100 <= length <= 1200, "severity": "warn", "note": f"{length} chars (email sweet spot 100-1200)"})
+    elif channel == "app_store":
+        items.append({"label": "≤170 chars", "passed": length <= 170, "severity": "error", "note": f"{length}/170"})
+        items.append({"label": "conversion-focused", "passed": any(k in body.lower() for k in ("download", "get", "free", "today", "now")), "severity": "warn", "note": "should contain action verb"})
+
+    # Brand-tone signals: cute brands benefit from emoji presence
+    tone = (app.get("tone") or "").lower()
+    if "cute" in tone or "playful" in tone or "warm" in tone:
+        items.append({"label": "has emoji", "passed": emoji >= 1, "severity": "info", "note": f"{emoji} emoji (brand tone calls for warmth)"})
+
+    return items
+
 
 def _char_trigrams(text: str) -> set:
     """Lowercased, whitespace-collapsed character trigrams. Cheap signature."""

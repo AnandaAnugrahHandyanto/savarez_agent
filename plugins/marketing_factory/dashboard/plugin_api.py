@@ -100,6 +100,7 @@ def _status_counts(drafts: list[Dict[str, Any]]) -> Dict[str, int]:
 
 
 def _overview(store: MarketingFactoryStore) -> Dict[str, Any]:
+    from plugins.marketing_factory.pipeline import draft_checklist
     store.initialize()
     apps = store.list_apps()
     drafts = store.list_drafts()
@@ -108,11 +109,22 @@ def _overview(store: MarketingFactoryStore) -> Dict[str, Any]:
     audit = store.list_audit(limit=25)
     state = store.load()
     advisor = _pipe(store).advise()
+    # Cheap per-draft checklist; computed once per overview rather than fetched
+    # per-draft from the client.
+    apps_by_slug = {app["slug"]: app for app in apps}
+    enriched_drafts = []
+    for draft in drafts[-50:]:
+        enriched = dict(draft)
+        owning_app = apps_by_slug.get(draft.get("app_slug"))
+        if owning_app:
+            enriched["_checklist"] = draft_checklist(draft, owning_app)
+        enriched_drafts.append(enriched)
+    drafts_window = enriched_drafts
     return {
         "summary": store.summary(),
         "apps": apps,
         "campaigns": campaigns[-12:],
-        "drafts": drafts[-50:],
+        "drafts": drafts_window,
         "pending_approvals": [draft for draft in drafts if draft.get("status") == "needs_review"],
         "schedules": schedules[:50],
         "publish_events": sorted(state["publish_events"].values(), key=lambda item: item.get("created_at", ""))[-25:],

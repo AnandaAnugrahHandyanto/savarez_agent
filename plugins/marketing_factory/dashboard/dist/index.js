@@ -559,6 +559,19 @@
               ),
               draft.llm_error ? h("div", { className: "mt-2 text-[11px] text-amber-200/90" }, `LLM fallback reason: ${draft.llm_error}`) : null,
               draft.safety && !draft.safety.passed && safetyDetail(draft.safety) ? h("div", { className: "mt-2 text-[11px] text-red-200/90" }, `Safety issues: ${safetyDetail(draft.safety)}`) : null,
+              (Array.isArray(draft._checklist) && draft._checklist.length) ? h("div", { className: "mt-2 flex flex-wrap gap-2 text-[10px]" },
+                draft._checklist.map((check, idx) => {
+                  const icon = check.passed ? "✓" : (check.severity === "error" ? "✗" : "⚠");
+                  const tone = check.passed
+                    ? "border-emerald-300/30 text-emerald-200/80"
+                    : (check.severity === "error" ? "border-red-300/40 text-red-200" : "border-amber-300/40 text-amber-200");
+                  return h("span", {
+                    key: idx,
+                    title: check.note || "",
+                    className: cx("inline-flex items-center gap-1 rounded border px-1.5 py-0.5", tone),
+                  }, h("span", null, icon), h("span", null, check.label));
+                })
+              ) : null,
               h(EditableBody, { draft, busy, run, app: (data?.apps || []).find((a) => a.slug === draft.app_slug) }),
               (Array.isArray(draft.images) && draft.images.length) ? h("div", { className: "mt-3 flex flex-wrap gap-2" },
                 draft.images.filter((img) => img && img.url).map((img, idx) => h("div", {
