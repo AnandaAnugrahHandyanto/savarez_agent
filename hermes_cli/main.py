@@ -235,10 +235,19 @@ except Exception:
 
 # Initialize centralized file logging early — all `hermes` subcommands
 # (chat, setup, gateway, config, etc.) write to agent.log + errors.log.
+# Dashboard entrypoints bootstrap with GUI mode so gui.log is always present
+# during GUI testing, including pre-dispatch startup failures.
 try:
     from hermes_logging import setup_logging as _setup_logging
 
-    _setup_logging(mode="cli")
+    _setup_logging(
+        mode=(
+            "gui"
+            if next((arg for arg in sys.argv[1:] if not arg.startswith("-")), "")
+            == "dashboard"
+            else "cli"
+        )
+    )
 except Exception:
     pass  # best-effort — don't crash the CLI if logging setup fails
 
@@ -1430,6 +1439,26 @@ def _pin_kanban_board_env() -> None:
         pass
 
 
+def _sync_bundled_skills_quietly() -> None:
+    """Seed ``~/.hermes/skills/`` with the bundled skill library on first launch.
+
+    Called from any CLI entrypoint that the user might use as their first
+    interaction with Hermes — chat, dashboard (the desktop GUI's backend),
+    and gateway. The skills_sync module is manifest-based and idempotent:
+    skipped skills cost ~milliseconds, so calling this repeatedly is fine.
+
+    Failures are swallowed because skills are an enhancement, not a hard
+    dependency. Hermes still functions without them; the user just sees an
+    empty skills library.
+    """
+    try:
+        from tools.skills_sync import sync_skills
+
+        sync_skills(quiet=True)
+    except Exception:
+        pass
+
+
 def cmd_chat(args):
     """Run interactive chat CLI."""
     use_tui = getattr(args, "tui", False) or os.environ.get("HERMES_TUI") == "1"
@@ -1532,12 +1561,7 @@ def cmd_chat(args):
         pass
 
     # Sync bundled skills on every CLI launch (fast -- skips unchanged skills)
-    try:
-        from tools.skills_sync import sync_skills
-
-        sync_skills(quiet=True)
-    except Exception:
-        pass
+    _sync_bundled_skills_quietly()
 
     # --yolo: bypass all dangerous command approvals
     if getattr(args, "yolo", False):
@@ -1615,6 +1639,8 @@ def cmd_chat(args):
 
 def cmd_gateway(args):
     """Gateway management commands."""
+    _sync_bundled_skills_quietly()
+
     from hermes_cli.gateway import gateway_command
 
     gateway_command(args)
@@ -6172,12 +6198,16 @@ def _gateway_prompt(prompt_text: str, default: str = "", timeout: float = 300.0)
 def _web_ui_build_needed(web_dir: Path) -> bool:
     """Return True if the web UI dist is missing or stale.
 
-    The Vite build outputs to ``hermes_cli/web_dist/`` (per vite.config.ts
-    outDir: "../hermes_cli/web_dist"), NOT to ``web/dist/``.  Uses the Vite
-    manifest as the sentinel because it is written last and therefore has the
-    newest mtime of any build output.
+    Mirrors the staleness logic used by ``_tui_build_needed()`` for the TUI.
+    The dashboard source lives under ``apps/dashboard/``, but the Vite build
+    still outputs to ``hermes_cli/web_dist/`` (per vite.config.ts
+    outDir: "../hermes_cli/web_dist"), NOT to ``web/dist/``, so Python
+    packaging can continue serving the same static asset directory. Uses the
+    Vite manifest as the sentinel because it is written last and therefore
+    has the newest mtime of any build output.
     """
-    dist_dir = web_dir.parent / "hermes_cli" / "web_dist"
+    project_root = web_dir.parent.parent if web_dir.parent.name == "apps" else web_dir.parent
+    dist_dir = project_root / "hermes_cli" / "web_dist"
     sentinel = dist_dir / ".vite" / "manifest.json"
     if not sentinel.exists():
         sentinel = dist_dir / "index.html"
@@ -6253,7 +6283,7 @@ def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
     """Build the web UI frontend if npm is available.
 
     Args:
-        web_dir: Path to the ``web/`` source directory.
+        web_dir: Path to the dashboard frontend source directory.
         fatal: If True, print error guidance and return False on failure
                instead of a soft warning (used by ``hermes web``).
 
@@ -6281,7 +6311,7 @@ def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
     if not npm:
         if fatal:
             _say("Web UI frontend not built and npm is not available.")
-            _say("Install Node.js, then run:  cd web && npm install && npm run build")
+            _say("Install Node.js, then run:  cd apps/dashboard && npm install && npm run build")
         return not fatal
     _say("→ Building web UI...")
 
@@ -6308,7 +6338,7 @@ def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
         )
         _relay(r1)
         if fatal:
-            _say("  Run manually:  cd web && npm install && npm run build")
+            _say("  Run manually:  cd apps/dashboard && npm install && npm run build")
         return False
     # First attempt
     r2 = subprocess.run(
@@ -6354,7 +6384,7 @@ def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
         )
         _relay(r2)
         if fatal:
-            _say("  Run manually:  cd web && npm install && npm run build")
+            _say("  Run manually:  cd apps/dashboard && npm install && npm run build")
         return False
     _say("  ✓ Web UI built")
     return True
@@ -6796,7 +6826,7 @@ def _update_via_zip(args):
         _install_python_dependencies_with_optional_fallback(pip_cmd)
 
     _update_node_dependencies()
-    _build_web_ui(PROJECT_ROOT / "web")
+    _build_web_ui(PROJECT_ROOT / "apps" / "dashboard")
 
     # Sync skills
     try:
@@ -7865,10 +7895,19 @@ def _update_node_dependencies() -> None:
         # appearing to hang silently for minutes (#18840).  The
         # `_UpdateOutputStream` wrapper installed by the updater mirrors
         # streamed output to ``~/.hermes/logs/update.log`` so nothing is lost.
+        #
+        # The repo root install also passes `--workspaces=false` so npm
+        # does not recursively install every `apps/*` workspace (dashboard,
+        # desktop, shared) — those are installed/built on demand via
+        # `_build_web_ui()` and the desktop launchers.
+        extra_args = ["--no-fund", "--no-audit", "--progress=false"]
+        if path == PROJECT_ROOT:
+            extra_args.append("--workspaces=false")
+
         result = _run_npm_install_deterministic(
             npm,
             path,
-            extra_args=("--no-fund", "--no-audit", "--progress=false"),
+            extra_args=tuple(extra_args),
             capture_output=False,
         )
         if result.returncode == 0:
@@ -8739,7 +8778,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         _refresh_active_lazy_features()
 
         _update_node_dependencies()
-        _build_web_ui(PROJECT_ROOT / "web")
+        _build_web_ui(PROJECT_ROOT / "apps" / "dashboard")
 
         print()
         print("✓ Code updated!")
@@ -10311,6 +10350,14 @@ def cmd_dashboard(args):
         remaining = _find_stale_dashboard_pids()
         sys.exit(1 if remaining else 0)
 
+    # Attach gui.log early so dashboard startup/build failures are captured in
+    # the same logs directory as every other Hermes surface.
+    try:
+        from hermes_logging import setup_logging as _setup_logging_gui
+        _setup_logging_gui(mode="gui")
+    except Exception:
+        pass
+
     try:
         import fastapi  # noqa: F401
         import uvicorn  # noqa: F401
@@ -10325,8 +10372,14 @@ def cmd_dashboard(args):
         print(f"Import error: {e}")
         sys.exit(1)
 
+    # Seed bundled skills on first dashboard launch so the desktop GUI's
+    # skills picker / agent skill discovery sees the bundled library.
+    # cmd_chat does this in its own pre-dispatch block; the dashboard
+    # backend is the desktop's primary entrypoint and needs the same.
+    _sync_bundled_skills_quietly()
+
     if "HERMES_WEB_DIST" not in os.environ and not getattr(args, "skip_build", False):
-        if not _build_web_ui(PROJECT_ROOT / "web", fatal=True):
+        if not _build_web_ui(PROJECT_ROOT / "apps" / "dashboard", fatal=True):
             sys.exit(1)
     elif getattr(args, "skip_build", False):
         # --skip-build trusts the caller to have pre-built the web UI.
@@ -10339,7 +10392,7 @@ def cmd_dashboard(args):
         )
         if not (_dist_root / "index.html").exists():
             print(f"✗ --skip-build was passed but no web dist found at: {_dist_root}")
-            print("  Pre-build first:  cd web && npm install && npm run build")
+            print("  Pre-build first:  cd apps/dashboard && npm install && npm run build")
             print("  Or drop --skip-build to build automatically.")
             sys.exit(1)
         print(f"→ Skipping web UI build (--skip-build); using dist at {_dist_root}")
@@ -13243,7 +13296,7 @@ Examples:
     logs_parser = subparsers.add_parser(
         "logs",
         help="View and filter Hermes log files",
-        description="View, tail, and filter agent.log / errors.log / gateway.log",
+        description="View, tail, and filter agent.log / errors.log / gateway.log / gui.log",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""\
 Examples:
@@ -13251,6 +13304,7 @@ Examples:
     hermes logs -f                 Follow agent.log in real time
     hermes logs errors             Show last 50 lines of errors.log
     hermes logs gateway -n 100     Show last 100 lines of gateway.log
+    hermes logs gui -f             Follow gui.log in real time
     hermes logs --level WARNING    Only show WARNING and above
     hermes logs --session abc123   Filter by session ID
     hermes logs --component tools  Only show tool-related lines
@@ -13263,7 +13317,7 @@ Examples:
         "log_name",
         nargs="?",
         default="agent",
-        help="Log to view: agent (default), errors, gateway, or 'list' to show available files",
+        help="Log to view: agent (default), errors, gateway, gui, or 'list' to show available files",
     )
     logs_parser.add_argument(
         "-n",
@@ -13296,7 +13350,7 @@ Examples:
     logs_parser.add_argument(
         "--component",
         metavar="NAME",
-        help="Filter by component: gateway, agent, tools, cli, cron",
+        help="Filter by component: gateway, agent, tools, cli, cron, gui",
     )
     logs_parser.set_defaults(func=cmd_logs)
 

@@ -1,20 +1,21 @@
 # nix/web.nix — Hermes Web Dashboard (Vite/React) frontend build
 { pkgs, hermesNpmLib, ... }:
 let
-  src = ../web;
+  src = ../apps;
   npmDeps = pkgs.fetchNpmDeps {
     inherit src;
     hash = "sha256-xSsyluzU2lNhwGqB6XMCGMv3QFHZizE6hgUyc1jvyOw=";
   };
 
-  npm = hermesNpmLib.mkNpmPassthru { folder = "web"; attr = "web"; pname = "hermes-web"; };
+  npm = hermesNpmLib.mkNpmPassthru { folder = "apps/dashboard"; attr = "web"; pname = "hermes-web"; };
 
-  packageJson = builtins.fromJSON (builtins.readFile (src + "/package.json"));
+  packageJson = builtins.fromJSON (builtins.readFile (src + "/dashboard/package.json"));
   version = packageJson.version;
 in
 pkgs.buildNpmPackage (npm // {
   pname = "hermes-web";
   inherit src npmDeps version;
+  sourceRoot = "apps/dashboard";
 
   doCheck = false;
 

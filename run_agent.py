@@ -284,45 +284,6 @@ def _qwen_portal_headers() -> dict:
     }
 
 
-class _StreamErrorEvent(Exception):
-    """Synthesized provider error surfaced from a Responses ``error`` SSE frame.
-
-    Some Codex-style Responses backends (xAI for subscription/quota
-    failures, custom relays under malformed-tool-call conditions) emit a
-    standalone ``type=error`` frame instead of routing the failure
-    through ``response.failed`` or returning an HTTP 4xx.  The fallback
-    streaming path raises this exception so ``_summarize_api_error`` and
-    ``_extract_api_error_context`` see a familiar ``.body`` /
-    ``.status_code`` shape and the entitlement detector can match the
-    underlying provider message ("do not have an active Grok
-    subscription", etc.).
-    """
-
-    def __init__(
-        self,
-        message: str,
-        *,
-        code: Optional[str] = None,
-        param: Optional[str] = None,
-        status_code: Optional[int] = None,
-    ) -> None:
-        super().__init__(message)
-        self.message = message
-        self.code = code
-        self.param = param
-        self.status_code = status_code
-        # OpenAI SDK-shaped body so _extract_api_error_context /
-        # _summarize_api_error / classify_api_error all pick it up.
-        self.body: Dict[str, Any] = {
-            "error": {
-                "message": message,
-                "code": code,
-                "param": param,
-                "type": "error",
-            }
-        }
-
-
 class AIAgent:
     """
     AI Agent with tool calling capabilities.
@@ -1391,6 +1352,63 @@ class AIAgent:
         return False
 
     @staticmethod
+    def _decorate_xai_entitlement_error(detail: str) -> str:
+        """Append a neutral hint when xAI's OAuth surface returns the
+        permission-denied 403.
+
+        xAI's ``/v1/responses`` endpoint replies to several distinct failure
+        modes with the SAME body::
+
+            {"code": "The caller does not have permission to execute the
+             specified operation", "error": "You have either run out of
+             available resources or do not have an active Grok subscription.
+             Manage subscriptions at https://grok.com/?_s=usage or subscribe
+             at https://grok.com/supergrok"}
+
+        That body covers several real causes we cannot distinguish without
+        more info from xAI.  The most common (and least obvious) one is
+        that **X Premium+ does NOT include API access** — only standalone
+        SuperGrok subscribers can use Hermes against xai-oauth.  Lots of
+        users see Grok in their X app, assume it works here too, and hit
+        this 403 with no idea why.  Lead the hint with that.
+
+        Other possible causes:
+          * No Grok subscription at all
+          * SuperGrok tier doesn't include the requested model (e.g.
+            grok-4.3 may need a higher tier)
+          * Monthly quota exhausted (the ``?_s=usage`` URL hints at this)
+
+        Surface the raw xAI text verbatim and point at
+        https://grok.com/?_s=usage where the user can see WHICH applies.
+
+        Matched once per detail string — won't double-decorate if the
+        upstream already concatenated the same text.
+        """
+        if not detail:
+            return detail
+        lower = detail.lower()
+        is_entitlement = (
+            "do not have an active grok subscription" in lower
+            or ("out of available resources" in lower and "grok" in lower)
+            or ("does not have permission" in lower and "grok" in lower)
+        )
+        if not is_entitlement:
+            return detail
+        hint = (
+            " — xAI rejected this OAuth account. NOTE: X Premium+ does NOT "
+            "include xAI API access — only standalone SuperGrok subscribers "
+            "can use this provider. Other possible causes: no Grok "
+            "subscription, your tier doesn't include this model, or your "
+            "quota is exhausted. Check https://grok.com/?_s=usage to see "
+            "which, or run `/model` to switch providers."
+        )
+        # Idempotency: detect prior decoration by a substring unique to the
+        # hint (not present in xAI's own body text).
+        if "X Premium+ does NOT include" in detail:
+            return detail
+        return f"{detail}{hint}"
+
+    @staticmethod
     def _summarize_api_error(error: Exception) -> str:
         """Extract a human-readable one-liner from an API error.
 
@@ -1429,12 +1447,12 @@ class AIAgent:
             if msg:
                 status_code = getattr(error, "status_code", None)
                 prefix = f"HTTP {status_code}: " if status_code else ""
-                return f"{prefix}{msg[:300]}"
+                return AIAgent._decorate_xai_entitlement_error(f"{prefix}{msg[:300]}")
 
         # Fallback: truncate the raw string but give more room than 200 chars
         status_code = getattr(error, "status_code", None)
         prefix = f"HTTP {status_code}: " if status_code else ""
-        return f"{prefix}{raw[:500]}"
+        return AIAgent._decorate_xai_entitlement_error(f"{prefix}{raw[:500]}")
 
     def _mask_api_key_for_logs(self, key: Any) -> Optional[str]:
         # Azure Foundry Entra ID bearer providers are callables — never
