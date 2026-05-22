@@ -15438,16 +15438,6 @@ class GatewayRunner:
         from gateway.config import Platform
         import queue
 
-        # Send an immediate typing indicator for WeCom so the user sees
-        # visual feedback before the agent starts processing.
-        if source.platform == Platform.WECOM:
-            _typing_adapter = self.adapters.get(source.platform)
-            if _typing_adapter:
-                try:
-                    await _typing_adapter.send_typing(source.chat_id)
-                except Exception:
-                    pass
-
         def _run_still_current() -> bool:
             if run_generation is None or not session_key:
                 return True

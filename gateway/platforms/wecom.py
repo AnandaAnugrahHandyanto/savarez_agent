@@ -466,23 +466,6 @@ class WeComAdapter(BasePlatformAdapter):
         finally:
             self._pending_responses.pop(normalized_req_id, None)
 
-    def _find_active_stream(self, chat_id: str) -> Optional[str]:
-        """Return the active stream_id for a chat, or None."""
-        if chat_id not in self._streaming_active_chats:
-            return None
-        # Find a stream_id whose reply context matches this chat.
-        # In practice there's at most one active stream per chat.
-        for stream_id, reply_req_id in self._streaming_replies.items():
-            # The _last_chat_req_ids maps chat→req_id; if this reply's
-            # context matches, it belongs to this chat.
-            if self._last_chat_req_ids.get(chat_id) == reply_req_id:
-                return stream_id
-        # Fallback: if only one stream is active and one chat is active,
-        # they must be the same.
-        if len(self._streaming_replies) == 1:
-            return next(iter(self._streaming_replies))
-        return None
-
     async def _send_reply_stream(
         self,
         reply_req_id: str,
@@ -1415,30 +1398,17 @@ class WeComAdapter(BasePlatformAdapter):
                 reply_req_id = self._last_chat_req_ids[chat_id]
 
             if reply_req_id and streaming_preview:
-                # If send_typing() already opened a streaming bubble for this
-                # chat, reuse that bubble instead of opening a second one.
-                existing_stream_id = self._find_active_stream(chat_id)
-                if existing_stream_id:
-                    # Send the first content frame into the existing bubble.
-                    response = await self._send_reply_stream(
-                        self._streaming_replies[existing_stream_id],
-                        existing_stream_id,
-                        content,
-                        finish=False,
-                    )
-                    message_id = existing_stream_id
-                else:
-                    # Open a new streaming bubble.
-                    stream_id = self._new_req_id("stream")
-                    response = await self._send_reply_stream(
-                        reply_req_id,
-                        stream_id,
-                        content,
-                        finish=False,
-                    )
-                    self._streaming_replies[stream_id] = reply_req_id
-                    self._streaming_active_chats.add(chat_id)
-                    message_id = stream_id
+                # Open a new streaming bubble for progressive updates.
+                stream_id = self._new_req_id("stream")
+                response = await self._send_reply_stream(
+                    reply_req_id,
+                    stream_id,
+                    content,
+                    finish=False,
+                )
+                self._streaming_replies[stream_id] = reply_req_id
+                self._streaming_active_chats.add(chat_id)
+                message_id = stream_id
             elif reply_req_id:
                 response = await self._send_reply_markdown(reply_req_id, content)
                 message_id = self._payload_req_id(response) or uuid.uuid4().hex[:12]
@@ -1561,31 +1531,15 @@ class WeComAdapter(BasePlatformAdapter):
         )
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
-        """Open a WeCom streaming bubble as a typing indicator.
+        """No-op for WeCom.
 
-        Sends an empty ``aibot_respond_msg`` with ``finish=False`` so the
-        WeCom client displays an animated typing indicator immediately.  The
-        stream consumer's first ``send()`` with ``streaming_preview`` will
-        detect the active streaming state and reuse the bubble.
+        WeCom's native streaming bubble has a server-side idle timeout.
+        Opening one too early (before the agent produces content) risks
+        it expiring during long tool-calling runs, resulting in a stuck
+        typing indicator that never shows content.  The stream consumer
+        opens a fresh bubble on-demand when actual content arrives.
         """
-        del metadata
-        if chat_id in self._streaming_active_chats:
-            return  # Already have an active streaming bubble
-
-        reply_req_id = self._reply_req_id_for_message(None)
-        if not reply_req_id and chat_id in self._last_chat_req_ids:
-            reply_req_id = self._last_chat_req_ids[chat_id]
-        if not reply_req_id:
-            return  # No inbound reply context available
-
-        stream_id = self._new_req_id("typing")
-        try:
-            await self._send_reply_stream(reply_req_id, stream_id, "", finish=False)
-            self._streaming_replies[stream_id] = reply_req_id
-            self._streaming_active_chats.add(chat_id)
-            logger.debug("[%s] Opened typing bubble %s for chat %s", self.name, stream_id, chat_id)
-        except Exception as exc:
-            logger.debug("[%s] send_typing failed for chat %s: %s", self.name, chat_id, exc)
+        pass
 
     async def edit_message(
         self,
