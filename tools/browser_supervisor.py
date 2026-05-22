@@ -26,7 +26,6 @@ import logging
 import threading
 import time
 from dataclasses import dataclass
-from urllib.parse import urlparse
 from typing import Any, Dict, List, Optional, Tuple
 
 import websockets
@@ -100,8 +99,14 @@ _DIALOG_BRIDGE_SCRIPT = r"""
       }
       return null;
     } catch (e) {
-      // If the bridge is unreachable, fall back to the native call so the
-      // page still sees *some* behavior (the backend will auto-dismiss).
+      // Bridge unreachable — fall back to native dialog. On Chrome that
+      // auto-dismisses (Browserbase, some headed configs) the native dialog
+      // fires and closes immediately; the supervisor's recent_dialogs will
+      // show it. On Chrome that keeps dialogs open, the supervisor surfaces
+      // it via the native-dialog path as a pending dialog.
+      if (kind === "alert")   { realAlert(message); return undefined; }
+      if (kind === "confirm") return realConfirm(message);
+      if (kind === "prompt")  return realPrompt(message, defaultPrompt);
       return null;
     }
   }
@@ -705,14 +710,7 @@ class CDPSupervisor:
         # a synchronous XHR we intercept via Fetch domain. This is how we make
         # dialog response work on Browserbase (whose CDP proxy auto-dismisses
         # real native dialogs before we can call handleJavaScriptDialog).
-        # Skip on local CDP — native dialogs fire correctly there.
-        if not self._is_local_cdp():
-            await self._install_dialog_bridge(self._page_session_id)
-
-    def _is_local_cdp(self) -> bool:
-        """Return True if CDP URL targets localhost or a loopback address."""
-        host = urlparse(self.cdp_url).hostname or ""
-        return host in ("localhost", "127.0.0.1", "::1")
+        await self._install_dialog_bridge(self._page_session_id)
 
     async def _install_dialog_bridge(self, session_id: str) -> None:
         """Install the dialog-bridge init script + Fetch interceptor on a session.
@@ -1264,9 +1262,7 @@ class CDPSupervisor:
         except Exception as e:
             logger.debug("child session %s setup failed: %s", sid[:16], e)
         # Install the dialog bridge on the child so iframe dialogs are captured.
-        # Skip on local CDP — native dialogs fire correctly there.
-        if not self._is_local_cdp():
-            await self._install_dialog_bridge(sid)
+        await self._install_dialog_bridge(sid)
 
     def _on_target_detached(self, params: Dict[str, Any]) -> None:
         """Handle a child CDP session detaching.

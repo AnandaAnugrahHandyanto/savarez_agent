@@ -538,8 +538,7 @@ def test_bridge_captures_prompt_and_returns_reply_text(chrome_cdp, supervisor_re
                         break
                     await _asyncio.sleep(0.05)
                 assert dialog is not None, "no dialog captured"
-                # On local CDP the bridge is skipped (native dialogs work);
-                # on Browserbase/cloud the bridge path is used. Both are valid.
+                assert dialog.bridge_request_id is not None, "expected bridge path"
                 assert dialog.type == "prompt"
 
                 # Agent responds
