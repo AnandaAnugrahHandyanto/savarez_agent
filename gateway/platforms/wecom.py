@@ -473,17 +473,28 @@ class WeComAdapter(BasePlatformAdapter):
         content: str,
         *,
         finish: bool = True,
-    ) -> Dict[str, Any]:
+    ) -> None:
         """Send a native WeCom streaming reply via ``aibot_respond_msg``.
 
         WeCom associates progressive updates with the combination of inbound
         ``req_id`` and a stable ``stream.id``.  The first ``finish=False``
         frame creates the streaming bubble, later frames refresh it, and the
         final ``finish=True`` frame closes it.
+
+        Streaming frames are fire-and-forget: we send the JSON over the
+        WebSocket but do NOT await WeCom's ACK response.  This avoids a race
+        condition where concurrent streaming sends (tool progress + response
+        content) clobber each other's pending-response futures — they all
+        share the same inbound ``req_id``, making 1:1 request-response
+        correlation impossible for streaming.
         """
-        response = await self._send_reply_request(
-            reply_req_id,
-            {
+        normalized_req_id = str(reply_req_id or "").strip()
+        if not normalized_req_id:
+            raise ValueError("reply_req_id is required for streaming")
+        await self._send_json({
+            "cmd": APP_CMD_RESPONSE,
+            "headers": {"req_id": normalized_req_id},
+            "body": {
                 "msgtype": "stream",
                 "stream": {
                     "id": stream_id,
@@ -491,9 +502,7 @@ class WeComAdapter(BasePlatformAdapter):
                     "content": content[:self.MAX_MESSAGE_LENGTH],
                 },
             },
-        )
-        self._raise_for_wecom_error(response, "send reply stream")
-        return response
+        })
 
     @staticmethod
     def _new_req_id(prefix: str) -> str:
@@ -1399,8 +1408,9 @@ class WeComAdapter(BasePlatformAdapter):
 
             if reply_req_id and streaming_preview:
                 # Open a new streaming bubble for progressive updates.
+                # Fire-and-forget: _send_reply_stream does not await ACK.
                 stream_id = self._new_req_id("stream")
-                response = await self._send_reply_stream(
+                await self._send_reply_stream(
                     reply_req_id,
                     stream_id,
                     content,
@@ -1408,7 +1418,7 @@ class WeComAdapter(BasePlatformAdapter):
                 )
                 self._streaming_replies[stream_id] = reply_req_id
                 self._streaming_active_chats.add(chat_id)
-                message_id = stream_id
+                return SendResult(success=True, message_id=stream_id)
             elif reply_req_id:
                 response = await self._send_reply_markdown(reply_req_id, content)
                 message_id = self._payload_req_id(response) or uuid.uuid4().hex[:12]
@@ -1554,6 +1564,9 @@ class WeComAdapter(BasePlatformAdapter):
         The ``message_id`` is the stream_id returned by ``send()`` when it
         opened the streaming bubble.  Progressive edits use ``finish=False``;
         the final edit uses ``finish=True`` to close the bubble.
+
+        Fire-and-forget: does not await WeCom's ACK to avoid race conditions
+        when progress and response streams send concurrently.
         """
         reply_req_id = self._streaming_replies.get(message_id)
         if not reply_req_id:
@@ -1570,8 +1583,6 @@ class WeComAdapter(BasePlatformAdapter):
                 self._streaming_replies.pop(message_id, None)
                 self._streaming_active_chats.discard(chat_id)
             return SendResult(success=True, message_id=message_id)
-        except asyncio.TimeoutError:
-            return SendResult(success=False, error="Timeout editing streaming reply")
         except Exception as exc:
             # On error, clean up streaming state to avoid stuck bubbles
             self._streaming_replies.pop(message_id, None)
