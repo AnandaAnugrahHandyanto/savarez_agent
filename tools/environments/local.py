@@ -231,6 +231,22 @@ def _find_bash() -> str:
     if custom and os.path.isfile(custom):
         return custom
 
+    def _is_wsl_bash_stub(candidate: str | None) -> bool:
+        if not candidate:
+            return False
+        try:
+            resolved = os.path.normcase(os.path.abspath(candidate))
+        except (OSError, ValueError):
+            resolved = os.path.normcase(str(candidate))
+        windir = os.path.normcase(os.environ.get("WINDIR", r"C:\Windows"))
+        local_appdata = os.path.normcase(os.environ.get("LOCALAPPDATA", ""))
+        wsl_paths = [os.path.join(windir, "system32", "bash.exe")]
+        if local_appdata:
+            wsl_paths.append(
+                os.path.join(local_appdata, "microsoft", "windowsapps", "bash.exe")
+            )
+        return any(resolved == os.path.normcase(path) for path in wsl_paths)
+
     # Prefer our own portable Git install first — this way a broken or
     # partially-uninstalled system Git can't hijack the bash lookup.  The
     # install.ps1 installer always drops portable Git here when the user
@@ -250,10 +266,6 @@ def _find_bash() -> str:
             if os.path.isfile(candidate):
                 return candidate
 
-    found = shutil.which("bash")
-    if found:
-        return found
-
     for candidate in (
         os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), "Git", "bin", "bash.exe"),
         os.path.join(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"), "Git", "bin", "bash.exe"),
@@ -261,6 +273,10 @@ def _find_bash() -> str:
     ):
         if candidate and os.path.isfile(candidate):
             return candidate
+
+    found = shutil.which("bash")
+    if found and not _is_wsl_bash_stub(found):
+        return found
 
     raise RuntimeError(
         "Git Bash not found. Hermes Agent requires Git for Windows on Windows.\n"

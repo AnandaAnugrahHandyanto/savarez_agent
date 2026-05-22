@@ -26,6 +26,7 @@ import pytest
 from tools.environments import local as local_mod
 from tools.environments.local import (
     LocalEnvironment,
+    _find_bash,
     _msys_to_windows_path,
     _resolve_safe_cwd,
 )
@@ -70,6 +71,41 @@ class TestMsysToWindowsPath:
     def test_empty_string(self, monkeypatch):
         monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
         assert _msys_to_windows_path("") == ""
+
+
+class TestFindBashWindows:
+    def test_prefers_git_bash_over_wsl_bash_on_path(self, monkeypatch):
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        monkeypatch.setenv("ProgramFiles", r"C:\Program Files")
+        monkeypatch.delenv("HERMES_GIT_BASH_PATH", raising=False)
+        monkeypatch.delenv("LOCALAPPDATA", raising=False)
+        monkeypatch.setattr(
+            local_mod.shutil,
+            "which",
+            lambda name: r"C:\Windows\System32\bash.EXE" if name == "bash" else None,
+        )
+        monkeypatch.setattr(
+            local_mod.os.path,
+            "isfile",
+            lambda path: path == r"C:\Program Files\Git\bin\bash.exe",
+        )
+
+        assert _find_bash() == r"C:\Program Files\Git\bin\bash.exe"
+
+    def test_rejects_wsl_bash_stub_when_git_bash_missing(self, monkeypatch):
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        monkeypatch.setenv("WINDIR", r"C:\Windows")
+        monkeypatch.setenv("LOCALAPPDATA", r"C:\Users\alice\AppData\Local")
+        monkeypatch.delenv("HERMES_GIT_BASH_PATH", raising=False)
+        monkeypatch.setattr(
+            local_mod.shutil,
+            "which",
+            lambda name: r"C:\Windows\System32\bash.exe" if name == "bash" else None,
+        )
+        monkeypatch.setattr(local_mod.os.path, "isfile", lambda path: False)
+
+        with pytest.raises(RuntimeError, match="Git Bash not found"):
+            _find_bash()
 
 
 # ---------------------------------------------------------------------------
