@@ -1,4 +1,4 @@
-import { useApp, useHasSelection, useSelection, useStdout, useTerminalTitle, type ScrollBoxHandle } from '@hermes/ink'
+import { type ScrollBoxHandle, useApp, useHasSelection, useSelection, useStdout, useTerminalTitle } from '@hermes/ink'
 import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
@@ -16,6 +16,7 @@ import type {
 } from '../gatewayTypes.js'
 import { useGitBranch } from '../hooks/useGitBranch.js'
 import { useVirtualHistory } from '../hooks/useVirtualHistory.js'
+import { translate, type TranslationKey, useI18n } from '../i18n/index.js'
 import { composerPromptWidth } from '../lib/inputMetrics.js'
 import { appendTranscriptMessage } from '../lib/messages.js'
 import { DEFAULT_VOICE_RECORD_KEY, isMac, type ParsedVoiceRecordKey } from '../lib/platform.js'
@@ -111,6 +112,8 @@ export function useMainApp(gw: GatewayClient) {
   const [bellOnComplete, setBellOnComplete] = useState(false)
 
   const ui = useStore($uiState)
+  const i18n = useI18n()
+  const ti = useCallback((key: TranslationKey, vars?: Record<string, string | number>) => translate(ui.locale, key, vars), [ui.locale])
   const overlay = useStore($overlayState)
 
   const turnLiveTailActive = useTurnSelector(state =>
@@ -196,7 +199,7 @@ export function useMainApp(gw: GatewayClient) {
     gw,
     onClipboardPaste: quiet => clipboardPasteRef.current(quiet),
     onImageAttached: info => {
-      sys(attachedImageNotice(info))
+      sys(attachedImageNotice(info, ui.locale))
     },
     submitRef
   })
@@ -328,10 +331,10 @@ export function useMainApp(gw: GatewayClient) {
       const warning = (value as { warning?: unknown } | null)?.warning
 
       if (typeof warning === 'string' && warning) {
-        sys(`warning: ${warning}`)
+        sys(ti('common.warning') + `: ${warning}`)
       }
     },
-    [sys]
+    [sys, ti]
   )
 
   const maybeGoodVibes = useCallback((text: string) => {
@@ -352,7 +355,7 @@ export function useMainApp(gw: GatewayClient) {
           return result
         }
 
-        sys(`error: invalid response: ${method}`)
+        sys(ti('errors.invalidResponse', { method }))
       } catch (e) {
         sys(`error: ${rpcErrorMessage(e)}`)
       }
@@ -469,7 +472,7 @@ export function useMainApp(gw: GatewayClient) {
           appendMessage({ role: 'user', text: answer })
           patchUiState({ status: 'running…' })
         } else {
-          sys('prompt cancelled')
+          sys(ti('input.promptCancelled'))
         }
 
         patchOverlayState({ clarify: null })
@@ -486,13 +489,13 @@ export function useMainApp(gw: GatewayClient) {
         }
 
         if (r.attached) {
-          const meta = imageTokenMeta(r)
+          const meta = imageTokenMeta(r, ui.locale)
 
-          return sys(`📎 Image #${r.count} attached from clipboard${meta ? ` · ${meta}` : ''}`)
+          return sys(ti('image.attached', { count: String(r.count), meta: meta ? ` · ${meta}` : '' }))
         }
 
         if (!quiet) {
-          sys(r.message || 'No image found in clipboard')
+          sys(r.message || ti('paste.noImage'))
         }
       }),
     [rpc, sys]
@@ -610,7 +613,7 @@ export function useMainApp(gw: GatewayClient) {
       turnController.reset()
       patchUiState({ busy: false, sid: null, status: 'gateway exited' })
       turnController.pushActivity('gateway exited · /logs to inspect', 'error')
-      sys('error: gateway exited')
+      sys(ti('errors.gatewayExited'))
     }
 
     gw.on('event', handler)
@@ -827,7 +830,11 @@ export function useMainApp(gw: GatewayClient) {
       turnStartedAt: ui.sid ? turnStartedAt : null,
       // CLI parity: the classic prompt_toolkit status bar shows a red dot
       // on REC (cli.py:_get_voice_status_fragments line 2344).
-      voiceLabel: voiceRecording ? '● REC' : voiceProcessing ? '◉ STT' : `voice ${voiceEnabled ? 'on' : 'off'}`
+      voiceLabel: voiceRecording
+        ? '● REC'
+        : voiceProcessing
+          ? '◉ STT'
+          : i18n.t('voice.idle', { state: voiceEnabled ? i18n.t('voice.on') : i18n.t('voice.off') })
     }),
     [
       cwd,
@@ -839,7 +846,8 @@ export function useMainApp(gw: GatewayClient) {
       ui,
       voiceEnabled,
       voiceProcessing,
-      voiceRecording
+      voiceRecording,
+      i18n
     ]
   )
 

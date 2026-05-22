@@ -4,6 +4,7 @@ import unicodeSpinners from 'unicode-animations'
 
 import { artWidth, caduceus, CADUCEUS_WIDTH, logo, LOGO_WIDTH } from '../banner.js'
 import { flat } from '../lib/text.js'
+import { toolsetLabel, useI18n } from '../i18n/index.js'
 import type { Theme } from '../theme.js'
 import type { PanelSection, SessionInfo } from '../types.js'
 
@@ -40,6 +41,7 @@ export function ArtLines({ lines }: { lines: [string, string][] }) {
 }
 
 export function Banner({ t }: { t: Theme }) {
+  const { t: ti } = useI18n()
   const cols = useStdout().stdout?.columns ?? 80
   const logoLines = logo(t.color, t.bannerLogo || undefined)
 
@@ -53,7 +55,7 @@ export function Banner({ t }: { t: Theme }) {
         </Text>
       )}
 
-      <Text color={t.color.muted}>{t.brand.icon} Nous Research · Messenger of the Digital Gods</Text>
+      <Text color={t.color.muted}>{t.brand.icon} {ti('branding.tagline')}</Text>
     </Box>
   )
 }
@@ -97,6 +99,7 @@ const SKILLS_MAX = 8
 const TOOLSETS_MAX = 8
 
 export function SessionPanel({ info, sid, t }: SessionPanelProps) {
+  const { t: ti, locale } = useI18n()
   const cols = useStdout().stdout?.columns ?? 100
   const heroLines = caduceus(t.color, t.bannerHero || undefined)
   const leftW = Math.min((artWidth(heroLines) || CADUCEUS_WIDTH) + 4, Math.floor(cols * 0.4))
@@ -136,7 +139,7 @@ export function SessionPanel({ info, sid, t }: SessionPanelProps) {
 
   const skillsBody = () => {
     if (info.lazy && skillEntries.length === 0) {
-      return <InlineLoader label="scanning skills" t={t} />
+      return <InlineLoader label={ti('branding.scanningSkills')} t={t} />
     }
 
     const shown = skillEntries.slice(0, SKILLS_MAX)
@@ -151,7 +154,7 @@ export function SessionPanel({ info, sid, t }: SessionPanelProps) {
           </Text>
         ))}
         {overflow > 0 && (
-          <Text color={t.color.muted}>(and {overflow} more categories…)</Text>
+          <Text color={t.color.muted}>{ti('branding.moreCategories', { count: String(overflow) })}</Text>
         )}
       </>
     )
@@ -169,12 +172,12 @@ export function SessionPanel({ info, sid, t }: SessionPanelProps) {
       <>
         {shown.map(([k, vs]) => (
           <Text key={k} wrap="truncate">
-            <Text color={t.color.muted}>{strip(k)}: </Text>
-            <Text color={t.color.text}>{truncLine(strip(k) + ': ', vs)}</Text>
+            <Text color={t.color.muted}>{toolsetLabel(k, locale)}: </Text>
+            <Text color={t.color.text}>{truncLine(toolsetLabel(k, locale) + ': ', vs)}</Text>
           </Text>
         ))}
         {overflow > 0 && (
-          <Text color={t.color.muted}>(and {overflow} more toolsets…)</Text>
+          <Text color={t.color.muted}>{ti('branding.moreToolsets', { count: String(overflow) })}</Text>
         )}
       </>
     )
@@ -190,10 +193,10 @@ export function SessionPanel({ info, sid, t }: SessionPanelProps) {
           <Text color={t.color.muted}>: </Text>
           {s.connected ? (
             <Text color={t.color.text}>
-              {s.tools} tool{s.tools === 1 ? '' : 's'}
+              {ti('branding.tools', { count: String(s.tools) })}
             </Text>
           ) : (
-            <Text color={t.color.error}>failed</Text>
+            <Text color={t.color.error}>{ti('branding.mcpFailed')}</Text>
           )}
         </Text>
       ))}
@@ -205,7 +208,7 @@ export function SessionPanel({ info, sid, t }: SessionPanelProps) {
 
   const systemBody = () => {
     if (sysPromptLen === 0) {
-      return <Text color={t.color.muted}>No system prompt loaded.</Text>
+      return <Text color={t.color.muted}>{ti('branding.noSystemPrompt')}</Text>
     }
 
     return (
@@ -224,7 +227,7 @@ export function SessionPanel({ info, sid, t }: SessionPanelProps) {
 
           <Text color={t.color.accent}>
             {info.model.split('/').pop()}
-            <Text color={t.color.muted}> · Nous Research</Text>
+            <Text color={t.color.muted}>{ti('branding.nousResearch')}</Text>
           </Text>
 
           <Text color={t.color.muted} wrap="truncate-end">
@@ -233,7 +236,7 @@ export function SessionPanel({ info, sid, t }: SessionPanelProps) {
 
           {sid && (
             <Text>
-              <Text color={t.color.sessionLabel}>Session: </Text>
+              <Text color={t.color.sessionLabel}>{ti('branding.session')}</Text>
               <Text color={t.color.sessionBorder}>{sid}</Text>
             </Text>
           )}
@@ -255,7 +258,7 @@ export function SessionPanel({ info, sid, t }: SessionPanelProps) {
             onToggle={() => setToolsOpen(v => !v)}
             open={toolsOpen}
             t={t}
-            title="Available Tools"
+            title={ti('branding.availableTools')}
           />
           {toolsOpen && toolsBody()}
         </Box>
@@ -266,9 +269,9 @@ export function SessionPanel({ info, sid, t }: SessionPanelProps) {
             count={skillsTotal}
             onToggle={() => setSkillsOpen(v => !v)}
             open={skillsOpen}
-            suffix={skillsCatCount > 0 ? `in ${skillsCatCount} categor${skillsCatCount === 1 ? 'y' : 'ies'}` : undefined}
+            suffix={skillsCatCount > 0 ? ti('branding.skillsInCategories', { count: String(skillsCatCount) }) : undefined}
             t={t}
-            title="Available Skills"
+            title={ti('branding.availableSkills')}
           />
           {skillsOpen && skillsBody()}
         </Box>
@@ -279,9 +282,9 @@ export function SessionPanel({ info, sid, t }: SessionPanelProps) {
             <CollapseToggle
               onToggle={() => setSystemOpen(v => !v)}
               open={systemOpen}
-              suffix={`— ${sysPromptLen.toLocaleString()} chars`}
+              suffix={ti('branding.chars', { count: sysPromptLen.toLocaleString() })}
               t={t}
-              title="System Prompt"
+              title={ti('branding.systemPrompt')}
             />
             {systemOpen && systemBody()}
           </Box>
@@ -294,9 +297,9 @@ export function SessionPanel({ info, sid, t }: SessionPanelProps) {
               count={info.mcp_servers.length}
               onToggle={() => setMcpOpen(v => !v)}
               open={mcpOpen}
-              suffix="connected"
+              suffix={ti('branding.mcpConnected')}
               t={t}
-              title="MCP Servers"
+              title={ti('branding.mcpServers')}
             />
             {mcpOpen && mcpBody()}
           </Box>
@@ -305,26 +308,29 @@ export function SessionPanel({ info, sid, t }: SessionPanelProps) {
         <Text />
 
         <Text color={t.color.text}>
-          {toolsTotal} tools{' · '}
-          {skillsTotal} skills
-          {info.mcp_servers?.length ? ` · ${info.mcp_servers.length} MCP` : ''}
-          {' · '}
-          <Text color={t.color.muted}>/help for commands</Text>
+          {ti('branding.summary', {
+            tools: String(toolsTotal),
+            skills: String(skillsTotal),
+            mcp: info.mcp_servers?.length ? ti('branding.mcpSummary', { count: String(info.mcp_servers.length) }) : ''
+          })}
         </Text>
 
         {typeof info.update_behind === 'number' && info.update_behind > 0 && (
           <Text bold color={t.color.warn}>
-            ! {info.update_behind} {info.update_behind === 1 ? 'commit' : 'commits'} behind
+            {ti('branding.updateBehind', {
+              count: String(info.update_behind),
+              commits: info.update_behind === 1 ? ti('branding.commitsSingular') : ti('branding.commitsPlural')
+            })}
             <Text bold={false} color={t.color.warn} dimColor>
               {' '}
-              - run{' '}
+              {ti('branding.updateRun')}
             </Text>
             <Text bold color={t.color.warn}>
               {info.update_command || 'hermes update'}
             </Text>
             <Text bold={false} color={t.color.warn} dimColor>
               {' '}
-              to update
+              {ti('branding.updateTo')}
             </Text>
           </Text>
         )}
