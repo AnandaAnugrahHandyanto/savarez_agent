@@ -279,8 +279,10 @@ def test_load_cron_protected_returns_none_when_symbol_missing(
     c = curator_env["curator"]
 
     # Inject a fake cron.jobs module without get_active_skill_refs.
+    import cron
     fake_mod = types.ModuleType("cron.jobs")
     monkeypatch.setitem(sys.modules, "cron.jobs", fake_mod)
+    monkeypatch.setattr(cron, "jobs", fake_mod, raising=False)  # restore parent attr too
 
     with caplog.at_level(logging.WARNING, logger="agent.curator"):
         result = c._load_cron_protected()

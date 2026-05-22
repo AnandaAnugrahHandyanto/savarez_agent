@@ -256,7 +256,8 @@ def should_run_now(now: Optional[datetime] = None) -> bool:
 def _load_cron_protected() -> Optional[Set[str]]:
     """Return skill names referenced by enabled cron jobs, or None on error.
 
-    Empty set  — cron not installed; no jobs exist, no protection needed.
+    Empty set  — no protected skills (cron absent, or installed with no
+                 enabled jobs that reference a skill).
     None       — cron store unreadable; caller must skip auto-archive
                  transitions (fail-closed) rather than proceed unprotected.
     """
