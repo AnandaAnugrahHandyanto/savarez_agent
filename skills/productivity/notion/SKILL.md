@@ -437,6 +437,32 @@ Headings 5/6 collapse to H4. Multiple `>` lines render as separate quote blocks 
 | One-off API exploration | `ntn api ...` | curl |
 | Build a sync / webhook / agent tool hosted by Notion | `ntn workers ...` | WSL2 + `ntn workers ...` |
 
+## Architecture & Execution Model
+
+This skill operates at the command layer. It tells Hermes how to use the
+terminal environment to call Notion's public interfaces, primarily via `ntn`
+where available and via direct `curl` HTTP requests everywhere else.
+
+It does not rely on a dedicated Python backend tool within `tools/`. The
+integration is skill-level guidance plus shell/API execution rather than a
+registry-backed native tool.
+
+Execution modes include:
+
+1. Terminal-driven Notion CLI calls via `ntn`
+2. Terminal-driven API calls via `curl`
+3. LLM-guided command generation from the examples in this skill
+4. Optional piping to utilities like `jq` for structured output
+
+If future updates introduce a native Python tool or require an MCP-based
+connector for Notion, update this section to reflect the new execution model.
+
+This section clarifies the distinction between:
+
+- Skill-level integrations (prompt + shell command execution)
+- Native tool-level integrations (Python registry tools)
+- MCP integrations (external server-backed tools wired through Hermes MCP)
+
 ## Notes
 
 - Page/database IDs are UUIDs (with or without dashes — both accepted).
