@@ -115,14 +115,6 @@ def _safe_env_for_worker(task, workspace: str, cfg: CodexLaneConfig, *, board: O
         "SSL_CERT_FILE",
         "REQUESTS_CA_BUNDLE",
         "CURL_CA_BUNDLE",
-        "HTTP_PROXY",
-        "HTTPS_PROXY",
-        "ALL_PROXY",
-        "NO_PROXY",
-        "http_proxy",
-        "https_proxy",
-        "all_proxy",
-        "no_proxy",
         "HERMES_HOME",
         "HERMES_KANBAN_HOME",
         "CODEX_HOME",
@@ -182,14 +174,6 @@ def _safe_env_for_codex(workspace: Optional[str] = None) -> dict[str, str]:
         "SSL_CERT_FILE",
         "REQUESTS_CA_BUNDLE",
         "CURL_CA_BUNDLE",
-        "HTTP_PROXY",
-        "HTTPS_PROXY",
-        "ALL_PROXY",
-        "NO_PROXY",
-        "http_proxy",
-        "https_proxy",
-        "all_proxy",
-        "no_proxy",
         "CODEX_HOME",
         "XDG_CONFIG_HOME",
         "XDG_CACHE_HOME",
@@ -281,6 +265,7 @@ def spawn_codex_worker(
             stderr=subprocess.STDOUT,
             env=env,
             start_new_session=True,
+            close_fds=True,
         )
     finally:
         log_f.close()
@@ -419,7 +404,7 @@ def _run_git(args: list[str], workspace: str, *, timeout: float = 5.0) -> str:
             timeout=timeout,
             check=False,
         )
-        out = (proc.stdout or "").strip()
+        out = (proc.stdout or "").rstrip("\r\n")
         err = (proc.stderr or "").strip()
         return out if out else err
     except Exception as exc:
@@ -701,6 +686,7 @@ def run_codex_worker(
                 text=True,
                 bufsize=1,
                 env=_safe_env_for_codex(workspace),
+                close_fds=True,
             )
         except OSError as exc:
             msg = f"failed to start codex: {exc}"

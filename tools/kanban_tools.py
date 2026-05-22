@@ -612,6 +612,28 @@ def _handle_plan_review(args: dict, **kw) -> str:
         return tool_error(test_error)
     if not include_review and not include_test:
         return tool_error("at least one of include_review/include_test must be true")
+    dispatch, dispatch_error = _parse_bool_arg(
+        args,
+        "dispatch",
+        default=False,
+    )
+    if dispatch_error:
+        return tool_error(dispatch_error)
+    dry_run, dry_run_error = _parse_bool_arg(
+        args,
+        "dry_run",
+        default=False,
+    )
+    if dry_run_error:
+        return tool_error(dry_run_error)
+    dispatch_max, dispatch_max_error = _parse_positive_int_arg(
+        args,
+        "dispatch_max",
+        default=None,
+        maximum=64,
+    )
+    if dispatch_max_error:
+        return tool_error(dispatch_max_error)
     board = args.get("board")
     try:
         kb, conn = _connect(board=board)
@@ -626,7 +648,22 @@ def _handle_plan_review(args: dict, **kw) -> str:
                 created_by=str(args.get("created_by") or "hermes-review-planner"),
                 board=board,
             )
-            return json.dumps(plan.to_dict())
+            payload = plan.to_dict()
+            if dispatch:
+                followup_ids = [
+                    task_id
+                    for task_id in (plan.review_task_id, plan.test_task_id)
+                    if task_id
+                ]
+                result = kb.dispatch_once(
+                    conn,
+                    dry_run=dry_run,
+                    max_spawn=dispatch_max,
+                    only_task_ids=followup_ids,
+                    board=board,
+                )
+                payload["dispatch"] = result.to_dict()
+            return json.dumps(payload)
         finally:
             conn.close()
     except ValueError as e:
@@ -1299,6 +1336,21 @@ KANBAN_PLAN_REVIEW_SCHEMA = {
             "created_by": {
                 "type": "string",
                 "description": "created_by value for planned follow-up tasks.",
+            },
+            "dispatch": {
+                "type": "boolean",
+                "description": (
+                    "When true, immediately run one dispatcher pass scoped "
+                    "only to the planned review/test follow-up task ids."
+                ),
+            },
+            "dry_run": {
+                "type": "boolean",
+                "description": "With dispatch=true, report spawns without claiming tasks.",
+            },
+            "dispatch_max": {
+                "type": "integer",
+                "description": "With dispatch=true, cap follow-up spawns. Max 64.",
             },
             "board": _board_schema_prop(),
         },

@@ -208,6 +208,18 @@ hermes kanban progress <implementation_task_id> --children --json
 
 This gives the main agent and dashboard a compact view of whether review and test workers are still ready, running, blocked, or done without interrupting any worker process.
 
+Controllers that want to start those workers immediately can ask the planner to
+run one dispatcher pass scoped only to the planned follow-up task ids:
+
+```bash
+hermes kanban plan-review <implementation_task_id> --dispatch --json
+```
+
+The equivalent tool flag is `kanban_plan_review(dispatch=true)`, and the
+dashboard/API accepts `{"dispatch": true}` on
+`POST /api/plugins/kanban/tasks/<task_id>/plan-review`. This scoped dispatch
+does not pick unrelated ready cards from the board.
+
 Approval is gated once follow-ups are planned. `hermes kanban review <task_id> approve` refuses to mark the implementation task done until every planned follow-up for the current implementation run has successful worker evidence. For the built-in Codex adapter, a follow-up that exits 0 and blocks with `review.required: true` counts as successful evidence: Hermes still reviews the bounded receipt, not the full Codex session. Pending, running, missing, timed out, binary-missing, or nonzero-exit follow-ups block approval with an explicit gate error. `request-changes` remains available at any time and unblocks the implementation task for another worker run.
 
 Before deciding, controllers can read a single acceptance snapshot:
@@ -311,6 +323,7 @@ Reviewers can close the handoff through the same bounded-evidence path:
 
 ```bash
 hermes kanban plan-review <task_id> --json
+hermes kanban plan-review <task_id> --dispatch --json
 hermes kanban review <task_id> approve --summary "bounded evidence accepted"
 hermes kanban review <task_id> request-changes --comment "add a regression test"
 ```
@@ -328,8 +341,8 @@ assigned lane.
 Configured orchestrator/main-agent profiles can use the equivalent tools:
 `kanban_reviews` for the queue, `kanban_progress` for one task's bounded
 snapshot, `kanban_acceptance` for implementation plus review/test evidence,
-`kanban_plan_review` to create independent review/test follow-ups, and
-`kanban_review` to approve or request changes. These tools are
+`kanban_plan_review` to create and optionally dispatch independent review/test
+follow-ups, and `kanban_review` to approve or request changes. These tools are
 orchestrator-only; dispatcher-spawned Codex workers do not see them.
 
 Pass `include_children=true` to `kanban_progress` when the task is a goal/root

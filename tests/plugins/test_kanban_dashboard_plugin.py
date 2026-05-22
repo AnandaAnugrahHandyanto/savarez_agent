@@ -1696,6 +1696,66 @@ def test_plan_review_endpoint_creates_review_and_test_followups(client, tmp_path
     assert "review follow-up gate is not satisfied" in early.json()["detail"]
 
 
+def test_plan_review_endpoint_dispatch_dry_run_scopes_to_followups(
+    client,
+    tmp_path,
+    monkeypatch,
+):
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import profiles
+
+    monkeypatch.setattr(profiles, "profile_exists", lambda name: True)
+    metadata = {
+        "worker_lane": {"name": "codex-deep", "kind": "codex_cli", "exit_code": 0},
+        "verification": {"commands": ["pytest -q"], "summary": "passed"},
+        "review": {"required": True, "reason": "Codex completed; Hermes review required"},
+    }
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(
+            conn,
+            title="plan review dispatch via api",
+            assignee="codex-deep",
+            workspace_kind="dir",
+            workspace_path=str(tmp_path),
+        )
+        unrelated = kb.create_task(
+            conn,
+            title="unrelated",
+            assignee="alice",
+            workspace_kind="dir",
+            workspace_path=str(tmp_path),
+        )
+        task = kb.claim_task(conn, tid, claimer="worker:codex-deep")
+        assert task is not None
+        assert kb.block_task(
+            conn,
+            tid,
+            reason="review-required: Codex completed; Hermes review required",
+            expected_run_id=task.current_run_id,
+            metadata=metadata,
+        )
+    finally:
+        conn.close()
+
+    r = client.post(
+        f"/api/plugins/kanban/tasks/{tid}/plan-review",
+        json={"dispatch": True, "dry_run": True},
+    )
+
+    assert r.status_code == 200, r.text
+    data = r.json()
+    spawned_ids = {item["task_id"] for item in data["dispatch"]["spawned"]}
+    conn = kb.connect()
+    try:
+        unrelated_task = kb.get_task(conn, unrelated)
+    finally:
+        conn.close()
+
+    assert spawned_ids == {data["review_task_id"], data["test_task_id"]}
+    assert unrelated_task.status == "ready"
+
+
 def test_worker_lane_request_endpoint_validates_without_enabling(client):
     from hermes_cli.worker_lanes import clear_worker_lanes, get_worker_lane
 

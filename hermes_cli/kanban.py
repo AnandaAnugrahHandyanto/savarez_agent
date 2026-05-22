@@ -580,6 +580,23 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         default="hermes-review-planner",
         help="created_by value for the follow-up tasks",
     )
+    p_plan_review.add_argument(
+        "--dispatch",
+        action="store_true",
+        help="Immediately run one dispatcher pass for the planned follow-up tasks only",
+    )
+    p_plan_review.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="With --dispatch, report which follow-up tasks would be spawned without claiming",
+    )
+    p_plan_review.add_argument(
+        "--dispatch-max",
+        type=int,
+        default=None,
+        metavar="N",
+        help="With --dispatch, cap the number of follow-up workers spawned",
+    )
     p_plan_review.add_argument("--json", action="store_true")
 
     # --- assign ---
@@ -2187,10 +2204,23 @@ def _cmd_plan_review(args: argparse.Namespace) -> int:
                 include_test=not review_only,
                 created_by=getattr(args, "created_by", None) or "hermes-review-planner",
             )
+            dispatch_result = None
+            if getattr(args, "dispatch", False):
+                followup_ids = [
+                    tid for tid in (plan.review_task_id, plan.test_task_id) if tid
+                ]
+                dispatch_result = kb.dispatch_once(
+                    conn,
+                    dry_run=bool(getattr(args, "dry_run", False)),
+                    max_spawn=getattr(args, "dispatch_max", None),
+                    only_task_ids=followup_ids,
+                )
     except ValueError as exc:
         print(f"kanban plan-review: {exc}", file=sys.stderr)
         return 2
     payload = plan.to_dict()
+    if dispatch_result is not None:
+        payload["dispatch"] = dispatch_result.to_dict()
     if getattr(args, "json", False):
         print(json.dumps(payload, indent=2, ensure_ascii=False))
         return 0
@@ -2204,6 +2234,11 @@ def _cmd_plan_review(args: argparse.Namespace) -> int:
     if plan.test_task_id:
         state = "existing" if plan.test_task_id in plan.existing else "created"
         print(f"  test:   {plan.test_task_id} @{plan.test_assignee} ({state})")
+    if dispatch_result is not None:
+        print(f"  dispatched: {len(dispatch_result.spawned)}")
+        for tid, who, ws in dispatch_result.spawned:
+            tag = " (dry)" if getattr(args, "dry_run", False) else ""
+            print(f"    - {tid} -> {who} @ {ws or '-'}{tag}")
     return 0
 
 
@@ -2643,21 +2678,7 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             failure_limit=getattr(args, "failure_limit", kb.DEFAULT_SPAWN_FAILURE_LIMIT),
         )
     if getattr(args, "json", False):
-        print(json.dumps({
-            "reclaimed": res.reclaimed,
-            "crashed": res.crashed,
-            "timed_out": res.timed_out,
-            "stale": res.stale,
-            "auto_blocked": res.auto_blocked,
-            "promoted": res.promoted,
-            "spawned": [
-                {"task_id": tid, "assignee": who, "workspace": ws}
-                for (tid, who, ws) in res.spawned
-            ],
-            "skipped_unassigned": res.skipped_unassigned,
-            "skipped_nonspawnable": res.skipped_nonspawnable,
-            "skipped_concurrency": res.skipped_concurrency,
-        }, indent=2))
+        print(json.dumps(res.to_dict(), indent=2))
         return 0
     print(f"Reclaimed:    {res.reclaimed}")
     print(f"Crashed:      {len(res.crashed)}")

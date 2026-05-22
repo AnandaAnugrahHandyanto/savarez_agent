@@ -702,6 +702,9 @@ class PlanReviewBody(BaseModel):
     include_review: bool = True
     include_test: bool = True
     created_by: Optional[str] = "hermes-review-planner"
+    dispatch: bool = False
+    dry_run: bool = False
+    dispatch_max: Optional[int] = Field(default=None, ge=1, le=64)
 
 
 class WorkerLaneRequestBody(BaseModel):
@@ -764,11 +767,24 @@ def plan_task_review_followups(
                 created_by=payload.created_by or "hermes-review-planner",
                 board=board,
             )
+            out = plan.to_dict()
+            if payload.dispatch:
+                followup_ids = [
+                    tid for tid in (plan.review_task_id, plan.test_task_id) if tid
+                ]
+                result = kanban_db.dispatch_once(
+                    conn,
+                    dry_run=payload.dry_run,
+                    max_spawn=payload.dispatch_max,
+                    only_task_ids=followup_ids,
+                    board=board,
+                )
+                out["dispatch"] = result.to_dict()
         except ValueError as exc:
             msg = str(exc)
             status_code = 404 if msg.startswith("unknown task ") else 400
             raise HTTPException(status_code=status_code, detail=msg)
-        return plan.to_dict()
+        return out
     finally:
         conn.close()
 

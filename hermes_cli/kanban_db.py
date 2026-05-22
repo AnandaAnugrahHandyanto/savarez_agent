@@ -1097,6 +1097,22 @@ _INIT_LOCK = threading.RLock()
 _SQLITE_HEADER = b"SQLite format 3\x00"
 
 
+class KanbanConnection(sqlite3.Connection):
+    """SQLite connection that closes when used as a context manager.
+
+    ``sqlite3.Connection.__exit__`` commits or rolls back but intentionally
+    leaves the connection open. Kanban callers use ``with connect()`` as a
+    short operation boundary across dispatchers and external workers, so close
+    on exit to avoid accumulating stale WAL readers while workers write.
+    """
+
+    def __exit__(self, exc_type, exc, tb):
+        try:
+            return super().__exit__(exc_type, exc, tb)
+        finally:
+            self.close()
+
+
 def _looks_like_tls_record_at(data: bytes, offset: int) -> bool:
     """Return True for a TLS record header at ``data[offset:]``."""
     if len(data) < offset + 5:
@@ -1178,7 +1194,12 @@ def connect(
     path.parent.mkdir(parents=True, exist_ok=True)
     _validate_sqlite_header(path)
     resolved = str(path.resolve())
-    conn = sqlite3.connect(str(path), isolation_level=None, timeout=30)
+    conn = sqlite3.connect(
+        str(path),
+        isolation_level=None,
+        timeout=30,
+        factory=KanbanConnection,
+    )
     try:
         conn.row_factory = sqlite3.Row
         with _INIT_LOCK:
@@ -1190,9 +1211,22 @@ def connect(
             # falls back to DELETE with one WARNING so kanban stays usable there.
             # See hermes_state._WAL_INCOMPAT_MARKERS for detection logic.
             from hermes_state import apply_wal_with_fallback
-            apply_wal_with_fallback(conn, db_label=f"kanban.db ({path.name})")
-            conn.execute("PRAGMA synchronous=NORMAL")
-            conn.execute("PRAGMA foreign_keys=ON")
+            for attempt in range(5):
+                try:
+                    apply_wal_with_fallback(conn, db_label=f"kanban.db ({path.name})")
+                    conn.execute("PRAGMA synchronous=NORMAL")
+                    conn.execute("PRAGMA foreign_keys=ON")
+                    break
+                except sqlite3.OperationalError as exc:
+                    msg = str(exc).lower()
+                    transient = (
+                        "database is locked" in msg
+                        or "disk i/o error" in msg
+                        or "locking protocol" in msg
+                    )
+                    if not transient or attempt >= 4:
+                        raise
+                    time.sleep(0.05 * (attempt + 1))
             needs_init = resolved not in _INITIALIZED_PATHS
             if needs_init:
                 # Idempotent: runs CREATE TABLE IF NOT EXISTS + the additive
@@ -5049,6 +5083,27 @@ class DispatchResult:
     ``"recent_success"`` (completed run within guard window),
     ``"active_pr"`` (GitHub PR URL in a recent comment)."""
 
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "reclaimed": self.reclaimed,
+            "crashed": self.crashed,
+            "timed_out": self.timed_out,
+            "stale": self.stale,
+            "auto_blocked": self.auto_blocked,
+            "promoted": self.promoted,
+            "spawned": [
+                {"task_id": tid, "assignee": who, "workspace": ws}
+                for (tid, who, ws) in self.spawned
+            ],
+            "skipped_unassigned": self.skipped_unassigned,
+            "skipped_nonspawnable": self.skipped_nonspawnable,
+            "skipped_concurrency": self.skipped_concurrency,
+            "respawn_guarded": [
+                {"task_id": tid, "reason": reason}
+                for (tid, reason) in self.respawn_guarded
+            ],
+        }
+
 
 # Bounded registry of recently-reaped worker child exits, populated by the
 # reap loop at the top of ``dispatch_once`` and consulted by
@@ -6086,6 +6141,7 @@ def dispatch_once(
     failure_limit: int = DEFAULT_SPAWN_FAILURE_LIMIT,
     stale_timeout_seconds: int = 0,
     board: Optional[str] = None,
+    only_task_ids: Optional[Iterable[str]] = None,
 ) -> DispatchResult:
     """Run one dispatcher tick.
 
@@ -6114,6 +6170,8 @@ def dispatch_once(
     ``spawn_fn`` defaults to ``_default_spawn``. Tests pass a stub.
     ``board`` pins workspace/log/db resolution for this tick to a specific
     board. When omitted, the current-board resolution chain is used.
+    ``only_task_ids`` narrows spawn attempts to those task IDs while still
+    running the normal lifecycle maintenance at the start of the tick.
     """
     # Reap zombie children from previously spawned workers.
     # The gateway-embedded dispatcher is the parent of every worker spawned
@@ -6188,11 +6246,19 @@ def dispatch_once(
             ).fetchone()[0]
         )
 
+    only_ids = (
+        {str(tid).strip() for tid in only_task_ids if str(tid).strip()}
+        if only_task_ids is not None
+        else None
+    )
+
     ready_rows = conn.execute(
         "SELECT id, assignee FROM tasks "
         "WHERE status = 'ready' AND claim_lock IS NULL "
         "ORDER BY priority DESC, created_at ASC"
     ).fetchall()
+    if only_ids is not None:
+        ready_rows = [row for row in ready_rows if row["id"] in only_ids]
     # Honour kanban.max_in_progress: if the board already has enough running
     # tasks, skip spawning this tick so slow workers (local LLMs,
     # resource-constrained hosts) can finish what they have before more tasks
@@ -6353,6 +6419,8 @@ def dispatch_once(
         "WHERE status = 'review' AND claim_lock IS NULL "
         "ORDER BY priority DESC, created_at ASC"
     ).fetchall()
+    if only_ids is not None:
+        review_rows = [row for row in review_rows if row["id"] in only_ids]
     for row in review_rows:
         if max_spawn is not None and running_count + spawned >= max_spawn:
             break

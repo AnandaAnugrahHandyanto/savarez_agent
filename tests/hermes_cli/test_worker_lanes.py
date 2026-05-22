@@ -2,16 +2,19 @@ from __future__ import annotations
 
 import os
 import stat
+import subprocess
 from pathlib import Path
 
 import pytest
 
 from hermes_cli import kanban_db as kb
 from hermes_cli.codex_worker import (
+    CodexLaneConfig,
     build_codex_argv,
     parse_progress_items,
     run_codex_worker,
     _safe_env_for_codex,
+    _safe_env_for_worker,
 )
 from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
 from hermes_cli.worker_lanes import (
@@ -460,6 +463,101 @@ def test_codex_env_preserves_existing_writable_codex_home(tmp_path, monkeypatch)
 
     assert env["HOME"] == str(home)
     assert env.get("CODEX_HOME") is None
+
+
+def test_codex_env_does_not_forward_proxy_variables(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    (home / ".codex").mkdir(parents=True)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:7890")
+    monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:7890")
+    monkeypatch.setenv("ALL_PROXY", "socks5://127.0.0.1:7891")
+    monkeypatch.setenv("NO_PROXY", "localhost")
+    monkeypatch.setenv("http_proxy", "http://127.0.0.1:7890")
+    monkeypatch.setenv("https_proxy", "http://127.0.0.1:7890")
+    monkeypatch.setenv("all_proxy", "socks5://127.0.0.1:7891")
+    monkeypatch.setenv("no_proxy", "localhost")
+
+    env = _safe_env_for_codex(str(workspace))
+
+    for name in (
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "NO_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+        "no_proxy",
+    ):
+        assert name not in env
+
+
+def test_codex_wrapper_env_does_not_forward_proxy_variables(
+    kanban_home, tmp_path, monkeypatch,
+):
+    for name in (
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "NO_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+        "no_proxy",
+    ):
+        monkeypatch.setenv(name, "http://127.0.0.1:7890")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="wrapper env",
+            assignee="codex-deep",
+            workspace_kind="dir",
+            workspace_path=str(workspace),
+        )
+        task = kb.get_task(conn, tid)
+
+    env = _safe_env_for_worker(
+        task,
+        str(workspace),
+        CodexLaneConfig(name="codex-deep"),
+        board=None,
+    )
+
+    for name in (
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "NO_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+        "no_proxy",
+    ):
+        assert name not in env
+
+
+def test_collect_git_evidence_preserves_short_status_paths(tmp_path):
+    from hermes_cli.codex_worker import collect_git_evidence
+
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, stdout=subprocess.PIPE)
+    subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.name", "Hermes Test"], cwd=tmp_path, check=True)
+    tracked = tmp_path / "codex_followup_dispatch_smoke.txt"
+    tracked.write_text("initial\n", encoding="utf-8")
+    subprocess.run(["git", "add", "codex_followup_dispatch_smoke.txt"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-m", "initial"], cwd=tmp_path, check=True, stdout=subprocess.PIPE)
+    tracked.write_text("updated\n", encoding="utf-8")
+
+    evidence = collect_git_evidence(str(tmp_path))
+
+    assert evidence["status"] == " M codex_followup_dispatch_smoke.txt"
+    assert evidence["changed_files"] == ["codex_followup_dispatch_smoke.txt"]
 
 
 def test_codex_env_uses_workspace_home_when_inherited_home_unwritable(

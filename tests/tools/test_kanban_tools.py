@@ -595,6 +595,68 @@ def test_plan_review_tool_creates_review_and_test_followups(monkeypatch, worker_
     assert "review follow-up gate is not satisfied" in early["error"]
 
 
+def test_plan_review_tool_dispatch_dry_run_scopes_to_followups(
+    monkeypatch,
+    worker_env,
+    tmp_path,
+):
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import profiles
+    from tools import kanban_tools as kt
+
+    monkeypatch.setattr(profiles, "profile_exists", lambda name: True)
+    metadata = {
+        "worker_lane": {"name": "codex-deep", "kind": "codex_cli", "exit_code": 0},
+        "verification": {"commands": ["pytest -q"], "summary": "passed"},
+        "review": {"required": True, "reason": "Codex completed; Hermes review required"},
+    }
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(
+            conn,
+            title="tool plan review dispatch",
+            assignee="codex-deep",
+            workspace_kind="dir",
+            workspace_path=str(tmp_path),
+        )
+        unrelated = kb.create_task(
+            conn,
+            title="unrelated",
+            assignee="alice",
+            workspace_kind="dir",
+            workspace_path=str(tmp_path),
+        )
+        task = kb.claim_task(conn, tid, claimer="worker:codex-deep")
+        assert task is not None
+        assert kb.block_task(
+            conn,
+            tid,
+            reason="review-required: Codex completed; Hermes review required",
+            expected_run_id=task.current_run_id,
+            metadata=metadata,
+        )
+    finally:
+        conn.close()
+
+    out = kt._handle_plan_review({
+        "task_id": tid,
+        "dispatch": True,
+        "dry_run": True,
+    })
+    d = json.loads(out)
+    spawned_ids = {item["task_id"] for item in d["dispatch"]["spawned"]}
+
+    conn = kb.connect()
+    try:
+        unrelated_task = kb.get_task(conn, unrelated)
+    finally:
+        conn.close()
+
+    assert spawned_ids == {d["review_task_id"], d["test_task_id"]}
+    assert unrelated_task.status == "ready"
+
+
 def test_complete_happy_path(worker_env):
     from tools import kanban_tools as kt
     out = kt._handle_complete({

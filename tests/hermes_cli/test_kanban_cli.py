@@ -712,6 +712,57 @@ def test_run_slash_plan_review_json_creates_followups(
     assert "review follow-up gate is not satisfied" in out
 
 
+def test_run_slash_plan_review_dispatch_dry_run_scopes_to_followups(
+    kanban_home,
+    tmp_path,
+    all_assignees_spawnable,
+):
+    metadata = {
+        "worker_lane": {"name": "codex-deep", "kind": "codex_cli", "exit_code": 0},
+        "verification": {"commands": ["pytest -q"], "summary": "passed"},
+        "review": {"required": True, "reason": "Codex completed; Hermes review required"},
+    }
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="plan and dispatch followups via slash",
+            assignee="codex-deep",
+            workspace_kind="dir",
+            workspace_path=str(tmp_path),
+        )
+        unrelated = kb.create_task(
+            conn,
+            title="unrelated",
+            assignee="alice",
+            workspace_kind="dir",
+            workspace_path=str(tmp_path),
+        )
+        task = kb.claim_task(conn, tid, claimer="worker:codex-deep")
+        assert task is not None
+        assert kb.block_task(
+            conn,
+            tid,
+            reason="review-required: Codex completed; Hermes review required",
+            expected_run_id=task.current_run_id,
+            metadata=metadata,
+        )
+
+    payload = json.loads(kc.run_slash(
+        f"plan-review {tid} --dispatch --dry-run --json"
+    ))
+    spawned_ids = {item["task_id"] for item in payload["dispatch"]["spawned"]}
+
+    with kb.connect() as conn:
+        unrelated_task = kb.get_task(conn, unrelated)
+        review_task = kb.get_task(conn, payload["review_task_id"])
+        test_task = kb.get_task(conn, payload["test_task_id"])
+
+    assert spawned_ids == {payload["review_task_id"], payload["test_task_id"]}
+    assert unrelated_task.status == "ready"
+    assert review_task.status == "ready"
+    assert test_task.status == "ready"
+
+
 def test_run_slash_worker_lane_request_validates_without_enabling(
     kanban_home, tmp_path,
 ):

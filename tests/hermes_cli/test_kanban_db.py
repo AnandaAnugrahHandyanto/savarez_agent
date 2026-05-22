@@ -39,6 +39,14 @@ def test_init_db_is_idempotent(kanban_home):
     assert tasks[0].title == "persisted"
 
 
+def test_connect_context_manager_closes_connection(kanban_home):
+    with kb.connect() as conn:
+        kb.create_task(conn, title="closed after with")
+
+    with pytest.raises(sqlite3.ProgrammingError, match="closed database"):
+        conn.execute("SELECT 1")
+
+
 def test_init_creates_expected_tables(kanban_home):
     with kb.connect() as conn:
         rows = conn.execute(
@@ -697,6 +705,67 @@ def test_plan_review_followups_creates_independent_review_and_test_tasks(
     assert repeated.created == []
     assert set(repeated.existing) == {plan.review_task_id, plan.test_task_id}
     assert len([task for task in all_tasks if task.created_by == "hermes-review-planner"]) == 2
+
+
+def test_dispatch_once_can_scope_to_review_followup_tasks(
+    kanban_home,
+    tmp_path,
+    all_assignees_spawnable,
+):
+    metadata = {
+        "worker_lane": {"name": "codex-deep", "kind": "codex_cli", "exit_code": 0},
+        "verification": {"commands": ["pytest -q"], "summary": "passed"},
+        "review": {"required": True, "reason": "Codex completed; Hermes review required"},
+    }
+    spawned: list[str] = []
+
+    def fake_spawn(task, workspace, board=None):
+        spawned.append(task.id)
+        return 123
+
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="implementation",
+            assignee="codex-deep",
+            workspace_kind="dir",
+            workspace_path=str(tmp_path),
+        )
+        unrelated = kb.create_task(
+            conn,
+            title="unrelated ready task",
+            assignee="alice",
+            workspace_kind="dir",
+            workspace_path=str(tmp_path),
+        )
+        task = kb.claim_task(conn, tid, claimer="worker:codex-deep")
+        assert task is not None
+        assert kb.block_task(
+            conn,
+            tid,
+            reason="review-required: Codex completed; Hermes review required",
+            expected_run_id=task.current_run_id,
+            metadata=metadata,
+        )
+        plan = kb.plan_review_followups(conn, tid)
+
+        res = kb.dispatch_once(
+            conn,
+            spawn_fn=fake_spawn,
+            max_spawn=2,
+            only_task_ids=[plan.review_task_id, plan.test_task_id],
+        )
+        gate = kb.review_followup_gate_status(conn, tid, source_run_id=task.current_run_id)
+        unrelated_task = kb.get_task(conn, unrelated)
+
+    assert {item[0] for item in res.spawned} == {
+        plan.review_task_id,
+        plan.test_task_id,
+    }
+    assert set(spawned) == {plan.review_task_id, plan.test_task_id}
+    assert unrelated_task.status == "ready"
+    assert gate["running"] == 2
+    assert gate["pending"] == 0
 
 
 def test_connect_rejects_tls_record_in_sqlite_header(tmp_path, monkeypatch):
@@ -2632,16 +2701,15 @@ def test_connect_falls_back_to_delete_on_locking_protocol(kanban_home, caplog):
 
     real_connect = _sqlite3.connect
 
-    class _WalBlockingConnection(_sqlite3.Connection):
+    class _WalBlockingConnection(kb.KanbanConnection):
         def execute(self, sql, *args, **kwargs):  # type: ignore[override]
             if "journal_mode=wal" in sql.lower().replace(" ", ""):
                 raise _sqlite3.OperationalError("locking protocol")
             return super().execute(sql, *args, **kwargs)
 
     def wal_blocking_connect(*args, **kwargs):
-        return real_connect(
-            *args, factory=_WalBlockingConnection, **kwargs
-        )
+        kwargs["factory"] = _WalBlockingConnection
+        return real_connect(*args, **kwargs)
 
     with _patch("hermes_cli.kanban_db.sqlite3.connect", side_effect=wal_blocking_connect):
         with caplog.at_level("WARNING", logger="hermes_state"):
