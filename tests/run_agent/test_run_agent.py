@@ -3994,6 +3994,24 @@ class TestCredentialPoolRecovery:
         assert context["reason"] == "usage_limit_reached"
         assert context["message"] == "The usage limit has been reached"
 
+    def test_extract_api_error_context_parses_gemini_please_retry_in_delay(self, agent):
+        class _FakeErrorWithStr(Exception):
+            def __str__(self):
+                return (
+                    "HTTP 429: Gemini HTTP 429 (RESOURCE_EXHAUSTED): You exceeded your current quota. "
+                    "Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_paid_tier_input_token_count, "
+                    "limit: 2000000, model: gemini-3.5-flash\n"
+                    "Please retry in 35.145570922s."
+                )
+        fake_error = _FakeErrorWithStr()
+        fake_error.response = SimpleNamespace(headers={})
+
+        context = agent._extract_api_error_context(fake_error)
+
+        assert "reset_at" in context
+        import time
+        assert abs(context["reset_at"] - (time.time() + 35.145570922)) < 2.0
+
     def test_recover_with_pool_passes_error_context_on_rotated_429(self, agent):
         next_entry = SimpleNamespace(label="secondary")
         captured = {}
