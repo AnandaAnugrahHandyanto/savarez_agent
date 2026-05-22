@@ -41,6 +41,22 @@ class TestWriteDenyExactPaths:
         path = str(get_hermes_home() / ".env")
         assert _is_write_denied(path) is True
 
+    def test_hermes_root_env_when_running_under_profile(self, tmp_path, monkeypatch):
+        """Top-level ``<root>/.env`` stays write-denied in profile mode (#15981)."""
+        root = tmp_path / "hermes_root"
+        profile_home = root / "profiles" / "coder"
+        profile_home.mkdir(parents=True)
+        global_env = root / ".env"
+        global_env.write_text("OPENAI_API_KEY=***\n")
+
+        monkeypatch.setenv("HERMES_HOME", str(profile_home))
+
+        from hermes_constants import get_default_hermes_root, get_hermes_home
+        assert get_hermes_home() == profile_home
+        assert get_default_hermes_root() == root
+
+        assert _is_write_denied(str(global_env)) is True
+
     def test_shell_profiles(self):
         home = str(Path.home())
         for name in [".bashrc", ".zshrc", ".profile", ".bash_profile", ".zprofile"]:
