@@ -953,23 +953,19 @@ def handle_function_call(
                         task_id=task_id,
                         user_task=user_task,
                     )
-            try:
-                from hermes_cli.middleware import run_tool_execution_middleware
-                result = run_tool_execution_middleware(
-                    function_name,
-                    function_args,
-                    _dispatch,
-                    original_args=original_function_args,
-                    task_id=task_id or "",
-                    session_id=session_id or "",
-                    tool_call_id=tool_call_id or "",
-                    turn_id=turn_id or "",
-                    api_request_id=api_request_id or "",
-                    middleware_trace=middleware_trace,
-                )
-            except Exception as _middleware_err:
-                logger.debug("tool execution middleware error: %s", _middleware_err)
-                result = _dispatch(function_args)
+            from hermes_cli.middleware import run_tool_execution_middleware
+            result = run_tool_execution_middleware(
+                function_name,
+                function_args,
+                _dispatch,
+                original_args=original_function_args,
+                task_id=task_id or "",
+                session_id=session_id or "",
+                tool_call_id=tool_call_id or "",
+                turn_id=turn_id or "",
+                api_request_id=api_request_id or "",
+                middleware_trace=middleware_trace,
+            )
         finally:
             if _approval_tokens is not None and reset_current_observability_context is not None:
                 try:

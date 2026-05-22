@@ -1115,26 +1115,23 @@ def run_conversation(
                         )
                     return agent._interruptible_api_call(next_api_kwargs)
 
-                try:
-                    from hermes_cli.middleware import run_api_execution_middleware
-                    response = run_api_execution_middleware(
-                        api_kwargs,
-                        _perform_api_call,
-                        original_request=_original_api_kwargs,
-                        task_id=effective_task_id,
-                        turn_id=turn_id,
-                        api_request_id=api_request_id,
-                        session_id=agent.session_id or "",
-                        platform=agent.platform or "",
-                        model=agent.model,
-                        provider=agent.provider,
-                        base_url=agent.base_url,
-                        api_mode=agent.api_mode,
-                        api_call_count=api_call_count,
-                        middleware_trace=_api_middleware_trace,
-                    )
-                except Exception:
-                    response = _perform_api_call(api_kwargs)
+                from hermes_cli.middleware import run_api_execution_middleware
+                response = run_api_execution_middleware(
+                    api_kwargs,
+                    _perform_api_call,
+                    original_request=_original_api_kwargs,
+                    task_id=effective_task_id,
+                    turn_id=turn_id,
+                    api_request_id=api_request_id,
+                    session_id=agent.session_id or "",
+                    platform=agent.platform or "",
+                    model=agent.model,
+                    provider=agent.provider,
+                    base_url=agent.base_url,
+                    api_mode=agent.api_mode,
+                    api_call_count=api_call_count,
+                    middleware_trace=_api_middleware_trace,
+                )
                 
                 api_duration = time.time() - api_start_time
                 
