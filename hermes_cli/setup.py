@@ -1737,6 +1737,8 @@ def setup_terminal_backend(config: dict):
                     print_success("    Updated")
         else:
             print_info("  Get a token with: sprite login  (or `sprite auth setup --token ...`)")
+            print_info("  Tip: in the dashboard you can mint a Restricted Token with prefix=hermes")
+            print_info("       to scope it to hermes-* sprites only. Recommended for CI / shared use.")
             token = prompt("    Sprites token", password=True)
             if token:
                 save_env_value("SPRITES_TOKEN", token)

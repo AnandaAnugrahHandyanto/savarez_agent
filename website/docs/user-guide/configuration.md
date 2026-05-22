@@ -297,6 +297,15 @@ pip install 'hermes-agent[sprites]'
 
 **Required authentication:** `SPRITES_TOKEN` environment variable. Get a token with `sprite login` or `sprite auth setup --token …` from the [Sprites CLI](https://sprites.dev).
 
+#### Restricted tokens (recommended for CI / shared envs)
+
+The Sprites dashboard (**Account → Tokens → ⚙ Create Token → Restricted Token Options**) lets you scope a token to:
+
+- **Name Prefix** — the token can only create or operate on sprites whose name starts with `<prefix>-…`. Set this to `hermes` and the token can manage `hermes-default`, `hermes-mytask`, `hermes-{task_id}`, etc. — i.e. every sprite Hermes creates — but nothing else in the account.
+- **Max Sprites Total** — caps how many sprites the token may keep alive at once. Useful for budgeting CI / batch / multi-agent workloads against a known ceiling.
+
+This pairs cleanly with the deterministic `hermes-{task_id}` naming scheme: a `hermes`-prefixed restricted token is the right thing to hand to a Hermes runtime (CI, gateway, shared dev box, untrusted automation) when you don't want it touching the rest of your Sprites fleet.
+
 **Persistence:** With `container_persistent: true`, `cleanup()` leaves the Sprite running so the next session can resume against the same filesystem and live VM. With `persistent: false`, the Sprite is deleted on cleanup. Sprites also support server-side checkpoints exposed by the SDK (`sprite.create_checkpoint`, `sprite.restore_checkpoint`), but Hermes does not invoke them automatically — manage checkpoints via the `sprite-env` CLI if needed.
 
 **Credential files:** Hermes pushes `~/.hermes/` credentials/skills/cache into the Sprite at startup via the Sprite filesystem API.
