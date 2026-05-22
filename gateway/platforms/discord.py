@@ -19,6 +19,8 @@ import subprocess
 import tempfile
 import threading
 import time
+import urllib.error
+import urllib.request
 from collections import defaultdict
 from typing import Callable, Dict, List, Optional, Any, Tuple
 
@@ -3075,6 +3077,64 @@ class DiscordAdapter(BasePlatformAdapter):
         @discord.app_commands.describe(prompt="The prompt to run in the background")
         async def slash_background(interaction: discord.Interaction, prompt: str):
             await self._run_simple_slash(interaction, f"/background {prompt}", "Background task started~")
+
+        async def _post_voice_transcriber(path: str, payload: dict[str, Any]) -> dict[str, Any]:
+            url = os.getenv("SCHOOLBRAIN_VOICE_CONTROL_URL", "http://127.0.0.1:8765") + path
+
+            def _send() -> dict[str, Any]:
+                body = json.dumps(payload).encode("utf-8")
+                req = urllib.request.Request(
+                    url,
+                    data=body,
+                    method="POST",
+                    headers={"Content-Type": "application/json", "User-Agent": "Hermes/voice-control"},
+                )
+                try:
+                    with urllib.request.urlopen(req, timeout=20) as resp:
+                        return json.loads(resp.read().decode("utf-8"))
+                except urllib.error.HTTPError as exc:
+                    raw = exc.read().decode("utf-8", errors="replace")
+                    try:
+                        data = json.loads(raw)
+                    except Exception:
+                        data = {"error": raw or str(exc)}
+                    data["ok"] = False
+                    return data
+
+            return await asyncio.to_thread(_send)
+
+        @tree.command(name="meeting_start", description="Start recording your current Discord voice channel")
+        @discord.app_commands.describe(title="Meeting title")
+        async def slash_meeting_start(interaction: discord.Interaction, title: str):
+            if not await self._check_slash_authorization(interaction, "/meeting_start"):
+                return
+            await interaction.response.defer(ephemeral=True)
+            voice = getattr(interaction.user, "voice", None)
+            voice_channel = getattr(voice, "channel", None)
+            if not voice_channel:
+                await interaction.edit_original_response(content="You are not in a voice channel. Join one, then run /meeting_start again.")
+                return
+            result = await _post_voice_transcriber("/start", {
+                "guild_id": int(interaction.guild_id or 0),
+                "voice_channel_id": int(voice_channel.id),
+                "text_channel_id": int(getattr(interaction.channel, "id", 0) or getattr(interaction, "channel_id", 0)),
+                "title": title,
+            })
+            if result.get("ok"):
+                await interaction.edit_original_response(content=result.get("message", f"Started recording: {title}"))
+            else:
+                await interaction.edit_original_response(content=f"Voice recorder start failed: {result.get('error', 'unknown error')}")
+
+        @tree.command(name="meeting_stop", description="Stop recording and write Schoolbrain meeting notes")
+        async def slash_meeting_stop(interaction: discord.Interaction):
+            if not await self._check_slash_authorization(interaction, "/meeting_stop"):
+                return
+            await interaction.response.defer(ephemeral=True)
+            result = await _post_voice_transcriber("/stop", {"guild_id": int(interaction.guild_id or 0)})
+            if result.get("ok"):
+                await interaction.edit_original_response(content=result.get("message", "Stopped recording."))
+            else:
+                await interaction.edit_original_response(content=f"Voice recorder stop failed: {result.get('error', 'unknown error')}")
 
         # ── Auto-register any gateway-available commands not yet on the tree ──
         # This ensures new commands added to COMMAND_REGISTRY in

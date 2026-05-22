@@ -16,9 +16,10 @@ from tests.gateway.restart_test_helpers import make_restart_runner, make_restart
 
 @pytest.mark.asyncio
 async def test_restart_command_while_busy_requests_drain_without_interrupt(monkeypatch):
-    # Ensure INVOCATION_ID is NOT set — systemd sets this in service mode,
-    # which changes the restart call signature.
+    # Ensure service-manager env vars are NOT set — systemd/launchd service
+    # mode changes the restart call signature.
     monkeypatch.delenv("INVOCATION_ID", raising=False)
+    monkeypatch.delenv("XPC_SERVICE_NAME", raising=False)
     runner, _adapter = make_restart_runner()
     runner.request_restart = MagicMock(return_value=True)
     event = MessageEvent(
@@ -45,6 +46,26 @@ async def test_restart_command_while_busy_requests_drain_without_interrupt(monke
     assert "Draining" in expected and "1" in expected
     running_agent.interrupt.assert_not_called()
     runner.request_restart.assert_called_once_with(detached=True, via_service=False)
+
+
+@pytest.mark.asyncio
+async def test_restart_command_under_launchd_uses_service_restart(monkeypatch):
+    monkeypatch.delenv("INVOCATION_ID", raising=False)
+    monkeypatch.setenv("XPC_SERVICE_NAME", "ai.hermes.gateway")
+    runner, _adapter = make_restart_runner()
+    runner.request_restart = MagicMock(return_value=True)
+    event = MessageEvent(
+        text="/restart",
+        message_type=MessageType.TEXT,
+        source=make_restart_source(),
+        message_id="m1-launchd",
+    )
+
+    result = await runner._handle_message(event)
+
+    assert result is not None
+    assert "Restarting gateway" in result
+    runner.request_restart.assert_called_once_with(detached=False, via_service=True)
 
 
 @pytest.mark.asyncio
