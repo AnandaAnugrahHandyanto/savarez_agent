@@ -500,6 +500,119 @@ def _parse_tags(tags_value) -> List[str]:
 
 
 
+
+
+_HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*#*\s*$", re.MULTILINE)
+
+
+def _normalize_section_name(value: str) -> str:
+    """Normalize a Markdown heading name for forgiving section lookup."""
+    return re.sub(r"[^a-z0-9]+", "-", value.strip().lower()).strip("-")
+
+
+def _markdown_sections(content: str) -> List[Dict[str, Any]]:
+    """Return top-level metadata for every Markdown heading in content."""
+    sections: List[Dict[str, Any]] = []
+    for match in _HEADING_RE.finditer(content):
+        heading = match.group(2).strip()
+        sections.append(
+            {
+                "title": heading,
+                "level": len(match.group(1)),
+                "anchor": _normalize_section_name(heading),
+            }
+        )
+    return sections
+
+
+def _extract_markdown_section(content: str, section: str) -> Optional[str]:
+    """Extract a Markdown section by heading title or slug anchor.
+
+    The returned text includes the matching heading and stops before the next
+    heading at the same or higher level, mirroring common Markdown section
+    semantics.
+    """
+    wanted = section.strip()
+    wanted_anchor = _normalize_section_name(wanted)
+    matches = list(_HEADING_RE.finditer(content))
+    for index, match in enumerate(matches):
+        title = match.group(2).strip()
+        if title.lower() != wanted.lower() and _normalize_section_name(title) != wanted_anchor:
+            continue
+
+        level = len(match.group(1))
+        end = len(content)
+        for next_match in matches[index + 1:]:
+            if len(next_match.group(1)) <= level:
+                end = next_match.start()
+                break
+        return content[match.start():end].strip() + "\n"
+    return None
+
+
+def _build_skill_summary_payload(
+    *,
+    name: str,
+    description: str = "",
+    content: str,
+    linked_files: Dict[str, List[str]] | None = None,
+    extra: Dict[str, Any] | None = None,
+) -> Dict[str, Any]:
+    """Build a compact skill_view summary payload without full content."""
+    _, body = _parse_frontmatter(content)
+    payload: Dict[str, Any] = {
+        "success": True,
+        "name": name,
+        "description": description,
+        "mode": "summary",
+        "sections": _markdown_sections(body),
+        "linked_files": linked_files if linked_files else None,
+        "hint": (
+            "Call skill_view(name, section=<section title or anchor>) to load "
+            "one SKILL.md section, or omit mode/section to load the full skill."
+        ),
+    }
+    if extra:
+        payload.update(extra)
+    return payload
+
+
+def _build_skill_section_payload(
+    *,
+    name: str,
+    description: str = "",
+    content: str,
+    section: str,
+    rendered_section: str | None = None,
+    linked_files: Dict[str, List[str]] | None = None,
+    extra: Dict[str, Any] | None = None,
+) -> Dict[str, Any]:
+    """Build a section-only skill_view payload or an actionable not-found error."""
+    _, body = _parse_frontmatter(content)
+    extracted = _extract_markdown_section(body, section)
+    if extracted is None:
+        return {
+            "success": False,
+            "error": f"Section '{section}' not found in skill '{name}'.",
+            "sections": _markdown_sections(body),
+            "hint": "Use one of the listed section titles or anchors.",
+        }
+
+    payload: Dict[str, Any] = {
+        "success": True,
+        "name": name,
+        "description": description,
+        "mode": "section",
+        "section": section,
+        "content": rendered_section if rendered_section is not None else extracted,
+        "sections": _markdown_sections(body),
+        "linked_files": linked_files if linked_files else None,
+    }
+    if extra:
+        payload.update(extra)
+    return payload
+
+
 def _get_disabled_skill_names() -> Set[str]:
     """Load disabled skill names from config.
 
@@ -749,6 +862,8 @@ def _serve_plugin_skill(
     *,
     preprocess: bool = True,
     session_id: str | None = None,
+    mode: str = "full",
+    section: str | None = None,
 ) -> str:
     """Read a plugin-provided skill, apply guards, return JSON."""
     from hermes_cli.plugins import _get_disabled_plugins, get_plugin_manager
@@ -818,6 +933,44 @@ def _serve_plugin_skill(
     except Exception:
         banner = ""
 
+    canonical_name = f"{namespace}:{bare}"
+    if mode == "summary":
+        return json.dumps(
+            _build_skill_summary_payload(
+                name=canonical_name,
+                description=description,
+                content=content,
+                extra={"readiness_status": SkillReadinessStatus.AVAILABLE.value},
+            ),
+            ensure_ascii=False,
+        )
+
+    if section:
+        section_content = _extract_markdown_section(_parse_frontmatter(content)[1], section)
+        rendered_section = section_content
+        if section_content is not None and preprocess:
+            try:
+                from agent.skill_preprocessing import preprocess_skill_content
+
+                rendered_section = preprocess_skill_content(
+                    section_content,
+                    skill_md.parent,
+                    session_id=session_id,
+                )
+            except Exception:
+                logger.debug(
+                    "Could not preprocess plugin skill %s:%s section %s", namespace, bare, section, exc_info=True
+                )
+        payload = _build_skill_section_payload(
+            name=canonical_name,
+            description=description,
+            content=content,
+            section=section,
+            rendered_section=rendered_section,
+            extra={"readiness_status": SkillReadinessStatus.AVAILABLE.value},
+        )
+        return json.dumps(payload, ensure_ascii=False)
+
     rendered_content = content
     if preprocess:
         try:
@@ -836,7 +989,7 @@ def _serve_plugin_skill(
     return json.dumps(
         {
             "success": True,
-            "name": f"{namespace}:{bare}",
+            "name": canonical_name,
             "content": f"{banner}{rendered_content}" if banner else rendered_content,
             "description": description,
             "linked_files": None,
@@ -851,6 +1004,8 @@ def skill_view(
     file_path: str = None,
     task_id: str = None,
     preprocess: bool = True,
+    mode: str = "full",
+    section: str = None,
 ) -> str:
     """
     View the content of a skill or a specific file within a skill directory.
@@ -863,11 +1018,24 @@ def skill_view(
         preprocess: Apply configured SKILL.md template and inline shell rendering
             to main skill content. Internal slash/preload callers disable this
             because they render the skill message themselves.
+        mode: "full" (default) returns full content; "summary" returns
+            frontmatter, section names, and linked files without full content.
+        section: Optional Markdown heading title or slug anchor to return only
+            that section from SKILL.md.
 
     Returns:
         JSON string with skill content or error message
     """
     try:
+        mode = (mode or "full").strip().lower()
+        if mode not in {"full", "summary"}:
+            return json.dumps(
+                {
+                    "success": False,
+                    "error": f"Invalid mode '{mode}'. Use 'full' or 'summary'.",
+                },
+                ensure_ascii=False,
+            )
         local_category_name: str | None = None
         # ── Qualified name dispatch (plugin skills) ──────────────────
         # Names containing ':' are routed to the plugin skill registry.
@@ -877,6 +1045,8 @@ def skill_view(
             from hermes_cli.plugins import discover_plugins, get_plugin_manager
 
             namespace, bare = parse_qualified_name(name)
+            namespace = namespace or ""
+            bare = bare or ""
             if not is_valid_namespace(namespace):
                 return json.dumps(
                     {
@@ -915,6 +1085,8 @@ def skill_view(
                     bare,
                     preprocess=preprocess,
                     session_id=task_id,
+                    mode=mode,
+                    section=section,
                 )
 
             # Plugin exists but this specific skill is missing?
@@ -1297,6 +1469,58 @@ def skill_view(
         skill_name = frontmatter.get(
             "name", skill_md.stem if not skill_dir else skill_dir.name
         )
+
+        if mode == "summary":
+            return json.dumps(
+                _build_skill_summary_payload(
+                    name=skill_name,
+                    description=frontmatter.get("description", ""),
+                    content=content,
+                    linked_files=linked_files,
+                    extra={
+                        "tags": tags,
+                        "related_skills": related_skills,
+                        "path": rel_path,
+                        "skill_dir": str(skill_dir) if skill_dir else None,
+                        "readiness_status": SkillReadinessStatus.AVAILABLE.value,
+                    },
+                ),
+                ensure_ascii=False,
+            )
+
+        if section:
+            section_content = _extract_markdown_section(_parse_frontmatter(content)[1], section)
+            rendered_section = section_content
+            if section_content is not None and preprocess:
+                try:
+                    from agent.skill_preprocessing import preprocess_skill_content
+
+                    rendered_section = preprocess_skill_content(
+                        section_content,
+                        skill_dir,
+                        session_id=task_id,
+                    )
+                except Exception:
+                    logger.debug(
+                        "Could not preprocess skill section for %s", skill_name, exc_info=True
+                    )
+            payload = _build_skill_section_payload(
+                name=skill_name,
+                description=frontmatter.get("description", ""),
+                content=content,
+                section=section,
+                rendered_section=rendered_section,
+                linked_files=linked_files,
+                extra={
+                    "tags": tags,
+                    "related_skills": related_skills,
+                    "path": rel_path,
+                    "skill_dir": str(skill_dir) if skill_dir else None,
+                    "readiness_status": SkillReadinessStatus.AVAILABLE.value,
+                },
+            )
+            return json.dumps(payload, ensure_ascii=False)
+
         legacy_env_vars, _ = _collect_prerequisite_values(frontmatter)
         required_env_vars = _get_required_environment_variables(
             frontmatter, legacy_env_vars
@@ -1504,7 +1728,7 @@ SKILLS_LIST_SCHEMA = {
 
 SKILL_VIEW_SCHEMA = {
     "name": "skill_view",
-    "description": "Skills allow for loading information about specific tasks and workflows, as well as scripts and templates. Load a skill's full content or access its linked files (references, templates, scripts). First call returns SKILL.md content plus a 'linked_files' dict showing available references/templates/scripts. To access those, call again with file_path parameter.",
+    "description": "Skills allow for loading information about specific tasks and workflows, as well as scripts and templates. Load full content, a compact summary, a named Markdown section, or linked files (references, templates, scripts). Use mode='summary' first for large skills when you only need available sections/linked files; use section to load one heading from SKILL.md; use file_path for linked files.",
     "parameters": {
         "type": "object",
         "properties": {
@@ -1515,6 +1739,15 @@ SKILL_VIEW_SCHEMA = {
             "file_path": {
                 "type": "string",
                 "description": "OPTIONAL: Path to a linked file within the skill (e.g., 'references/api.md', 'templates/config.yaml', 'scripts/validate.py'). Omit to get the main SKILL.md content.",
+            },
+            "mode": {
+                "type": "string",
+                "enum": ["full", "summary"],
+                "description": "OPTIONAL: 'full' (default) loads complete SKILL.md content; 'summary' returns metadata, section list, and linked_files without full content.",
+            },
+            "section": {
+                "type": "string",
+                "description": "OPTIONAL: Markdown heading title or anchor to load only that section from SKILL.md (e.g. 'Merging' or 'github-pr-workflow'). Ignored when file_path is provided.",
             },
         },
         "required": ["name"],
@@ -1536,7 +1769,11 @@ def _skill_view_with_bump(args, **kw):
     telemetry failure never breaks the tool call."""
     name = args.get("name", "")
     result = skill_view(
-        name, file_path=args.get("file_path"), task_id=kw.get("task_id")
+        name,
+        file_path=args.get("file_path"),
+        task_id=kw.get("task_id"),
+        mode=args.get("mode", "full"),
+        section=args.get("section"),
     )
     try:
         parsed = json.loads(result)

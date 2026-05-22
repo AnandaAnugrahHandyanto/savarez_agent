@@ -420,6 +420,67 @@ class TestSkillView:
         assert "not found" in result["error"].lower()
         assert "available_skills" in result
 
+    def test_view_summary_omits_full_content_and_lists_sections(self, tmp_path):
+        body = """Intro text.
+
+## Setup
+Short setup notes.
+
+## Merging
+Do a lot of merge work here.
+"""
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            skill_dir = _make_skill(tmp_path, "large-skill", body=body)
+            refs_dir = skill_dir / "references"
+            refs_dir.mkdir()
+            (refs_dir / "details.md").write_text("Reference details")
+            raw = skill_view("large-skill", mode="summary")
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert result["mode"] == "summary"
+        assert "content" not in result
+        assert result["sections"] == [
+            {"title": "large-skill", "level": 1, "anchor": "large-skill"},
+            {"title": "Setup", "level": 2, "anchor": "setup"},
+            {"title": "Merging", "level": 2, "anchor": "merging"},
+        ]
+        assert result["linked_files"] == {"references": ["references/details.md"]}
+
+    def test_view_named_section_only(self, tmp_path):
+        body = """Intro text.
+
+## Setup
+Short setup notes.
+
+### Nested
+Nested setup detail.
+
+## Merging
+Merge instructions.
+"""
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "sectioned", body=body)
+            raw = skill_view("sectioned", section="setup")
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert result["mode"] == "section"
+        assert "## Setup" in result["content"]
+        assert "Nested setup detail" in result["content"]
+        assert "## Merging" not in result["content"]
+        assert "Merge instructions" not in result["content"]
+
+    def test_view_missing_section_returns_available_sections(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "sectioned", body="## Existing\nBody.")
+            raw = skill_view("sectioned", section="missing")
+
+        result = json.loads(raw)
+        assert result["success"] is False
+        assert "Section 'missing' not found" in result["error"]
+        assert {"title": "Existing", "level": 2, "anchor": "existing"} in result["sections"]
+
     def test_view_reference_file(self, tmp_path):
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
             skill_dir = _make_skill(tmp_path, "my-skill")
