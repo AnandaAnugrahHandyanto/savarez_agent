@@ -75,6 +75,10 @@ def register_cli(subparser: argparse.ArgumentParser) -> None:
     regen = subs.add_parser("regenerate", help="Re-roll a single draft with the latest steering applied (keeps the old draft)")
     regen.add_argument("draft_id")
 
+    variants = subs.add_parser("variants", help="Generate N alternative drafts for the same plan item — pick the best of N")
+    variants.add_argument("draft_id")
+    variants.add_argument("--count", type=int, default=3)
+
     advise = subs.add_parser("advise", help="Run health checks against the factory and print actionable items")
     advise.add_argument("--json", action="store_true")
 
@@ -131,7 +135,7 @@ def register_cli(subparser: argparse.ArgumentParser) -> None:
 def marketing_command(args: argparse.Namespace) -> int:
     sub = getattr(args, "marketing_command", None)
     if not sub:
-        print("usage: hermes marketing-factory {init,status,apps,add-app,update-app,remove-app,campaigns,drafts,approvals,approve,reject,regenerate,schedule,publish-dry-run,poll,enable-poller,disable-poller,advise,digest,audit,export,generate,full-dry-run}")
+        print("usage: hermes marketing-factory {init,status,apps,add-app,update-app,remove-app,campaigns,drafts,approvals,approve,reject,regenerate,variants,schedule,publish-dry-run,poll,enable-poller,disable-poller,advise,digest,audit,export,generate,full-dry-run}")
         return 2
     store = MarketingFactoryStore(getattr(args, "store_path", None))
     pipe = MarketingFactoryPipeline(store)
@@ -204,6 +208,14 @@ def marketing_command(args: argparse.Namespace) -> int:
             return 0
         if sub == "digest":
             print(pipe.weekly_digest(args.app, days=args.days))
+            return 0
+        if sub == "variants":
+            result = pipe.generate_variants(args.draft_id, count=args.count)
+            _print_json({
+                "source_draft_id": result["source_draft_id"],
+                "count_generated": result["count_generated"],
+                "variant_ids": [v["id"] for v in result["variants"]],
+            })
             return 0
         if sub == "regenerate":
             result = pipe.regenerate_draft(args.draft_id)

@@ -283,6 +283,18 @@ async def delete_app(app_slug: str, cascade: bool = True):
     return {"result": result, "overview": _overview(store)}
 
 
+@router.post("/drafts/{draft_id}/variants")
+async def make_variants(draft_id: str, count: int = 3):
+    store = _store()
+    try:
+        result = _pipe(store).generate_variants(draft_id, count=count)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"result": result, "overview": _overview(store)}
+
+
 @router.post("/drafts/{draft_id}/regenerate")
 async def regenerate_draft(draft_id: str):
     store = _store()

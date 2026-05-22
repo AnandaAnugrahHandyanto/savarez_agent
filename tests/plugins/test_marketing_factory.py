@@ -525,6 +525,46 @@ def test_weekly_digest_via_api_endpoint(isolate_home):
     assert response_404.status_code == 404
 
 
+def test_generate_variants_produces_n_distinct_drafts(isolate_home):
+    """Phase 11: generate_variants(draft_id, count=3) returns 3 distinct drafts all linked to the source."""
+    from plugins.marketing_factory.pipeline import MarketingFactoryPipeline
+    from plugins.marketing_factory.store import MarketingFactoryStore
+
+    store = MarketingFactoryStore()
+    pipe = MarketingFactoryPipeline(store)
+    pipe.initialize_samples()
+    gen = pipe.generate_campaign("pupular", days=1)
+    source = gen["drafts"][0]
+
+    result = pipe.generate_variants(source["id"], count=3)
+    assert result["count_generated"] == 3
+    variant_ids = {v["id"] for v in result["variants"]}
+    assert len(variant_ids) == 3
+    for variant in result["variants"]:
+        assert variant["regenerated_from"] == source["id"]
+        assert variant["status"] == "needs_review"
+        assert variant["channel"] == source["channel"]
+
+    # audit captures the batch
+    actions = [event["action"] for event in store.list_audit(app_slug="pupular", limit=200)]
+    assert "variants.generated" in actions
+
+
+def test_generate_variants_rejects_invalid_counts(isolate_home):
+    from plugins.marketing_factory.pipeline import MarketingFactoryPipeline
+    from plugins.marketing_factory.store import MarketingFactoryStore
+
+    store = MarketingFactoryStore()
+    pipe = MarketingFactoryPipeline(store)
+    pipe.initialize_samples()
+    gen = pipe.generate_campaign("pupular", days=1)
+
+    with pytest.raises(ValueError):
+        pipe.generate_variants(gen["drafts"][0]["id"], count=0)
+    with pytest.raises(ValueError):
+        pipe.generate_variants(gen["drafts"][0]["id"], count=10)
+
+
 def test_regenerate_draft_creates_new_draft_preserves_old(isolate_home):
     """Phase 8: regenerate produces a new draft with regenerated_from lineage, leaving the old draft intact."""
     from plugins.marketing_factory.pipeline import MarketingFactoryPipeline
