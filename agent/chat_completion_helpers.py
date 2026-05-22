@@ -64,6 +64,16 @@ from utils import base_url_host_matches, base_url_hostname
 logger = logging.getLogger(__name__)
 
 
+def _append_provider_telemetry(event: dict) -> None:
+    """Best-effort provider telemetry bridge for hot fallback paths."""
+    try:
+        from agent.provider_telemetry import append_provider_event
+
+        append_provider_event(event)
+    except Exception:
+        logger.debug("provider telemetry bridge failed", exc_info=True)
+
+
 def _ra():
     """Lazy ``run_agent`` reference.
 
@@ -771,6 +781,19 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             logging.warning(
                 "Fallback to %s failed: provider not configured",
                 fb_provider)
+            _append_provider_telemetry({
+                "event": "fallback_activation_failed",
+                "status": "failed",
+                "resolution": "fail",
+                "failure_kind": "provider_error",
+                "platform": getattr(agent, "platform", None) or "unknown",
+                "session_id": getattr(agent, "session_id", None),
+                "provider": current_provider or "unknown",
+                "model": current_model or "unknown",
+                "fallback": {"provider": fb_provider, "model": fb_model},
+                "retry_count": max(agent._fallback_index - 1, 0),
+                "notes": "fallback provider not configured",
+            })
             return agent._try_activate_fallback()  # try next in chain
         try:
             from hermes_cli.model_normalize import normalize_model_for_provider
@@ -808,6 +831,8 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             fb_api_mode = "bedrock_converse"
 
         old_model = agent.model
+        old_provider = getattr(agent, "provider", "") or ""
+        old_base_url = getattr(agent, "base_url", "") or ""
 
         # Clear the per-config context_length override so the fallback
         # model's actual context window is resolved instead of inheriting
@@ -915,9 +940,43 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             "Fallback activated: %s → %s (%s)",
             old_model, fb_model, fb_provider,
         )
+        _append_provider_telemetry({
+            "event": "fallback_activated",
+            "status": "fallback_activated",
+            "resolution": "fallback",
+            "failure_kind": (getattr(reason, "value", None) or str(reason or "provider_error")),
+            "platform": getattr(agent, "platform", None) or "unknown",
+            "session_id": getattr(agent, "session_id", None),
+            "provider": old_provider or "unknown",
+            "model": old_model or "unknown",
+            "engine": "hermes-runtime",
+            "fallback": {
+                "provider": fb_provider,
+                "model": fb_model,
+                "base_url": fb_base_url,
+                "previous_provider": old_provider,
+                "previous_model": old_model,
+                "previous_base_url": old_base_url,
+            },
+            "retry_count": max(agent._fallback_index - 1, 0),
+            "notes": "provider fallback activated",
+        })
         return True
     except Exception as e:
         logging.error("Failed to activate fallback %s: %s", fb_model, e)
+        _append_provider_telemetry({
+            "event": "fallback_activation_failed",
+            "status": "failed",
+            "resolution": "fail",
+            "failure_kind": "provider_error",
+            "platform": getattr(agent, "platform", None) or "unknown",
+            "session_id": getattr(agent, "session_id", None),
+            "provider": current_provider or getattr(agent, "provider", None) or "unknown",
+            "model": current_model or getattr(agent, "model", None) or "unknown",
+            "fallback": {"provider": fb_provider, "model": fb_model},
+            "retry_count": max(getattr(agent, "_fallback_index", 1) - 1, 0),
+            "notes": repr(e),
+        })
         return agent._try_activate_fallback()  # try next in chain
 
 
