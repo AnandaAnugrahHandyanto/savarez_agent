@@ -100,6 +100,14 @@ def _generic_signature(body: bytes, secret: str) -> str:
     return hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
 
 
+def _todoist_signature(body: bytes, secret: str) -> str:
+    """Compute X-Todoist-Hmac-SHA256 (base64-encoded HMAC-SHA256) for *body*."""
+    import base64
+    return base64.b64encode(
+        hmac.new(secret.encode(), body, hashlib.sha256).digest()
+    ).decode()
+
+
 # ===================================================================
 # Signature validation
 # ===================================================================
@@ -169,6 +177,33 @@ class TestValidateSignature:
         sig = _generic_signature(body, secret)
         req = _mock_request(headers={"X-Webhook-Signature": sig})
         assert adapter._validate_signature(req, body, secret) is True
+
+    def test_validate_todoist_signature_valid(self):
+        """Valid X-Todoist-Hmac-SHA256 (base64 HMAC-SHA256) is accepted."""
+        adapter = _make_adapter()
+        body = b'{"event_name": "item:added", "event_data": {"content": "buy milk"}}'
+        secret = "todoist-client-secret"
+        sig = _todoist_signature(body, secret)
+        req = _mock_request(headers={"X-Todoist-Hmac-SHA256": sig})
+        assert adapter._validate_signature(req, body, secret) is True
+
+    def test_validate_todoist_signature_invalid(self):
+        """Wrong X-Todoist-Hmac-SHA256 is rejected."""
+        adapter = _make_adapter()
+        body = b'{"event_name": "item:added"}'
+        secret = "todoist-client-secret"
+        req = _mock_request(
+            headers={"X-Todoist-Hmac-SHA256": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="}
+        )
+        assert adapter._validate_signature(req, body, secret) is False
+
+    def test_validate_todoist_signature_wrong_secret(self):
+        """Valid signature with a different secret is rejected."""
+        adapter = _make_adapter()
+        body = b'{"event_name": "item:added"}'
+        wrong_sig = _todoist_signature(body, "other-secret")
+        req = _mock_request(headers={"X-Todoist-Hmac-SHA256": wrong_sig})
+        assert adapter._validate_signature(req, body, "todoist-client-secret") is False
 
 
 # ===================================================================

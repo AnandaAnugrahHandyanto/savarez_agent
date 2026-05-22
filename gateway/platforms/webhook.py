@@ -27,6 +27,7 @@ Security:
 """
 
 import asyncio
+import base64
 import hashlib
 import hmac
 import json
@@ -603,6 +604,15 @@ class WebhookAdapter(BasePlatformAdapter):
         gl_token = request.headers.get("X-Gitlab-Token", "")
         if gl_token:
             return hmac.compare_digest(gl_token, secret)
+
+        # Todoist: X-Todoist-Hmac-SHA256 = base64(HMAC-SHA256(body, client_secret))
+        # https://developer.todoist.com/sync/v9/#request-format
+        td_sig = request.headers.get("X-Todoist-Hmac-SHA256", "")
+        if td_sig:
+            expected = base64.b64encode(
+                hmac.new(secret.encode(), body, hashlib.sha256).digest()
+            ).decode()
+            return hmac.compare_digest(td_sig, expected)
 
         # Generic: X-Webhook-Signature = <hex HMAC-SHA256>
         generic_sig = request.headers.get("X-Webhook-Signature", "")
