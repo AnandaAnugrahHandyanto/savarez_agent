@@ -191,6 +191,89 @@
     );
   }
 
+  function PlatformPreview({ draft, app }) {
+    const channel = draft.channel;
+    const brandName = (app && app.name) || draft.app_slug;
+    const handle = `@${(draft.app_slug || "brand").toLowerCase().replace(/[^a-z0-9_]/g, "")}`;
+    const body = draft.body || "";
+    const firstImage = (draft.images || []).find((img) => img && img.url);
+
+    if (channel === "x") {
+      return h("div", { className: "rounded-2xl border border-midground/20 bg-background/80 p-4 max-w-md" },
+        h("div", { className: "flex items-start gap-3" },
+          h("div", { className: "h-10 w-10 rounded-full bg-cyan-300/40 shrink-0" }),
+          h("div", { className: "flex-1 min-w-0" },
+            h("div", { className: "flex items-baseline gap-1 text-sm" },
+              h("span", { className: "font-semibold" }, brandName),
+              h("span", { className: "text-midground/60" }, handle),
+              h("span", { className: "text-midground/60" }, "· now")
+            ),
+            h("p", { className: "mt-1 whitespace-pre-wrap text-sm leading-6" }, body),
+            firstImage ? h("img", { src: firstImage.url, alt: "post image", loading: "lazy", className: "mt-2 w-full rounded-2xl border border-midground/15" }) : null
+          )
+        )
+      );
+    }
+    if (channel === "instagram") {
+      return h("div", { className: "rounded-xl border border-midground/20 bg-background/80 p-3 max-w-sm" },
+        h("div", { className: "flex items-center gap-2 mb-2" },
+          h("div", { className: "h-8 w-8 rounded-full bg-gradient-to-br from-pink-400 via-red-500 to-yellow-400" }),
+          h("span", { className: "text-sm font-semibold" }, brandName)
+        ),
+        firstImage ? h("img", { src: firstImage.url, alt: "post image", loading: "lazy", className: "w-full aspect-square rounded-lg border border-midground/15 object-cover mb-2" }) : null,
+        h("div", { className: "flex gap-3 text-lg mb-1" }, "♡  ◌  ⤴"),
+        h("p", { className: "text-sm leading-6 whitespace-pre-wrap" },
+          h("span", { className: "font-semibold mr-1" }, brandName),
+          body
+        )
+      );
+    }
+    if (channel === "tiktok") {
+      return h("div", { className: "rounded-xl border border-midground/20 bg-black text-white p-3 max-w-xs relative" },
+        firstImage ? h("img", { src: firstImage.url, alt: "tiktok thumb", loading: "lazy", className: "w-full aspect-[9/16] rounded-lg object-cover mb-2 opacity-90" }) : h("div", { className: "w-full aspect-[9/16] rounded-lg bg-midground/40 mb-2" }),
+        h("div", { className: "absolute bottom-3 left-3 right-3 text-sm" },
+          h("div", { className: "font-semibold" }, brandName),
+          h("p", { className: "mt-1 whitespace-pre-wrap leading-5" }, body)
+        )
+      );
+    }
+    if (channel === "linkedin") {
+      return h("div", { className: "rounded-lg border border-midground/20 bg-background/80 p-4 max-w-md" },
+        h("div", { className: "flex items-start gap-3 mb-3" },
+          h("div", { className: "h-12 w-12 rounded-full bg-blue-400/40 shrink-0" }),
+          h("div", null,
+            h("div", { className: "font-semibold text-sm" }, brandName),
+            h("div", { className: "text-xs text-midground/60" }, app && app.positioning ? (app.positioning.length > 60 ? app.positioning.slice(0, 60) + "…" : app.positioning) : "Brand · Now")
+          )
+        ),
+        h("p", { className: "text-sm leading-6 whitespace-pre-wrap" }, body)
+      );
+    }
+    if (channel === "blog") {
+      return h("article", { className: "rounded-lg border border-midground/20 bg-background/80 p-4 max-w-2xl prose prose-sm prose-invert" },
+        h("pre", { className: "whitespace-pre-wrap text-xs leading-6 font-mono text-midground/90" }, body)
+      );
+    }
+    if (channel === "email") {
+      const lines = body.split("\n");
+      const subjectLine = lines[0] && lines[0].toLowerCase().startsWith("subject:") ? lines[0] : null;
+      const rest = subjectLine ? lines.slice(1).join("\n") : body;
+      return h("div", { className: "rounded-lg border border-midground/20 bg-background/80 p-4 max-w-xl" },
+        subjectLine ? h("div", { className: "border-b border-midground/15 pb-2 mb-3 text-sm font-semibold" }, subjectLine) : null,
+        h("div", { className: "text-xs text-midground/60 mb-3" }, `From: ${brandName} <hello@${draft.app_slug}.com>`),
+        h("p", { className: "text-sm leading-6 whitespace-pre-wrap" }, rest)
+      );
+    }
+    if (channel === "app_store") {
+      return h("div", { className: "rounded-2xl border border-midground/20 bg-gradient-to-br from-cyan-900/20 to-purple-900/20 p-4 max-w-sm" },
+        h("div", { className: "text-[10px] uppercase tracking-[0.18em] text-midground/70" }, "App Store promotional text"),
+        h("p", { className: "mt-2 text-base font-medium leading-snug" }, body)
+      );
+    }
+    // Fallback: just show the body in a box
+    return h("div", { className: "rounded-lg border border-midground/20 bg-background/80 p-3 text-sm whitespace-pre-wrap" }, body);
+  }
+
   function SchedulePicker({ draft, busy, run }) {
     const [editing, setEditing] = useState(false);
     const canEdit = draft.status !== "posted" && draft.status !== "dry_run_posted";
@@ -235,19 +318,31 @@
     );
   }
 
-  function EditableBody({ draft, busy, run }) {
+  function EditableBody({ draft, busy, run, app }) {
     const [editing, setEditing] = useState(false);
+    const [showPreview, setShowPreview] = useState(false);
     const [value, setValue] = useState(draft.body || "");
     useEffect(() => { setValue(draft.body || ""); }, [draft.body, draft.id]);
     const canEdit = draft.status !== "posted" && draft.status !== "dry_run_posted";
     if (!editing) {
-      return h("div", { className: "mt-3 flex items-start gap-2" },
-        h("p", { className: "flex-1 whitespace-pre-wrap text-sm leading-6" }, draft.body),
-        canEdit ? h("button", {
-          type: "button",
-          onClick: () => { setValue(draft.body || ""); setEditing(true); },
-          className: "text-[10px] text-midground/60 hover:text-cyan-200 underline shrink-0",
-        }, "edit") : null
+      return h("div", { className: "mt-3" },
+        h("div", { className: "flex items-start gap-2" },
+          showPreview
+            ? h("div", { className: "flex-1" }, h(PlatformPreview, { draft, app }))
+            : h("p", { className: "flex-1 whitespace-pre-wrap text-sm leading-6" }, draft.body),
+          h("div", { className: "flex flex-col gap-1 shrink-0" },
+            h("button", {
+              type: "button",
+              onClick: () => setShowPreview(!showPreview),
+              className: "text-[10px] text-midground/60 hover:text-cyan-200 underline",
+            }, showPreview ? "show raw" : "show preview"),
+            canEdit ? h("button", {
+              type: "button",
+              onClick: () => { setValue(draft.body || ""); setEditing(true); },
+              className: "text-[10px] text-midground/60 hover:text-cyan-200 underline",
+            }, "edit") : null
+          )
+        )
       );
     }
     return h("div", { className: "mt-3 flex flex-col gap-2" },
@@ -464,7 +559,7 @@
               ),
               draft.llm_error ? h("div", { className: "mt-2 text-[11px] text-amber-200/90" }, `LLM fallback reason: ${draft.llm_error}`) : null,
               draft.safety && !draft.safety.passed && safetyDetail(draft.safety) ? h("div", { className: "mt-2 text-[11px] text-red-200/90" }, `Safety issues: ${safetyDetail(draft.safety)}`) : null,
-              h(EditableBody, { draft, busy, run }),
+              h(EditableBody, { draft, busy, run, app: (data?.apps || []).find((a) => a.slug === draft.app_slug) }),
               (Array.isArray(draft.images) && draft.images.length) ? h("div", { className: "mt-3 flex flex-wrap gap-2" },
                 draft.images.filter((img) => img && img.url).map((img, idx) => h("div", {
                   key: idx,
@@ -475,10 +570,10 @@
                       src: img.url,
                       alt: img.prompt || "generated image",
                       loading: "lazy",
-                      className: "w-32 h-32 rounded-lg border border-midground/20 object-cover",
+                      className: "w-24 h-24 rounded-lg border border-midground/20 object-cover",
                     })
                   ),
-                  img.prompt ? h("div", { className: "max-w-[8rem] text-[10px] text-midground/60 leading-snug" }, img.prompt.length > 110 ? img.prompt.slice(0, 110) + "…" : img.prompt) : null
+                  img.prompt ? h("div", { className: "max-w-[6rem] text-[10px] text-midground/60 leading-snug" }, img.prompt.length > 80 ? img.prompt.slice(0, 80) + "…" : img.prompt) : null
                 ))
               ) : null,
               h("div", { className: "mt-3 flex flex-wrap gap-2" },
