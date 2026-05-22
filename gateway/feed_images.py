@@ -145,24 +145,38 @@ async def _download_image(client: httpx.AsyncClient, url: str, workdir: Path) ->
     return path
 
 
+FEED_IMAGE_TRANSFORM_PROMPT = """첨부한 사진을 기반으로 자연스러운 합성 이미지를 만들어줘.
+
+현재 사진은 풍경을 배경으로, 한 손에 인물 사진을 들고 있는 장면이다.
+손에 들린 사진 속 인물을 실제 풍경 속에 자연스럽게 등장한 것처럼 합성해줘.
+
+가장 중요한 조건은 다음과 같다.
+
+사진 속 인물의 얼굴 생김새, 표정, 시선, 포즈, 체형, 신체 비율은 최대한 그대로 유지해줘.
+인물이 다른 사람처럼 보이면 안 된다. 얼굴 구조, 눈·코·입의 인상, 분위기, 표정의 뉘앙스를 원본 인물과 동일하게 유지해줘.
+
+다만 인물이 풍경 속에 실제로 서 있는 것처럼 보이도록,
+의상은 배경의 계절감과 장소 분위기에 맞는 자연스러운 캐주얼 스타일로 바꿔줘.
+옷은 과하게 화려하지 않게, 실제 여행 사진이나 일상 스냅처럼 자연스럽게 연출해줘.
+
+머리스타일이나 메이크업, 분장이 원본에서 너무 과하거나 배경과 어울리지 않는다면,
+인물의 정체성과 얼굴 인상은 유지한 채 캐주얼한 의상과 어울리도록 자연스럽게 정리해줘.
+단, 헤어스타일을 완전히 다른 사람처럼 바꾸지는 말고, 원본의 분위기를 살린 자연스러운 변화만 적용해줘.
+
+합성된 인물은 배경의 조명, 그림자, 원근감, 색감, 해상도와 자연스럽게 어울려야 한다.
+사진을 들고 있는 손이나 원래의 종이 사진 느낌은 제거하고, 인물이 실제 풍경 안에 존재하는 것처럼 만들어줘.
+
+전체 결과물은 인위적인 AI 합성 느낌이 아니라, 실제 카메라로 촬영한 자연스러운 여행/라이프스타일 사진처럼 보여야 한다.
+
+네거티브 프롬프트
+
+다른 사람처럼 변형된 얼굴, 얼굴 인상 변화, 표정 변화, 포즈 변화, 과한 성형 느낌, 과한 메이크업, 과한 헤어스타일, 비현실적인 의상, 판타지 의상, 과도한 보정, 플라스틱 피부, AI 합성 티, 흐릿한 얼굴, 왜곡된 손, 이상한 손가락, 부자연스러운 그림자, 배경과 맞지 않는 조명, 원근감 오류, 종이 사진이 남아 있음, 손에 사진을 들고 있는 상태 유지, 인물이 배경에 떠 보임"""
+
+
 def build_transform_prompt(image_path: Path, user_prompt: str) -> str:
-    """Build the GPT Image 2 prompt for a queued feed image.
+    """Build the GPT Image 2 prompt for a queued feed image."""
 
-    Current Hermes' FAL GPT Image 2 backend is text-to-image, so this prompt is
-    designed to create a transformed output from the user's instruction while
-    the original image is kept as job context. If/when the backend supports
-    img2img, this function remains the text prompt source.
-    """
-
-    base = (user_prompt or "").strip()
-    if not base:
-        base = "Create a polished social-feed image inspired by the uploaded image."
-    return (
-        f"{base}\n\n"
-        "Create a high-quality, safe, social-media-ready image. Preserve the likely "
-        "subject intent and composition implied by the uploaded source image. Use "
-        "clean lighting, crisp details, natural colors, and no watermarks."
-    )
+    return FEED_IMAGE_TRANSFORM_PROMPT
 
 
 def generate_with_gpt_image_2(prompt: str, output_dir: Path) -> tuple[Path | None, str | None]:

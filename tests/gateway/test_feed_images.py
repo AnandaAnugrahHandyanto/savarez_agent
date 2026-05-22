@@ -68,6 +68,17 @@ async def test_post_discord_feed_image_sends_multipart_with_jwt_and_metadata(mon
     assert kwargs["data"]["prompt"] == "make it cute"
 
 
+def test_build_transform_prompt_uses_required_synthesis_prompt(tmp_path):
+    prompt = feed_images.build_transform_prompt(tmp_path / "source.png", "ignored user text")
+
+    assert "첨부한 사진을 기반으로 자연스러운 합성 이미지를 만들어줘." in prompt
+    assert "사진 속 인물의 얼굴 생김새, 표정, 시선, 포즈, 체형, 신체 비율은 최대한 그대로 유지해줘." in prompt
+    assert "사진을 들고 있는 손이나 원래의 종이 사진 느낌은 제거하고" in prompt
+    assert "네거티브 프롬프트" in prompt
+    assert "다른 사람처럼 변형된 얼굴" in prompt
+    assert "ignored user text" not in prompt
+
+
 @pytest.mark.asyncio
 async def test_process_queued_feed_images_claims_generates_and_updates(monkeypatch, tmp_path):
     input_image = tmp_path / "source.png"
