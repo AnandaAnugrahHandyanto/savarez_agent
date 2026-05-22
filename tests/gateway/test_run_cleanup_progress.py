@@ -131,6 +131,17 @@ class FailingAgent:
         }
 
 
+class SlowNotifyAgent:
+    """Runs long enough for the periodic still-working notifier to fire."""
+
+    def __init__(self, **kwargs):
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        time.sleep(0.25)
+        return {"final_response": "done", "messages": [], "api_calls": 1}
+
+
 def _make_runner(adapter):
     gateway_run = importlib.import_module("gateway.run")
     GatewayRunner = gateway_run.GatewayRunner
@@ -320,6 +331,43 @@ async def test_cleanup_noop_on_adapter_without_delete_support(monkeypatch, tmp_p
     # (The NoDeleteAdapter.delete_message would raise AssertionError if
     # the cleanup closure had somehow captured a reference to it.)
     assert adapter.deleted == []
+
+
+@pytest.mark.asyncio
+async def test_still_working_reuses_editable_status_message(monkeypatch, tmp_path):
+    """Periodic still-working notices should edit one bubble when possible.
+
+    Slack supports ``edit_message`` but not cleanup/deletion, so editing the
+    first status message is the low-noise path: one thread notification instead
+    of a new permanent message every interval.
+    """
+    adapter = CleanupCaptureAdapter(platform=Platform.SLACK)
+    runner = _make_runner(adapter)
+    gateway_run = _install_fakes(monkeypatch, SlowNotifyAgent, cleanup_on=False)
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setenv("HERMES_AGENT_NOTIFY_INTERVAL", "0.05")
+
+    source = SessionSource(platform=Platform.SLACK, chat_id="C123", thread_id="parent_ts")
+    session_key = "agent:main:slack:channel:C123:thread:parent_ts"
+
+    result = await runner._run_agent(
+        message="hello",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-1",
+        session_key=session_key,
+        event_message_id="parent_ts",
+    )
+
+    assert result["final_response"] == "done"
+    still_working_sends = [m for m in adapter.sent if "Still working" in m["content"]]
+    still_working_edits = [m for m in adapter.edits if "Still working" in m["content"]]
+    assert len(still_working_sends) == 1
+    assert len(still_working_edits) >= 1
+    assert {m["message_id"] for m in still_working_edits} == {
+        still_working_sends[0]["message_id"]
+    }
 
 
 @pytest.mark.asyncio
