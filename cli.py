@@ -14194,8 +14194,18 @@ class HermesCLI:
             from hermes_cli.relaunch import relaunch
             relaunch(self._pending_relaunch, preserve_inherited=False)
 
+        # Force exit after the finally block completes. Non-daemon background
+        # threads (asyncio event loop workers, httpx transport pools, etc.)
+        # can keep the Python process alive indefinitely once the interactive
+        # session ends, especially on Windows where stdin-orphan detection is
+        # unreliable. All resource cleanup (MCP servers, browsers, terminals,
+        # session DB, voice recorder, memory providers) already ran in the
+        # finally block above, so os._exit(0) here is safe — nothing remains
+        # to finalize.
+        os._exit(0)
 
-# ============================================================================
+
+# =============================================================================
 # Main Entry Point
 # ============================================================================
 
