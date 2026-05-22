@@ -743,11 +743,13 @@ class DiscordAdapter(BasePlatformAdapter):
                 # Bot message filtering (DISCORD_ALLOW_BOTS):
                 #   "none"     — ignore all other bots (default)
                 #   "mentions" — accept bot messages only when they @mention us
-                #   "all"      — accept all bot messages
+                #   "all"      — accept non-reply bot messages; reply messages still
+                #                drop via anti-loop guard below
                 # Must run BEFORE the user allowlist check so that bots
                 # permitted by DISCORD_ALLOW_BOTS are not rejected for
                 # not being in DISCORD_ALLOWED_USERS (fixes #4466).
-                if getattr(message.author, "bot", False):
+                _is_bot = getattr(message.author, "bot", False)
+                if _is_bot:
                     allow_bots = os.getenv("DISCORD_ALLOW_BOTS", "none").lower().strip()
                     if allow_bots == "none":
                         return
@@ -756,6 +758,18 @@ class DiscordAdapter(BasePlatformAdapter):
                             return
                     # "all" falls through; bot is permitted — skip the
                     # human-user allowlist below (bots aren't in it).
+
+                    # Anti-loop: unconditionally drop bot reply messages.
+                    # In multi-agent threads, reply chains are the primary
+                    # loop fuel; discarding them by MessageType is clean,
+                    # content-agnostic, and requires no language-specific
+                    # hardcoding.
+                    if message.type == discord.MessageType.reply:
+                        logger.debug(
+                            "[%s] Dropping bot reply message: author=%s",
+                            self.name, message.author.id,
+                        )
+                        return
                 else:
                     # Non-bot: enforce the configured user/role allowlists.
                     # Pass guild + is_dm so role checks are scoped to the
@@ -4533,10 +4547,12 @@ class DiscordAdapter(BasePlatformAdapter):
             # — UNLESS thread_require_mention is enabled, in which case threads
             # are gated the same as channels.  Useful when multiple bots share
             # a thread.
+            _is_bot_author = getattr(message.author, "bot", False)
             in_bot_thread = (
                 is_thread
                 and thread_id in self._threads
                 and not self._discord_thread_require_mention()
+                and not _is_bot_author
             )
 
             if require_mention and not is_free_channel and not in_bot_thread:

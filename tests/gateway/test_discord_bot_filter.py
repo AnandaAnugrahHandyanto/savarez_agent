@@ -16,13 +16,14 @@ def _make_author(*, bot: bool = False, is_self: bool = False):
     return author
 
 
-def _make_message(*, author=None, content="hello", mentions=None, is_dm=False):
+def _make_message(*, author=None, content="hello", mentions=None, is_dm=False, msg_type=None):
     """Create a mock Discord message."""
     msg = MagicMock()
     msg.author = author or _make_author()
     msg.content = content
     msg.attachments = []
     msg.mentions = mentions or []
+    msg.type = msg_type
     if is_dm:
         import discord
         msg.channel = MagicMock(spec=discord.DMChannel)
@@ -47,6 +48,11 @@ class TestDiscordBotFilter(unittest.TestCase):
         if message.author == client_user:
             return False  # own messages always ignored
 
+        # Ignore Discord system messages (only default and reply allowed)
+        import discord
+        if message.type not in {discord.MessageType.default, discord.MessageType.reply, None}:
+            return False
+
         if getattr(message.author, "bot", False):
             allow = allow_bots.lower().strip()
             if allow == "none":
@@ -55,6 +61,10 @@ class TestDiscordBotFilter(unittest.TestCase):
                 if not client_user or client_user not in message.mentions:
                     return False
             # "all" falls through
+
+            # Anti-loop: unconditionally drop bot reply messages
+            if message.type == discord.MessageType.reply:
+                return False
         
         return True  # message accepted
 
@@ -111,6 +121,33 @@ class TestDiscordBotFilter(unittest.TestCase):
         self.assertTrue(self._run_filter(msg, "All"))
         self.assertFalse(self._run_filter(msg, "NONE"))
         self.assertFalse(self._run_filter(msg, "None"))
+
+
+    def test_allow_bots_all_rejects_bot_reply(self):
+        """Even with allow_bots=all, bot reply messages are dropped."""
+        import discord
+        bot = _make_author(bot=True)
+        msg = _make_message(author=bot, msg_type=discord.MessageType.reply)
+        self.assertFalse(self._run_filter(msg, "all"))
+
+    def test_allow_bots_mentions_rejects_bot_reply(self):
+        """Bot reply messages are dropped even when @mentioned."""
+        import discord
+        our_user = _make_author(is_self=True)
+        bot = _make_author(bot=True)
+        msg = _make_message(
+            author=bot,
+            mentions=[our_user],
+            msg_type=discord.MessageType.reply,
+        )
+        self.assertFalse(self._run_filter(msg, "mentions", our_user))
+
+    def test_human_reply_not_rejected(self):
+        """Human reply messages are not dropped by the anti-loop guard."""
+        import discord
+        human = _make_author(bot=False)
+        msg = _make_message(author=human, msg_type=discord.MessageType.reply)
+        self.assertTrue(self._run_filter(msg, "all"))
 
 
 if __name__ == "__main__":
