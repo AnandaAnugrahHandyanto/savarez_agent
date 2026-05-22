@@ -3,9 +3,10 @@
 Exposes lemonade's local inference server (sd-cpp / Stable Diffusion) as an
 :class:`ImageGenProvider` implementation.
 
-Models are from the lemonade ``omni-router.md`` collections:
+Models are from the lemonade collection:
 - **SD-Turbo** — Lite Collection (text-to-image only)
 - **Flux-2-Klein-9B-GGUF** — Ultra Collection (text-to-image + image editing)
+- **Z-Image-Turbo** — Ultra Collection (text-to-image)
 
 Features:
 - Local image generation via lemonade server (sd-cpp / Stable Diffusion)
@@ -41,13 +42,12 @@ from agent.image_gen_provider import (
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Model catalog — from lemonade omni-router.md collections
+# Model catalog — from lemonade collection
 # ---------------------------------------------------------------------------
 
 _MODELS: Dict[str, Dict[str, Any]] = {
     "SD-Turbo": {
         "display": "SD-Turbo",
-        "speed": "~2-5s (GPU) / ~4-5min (CPU)",
         "strengths": "Fastest, Lite Collection, text-to-image only",
         "steps": 4,
         "cfg_scale": 1.0,
@@ -56,6 +56,12 @@ _MODELS: Dict[str, Dict[str, Any]] = {
         "display": "Flux 2 Klein 9B",
         "strengths": "Ultra Collection, text-to-image + image editing",
         "steps": 4,
+        "cfg_scale": 1.0,
+    },
+    "Z-Image-Turbo": {
+        "display": "Z Image Turbo",
+        "strengths": "Fast distilled diffusion model, text-to-image",
+        "steps": 9,
         "cfg_scale": 1.0,
     },
 }
