@@ -3043,6 +3043,54 @@ def _(rid, params: dict) -> dict:
     return _ok(rid, {"status": "streaming"})
 
 
+def _notification_event_belongs_to_session(evt: dict, session: dict) -> bool:
+    """Return True only when a process notification is owned by this TUI session.
+
+    completion_queue is process-global. Without this hard gate, whichever TUI
+    session poller wakes first can consume and deliver a notification for a
+    background process launched by a different session. A notification without
+    an immutable session_key is intentionally unroutable in TUI mode.
+    """
+    event_session_key = str(evt.get("session_key") or "").strip()
+    current_session_key = str(session.get("session_key") or "").strip()
+    return bool(event_session_key and current_session_key and event_session_key == current_session_key)
+
+
+def _requeue_foreign_notification_event(
+    evt: dict,
+    *,
+    current_session_key: str,
+    process_registry,
+    max_attempts: int = 20,
+) -> bool:
+    """Requeue a foreign event briefly so its owner poller can claim it.
+
+    Returns True when requeued, False when dropped. The bounded retry prevents a
+    single stale event from spinning forever when its owning TUI session is gone.
+    """
+    event_session_key = str(evt.get("session_key") or "").strip()
+    if not event_session_key:
+        logger.warning(
+            "Dropping unroutable process notification with no session_key in TUI poller"
+        )
+        return False
+
+    attempts = int(evt.get("_tui_requeue_attempts") or 0)
+    if attempts >= max_attempts:
+        logger.warning(
+            "Dropping process notification for inactive TUI session %s after %s requeues "
+            "(current session %s)",
+            event_session_key,
+            attempts,
+            current_session_key,
+        )
+        return False
+
+    evt["_tui_requeue_attempts"] = attempts + 1
+    process_registry.completion_queue.put(evt)
+    return True
+
+
 def _notification_poller_loop(
     stop_event: threading.Event, sid: str, session: dict
 ) -> None:
@@ -3052,10 +3100,11 @@ def _notification_poller_loop(
     status.update (kind=process) for user visibility, then chains an
     agent turn via _run_prompt_submit if the session is idle.
 
-    NOTE: The completion_queue is global (one per process). If multiple
-    TUI sessions coexist, whichever poller wakes first grabs the event,
-    even if the process was started by a different session. This matches
-    CLI/gateway behavior (single session per process).
+    The completion_queue is global (one per process), so every event must be
+    gated by its immutable session_key before this poller may display it or
+    inject it into the agent. Foreign events are briefly requeued for their
+    owning session; unroutable/stale events are dropped rather than delivered
+    into the wrong session.
     """
     from tools.process_registry import process_registry, format_process_notification
 
@@ -3063,6 +3112,16 @@ def _notification_poller_loop(
         try:
             evt = process_registry.completion_queue.get(timeout=0.5)
         except Exception:
+            continue
+
+        current_session_key = str(session.get("session_key") or "")
+        if not _notification_event_belongs_to_session(evt, session):
+            if _requeue_foreign_notification_event(
+                evt,
+                current_session_key=current_session_key,
+                process_registry=process_registry,
+            ):
+                time.sleep(0.05)
             continue
 
         _evt_sid = evt.get("session_id", "")
@@ -3101,6 +3160,16 @@ def _notification_poller_loop(
             evt = process_registry.completion_queue.get_nowait()
         except Exception:
             break
+        current_session_key = str(session.get("session_key") or "")
+        if not _notification_event_belongs_to_session(evt, session):
+            if _requeue_foreign_notification_event(
+                evt,
+                current_session_key=current_session_key,
+                process_registry=process_registry,
+            ):
+                time.sleep(0.05)
+            continue
+
         _evt_sid = evt.get("session_id", "")
         if evt.get("type") == "completion" and process_registry.is_completion_consumed(_evt_sid):
             continue
