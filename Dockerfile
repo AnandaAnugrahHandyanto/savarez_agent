@@ -115,5 +115,8 @@ RUN uv pip install --no-cache-dir --no-deps -e "."
 ENV HERMES_WEB_DIST=/opt/hermes/hermes_cli/web_dist
 ENV HERMES_HOME=/opt/data
 ENV PATH="/opt/data/.local/bin:${PATH}"
-RUN mkdir -p /opt/data
-ENTRYPOINT [ "/usr/bin/tini", "-g", "--", "/opt/hermes/docker/entrypoint.sh" ]
+
+RUN mkdir -p /opt/data && \
+    chmod 755 /opt/hermes/railway-entrypoint.sh
+
+ENTRYPOINT [ "/usr/bin/tini", "-g", "--", "/opt/hermes/railway-entrypoint.sh" ]
