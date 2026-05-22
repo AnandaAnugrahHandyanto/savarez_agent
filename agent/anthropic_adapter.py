@@ -643,7 +643,7 @@ def build_anthropic_client(
     timeout: float = None,
     *,
     drop_context_1m_beta: bool = False,
-    api_version: str = None,  # type: ignore[assignment]
+    api_version: Optional[str] = None,
 ):
     """Create an Anthropic client, auto-detecting setup-tokens vs API keys.
 

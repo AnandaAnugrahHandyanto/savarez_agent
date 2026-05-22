@@ -161,7 +161,6 @@ _PROVIDER_ALIASES = {
     "tencentmaas": "tencent-tokenhub",
     "azure_foundry": "azure-foundry",
     "azurefoundry": "azure-foundry",
-    "azure": "azure-foundry",
 }
 
 
@@ -3397,7 +3396,7 @@ def resolve_provider_client(
                 if entry_api_mode == "anthropic_messages":
                     try:
                         from agent.anthropic_adapter import build_anthropic_client
-                        _entry_api_version = custom_entry.get("api_version") or None
+                        _entry_api_version = str(custom_entry.get("api_version") or "").strip() or None
                         real_client = build_anthropic_client(custom_key, custom_base,
                                                              api_version=_entry_api_version)
                     except ImportError:
