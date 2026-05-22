@@ -884,6 +884,7 @@ def _resolve_runtime_agent_kwargs() -> dict:
 
 def _try_resolve_fallback_provider() -> dict | None:
     """Attempt to resolve credentials from the fallback_model/fallback_providers config."""
+    from hermes_cli.config import _expand_env_vars
     from hermes_cli.runtime_provider import resolve_runtime_provider
     try:
         import yaml as _y
@@ -895,6 +896,7 @@ def _try_resolve_fallback_provider() -> dict | None:
         fb = cfg.get("fallback_providers") or cfg.get("fallback_model")
         if not fb:
             return None
+        fb = _expand_env_vars(fb)
         # Normalize to list
         fb_list = fb if isinstance(fb, list) else [fb]
         for entry in fb_list:
@@ -2813,6 +2815,7 @@ class GatewayRunner:
         AIAgent.__init__ normalizes both formats into a chain.
         """
         try:
+            from hermes_cli.config import _expand_env_vars
             import yaml as _y
             cfg_path = _hermes_home / "config.yaml"
             if cfg_path.exists():
@@ -2820,7 +2823,7 @@ class GatewayRunner:
                     cfg = _y.safe_load(_f) or {}
                 fb = cfg.get("fallback_providers") or cfg.get("fallback_model") or None
                 if fb:
-                    return fb
+                    return _expand_env_vars(fb)
         except Exception:
             pass
         return None
