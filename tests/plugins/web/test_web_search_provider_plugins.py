@@ -85,6 +85,7 @@ class TestBundledPluginsRegister:
             "parallel",
             "searxng",
             "tavily",
+            "xai",
         ]
 
     @pytest.mark.parametrize(
