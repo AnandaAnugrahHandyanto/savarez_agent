@@ -1966,9 +1966,17 @@ def _detect_active_provider_index(providers: list, config: dict) -> int:
     for i, p in enumerate(providers):
         if _is_provider_active(p, config):
             return i
-        # Fallback: env vars present → likely configured
+        # Fallback: env vars present → likely configured.
+        # Only applies when no explicit web.backend is set in config,
+        # so we don't override a user's explicit provider selection.
         env_vars = p.get("env_vars", [])
         if env_vars and all(get_env_value(v["key"]) for v in env_vars):
+            # Don't use env-var fallback if the user explicitly set
+            # web.backend to a different backend.
+            if p.get("web_backend"):
+                configured = (cfg_get(config, "web", "backend") or "").lower().strip()
+                if configured and configured != p["web_backend"]:
+                    continue
             return i
     return 0
 
