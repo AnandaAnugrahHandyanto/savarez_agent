@@ -238,6 +238,41 @@ export interface Translations {
     pause: string;
     resume: string;
     triggerNow: string;
+    edit: string;
+    editJob: string;
+    profile: string;
+    allProfiles: string;
+    idLabel: string;
+    storedIn: string;
+    sections: {
+      core: string;
+      execution: string;
+      advancedModelAndContext: string;
+    };
+    repeatCount: string;
+    repeatPlaceholder: string;
+    deliveryHint: string;
+    skills: string;
+    skillsPlaceholder: string;
+    script: string;
+    scriptPlaceholder: string;
+    workdir: string;
+    workdirPlaceholder: string;
+    noAgentMode: string;
+    runProfile: string;
+    runProfilePlaceholder: string;
+    provider: string;
+    model: string;
+    baseUrl: string;
+    contextFrom: string;
+    contextFromPlaceholder: string;
+    enabledToolsets: string;
+    enabledToolsetsPlaceholder: string;
+    errors: {
+      scheduleRequired: string;
+      repeatPositiveInteger: string;
+      noAgentRequiresScript: string;
+    };
     delivery: {
       local: string;
       telegram: string;

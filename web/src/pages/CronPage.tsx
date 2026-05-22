@@ -119,6 +119,12 @@ interface CronJobConfigForm {
   enabledToolsets: string;
 }
 
+interface CronValidationMessages {
+  scheduleRequired: string;
+  repeatPositiveInteger: string;
+  noAgentRequiresScript: string;
+}
+
 function emptyCronForm(): CronJobConfigForm {
   return {
     name: "",
@@ -181,23 +187,23 @@ function jobToEditForm(job: CronJob): CronJobConfigForm {
   };
 }
 
-function parseCronForm(form: CronJobConfigForm) {
+function parseCronForm(form: CronJobConfigForm, errors: CronValidationMessages) {
   const schedule = form.schedule.trim();
-  if (!schedule) throw new Error("Schedule is required");
+  if (!schedule) throw new Error(errors.scheduleRequired);
 
   const repeatRaw = form.repeat.trim();
   let repeat: number | null = null;
   if (repeatRaw) {
     const parsed = Number(repeatRaw);
     if (!Number.isInteger(parsed) || parsed < 1) {
-      throw new Error("Repeat count must be a positive integer");
+      throw new Error(errors.repeatPositiveInteger);
     }
     repeat = parsed;
   }
 
   const script = nullableText(form.script);
   if (form.noAgent && !script) {
-    throw new Error("No-agent mode requires a script");
+    throw new Error(errors.noAgentRequiresScript);
   }
 
   const skills = splitList(form.skills);
@@ -223,12 +229,19 @@ function parseCronForm(form: CronJobConfigForm) {
   };
 }
 
-function buildCronCreate(form: CronJobConfigForm): CronJobCreatePayload {
-  return parseCronForm(form);
+function buildCronCreate(
+  form: CronJobConfigForm,
+  errors: CronValidationMessages,
+): CronJobCreatePayload {
+  return parseCronForm(form, errors);
 }
 
-function buildCronUpdate(job: CronJob, form: CronJobConfigForm): CronJobUpdate {
-  const parsed = parseCronForm(form);
+function buildCronUpdate(
+  job: CronJob,
+  form: CronJobConfigForm,
+  errors: CronValidationMessages,
+): CronJobUpdate {
+  const parsed = parseCronForm(form, errors);
   return {
     ...parsed,
     repeat: {
@@ -259,7 +272,7 @@ function CronJobConfigFields({
     <>
       <section className="grid gap-3">
         <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-          Core
+          {t.cron.sections.core}
         </h3>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <div className="grid gap-2">
@@ -303,15 +316,15 @@ function CronJobConfigFields({
               onChange={(e) => setField("deliver", e.target.value)}
             />
             <p className="text-[11px] text-muted-foreground">
-              local, telegram, discord, signal, email, or platform:chat_id
+              {t.cron.deliveryHint}
             </p>
           </div>
           <div className="grid gap-2">
-            <Label htmlFor={`${idPrefix}-repeat`}>Repeat count</Label>
+            <Label htmlFor={`${idPrefix}-repeat`}>{t.cron.repeatCount}</Label>
             <Input
               id={`${idPrefix}-repeat`}
               inputMode="numeric"
-              placeholder="blank = unlimited"
+              placeholder={t.cron.repeatPlaceholder}
               value={form.repeat}
               onChange={(e) => setField("repeat", e.target.value)}
             />
@@ -321,14 +334,14 @@ function CronJobConfigFields({
 
       <section className="grid gap-3">
         <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-          Execution
+          {t.cron.sections.execution}
         </h3>
         <div className="grid gap-2">
-          <Label htmlFor={`${idPrefix}-skills`}>Skills</Label>
+          <Label htmlFor={`${idPrefix}-skills`}>{t.cron.skills}</Label>
           <textarea
             id={`${idPrefix}-skills`}
             className={textAreaClass}
-            placeholder="one skill per line"
+            placeholder={t.cron.skillsPlaceholder}
             value={form.skills}
             onChange={(e) => setField("skills", e.target.value)}
           />
@@ -336,19 +349,19 @@ function CronJobConfigFields({
 
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <div className="grid gap-2">
-            <Label htmlFor={`${idPrefix}-script`}>Script</Label>
+            <Label htmlFor={`${idPrefix}-script`}>{t.cron.script}</Label>
             <Input
               id={`${idPrefix}-script`}
-              placeholder="relative to ~/.hermes/scripts/"
+              placeholder={t.cron.scriptPlaceholder}
               value={form.script}
               onChange={(e) => setField("script", e.target.value)}
             />
           </div>
           <div className="grid gap-2">
-            <Label htmlFor={`${idPrefix}-workdir`}>Workdir</Label>
+            <Label htmlFor={`${idPrefix}-workdir`}>{t.cron.workdir}</Label>
             <Input
               id={`${idPrefix}-workdir`}
-              placeholder="/absolute/project/path"
+              placeholder={t.cron.workdirPlaceholder}
               value={form.workdir}
               onChange={(e) => setField("workdir", e.target.value)}
             />
@@ -368,15 +381,15 @@ function CronJobConfigFields({
               className="font-sans normal-case tracking-normal text-sm cursor-pointer"
               htmlFor={`${idPrefix}-no-agent`}
             >
-              No-agent mode
+              {t.cron.noAgentMode}
             </Label>
           </div>
           <div className="grid gap-2">
-            <Label htmlFor={`${idPrefix}-run-profile`}>Run profile</Label>
+            <Label htmlFor={`${idPrefix}-run-profile`}>{t.cron.runProfile}</Label>
             <Input
               id={`${idPrefix}-run-profile`}
               list={profileOptionsId}
-              placeholder="blank = scheduler default"
+              placeholder={t.cron.runProfilePlaceholder}
               value={form.runProfile}
               onChange={(e) => setField("runProfile", e.target.value)}
             />
@@ -391,11 +404,11 @@ function CronJobConfigFields({
 
       <section className="grid gap-3">
         <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-          Advanced model and context
+          {t.cron.sections.advancedModelAndContext}
         </h3>
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
           <div className="grid gap-2">
-            <Label htmlFor={`${idPrefix}-provider`}>Provider</Label>
+            <Label htmlFor={`${idPrefix}-provider`}>{t.cron.provider}</Label>
             <Input
               id={`${idPrefix}-provider`}
               value={form.provider}
@@ -403,7 +416,7 @@ function CronJobConfigFields({
             />
           </div>
           <div className="grid gap-2">
-            <Label htmlFor={`${idPrefix}-model`}>Model</Label>
+            <Label htmlFor={`${idPrefix}-model`}>{t.cron.model}</Label>
             <Input
               id={`${idPrefix}-model`}
               value={form.model}
@@ -411,7 +424,7 @@ function CronJobConfigFields({
             />
           </div>
           <div className="grid gap-2">
-            <Label htmlFor={`${idPrefix}-base-url`}>Base URL</Label>
+            <Label htmlFor={`${idPrefix}-base-url`}>{t.cron.baseUrl}</Label>
             <Input
               id={`${idPrefix}-base-url`}
               value={form.baseUrl}
@@ -422,21 +435,21 @@ function CronJobConfigFields({
 
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <div className="grid gap-2">
-            <Label htmlFor={`${idPrefix}-context-from`}>Context from</Label>
+            <Label htmlFor={`${idPrefix}-context-from`}>{t.cron.contextFrom}</Label>
             <textarea
               id={`${idPrefix}-context-from`}
               className={textAreaClass}
-              placeholder="one job ID per line"
+              placeholder={t.cron.contextFromPlaceholder}
               value={form.contextFrom}
               onChange={(e) => setField("contextFrom", e.target.value)}
             />
           </div>
           <div className="grid gap-2">
-            <Label htmlFor={`${idPrefix}-toolsets`}>Enabled toolsets</Label>
+            <Label htmlFor={`${idPrefix}-toolsets`}>{t.cron.enabledToolsets}</Label>
             <textarea
               id={`${idPrefix}-toolsets`}
               className={textAreaClass}
-              placeholder="one toolset per line"
+              placeholder={t.cron.enabledToolsetsPlaceholder}
               value={form.enabledToolsets}
               onChange={(e) => setField("enabledToolsets", e.target.value)}
             />
@@ -473,7 +486,7 @@ function CronJobEditModal({
   const handleSave = async () => {
     setSaving(true);
     try {
-      await api.updateCronJob(job.id, buildCronUpdate(job, form), storageProfile);
+      await api.updateCronJob(job.id, buildCronUpdate(job, form, t.cron.errors), storageProfile);
       showToast(`${t.common.save} ✓`, "success");
       onSaved();
       onClose();
@@ -509,10 +522,11 @@ function CronJobEditModal({
             id="edit-cron-title"
             className="font-display text-base tracking-wider uppercase"
           >
-            Edit Cron Job
+            {t.cron.editJob}
           </h2>
           <p className="mt-1 text-xs text-muted-foreground">
-            ID <span className="font-mono">{job.id}</span> · stored in{" "}
+            {t.cron.idLabel} <span className="font-mono">{job.id}</span> ·{" "}
+            {t.cron.storedIn}{" "}
             <span className="font-mono">{storageProfile}</span>
           </p>
         </header>
@@ -601,7 +615,7 @@ export default function CronPage() {
   const handleCreate = async () => {
     setCreating(true);
     try {
-      await api.createCronJob(buildCronCreate(createForm), createStorageProfile);
+      await api.createCronJob(buildCronCreate(createForm, t.cron.errors), createStorageProfile);
       showToast(t.common.create + " ✓", "success");
       setCreateForm(emptyCronForm());
       setCreateModalOpen(false);
@@ -750,7 +764,7 @@ export default function CronPage() {
               size="icon"
               onClick={() => setCreateModalOpen(false)}
               className="absolute right-2 top-2 text-muted-foreground hover:text-foreground"
-              aria-label="Close"
+              aria-label={t.common.close}
             >
               <X />
             </Button>
@@ -766,7 +780,7 @@ export default function CronPage() {
 
             <div className="p-5 overflow-y-auto grid gap-5">
               <div className="grid gap-2">
-                <Label htmlFor="cron-profile">Profile</Label>
+                <Label htmlFor="cron-profile">{t.cron.profile}</Label>
                 <Select
                   id="cron-profile"
                   value={createStorageProfile}
@@ -822,13 +836,13 @@ export default function CronPage() {
           </H2>
 
           <div className="grid gap-1 min-w-[220px]">
-            <Label htmlFor="cron-profile-filter">Profile</Label>
+            <Label htmlFor="cron-profile-filter">{t.cron.profile}</Label>
             <Select
               id="cron-profile-filter"
               value={selectedProfile}
               onValueChange={(v) => setSelectedProfile(v)}
             >
-              <SelectOption value="all">All profiles</SelectOption>
+              <SelectOption value="all">{t.cron.allProfiles}</SelectOption>
               {profiles.map((profile) => (
                 <SelectOption key={profile.name} value={profile.name}>
                   {profileLabel(profile.name)}
@@ -869,7 +883,9 @@ export default function CronPage() {
                     </Badge>
                     <Badge tone="outline">{profileLabel(profile)}</Badge>
                     {runProfile && runProfile !== profile && (
-                      <Badge tone="outline">run: {profileLabel(runProfile)}</Badge>
+                      <Badge tone="outline">
+                        {t.cron.runProfile}: {profileLabel(runProfile)}
+                      </Badge>
                     )}
                     {deliver && deliver !== "local" && (
                       <Badge tone="outline">{deliver}</Badge>
@@ -900,8 +916,8 @@ export default function CronPage() {
                   <Button
                     ghost
                     size="icon"
-                    title="Edit"
-                    aria-label="Edit"
+                    title={t.cron.edit}
+                    aria-label={t.cron.edit}
                     onClick={() => setEditingJob(job)}
                   >
                     <Pencil />
