@@ -525,6 +525,89 @@ def test_weekly_digest_via_api_endpoint(isolate_home):
     assert response_404.status_code == 404
 
 
+def test_freshness_jaccard_identical_scores_zero(isolate_home):
+    """Phase 13: identical bodies must score 0 freshness (= 0% novel)."""
+    from plugins.marketing_factory.pipeline import _compute_freshness
+    from plugins.marketing_factory.store import MarketingFactoryStore
+
+    store = MarketingFactoryStore()
+    store.initialize()
+    # Seed pupular app + a draft directly
+    from plugins.marketing_factory.pipeline import MarketingFactoryPipeline
+    MarketingFactoryPipeline(store).initialize_samples()
+    state = store.load()
+    seed_body = "Tiny paws huge main-character energy. Adoptable pets are out there waiting."
+    state["drafts"]["draft_seed1"] = {
+        "id": "draft_seed1", "app_slug": "pupular", "channel": "x", "body": seed_body,
+        "campaign_id": "test", "content_type": "short_social", "status": "dry_run_posted",
+        "created_at": "2026-05-20T00:00:00+00:00",
+    }
+    store._write_state(state)
+
+    result = _compute_freshness(store, "pupular", "x", seed_body)
+    assert result["score"] == 0.0
+    assert result["most_similar_id"] == "draft_seed1"
+    assert result["compared_against"] == 1
+
+
+def test_freshness_jaccard_totally_different_scores_high(isolate_home):
+    from plugins.marketing_factory.pipeline import _compute_freshness
+    from plugins.marketing_factory.pipeline import MarketingFactoryPipeline
+    from plugins.marketing_factory.store import MarketingFactoryStore
+
+    store = MarketingFactoryStore()
+    MarketingFactoryPipeline(store).initialize_samples()
+    state = store.load()
+    state["drafts"]["draft_seed1"] = {
+        "id": "draft_seed1", "app_slug": "pupular", "channel": "x",
+        "body": "Tiny paws huge main-character energy. Adoptable pets are out there waiting.",
+        "campaign_id": "test", "content_type": "short_social", "status": "dry_run_posted",
+        "created_at": "2026-05-20T00:00:00+00:00",
+    }
+    store._write_state(state)
+
+    completely_different = "Premium architectural venues for production shoots — book unique spaces with clear approval timelines."
+    result = _compute_freshness(store, "pupular", "x", completely_different)
+    assert result["score"] > 0.7  # mostly novel
+
+
+def test_freshness_scoring_is_per_channel_scoped(isolate_home):
+    """Identical body on a DIFFERENT channel must not lower freshness."""
+    from plugins.marketing_factory.pipeline import _compute_freshness
+    from plugins.marketing_factory.pipeline import MarketingFactoryPipeline
+    from plugins.marketing_factory.store import MarketingFactoryStore
+
+    store = MarketingFactoryStore()
+    MarketingFactoryPipeline(store).initialize_samples()
+    state = store.load()
+    seed_body = "Tiny paws huge main-character energy. Adoptable pets are out there waiting."
+    state["drafts"]["draft_ig"] = {
+        "id": "draft_ig", "app_slug": "pupular", "channel": "instagram", "body": seed_body,
+        "campaign_id": "test", "content_type": "visual_caption", "status": "dry_run_posted",
+        "created_at": "2026-05-20T00:00:00+00:00",
+    }
+    store._write_state(state)
+
+    # Same body checked against channel=x — no x drafts exist, so freshness should be 1.0
+    result = _compute_freshness(store, "pupular", "x", seed_body)
+    assert result["score"] == 1.0
+    assert result["compared_against"] == 0
+
+
+def test_generate_campaign_attaches_freshness_to_new_drafts(isolate_home):
+    """Phase 13: every draft from generate_campaign carries a freshness_score field."""
+    from plugins.marketing_factory.pipeline import MarketingFactoryPipeline
+    from plugins.marketing_factory.store import MarketingFactoryStore
+
+    store = MarketingFactoryStore()
+    pipe = MarketingFactoryPipeline(store)
+    pipe.initialize_samples()
+    result = pipe.generate_campaign("pupular", days=2)
+    for draft in result["drafts"]:
+        assert "freshness_score" in draft
+        assert 0.0 <= draft["freshness_score"] <= 1.0
+
+
 def test_edit_draft_updates_body_and_reruns_safety(isolate_home):
     """Phase 12: editing a draft updates body, sets edited_by/at, re-runs safety, audits."""
     from plugins.marketing_factory.pipeline import MarketingFactoryPipeline

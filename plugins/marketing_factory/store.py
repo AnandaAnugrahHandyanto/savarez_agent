@@ -305,6 +305,9 @@ class MarketingFactoryStore:
             "llm_error": draft.get("llm_error"),
             "regenerated_from": draft.get("regenerated_from"),
             "images": list(draft.get("images") or []),
+            "freshness_score": draft.get("freshness_score"),
+            "freshness_compared_against": draft.get("freshness_compared_against"),
+            "freshness_most_similar_id": draft.get("freshness_most_similar_id"),
             "created_at": utc_now(),
             "updated_at": utc_now(),
         }

@@ -638,6 +638,12 @@ class MarketingFactoryPipeline:
             safety = self.review.review(app, enriched)
             enriched["safety"] = safety
             enriched["status"] = "needs_review" if safety["passed"] else "rejected"
+            # Freshness vs prior same-channel drafts (computed BEFORE persisting
+            # so the new draft itself isn't in the candidate set).
+            freshness = _compute_freshness(self.store, app["slug"], item["channel"], enriched["body"])
+            enriched["freshness_score"] = freshness["score"]
+            enriched["freshness_compared_against"] = freshness["compared_against"]
+            enriched["freshness_most_similar_id"] = freshness["most_similar_id"]
             draft = self.store.create_draft(app["slug"], enriched)
             if auto_approve and safety["passed"]:
                 self.store.set_approval(draft["id"], "approved", reviewer="auto-test", reason="auto approval for dry-run verification only")
@@ -837,6 +843,10 @@ class MarketingFactoryPipeline:
         enriched["safety"] = safety
         enriched["status"] = "needs_review" if safety["passed"] else "rejected"
         enriched["regenerated_from"] = old_draft["id"]
+        freshness = _compute_freshness(self.store, app["slug"], old_draft["channel"], enriched["body"])
+        enriched["freshness_score"] = freshness["score"]
+        enriched["freshness_compared_against"] = freshness["compared_against"]
+        enriched["freshness_most_similar_id"] = freshness["most_similar_id"]
         new_draft = self.store.create_draft(app["slug"], enriched)
         if token_ledger:
             self.store.record_token_usage(app["slug"], old_draft.get("campaign_id"), token_ledger)
@@ -1112,6 +1122,56 @@ def _draft_body(app: Dict[str, Any], item: Dict[str, Any]) -> str:
             f"requests go to hosts, and payment is finalized after host approval. {link}"
         )
     return f"{app['name']} helps {app.get('icp', 'its audience')} with {item['pillar']}. {app.get('cta', '')} {link}".strip()
+
+
+_FRESHNESS_COMPARE_AGAINST = 20
+
+
+def _char_trigrams(text: str) -> set:
+    """Lowercased, whitespace-collapsed character trigrams. Cheap signature."""
+    text = " ".join((text or "").lower().split())
+    if len(text) < 3:
+        return {text}
+    return {text[i:i + 3] for i in range(len(text) - 2)}
+
+
+def _jaccard(a: set, b: set) -> float:
+    if not a and not b:
+        return 1.0
+    if not a or not b:
+        return 0.0
+    inter = len(a & b)
+    union = len(a | b)
+    return inter / union if union else 0.0
+
+
+def _compute_freshness(store: MarketingFactoryStore, app_slug: str, channel: str, body: str) -> Dict[str, Any]:
+    """Score 0-1: 1.0 = totally novel vs recent same-channel drafts, 0.0 = perfect duplicate.
+
+    Compared against last `_FRESHNESS_COMPARE_AGAINST` drafts on the same channel
+    for the same app, regardless of status (so rejected drafts also count —
+    they're still patterns the LLM produced and we want to diverge from).
+    Returns {score, compared_against, most_similar_id}.
+    """
+    state = store.load()
+    candidates = [
+        d for d in state.get("drafts", {}).values()
+        if d.get("app_slug") == app_slug and d.get("channel") == channel and d.get("body")
+    ]
+    candidates.sort(key=lambda d: d.get("created_at") or "", reverse=True)
+    candidates = candidates[:_FRESHNESS_COMPARE_AGAINST]
+    if not candidates:
+        return {"score": 1.0, "compared_against": 0, "most_similar_id": None}
+    body_trigrams = _char_trigrams(body)
+    most_similar_id = None
+    max_similarity = 0.0
+    for cand in candidates:
+        sim = _jaccard(body_trigrams, _char_trigrams(cand.get("body") or ""))
+        if sim > max_similarity:
+            max_similarity = sim
+            most_similar_id = cand.get("id")
+    score = round(1.0 - max_similarity, 3)
+    return {"score": score, "compared_against": len(candidates), "most_similar_id": most_similar_id}
 
 
 def _default_image_prompt(app: Dict[str, Any], item: Dict[str, Any], body: str) -> str:

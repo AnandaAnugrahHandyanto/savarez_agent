@@ -408,6 +408,13 @@
                 pill(draft.model_route || "cheap", `route_${draft.model_route || "cheap"}`),
                 draft.llm_used ? pill(`llm: ${draft.llm_model || "ok"}`, "llm_ok") : pill(draft.llm_error ? "template (llm err)" : "template", draft.llm_error ? "llm_fallback" : "tone_neutral"),
                 draft.safety ? pill(draft.safety.passed ? "safety ok" : "safety fail", draft.safety.passed ? "safety_ok" : "safety_fail") : null,
+                (typeof draft.freshness_score === "number" && draft.freshness_compared_against > 0) ? (
+                  draft.freshness_score < 0.3
+                    ? pill(`near-duplicate · ${Math.round(draft.freshness_score * 100)}% fresh`, "safety_fail")
+                    : draft.freshness_score < 0.5
+                      ? pill(`similar to recent · ${Math.round(draft.freshness_score * 100)}% fresh`, "llm_fallback")
+                      : pill(`${Math.round(draft.freshness_score * 100)}% fresh`, "tone_neutral")
+                ) : null,
                 bodyLengthIndicator(draft.channel, draft.body),
                 h("span", { className: "text-xs text-midground/60" }, draft.scheduled_for ? new Date(draft.scheduled_for).toLocaleString() : "unscheduled")
               ),
