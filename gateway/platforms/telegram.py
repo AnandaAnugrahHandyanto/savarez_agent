@@ -4759,9 +4759,22 @@ class TelegramAdapter(BasePlatformAdapter):
 
     # ── Message reactions (processing lifecycle) ──────────────────────────
 
-    def _reactions_enabled(self) -> bool:
-        """Check if message reactions are enabled via config/env."""
-        return os.getenv("TELEGRAM_REACTIONS", "false").lower() not in {"false", "0", "no"}
+    def _reactions_enabled(self, event: Optional[Any] = None) -> bool:
+        """Check if message reactions are enabled via config/env.
+
+        Telegram clients surface bot reactions to a user's group-topic message
+        as an @/mention-style badge in the forum topic list. That badge takes
+        priority over the normal unread-count number, so lifecycle reactions in
+        busy forum groups make every topic look like it has a mention and hide
+        numbered notifications. Keep reactions available for DMs, but make
+        group/supergroup reactions opt-in via TELEGRAM_GROUP_REACTIONS.
+        """
+        if os.getenv("TELEGRAM_REACTIONS", "false").lower() in {"false", "0", "no"}:
+            return False
+        source = getattr(event, "source", None) if event is not None else None
+        if getattr(source, "chat_type", None) == "group":
+            return os.getenv("TELEGRAM_GROUP_REACTIONS", "false").lower() not in {"false", "0", "no"}
+        return True
 
     async def _set_reaction(self, chat_id: str, message_id: str, emoji: str) -> bool:
         """Set a single emoji reaction on a Telegram message."""
@@ -4801,7 +4814,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
     async def on_processing_start(self, event: MessageEvent) -> None:
         """Add an in-progress reaction when message processing begins."""
-        if not self._reactions_enabled():
+        if not self._reactions_enabled(event):
             return
         chat_id = getattr(event.source, "chat_id", None)
         message_id = getattr(event, "message_id", None)
@@ -4821,7 +4834,7 @@ class TelegramAdapter(BasePlatformAdapter):
         another agent run to swap it to ✅/❌ — which never happens if the
         cancellation was the last activity in the chat.
         """
-        if not self._reactions_enabled():
+        if not self._reactions_enabled(event):
             return
         chat_id = getattr(event.source, "chat_id", None)
         message_id = getattr(event, "message_id", None)

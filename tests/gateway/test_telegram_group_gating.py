@@ -389,3 +389,51 @@ def test_config_bridges_telegram_ignored_threads(monkeypatch, tmp_path):
 
     assert config is not None
     assert __import__("os").environ["TELEGRAM_IGNORED_THREADS"] == "31,42"
+
+
+def test_telegram_reactions_skip_group_topics_by_default(monkeypatch):
+    """Bot reactions create @ badges in Telegram forum topic lists.
+
+    Keep the lifecycle reaction UX for DMs, but do not react to group/forum
+    topic messages unless explicitly opted in.
+    """
+    adapter = _make_adapter()
+    monkeypatch.setenv("TELEGRAM_REACTIONS", "true")
+    monkeypatch.delenv("TELEGRAM_GROUP_REACTIONS", raising=False)
+
+    group_event = SimpleNamespace(source=SimpleNamespace(chat_type="group"))
+    dm_event = SimpleNamespace(source=SimpleNamespace(chat_type="dm"))
+
+    assert adapter._reactions_enabled(group_event) is False
+    assert adapter._reactions_enabled(dm_event) is True
+
+
+def test_telegram_group_reactions_can_be_opted_in(monkeypatch):
+    adapter = _make_adapter()
+    monkeypatch.setenv("TELEGRAM_REACTIONS", "true")
+    monkeypatch.setenv("TELEGRAM_GROUP_REACTIONS", "true")
+
+    group_event = SimpleNamespace(source=SimpleNamespace(chat_type="group"))
+
+    assert adapter._reactions_enabled(group_event) is True
+
+
+def test_config_bridges_telegram_group_reactions(monkeypatch, tmp_path):
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        "telegram:\n"
+        "  reactions: true\n"
+        "  group_reactions: false\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.delenv("TELEGRAM_REACTIONS", raising=False)
+    monkeypatch.delenv("TELEGRAM_GROUP_REACTIONS", raising=False)
+
+    config = load_gateway_config()
+
+    assert config is not None
+    assert __import__("os").environ["TELEGRAM_REACTIONS"] == "true"
+    assert __import__("os").environ["TELEGRAM_GROUP_REACTIONS"] == "false"
