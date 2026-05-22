@@ -83,5 +83,9 @@ echo "Hermes Agent on Railway"
 echo "Listening on PORT: $PORT"
 echo "═══════════════════════════════════════════════════════════"
 
-# Start hermes gateway on Railway's PORT
-exec hermes gateway run --port "$PORT" --host 0.0.0.0
+# Start hermes gateway
+# Use environment variables for the internal API server (more reliable than CLI flags in current Hermes versions)
+export API_SERVER_HOST=0.0.0.0
+export API_SERVER_PORT="$PORT"
+
+exec hermes gateway run
