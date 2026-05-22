@@ -358,6 +358,65 @@ class TestGatewayRuntimeStatus:
         assert payload["platforms"]["discord"]["error_code"] is None
         assert payload["platforms"]["discord"]["error_message"] is None
 
+    def test_write_runtime_status_records_reconnect_and_auth_warning(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        status.write_runtime_status(
+            platform="feishu",
+            platform_state="connected",
+            reconnect_event=True,
+        )
+        status.write_runtime_status(
+            platform="api_server",
+            auth_required=False,
+            auth_warning="API_SERVER_KEY is not configured",
+        )
+
+        payload = status.read_runtime_status()
+        assert payload["platforms"]["feishu"]["reconnect_count"] == 1
+        assert payload["platforms"]["feishu"]["last_reconnect_at"]
+        assert payload["platforms"]["api_server"]["auth_required"] is False
+        assert "API_SERVER_KEY" in payload["platforms"]["api_server"]["auth_warning"]
+
+    def test_build_runtime_overview_uses_status_payload_instead_of_manual_pid_table(self):
+        overview = status.build_runtime_overview(
+            runtime={
+                "pid": 123,
+                "gateway_state": "running",
+                "active_agents": 2,
+                "updated_at": "2026-05-22T00:00:00+00:00",
+                "platforms": {
+                    "feishu": {
+                        "state": "connected",
+                        "reconnect_count": 3,
+                        "last_reconnect_at": "2026-05-22T01:00:00+00:00",
+                    }
+                },
+            }
+        )
+
+        assert overview["services"][0]["service"] == "gateway"
+        assert overview["services"][0]["pid"] == 123
+        assert overview["services"][1]["service"] == "feishu"
+        assert overview["services"][1]["reconnect_count"] == 3
+
+    def test_parse_launchctl_print_extracts_pid_state_and_runs(self):
+        parsed = status.parse_launchctl_print(
+            """
+            path = /Users/gu/Library/LaunchAgents/ai.hermes.gateway.plist
+            state = running
+            runs = 1
+            pid = 959
+            last exit code = (never exited)
+            """
+        )
+
+        assert parsed["path"].endswith("ai.hermes.gateway.plist")
+        assert parsed["state"] == "running"
+        assert parsed["pid"] == 959
+        assert parsed["runs"] == 1
+        assert parsed["last_exit_code"] == "(never exited)"
+
 
 class TestTerminatePid:
     def test_force_uses_taskkill_on_windows(self, monkeypatch):

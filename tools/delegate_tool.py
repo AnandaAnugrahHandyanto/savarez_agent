@@ -3161,6 +3161,7 @@ def _recover_tasks_from_json_string(
 
 
 _MANAGED_AGENTS_CONFIG = "configs/managed_agents/agents.yaml"
+_MANAGED_POLICY_CONFIG = "configs/managed_agents/policy.yaml"
 
 
 def _find_managed_agents_config() -> Optional["Path"]:
@@ -3169,6 +3170,19 @@ def _find_managed_agents_config() -> Optional["Path"]:
     candidates = [
         Path.cwd() / _MANAGED_AGENTS_CONFIG,
         Path(__file__).resolve().parent.parent / _MANAGED_AGENTS_CONFIG,
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def _find_managed_policy_config() -> Optional["Path"]:
+    from pathlib import Path
+
+    candidates = [
+        Path.cwd() / _MANAGED_POLICY_CONFIG,
+        Path(__file__).resolve().parent.parent / _MANAGED_POLICY_CONFIG,
     ]
     for candidate in candidates:
         if candidate.exists():
@@ -3194,7 +3208,7 @@ def _run_managed_preflight(
     try:
         from agent.managed_agents.gateway import DelegationGateway, DelegationGatewayError
         from agent.managed_agents.registry import RiskLevel, load_agent_registry
-        from agent.managed_agents.policy import PolicyEngine
+        from agent.managed_agents.policy import PolicyEngine, load_policy_engine
         from agent.managed_agents.permissions import PermissionGuard, DelegationPermissionError
         from agent.session_event_log import EventLog
         from agent.task_card import TaskCard, ExecutionPlan
@@ -3212,19 +3226,23 @@ def _run_managed_preflight(
         return None  # agent not in managed registry → legacy path
 
     try:
-        policy_engine = PolicyEngine(
-            version="managed-preflight",
-            priority_order=(
-                "safety",
-                "user_explicit_instruction",
-                "soul_global_policy",
-                "managed_agents_policy",
-                "router_policy",
-                "skill_policy",
-                "agent_preference",
-            ),
-            rules=(),
-        )
+        policy_path = _find_managed_policy_config()
+        if policy_path is not None:
+            policy_engine = load_policy_engine(policy_path)
+        else:
+            policy_engine = PolicyEngine(
+                version="managed-preflight",
+                priority_order=(
+                    "safety",
+                    "user_explicit_instruction",
+                    "soul_global_policy",
+                    "managed_agents_policy",
+                    "router_policy",
+                    "skill_policy",
+                    "agent_preference",
+                ),
+                rules=(),
+            )
     except Exception as exc:
         logger.debug("Could not construct policy engine: %s", exc)
         return None
@@ -3235,6 +3253,10 @@ def _run_managed_preflight(
     parent_task_card = getattr(parent_agent, "_current_task_card", None)
     if parent_task_card is not None:
         task_card = TaskCard.from_dict(parent_task_card.to_dict())
+        if hasattr(parent_task_card, "action_type"):
+            task_card.action_type = getattr(parent_task_card, "action_type")
+        if hasattr(parent_task_card, "user_override"):
+            task_card.user_override = getattr(parent_task_card, "user_override")
         task_card.execution_plan = ExecutionPlan(
             mode="single_agent",
             agents=[agent_id],

@@ -222,6 +222,103 @@ def _build_runtime_status_record() -> dict[str, Any]:
     return payload
 
 
+def parse_launchctl_print(output: str) -> dict[str, Any]:
+    """Parse the small subset of ``launchctl print`` used for runtime status."""
+    parsed: dict[str, Any] = {}
+    for raw_line in str(output or "").splitlines():
+        line = raw_line.strip()
+        if not line or "=" not in line:
+            continue
+        key, value = [part.strip() for part in line.split("=", 1)]
+        if key == "path":
+            parsed["path"] = value
+        elif key == "state":
+            parsed.setdefault("state", value)
+        elif key == "pid":
+            try:
+                parsed["pid"] = int(value)
+            except ValueError:
+                parsed["pid"] = value
+        elif key == "runs":
+            try:
+                parsed["runs"] = int(value)
+            except ValueError:
+                parsed["runs"] = value
+        elif key == "last exit code":
+            parsed["last_exit_code"] = value
+    return parsed
+
+
+def read_launchctl_service_status(label: str) -> dict[str, Any] | None:
+    """Return launchd service status for ``label`` on macOS, if available."""
+    if sys.platform != "darwin" or not label:
+        return None
+    try:
+        uid = os.getuid()
+        result = subprocess.run(
+            ["launchctl", "print", f"gui/{uid}/{label}"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    parsed = parse_launchctl_print(result.stdout)
+    parsed["label"] = label
+    return parsed
+
+
+def build_runtime_overview(
+    *,
+    runtime: Optional[dict[str, Any]] = None,
+    launchd_labels: Optional[list[str]] = None,
+) -> dict[str, Any]:
+    """Build an operator-facing runtime overview from persisted status.
+
+    The output is deliberately JSON-shaped so CLIs, dashboards and Feishu
+    summaries can render it as a table without hand-maintained PID lists.
+    """
+    runtime = runtime if runtime is not None else (read_runtime_status() or {})
+    services: list[dict[str, Any]] = []
+
+    if runtime:
+        services.append({
+            "service": "gateway",
+            "source": "runtime_status",
+            "pid": runtime.get("pid"),
+            "state": runtime.get("gateway_state"),
+            "updated_at": runtime.get("updated_at"),
+            "active_agents": runtime.get("active_agents", 0),
+        })
+        for platform, payload in sorted((runtime.get("platforms") or {}).items()):
+            if isinstance(payload, dict):
+                services.append({
+                    "service": platform,
+                    "source": "runtime_status",
+                    "pid": runtime.get("pid"),
+                    "state": payload.get("state"),
+                    "updated_at": payload.get("updated_at"),
+                    "reconnect_count": payload.get("reconnect_count", 0),
+                    "last_reconnect_at": payload.get("last_reconnect_at"),
+                    "error_code": payload.get("error_code"),
+                    "error_message": payload.get("error_message"),
+                })
+
+    launchd: list[dict[str, Any]] = []
+    for label in launchd_labels or ():
+        service = read_launchctl_service_status(label)
+        if service:
+            launchd.append(service)
+
+    return {
+        "generated_at": _utc_now_iso(),
+        "services": services,
+        "launchd": launchd,
+    }
+
+
 def _read_json_file(path: Path) -> Optional[dict[str, Any]]:
     if not path.exists():
         return None
@@ -511,6 +608,9 @@ def write_runtime_status(
     platform_state: Any = _UNSET,
     error_code: Any = _UNSET,
     error_message: Any = _UNSET,
+    reconnect_event: Any = _UNSET,
+    auth_required: Any = _UNSET,
+    auth_warning: Any = _UNSET,
 ) -> None:
     """Persist gateway runtime health information for diagnostics/status."""
     path = _get_runtime_status_path()
@@ -540,6 +640,13 @@ def write_runtime_status(
             platform_payload["error_code"] = error_code
         if error_message is not _UNSET:
             platform_payload["error_message"] = error_message
+        if reconnect_event is not _UNSET and reconnect_event:
+            platform_payload["reconnect_count"] = int(platform_payload.get("reconnect_count") or 0) + 1
+            platform_payload["last_reconnect_at"] = _utc_now_iso()
+        if auth_required is not _UNSET:
+            platform_payload["auth_required"] = bool(auth_required)
+        if auth_warning is not _UNSET:
+            platform_payload["auth_warning"] = auth_warning
         platform_payload["updated_at"] = _utc_now_iso()
         payload["platforms"][platform] = platform_payload
 

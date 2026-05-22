@@ -40,6 +40,35 @@ agents:
     return yaml_path
 
 
+def _write_managed_policy_yaml(tmp_path: Path) -> Path:
+    path = tmp_path / "configs" / "managed_agents"
+    path.mkdir(parents=True, exist_ok=True)
+    yaml_path = path / "policy.yaml"
+    yaml_path.write_text(
+        """
+version: "2026-05-21"
+priority_order:
+  - safety
+  - user_explicit_instruction
+  - soul_global_policy
+  - managed_agents_policy
+  - router_policy
+  - skill_policy
+  - agent_preference
+rules:
+  - id: destructive_actions_require_safety_block
+    priority: safety
+    when:
+      action_type: delete_file
+    decision: deny
+    reason: destructive_actions_require_human_approval
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    return yaml_path
+
+
 def _make_parent():
     parent = MagicMock()
     parent._delegate_depth = 0
@@ -153,3 +182,27 @@ def test_managed_read_only_profile_blocks_write_tools(tmp_path, monkeypatch):
     assert profile["permission_mode"] == "read_only"
     assert profile["isolation"] == "readonly"
     assert {"write_file", "patch"} <= set(profile["blocked_tools"])
+
+
+def test_managed_preflight_loads_policy_yaml_and_blocks_delete_file(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _write_managed_agents_yaml(tmp_path)
+    _write_managed_policy_yaml(tmp_path)
+    parent = _make_parent()
+    task_card = TaskCard(
+        task_id="task-1",
+        session_id="sess-1",
+        raw_user_request="delete generated file",
+        compiled_intent=CompiledIntent(real_task="delete generated file", task_category="feature"),
+        execution_plan=ExecutionPlan(mode="single_agent", agents=["claude"], delegation_reason="route"),
+    )
+    task_card.risk_level = "R2"
+    task_card.action_type = "delete_file"
+    parent._current_task_card = task_card
+
+    with patch("tools.delegate_tool._run_single_child") as mock_run:
+        result = delegate_task(goal="delete generated file", agent_id="claude", parent_agent=parent)
+
+    assert "Managed agent preflight rejected delegation" in result
+    assert "Policy denied" in result
+    assert mock_run.call_count == 0

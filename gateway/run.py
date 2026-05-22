@@ -2168,6 +2168,7 @@ class GatewayRunner:
         platform_state: Optional[str] = None,
         error_code: Optional[str] = None,
         error_message: Optional[str] = None,
+        reconnect_event: bool = False,
     ) -> None:
         try:
             from gateway.status import write_runtime_status
@@ -2176,6 +2177,7 @@ class GatewayRunner:
                 platform_state=platform_state,
                 error_code=error_code,
                 error_message=error_message,
+                reconnect_event=reconnect_event,
             )
         except Exception:
             pass
@@ -4885,6 +4887,7 @@ class GatewayRunner:
                             platform_state="connected",
                             error_code=None,
                             error_message=None,
+                            reconnect_event=True,
                         )
                         logger.info("✓ %s reconnected successfully", platform.value)
 

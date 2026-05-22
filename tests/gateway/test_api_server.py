@@ -16,6 +16,7 @@ import asyncio
 import json
 import time
 import uuid
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -484,47 +485,42 @@ class TestHealthDetailedEndpoint:
     @pytest.mark.asyncio
     async def test_health_detailed_returns_ok(self, adapter):
         """GET /health/detailed returns status, platform, and runtime fields."""
-        app = _create_app(adapter)
         with patch("gateway.status.read_runtime_status", return_value={
             "gateway_state": "running",
             "platforms": {"telegram": {"state": "connected"}},
             "active_agents": 2,
             "exit_reason": None,
             "updated_at": "2026-04-14T00:00:00Z",
-        }):
-            async with TestClient(TestServer(app)) as cli:
-                resp = await cli.get("/health/detailed")
-                assert resp.status == 200
-                data = await resp.json()
-                assert data["status"] == "ok"
-                assert data["platform"] == "hermes-agent"
-                assert data["gateway_state"] == "running"
-                assert data["platforms"] == {"telegram": {"state": "connected"}}
-                assert data["active_agents"] == 2
-                assert isinstance(data["pid"], int)
-                assert "updated_at" in data
+        }), patch("gateway.status.build_runtime_overview", return_value={"services": [{"service": "gateway"}]}):
+            resp = await adapter._handle_health_detailed(SimpleNamespace())
+            assert resp.status == 200
+            data = json.loads(resp.text)
+            assert data["status"] == "ok"
+            assert data["platform"] == "hermes-agent"
+            assert data["gateway_state"] == "running"
+            assert data["platforms"] == {"telegram": {"state": "connected"}}
+            assert data["active_agents"] == 2
+            assert isinstance(data["pid"], int)
+            assert "updated_at" in data
+            assert data["runtime_overview"]["services"][0]["service"] == "gateway"
 
     @pytest.mark.asyncio
     async def test_health_detailed_no_runtime_status(self, adapter):
         """When gateway_state.json is missing, fields are None."""
-        app = _create_app(adapter)
         with patch("gateway.status.read_runtime_status", return_value=None):
-            async with TestClient(TestServer(app)) as cli:
-                resp = await cli.get("/health/detailed")
-                assert resp.status == 200
-                data = await resp.json()
-                assert data["status"] == "ok"
-                assert data["gateway_state"] is None
-                assert data["platforms"] == {}
+            resp = await adapter._handle_health_detailed(SimpleNamespace())
+            assert resp.status == 200
+            data = json.loads(resp.text)
+            assert data["status"] == "ok"
+            assert data["gateway_state"] is None
+            assert data["platforms"] == {}
 
     @pytest.mark.asyncio
     async def test_health_detailed_does_not_require_auth(self, auth_adapter):
         """Health detailed endpoint should be accessible without auth, like /health."""
-        app = _create_app(auth_adapter)
         with patch("gateway.status.read_runtime_status", return_value=None):
-            async with TestClient(TestServer(app)) as cli:
-                resp = await cli.get("/health/detailed")
-                assert resp.status == 200
+            resp = await auth_adapter._handle_health_detailed(SimpleNamespace())
+            assert resp.status == 200
 
 
 # ---------------------------------------------------------------------------

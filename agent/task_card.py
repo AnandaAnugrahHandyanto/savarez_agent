@@ -99,6 +99,7 @@ class TaskCard:
     # ── Forward-compatible fields (Sprint 4, 5) ──
     routing_basis: List[str] = field(default_factory=list)
     fallback_used: Optional[str] = None
+    risk_level: str = "R0"
 
     # ── v2.8 最小 Task Card 扩展字段 ──
     client: Optional[str] = None
@@ -177,6 +178,7 @@ class TaskCard:
             session_id=d.get("session_id", ""),
             routing_basis=d.get("routing_basis", []),
             fallback_used=d.get("fallback_used"),
+            risk_level=d.get("risk_level", "R0"),
             # ── v2.8 扩展字段 ──
             client=d.get("client"),
             project_topic=d.get("project_topic"),

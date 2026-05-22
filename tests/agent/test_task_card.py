@@ -63,6 +63,7 @@ def test_round_trip_preserves_nested_and_extension_fields():
         session_id="sess-2",
         routing_basis=["task_category_default"],
         fallback_used="none",
+        risk_level="R2",
         client="dongqiudi",
         project_topic="managed agents",
         local_project_path="/tmp/project",
@@ -78,6 +79,7 @@ def test_round_trip_preserves_nested_and_extension_fields():
     assert clone.execution_plan.agents == ["codex", "claude"]
     assert clone.review_result == {"quality_score": 88}
     assert clone.first_output == "strategy_spine"
+    assert clone.risk_level == "R2"
 
 
 def test_save_increments_version_and_refreshes_timestamp(tmp_path, monkeypatch):

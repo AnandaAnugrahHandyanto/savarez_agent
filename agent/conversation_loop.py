@@ -25,6 +25,7 @@ import ssl
 import threading
 import time
 import uuid
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from agent.anthropic_adapter import _is_oauth_token
@@ -74,6 +75,76 @@ from tools.skill_provenance import set_current_write_origin
 from utils import base_url_host_matches, env_var_enabled
 
 logger = logging.getLogger(__name__)
+
+
+def _managed_agents_config_path() -> Optional[Path]:
+    candidates = [
+        Path.cwd() / "configs" / "managed_agents" / "agents.yaml",
+        Path(__file__).resolve().parents[1] / "configs" / "managed_agents" / "agents.yaml",
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def _risk_level_from_request(raw_request: str, task_category: str = "other") -> str:
+    text = (raw_request or "").lower()
+    destructive_keywords = (
+        "删除",
+        "销毁",
+        "生产",
+        "部署",
+        "delete",
+        "destroy",
+        "production",
+        "deploy",
+    )
+    architecture_keywords = ("架构", "重构", "architecture", "refactor")
+    if any(keyword in text for keyword in destructive_keywords):
+        return "R4"
+    if any(keyword in text for keyword in architecture_keywords):
+        return "R3"
+    if task_category == "explain_code":
+        return "R0"
+    if task_category == "tests":
+        return "R1"
+    if task_category in {"architecture_change", "architecture_review"}:
+        return "R3"
+    if task_category in {"feature", "code_maintenance"}:
+        return "R2"
+    return "R2"
+
+
+def _route_task(agent, task_card: TaskCard, raw_request: str) -> Any:
+    config_path = _managed_agents_config_path()
+    if config_path is not None:
+        try:
+            from agent.managed_agents.router import load_managed_agent_router
+
+            router = load_managed_agent_router(config_path)
+            current_risk = getattr(task_card, "risk_level", None)
+            risk_level = (
+                current_risk
+                if current_risk not in {None, "", "R0"} or task_card.compiled_intent.task_category == "explain_code"
+                else _risk_level_from_request(raw_request, task_card.compiled_intent.task_category)
+            )
+            task_card.risk_level = risk_level
+            return router.route(
+                {
+                    "task_id": task_card.task_id,
+                    "task_category": task_card.compiled_intent.task_category,
+                    "risk_level": risk_level,
+                    "summary": raw_request,
+                }
+            )
+        except Exception:
+            logger.warning("Managed agent routing failed; falling back to legacy router", exc_info=True)
+
+    return agent._agent_router.route(
+        task_category=task_card.compiled_intent.task_category,
+        raw_request=raw_request,
+    )
 
 
 def _ra():
@@ -208,14 +279,14 @@ def run_conversation(
     if getattr(agent, "_current_task_card", None) is not None:
         try:
             tc = agent._current_task_card
-            routing = agent._agent_router.route(
-                task_category=tc.compiled_intent.task_category,
-                raw_request=persist_user_message or user_message,
-            )
+            routing = _route_task(agent, tc, persist_user_message or user_message)
             tc.execution_plan.mode = routing.mode
             tc.execution_plan.agents = routing.agents
             tc.execution_plan.delegation_reason = routing.reason
             tc.routing_basis = routing.routing_basis
+            tc.fallback_used = getattr(routing, "fallback_used", None)
+            if hasattr(tc.execution_plan, "require_gate"):
+                tc.execution_plan.require_gate = getattr(routing, "require_gate", None)
             save_task_card(tc)
             if should_auto_create_card(tc):
                 try:

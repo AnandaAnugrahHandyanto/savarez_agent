@@ -926,7 +926,7 @@ class APIServerAdapter(BasePlatformAdapter):
         dashboard can display full status without needing a shared PID file or
         /proc access.  No authentication required.
         """
-        from gateway.status import read_runtime_status
+        from gateway.status import build_runtime_overview, read_runtime_status
 
         runtime = read_runtime_status() or {}
         return web.json_response({
@@ -938,6 +938,7 @@ class APIServerAdapter(BasePlatformAdapter):
             "exit_reason": runtime.get("exit_reason"),
             "updated_at": runtime.get("updated_at"),
             "pid": os.getpid(),
+            "runtime_overview": build_runtime_overview(runtime=runtime),
         })
 
     async def _handle_models(self, request: "web.Request") -> "web.Response":
@@ -3473,6 +3474,15 @@ class APIServerAdapter(BasePlatformAdapter):
 
             self._mark_connected()
             if not self._api_key:
+                try:
+                    from gateway.status import write_runtime_status
+                    write_runtime_status(
+                        platform=self.platform.value,
+                        auth_required=False,
+                        auth_warning="API_SERVER_KEY is not configured; non-health endpoints accept unauthenticated loopback requests.",
+                    )
+                except Exception:
+                    pass
                 logger.warning(
                     "[%s] ⚠️  No API key configured (API_SERVER_KEY / platforms.api_server.key). "
                     "All requests will be accepted without authentication. "
@@ -3480,6 +3490,16 @@ class APIServerAdapter(BasePlatformAdapter):
                     "unauthorized access to sessions, responses, and cron jobs.",
                     self.name,
                 )
+            else:
+                try:
+                    from gateway.status import write_runtime_status
+                    write_runtime_status(
+                        platform=self.platform.value,
+                        auth_required=True,
+                        auth_warning=None,
+                    )
+                except Exception:
+                    pass
             logger.info(
                 "[%s] API server listening on http://%s:%d (model: %s)",
                 self.name, self._host, self._port, self._model_name,
