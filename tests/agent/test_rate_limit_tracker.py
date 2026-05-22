@@ -92,11 +92,11 @@ class TestParseHeaders:
 
 class TestBucket:
     def test_used(self):
-        b = RateLimitBucket(limit=800, remaining=795, reset_seconds=45.0, captured_at=time.time())
+        b = RateLimitBucket(limit=800, remaining=795, reset_seconds=45.0, captured_at=time.monotonic())
         assert b.used == 5
 
     def test_usage_pct(self):
-        b = RateLimitBucket(limit=100, remaining=20, reset_seconds=30.0, captured_at=time.time())
+        b = RateLimitBucket(limit=100, remaining=20, reset_seconds=30.0, captured_at=time.monotonic())
         assert b.usage_pct == pytest.approx(80.0)
 
     def test_usage_pct_zero_limit(self):
@@ -104,13 +104,13 @@ class TestBucket:
         assert b.usage_pct == 0.0
 
     def test_remaining_seconds_now(self):
-        now = time.time()
+        now = time.monotonic()
         b = RateLimitBucket(limit=800, remaining=795, reset_seconds=60.0, captured_at=now - 10)
         # ~50 seconds should remain
         assert 49 <= b.remaining_seconds_now <= 51
 
     def test_remaining_seconds_expired(self):
-        b = RateLimitBucket(limit=800, remaining=795, reset_seconds=30.0, captured_at=time.time() - 60)
+        b = RateLimitBucket(limit=800, remaining=795, reset_seconds=30.0, captured_at=time.monotonic() - 60)
         assert b.remaining_seconds_now == 0.0
 
 
