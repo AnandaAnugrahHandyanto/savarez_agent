@@ -115,6 +115,18 @@ def _get_process_start_time(pid: int) -> Optional[int]:
         # Field 22 in /proc/<pid>/stat is process start time (clock ticks).
         return int(stat_path.read_text(encoding="utf-8").split()[21])
     except (FileNotFoundError, IndexError, PermissionError, ValueError, OSError):
+        pass
+
+    # Non-Linux fallback (Windows / macOS): psutil is a core dependency,
+    # already used by _pid_exists() and _read_process_cmdline().  create_time()
+    # returns a stable per-process epoch timestamp that changes when a PID is
+    # reused, which is exactly what start_time is used for here.  Without this
+    # fallback start_time was always None off Linux, weakening PID liveness /
+    # PID-reuse detection in the gateway state files.
+    try:
+        import psutil  # type: ignore
+        return int(psutil.Process(pid).create_time())
+    except Exception:
         return None
 
 
