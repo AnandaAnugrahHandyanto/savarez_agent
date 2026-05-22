@@ -1455,9 +1455,11 @@ class SystemScopeRequiresRootError(RuntimeError):
 
 def _user_dbus_socket_path() -> Path:
     """Return the expected per-user D-Bus socket path (regardless of existence)."""
+    if not hasattr(os, "getuid"):
+        return Path("/run/user/0") / "bus"
     xdg = (
         os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
-    )  # windows-footgun: ok — POSIX systemd helper, never invoked on Windows
+    )  # windows-footgun: ok — guarded by hasattr(os, 'getuid') above
     return Path(xdg) / "bus"
 
 
@@ -1493,7 +1495,7 @@ def _ensure_user_systemd_env() -> None:
     """
     uid = (
         os.getuid()
-    )  # windows-footgun: ok — POSIX systemd helper, never invoked on Windows
+    )  # windows-footgun: ok — guarded by hasattr(os, 'getuid')
     if "XDG_RUNTIME_DIR" not in os.environ:
         runtime_dir = f"/run/user/{uid}"
         if Path(runtime_dir).exists():
