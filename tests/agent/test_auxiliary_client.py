@@ -3132,3 +3132,109 @@ class TestZ2O1579ConfiguredFallbackChainFix:
         # Payment fallback should NOT be reached because configured chain
         # returned a working client.
         mock_payment.assert_not_called()
+
+
+class TestZ2O1621BuildCallKwargsAzureReasoningModel:
+    """Regression tests for the 2026-05-22 Verdigris/Mercator finding:
+    _build_call_kwargs emits max_tokens for provider=azure-foundry +
+    gpt-5.x, but Azure rejects max_tokens with HTTP 400 ("Unsupported
+    parameter: 'max_tokens' is not supported with this model. Use
+    'max_completion_tokens' instead.") for all gpt-5.x, gpt-4o*, and
+    o-series reasoning models. Same rule applies to both
+    *.openai.azure.com and *.cognitiveservices.azure.com (Azure AI
+    Foundry) domains."""
+
+    def test_azure_foundry_gpt5_uses_max_completion_tokens(self):
+        from agent.auxiliary_client import _build_call_kwargs
+
+        kwargs = _build_call_kwargs(
+            provider="azure-foundry",
+            model="gpt-5.5",
+            messages=[{"role": "user", "content": "hi"}],
+            max_tokens=500,
+        )
+        assert kwargs.get("max_completion_tokens") == 500
+        assert "max_tokens" not in kwargs
+
+    def test_azure_foundry_gpt5_mini_uses_max_completion_tokens(self):
+        from agent.auxiliary_client import _build_call_kwargs
+
+        kwargs = _build_call_kwargs(
+            provider="azure-foundry",
+            model="gpt-5-mini",
+            messages=[{"role": "user", "content": "hi"}],
+            max_tokens=500,
+        )
+        assert kwargs.get("max_completion_tokens") == 500
+
+    def test_azure_provider_with_o3_uses_max_completion_tokens(self):
+        from agent.auxiliary_client import _build_call_kwargs
+
+        kwargs = _build_call_kwargs(
+            provider="azure",
+            model="o3",
+            messages=[{"role": "user", "content": "hi"}],
+            max_tokens=500,
+        )
+        assert kwargs.get("max_completion_tokens") == 500
+
+    def test_azure_with_legacy_gpt35_still_uses_max_tokens(self):
+        """Non-reasoning models on Azure should keep the legacy max_tokens
+        key. The fix is scoped to reasoning models specifically."""
+        from agent.auxiliary_client import _build_call_kwargs
+
+        kwargs = _build_call_kwargs(
+            provider="azure",
+            model="gpt-3.5-turbo",
+            messages=[{"role": "user", "content": "hi"}],
+            max_tokens=500,
+        )
+        assert kwargs.get("max_tokens") == 500
+        assert "max_completion_tokens" not in kwargs
+
+    def test_openrouter_gpt5_still_uses_max_tokens(self):
+        """OpenRouter normalizes max_tokens itself and accepts it for all
+        models including gpt-5.x routed through its API. The fix must not
+        accidentally change OpenRouter behavior."""
+        from agent.auxiliary_client import _build_call_kwargs
+
+        kwargs = _build_call_kwargs(
+            provider="openrouter",
+            model="openai/gpt-5",
+            messages=[{"role": "user", "content": "hi"}],
+            max_tokens=500,
+        )
+        assert kwargs.get("max_tokens") == 500
+
+
+class TestZ2O1620PoolMayRecoverFromRateLimitImport:
+    """Regression test for the NameError that fired in
+    agent/conversation_loop.py:2254 when a user with a configured
+    fallback_providers entry hit a rate limit. The bare reference to
+    _pool_may_recover_from_rate_limit didn't import the symbol; the
+    fix routes through _ra() (which returns the run_agent module)
+    like every other run_agent helper in the file.
+
+    Pre-fix this code path was unreachable in practice because no
+    one had configured a fallback chain and reached the
+    `is_rate_limited AND _fallback_index < len(_fallback_chain)`
+    branch. After PR #30005's _resolve_auto fix it became reachable
+    — and immediately NameError'd."""
+
+    def test_pool_may_recover_helper_accessible_via_run_agent_module(self):
+        """The helper must be reachable from agent.conversation_loop via
+        the _ra() module accessor — if it isn't, the rate-limit
+        fallback path NameErrors at runtime."""
+        from agent.conversation_loop import _ra
+
+        run_agent_mod = _ra()
+        assert hasattr(run_agent_mod, "_pool_may_recover_from_rate_limit"), (
+            "_pool_may_recover_from_rate_limit must be defined on the "
+            "run_agent module — conversation_loop's rate-limit fallback "
+            "path calls it via _ra() and will NameError if it's missing."
+        )
+        # Sanity: it's callable with the expected positional arg.
+        # Passing None for credential_pool should be a no-op safe call
+        # (returns False per the existing test in
+        # tests/run_agent/test_provider_fallback.py).
+        assert run_agent_mod._pool_may_recover_from_rate_limit(None) is False

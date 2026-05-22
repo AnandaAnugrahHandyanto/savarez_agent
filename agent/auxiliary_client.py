@@ -4315,6 +4315,11 @@ def _build_call_kwargs(
     if max_tokens is not None:
         # Codex adapter handles max_tokens internally; OpenRouter/Nous use max_tokens.
         # Direct OpenAI api.openai.com with newer models needs max_completion_tokens.
+        # Azure OpenAI (both *.openai.azure.com and *.cognitiveservices.azure.com,
+        # the latter being Azure AI Foundry) with reasoning models (gpt-5.x,
+        # gpt-4o, o-series) also rejects max_tokens with HTTP 400
+        # "Unsupported parameter: 'max_tokens' is not supported with this
+        # model. Use 'max_completion_tokens' instead." — same rule applies.
         # ZAI vision models (glm-4v-flash, glm-4v-plus, etc.) reject max_tokens with
         # error code 1210 ("API 调用参数有误") on multimodal requests — skip it.
         _model_lower = (model or "").lower()
@@ -4322,6 +4327,20 @@ def _build_call_kwargs(
             provider == "zai"
             and ("4v" in _model_lower or "5v" in _model_lower or "-v" in _model_lower)
         )
+
+        def _is_reasoning_model(m: str) -> bool:
+            """gpt-5.x, gpt-4o*, o1/o3/o4 series all require max_completion_tokens
+            instead of max_tokens on direct-OpenAI-compatible endpoints
+            (Azure, api.openai.com, GitHub Copilot)."""
+            m = m.lower()
+            return (
+                m.startswith("gpt-5")
+                or m.startswith("gpt-4o")
+                or m.startswith("o1")
+                or m.startswith("o3")
+                or m.startswith("o4")
+            )
+
         if _skip_max_tokens:
             pass  # ZAI vision models do not accept max_tokens
         elif provider == "custom":
@@ -4330,6 +4349,11 @@ def _build_call_kwargs(
                 kwargs["max_completion_tokens"] = max_tokens
             else:
                 kwargs["max_tokens"] = max_tokens
+        elif provider in {"azure", "azure-foundry"} and _is_reasoning_model(_model_lower):
+            # Azure rejects max_tokens for reasoning models — must use
+            # max_completion_tokens. Applies to both the classic Azure OpenAI
+            # domain and the Azure AI Foundry domain (cognitiveservices.azure.com).
+            kwargs["max_completion_tokens"] = max_tokens
         else:
             kwargs["max_tokens"] = max_tokens
 
