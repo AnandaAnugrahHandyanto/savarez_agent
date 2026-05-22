@@ -272,6 +272,11 @@ It never waits for, signals, or replays a running Codex worker. Use
 `request-changes`, which writes a reviewer comment containing only bounded
 follow-up verdicts, worker metadata, verification summaries, and deterministic
 check output tails, then unblocks the implementation for another worker run.
+On the next claim, the worker context includes a dedicated
+`Requested changes to address before finishing` section with the latest
+reviewer, source run id, timestamp, and bounded comment, so an implementation
+Codex lane can fix the failure without the main agent replaying the full
+session or manually restating the failure.
 Use `--no-request-changes` or API/tool
 `request_changes_on_failure=false` when a controller wants to inspect the
 failed gate without mutating task state. The Python tool equivalent is

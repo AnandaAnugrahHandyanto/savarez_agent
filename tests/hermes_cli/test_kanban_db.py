@@ -394,6 +394,50 @@ def test_review_worker_evidence_request_changes_unblocks_with_comment(
     )
 
 
+def test_worker_context_surfaces_latest_requested_changes_for_retry(
+    kanban_home, tmp_path,
+):
+    metadata = {
+        "worker_lane": {"name": "codex-deep", "kind": "codex_cli", "exit_code": 0},
+        "verification": {"commands": ["pytest -q"], "summary": "failed"},
+        "review": {"required": True, "reason": "Codex completed; Hermes review required"},
+    }
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="retry requested changes",
+            assignee="codex-deep",
+            workspace_kind="dir",
+            workspace_path=str(tmp_path),
+        )
+        first = kb.claim_task(conn, tid, claimer="worker:codex-deep")
+        assert first is not None
+        assert kb.block_task(
+            conn,
+            tid,
+            reason="review-required: Codex completed; Hermes review required",
+            expected_run_id=first.current_run_id,
+            metadata=metadata,
+        )
+        assert kb.review_worker_evidence(
+            conn,
+            tid,
+            decision="request_changes",
+            reviewer="controller",
+            comment="Fix the failed exact-file acceptance check.",
+        )
+        retry_task = kb.claim_task(conn, tid, claimer="worker:codex-deep")
+        assert retry_task is not None
+        context = kb.build_worker_context(conn, tid)
+
+    assert "## Requested changes to address before finishing" in context
+    assert "This task was reopened after review" in context
+    assert "reviewer: controller" in context
+    assert f"source_run_id: {first.current_run_id}" in context
+    assert "Fix the failed exact-file acceptance check." in context
+    assert "## Prior attempts on this task" in context
+
+
 def _finish_followup_with_worker_evidence(
     conn,
     task_id: str,

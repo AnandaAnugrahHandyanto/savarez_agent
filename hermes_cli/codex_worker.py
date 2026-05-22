@@ -578,6 +578,10 @@ Implement the assigned task in the workspace. Do not mark the Kanban task
 done yourself; this wrapper will return your structured receipt to Hermes
 and block the task for review.
 
+If the task context contains "Requested changes to address before finishing",
+treat that section as mandatory retry feedback. Fix those items first and
+include the verification you ran for the requested changes in your receipt.
+
 When finished, print a concise structured receipt:
 
 Progress:

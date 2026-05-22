@@ -450,6 +450,22 @@ def test_codex_argv_model_parameter():
     ]
 
 
+def test_codex_prompt_marks_requested_changes_as_mandatory():
+    from hermes_cli.codex_worker import build_codex_prompt
+
+    prompt = build_codex_prompt(
+        "# Kanban task t_retry: retry\n\n"
+        "## Requested changes to address before finishing\n"
+        "Fix the failed exact-file acceptance check.\n",
+        lane="codex-deep",
+        model="gpt-5.5",
+    )
+
+    assert "Requested changes to address before finishing" in prompt
+    assert "mandatory retry feedback" in prompt
+    assert "Fix the failed exact-file acceptance check." in prompt
+
+
 def test_codex_env_preserves_existing_writable_codex_home(tmp_path, monkeypatch):
     home = tmp_path / "home"
     codex_home = home / ".codex"

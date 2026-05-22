@@ -8236,17 +8236,19 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
     Order:
       1. Task title (mandatory).
       2. Task body (optional opening post, capped at 8 KB).
-      3. Prior attempts on THIS task (most recent ``_CTX_MAX_PRIOR_ATTEMPTS``
+      3. Latest requested-changes feedback, when the current task is a retry
+         after Hermes/controller review asked for changes.
+      4. Prior attempts on THIS task (most recent ``_CTX_MAX_PRIOR_ATTEMPTS``
          shown; older attempts collapsed into a one-line summary).
          Each attempt's ``summary`` / ``error`` / ``metadata`` capped at
          ``_CTX_MAX_FIELD_BYTES`` each.
-      4. Structured handoff results of every done parent task. Prefers
+      5. Structured handoff results of every done parent task. Prefers
          ``run.summary`` / ``run.metadata`` when the parent was executed
          via a run; falls back to ``task.result`` for older data. Same
          per-field cap.
-      5. Cross-task role history for the assignee (most recent 5
+      6. Cross-task role history for the assignee (most recent 5
          completed runs on other tasks).
-      6. Comment thread (most recent ``_CTX_MAX_COMMENTS`` shown, older
+      7. Comment thread (most recent ``_CTX_MAX_COMMENTS`` shown, older
          collapsed).
 
     All caps exist so worker prompts stay bounded even on pathological
@@ -8292,12 +8294,49 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
         lines.append(_cap(task.body, _CTX_MAX_BODY_BYTES))
         lines.append("")
 
+    all_prior = [r for r in list_runs(conn, task_id) if r.ended_at is not None]
+    latest_change_request: Optional[Run] = None
+    latest_change_meta: Optional[dict[str, Any]] = None
+    for run in reversed(all_prior):
+        metadata = run.metadata if isinstance(run.metadata, dict) else None
+        review = metadata.get("review") if isinstance(metadata, dict) else None
+        if not isinstance(review, dict):
+            continue
+        if review.get("decision") == "changes_requested":
+            latest_change_request = run
+            latest_change_meta = review
+            break
+    if latest_change_request is not None and latest_change_meta is not None:
+        lines.append("## Requested changes to address before finishing")
+        lines.append(
+            "This task was reopened after review. Address the feedback below, "
+            "then run focused verification and include the result in your receipt."
+        )
+        reviewer = latest_change_meta.get("reviewer") or "reviewer"
+        reviewed_at = latest_change_meta.get("reviewed_at")
+        if isinstance(reviewed_at, (int, float)):
+            reviewed_at_text = time.strftime(
+                "%Y-%m-%d %H:%M",
+                time.localtime(int(reviewed_at)),
+            )
+        else:
+            reviewed_at_text = "-"
+        lines.append(
+            f"- reviewer: {reviewer}; source_run_id: "
+            f"{latest_change_meta.get('source_run_id') or latest_change_request.id}; "
+            f"reviewed_at: {reviewed_at_text}"
+        )
+        comment = latest_change_meta.get("comment")
+        if isinstance(comment, str) and comment.strip():
+            lines.append("")
+            lines.append(_cap(comment, _CTX_MAX_COMMENT_BYTES))
+        lines.append("")
+
     # Prior attempts — show closed runs so a retrying worker sees the
     # history. Skip the currently-active run (that's this worker).
     # Cap at _CTX_MAX_PRIOR_ATTEMPTS most-recent closed runs; older
     # attempts get collapsed into a one-line marker so the worker knows
     # more exist without bloating the prompt.
-    all_prior = [r for r in list_runs(conn, task_id) if r.ended_at is not None]
     # list_runs returns ascending by started_at; "most recent" = last N
     if len(all_prior) > _CTX_MAX_PRIOR_ATTEMPTS:
         omitted = len(all_prior) - _CTX_MAX_PRIOR_ATTEMPTS
