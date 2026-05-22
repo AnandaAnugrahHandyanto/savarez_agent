@@ -38,6 +38,10 @@ _approval_run_id: contextvars.ContextVar[str] = contextvars.ContextVar(
     "approval_run_id",
     default="",
 )
+_approval_interactive: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "approval_interactive",
+    default=False,
+)
 
 
 def _fire_approval_hook(hook_name: str, **kwargs) -> None:
@@ -76,8 +80,18 @@ def reset_current_session_key(token: contextvars.Token[str]) -> None:
     _approval_session_key.reset(token)
 
 
+def set_current_interactive(enabled: bool = True) -> contextvars.Token[bool]:
+    """Bind interactive approval routing to the current context."""
+    return _approval_interactive.set(bool(enabled))
+
+
+def reset_current_interactive(token: contextvars.Token[bool]) -> None:
+    """Restore the prior interactive approval routing context."""
+    _approval_interactive.reset(token)
+
+
 def set_current_run_id(run_id: str) -> contextvars.Token[str]:
-    """Bind the active API run id to pending gateway approvals."""
+    """Bind the active API run id to the current context."""
     return _approval_run_id.set(run_id or "")
 
 
@@ -86,9 +100,22 @@ def reset_current_run_id(token: contextvars.Token[str]) -> None:
     _approval_run_id.reset(token)
 
 
-def get_current_run_id() -> str:
-    """Return the active API run id for approval binding, if any."""
-    return _approval_run_id.get()
+def get_current_run_id(default: str = "") -> str:
+    """Return the active run id, preferring context-local state."""
+    run_id = _approval_run_id.get()
+    if run_id:
+        return run_id
+    try:
+        from gateway.session_context import get_session_env
+
+        return get_session_env("HERMES_RUN_ID", default)
+    except Exception:
+        return os.getenv("HERMES_RUN_ID", default)
+
+
+def is_current_interactive() -> bool:
+    """Return whether this context should use interactive approval routing."""
+    return _approval_interactive.get() or bool(os.getenv("HERMES_INTERACTIVE"))
 
 
 def get_current_session_key(default: str = "default") -> str:
@@ -1096,7 +1123,7 @@ def check_dangerous_command(command: str, env_type: str,
     if is_approved(session_key, pattern_key):
         return {"approved": True, "message": None}
 
-    is_cli = os.getenv("HERMES_INTERACTIVE")
+    is_cli = is_current_interactive()
     is_gateway = _is_gateway_approval_context()
 
     if not is_cli and not is_gateway:
@@ -1224,7 +1251,7 @@ def check_all_command_guards(command: str, env_type: str,
     if is_truthy_value(os.getenv("HERMES_YOLO_MODE")) or is_current_session_yolo_enabled() or approval_mode == "off":
         return {"approved": True, "message": None}
 
-    is_cli = os.getenv("HERMES_INTERACTIVE")
+    is_cli = is_current_interactive()
     is_gateway = _is_gateway_approval_context()
     is_ask = os.getenv("HERMES_EXEC_ASK")
 
