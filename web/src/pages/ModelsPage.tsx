@@ -255,13 +255,13 @@ function UseAsMenu({
               Main model
             </span>
             {isMain && (
-              <span className="text-[9px] uppercase tracking-wider text-primary/80">
+              <span className="text-[9px] tracking-wider text-primary/80">
                 current
               </span>
             )}
           </button>
 
-          <div className="border-t border-border/50 px-3 py-1.5 text-[9px] uppercase tracking-wider text-muted-foreground">
+          <div className="border-t border-border/50 px-3 py-1.5 text-[9px] tracking-wider text-muted-foreground">
             Auxiliary task
           </div>
 
@@ -284,7 +284,7 @@ function UseAsMenu({
             >
               <span>{t.label}</span>
               {mainAuxTask === t.key && (
-                <span className="text-[9px] uppercase tracking-wider text-primary/80">
+                <span className="text-[9px] tracking-wider text-primary/80">
                   current
                 </span>
               )}
@@ -352,12 +352,12 @@ function ModelCard({
                 {shortModelName(entry.model)}
               </CardTitle>
               {isMain && (
-                <span className="inline-flex items-center gap-0.5 bg-primary/15 px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wider text-primary">
+                <span className="inline-flex items-center gap-0.5 bg-primary/15 px-1.5 py-0.5 text-[9px] font-medium tracking-wider text-primary">
                   <Star className="h-2.5 w-2.5" /> main
                 </span>
               )}
               {mainAuxTask && (
-                <span className="inline-flex items-center bg-purple-500/10 px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wider text-purple-600 dark:text-purple-400">
+                <span className="inline-flex items-center bg-purple-500/10 px-1.5 py-0.5 text-[9px] font-medium tracking-wider text-purple-600 dark:text-purple-400">
                   aux · {mainAuxTask}
                 </span>
               )}
@@ -539,7 +539,7 @@ function AuxiliaryTasksModal({
           <div className="flex items-center justify-between gap-3 pr-8">
             <h2
               id="aux-modal-title"
-              className="font-display text-base tracking-wider uppercase"
+              className="font-display text-base tracking-wider"
             >
               Auxiliary Tasks
             </h2>
@@ -687,7 +687,7 @@ function ModelSettingsPanel({
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2 mb-0.5">
               <Star className="h-3 w-3 text-primary" />
-              <span className="text-xs font-medium uppercase tracking-wider">
+              <span className="text-xs font-medium tracking-wider">
                 Main model
               </span>
             </div>
@@ -711,7 +711,7 @@ function ModelSettingsPanel({
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2 mb-0.5">
               <Cpu className="h-3 w-3 text-muted-foreground" />
-              <span className="text-xs font-medium uppercase tracking-wider">
+              <span className="text-xs font-medium tracking-wider">
                 Auxiliary tasks
               </span>
             </div>

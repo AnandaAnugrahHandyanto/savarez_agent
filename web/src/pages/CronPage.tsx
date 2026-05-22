@@ -296,7 +296,7 @@ export default function CronPage() {
             <header className="p-5 pb-3 border-b border-border">
               <h2
                 id="create-cron-title"
-                className="font-display text-base tracking-wider uppercase"
+                className="font-display text-base tracking-wider"
               >
                 {t.cron.newJob}
               </h2>
