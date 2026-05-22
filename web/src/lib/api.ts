@@ -63,17 +63,90 @@ async function getSessionToken(): Promise<string> {
 
 export const api = {
   getStatus: () => fetchJSON<StatusResponse>("/api/status"),
-  getSessions: (limit = 20, offset = 0) =>
-    fetchJSON<PaginatedSessions>(`/api/sessions?limit=${limit}&offset=${offset}`),
+  getSessions: (limit = 20, offset = 0, projectId?: string | null) => {
+    const qs = new URLSearchParams({
+      limit: String(limit),
+      offset: String(offset),
+    });
+    if (projectId) qs.set("project_id", projectId);
+    return fetchJSON<PaginatedSessions>(`/api/sessions?${qs.toString()}`);
+  },
   getSessionMessages: (id: string) =>
     fetchJSON<SessionMessagesResponse>(`/api/sessions/${encodeURIComponent(id)}/messages`),
   getSessionLatestDescendant: (id: string) =>
     fetchJSON<SessionLatestDescendantResponse>(
       `/api/sessions/${encodeURIComponent(id)}/latest-descendant`,
     ),
+  updateSessionTitle: (id: string, title: string) =>
+    fetchJSON<{ ok: boolean; session: SessionInfo }>(
+      `/api/sessions/${encodeURIComponent(id)}`,
+      {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title }),
+      },
+    ),
   deleteSession: (id: string) =>
     fetchJSON<{ ok: boolean }>(`/api/sessions/${encodeURIComponent(id)}`, {
       method: "DELETE",
+    }),
+  getSessionOrganization: () =>
+    fetchJSON<SessionOrganizationResponse>("/api/session-organization"),
+  createSessionProject: (body: Partial<SessionProject> & { name: string }) =>
+    fetchJSON<{ project: SessionProject }>("/api/session-organization/projects", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  updateSessionProject: (id: string, body: Partial<SessionProject>) =>
+    fetchJSON<{ project: SessionProject }>(
+      `/api/session-organization/projects/${encodeURIComponent(id)}`,
+      {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      },
+    ),
+  openSessionProject: (id: string) =>
+    fetchJSON<{ ok: boolean; path: string }>(
+      `/api/session-organization/projects/${encodeURIComponent(id)}/open`,
+      { method: "POST" },
+    ),
+  deleteSessionProject: (id: string) =>
+    fetchJSON<{ ok: boolean }>(
+      `/api/session-organization/projects/${encodeURIComponent(id)}`,
+      { method: "DELETE" },
+    ),
+  updateSessionOrganizationMeta: (
+    id: string,
+    body: { pinned?: boolean; archived?: boolean; seen?: boolean },
+  ) =>
+    fetchJSON<{ meta: SessionOrganizationSessionMeta | null }>(
+      `/api/session-organization/sessions/${encodeURIComponent(id)}/meta`,
+      {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      },
+    ),
+  uploadDashboardFile: (file: File) => {
+    const qs = new URLSearchParams({ filename: file.name });
+    const headers: Record<string, string> = {};
+    if (file.type) headers["Content-Type"] = file.type;
+    return fetchJSON<DashboardFileUploadResponse>(
+      `/api/media/file?${qs.toString()}`,
+      {
+        method: "POST",
+        headers,
+        body: file,
+      },
+    );
+  },
+  createDashboardPaste: (text: string) =>
+    fetchJSON<DashboardPasteResponse>("/api/chat/paste", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text }),
     }),
   getLogs: (params: { file?: string; lines?: number; level?: string; component?: string }) => {
     const qs = new URLSearchParams();
@@ -389,6 +462,7 @@ export interface SessionInfo {
   title: string | null;
   started_at: number;
   ended_at: number | null;
+  end_reason?: string | null;
   last_active: number;
   is_active: boolean;
   message_count: number;
@@ -397,6 +471,11 @@ export interface SessionInfo {
   output_tokens: number;
   preview: string | null;
   parent_session_id?: string | null;
+  project_id?: string | null;
+  pinned_at?: number | null;
+  archived_at?: number | null;
+  seen_at?: number | null;
+  needs_attention?: boolean;
 }
 
 export interface SessionLatestDescendantResponse {
@@ -411,6 +490,56 @@ export interface PaginatedSessions {
   total: number;
   limit: number;
   offset: number;
+}
+
+export interface SessionProject {
+  id: string;
+  name: string;
+  description?: string;
+  default_model?: string | null;
+  default_skills?: string[];
+  workspace_path?: string | null;
+  created_at?: number;
+  updated_at?: number;
+  pinned_at?: number | null;
+  archived_at?: number | null;
+  pinned?: boolean;
+  archived?: boolean;
+}
+
+export interface SessionOrganizationResponse {
+  version: number;
+  updated_at: number;
+  projects: SessionProject[];
+  assignments: Record<string, { project_id: string; updated_at?: number }>;
+  sessions?: Record<string, SessionOrganizationSessionMeta>;
+}
+
+export interface SessionOrganizationSessionMeta {
+  pinned_at?: number | null;
+  archived_at?: number | null;
+  seen_at?: number | null;
+}
+
+export interface DashboardFileUploadResponse {
+  ok: boolean;
+  filename: string;
+  size: number;
+  kind: string;
+  content_type: string;
+  stored_path: string;
+  agent_path: string;
+  suggested_prompt: string;
+}
+
+export interface DashboardPasteResponse {
+  ok: boolean;
+  filename: string;
+  size: number;
+  line_count: number;
+  stored_path: string;
+  agent_path: string;
+  suggested_prompt: string;
 }
 
 export interface EnvVarInfo {

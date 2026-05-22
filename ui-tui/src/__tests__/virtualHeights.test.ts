@@ -40,6 +40,22 @@ describe('virtual height estimates', () => {
     expect(withSep).toBe(base + 2)
   })
 
+  it('tracks intro title changes in the height cache key', () => {
+    const baseInfo = { model: 'gpt-5.5', skills: {}, tools: {}, version: '0.13.0' }
+    const untitled: Msg = { info: baseInfo, kind: 'intro', role: 'system', text: '' }
+    const titled: Msg = {
+      info: { ...baseInfo, title: 'Readable session name' },
+      kind: 'intro',
+      role: 'system',
+      text: ''
+    }
+
+    expect(messageHeightKey(untitled)).not.toBe(messageHeightKey(titled))
+    expect(estimatedMsgHeight(titled, 80, { compact: false, details: false })).toBe(
+      estimatedMsgHeight(untitled, 80, { compact: false, details: false }) + 1
+    )
+  })
+
   it('caps wrapped-line counting so giant assistant turns do not block offset rebuilds', () => {
     // wrappedLines is invoked once per uncached message during
     // useVirtualHistory's offset rebuild. Unbounded counting on a long

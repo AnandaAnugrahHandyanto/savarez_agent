@@ -22,29 +22,38 @@ import { WebLinksAddon } from "@xterm/addon-web-links";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
+import { Badge } from "@nous-research/ui/ui/components/badge";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Typography } from "@/components/NouiTypography";
 import { HERMES_BASE_PATH } from "@/lib/api";
 import { cn } from "@/lib/utils";
-import { Copy, PanelRight, X } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { CircleStop, Copy, FileUp, Loader2, MessageSquarePlus, PanelRight, SendHorizontal, X } from "lucide-react";
+import { type DragEvent, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useSearchParams } from "react-router-dom";
 
+import { ChatModelControl } from "@/components/ChatModelControl";
 import { ChatSidebar } from "@/components/ChatSidebar";
+import {
+  EVENTS_LABEL,
+  EVENTS_TONE,
+  type EventsState,
+} from "@/components/chat-events-status";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { useI18n } from "@/i18n";
-import { api } from "@/lib/api";
+import { api, type SessionMessage } from "@/lib/api";
 import { PluginSlot } from "@/plugins";
 
 function buildWsUrl(
   token: string,
   resume: string | null,
   channel: string,
+  projectId: string | null,
 ): string {
   const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
   const qs = new URLSearchParams({ token, channel });
   if (resume) qs.set("resume", resume);
+  if (!resume && projectId) qs.set("project", projectId);
   return `${proto}//${window.location.host}${HERMES_BASE_PATH}/api/pty?${qs.toString()}`;
 }
 
@@ -70,6 +79,313 @@ const TERMINAL_THEME = {
   cursorAccent: "#0d2626",
   selectionBackground: "#f0e6d244",
 };
+
+const FILE_UPLOAD_ACCEPT = [
+  ".mp4",
+  ".mov",
+  ".m4v",
+  ".mkv",
+  ".webm",
+  ".avi",
+  ".mp3",
+  ".wav",
+  ".m4a",
+  ".flac",
+  ".ogg",
+  ".opus",
+  ".png",
+  ".jpg",
+  ".jpeg",
+  ".webp",
+  ".gif",
+  ".bmp",
+  ".tif",
+  ".tiff",
+  ".svg",
+  ".pdf",
+  ".doc",
+  ".docx",
+  ".ppt",
+  ".pptx",
+  ".xls",
+  ".xlsx",
+  ".xlsm",
+  ".ods",
+  ".odp",
+  ".csv",
+  ".tsv",
+  ".txt",
+  ".md",
+  ".json",
+  ".jsonl",
+  ".yaml",
+  ".yml",
+  ".xml",
+  ".html",
+  ".htm",
+  ".rtf",
+  ".log",
+  ".zip",
+  ".tar",
+  ".gz",
+  ".tgz",
+  ".7z",
+  ".bin",
+].join(",");
+const FILE_UPLOAD_EXTENSIONS = new Set(
+  FILE_UPLOAD_ACCEPT.split(",").map((ext) => ext.trim()),
+);
+const FILE_UPLOAD_MAX_BYTES = 2 * 1024 * 1024 * 1024;
+const DIRECT_PROMPT_MAX_CHARS = 1200;
+const SESSION_HISTORY_COLLAPSED_COUNT = 4;
+const SESSION_HISTORY_EXPANDED_COUNT = 12;
+
+type FileUploadState =
+  | { status: "idle"; message: string | null }
+  | { status: "uploading"; message: string }
+  | { status: "ready"; message: string }
+  | { status: "error"; message: string };
+
+type SelectionActionState = {
+  visible: boolean;
+  text: string;
+  left: number;
+  top: number;
+};
+
+type SessionHistoryPreviewState =
+  | { status: "idle"; messages: SessionMessage[]; expanded: boolean; error: null }
+  | { status: "loading"; messages: SessionMessage[]; expanded: boolean; error: null }
+  | { status: "ready"; messages: SessionMessage[]; expanded: boolean; error: null }
+  | { status: "error"; messages: SessionMessage[]; expanded: boolean; error: string };
+
+const EMPTY_SELECTION_ACTION: SelectionActionState = {
+  visible: false,
+  text: "",
+  left: 0,
+  top: 0,
+};
+
+const EMPTY_SESSION_HISTORY_PREVIEW: SessionHistoryPreviewState = {
+  status: "idle",
+  messages: [],
+  expanded: false,
+  error: null,
+};
+
+function dashboardFileExtensionForMime(type: string): string | null {
+  const normalized = type.toLowerCase();
+  if (normalized === "image/png") return ".png";
+  if (normalized === "image/jpeg") return ".jpg";
+  if (normalized === "image/webp") return ".webp";
+  if (normalized === "image/gif") return ".gif";
+  if (normalized === "image/bmp") return ".bmp";
+  if (normalized === "image/tiff") return ".tiff";
+  if (normalized === "video/mp4") return ".mp4";
+  if (normalized === "video/webm") return ".webm";
+  if (normalized === "video/quicktime") return ".mov";
+  if (normalized === "application/pdf") return ".pdf";
+  if (normalized === "text/plain") return ".txt";
+  return null;
+}
+
+function dashboardTimestampForFilename(): string {
+  return new Date().toISOString().replace(/[:.]/g, "-").replace("T", "_").slice(0, 19);
+}
+
+function ensureDashboardFileName(file: File, fallbackPrefix: string): File {
+  const hasExtension = /\.[A-Za-z0-9]+$/.test(file.name);
+  if (file.name.trim() && hasExtension) return file;
+
+  const ext = dashboardFileExtensionForMime(file.type) ?? ".bin";
+  return new File([file], `${fallbackPrefix}-${dashboardTimestampForFilename()}${ext}`, {
+    type: file.type || "application/octet-stream",
+    lastModified: file.lastModified || Date.now(),
+  });
+}
+
+function firstDataTransferFile(dataTransfer: DataTransfer | null | undefined): File | null {
+  const files = Array.from(dataTransfer?.files ?? []);
+  if (files.length > 0) return ensureDashboardFileName(files[0], "clipboard-file");
+
+  const items = Array.from(dataTransfer?.items ?? []);
+  for (const item of items) {
+    if (item.kind !== "file") continue;
+    const file = item.getAsFile();
+    if (file) return ensureDashboardFileName(file, "clipboard-file");
+  }
+
+  return null;
+}
+
+function formatHistoryMessageContent(message: SessionMessage): string {
+  const content = (message.content ?? "").trim();
+  if (content) return content;
+  if (message.tool_name) return `[tool] ${message.tool_name}`;
+  if (message.tool_calls?.length) {
+    return `[tool calls] ${message.tool_calls
+      .map((call) => call.function?.name)
+      .filter(Boolean)
+      .join(", ")}`;
+  }
+  return "";
+}
+
+function historyRoleLabel(role: SessionMessage["role"]): string {
+  if (role === "user") return "我";
+  if (role === "assistant") return "Hermes";
+  if (role === "tool") return "工具";
+  return "系统";
+}
+
+function SessionHistoryPreview({
+  expanded,
+  messages,
+  onToggleExpanded,
+  status,
+  error,
+}: {
+  expanded: boolean;
+  messages: SessionMessage[];
+  onToggleExpanded: () => void;
+  status: SessionHistoryPreviewState["status"];
+  error: string | null;
+}) {
+  const meaningfulMessages = messages.filter((message) =>
+    Boolean(formatHistoryMessageContent(message)),
+  );
+  const limit = expanded
+    ? SESSION_HISTORY_EXPANDED_COUNT
+    : SESSION_HISTORY_COLLAPSED_COUNT;
+  const visibleMessages = meaningfulMessages.slice(-limit);
+  const hiddenCount = Math.max(0, meaningfulMessages.length - visibleMessages.length);
+
+  if (status === "idle") return null;
+
+  return (
+    <section
+      className={cn(
+        "mb-2 shrink-0 rounded-md border border-current/20 bg-black/20 px-3 py-2",
+        "text-[0.72rem] leading-5 tracking-normal backdrop-blur-sm",
+      )}
+      style={{ color: TERMINAL_THEME.foreground }}
+      aria-label="当前会话最近历史"
+    >
+      <div className="mb-1 flex items-center justify-between gap-2">
+        <div className="font-semibold tracking-[0.08em] text-current/90">
+          当前会话最近历史
+        </div>
+        {hiddenCount > 0 && (
+          <button
+            type="button"
+            className="rounded border border-current/25 px-2 py-0.5 text-[0.68rem] text-current/75 transition hover:border-current/55 hover:text-current"
+            onClick={onToggleExpanded}
+          >
+            {expanded ? "收起" : `查看更多 (${hiddenCount})`}
+          </button>
+        )}
+      </div>
+
+      {status === "loading" && (
+        <div className="text-current/60">正在读取当前会话历史...</div>
+      )}
+
+      {status === "error" && (
+        <div className="text-red-200">历史读取失败：{error}</div>
+      )}
+
+      {status === "ready" && visibleMessages.length === 0 && (
+        <div className="text-current/60">这个会话还没有可展示的历史消息。</div>
+      )}
+
+      {visibleMessages.length > 0 && (
+        <div
+          className={cn(
+            "space-y-1 overflow-y-auto pr-1",
+            expanded ? "max-h-56" : "max-h-32",
+          )}
+        >
+          {visibleMessages.map((message, index) => (
+            <div
+              key={`${message.timestamp ?? "msg"}-${index}`}
+              className="grid grid-cols-[3.5rem_minmax(0,1fr)] gap-2 rounded border border-current/10 bg-black/15 px-2 py-1"
+            >
+              <span className="text-current/55">{historyRoleLabel(message.role)}</span>
+              <span className="min-w-0 whitespace-pre-wrap break-words text-current/82">
+                {formatHistoryMessageContent(message)}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function isAllowedDashboardFile(file: File): boolean {
+  const suffix = `.${file.name.split(".").pop()?.toLowerCase() ?? ""}`;
+  return FILE_UPLOAD_EXTENSIONS.has(suffix);
+}
+
+function formatFileSize(bytes: number): string {
+  if (bytes >= 1024 * 1024 * 1024) {
+    return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+  }
+  if (bytes >= 1024 * 1024) {
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  }
+  if (bytes >= 1024) {
+    return `${(bytes / 1024).toFixed(1)} KB`;
+  }
+  return `${bytes} B`;
+}
+
+function shouldSavePromptAsPaste(prompt: string): boolean {
+  return prompt.length > DIRECT_PROMPT_MAX_CHARS || /\r|\n/.test(prompt);
+}
+
+function buildSelectedTextPrompt(text: string): string {
+  const normalized = text.replace(/\r\n?/g, "\n").trim();
+  const limit = 20000;
+  const clipped =
+    normalized.length > limit
+      ? `${normalized.slice(0, limit)}\n\n[选中文本较长，已截断到前 ${limit} 个字符。]`
+      : normalized;
+
+  return [
+    "我选中了当前聊天窗口里的下面这段内容。",
+    "请把它加入当前对话上下文，并基于这段内容继续回答或处理：",
+    "",
+    "<selected_text>",
+    clipped,
+    "</selected_text>",
+  ].join("\n");
+}
+
+function stripAnsiForStatus(data: string): string {
+  // eslint-disable-next-line no-control-regex -- terminal output intentionally contains ANSI control bytes.
+  return data.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "");
+}
+
+function terminalOutputSignalsReady(data: string): boolean {
+  const text = stripAnsiForStatus(data).toLowerCase();
+  return (
+    /\bready\b/.test(text) ||
+    text.includes("准备好") ||
+    text.includes("chat is not connected") ||
+    text.includes("chat disconnected")
+  );
+}
+
+function terminalOutputSignalsBusy(data: string): boolean {
+  const text = stripAnsiForStatus(data).toLowerCase();
+  return (
+    text.includes("starting agent") ||
+    text.includes("resuming") ||
+    text.includes("thinking") ||
+    text.includes("tool calls")
+  );
+}
 
 /**
  * CSS width for xterm font tiers.
@@ -106,6 +422,7 @@ function terminalLineHeightForWidth(layoutWidthPx: number): number {
 
 export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   const hostRef = useRef<HTMLDivElement | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
@@ -122,7 +439,19 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       : null,
   );
   const [copyState, setCopyState] = useState<"idle" | "copied">("idle");
+  const [fileDragActive, setFileDragActive] = useState(false);
+  const [fileUploadState, setFileUploadState] = useState<FileUploadState>({
+    status: "idle",
+    message: null,
+  });
+  const [agentTurnActive, setAgentTurnActive] = useState(false);
+  const [selectionAction, setSelectionAction] =
+    useState<SelectionActionState>(EMPTY_SELECTION_ACTION);
+  const [chatReconnectVersion, setChatReconnectVersion] = useState(0);
+  const [historyPreview, setHistoryPreview] =
+    useState<SessionHistoryPreviewState>(EMPTY_SESSION_HISTORY_PREVIEW);
   const copyResetRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const agentReadyReleaseRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Raw state for the mobile side-sheet + a derived value that force-
   // closes whenever the chat tab isn't active.  The *derived* value is
   // what side-effects (body-scroll lock, keydown listener, portal render)
@@ -133,13 +462,11 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   // tabs because the dep wouldn't change on tab switch.
   const [mobilePanelOpenRaw, setMobilePanelOpenRaw] = useState(false);
   const mobilePanelOpen = isActive && mobilePanelOpenRaw;
-  const { setEnd } = usePageHeader();
+  const [eventsState, setEventsState] = useState<EventsState>("connecting");
+  const { setAfterTitle, setEnd } = usePageHeader();
   const { t } = useI18n();
   const closeMobilePanel = useCallback(() => setMobilePanelOpenRaw(false), []);
-  const modelToolsLabel = useMemo(
-    () => `${t.app.modelToolsSheetTitle} ${t.app.modelToolsSheetSubtitle}`,
-    [t.app.modelToolsSheetSubtitle, t.app.modelToolsSheetTitle],
-  );
+  const modelToolsLabel = "Sessions";
   const [portalRoot] = useState<HTMLElement | null>(() =>
     typeof document !== "undefined" ? document.body : null,
   );
@@ -156,7 +483,46 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   // treat the current resume target as part of the PTY identity and rebuild the
   // terminal session when it changes.
   const resumeParam = searchParams.get("resume");
-  const channel = useMemo(() => generateChannelId(), [resumeParam]);
+  const projectParam = searchParams.get("project");
+  const channel = useMemo(
+    () =>
+      `${generateChannelId()}-${resumeParam ? "resume" : projectParam ? "project" : "new"}`,
+    [resumeParam, projectParam],
+  );
+
+  const startFreshChatAfterResumeFailure = useCallback(
+    (message: string) => {
+      if (!resumeParam) return false;
+
+      setBanner(message);
+      setSearchParams((prev) => {
+        const next = new URLSearchParams(prev);
+        next.delete("resume");
+        return next;
+      }, { replace: true });
+      setChatReconnectVersion((v) => v + 1);
+      return true;
+    },
+    [resumeParam, setSearchParams],
+  );
+
+  const requestChatReconnect = useCallback(() => {
+    if (
+      startFreshChatAfterResumeFailure(
+        "Resume stalled. Starting a fresh chat...",
+      )
+    ) {
+      return;
+    }
+
+    setBanner("Chat disconnected. Reconnecting...");
+    setChatReconnectVersion((v) => v + 1);
+  }, [startFreshChatAfterResumeFailure]);
+
+  useLayoutEffect(() => {
+    setAfterTitle(null);
+    return () => setAfterTitle(null);
+  }, [setAfterTitle]);
 
   useEffect(() => {
     if (!resumeParam) return;
@@ -170,9 +536,11 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           return;
         }
 
-        const next = new URLSearchParams(searchParams);
-        next.set("resume", res.session_id);
-        setSearchParams(next, { replace: true });
+        setSearchParams((prev) => {
+          const next = new URLSearchParams(prev);
+          next.set("resume", res.session_id);
+          return next;
+        }, { replace: true });
       })
       .catch(() => {
         // Best-effort: old servers or missing sessions should not block chat.
@@ -181,7 +549,54 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     return () => {
       cancelled = true;
     };
-  }, [resumeParam, searchParams, setSearchParams]);
+  }, [resumeParam, setSearchParams]);
+
+  useEffect(() => {
+    if (!resumeParam) {
+      setHistoryPreview(EMPTY_SESSION_HISTORY_PREVIEW);
+      return;
+    }
+
+    let cancelled = false;
+    setHistoryPreview({
+      status: "loading",
+      messages: [],
+      expanded: false,
+      error: null,
+    });
+
+    api
+      .getSessionMessages(resumeParam)
+      .then((res) => {
+        if (cancelled) return;
+        setHistoryPreview({
+          status: "ready",
+          messages: res.messages ?? [],
+          expanded: false,
+          error: null,
+        });
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setHistoryPreview({
+          status: "error",
+          messages: [],
+          expanded: false,
+          error: err instanceof Error ? err.message : "Unable to load history",
+        });
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [resumeParam]);
+
+  const toggleHistoryPreviewExpanded = useCallback(() => {
+    setHistoryPreview((prev) => ({
+      ...prev,
+      expanded: !prev.expanded,
+    }));
+  }, []);
 
   useEffect(() => {
     const mql = window.matchMedia("(max-width: 1023px)");
@@ -257,13 +672,272 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     ws.send("/copy");
     setTimeout(() => {
       const s = wsRef.current;
-      if (s && s.readyState === WebSocket.OPEN) s.send("\r");
+      if (s && s.readyState === WebSocket.OPEN) s.send("\n");
     }, 100);
     setCopyState("copied");
     if (copyResetRef.current) clearTimeout(copyResetRef.current);
     copyResetRef.current = setTimeout(() => setCopyState("idle"), 1500);
     termRef.current?.focus();
   };
+
+  const handleSendCurrentInput = useCallback(() => {
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      requestChatReconnect();
+      setFileUploadState({
+        status: "error",
+        message: "Chat is reconnecting. Try again in a moment.",
+      });
+      return;
+    }
+    ws.send("\n");
+    termRef.current?.focus();
+  }, [requestChatReconnect]);
+
+  const clearReconnectNotice = useCallback(() => {
+    setFileUploadState((prev) => {
+      if (
+        prev.status === "error" &&
+        prev.message?.toLowerCase().includes("reconnecting")
+      ) {
+        return { status: "idle", message: null };
+      }
+      return prev;
+    });
+  }, []);
+
+  const updateAgentTurnStateFromTerminal = useCallback((data: string) => {
+    if (terminalOutputSignalsBusy(data)) {
+      if (agentReadyReleaseRef.current) {
+        clearTimeout(agentReadyReleaseRef.current);
+        agentReadyReleaseRef.current = null;
+      }
+      setAgentTurnActive(true);
+    }
+
+    if (terminalOutputSignalsReady(data)) {
+      if (agentReadyReleaseRef.current) clearTimeout(agentReadyReleaseRef.current);
+      // The TUI can repaint "ready" a few times while flushing the last frame.
+      // Delay one tick so a queued guide does not race the final output write.
+      agentReadyReleaseRef.current = setTimeout(() => {
+        setAgentTurnActive(false);
+        agentReadyReleaseRef.current = null;
+      }, 180);
+    }
+  }, []);
+
+  const handleInterruptTurn = useCallback(() => {
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      requestChatReconnect();
+      return;
+    }
+
+    // The backend interrupt path is Ctrl+C over the PTY. The UI presents it
+    // as a compact stop control so it behaves like Codex's in-flight button.
+    ws.send("\x03");
+    setAgentTurnActive(false);
+    setFileUploadState({
+      status: "ready",
+      message: "已发送中止请求。",
+    });
+    termRef.current?.focus();
+  }, [requestChatReconnect]);
+
+  const waitForOpenChatSocket = useCallback(
+    async (timeoutMs = 10000) => {
+      const waitUntil = async (deadline: number) => {
+        while (Date.now() < deadline) {
+          const ws = wsRef.current;
+          if (ws?.readyState === WebSocket.OPEN) return ws;
+          await new Promise<void>((resolve) => window.setTimeout(resolve, 100));
+        }
+        const ws = wsRef.current;
+        return ws?.readyState === WebSocket.OPEN ? ws : null;
+      };
+
+      const openSocket = await waitUntil(Date.now() + timeoutMs);
+      if (openSocket) return openSocket;
+
+      requestChatReconnect();
+      return waitUntil(Date.now() + 5000);
+    },
+    [requestChatReconnect],
+  );
+
+  const sendPromptToHermes = useCallback(
+    async (
+      prompt: string,
+      disconnectedMessage =
+        "Chat is reconnecting. Try again in a moment.",
+    ) => {
+      let promptToSend = prompt;
+      let savedLongPromptPath: string | null = null;
+      if (shouldSavePromptAsPaste(prompt)) {
+        setFileUploadState({
+          status: "uploading",
+          message: "正在为 Hermes 保存长文本...",
+        });
+        try {
+          const saved = await api.createDashboardPaste(prompt);
+          promptToSend = saved.suggested_prompt;
+          savedLongPromptPath = saved.agent_path;
+        } catch (err) {
+          setFileUploadState({
+            status: "error",
+            message:
+              err instanceof Error
+                ? `长文本保存失败: ${err.message}`
+                : "长文本保存失败。",
+          });
+          return false;
+        }
+      }
+
+      const ws = await waitForOpenChatSocket();
+      if (!ws || ws.readyState !== WebSocket.OPEN) {
+        setFileUploadState({
+          status: "error",
+          message: disconnectedMessage,
+        });
+        return false;
+      }
+      clearReconnectNotice();
+      ws.send(promptToSend);
+      if (agentReadyReleaseRef.current) {
+        clearTimeout(agentReadyReleaseRef.current);
+        agentReadyReleaseRef.current = null;
+      }
+      setAgentTurnActive(true);
+      setTimeout(() => {
+        const current = wsRef.current;
+        if (current && current.readyState === WebSocket.OPEN) current.send("\n");
+      }, 100);
+      if (savedLongPromptPath) {
+        setFileUploadState({
+          status: "ready",
+          message: `长文本已保存并发送路径提示: ${savedLongPromptPath}`,
+        });
+      }
+      termRef.current?.focus();
+      return true;
+    },
+    [clearReconnectNotice, waitForOpenChatSocket],
+  );
+
+  const handleAddSelectionToChat = useCallback(() => {
+    const selected = selectionAction.text.trim();
+    if (!selected) return;
+
+    setSelectionAction(EMPTY_SELECTION_ACTION);
+    termRef.current?.clearSelection();
+    void sendPromptToHermes(
+      buildSelectedTextPrompt(selected),
+      "Chat is reconnecting. Selection was not sent.",
+    );
+  }, [selectionAction.text, sendPromptToHermes]);
+
+  const handleDashboardFile = useCallback(
+    async (file: File | null) => {
+      if (!file) return;
+      if (!isAllowedDashboardFile(file)) {
+        setFileUploadState({
+          status: "error",
+          message:
+            "Unsupported file type. Use media, images, PDF, Office, text/data files, or archives.",
+        });
+        return;
+      }
+      if (file.size <= 0) {
+        setFileUploadState({
+          status: "error",
+          message: "That file is empty.",
+        });
+        return;
+      }
+      if (file.size > FILE_UPLOAD_MAX_BYTES) {
+        setFileUploadState({
+          status: "error",
+          message: `File is too large (${formatFileSize(file.size)}). Limit: 2 GB.`,
+        });
+        return;
+      }
+
+      setFileUploadState({
+        status: "uploading",
+        message: `Uploading ${file.name} (${formatFileSize(file.size)})...`,
+      });
+
+      try {
+        const uploaded = await api.uploadDashboardFile(file);
+        setFileUploadState({
+          status: "uploading",
+          message: "File saved. Waiting for chat connection...",
+        });
+        const injected = await sendPromptToHermes(uploaded.suggested_prompt);
+        setFileUploadState({
+          status: injected ? "ready" : "error",
+          message: injected
+            ? `File saved and prompt sent: ${uploaded.agent_path}`
+            : `File saved, but prompt could not be sent: ${uploaded.agent_path}`,
+        });
+      } catch (err) {
+        setFileUploadState({
+          status: "error",
+          message: err instanceof Error ? err.message : "File upload failed.",
+        });
+      } finally {
+        if (fileInputRef.current) fileInputRef.current.value = "";
+      }
+    },
+    [sendPromptToHermes],
+  );
+
+  const handleDashboardFiles = useCallback(
+    async (files: FileList | File[] | null) => {
+      const list = Array.from(files ?? []);
+      for (const file of list) {
+        await handleDashboardFile(ensureDashboardFileName(file, "dropped-file"));
+      }
+    },
+    [handleDashboardFile],
+  );
+
+  const handleFileDrop = useCallback(
+    (event: DragEvent<HTMLElement>) => {
+      event.preventDefault();
+      event.stopPropagation();
+      setFileDragActive(false);
+      void handleDashboardFiles(event.dataTransfer.files ?? null);
+    },
+    [handleDashboardFiles],
+  );
+
+  const handleFileDrag = useCallback((event: DragEvent<HTMLElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (event.type === "dragenter" || event.type === "dragover") {
+      setFileDragActive(true);
+    } else if (event.type === "dragleave") {
+      setFileDragActive(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!isActive) return;
+
+    const onPaste = (event: ClipboardEvent) => {
+      const file = firstDataTransferFile(event.clipboardData);
+      if (!file) return;
+
+      event.preventDefault();
+      event.stopPropagation();
+      void handleDashboardFile(file);
+    };
+
+    document.addEventListener("paste", onPaste);
+    return () => document.removeEventListener("paste", onPaste);
+  }, [handleDashboardFile, isActive]);
 
   useEffect(() => {
     const host = hostRef.current;
@@ -300,7 +974,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       rightClickSelectsWord: true,
       // Browser-embedded chat runs the TUI in inline mode. Keep transcript
       // history in xterm.js so the browser wheel can scroll it directly.
-      scrollback: 5000,
+      scrollback: 10000,
       theme: TERMINAL_THEME,
     });
     termRef.current = term;
@@ -356,14 +1030,18 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     term.attachCustomKeyEventHandler((ev) => {
       if (ev.type !== "keydown") return true;
 
-      // Copy: Cmd+C on macOS, Ctrl+Shift+C on other platforms. Bare Ctrl+C
-      // is reserved for SIGINT to the TUI child — matches xterm / gnome-terminal /
-      // konsole / Windows Terminal. Ctrl+Shift+C only copies if a selection exists;
-      // without a selection it passes through to the TUI so agents can still
-      // react to the keypress.
-      // Paste: Cmd+Shift+V on macOS, Ctrl+Shift+V on others.
-      const copyModifier = isMac ? ev.metaKey : ev.ctrlKey && ev.shiftKey;
-      const pasteModifier = isMac ? ev.metaKey : ev.ctrlKey && ev.shiftKey;
+      // Copy: Cmd+C on macOS. On Windows/Linux, Ctrl+C copies only when
+      // the terminal has a selection; otherwise it remains SIGINT for Hermes.
+      // Ctrl+Shift+C is kept as an expert fallback.
+      // Paste: Cmd+V on macOS, Ctrl+V or Ctrl+Shift+V on Windows/Linux.
+      const plainCtrl = ev.ctrlKey && !ev.altKey && !ev.metaKey;
+      const hasSelection = Boolean(term.getSelection());
+      const copyModifier = isMac
+        ? ev.metaKey && !ev.shiftKey
+        : plainCtrl && (ev.shiftKey || hasSelection);
+      const pasteModifier = isMac
+        ? ev.metaKey && !ev.shiftKey
+        : plainCtrl;
 
       if (copyModifier && ev.key.toLowerCase() === "c") {
         const sel = term.getSelection();
@@ -403,12 +1081,21 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     fitRef.current = fit;
     term.loadAddon(fit);
 
-    // Dashboard chat should scroll the browser-side transcript, not send
-    // mouse-wheel protocol bytes through the PTY.
+    // Plain wheel uses xterm.js's native scrollback so the chat feels like a
+    // browser page and keeps drag-to-select available. Modifier-held wheel still
+    // routes to the inner TUI as an expert fallback for transcript scroll.
     term.attachCustomWheelEventHandler((ev) => {
+      if (!ev.altKey && !ev.ctrlKey && !ev.metaKey && !ev.shiftKey) {
+        return true;
+      }
+
+      if (wsRef.current?.readyState !== WebSocket.OPEN) {
+        return true;
+      }
+
       const delta = ev.deltaY;
       if (!delta) {
-        return false;
+        return true;
       }
 
       const step = Math.max(1, Math.round(Math.abs(delta) / 50));
@@ -424,6 +1111,78 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     term.unicode.activeVersion = "11";
 
     term.loadAddon(new WebLinksAddon());
+
+    let selectionActionTimer: ReturnType<typeof setTimeout> | null = null;
+    let pointerSelecting = false;
+    let lastSelectionPoint: { clientX: number; clientY: number } | null = null;
+
+    const clearSelectionAction = () => {
+      if (selectionActionTimer) {
+        clearTimeout(selectionActionTimer);
+        selectionActionTimer = null;
+      }
+      setSelectionAction(EMPTY_SELECTION_ACTION);
+    };
+
+    const clampToHost = (value: number, min: number, max: number) =>
+      Math.min(Math.max(value, min), Math.max(min, max));
+
+    const scheduleSelectionAction = (
+      point = lastSelectionPoint,
+      delayMs = 80,
+    ) => {
+      if (selectionActionTimer) clearTimeout(selectionActionTimer);
+      selectionActionTimer = setTimeout(() => {
+        selectionActionTimer = null;
+        const selected = term.getSelection().trim();
+        if (!selected) {
+          setSelectionAction(EMPTY_SELECTION_ACTION);
+          return;
+        }
+
+        const rect = host.getBoundingClientRect();
+        const preferredLeft =
+          (point?.clientX ?? rect.left + rect.width - 150) - rect.left;
+        const preferredTop =
+          (point?.clientY ?? rect.top + 48) - rect.top - 42;
+
+        setSelectionAction({
+          visible: true,
+          text: selected,
+          left: clampToHost(preferredLeft, 8, rect.width - 150),
+          top: clampToHost(preferredTop, 8, rect.height - 46),
+        });
+      }, delayMs);
+    };
+
+    const onSelectionPointerDown = (ev: PointerEvent) => {
+      pointerSelecting = true;
+      lastSelectionPoint = { clientX: ev.clientX, clientY: ev.clientY };
+      clearSelectionAction();
+    };
+
+    const onSelectionPointerMove = (ev: PointerEvent) => {
+      if ((ev.buttons & 1) === 0) return;
+      lastSelectionPoint = { clientX: ev.clientX, clientY: ev.clientY };
+    };
+
+    const onSelectionPointerUp = (ev: PointerEvent) => {
+      pointerSelecting = false;
+      lastSelectionPoint = { clientX: ev.clientX, clientY: ev.clientY };
+      scheduleSelectionAction(lastSelectionPoint, 0);
+    };
+
+    host.addEventListener("pointerdown", onSelectionPointerDown);
+    host.addEventListener("pointermove", onSelectionPointerMove);
+    host.addEventListener("pointerup", onSelectionPointerUp);
+
+    const selectionChangeDisposable = term.onSelectionChange(() => {
+      if (!term.getSelection()) {
+        clearSelectionAction();
+        return;
+      }
+      if (!pointerSelecting) scheduleSelectionAction(lastSelectionPoint);
+    });
 
     term.open(host);
 
@@ -545,7 +1304,10 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     });
 
     // WebSocket
-    const url = buildWsUrl(token, resumeParam, channel);
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    let resumeFallbackTimer: ReturnType<typeof setTimeout> | null = null;
+    let resumeReadySeen = !resumeParam;
+    const url = buildWsUrl(token, resumeParam, channel, projectParam);
     const ws = new WebSocket(url);
     ws.binaryType = "arraybuffer";
     wsRef.current = ws;
@@ -554,25 +1316,77 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     // disposed xterm or setState on an unmounted tree.
     let unmounting = false;
 
+    const clearResumeFallbackTimer = () => {
+      if (resumeFallbackTimer) {
+        clearTimeout(resumeFallbackTimer);
+        resumeFallbackTimer = null;
+      }
+    };
+
+    const fallbackFromStalledResume = (message: string) => {
+      if (unmounting || !resumeParam || resumeReadySeen) {
+        return;
+      }
+
+      resumeReadySeen = true;
+      clearResumeFallbackTimer();
+      startFreshChatAfterResumeFailure(message);
+      try {
+        ws.close();
+      } catch {
+        /* ignore */
+      }
+    };
+
+    const markResumeReadyIfSettled = (data: string) => {
+      if (!resumeParam || resumeReadySeen) return;
+      if (
+        data.includes("ready") ||
+        data.includes("准备好") ||
+        data.includes("setup required") ||
+        data.includes("starting agent")
+      ) {
+        resumeReadySeen = true;
+        clearResumeFallbackTimer();
+      }
+    };
+
     ws.onopen = () => {
       setBanner(null);
+      clearReconnectNotice();
+      setAgentTurnActive(false);
       // Send the initial RESIZE immediately so Ink has *a* size to lay
       // out against on its first paint.  The double-rAF block above will
       // follow up with the authoritative measurement — at worst Ink
       // reflows once after the PTY boots, which is imperceptible.
       ws.send(`\x1b[RESIZE:${term.cols};${term.rows}]`);
+      if (resumeParam) {
+        resumeFallbackTimer = window.setTimeout(() => {
+          fallbackFromStalledResume(
+            "Resume timed out. Starting a fresh chat...",
+          );
+        }, 12000);
+      }
     };
 
     ws.onmessage = (ev) => {
+      clearReconnectNotice();
       if (typeof ev.data === "string") {
+        markResumeReadyIfSettled(ev.data);
+        updateAgentTurnStateFromTerminal(ev.data);
         term.write(ev.data);
       } else {
-        term.write(new Uint8Array(ev.data as ArrayBuffer));
+        const bytes = new Uint8Array(ev.data as ArrayBuffer);
+        const text = new TextDecoder("utf-8").decode(bytes);
+        markResumeReadyIfSettled(text);
+        updateAgentTurnStateFromTerminal(text);
+        term.write(bytes);
       }
     };
 
     ws.onclose = (ev) => {
       wsRef.current = null;
+      setAgentTurnActive(false);
       if (unmounting) {
         return;
       }
@@ -588,7 +1402,19 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         // Server already wrote an ANSI error frame.
         return;
       }
+      if (resumeParam) {
+        fallbackFromStalledResume(
+          "Resume connection dropped. Starting a fresh chat...",
+        );
+        return;
+      }
+      setBanner("Chat disconnected. Reconnecting...");
       term.write("\r\n\x1b[90m[session ended]\x1b[0m\r\n");
+      reconnectTimer = window.setTimeout(() => {
+        if (!unmounting) {
+          setChatReconnectVersion((v) => v + 1);
+        }
+      }, 800);
     };
 
     // Keystrokes → PTY.
@@ -614,7 +1440,9 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         return;
       }
 
-      ws.send(data);
+      // The browser/xterm Enter key reports CR, but the current TUI line
+      // reader submits on LF in this PTY path.
+      ws.send(data === "\r" ? "\n" : data);
     });
 
     const onResizeDisposable = term.onResize(({ cols, rows }) => {
@@ -628,9 +1456,16 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     return () => {
       unmounting = true;
       syncMetricsRef.current = null;
+      selectionChangeDisposable.dispose();
       onDataDisposable.dispose();
       onResizeDisposable.dispose();
+      clearSelectionAction();
+      host.removeEventListener("pointerdown", onSelectionPointerDown);
+      host.removeEventListener("pointermove", onSelectionPointerMove);
+      host.removeEventListener("pointerup", onSelectionPointerUp);
       if (metricsDebounce) clearTimeout(metricsDebounce);
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      clearResumeFallbackTimer();
       window.removeEventListener("resize", scheduleSyncTerminalMetrics);
       window.visualViewport?.removeEventListener(
         "resize",
@@ -649,8 +1484,20 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         clearTimeout(copyResetRef.current);
         copyResetRef.current = null;
       }
+      if (agentReadyReleaseRef.current) {
+        clearTimeout(agentReadyReleaseRef.current);
+        agentReadyReleaseRef.current = null;
+      }
     };
-  }, [channel, resumeParam]);
+  }, [
+    channel,
+    chatReconnectVersion,
+    clearReconnectNotice,
+    projectParam,
+    resumeParam,
+    startFreshChatAfterResumeFailure,
+    updateAgentTurnStateFromTerminal,
+  ]);
 
   // When the user returns to the chat tab (isActive: false → true), the
   // terminal host just transitioned from display:none to display:flex.
@@ -738,7 +1585,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           role="complementary"
           aria-label={modelToolsLabel}
           className={cn(
-            "font-mondwest fixed top-0 right-0 z-[60] flex h-dvh max-h-dvh w-64 min-w-0 flex-col antialiased",
+            "font-mondwest fixed top-0 right-0 z-[60] flex h-dvh max-h-dvh w-80 max-w-[88vw] min-w-0 flex-col antialiased",
             "border-l border-current/20 text-midground",
             "bg-background-base/95 backdrop-blur-sm",
             "transition-transform duration-200 ease-out",
@@ -759,9 +1606,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
               className="font-bold text-[1.125rem] leading-[0.95] tracking-[0.0525rem] text-midground"
               style={{ mixBlendMode: "plus-lighter" }}
             >
-              {t.app.modelToolsSheetTitle}
-              <br />
-              {t.app.modelToolsSheetSubtitle}
+              Sessions
             </Typography>
 
             <Button
@@ -781,7 +1626,11 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
               "border-t border-current/10",
             )}
           >
-            <ChatSidebar channel={channel} />
+            <ChatSidebar
+              channel={channel}
+              activeSessionId={resumeParam}
+              onEventsStateChange={setEventsState}
+            />
           </div>
         </div>
       </>,
@@ -790,6 +1639,16 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-2 normal-case">
+      {isActive && (
+        <div className="pointer-events-none fixed left-[7.4rem] top-[1.05rem] z-[70] hidden lg:block">
+          <Badge
+            tone={EVENTS_TONE[eventsState]}
+            className="px-2 py-0.5 text-[10px] tracking-[0.12em]"
+          >
+            {EVENTS_LABEL[eventsState]}
+          </Badge>
+        </div>
+      )}
       <PluginSlot name="chat:top" />
       {mobileModelToolsPortal}
 
@@ -803,41 +1662,218 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         <div
           className={cn(
             "relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-lg",
-            "p-2 sm:p-3",
+            "border border-transparent p-2 sm:p-3",
+            fileDragActive && "border-current/70 bg-white/[0.04]",
           )}
+          onDragEnter={handleFileDrag}
+          onDragLeave={handleFileDrag}
+          onDragOver={handleFileDrag}
+          onDrop={handleFileDrop}
           style={{
             backgroundColor: TERMINAL_THEME.background,
             boxShadow: "0 8px 32px rgba(0, 0, 0, 0.4)",
           }}
         >
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept={FILE_UPLOAD_ACCEPT}
+            multiple
+            className="hidden"
+            onChange={(event) => {
+              void handleDashboardFiles(event.target.files ?? null);
+            }}
+          />
+
+          {resumeParam && (
+            <SessionHistoryPreview
+              expanded={historyPreview.expanded}
+              messages={historyPreview.messages}
+              status={historyPreview.status}
+              error={historyPreview.error}
+              onToggleExpanded={toggleHistoryPreviewExpanded}
+            />
+          )}
+
           <div
             ref={hostRef}
             className="hermes-chat-xterm-host min-h-0 min-w-0 flex-1"
           />
 
-          <Button
-            ghost
-            onClick={handleCopyLast}
-            title="Copy last assistant response as raw markdown"
-            aria-label="Copy last assistant response"
+          {selectionAction.visible && (
+            <button
+              type="button"
+              data-selection-action
+              aria-label="把选中文本添加到当前对话"
+              title="把选中文本作为引用发给 Hermes"
+              onPointerDown={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+              }}
+              onClick={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                handleAddSelectionToChat();
+              }}
+              className={cn(
+                "absolute z-30 inline-flex items-center gap-1.5 rounded border px-2.5 py-1.5",
+                "border-current/45 bg-black/70 text-xs shadow-lg backdrop-blur-sm",
+                "transition hover:border-current/75 hover:bg-black/85",
+                "focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-current",
+              )}
+              style={{
+                color: TERMINAL_THEME.foreground,
+                left: selectionAction.left,
+                top: selectionAction.top,
+              }}
+            >
+              <MessageSquarePlus className="h-3.5 w-3.5 shrink-0" />
+              <span className="whitespace-nowrap tracking-wide">添加对话</span>
+            </button>
+          )}
+
+          <div
             className={cn(
-              "absolute z-10",
-              "rounded border border-current/30",
-              "bg-black/20 backdrop-blur-sm",
-              "opacity-60 hover:opacity-100 hover:border-current/60",
-              "transition-opacity duration-150 normal-case font-normal tracking-normal",
-              "bottom-2 right-2 px-2 py-1 text-[0.65rem] sm:bottom-3 sm:right-3 sm:px-2.5 sm:py-1.5 sm:text-xs",
-              "lg:bottom-4 lg:right-4",
+              "mt-2 flex shrink-0 flex-wrap items-center justify-between gap-2",
+              "border-t border-current/15 px-0.5 pt-2",
+              "text-[0.65rem] sm:text-xs",
             )}
             style={{ color: TERMINAL_THEME.foreground }}
           >
-            <span className="inline-flex items-center gap-1.5">
-              <Copy className="h-3 w-3 shrink-0" />
-              <span className="hidden min-[400px]:inline tracking-wide">
-                {copyState === "copied" ? "copied" : "copy last response"}
-              </span>
-            </span>
-          </Button>
+            <div className="flex min-w-0 items-center gap-2">
+              <Button
+                ghost
+                onClick={() => fileInputRef.current?.click()}
+                title="Upload a file, save it locally, and send Hermes an analysis prompt with the file path"
+                aria-label="Upload file for Hermes analysis"
+                disabled={fileUploadState.status === "uploading"}
+                className={cn(
+                  "h-6 min-w-0 rounded border border-current/30 px-2 py-1",
+                  "bg-black/20 backdrop-blur-sm",
+                  "opacity-75 hover:opacity-100 hover:border-current/60",
+                  "transition-opacity duration-150 normal-case font-normal tracking-normal",
+                  "text-[0.65rem] sm:h-7 sm:px-2.5 sm:text-xs",
+                )}
+                style={{ color: TERMINAL_THEME.foreground }}
+              >
+                <span className="inline-flex min-w-0 items-center gap-1.5">
+                  {fileUploadState.status === "uploading" ? (
+                    <Loader2 className="h-3 w-3 shrink-0 animate-spin" />
+                  ) : (
+                    <FileUp className="h-3 w-3 shrink-0" />
+                  )}
+                  <span className="hidden min-[420px]:inline truncate tracking-wide">
+                    {fileUploadState.status === "uploading"
+                      ? "uploading file"
+                      : "upload file"}
+                  </span>
+                </span>
+              </Button>
+
+              <ChatModelControl
+                className="min-w-0"
+                buttonClassName="text-current"
+                showStateBadge={false}
+                onSlashCommand={(slashCommand) => {
+                  void sendPromptToHermes(slashCommand);
+                }}
+              />
+            </div>
+
+            <div className="ml-auto flex min-w-0 items-center justify-end gap-2">
+              <Button
+                ghost
+                onClick={handleSendCurrentInput}
+                title="Send current Hermes input"
+                aria-label="Send current Hermes input"
+                className={cn(
+                  "h-6 min-w-0 rounded border border-current/45 px-2 py-1",
+                  "bg-black/25 backdrop-blur-sm",
+                  "opacity-90 hover:opacity-100 hover:border-current/75",
+                  "transition-opacity duration-150 normal-case font-normal tracking-normal",
+                  "text-[0.65rem] sm:h-7 sm:px-2.5 sm:text-xs",
+                )}
+                style={{ color: TERMINAL_THEME.foreground }}
+              >
+                <span className="inline-flex min-w-0 items-center gap-1.5">
+                  <SendHorizontal className="h-3 w-3 shrink-0" />
+                  <span className="hidden min-[360px]:inline truncate tracking-wide">
+                    send
+                  </span>
+                </span>
+              </Button>
+
+              <Button
+                ghost
+                onClick={agentTurnActive ? handleInterruptTurn : handleCopyLast}
+                title={
+                  agentTurnActive
+                    ? "中止当前推进"
+                    : copyState === "copied"
+                      ? "Copied"
+                      : "Copy last assistant response as raw markdown"
+                }
+                aria-label={
+                  agentTurnActive
+                    ? "中止当前推进"
+                    : "Copy last assistant response"
+                }
+                className={cn(
+                  "h-8 w-8 min-w-0 rounded-full border p-0",
+                  "bg-black/80 backdrop-blur-sm",
+                  agentTurnActive
+                    ? "border-red-200/55 text-red-100 opacity-100"
+                    : "border-current/30 opacity-75",
+                  "hover:opacity-100 hover:border-current/70",
+                  "transition-opacity duration-150 normal-case font-normal tracking-normal",
+                )}
+                style={{ color: TERMINAL_THEME.foreground }}
+              >
+                {agentTurnActive ? (
+                  <CircleStop className="h-4 w-4 shrink-0" />
+                ) : (
+                  <Copy className="h-3.5 w-3.5 shrink-0" />
+                )}
+              </Button>
+            </div>
+
+          </div>
+
+          {fileDragActive && (
+            <div
+              aria-hidden="true"
+              className={cn(
+                "pointer-events-none absolute inset-3 z-20 flex items-center justify-center rounded-lg",
+                "border border-dashed border-current/60 bg-black/35 text-center",
+                "text-xs tracking-wide",
+              )}
+              style={{ color: TERMINAL_THEME.foreground }}
+            >
+              Drop file to save it and send Hermes the file path
+            </div>
+          )}
+
+          {fileUploadState.message && (
+            <div
+              role="status"
+              aria-live="polite"
+              className={cn(
+                "pointer-events-none absolute left-2 right-2 top-2 z-10 rounded border px-2 py-1",
+                "bg-black/40 text-[0.65rem] tracking-wide backdrop-blur-sm sm:left-3 sm:right-3 sm:top-3 sm:text-xs",
+                fileUploadState.status === "error"
+                  ? "border-red-300/40 text-red-200"
+                  : "border-current/25",
+              )}
+              style={{
+                color:
+                  fileUploadState.status === "error"
+                    ? undefined
+                    : TERMINAL_THEME.foreground,
+              }}
+            >
+              {fileUploadState.message}
+            </div>
+          )}
         </div>
 
         {!narrow && (
@@ -845,10 +1881,14 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
             id="chat-side-panel"
             role="complementary"
             aria-label={modelToolsLabel}
-            className="flex min-h-0 shrink-0 flex-col overflow-hidden lg:h-full lg:w-80"
+            className="flex min-h-0 shrink-0 flex-col overflow-hidden lg:h-full lg:w-[28rem] xl:w-[30rem]"
           >
             <div className="min-h-0 flex-1 overflow-hidden">
-              <ChatSidebar channel={channel} />
+              <ChatSidebar
+                channel={channel}
+                activeSessionId={resumeParam}
+                onEventsStateChange={setEventsState}
+              />
             </div>
           </div>
         )}

@@ -96,14 +96,15 @@ function CollapseToggle({
 const SKILLS_MAX = 8
 const TOOLSETS_MAX = 8
 
-export function SessionPanel({ info, sid, t }: SessionPanelProps) {
+export function SessionPanel({ hideHero = false, info, sid, t }: SessionPanelProps) {
   const cols = useStdout().stdout?.columns ?? 100
   const heroLines = caduceus(t.color, t.bannerHero || undefined)
   const leftW = Math.min((artWidth(heroLines) || CADUCEUS_WIDTH) + 4, Math.floor(cols * 0.4))
-  const wide = cols >= 90 && leftW + 40 < cols
+  const wide = !hideHero && cols >= 90 && leftW + 40 < cols
   const w = Math.max(20, wide ? cols - leftW - 14 : cols - 12)
   const lineBudget = Math.max(12, w - 2)
   const strip = (s: string) => (s.endsWith('_tools') ? s.slice(0, -6) : s)
+  const sessionTitle = (info.title ?? '').trim()
 
   // ── Local collapse state for each section ──
   const [toolsOpen, setToolsOpen] = useState(true)
@@ -248,6 +249,13 @@ export function SessionPanel({ info, sid, t }: SessionPanelProps) {
             {info.release_date ? ` (${info.release_date})` : ''}
           </Text>
         </Box>
+        {sessionTitle && (
+          <Box justifyContent="center" marginBottom={1}>
+            <Text color={t.color.sessionLabel} wrap="truncate-end">
+              Session: <Text color={t.color.sessionBorder}>{sessionTitle}</Text>
+            </Text>
+          </Box>
+        )}
 
         {/* ── Tools (expanded by default) ── */}
         <Box flexDirection="column" marginTop={1}>
@@ -377,6 +385,7 @@ interface PanelProps {
 }
 
 interface SessionPanelProps {
+  hideHero?: boolean
   info: SessionInfo
   sid?: string | null
   t: Theme

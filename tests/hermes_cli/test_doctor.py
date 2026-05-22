@@ -219,6 +219,31 @@ def test_run_doctor_sets_interactive_env_for_tool_checks(monkeypatch, tmp_path):
     assert seen["interactive"] == "1"
 
 
+def test_doctor_gemini_provider_probe_uses_google_api_key_header(monkeypatch):
+    """Gemini native API keys must not be checked with Bearer auth."""
+    import httpx
+
+    seen = {}
+
+    def fake_get(url, headers=None, timeout=None):
+        seen["url"] = url
+        seen["headers"] = dict(headers or {})
+        return httpx.Response(200, json={"models": []})
+
+    monkeypatch.setattr(httpx, "get", fake_get)
+
+    response = doctor_mod._probe_gemini_native_models(
+        "test-gemini-key",
+        "",
+        "https://generativelanguage.googleapis.com/v1beta/models",
+    )
+
+    assert response.status_code == 200
+    assert seen["url"] == "https://generativelanguage.googleapis.com/v1beta/models"
+    assert seen["headers"]["x-goog-api-key"] == "test-gemini-key"
+    assert "Authorization" not in seen["headers"]
+
+
 def test_check_gateway_service_linger_warns_when_disabled(monkeypatch, tmp_path, capsys):
     unit_path = tmp_path / "hermes-gateway.service"
     unit_path.write_text("[Unit]\n")

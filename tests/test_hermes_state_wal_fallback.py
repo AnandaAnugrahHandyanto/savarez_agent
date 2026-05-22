@@ -119,6 +119,104 @@ class TestApplyWalWithFallback:
         assert mode == "delete"
         conn.close()
 
+    def test_falls_back_on_unable_to_open_database_file(self, tmp_path):
+        """WSL/DrvFS can report WAL sidecar failures with this generic message."""
+        conn, _ = _open_blocking(
+            tmp_path / "drvfs.db",
+            reason="unable to open database file",
+            isolation_level=None,
+        )
+        mode = apply_wal_with_fallback(conn)
+        assert mode == "delete"
+        conn.close()
+
+    def test_falls_back_on_database_is_locked(self, tmp_path):
+        """Concurrent open handles can block WAL mode changes during startup."""
+        conn, _ = _open_blocking(
+            tmp_path / "locked.db",
+            reason="database is locked",
+            isolation_level=None,
+        )
+        mode = apply_wal_with_fallback(conn)
+        assert mode == "delete"
+        conn.close()
+
+    def test_skips_wal_on_wsl_windows_mount(self, tmp_path):
+        """DrvFS paths should use DELETE directly instead of trying flaky WAL."""
+        conn, attempts = _open_blocking(
+            tmp_path / "drvfs-skip.db",
+            reason="WAL should not be attempted",
+            isolation_level=None,
+        )
+        mode = apply_wal_with_fallback(
+            conn,
+            db_label="state.db",
+            db_path="/mnt/c/Users/example/.hermes/state.db",
+        )
+        assert mode == "delete"
+        assert attempts[0] == 0
+        conn.close()
+
+    def test_skips_all_journal_pragmas_when_wsl_db_already_rollback(self, tmp_path):
+        """Already-converted DrvFS databases should not take journal-mode locks."""
+
+        class _JournalModeBlockingConnection(sqlite3.Connection):
+            def execute(self, sql, *args, **kwargs):  # type: ignore[override]
+                if "journal_mode" in sql.lower():
+                    raise sqlite3.OperationalError("journal pragma should not run")
+                return super().execute(sql, *args, **kwargs)
+
+        target = tmp_path / "drvfs-existing-delete.db"
+        conn = sqlite3.connect(str(target), factory=_JournalModeBlockingConnection)
+        with patch("hermes_state._sqlite_header_uses_wal", return_value=False):
+            mode = apply_wal_with_fallback(
+                conn,
+                db_label="state.db",
+                db_path="/mnt/c/Users/example/.hermes/state.db",
+            )
+        assert mode == "delete"
+        conn.close()
+
+    def test_repairs_wsl_wal_header_before_delete_pragma(self, tmp_path):
+        """DrvFS WAL headers are repaired before SQLite touches journal pragmas."""
+
+        class _JournalModeBlockingConnection(sqlite3.Connection):
+            def execute(self, sql, *args, **kwargs):  # type: ignore[override]
+                if "journal_mode" in sql.lower():
+                    raise sqlite3.OperationalError("journal pragma should not run")
+                return super().execute(sql, *args, **kwargs)
+
+        target = tmp_path / "drvfs-wal-header.db"
+        setup_conn = sqlite3.connect(str(target), isolation_level=None)
+        setup_conn.execute("CREATE TABLE t(x)")
+        setup_conn.close()
+
+        with open(target, "r+b") as handle:
+            handle.seek(18)
+            handle.write(b"\x02\x02")
+
+        conn = sqlite3.connect(
+            str(target),
+            factory=_JournalModeBlockingConnection,
+            isolation_level=None,
+        )
+        try:
+            with patch("hermes_state._is_wsl_windows_mount", return_value=True):
+                mode = apply_wal_with_fallback(
+                    conn,
+                    db_label="state.db",
+                    db_path=target,
+                )
+        finally:
+            conn.close()
+
+        assert mode == "delete"
+        with open(target, "rb") as handle:
+            header = handle.read(20)
+        assert header[18] == 1
+        assert header[19] == 1
+        assert list(tmp_path.glob("drvfs-wal-header.db.wal-header-backup-*"))
+
     def test_reraises_unrelated_operational_error(self, tmp_path):
         """Non-WAL-compat errors must NOT be silently swallowed by the fallback."""
         conn, _ = _open_blocking(

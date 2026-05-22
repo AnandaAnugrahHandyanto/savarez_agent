@@ -2627,6 +2627,21 @@ def test_session_info_includes_mcp_servers(monkeypatch):
     assert info["mcp_servers"] == fake_status
 
 
+def test_session_info_includes_session_title(monkeypatch):
+    class FakeDB:
+        def get_session_title(self, key):
+            assert key == "session-123"
+            return "Readable session name"
+
+    monkeypatch.setattr(server, "_get_db", lambda: FakeDB())
+
+    info = server._session_info(
+        types.SimpleNamespace(model="gpt", session_id="session-123", tools=[])
+    )
+
+    assert info["title"] == "Readable session name"
+
+
 # ---------------------------------------------------------------------------
 # History-mutating commands must reject while session.running is True.
 # Without these guards, prompt.submit's post-run history write either

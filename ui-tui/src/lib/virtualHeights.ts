@@ -21,7 +21,7 @@ export const messageHeightKey = (msg: Msg) => {
       .map(s => `${s.title ?? ''}:${s.text?.length ?? 0}:${s.items?.length ?? 0}:${s.rows?.length ?? 0}`)
       .join('\u0001') ?? ''
 
-  const introSig = msg.kind === 'intro' ? (msg.info?.version ?? '') : ''
+  const introSig = msg.kind === 'intro' ? [msg.info?.version ?? '', msg.info?.title ?? ''].join('\u0001') : ''
 
   return [
     msg.role,
@@ -82,7 +82,7 @@ export const estimatedMsgHeight = (
   }
 ) => {
   if (msg.kind === 'intro') {
-    return msg.info?.version ? 9 : 5
+    return (msg.info?.version ? 9 : 5) + (msg.info?.title ? 1 : 0)
   }
 
   if (msg.kind === 'panel') {
