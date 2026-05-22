@@ -9,6 +9,7 @@ which has provider-specific conditionals for max_tokens defaults,
 reasoning configuration, temperature handling, and extra_body assembly.
 """
 
+import copy
 from typing import Any, Dict, List, Optional
 
 from agent.lmstudio_reasoning import resolve_lmstudio_effort
@@ -18,9 +19,7 @@ from agent.transports.base import ProviderTransport
 from agent.transports.types import NormalizedResponse, ToolCall, Usage
 
 
-def _build_gemini_thinking_config(
-    model: str, reasoning_config: dict | None
-) -> dict | None:
+def _build_gemini_thinking_config(model: str, reasoning_config: dict | None) -> dict | None:
     """Translate Hermes/OpenRouter-style reasoning config to Gemini thinkingConfig."""
     if reasoning_config is None or not isinstance(reasoning_config, dict):
         return None
@@ -111,27 +110,38 @@ class ChatCompletionsTransport(ProviderTransport):
         return "chat_completions"
 
     def convert_messages(
-        self, messages: List[Dict[str, Any]], **kwargs
-    ) -> List[Dict[str, Any]]:
-        """Messages are already in OpenAI format — sanitize Codex leaks only.
+        self, messages: list[dict[str, Any]], **kwargs
+    ) -> list[dict[str, Any]]:
+        """Messages are already in OpenAI format — strip internal fields
+        that strict chat-completions providers reject with HTTP 400/422.
 
-        Strips Codex Responses API fields (``codex_reasoning_items`` /
-        ``codex_message_items`` on the message, ``call_id``/``response_item_id``
-        on tool_calls) that strict chat-completions providers reject with 400/422.
+        Strips:
+
+        - Codex Responses API fields: ``codex_reasoning_items`` /
+          ``codex_message_items`` on the message, ``call_id`` /
+          ``response_item_id`` on ``tool_calls`` entries.
+        - ``tool_name`` on tool-result messages — written by
+          ``make_tool_result_message()`` for the SQLite FTS index, but not
+          part of the Chat Completions schema. Strict providers (Fireworks,
+          Moonshot/Kimi) reject any payload containing it with
+          ``Extra inputs are not permitted, field: 'messages[N].tool_name'``.
+          Permissive providers (OpenRouter, MiniMax) silently ignore the
+          field, which masked the bug for months.
         """
         needs_sanitize = False
         for msg in messages:
             if not isinstance(msg, dict):
                 continue
-            if "codex_reasoning_items" in msg or "codex_message_items" in msg:
+            if (
+                "codex_reasoning_items" in msg
+                or "codex_message_items" in msg
+                or "tool_name" in msg
+            ):
                 needs_sanitize = True
                 break
             tool_calls = msg.get("tool_calls")
             if isinstance(tool_calls, list):
                 for tc in tool_calls:
-                    if isinstance(tc, dict) and (
-                        "call_id" in tc or "response_item_id" in tc
-                    ):
                     if isinstance(tc, dict) and (
                         "call_id" in tc or "response_item_id" in tc
                     ):
@@ -143,30 +153,19 @@ class ChatCompletionsTransport(ProviderTransport):
         if not needs_sanitize:
             return messages
 
-        sanitized = []
-        for msg in messages:
+        sanitized = copy.deepcopy(messages)
+        for msg in sanitized:
             if not isinstance(msg, dict):
-                sanitized.append(msg)
                 continue
-
-            new_msg = msg.copy()
-            new_msg.pop("codex_reasoning_items", None)
-            new_msg.pop("codex_message_items", None)
-
-            tool_calls = new_msg.get("tool_calls")
+            msg.pop("codex_reasoning_items", None)
+            msg.pop("codex_message_items", None)
+            msg.pop("tool_name", None)
+            tool_calls = msg.get("tool_calls")
             if isinstance(tool_calls, list):
-                new_tool_calls = []
                 for tc in tool_calls:
                     if isinstance(tc, dict):
-                        new_tc = tc.copy()
-                        new_tc.pop("call_id", None)
-                        new_tc.pop("response_item_id", None)
-                        new_tool_calls.append(new_tc)
-                    else:
-                        new_tool_calls.append(tc)
-                new_msg["tool_calls"] = new_tool_calls
-            sanitized.append(new_msg)
-
+                        tc.pop("call_id", None)
+                        tc.pop("response_item_id", None)
         return sanitized
 
     def convert_tools(self, tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -366,9 +365,7 @@ class ChatCompletionsTransport(ProviderTransport):
 
         # Reasoning. LM Studio is handled above via top-level reasoning_effort,
         # so skip emitting extra_body.reasoning for it.
-        if params.get("supports_reasoning", False) and not params.get(
-            "is_lmstudio", False
-        ):
+        if params.get("supports_reasoning", False) and not params.get("is_lmstudio", False):
             if is_github_models:
                 gh_reasoning = params.get("github_reasoning_extra")
                 if gh_reasoning is not None:
@@ -379,9 +376,7 @@ class ChatCompletionsTransport(ProviderTransport):
         if provider_name == "gemini":
             raw_thinking_config = _build_gemini_thinking_config(model, reasoning_config)
             if _is_gemini_openai_compat_base_url(base_url):
-                thinking_config = _snake_case_gemini_thinking_config(
-                    raw_thinking_config
-                )
+                thinking_config = _snake_case_gemini_thinking_config(raw_thinking_config)
                 if thinking_config:
                     openai_compat_extra = extra_body.get("extra_body", {})
                     google_extra = openai_compat_extra.get("google", {})
@@ -558,14 +553,6 @@ class ChatCompletionsTransport(ProviderTransport):
                         except Exception:
                             pass
                     tc_provider_data["extra_content"] = extra
-                tool_calls.append(
-                    ToolCall(
-                        id=tc.id,
-                        name=tc.function.name,
-                        arguments=tc.function.arguments,
-                        provider_data=tc_provider_data or None,
-                    )
-                )
                 tool_calls.append(
                     ToolCall(
                         id=tc.id,
