@@ -108,6 +108,26 @@ class TestSchemaConversion:
         assert schema["parameters"]["type"] == "object"
         assert schema["parameters"]["properties"] == {}
 
+    def test_github_project_tools_expose_full_content_opt_in(self):
+        from tools.mcp_tool import _convert_mcp_schema
+
+        mcp_tool = _make_mcp_tool(
+            name="projects_list",
+            description="List GitHub Projects resources",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "method": {"type": "string"},
+                },
+                "required": ["method"],
+            },
+        )
+
+        schema = _convert_mcp_schema("github", mcp_tool)
+
+        assert "include_full_content" in schema["parameters"]["properties"]
+        assert "include_full_content" not in schema["parameters"].get("required", [])
+
     def test_object_schema_without_properties_gets_normalized(self):
         from tools.mcp_tool import _convert_mcp_schema
 
@@ -430,6 +450,98 @@ class TestToolHandler:
             mock_session.call_tool.assert_called_once_with("greet", arguments={"name": "world"})
         finally:
             _servers.pop("test_srv", None)
+
+    def test_github_project_items_are_compacted_by_default(self):
+        from tools.mcp_tool import _make_tool_handler, _servers
+
+        payload = {
+            "items": [
+                {
+                    "id": 123,
+                    "node_id": "PVTI_1",
+                    "content_type": "Issue",
+                    "content": {
+                        "id": 456,
+                        "number": 72,
+                        "state": "open",
+                        "title": "Return compact fields",
+                        "body": "large body should be removed",
+                        "html_url": "https://github.com/ryanleeai/tasks/issues/72",
+                        "repository": {
+                            "id": 789,
+                            "name": "tasks",
+                            "full_name": "ryanleeai/tasks",
+                            "owner": {"login": "ryanleeai", "avatar_url": "drop"},
+                            "permissions": {"admin": True},
+                        },
+                    },
+                    "fields": [
+                        {
+                            "id": 346926028,
+                            "name": "Status",
+                            "data_type": "single_select",
+                            "value": {
+                                "id": "47fc9ee4",
+                                "name": {"raw": "In Progress", "html": "In Progress"},
+                                "description": {"raw": "drop"},
+                            },
+                        }
+                    ],
+                }
+            ],
+            "pageInfo": {"hasNextPage": False},
+        }
+        mock_session = MagicMock()
+        mock_session.call_tool = AsyncMock(
+            return_value=_make_call_result(json.dumps(payload), is_error=False)
+        )
+        server = _make_mock_server("github", session=mock_session)
+        _servers["github"] = server
+
+        try:
+            handler = _make_tool_handler("github", "projects_list", 120)
+            with self._patch_mcp_loop():
+                result = json.loads(handler({"method": "list_project_items", "include_full_content": False}))
+
+            item = result["result"]["items"][0]
+            assert item["id"] == 123
+            assert item["content"]["repository"] == {
+                "id": 789,
+                "name": "tasks",
+                "full_name": "ryanleeai/tasks",
+                "owner": {"login": "ryanleeai"},
+            }
+            assert item["fields"][0]["value"] == {"id": "47fc9ee4", "name": "In Progress"}
+            assert "body" not in item["content"]
+            assert "permissions" not in item["content"]["repository"]
+            mock_session.call_tool.assert_called_once_with(
+                "projects_list", arguments={"method": "list_project_items"}
+            )
+        finally:
+            _servers.pop("github", None)
+
+    def test_github_project_items_full_content_opt_in_preserves_payload(self):
+        from tools.mcp_tool import _make_tool_handler, _servers
+
+        payload = {"items": [{"content": {"body": "keep me"}}]}
+        mock_session = MagicMock()
+        mock_session.call_tool = AsyncMock(
+            return_value=_make_call_result(json.dumps(payload), is_error=False)
+        )
+        server = _make_mock_server("github", session=mock_session)
+        _servers["github"] = server
+
+        try:
+            handler = _make_tool_handler("github", "projects_list", 120)
+            with self._patch_mcp_loop():
+                result = json.loads(handler({"method": "list_project_items", "include_full_content": True}))
+
+            assert json.loads(result["result"]) == payload
+            mock_session.call_tool.assert_called_once_with(
+                "projects_list", arguments={"method": "list_project_items"}
+            )
+        finally:
+            _servers.pop("github", None)
 
     def test_mcp_error_result(self):
         from tools.mcp_tool import _make_tool_handler, _servers

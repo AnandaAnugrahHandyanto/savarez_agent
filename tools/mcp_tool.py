@@ -2228,6 +2228,158 @@ async def _connect_server(name: str, config: dict) -> MCPServerTask:
 # Handler / check-fn factories
 # ---------------------------------------------------------------------------
 
+
+
+_GITHUB_PROJECT_TOOL_NAMES = {"projects_list", "projects_get"}
+_GITHUB_PROJECT_ITEM_METHODS = {"list_project_items", "get_project_item"}
+
+
+def _is_github_project_item_tool(server_name: str, tool_name: str, args: dict | None = None) -> bool:
+    """Return True for GitHub MCP Project item read operations we can compact."""
+    if server_name != "github" or tool_name not in _GITHUB_PROJECT_TOOL_NAMES:
+        return False
+    if args is None:
+        return True
+    return args.get("method") in _GITHUB_PROJECT_ITEM_METHODS
+
+
+def _add_github_project_include_full_param(schema: dict, server_name: str, tool_name: str) -> dict:
+    """Add Hermes-local opt-in for full GitHub Project item payloads."""
+    if not _is_github_project_item_tool(server_name, tool_name):
+        return schema
+    parameters = schema.setdefault("parameters", {})
+    if parameters.get("type") != "object":
+        parameters["type"] = "object"
+    properties = parameters.setdefault("properties", {})
+    if isinstance(properties, dict):
+        properties.setdefault("include_full_content", {
+            "type": "boolean",
+            "description": (
+                "Hermes-local option for GitHub Project item methods. "
+                "Defaults to false, returning compact item summaries. Set true "
+                "to include the full MCP issue/PR/repository payloads."
+            ),
+            "default": False,
+        })
+    return schema
+
+
+def _raw_name(value: Any) -> Any:
+    if isinstance(value, dict):
+        if "raw" in value:
+            return value["raw"]
+        if "html" in value:
+            return value["html"]
+    return value
+
+
+def _compact_github_project_field_value(value: Any) -> Any:
+    """Preserve update-relevant Project field values without verbose metadata."""
+    if isinstance(value, list):
+        return [_compact_github_project_field_value(item) for item in value]
+    if not isinstance(value, dict):
+        return value
+
+    compact: dict[str, Any] = {}
+    for key in ("id", "node_id", "color", "start_date", "duration", "completed"):
+        if key in value:
+            compact[key] = value[key]
+    if "name" in value:
+        compact["name"] = _raw_name(value["name"])
+    if "title" in value:
+        compact["title"] = _raw_name(value["title"])
+    if compact:
+        return compact
+    return {k: _compact_github_project_field_value(v) for k, v in value.items()}
+
+
+def _compact_github_project_field(field: Any) -> Any:
+    if not isinstance(field, dict):
+        return field
+    compact = {k: field[k] for k in ("id", "name", "data_type") if k in field}
+    if "value" in field:
+        compact["value"] = _compact_github_project_field_value(field["value"])
+    return compact
+
+
+def _compact_github_repository(repo: Any) -> Any:
+    if not isinstance(repo, dict):
+        return repo
+    owner = repo.get("owner") or {}
+    compact = {k: repo[k] for k in ("id", "node_id", "name", "full_name", "html_url") if k in repo}
+    if isinstance(owner, dict) and owner.get("login"):
+        compact["owner"] = {"login": owner.get("login")}
+    return compact
+
+
+def _compact_github_project_content(content: Any) -> Any:
+    if not isinstance(content, dict):
+        return content
+    compact = {
+        k: content[k]
+        for k in (
+            "id",
+            "node_id",
+            "number",
+            "state",
+            "title",
+            "html_url",
+            "url",
+            "created_at",
+            "updated_at",
+        )
+        if k in content
+    }
+    if "repository" in content:
+        compact["repository"] = _compact_github_repository(content["repository"])
+    return compact
+
+
+def _compact_github_project_item(item: Any) -> Any:
+    if not isinstance(item, dict):
+        return item
+    compact = {
+        k: item[k]
+        for k in (
+            "id",
+            "node_id",
+            "content_type",
+            "item_url",
+            "project_url",
+            "created_at",
+            "updated_at",
+        )
+        if k in item
+    }
+    if "content" in item:
+        compact["content"] = _compact_github_project_content(item["content"])
+    if "fields" in item:
+        compact["fields"] = [_compact_github_project_field(f) for f in item.get("fields") or []]
+    return compact
+
+
+def _compact_github_project_items_response(payload: Any) -> Any:
+    """Compact GitHub MCP Project item responses while preserving pagination."""
+    if not isinstance(payload, dict):
+        return payload
+    compact = dict(payload)
+    if isinstance(compact.get("items"), list):
+        compact["items"] = [_compact_github_project_item(item) for item in compact["items"]]
+    elif "content" in compact or "fields" in compact:
+        compact = _compact_github_project_item(compact)
+    return compact
+
+
+def _maybe_compact_github_project_result(server_name: str, tool_name: str, args: dict, text_result: str) -> Any:
+    """Return compact object for GitHub Project item reads unless full output is requested."""
+    if args.get("include_full_content") or not _is_github_project_item_tool(server_name, tool_name, args):
+        return text_result
+    try:
+        payload = json.loads(text_result)
+    except (json.JSONDecodeError, TypeError):
+        return text_result
+    return _compact_github_project_items_response(payload)
+
 def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
     """Return a sync handler that calls an MCP tool via the background loop.
 
@@ -2236,6 +2388,12 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
     """
 
     def _handler(args: dict, **kwargs) -> str:
+        args = dict(args or {})
+        if _is_github_project_item_tool(server_name, tool_name, args):
+            include_full_content = bool(args.pop("include_full_content", False))
+            local_args = {**args, "include_full_content": include_full_content}
+        else:
+            local_args = args
         # Circuit breaker: if this server has failed too many times
         # consecutively, short-circuit with a clear message so the model
         # stops retrying and uses alternative approaches (#10447).
@@ -2313,12 +2471,18 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
             structured = getattr(result, "structuredContent", None)
             if structured is not None:
                 if text_result:
+                    result_payload = _maybe_compact_github_project_result(
+                        server_name, tool_name, local_args, text_result,
+                    )
                     return json.dumps({
-                        "result": text_result,
+                        "result": result_payload,
                         "structuredContent": structured,
                     }, ensure_ascii=False)
                 return json.dumps({"result": structured}, ensure_ascii=False)
-            return json.dumps({"result": text_result}, ensure_ascii=False)
+            result_payload = _maybe_compact_github_project_result(
+                server_name, tool_name, local_args, text_result,
+            )
+            return json.dumps({"result": result_payload}, ensure_ascii=False)
 
         def _call_once():
             return _run_on_mcp_loop(_call(), timeout=tool_timeout)
@@ -2772,11 +2936,12 @@ def _convert_mcp_schema(server_name: str, mcp_tool) -> dict:
     safe_tool_name = sanitize_mcp_name_component(mcp_tool.name)
     safe_server_name = sanitize_mcp_name_component(server_name)
     prefixed_name = f"mcp_{safe_server_name}_{safe_tool_name}"
-    return {
+    schema = {
         "name": prefixed_name,
         "description": mcp_tool.description or f"MCP tool {mcp_tool.name} from {server_name}",
         "parameters": _normalize_mcp_input_schema(getattr(mcp_tool, "inputSchema", None)),
     }
+    return _add_github_project_include_full_param(schema, server_name, mcp_tool.name)
 
 
 def _build_utility_schemas(server_name: str) -> List[dict]:
