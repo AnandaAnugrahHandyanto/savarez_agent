@@ -156,9 +156,11 @@
   const COLUMN_DOT = {
     triage: "hermes-kanban-dot-triage",
     todo: "hermes-kanban-dot-todo",
+    scheduled: "hermes-kanban-dot-scheduled",
     ready: "hermes-kanban-dot-ready",
     running: "hermes-kanban-dot-running",
     blocked: "hermes-kanban-dot-blocked",
+    review: "hermes-kanban-dot-review",
     done: "hermes-kanban-dot-done",
     archived: "hermes-kanban-dot-archived",
   };
