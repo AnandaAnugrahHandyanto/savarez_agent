@@ -262,10 +262,20 @@ def _load_cron_protected() -> Optional[Set[str]]:
     """
     try:
         from cron.jobs import get_active_skill_refs
-    except ModuleNotFoundError:
-        return set()  # cron subsystem not installed — no jobs exist
+    except ImportError as e:
+        # ModuleNotFoundError (subclass) — real missing module, any Python version.
+        # Plain ImportError — Python ≤ 3.11 with sys.modules["cron.jobs"] = None.
+        # Both cases share e.name == "cron" or "cron.jobs" when the subsystem is absent.
+        if getattr(e, "name", None) in ("cron", "cron.jobs"):
+            return set()  # cron subsystem not installed — no jobs exist
+        # A dependency *inside* cron.jobs failed — treat as broken, fail-closed.
+        logger.warning(
+            "curator: cron.jobs failed to import — "
+            "auto-archive transitions will be skipped this run: %s", e,
+        )
+        return None
     except Exception as e:
-        # cron.jobs exists but failed to import (broken dep, init-time RuntimeError, etc.)
+        # cron.jobs exists but failed to import (init-time RuntimeError, etc.)
         logger.warning(
             "curator: cron.jobs failed to import — "
             "auto-archive transitions will be skipped this run: %s", e,

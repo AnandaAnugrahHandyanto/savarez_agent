@@ -582,10 +582,26 @@ def _delete_skill(name: str, absorbed_into: Optional[str] = None) -> Dict[str, A
         _get_refs = None
         try:
             from cron.jobs import get_active_skill_refs as _get_refs
-        except ModuleNotFoundError:
-            pass  # cron not installed — no active jobs, guard not needed
+        except ImportError as e:
+            # ModuleNotFoundError (subclass) — real missing module, any Python version.
+            # Plain ImportError — Python ≤ 3.11 with sys.modules["cron.jobs"] = None.
+            if getattr(e, "name", None) not in ("cron", "cron.jobs"):
+                # A dependency *inside* cron.jobs failed — fail-closed.
+                logger.warning(
+                    "skill_manager: cron.jobs failed to import for '%s': %s",
+                    name, e, exc_info=True,
+                )
+                return {
+                    "success": False,
+                    "error": (
+                        f"Cannot verify cron job references for '{name}' "
+                        "(cron import error — see server logs). "
+                        "Resolve the cron issue and retry."
+                    ),
+                }
+            # cron not installed — no active jobs, guard not needed
         except Exception as e:
-            # cron.jobs exists but failed to import (broken dep, init-time error, etc.)
+            # cron.jobs exists but failed to import (init-time error, etc.)
             logger.warning(
                 "skill_manager: cron.jobs failed to import for '%s': %s",
                 name, e, exc_info=True,

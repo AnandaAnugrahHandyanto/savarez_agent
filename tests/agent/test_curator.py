@@ -243,8 +243,9 @@ def test_load_cron_protected_returns_empty_when_cron_unavailable(curator_env, mo
     an empty set silently — missing cron support is not a fatal error."""
     import sys
     c = curator_env["curator"]
-    # Setting a module to None in sys.modules makes 'from <mod> import ...'
-    # raise ModuleNotFoundError — the documented way to simulate a missing module.
+    # Setting a module to None in sys.modules simulates a missing/blocked module.
+    # Python 3.12+ raises ModuleNotFoundError; Python 3.11 raises plain ImportError.
+    # _load_cron_protected uses `except ImportError` + e.name check to handle both.
     monkeypatch.setitem(sys.modules, "cron.jobs", None)
     result = c._load_cron_protected()
     assert result == set()
