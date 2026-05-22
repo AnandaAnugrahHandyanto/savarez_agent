@@ -64,32 +64,23 @@
 
 .hermes-kanban-columns {
   display: flex;
+  flex-wrap: wrap;
   gap: 0.75rem;
   align-items: start;
   overflow-x: auto;
   scrollbar-width: none;
-  padding-bottom: 0.35rem;
-  scrollbar-gutter: stable;
-  scrollbar-width: thin;
-  scrollbar-color: color-mix(in srgb, var(--color-muted-foreground) 45%, transparent) transparent;
 }
 .hermes-kanban-columns::-webkit-scrollbar {
   display: none;
-  height: 0.55rem;
-}
-.hermes-kanban-columns::-webkit-scrollbar-track {
-  background: transparent;
-}
-.hermes-kanban-columns::-webkit-scrollbar-thumb {
-  background: color-mix(in srgb, var(--color-muted-foreground) 35%, transparent);
-  border-radius: 999px;
-}
-.hermes-kanban-columns::-webkit-scrollbar-thumb:hover {
-  background: color-mix(in srgb, var(--color-muted-foreground) 55%, transparent);
+  align-items: flex-start;
+  overflow-x: visible;
 }
 
 .hermes-kanban-column {
   flex: 0 0 280px;
+  flex: 1 1 280px;
+  min-width: 260px;
+  max-width: 360px;
   display: flex;
   flex-direction: column;
   background: color-mix(in srgb, var(--color-card) 85%, transparent);
