@@ -583,7 +583,7 @@ Matches OpenClaw's channel bridge surface plus a Hermes-specific channel browser
 
 #### Skills and knowledge (7 tools, read-only)
 
-Registered from `hermes_skills_mcp` when the module is importable (bundled with `hermes-agent` installs). Paths resolve via `HERMES_HOME` and `HERMES_REPO`.
+Registered from `hermes_skills_mcp` when the module is importable (bundled with `hermes-agent` installs). Paths resolve via `HERMES_AGENTS_DIR`, then `HERMES_REPO`, then `HERMES_HOME`. See [Cursor & Hermes](./cursor-hermes.md) for skills-only vs gateway mode and source-of-truth hierarchy.
 
 | Tool | Description |
 |------|-------------|

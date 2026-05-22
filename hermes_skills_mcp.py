@@ -13,10 +13,10 @@ read-only tools that let MCP clients discover and read:
   - Skill documents from the repo skills/ directory
   - Cron schedule configuration
 
-All paths resolve via HERMES_HOME and HERMES_REPO environment variables,
-following the same conventions as the existing mcp_serve.py.
+Paths resolve via HERMES_AGENTS_DIR (runtime fleet), then HERMES_REPO,
+then HERMES_HOME — same profile conventions as mcp_serve.py.
 
-Tool surface (7 tools):
+Tool surface (7 tools; read-only by design):
   skills_list          — list available agent SOUL.md files and repo skills
   skills_read          — read a specific skill/SOUL.md document
   agents_list          — list agents from registry with status summary
