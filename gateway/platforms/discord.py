@@ -2714,6 +2714,8 @@ class DiscordAdapter(BasePlatformAdapter):
         default), and continues — it does NOT die on a single rate-limit
         hit.  Only CancelledError (from stop_typing) stops the loop.
         """
+        if os.getenv("DISCORD_TYPING", "true").lower() in ("false", "0", "no"):
+            return
         if not self._client:
             return
         # Don't start a duplicate loop
