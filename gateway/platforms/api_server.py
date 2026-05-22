@@ -724,6 +724,14 @@ class APIServerAdapter(BasePlatformAdapter):
                 seen.add(value)
                 model_ids.append(value)
 
+        def add_provider_model(provider_name: str, model_name: Any) -> None:
+            if not isinstance(model_name, str):
+                return
+            provider_name = str(provider_name or "").strip()
+            model_name = model_name.strip()
+            if provider_name and model_name:
+                add(f"{provider_name}:{model_name}")
+
         add(self._model_name)
 
         try:
@@ -740,6 +748,13 @@ class APIServerAdapter(BasePlatformAdapter):
                     add(model_cfg.get(key))
 
             providers = cfg.get("providers", {}) if isinstance(cfg, dict) else {}
+            configured_provider_names: List[str] = []
+            if isinstance(providers, dict):
+                configured_provider_names = [
+                    name for name, value in providers.items()
+                    if isinstance(name, str) and name.strip() and isinstance(value, dict)
+                ]
+
             if isinstance(providers, dict) and provider in providers:
                 provider_cfg = providers.get(provider) or {}
                 if isinstance(provider_cfg, dict):
@@ -749,6 +764,23 @@ class APIServerAdapter(BasePlatformAdapter):
                     if isinstance(configured_models, list):
                         for item in configured_models:
                             add(item)
+
+            try:
+                from hermes_cli.models import curated_models_for_provider
+
+                for provider_name in configured_provider_names:
+                    provider_cfg = providers.get(provider_name) or {}
+                    if isinstance(provider_cfg, dict):
+                        for key in ("default", "model", "default_model"):
+                            add_provider_model(provider_name, provider_cfg.get(key))
+                        configured_models = provider_cfg.get("models")
+                        if isinstance(configured_models, list):
+                            for item in configured_models:
+                                add_provider_model(provider_name, item)
+                    for model_id, _description in curated_models_for_provider(provider_name):
+                        add_provider_model(provider_name, model_id)
+            except Exception as exc:
+                logger.debug("Configured provider model discovery failed: %s", exc)
 
             if provider == "openai-codex":
                 access_token = None
@@ -776,6 +808,50 @@ class APIServerAdapter(BasePlatformAdapter):
             logger.debug("Hermes model discovery failed: %s", exc)
 
         return model_ids or [self._model_name]
+
+    @staticmethod
+    def _split_provider_model_choice(raw_model: Optional[str], cfg: Optional[dict] = None) -> tuple[Optional[str], str]:
+        """Resolve UI model choices like ``opencode-go:kimi-k2.6``.
+
+        Plain model IDs remain untouched.  Provider-prefixed choices are only
+        treated specially when the prefix matches a configured provider, so
+        normal model IDs containing colons (for example Ollama tags such as
+        ``qwen3-next:80b``) keep working.
+        """
+        model = str(raw_model or "").strip()
+        if not model or ":" not in model:
+            return None, model
+
+        provider_name, candidate = model.split(":", 1)
+        provider_name = provider_name.strip()
+        candidate = candidate.strip()
+        if not provider_name or not candidate:
+            return None, model
+
+        providers = cfg.get("providers", {}) if isinstance(cfg, dict) else {}
+        if isinstance(providers, dict) and provider_name in providers:
+            return provider_name, candidate
+
+        return None, model
+
+    @staticmethod
+    def _resolve_provider_runtime_kwargs(provider_name: str, model_name: str) -> dict:
+        """Resolve runtime kwargs for an explicitly selected configured provider."""
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+
+        runtime = resolve_runtime_provider(
+            requested=provider_name,
+            target_model=model_name,
+        )
+        return {
+            "api_key": runtime.get("api_key"),
+            "base_url": runtime.get("base_url"),
+            "provider": runtime.get("provider"),
+            "api_mode": runtime.get("api_mode"),
+            "command": runtime.get("command"),
+            "args": list(runtime.get("args") or []),
+            "credential_pool": runtime.get("credential_pool"),
+        }
 
     def _cors_headers_for_origin(self, origin: str) -> Optional[Dict[str, str]]:
         """Return CORS headers for an allowed browser origin."""
@@ -952,9 +1028,12 @@ class APIServerAdapter(BasePlatformAdapter):
 
         runtime_kwargs = _resolve_runtime_agent_kwargs()
         reasoning_config = GatewayRunner._load_reasoning_config()
-        model = (model_override or "").strip() or _resolve_gateway_model()
-
         user_config = _load_gateway_config()
+        provider_override, selected_model = self._split_provider_model_choice(model_override, user_config)
+        if provider_override:
+            runtime_kwargs = self._resolve_provider_runtime_kwargs(provider_override, selected_model)
+        model = selected_model or _resolve_gateway_model(user_config)
+
         enabled_toolsets = sorted(_get_platform_tools(user_config, "api_server"))
 
         max_iterations = int(os.getenv("HERMES_MAX_ITERATIONS", "90"))
