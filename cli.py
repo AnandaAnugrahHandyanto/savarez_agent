@@ -8559,6 +8559,45 @@ class HermesCLI:
         self._goal_manager = mgr
         return mgr
 
+    def _is_goal_continuation_payload(self, entry: object) -> bool:
+        """Return True when a pending-queue entry is a goal continuation prompt."""
+        if isinstance(entry, tuple) and entry:
+            entry = entry[0]
+        return isinstance(entry, str) and entry.startswith("[Continuing toward your standing goal]")
+
+    def _clear_goal_pending_continuations(self) -> int:
+        """Drop queued goal continuation prompts from ``_pending_input``.
+
+        Needed when the user pauses/clears/resumes a goal while a prior
+        continuation is already queued. Without this, the stale queued prompt
+        can fire one extra turn after the control command is processed.
+        """
+        pending = getattr(self, "_pending_input", None)
+        if pending is None:
+            return 0
+        try:
+            with pending.mutex:
+                original = list(pending.queue)
+                kept = [entry for entry in original if not self._is_goal_continuation_payload(entry)]
+                removed = len(original) - len(kept)
+                if removed:
+                    pending.queue.clear()
+                    pending.queue.extend(kept)
+                    pending.unfinished_tasks = max(0, pending.unfinished_tasks - removed)
+                    pending.not_full.notify_all()
+                return removed
+        except Exception:
+            return 0
+
+    def _enqueue_goal_followup(self, prompt: str) -> bool:
+        if not prompt:
+            return False
+        try:
+            self._pending_input.put(prompt)
+            return True
+        except Exception:
+            return False
+
     def _handle_goal_command(self, cmd: str) -> None:
         """Dispatch /goal subcommands: set / status / pause / resume / clear."""
         parts = (cmd or "").strip().split(None, 1)
@@ -8581,6 +8620,7 @@ class HermesCLI:
             if state is None:
                 _cprint(f"  {_DIM}No goal set.{_RST}")
             else:
+                self._clear_goal_pending_continuations()
                 _cprint(f"  ⏸ Goal paused: {state.goal}")
             return
 
@@ -8589,16 +8629,23 @@ class HermesCLI:
             if state is None:
                 _cprint(f"  {_DIM}No goal to resume.{_RST}")
             else:
+                self._clear_goal_pending_continuations()
+                prompt = mgr.next_continuation_prompt() or state.goal
+                kicked = self._enqueue_goal_followup(prompt)
                 _cprint(f"  ▶ Goal resumed: {state.goal}")
-                _cprint(
-                    f"  {_DIM}Send any message (or press Enter on an empty prompt "
-                    f"is a no-op; type 'continue' to kick it off).{_RST}"
-                )
+                if kicked:
+                    _cprint(f"  {_DIM}Queued the next continuation turn now.{_RST}")
+                else:
+                    _cprint(
+                        f"  {_DIM}Resume succeeded, but automatic kickoff could not be queued. "
+                        f"Send any message to continue.{_RST}"
+                    )
             return
 
         if lower in {"clear", "stop", "done"}:
             had = mgr.has_goal()
             mgr.clear()
+            self._clear_goal_pending_continuations()
             if had:
                 _cprint("  ✓ Goal cleared.")
             else:
@@ -8620,10 +8667,8 @@ class HermesCLI:
         )
         # Kick the loop off immediately so the user doesn't have to send a
         # separate message after setting the goal.
-        try:
-            self._pending_input.put(state.goal)
-        except Exception:
-            pass
+        self._clear_goal_pending_continuations()
+        self._enqueue_goal_followup(state.goal)
 
     def _handle_subgoal_command(self, cmd: str) -> None:
         """Dispatch /subgoal subcommands.

@@ -32,8 +32,10 @@ import logging
 import os
 import re
 import shlex
+import shutil
 import sys
 import signal
+import subprocess
 import tempfile
 import threading
 import time
@@ -2120,12 +2122,15 @@ class GatewayRunner:
 
     @staticmethod
     def _is_goal_continuation_event(event_or_text: Any) -> bool:
-        """Return True for synthetic /goal continuation turns.
+        """Return True for synthetic /goal-owned queued turns.
 
-        Goal continuations are normal queued user-role events, so pause/clear
-        must distinguish them from real user /queue messages before removing or
-        suppressing them.
+        Covers both post-judge continuation prompts and the initial synthetic
+        kickoff/resume events queued by the gateway itself. User-authored
+        /queue messages must be preserved even if their text resembles a goal.
         """
+        raw = getattr(event_or_text, "raw_message", None)
+        if isinstance(raw, dict) and raw.get("goal_synthetic"):
+            return True
         text = getattr(event_or_text, "text", event_or_text) or ""
         return str(text).startswith("[Continuing toward your standing goal]\nGoal:")
 
@@ -9816,6 +9821,24 @@ class GatewayRunner:
             state = mgr.resume()
             if state is None:
                 return t("gateway.goal.no_resume")
+            adapter = self.adapters.get(event.source.platform) if event.source else None
+            _quick_key = self._session_key_for_source(event.source) if event.source else None
+            if adapter and _quick_key:
+                try:
+                    self._clear_goal_pending_continuations(_quick_key, adapter)
+                    prompt = mgr.next_continuation_prompt() or state.goal
+                    kickoff_event = MessageEvent(
+                        text=prompt,
+                        message_type=MessageType.TEXT,
+                        source=event.source,
+                        message_id=event.message_id,
+                        channel_prompt=event.channel_prompt,
+                        raw_message={"goal_synthetic": True, "goal_origin": "resume"},
+                        internal=True,
+                    )
+                    self._enqueue_fifo(_quick_key, kickoff_event, adapter)
+                except Exception as exc:
+                    logger.debug("goal resume enqueue failed: %s", exc)
             return t("gateway.goal.resumed", goal=state.goal)
 
         if lower in {"clear", "stop", "done"}:
@@ -9848,6 +9871,8 @@ class GatewayRunner:
                     source=event.source,
                     message_id=event.message_id,
                     channel_prompt=event.channel_prompt,
+                    raw_message={"goal_synthetic": True, "goal_origin": "set"},
+                    internal=True,
                 )
                 self._enqueue_fifo(_quick_key, kickoff_event, adapter)
             except Exception as exc:
@@ -10032,6 +10057,8 @@ class GatewayRunner:
                     source=source,
                     message_id=None,
                     channel_prompt=None,
+                    raw_message={"goal_synthetic": True, "goal_origin": "continuation"},
+                    internal=True,
                 )
                 self._enqueue_fifo(_quick_key, cont_event, adapter)
         except Exception as exc:
