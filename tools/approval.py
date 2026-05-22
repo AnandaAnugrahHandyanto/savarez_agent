@@ -909,6 +909,11 @@ Respond with exactly one word: APPROVE, DENY, or ESCALATE"""
         )
 
         answer = (response.choices[0].message.content or "").strip().upper()
+        # Reasoning models (e.g. Z.AI GLM, DeepSeek-R1) may put the answer
+        # in reasoning_content when content is empty
+        if not answer:
+            rc = getattr(response.choices[0].message, "reasoning_content", None) or ""
+            answer = rc.strip().upper()
 
         if "APPROVE" in answer:
             return "approve"
