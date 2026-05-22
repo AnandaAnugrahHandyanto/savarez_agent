@@ -262,12 +262,32 @@ export interface Translations {
     runProfile: string;
     runProfilePlaceholder: string;
     provider: string;
+    providerPlaceholder: string;
     model: string;
+    modelPlaceholder: string;
     baseUrl: string;
+    baseUrlPlaceholder: string;
     contextFrom: string;
     contextFromPlaceholder: string;
     enabledToolsets: string;
     enabledToolsetsPlaceholder: string;
+    helpers: {
+      name: string;
+      schedule: string;
+      prompt: string;
+      storageProfile: string;
+      repeat: string;
+      skills: string;
+      script: string;
+      noAgent: string;
+      workdir: string;
+      runProfile: string;
+      provider: string;
+      model: string;
+      baseUrl: string;
+      contextFrom: string;
+      enabledToolsets: string;
+    };
     errors: {
       scheduleRequired: string;
       repeatPositiveInteger: string;

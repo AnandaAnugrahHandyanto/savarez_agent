@@ -268,6 +268,7 @@ function CronJobConfigFields({
   const profileOptionsId = `${idPrefix}-profile-options`;
   const textAreaClass =
     "flex min-h-[72px] w-full border border-border bg-background/40 px-3 py-2 text-sm font-courier shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-foreground/30 focus-visible:border-foreground/25";
+  const helperClass = "text-[11px] leading-relaxed text-muted-foreground";
   return (
     <>
       <section className="grid gap-3">
@@ -284,6 +285,7 @@ function CronJobConfigFields({
               value={form.name}
               onChange={(e) => setField("name", e.target.value)}
             />
+            <p className={helperClass}>{t.cron.helpers.name}</p>
           </div>
           <div className="grid gap-2">
             <Label htmlFor={`${idPrefix}-schedule`}>{t.cron.schedule}</Label>
@@ -293,6 +295,7 @@ function CronJobConfigFields({
               value={form.schedule}
               onChange={(e) => setField("schedule", e.target.value)}
             />
+            <p className={helperClass}>{t.cron.helpers.schedule}</p>
           </div>
         </div>
 
@@ -305,6 +308,7 @@ function CronJobConfigFields({
             value={form.prompt}
             onChange={(e) => setField("prompt", e.target.value)}
           />
+          <p className={helperClass}>{t.cron.helpers.prompt}</p>
         </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -315,9 +319,7 @@ function CronJobConfigFields({
               value={form.deliver}
               onChange={(e) => setField("deliver", e.target.value)}
             />
-            <p className="text-[11px] text-muted-foreground">
-              {t.cron.deliveryHint}
-            </p>
+            <p className={helperClass}>{t.cron.deliveryHint}</p>
           </div>
           <div className="grid gap-2">
             <Label htmlFor={`${idPrefix}-repeat`}>{t.cron.repeatCount}</Label>
@@ -328,6 +330,7 @@ function CronJobConfigFields({
               value={form.repeat}
               onChange={(e) => setField("repeat", e.target.value)}
             />
+            <p className={helperClass}>{t.cron.helpers.repeat}</p>
           </div>
         </div>
       </section>
@@ -345,6 +348,7 @@ function CronJobConfigFields({
             value={form.skills}
             onChange={(e) => setField("skills", e.target.value)}
           />
+          <p className={helperClass}>{t.cron.helpers.skills}</p>
         </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -356,6 +360,7 @@ function CronJobConfigFields({
               value={form.script}
               onChange={(e) => setField("script", e.target.value)}
             />
+            <p className={helperClass}>{t.cron.helpers.script}</p>
           </div>
           <div className="grid gap-2">
             <Label htmlFor={`${idPrefix}-workdir`}>{t.cron.workdir}</Label>
@@ -365,24 +370,28 @@ function CronJobConfigFields({
               value={form.workdir}
               onChange={(e) => setField("workdir", e.target.value)}
             />
+            <p className={helperClass}>{t.cron.helpers.workdir}</p>
           </div>
         </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-          <div className="flex items-center gap-2.5">
-            <Checkbox
-              checked={form.noAgent}
-              id={`${idPrefix}-no-agent`}
-              onCheckedChange={(checked) =>
-                setField("noAgent", checked === true)
-              }
-            />
-            <Label
-              className="font-sans normal-case tracking-normal text-sm cursor-pointer"
-              htmlFor={`${idPrefix}-no-agent`}
-            >
-              {t.cron.noAgentMode}
-            </Label>
+          <div className="grid gap-2">
+            <div className="flex items-center gap-2.5">
+              <Checkbox
+                checked={form.noAgent}
+                id={`${idPrefix}-no-agent`}
+                onCheckedChange={(checked) =>
+                  setField("noAgent", checked === true)
+                }
+              />
+              <Label
+                className="font-sans normal-case tracking-normal text-sm cursor-pointer"
+                htmlFor={`${idPrefix}-no-agent`}
+              >
+                {t.cron.noAgentMode}
+              </Label>
+            </div>
+            <p className={helperClass}>{t.cron.helpers.noAgent}</p>
           </div>
           <div className="grid gap-2">
             <Label htmlFor={`${idPrefix}-run-profile`}>{t.cron.runProfile}</Label>
@@ -393,6 +402,7 @@ function CronJobConfigFields({
               value={form.runProfile}
               onChange={(e) => setField("runProfile", e.target.value)}
             />
+            <p className={helperClass}>{t.cron.helpers.runProfile}</p>
             <datalist id={profileOptionsId}>
               {profiles.map((profile) => (
                 <option key={profile.name} value={profile.name} />
@@ -411,25 +421,31 @@ function CronJobConfigFields({
             <Label htmlFor={`${idPrefix}-provider`}>{t.cron.provider}</Label>
             <Input
               id={`${idPrefix}-provider`}
+              placeholder={t.cron.providerPlaceholder}
               value={form.provider}
               onChange={(e) => setField("provider", e.target.value)}
             />
+            <p className={helperClass}>{t.cron.helpers.provider}</p>
           </div>
           <div className="grid gap-2">
             <Label htmlFor={`${idPrefix}-model`}>{t.cron.model}</Label>
             <Input
               id={`${idPrefix}-model`}
+              placeholder={t.cron.modelPlaceholder}
               value={form.model}
               onChange={(e) => setField("model", e.target.value)}
             />
+            <p className={helperClass}>{t.cron.helpers.model}</p>
           </div>
           <div className="grid gap-2">
             <Label htmlFor={`${idPrefix}-base-url`}>{t.cron.baseUrl}</Label>
             <Input
               id={`${idPrefix}-base-url`}
+              placeholder={t.cron.baseUrlPlaceholder}
               value={form.baseUrl}
               onChange={(e) => setField("baseUrl", e.target.value)}
             />
+            <p className={helperClass}>{t.cron.helpers.baseUrl}</p>
           </div>
         </div>
 
@@ -443,6 +459,7 @@ function CronJobConfigFields({
               value={form.contextFrom}
               onChange={(e) => setField("contextFrom", e.target.value)}
             />
+            <p className={helperClass}>{t.cron.helpers.contextFrom}</p>
           </div>
           <div className="grid gap-2">
             <Label htmlFor={`${idPrefix}-toolsets`}>{t.cron.enabledToolsets}</Label>
@@ -453,6 +470,7 @@ function CronJobConfigFields({
               value={form.enabledToolsets}
               onChange={(e) => setField("enabledToolsets", e.target.value)}
             />
+            <p className={helperClass}>{t.cron.helpers.enabledToolsets}</p>
           </div>
         </div>
       </section>
@@ -792,6 +810,9 @@ export default function CronPage() {
                     </SelectOption>
                   ))}
                 </Select>
+                <p className="text-[11px] leading-relaxed text-muted-foreground">
+                  {t.cron.helpers.storageProfile}
+                </p>
               </div>
 
               <CronJobConfigFields
