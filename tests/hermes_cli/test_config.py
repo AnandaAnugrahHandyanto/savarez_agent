@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 import yaml
+from dotenv import dotenv_values
 
 from hermes_cli.config import (
     DEFAULT_CONFIG,
@@ -452,6 +453,41 @@ class TestSanitizeEnvLines:
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
             fixes = sanitize_env_file()
             assert fixes == 0
+
+    def test_save_env_value_quotes_hash_values_for_dotenv(self, tmp_path):
+        """OAuth tokens containing # are quoted so dotenv parsers preserve them."""
+        env_file = tmp_path / ".env"
+        token = "oauth-token#fragment"
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            save_env_value("ANTHROPIC_TOKEN", token)
+
+        content = env_file.read_text(encoding="utf-8")
+        assert f'ANTHROPIC_TOKEN="{token}"\n' in content
+        assert dotenv_values(env_file)["ANTHROPIC_TOKEN"] == token
+
+    def test_save_env_value_updates_hash_value_with_quotes(self, tmp_path):
+        """Updating an existing .env key also preserves # characters."""
+        env_file = tmp_path / ".env"
+        env_file.write_text("ANTHROPIC_TOKEN=old-token\n", encoding="utf-8")
+        token = "updated#token"
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            save_env_value("ANTHROPIC_TOKEN", token)
+            assert load_env()["ANTHROPIC_TOKEN"] == token
+
+        assert env_file.read_text(encoding="utf-8") == f'ANTHROPIC_TOKEN="{token}"\n'
+
+    def test_save_env_value_hash_value_round_trips_quotes_and_backslashes(self, tmp_path):
+        """Quoted hash values keep embedded quotes/backslashes for Hermes too."""
+        env_file = tmp_path / ".env"
+        token = 'abc"def\\ghi#jkl'
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            save_env_value("ANTHROPIC_TOKEN", token)
+            assert load_env()["ANTHROPIC_TOKEN"] == token
+
+        assert dotenv_values(env_file)["ANTHROPIC_TOKEN"] == token
 
 
 class TestOptionalEnvVarsRegistry:

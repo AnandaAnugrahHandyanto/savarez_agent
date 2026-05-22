@@ -4633,7 +4633,7 @@ def load_env() -> Dict[str, str]:
             line = line.strip()
             if line and not line.startswith('#') and '=' in line:
                 key, _, value = line.partition('=')
-                env_vars[key.strip()] = value.strip().strip('"\'')
+                env_vars[key.strip()] = _parse_env_value(value)
 
     if cache_key is not None:
         _env_cache = (cache_key, dict(env_vars))
@@ -4767,6 +4767,20 @@ def sanitize_env_file() -> int:
     return fixes
 
 
+def _parse_env_value(value: str) -> str:
+    """Parse one dotenv value using the subset Hermes writes.
+
+    Historically Hermes stripped surrounding quotes without unescaping. Keep
+    that behavior for plain/single-quoted values, but reverse the escaping used
+    by ``_format_env_value()`` for double-quoted values containing ``#``.
+    """
+    value = value.strip()
+    if len(value) >= 2 and value[0] == '"' and value[-1] == '"':
+        inner = value[1:-1]
+        return re.sub(r'\\(["\\])', r'\1', inner)
+    return value.strip('"\'')
+
+
 def _check_non_ascii_credential(key: str, value: str) -> str:
     """Warn and strip non-ASCII characters from credential values.
 
@@ -4807,6 +4821,13 @@ def _check_non_ascii_credential(key: str, value: str) -> str:
     return sanitized
 
 
+def _format_env_value(value: str) -> str:
+    """Format a value for dotenv files without changing its parsed value."""
+    if "#" not in value:
+        return value
+    return '"' + value.replace('\\', '\\\\').replace('"', '\\"') + '"'
+
+
 def save_env_value(key: str, value: str):
     """Save or update a value in ~/.hermes/.env."""
     if is_managed():
@@ -4817,6 +4838,7 @@ def save_env_value(key: str, value: str):
     value = value.replace("\n", "").replace("\r", "")
     # API keys / tokens must be ASCII — strip non-ASCII with a warning.
     value = _check_non_ascii_credential(key, value)
+    persisted_value = _format_env_value(value)
     ensure_hermes_home()
     env_path = get_env_path()
 
@@ -4836,7 +4858,7 @@ def save_env_value(key: str, value: str):
     found = False
     for i, line in enumerate(lines):
         if line.strip().startswith(f"{key}="):
-            lines[i] = f"{key}={value}\n"
+            lines[i] = f"{key}={persisted_value}\n"
             found = True
             break
 
@@ -4844,7 +4866,7 @@ def save_env_value(key: str, value: str):
         # Ensure there's a newline at the end of the file before appending
         if lines and not lines[-1].endswith("\n"):
             lines[-1] += "\n"
-        lines.append(f"{key}={value}\n")
+        lines.append(f"{key}={persisted_value}\n")
     
     fd, tmp_path = tempfile.mkstemp(dir=str(env_path.parent), suffix='.tmp', prefix='.env_')
     # Preserve original permissions so Docker volume mounts aren't clobbered.
