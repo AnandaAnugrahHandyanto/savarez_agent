@@ -16,7 +16,7 @@ const copyHotkeys: [string, TranslationKey][] = isMac
       ]
     : [['Ctrl+C', 'hotkey.copySelectionInterruptClearExit']]
 
-export const HOTKEY_DEFS: [string, TranslationKey][] = [
+export const HOTKEYS: [string, TranslationKey][] = [
   ...copyHotkeys,
   [action + '+D', 'hotkey.quit'],
   [action + '+G / Alt+G', 'hotkey.openEditor'],
