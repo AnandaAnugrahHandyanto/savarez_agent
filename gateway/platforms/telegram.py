@@ -5140,6 +5140,28 @@ class TelegramAdapter(BasePlatformAdapter):
             thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
         )
 
+    @staticmethod
+    def _merge_batched_telegram_events(existing: MessageEvent, incoming: MessageEvent) -> MessageEvent:
+        """Merge a rapid Telegram update into a pending text batch safely.
+
+        Text batching is meant for Telegram client-side split messages, but a
+        user can send short text and then a voice note inside the debounce
+        window.  Preserve audio media and promote the aggregate away from TEXT
+        so the gateway STT enrichment path still runs.
+        """
+        if incoming.text:
+            existing.text = f"{existing.text}\n{incoming.text}" if existing.text else incoming.text
+        if incoming.media_urls:
+            existing.media_urls.extend(incoming.media_urls)
+            existing.media_types.extend(incoming.media_types)
+            if incoming.message_type in {MessageType.VOICE, MessageType.AUDIO}:
+                existing.message_type = incoming.message_type
+            elif existing.message_type == MessageType.TEXT:
+                existing.message_type = incoming.message_type
+        if incoming.message_id:
+            existing.message_id = incoming.message_id
+        return existing
+
     def _enqueue_text_event(self, event: MessageEvent) -> None:
         """Buffer a text event and reset the flush timer.
 
@@ -5155,14 +5177,8 @@ class TelegramAdapter(BasePlatformAdapter):
             event._last_chunk_len = chunk_len  # type: ignore[attr-defined]
             self._pending_text_batches[key] = event
         else:
-            # Append text from the follow-up chunk
-            if event.text:
-                existing.text = f"{existing.text}\n{event.text}" if existing.text else event.text
+            self._merge_batched_telegram_events(existing, event)
             existing._last_chunk_len = chunk_len  # type: ignore[attr-defined]
-            # Merge any media that might be attached
-            if event.media_urls:
-                existing.media_urls.extend(event.media_urls)
-                existing.media_types.extend(event.media_types)
 
         # Cancel any pending flush and restart the timer
         prior_task = self._pending_text_batch_tasks.get(key)

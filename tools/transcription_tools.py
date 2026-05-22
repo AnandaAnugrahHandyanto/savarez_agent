@@ -26,6 +26,7 @@ Usage::
         print(result["transcript"])
 """
 
+import json
 import logging
 import os
 import shlex
@@ -34,7 +35,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 from typing import Optional, Dict, Any
-from urllib.parse import urlencode, urljoin
+from urllib.parse import urlencode, urljoin, urlparse
 
 from utils import is_truthy_value
 from tools.managed_tool_gateway import resolve_managed_tool_gateway
@@ -302,8 +303,8 @@ def _get_provider(stt_config: dict) -> str:
             if _has_deepgram_backend():
                 return "deepgram"
             logger.warning(
-                "STT provider 'deepgram' configured but DEEPGRAM_API_KEY is not set "
-                "and Agent Vault Deepgram is unavailable"
+                "STT provider 'deepgram' configured but neither DEEPGRAM_API_KEY "
+                "nor Agent Vault Deepgram access is available"
             )
             return "none"
 
@@ -847,100 +848,169 @@ def _transcribe_xai(file_path: str, model_name: str) -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# Provider: deepgram (Nova STT API)
+# Provider: Deepgram (Nova STT API)
 # ---------------------------------------------------------------------------
 
 
 def _agent_vault_config() -> Optional[Dict[str, str]]:
-    """Return Agent Vault proxy config when available.
+    """Return persistent Agent Vault config without exposing token values."""
+    cfg_path = Path.home() / ".hermes" / "agent-vault-agent.json"
+    try:
+        data = json.loads(cfg_path.read_text())
+    except Exception:
+        # Back-compat for tests or explicit environment overrides.
+        base_url = get_env_value("AGENT_VAULT_BASE_URL") or os.getenv("AGENT_VAULT_BASE_URL") or os.getenv("AGENT_VAULT_ADDR")
+        token = get_env_value("AGENT_VAULT_TOKEN") or os.getenv("AGENT_VAULT_TOKEN") or os.getenv("AGENT_VAULT_SESSION_TOKEN")
+        if base_url and token:
+            return {
+                "base_url": str(base_url).strip().rstrip("/"),
+                "token": str(token).strip(),
+                "vault": os.getenv("AGENT_VAULT_VAULT") or "default",
+            }
+        return None
 
-    Kept intentionally small: tests patch this helper, and production setups may
-    provide Deepgram either directly via DEEPGRAM_API_KEY or through Agent Vault.
-    """
-    base_url = get_env_value("AGENT_VAULT_BASE_URL") or os.getenv("AGENT_VAULT_BASE_URL")
-    token = get_env_value("AGENT_VAULT_TOKEN") or os.getenv("AGENT_VAULT_TOKEN")
-    if base_url and token:
-        return {"base_url": str(base_url), "token": str(token)}
-    return None
+    base_url = str(
+        data.get("base_url") or data.get("av_addr") or os.getenv("AGENT_VAULT_ADDR") or ""
+    ).strip().rstrip("/")
+    token = str(
+        data.get("token") or data.get("agent_token") or data.get("av_agent_token") or os.getenv("AGENT_VAULT_SESSION_TOKEN") or ""
+    ).strip()
+    if not base_url or not token:
+        return None
+    return {"base_url": base_url, "token": token, "vault": os.getenv("AGENT_VAULT_VAULT") or "default"}
 
 
-def _ensure_agent_vault_ca(base_url: str) -> tuple[str, Optional[str]]:
-    """Normalize Agent Vault URL and return an optional CA bundle path."""
-    ca_path = get_env_value("AGENT_VAULT_CA_BUNDLE") or os.getenv("AGENT_VAULT_CA_BUNDLE")
-    return base_url.rstrip("/"), ca_path or None
+def _agent_vault_headers(cfg: Dict[str, str]) -> Dict[str, str]:
+    return {"Authorization": f"Bearer {cfg['token']}", "X-Vault": cfg.get("vault") or "default"}
 
 
 def _has_agent_vault_deepgram() -> bool:
-    return _agent_vault_config() is not None
+    """Return True if Agent Vault advertises Deepgram access."""
+    cfg = _agent_vault_config()
+    if not cfg:
+        return False
+    try:
+        import requests
+        response = requests.get(
+            f"{cfg['base_url']}/discover",
+            headers=_agent_vault_headers(cfg),
+            timeout=5,
+        )
+        if response.status_code != 200:
+            return False
+        data = response.json()
+        services = data.get("services") or []
+        hosts = {str(s.get("host") or "").split(":", 1)[0].lower() for s in services if isinstance(s, dict)}
+        return "api.deepgram.com" in hosts
+    except Exception:
+        return False
 
 
 def _has_deepgram_backend() -> bool:
     return bool(get_env_value("DEEPGRAM_API_KEY") or os.getenv("DEEPGRAM_API_KEY") or _has_agent_vault_deepgram())
 
 
-def _transcribe_deepgram(file_path: str, model_name: str) -> Dict[str, Any]:
-    """Transcribe using Deepgram's pre-recorded audio API."""
-    stt_config = _load_stt_config()
-    deepgram_cfg = stt_config.get("deepgram", {}) if isinstance(stt_config, dict) else {}
-    language = str(deepgram_cfg.get("language") or "").strip()
+def _ensure_agent_vault_ca(cfg_or_base_url: Any) -> tuple[str, Optional[str]]:
+    """Return Agent Vault HTTPS proxy origin and optional CA bundle path."""
+    if isinstance(cfg_or_base_url, dict):
+        cfg = cfg_or_base_url
+        base_url = str(cfg.get("base_url") or "").strip().rstrip("/")
+    else:
+        cfg = None
+        base_url = str(cfg_or_base_url or "").strip().rstrip("/")
 
-    params: Dict[str, str] = {
-        "model": model_name,
-        "smart_format": "true",
-    }
+    ca_override = get_env_value("AGENT_VAULT_CA_BUNDLE") or os.getenv("AGENT_VAULT_CA_BUNDLE")
+    parsed = urlparse(base_url)
+    https_port = (parsed.port + 1) if parsed.port else 14322
+    host = parsed.hostname or "127.0.0.1"
+    https_proxy_origin = f"https://{host}:{https_port}"
+    ca_path = str(Path.home() / ".hermes" / "agent-vault-ca.pem")
+
+    if ca_override:
+        return https_proxy_origin, str(ca_override)
+
+    if cfg:
+        try:
+            import requests
+            response = requests.get(
+                f"{base_url}/v1/mitm/ca.pem",
+                headers=_agent_vault_headers(cfg),
+                timeout=10,
+            )
+            if response.status_code == 200 and response.text:
+                Path(ca_path).write_text(response.text)
+                return https_proxy_origin, ca_path
+        except Exception:
+            pass
+    return https_proxy_origin, None
+
+
+def _deepgram_params(model_name: str) -> Dict[str, str]:
+    stt_config = _load_stt_config()
+    dg_cfg = stt_config.get("deepgram", {}) if isinstance(stt_config, dict) else {}
+    params: Dict[str, str] = {"model": model_name or dg_cfg.get("model") or "nova-3"}
+    language = str(dg_cfg.get("language") or "").strip()
     if language:
         params["language"] = language
+    if is_truthy_value(dg_cfg.get("smart_format", True)):
+        params["smart_format"] = "true"
+    if is_truthy_value(dg_cfg.get("punctuate", True)):
+        params["punctuate"] = "true"
+    return params
 
-    headers = {
-        "Content-Type": "application/octet-stream",
-    }
-    proxies = None
-    verify: Any = True
 
+def _extract_deepgram_transcript(payload: Dict[str, Any]) -> str:
+    try:
+        channels = payload.get("results", {}).get("channels", [])
+        alternatives = channels[0].get("alternatives", []) if channels else []
+        transcript = alternatives[0].get("transcript", "") if alternatives else ""
+        return str(transcript).strip()
+    except Exception:
+        return ""
+
+
+def _transcribe_deepgram(file_path: str, model_name: str) -> Dict[str, Any]:
+    """Transcribe using Deepgram directly or through Agent Vault."""
     api_key = get_env_value("DEEPGRAM_API_KEY") or os.getenv("DEEPGRAM_API_KEY")
-    if api_key:
-        endpoint = "https://api.deepgram.com/v1/listen"
-        headers["Authorization"] = f"Token {api_key}"
-    else:
-        vault_cfg = _agent_vault_config()
-        if not vault_cfg:
-            return {
-                "success": False,
-                "transcript": "",
-                "error": "DEEPGRAM_API_KEY not set and Agent Vault Deepgram is unavailable",
-            }
-        vault_base, ca_path = _ensure_agent_vault_ca(str(vault_cfg.get("base_url", "")))
-        endpoint = f"{vault_base.rstrip('/')}/v1/listen"
-        token = str(vault_cfg.get("token") or "")
-        proxies = {
-            "http": f"{vault_base.split(':', 1)[0]}://{token}:@{vault_base.split('://', 1)[-1]}",
-            "https": f"{vault_base.split(':', 1)[0]}://{token}:@{vault_base.split('://', 1)[-1]}",
+    vault_cfg = None if api_key else _agent_vault_config()
+    if not api_key and not vault_cfg:
+        return {
+            "success": False,
+            "transcript": "",
+            "error": "DEEPGRAM_API_KEY not set and Agent Vault Deepgram access is unavailable",
         }
-        if ca_path:
-            verify = ca_path
-
-    url = f"{endpoint}?{urlencode(params)}"
 
     try:
         import requests
+        session = requests.Session()
+        headers = {"Content-Type": "application/octet-stream"}
+        request_kwargs: Dict[str, Any] = {}
+        if api_key:
+            headers["Authorization"] = f"Token {api_key}"
+        else:
+            assert vault_cfg is not None
+            proxy_origin, ca_path = _ensure_agent_vault_ca(vault_cfg)
+            proxy_url = proxy_origin.replace("https://", f"https://{vault_cfg['token']}:@")
+            request_kwargs["proxies"] = {"https": proxy_url, "http": proxy_url}
+            if ca_path:
+                request_kwargs["verify"] = ca_path
+            headers["X-Vault"] = vault_cfg.get("vault") or "default"
 
         with open(file_path, "rb") as audio_file:
-            data = audio_file.read()
+            response = session.post(
+                "https://api.deepgram.com/v1/listen",
+                headers=headers,
+                params=_deepgram_params(model_name),
+                data=audio_file,
+                timeout=120,
+                **request_kwargs,
+            )
 
-        session = requests.Session()
-        response = session.post(
-            url,
-            headers=headers,
-            data=data,
-            timeout=120,
-            proxies=proxies,
-            verify=verify,
-        )
         if response.status_code != 200:
             detail = ""
             try:
-                body = response.json()
-                detail = body.get("err_msg") or body.get("error") or response.text[:300]
+                err_body = response.json()
+                detail = err_body.get("err_msg") or err_body.get("message") or err_body.get("error") or response.text[:300]
             except Exception:
                 detail = response.text[:300]
             return {
@@ -949,21 +1019,11 @@ def _transcribe_deepgram(file_path: str, model_name: str) -> Dict[str, Any]:
                 "error": f"Deepgram STT API error (HTTP {response.status_code}): {detail}",
             }
 
-        result = response.json()
-        channels = result.get("results", {}).get("channels", [])
-        transcript_text = ""
-        if channels:
-            alternatives = channels[0].get("alternatives", [])
-            if alternatives:
-                transcript_text = str(alternatives[0].get("transcript") or "").strip()
+        transcript_text = _extract_deepgram_transcript(response.json())
+        if not transcript_text:
+            return {"success": False, "transcript": "", "error": "Deepgram returned empty transcript"}
 
-        logger.info(
-            "Transcribed %s via Deepgram (%s, lang=%s, %d chars)",
-            Path(file_path).name,
-            model_name,
-            language or "auto",
-            len(transcript_text),
-        )
+        logger.info("Transcribed %s via Deepgram STT (%s, %d chars)", Path(file_path).name, model_name, len(transcript_text))
         return {"success": True, "transcript": transcript_text, "provider": "deepgram"}
 
     except PermissionError:
@@ -973,7 +1033,6 @@ def _transcribe_deepgram(file_path: str, model_name: str) -> Dict[str, Any]:
         return {"success": False, "transcript": "", "error": f"Deepgram transcription failed: {e}"}
 
 
-# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 

@@ -142,6 +142,45 @@ async def test_stt_echo_separate_uses_thread_metadata(monkeypatch, tmp_path):
         metadata={
             "thread_id": "61892",
             "telegram_dm_topic_reply_fallback": True,
+            "direct_messages_topic_id": "61892",
             "telegram_reply_to_message_id": "99",
         },
     )
+
+@pytest.mark.asyncio
+async def test_voice_event_is_not_merged_into_pending_text_batch(monkeypatch, tmp_path):
+    """A voice-only Telegram update must flush through STT immediately.
+
+    Regression: if a previous short text message is still waiting in the
+    Telegram text batching buffer, a following voice event can be merged into
+    that pending text event.  The pending event keeps message_type=TEXT, so the
+    gateway never calls the STT enrichment path and the voice reaches the agent
+    as an empty message.
+    """
+    from gateway.platforms.telegram import TelegramAdapter
+
+    monkeypatch.setattr(
+        "tools.transcription_tools.transcribe_audio",
+        lambda path: {"success": True, "transcript": "daily browser cleanup"},
+    )
+    runner = _make_runner(stt_config={"echo_transcript": True, "echo_mode": "separate"}, tmp_path=tmp_path)
+
+    pending_text = MessageEvent(
+        text="previous text",
+        message_type=MessageType.TEXT,
+        source=_make_voice_event().source,
+        message_id="98",
+    )
+    voice_event = _make_voice_event()
+
+    merged = TelegramAdapter._merge_batched_telegram_events(pending_text, voice_event)
+    text = await runner._prepare_inbound_message_text(
+        event=merged,
+        source=merged.source,
+        history=[],
+    )
+
+    assert merged.message_type == MessageType.VOICE
+    assert merged.media_urls == ["/tmp/voice.ogg"]
+    assert 'daily browser cleanup' in text
+    assert 'previous text' in text
