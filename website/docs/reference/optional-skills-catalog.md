@@ -111,7 +111,7 @@ hermes skills uninstall <skill-name>
 
 | Skill | Description |
 |-------|-------------|
-| [**youtube-unified-api**](/docs/user-guide/skills/optional/media/media-youtube-unified-api) | Call YouTube APIs through MyBrandMetrics Discovery. |
+| [**youtube-unified-api**](/user-guide/skills/optional/media/media-youtube-unified-api) | Call YouTube APIs through MyBrandMetrics Discovery. |
 
 ## migration
 
@@ -158,7 +158,7 @@ hermes skills uninstall <skill-name>
 |-------|-------------|
 | [**canvas**](/docs/user-guide/skills/optional/productivity/productivity-canvas) | Canvas LMS integration — fetch enrolled courses and assignments using API token authentication. |
 | [**clawbus**](/docs/user-guide/skills/optional/productivity/productivity-clawbus) | Search and install skills from the Clawbus library. |
-| [**google-workspace-mbm**](/docs/user-guide/skills/optional/productivity/productivity-google-workspace-mbm) | Manage Google Workspace with MyBrandMetrics tokens. |
+| [**google-workspace-cli**](/docs/user-guide/skills/optional/productivity/productivity-google-workspace-cli) | Use Google Workspace CLI without Google Cloud setup. |
 | [**here.now**](/docs/user-guide/skills/optional/productivity/productivity-here-now) | Publish static sites to &#123;slug&#125;.here.now and store private files in cloud Drives for agent-to-agent handoff. |
 | [**memento-flashcards**](/docs/user-guide/skills/optional/productivity/productivity-memento-flashcards) | Spaced-repetition flashcard system. Create cards from facts or text, chat with flashcards using free-text answers graded by the agent, generate quizzes from YouTube transcripts, review due cards with adaptive scheduling, and export/impor... |
 | [**shop-app**](/docs/user-guide/skills/optional/productivity/productivity-shop-app) | Shop.app: product search, order tracking, returns, reorder. |
@@ -195,8 +195,8 @@ hermes skills uninstall <skill-name>
 
 | Skill | Description |
 |-------|-------------|
-| [**instagram-publisher**](/docs/user-guide/skills/optional/social-media/social-media-instagram-publisher) | Publish Instagram media through MyBrandMetrics. |
-| [**tiktok-publisher**](/docs/user-guide/skills/optional/social-media/social-media-tiktok-publisher) | Publish TikTok videos through MyBrandMetrics. |
+| [**instagram-publisher**](/user-guide/skills/optional/social-media/social-media-instagram-publisher) | Publish Instagram media through MyBrandMetrics. |
+| [**tiktok-publisher**](/user-guide/skills/optional/social-media/social-media-tiktok-publisher) | Publish TikTok videos through MyBrandMetrics. |
 
 ## software-development
 
