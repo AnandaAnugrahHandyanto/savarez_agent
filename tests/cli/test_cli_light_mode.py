@@ -202,6 +202,7 @@ class TestOsc11ProbeAllowList:
         monkeypatch.delenv("HERMES_TUI_BACKGROUND", raising=False)
         monkeypatch.delenv("COLORFGBG", raising=False)
         monkeypatch.setenv("TERM_PROGRAM", "Apple_Terminal")
+        monkeypatch.setattr(cli_mod, "_LIGHT_MODE_CACHE", None)
 
         called = {"n": 0}
 
@@ -225,6 +226,7 @@ class TestOsc11ProbeAllowList:
         monkeypatch.delenv("HERMES_TUI_BACKGROUND", raising=False)
         monkeypatch.delenv("COLORFGBG", raising=False)
         monkeypatch.setenv("TERM_PROGRAM", "iTerm.app")
+        monkeypatch.setattr(cli_mod, "_LIGHT_MODE_CACHE", None)
 
         called = {"n": 0}
 
