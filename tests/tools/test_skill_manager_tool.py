@@ -1021,10 +1021,11 @@ class TestDeleteSkillCronGuard:
         """If cron.jobs IS installed but get_active_skill_refs is missing (partial
         upgrade), the import raises plain ImportError with e.name=='cron.jobs'.
         The guard must treat this as fail-closed, not as 'cron not installed'."""
-        import sys, types
+        import sys, types, cron
 
         fake_mod = types.ModuleType("cron.jobs")  # no get_active_skill_refs attribute
         monkeypatch.setitem(sys.modules, "cron.jobs", fake_mod)
+        monkeypatch.setattr(cron, "jobs", fake_mod, raising=False)  # restore parent attr too
         with _skill_dir(tmp_path), self._in_curator_fork():
             _create_skill("my-skill", VALID_SKILL_CONTENT)
             result = _delete_skill("my-skill")
