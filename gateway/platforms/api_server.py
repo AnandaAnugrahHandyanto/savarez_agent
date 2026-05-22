@@ -705,6 +705,78 @@ class APIServerAdapter(BasePlatformAdapter):
             pass
         return "hermes-agent"
 
+    def _advertised_model_ids(self) -> List[str]:
+        """Return model IDs for OpenAI-compatible /v1/models discovery.
+
+        The API adapter itself is exposed as ``hermes-agent`` for generic clients,
+        but Workbench-style UIs also need the concrete model slugs that Hermes can
+        pass into AIAgent for per-request model switching.  Keep this discovery
+        best-effort and never expose credentials.
+        """
+        model_ids: List[str] = []
+        seen: set[str] = set()
+
+        def add(value: Any) -> None:
+            if not isinstance(value, str):
+                return
+            value = value.strip()
+            if value and value not in seen:
+                seen.add(value)
+                model_ids.append(value)
+
+        add(self._model_name)
+
+        try:
+            from gateway.run import _load_gateway_config, _resolve_gateway_model
+
+            cfg = _load_gateway_config()
+            add(_resolve_gateway_model(cfg))
+
+            model_cfg = cfg.get("model", {}) if isinstance(cfg, dict) else {}
+            provider = ""
+            if isinstance(model_cfg, dict):
+                provider = str(model_cfg.get("provider") or "").strip()
+                for key in ("default", "model"):
+                    add(model_cfg.get(key))
+
+            providers = cfg.get("providers", {}) if isinstance(cfg, dict) else {}
+            if isinstance(providers, dict) and provider in providers:
+                provider_cfg = providers.get(provider) or {}
+                if isinstance(provider_cfg, dict):
+                    for key in ("default", "model"):
+                        add(provider_cfg.get(key))
+                    configured_models = provider_cfg.get("models")
+                    if isinstance(configured_models, list):
+                        for item in configured_models:
+                            add(item)
+
+            if provider == "openai-codex":
+                access_token = None
+                try:
+                    from hermes_cli.auth import get_codex_auth_status, resolve_codex_runtime_credentials
+
+                    status = get_codex_auth_status()
+                    if isinstance(status, dict) and status.get("logged_in"):
+                        access_token = status.get("api_key")
+                    if not access_token:
+                        creds = resolve_codex_runtime_credentials()
+                        if isinstance(creds, dict):
+                            access_token = creds.get("api_key")
+                except Exception as exc:
+                    logger.debug("Codex credential lookup for model discovery failed: %s", exc)
+
+                try:
+                    from hermes_cli.codex_models import get_codex_model_ids
+
+                    for model_id in get_codex_model_ids(access_token=access_token):
+                        add(model_id)
+                except Exception as exc:
+                    logger.debug("Codex model discovery failed: %s", exc)
+        except Exception as exc:
+            logger.debug("Hermes model discovery failed: %s", exc)
+
+        return model_ids or [self._model_name]
+
     def _cors_headers_for_origin(self, origin: str) -> Optional[Dict[str, str]]:
         """Return CORS headers for an allowed browser origin."""
         if not origin or not self._cors_origins:
@@ -857,6 +929,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_start_callback=None,
         tool_complete_callback=None,
         gateway_session_key: Optional[str] = None,
+        model_override: Optional[str] = None,
     ) -> Any:
         """
         Create an AIAgent instance using the gateway's runtime config.
@@ -879,7 +952,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
         runtime_kwargs = _resolve_runtime_agent_kwargs()
         reasoning_config = GatewayRunner._load_reasoning_config()
-        model = _resolve_gateway_model()
+        model = (model_override or "").strip() or _resolve_gateway_model()
 
         user_config = _load_gateway_config()
         enabled_toolsets = sorted(_get_platform_tools(user_config, "api_server"))
@@ -941,23 +1014,25 @@ class APIServerAdapter(BasePlatformAdapter):
         })
 
     async def _handle_models(self, request: "web.Request") -> "web.Response":
-        """GET /v1/models — return hermes-agent as an available model."""
+        """GET /v1/models — return Hermes adapter and concrete selectable models."""
         auth_err = self._check_auth(request)
         if auth_err:
             return auth_err
 
+        created = int(time.time())
         return web.json_response({
             "object": "list",
             "data": [
                 {
-                    "id": self._model_name,
+                    "id": model_id,
                     "object": "model",
-                    "created": int(time.time()),
-                    "owned_by": "hermes",
+                    "created": created,
+                    "owned_by": "hermes" if model_id == self._model_name else "hermes-runtime",
                     "permission": [],
-                    "root": self._model_name,
-                    "parent": None,
+                    "root": model_id,
+                    "parent": self._model_name if model_id != self._model_name else None,
                 }
+                for model_id in self._advertised_model_ids()
             ],
         })
 
@@ -1135,7 +1210,8 @@ class APIServerAdapter(BasePlatformAdapter):
             # history already set from request body above
 
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:29]}"
-        model_name = body.get("model", self._model_name)
+        model_name = str(body.get("model") or self._model_name).strip() or self._model_name
+        model_override = None if model_name == self._model_name else model_name
         created = int(time.time())
 
         if stream:
@@ -1220,6 +1296,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_complete_callback=_on_tool_complete,
                 agent_ref=agent_ref,
                 gateway_session_key=gateway_session_key,
+                model_override=model_override,
             ))
             # Ensure SSE drain loops can terminate without relying on polling
             # agent_task.done(), which can race with queue timeout checks.
@@ -1239,6 +1316,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 ephemeral_system_prompt=system_prompt,
                 session_id=session_id,
                 gateway_session_key=gateway_session_key,
+                model_override=model_override,
             )
 
         idempotency_key = request.headers.get("Idempotency-Key")
@@ -2743,6 +2821,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_complete_callback=None,
         agent_ref: Optional[list] = None,
         gateway_session_key: Optional[str] = None,
+        model_override: Optional[str] = None,
     ) -> tuple:
         """
         Create an agent and run a conversation in a thread executor.
@@ -2766,6 +2845,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_start_callback=tool_start_callback,
                 tool_complete_callback=tool_complete_callback,
                 gateway_session_key=gateway_session_key,
+                model_override=model_override,
             )
             if agent_ref is not None:
                 agent_ref[0] = agent
