@@ -12,10 +12,9 @@ from agent.auxiliary_client import call_llm
 
 logger = logging.getLogger(__name__)
 
-# Callback signature: (task_name, exception) -> None. Used to surface
-# auxiliary failures to the user through AIAgent._emit_auxiliary_failure
-# so silent-drops (e.g. OpenRouter 402 exhausting the fallback chain)
-# become visible instead of piling up as NULL session titles.
+# Callback signature: (task_name, exception) -> None. Other auxiliary tasks use
+# this to surface actionable failures. Title generation intentionally ignores it
+# on failure because auto-titles are cosmetic and run after the reply is sent.
 FailureCallback = Callable[[str, BaseException], None]
 TitleCallback = Callable[[str], None]
 
@@ -39,10 +38,10 @@ def generate_title(
     auxiliary LLM client (cheapest/fastest available model).
     Returns the title string or None on failure.
 
-    ``failure_callback`` is invoked with ``(task, exception)`` when the
-    auxiliary call raises — the caller typically wires this to
-    ``AIAgent._emit_auxiliary_failure`` so the user sees a warning instead
-    of silently accumulating untitled sessions.
+    ``failure_callback`` is accepted for call-site compatibility but is not
+    invoked for title-generation failures. Auto-title generation is cosmetic
+    and background-only; failures stay in logs instead of surfacing as extra
+    gateway/Slack/Telegram messages after the user-facing reply is complete.
     """
     # Truncate long messages to keep the request small
     user_snippet = user_message[:500] if user_message else ""
@@ -76,11 +75,10 @@ def generate_title(
         # Full detail at debug level for operators who need the stack.
         logger.warning("Title generation failed: %s", e)
         logger.debug("Title generation traceback", exc_info=True)
-        if failure_callback is not None:
-            try:
-                failure_callback("title generation", e)
-            except Exception:
-                logger.debug("Title generation failure_callback raised", exc_info=True)
+        # Title generation is cosmetic. Do not surface failures to gateway users
+        # (e.g. Telegram) because provider limits can otherwise spam every new
+        # session with warnings like "Auxiliary title generation failed".
+        # Keep the warning in logs for operators instead.
         return None
 
 

@@ -64,8 +64,8 @@ class TestGenerateTitle:
         with patch("agent.title_generator.call_llm", side_effect=RuntimeError("no provider")):
             assert generate_title("question", "answer") is None
 
-    def test_invokes_failure_callback_on_exception(self):
-        """failure_callback must fire so the user sees a warning (issue #15775)."""
+    def test_does_not_invoke_failure_callback_on_exception(self):
+        """Auto-title failures are cosmetic and must not notify users."""
         captured = []
 
         def _cb(task, exc):
@@ -76,12 +76,10 @@ class TestGenerateTitle:
             result = generate_title("question", "answer", failure_callback=_cb)
 
         assert result is None
-        assert len(captured) == 1
-        assert captured[0][0] == "title generation"
-        assert captured[0][1] is exc
+        assert captured == []
 
-    def test_failure_callback_errors_are_swallowed(self):
-        """A broken callback must not crash title generation."""
+    def test_failure_callback_is_ignored_on_exception(self):
+        """A broken callback must not crash or run for auto-title failures."""
 
         def _bad_cb(task, exc):
             raise ValueError("callback bug")
