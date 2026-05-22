@@ -199,7 +199,6 @@ def prompt(question: str, default: str = None, password: bool = False) -> str:
         display = f"{question} [{default}]: "
     else:
         display = f"{question}: "
-
     try:
         if password:
             import getpass
@@ -207,7 +206,6 @@ def prompt(question: str, default: str = None, password: bool = False) -> str:
             value = getpass.getpass(color(display, Colors.YELLOW))
         else:
             value = input(color(display, Colors.YELLOW))
-
         cleaned = _sanitize_pasted_input(value)
         return cleaned.strip() or default or ""
     except (KeyboardInterrupt, EOFError):
