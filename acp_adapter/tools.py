@@ -640,8 +640,42 @@ def _format_process_result(
             lines.append(f"... {len(processes) - 20} more process(es)")
         return "\n".join(lines)
 
-    status = str(data.get("status") or data.get("state") or action).strip()
+    processes = data.get("processes")
+    if isinstance(processes, list):
+        return _format_process_list(processes)
+
     sid = str(data.get("session_id") or (args or {}).get("session_id") or "").strip()
+    return _format_single_process(data, action, sid)
+
+
+def _format_process_list(processes: List[Any]) -> str:
+    lines = [f"Processes: {len(processes)}"]
+    for proc in processes[:20]:
+        if not isinstance(proc, dict):
+            lines.append(f"- {proc}")
+            continue
+        sid = str(proc.get("session_id") or proc.get("id") or "?")
+        status = str(
+            proc.get("status") or ("exited" if proc.get("exited") else "running")
+        )
+        cmd = str(proc.get("command") or "").strip()
+        pid = proc.get("pid")
+        code = proc.get("exit_code")
+        bits = [status]
+        if pid is not None:
+            bits.append(f"pid {pid}")
+        if code is not None:
+            bits.append(f"exit {code}")
+        lines.append(
+            f"- `{sid}` — {', '.join(bits)}" + (f" — {cmd[:120]}" if cmd else "")
+        )
+    if len(processes) > 20:
+        lines.append(f"... {len(processes) - 20} more process(es)")
+    return "\n".join(lines)
+
+
+def _format_single_process(data: Dict[str, Any], action: str, sid: str) -> str:
+    status = str(data.get("status") or data.get("state") or action).strip()
     lines = [f"Process {action}: {status}" + (f" (`{sid}`)" if sid else "")]
     for key, label in (
         ("command", "Command"),
@@ -667,6 +701,49 @@ def _format_process_result(
     if msg and not output and not error:
         lines.append(str(msg))
     return _truncate_text("\n".join(lines), limit=7000)
+
+
+def _format_delegate_task_item(item: dict) -> list[str]:
+    lines = []
+    icon = {
+        "completed": "✅",
+        "failed": "✗",
+        "error": "✗",
+        "timeout": "⏱",
+        "interrupted": "⚠",
+    }
+    idx = item.get("task_index")
+    status = str(item.get("status") or "unknown")
+    model = item.get("model")
+    dur = item.get("duration_seconds")
+    role = item.get("_child_role")
+    header = f"{icon.get(status, '•')} Task {idx + 1 if isinstance(idx, int) else '?'}: {status}"
+    bits = []
+    if model:
+        bits.append(str(model))
+    if role:
+        bits.append(f"role={role}")
+    if dur is not None:
+        bits.append(f"{dur}s")
+    if bits:
+        header += " (" + ", ".join(bits) + ")"
+    lines.extend(["", header])
+    summary = str(item.get("summary") or "").strip()
+    error = str(item.get("error") or "").strip()
+    if summary:
+        lines.append(_truncate_text(summary, limit=1200))
+    if error:
+        lines.append("Error: " + _truncate_text(error, limit=800))
+    trace = item.get("tool_trace")
+    if isinstance(trace, list) and trace:
+        names = [str(t.get("tool") or "?") for t in trace if isinstance(t, dict)]
+        if names:
+            lines.append(
+                "Tools: "
+                + ", ".join(names[:12])
+                + (f" (+{len(names) - 12})" if len(names) > 12 else "")
+            )
+    return lines
 
 
 def _format_delegate_result(result: Optional[str]) -> Optional[str]:
@@ -902,8 +979,6 @@ def _format_generic_structured_result(
             lines.append(f"- {_truncate_text(str(item), limit=240)}")
         return _truncate_text("\n".join(lines), limit=5000)
 
-    if data.get("success") is False or data.get("error"):
-        return f"{tool_name} failed: {data.get('error', 'unknown error')}"
 
     lines = [
         f"✅ {tool_name} completed"
@@ -928,7 +1003,6 @@ def _format_generic_structured_result(
         "total",
         "next_run",
     )
-    seen = set()
     for key in priority_keys:
         value = data.get(key)
         if value in (None, "", [], {}):
@@ -936,12 +1010,16 @@ def _format_generic_structured_result(
         seen.add(key)
         lines.append(f"- **{key}:** {_truncate_text(str(value), limit=500)}")
 
+
+def _add_remaining_keys(data: dict, lines: list, seen: set) -> None:
     for key, value in data.items():
         if key in seen or key in {"success", "raw", "content", "entries"}:
             continue
         if value in (None, "", [], {}):
             continue
         if isinstance(value, (dict, list)):
+            import json
+
             preview = json.dumps(value, ensure_ascii=False, default=str)
         else:
             preview = str(value)
@@ -949,10 +1027,38 @@ def _format_generic_structured_result(
         if len(lines) >= 14:
             break
 
+
+def _add_content_if_present(data: dict, lines: list) -> None:
     content = data.get("content")
     if isinstance(content, str) and content.strip():
         lines.extend(["", _truncate_text(content.strip(), limit=1500)])
+
+
+def _format_generic_dict_result(tool_name: str, data: dict) -> str:
+    if data.get("success") is False or data.get("error"):
+        return f"{tool_name} failed: {data.get('error', 'unknown error')}"
+
+    lines = [
+        f"✅ {tool_name} completed"
+        if data.get("success") is True
+        else f"{tool_name} result"
+    ]
+    seen = set()
+    _add_priority_keys(data, lines, seen)
+    _add_remaining_keys(data, lines, seen)
+    _add_content_if_present(data, lines)
     return _truncate_text("\n".join(lines), limit=7000)
+
+
+def _format_generic_structured_result(
+    tool_name: str, result: Optional[str]
+) -> Optional[str]:
+    data = _json_loads_maybe(result)
+    if not isinstance(data, (dict, list)):
+        return result if isinstance(result, str) and result.strip() else None
+    if isinstance(data, list):
+        return _format_generic_list_result(tool_name, data)
+    return _format_generic_dict_result(tool_name, data)
 
 
 def _build_polished_completion_content(
