@@ -704,7 +704,24 @@ class CDPSupervisor:
         # a synchronous XHR we intercept via Fetch domain. This is how we make
         # dialog response work on Browserbase (whose CDP proxy auto-dismisses
         # real native dialogs before we can call handleJavaScriptDialog).
-        await self._install_dialog_bridge(self._page_session_id)
+        # Skip on local CDP — native dialogs fire correctly there.
+        if not self._is_local_cdp():
+            await self._install_dialog_bridge(self._page_session_id)
+
+    def _is_local_cdp(self) -> bool:
+        """Skip dialog bridge for local Chrome — native dialogs work fine.
+
+        The bridge overrides alert/confirm/prompt with sync XHRs intercepted
+        via Fetch domain. On local CDP connections the Fetch interception may
+        not reliably capture the XHR, and native Page.javascriptDialogOpening
+        events work correctly — so we skip the bridge and let native dialogs
+        fire normally.
+        """
+        return (
+            "localhost" in self.cdp_url
+            or "127.0.0.1" in self.cdp_url
+            or "::1" in self.cdp_url
+        )
 
     async def _install_dialog_bridge(self, session_id: str) -> None:
         """Install the dialog-bridge init script + Fetch interceptor on a session.
@@ -1256,7 +1273,9 @@ class CDPSupervisor:
         except Exception as e:
             logger.debug("child session %s setup failed: %s", sid[:16], e)
         # Install the dialog bridge on the child so iframe dialogs are captured.
-        await self._install_dialog_bridge(sid)
+        # Skip on local CDP — native dialogs fire correctly there.
+        if not self._is_local_cdp():
+            await self._install_dialog_bridge(sid)
 
     def _on_target_detached(self, params: Dict[str, Any]) -> None:
         """Handle a child CDP session detaching.
