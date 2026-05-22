@@ -7,7 +7,15 @@ import { Select, SelectOption } from "@nous-research/ui/ui/components/select";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { H2 } from "@/components/NouiTypography";
 import { api } from "@/lib/api";
-import type { CronJob, CronJobCreatePayload, CronJobUpdate, ProfileInfo } from "@/lib/api";
+import type {
+  CronJob,
+  CronJobCreatePayload,
+  CronJobUpdate,
+  ModelOptionsResponse,
+  ProfileInfo,
+  SkillInfo,
+  ToolsetInfo,
+} from "@/lib/api";
 import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
 import { useToast } from "@/hooks/useToast";
 import { useConfirmDelete } from "@/hooks/useConfirmDelete";
@@ -125,6 +133,12 @@ interface CronValidationMessages {
   noAgentRequiresScript: string;
 }
 
+interface PickerOption {
+  value: string;
+  label?: string;
+  description?: string;
+}
+
 function emptyCronForm(): CronJobConfigForm {
   return {
     name: "",
@@ -155,6 +169,26 @@ function splitList(value: string): string[] {
     .split(/[\n,]/)
     .map((item) => item.trim())
     .filter(Boolean);
+}
+
+function joinPickerValues(values: string[], delimiter: "comma" | "newline"): string {
+  return values.join(delimiter === "comma" ? ", " : "\n");
+}
+
+function uniquePickerOptions(options: PickerOption[]): PickerOption[] {
+  const seen = new Set<string>();
+  const unique: PickerOption[] = [];
+  for (const option of options) {
+    const value = option.value.trim();
+    if (!value || seen.has(value)) continue;
+    seen.add(value);
+    unique.push({ ...option, value });
+  }
+  return unique;
+}
+
+function optionLabel(options: PickerOption[], value: string): string {
+  return options.find((option) => option.value === value)?.label || value;
 }
 
 function nullableText(value: string): string | null {
@@ -251,21 +285,329 @@ function buildCronUpdate(
   };
 }
 
+function ChoiceInputField({
+  id,
+  label,
+  value,
+  onChange,
+  options,
+  placeholder,
+  helper,
+}: {
+  id: string;
+  label: string;
+  value: string;
+  onChange(value: string): void;
+  options: PickerOption[];
+  placeholder: string;
+  helper: string;
+}) {
+  const { t } = useI18n();
+  const [open, setOpen] = useState(false);
+  const [filterText, setFilterText] = useState("");
+  const choices = uniquePickerOptions(options);
+  const normalizedFilter = filterText.trim().toLowerCase();
+  const visibleChoices = choices
+    .filter((option) => {
+      if (!normalizedFilter) return true;
+      const haystack = `${option.value} ${option.label ?? ""} ${option.description ?? ""}`.toLowerCase();
+      return haystack.includes(normalizedFilter);
+    });
+
+  const selectOption = (nextValue: string) => {
+    onChange(nextValue);
+    setFilterText("");
+    setOpen(false);
+  };
+
+  return (
+    <div
+      className="grid gap-2"
+      onBlur={() => {
+        window.setTimeout(() => setOpen(false), 120);
+      }}
+    >
+      <Label htmlFor={id}>{label}</Label>
+      <Input
+        id={id}
+        placeholder={placeholder}
+        value={value}
+        onFocus={() => {
+          setFilterText("");
+          setOpen(true);
+        }}
+        onClick={() => {
+          setFilterText("");
+          setOpen(true);
+        }}
+        onChange={(e) => {
+          setFilterText(e.target.value);
+          onChange(e.target.value);
+          setOpen(true);
+        }}
+        onKeyDown={(e) => {
+          if (e.key === "Escape") {
+            setOpen(false);
+          }
+        }}
+      />
+      {open && (
+        <div className="max-h-52 overflow-y-auto border border-border bg-card shadow-lg">
+          {visibleChoices.length > 0 ? (
+            visibleChoices.map((option) => (
+              <button
+                type="button"
+                key={option.value}
+                className="block w-full border-b border-border/60 px-3 py-2 text-left text-xs hover:bg-muted/60 last:border-b-0"
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => selectOption(option.value)}
+                title={option.description}
+              >
+                <span className="block font-mono text-foreground">
+                  {option.label || option.value}
+                </span>
+                {option.description && (
+                  <span className="mt-0.5 block truncate text-[11px] text-muted-foreground">
+                    {option.description}
+                  </span>
+                )}
+              </button>
+            ))
+          ) : (
+            <div className="px-3 py-2 text-xs text-muted-foreground">
+              {t.common.noResults}
+            </div>
+          )}
+        </div>
+      )}
+      <p className="text-[11px] leading-relaxed text-muted-foreground">{helper}</p>
+    </div>
+  );
+}
+
+function MultiValuePicker({
+  id,
+  label,
+  value,
+  onChange,
+  options,
+  placeholder,
+  helper,
+  delimiter = "newline",
+  allowCustom = true,
+}: {
+  id: string;
+  label: string;
+  value: string;
+  onChange(value: string): void;
+  options: PickerOption[];
+  placeholder: string;
+  helper: string;
+  delimiter?: "comma" | "newline";
+  allowCustom?: boolean;
+}) {
+  const { t } = useI18n();
+  const [draft, setDraft] = useState("");
+  const [open, setOpen] = useState(false);
+  const choices = uniquePickerOptions(options);
+  const values = splitList(value);
+  const selected = new Set(values);
+  const allowed = new Set(choices.map((option) => option.value));
+  const normalizedDraft = draft.trim().toLowerCase();
+  const visibleChoices = choices
+    .filter((option) => !selected.has(option.value))
+    .filter((option) => {
+      if (!normalizedDraft) return true;
+      const haystack = `${option.value} ${option.label ?? ""} ${option.description ?? ""}`.toLowerCase();
+      return haystack.includes(normalizedDraft);
+    });
+
+  const commitValues = (raw: string) => {
+    const incoming = splitList(raw);
+    if (incoming.length === 0) {
+      setOpen((current) => !current);
+      return;
+    }
+
+    const next = [...values];
+    for (const item of incoming) {
+      if (!allowCustom && !allowed.has(item)) continue;
+      if (!next.includes(item)) next.push(item);
+    }
+    onChange(joinPickerValues(next, delimiter));
+    setDraft("");
+    setOpen(true);
+  };
+
+  const removeValue = (item: string) => {
+    onChange(joinPickerValues(values.filter((valueItem) => valueItem !== item), delimiter));
+  };
+
+  return (
+    <div
+      className="grid gap-2"
+      onBlur={() => {
+        window.setTimeout(() => setOpen(false), 120);
+      }}
+    >
+      <Label htmlFor={`${id}-input`}>{label}</Label>
+
+      {values.length > 0 && (
+        <div className="flex flex-wrap gap-1.5">
+          {values.map((item) => (
+            <span
+              key={item}
+              className="inline-flex max-w-full items-center gap-1 border border-border bg-muted/40 px-2 py-1 text-xs"
+            >
+              <span className="truncate font-mono">{optionLabel(choices, item)}</span>
+              <button
+                type="button"
+                className="text-muted-foreground hover:text-foreground"
+                onClick={() => removeValue(item)}
+                aria-label={`${t.common.delete} ${item}`}
+              >
+                <X className="h-3 w-3" />
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
+
+      <div className="flex gap-2">
+        <Input
+          id={`${id}-input`}
+          placeholder={placeholder}
+          value={draft}
+          onFocus={() => setOpen(true)}
+          onClick={() => setOpen(true)}
+          onChange={(e) => {
+            setDraft(e.target.value);
+            setOpen(true);
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" || e.key === ",") {
+              e.preventDefault();
+              commitValues(draft);
+            }
+            if (e.key === "Escape") {
+              setOpen(false);
+            }
+            if (e.key === "Backspace" && !draft && values.length > 0) {
+              removeValue(values[values.length - 1]);
+            }
+          }}
+        />
+        <Button
+          type="button"
+          outlined
+          size="sm"
+          onClick={() => commitValues(draft)}
+          aria-label={`${t.common.create} ${label}`}
+        >
+          <Plus className="h-3.5 w-3.5" />
+        </Button>
+      </div>
+
+      {open && (
+        <div className="max-h-52 overflow-y-auto border border-border bg-card shadow-lg">
+          {visibleChoices.length > 0 ? (
+            visibleChoices.map((option) => (
+              <button
+                type="button"
+                key={option.value}
+                className="block w-full border-b border-border/60 px-3 py-2 text-left text-xs hover:bg-muted/60 last:border-b-0"
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => commitValues(option.value)}
+                title={option.description}
+              >
+                <span className="block font-mono text-foreground">
+                  {option.label || option.value}
+                </span>
+                {option.description && (
+                  <span className="mt-0.5 block truncate text-[11px] text-muted-foreground">
+                    {option.description}
+                  </span>
+                )}
+              </button>
+            ))
+          ) : (
+            <div className="px-3 py-2 text-xs text-muted-foreground">
+              {t.common.noResults}
+            </div>
+          )}
+        </div>
+      )}
+
+      <p className="text-[11px] leading-relaxed text-muted-foreground">{helper}</p>
+    </div>
+  );
+}
+
 function CronJobConfigFields({
   form,
   setField,
   profiles,
+  skills,
+  toolsets,
+  modelOptions,
+  contextJobs,
+  excludeContextJobId,
   idPrefix,
   autoFocusName = false,
 }: {
   form: CronJobConfigForm;
   setField<K extends keyof CronJobConfigForm>(key: K, value: CronJobConfigForm[K]): void;
   profiles: ProfileInfo[];
+  skills: SkillInfo[];
+  toolsets: ToolsetInfo[];
+  modelOptions: ModelOptionsResponse | null;
+  contextJobs: CronJob[];
+  excludeContextJobId?: string;
   idPrefix: string;
   autoFocusName?: boolean;
 }) {
   const { t } = useI18n();
-  const profileOptionsId = `${idPrefix}-profile-options`;
+  const deliveryOptions: PickerOption[] = [
+    { value: "local", label: t.cron.delivery.local },
+    { value: "origin", label: "origin" },
+    { value: "all", label: "all" },
+    { value: "telegram", label: t.cron.delivery.telegram },
+    { value: "discord", label: t.cron.delivery.discord },
+    { value: "slack", label: t.cron.delivery.slack },
+    { value: "email", label: t.cron.delivery.email },
+  ];
+  const skillOptions: PickerOption[] = skills.map((skill) => ({
+    value: skill.name,
+    label: skill.name,
+    description: skill.description,
+  }));
+  const toolsetOptions: PickerOption[] = toolsets.map((toolset) => ({
+    value: toolset.name,
+    label: toolset.label || toolset.name,
+    description: toolset.description,
+  }));
+  const providerOptions: PickerOption[] = (modelOptions?.providers ?? []).map((provider) => ({
+    value: provider.slug,
+    label: provider.name,
+    description: provider.warning || provider.source,
+  }));
+  const selectedProvider = (modelOptions?.providers ?? []).find(
+    (provider) => provider.slug === form.provider || provider.name === form.provider,
+  );
+  const modelChoices = selectedProvider
+    ? selectedProvider.models ?? []
+    : (modelOptions?.providers ?? []).flatMap((provider) => provider.models ?? []);
+  const modelChoiceOptions: PickerOption[] = [...new Set(modelChoices)].map((model) => ({
+    value: model,
+    label: model,
+  }));
+  const contextOptions: PickerOption[] = contextJobs
+    .filter((job) => job.id !== excludeContextJobId)
+    .map((job) => ({
+      value: job.id,
+      label: `${getJobTitle(job)} (${job.id})`,
+      description: getJobProfile(job),
+    }));
   const textAreaClass =
     "flex min-h-[72px] w-full border border-border bg-background/40 px-3 py-2 text-sm font-courier shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-foreground/30 focus-visible:border-foreground/25";
   const helperClass = "text-[11px] leading-relaxed text-muted-foreground";
@@ -312,15 +654,16 @@ function CronJobConfigFields({
         </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-          <div className="grid gap-2">
-            <Label htmlFor={`${idPrefix}-deliver`}>{t.cron.deliverTo}</Label>
-            <Input
-              id={`${idPrefix}-deliver`}
-              value={form.deliver}
-              onChange={(e) => setField("deliver", e.target.value)}
-            />
-            <p className={helperClass}>{t.cron.deliveryHint}</p>
-          </div>
+          <MultiValuePicker
+            id={`${idPrefix}-deliver`}
+            label={t.cron.deliverTo}
+            value={form.deliver}
+            onChange={(value) => setField("deliver", value)}
+            options={deliveryOptions}
+            placeholder={t.cron.deliveryHint}
+            helper={t.cron.deliveryHint}
+            delimiter="comma"
+          />
           <div className="grid gap-2">
             <Label htmlFor={`${idPrefix}-repeat`}>{t.cron.repeatCount}</Label>
             <Input
@@ -339,17 +682,15 @@ function CronJobConfigFields({
         <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
           {t.cron.sections.execution}
         </h3>
-        <div className="grid gap-2">
-          <Label htmlFor={`${idPrefix}-skills`}>{t.cron.skills}</Label>
-          <textarea
-            id={`${idPrefix}-skills`}
-            className={textAreaClass}
-            placeholder={t.cron.skillsPlaceholder}
-            value={form.skills}
-            onChange={(e) => setField("skills", e.target.value)}
-          />
-          <p className={helperClass}>{t.cron.helpers.skills}</p>
-        </div>
+        <MultiValuePicker
+          id={`${idPrefix}-skills`}
+          label={t.cron.skills}
+          value={form.skills}
+          onChange={(value) => setField("skills", value)}
+          options={skillOptions}
+          placeholder={t.cron.skillsPlaceholder}
+          helper={t.cron.helpers.skills}
+        />
 
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <div className="grid gap-2">
@@ -395,19 +736,20 @@ function CronJobConfigFields({
           </div>
           <div className="grid gap-2">
             <Label htmlFor={`${idPrefix}-run-profile`}>{t.cron.runProfile}</Label>
-            <Input
+            <Select
               id={`${idPrefix}-run-profile`}
-              list={profileOptionsId}
               placeholder={t.cron.runProfilePlaceholder}
               value={form.runProfile}
-              onChange={(e) => setField("runProfile", e.target.value)}
-            />
-            <p className={helperClass}>{t.cron.helpers.runProfile}</p>
-            <datalist id={profileOptionsId}>
+              onValueChange={(value) => setField("runProfile", value)}
+            >
+              <SelectOption value="">{t.common.none}</SelectOption>
               {profiles.map((profile) => (
-                <option key={profile.name} value={profile.name} />
+                <SelectOption key={profile.name} value={profile.name}>
+                  {profileLabel(profile.name)}
+                </SelectOption>
               ))}
-            </datalist>
+            </Select>
+            <p className={helperClass}>{t.cron.helpers.runProfile}</p>
           </div>
         </div>
       </section>
@@ -417,26 +759,24 @@ function CronJobConfigFields({
           {t.cron.sections.advancedModelAndContext}
         </h3>
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-          <div className="grid gap-2">
-            <Label htmlFor={`${idPrefix}-provider`}>{t.cron.provider}</Label>
-            <Input
-              id={`${idPrefix}-provider`}
-              placeholder={t.cron.providerPlaceholder}
-              value={form.provider}
-              onChange={(e) => setField("provider", e.target.value)}
-            />
-            <p className={helperClass}>{t.cron.helpers.provider}</p>
-          </div>
-          <div className="grid gap-2">
-            <Label htmlFor={`${idPrefix}-model`}>{t.cron.model}</Label>
-            <Input
-              id={`${idPrefix}-model`}
-              placeholder={t.cron.modelPlaceholder}
-              value={form.model}
-              onChange={(e) => setField("model", e.target.value)}
-            />
-            <p className={helperClass}>{t.cron.helpers.model}</p>
-          </div>
+          <ChoiceInputField
+            id={`${idPrefix}-provider`}
+            label={t.cron.provider}
+            value={form.provider}
+            onChange={(value) => setField("provider", value)}
+            options={providerOptions}
+            placeholder={t.cron.providerPlaceholder}
+            helper={t.cron.helpers.provider}
+          />
+          <ChoiceInputField
+            id={`${idPrefix}-model`}
+            label={t.cron.model}
+            value={form.model}
+            onChange={(value) => setField("model", value)}
+            options={modelChoiceOptions}
+            placeholder={t.cron.modelPlaceholder}
+            helper={t.cron.helpers.model}
+          />
           <div className="grid gap-2">
             <Label htmlFor={`${idPrefix}-base-url`}>{t.cron.baseUrl}</Label>
             <Input
@@ -450,28 +790,24 @@ function CronJobConfigFields({
         </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-          <div className="grid gap-2">
-            <Label htmlFor={`${idPrefix}-context-from`}>{t.cron.contextFrom}</Label>
-            <textarea
-              id={`${idPrefix}-context-from`}
-              className={textAreaClass}
-              placeholder={t.cron.contextFromPlaceholder}
-              value={form.contextFrom}
-              onChange={(e) => setField("contextFrom", e.target.value)}
-            />
-            <p className={helperClass}>{t.cron.helpers.contextFrom}</p>
-          </div>
-          <div className="grid gap-2">
-            <Label htmlFor={`${idPrefix}-toolsets`}>{t.cron.enabledToolsets}</Label>
-            <textarea
-              id={`${idPrefix}-toolsets`}
-              className={textAreaClass}
-              placeholder={t.cron.enabledToolsetsPlaceholder}
-              value={form.enabledToolsets}
-              onChange={(e) => setField("enabledToolsets", e.target.value)}
-            />
-            <p className={helperClass}>{t.cron.helpers.enabledToolsets}</p>
-          </div>
+          <MultiValuePicker
+            id={`${idPrefix}-context-from`}
+            label={t.cron.contextFrom}
+            value={form.contextFrom}
+            onChange={(value) => setField("contextFrom", value)}
+            options={contextOptions}
+            placeholder={t.cron.contextFromPlaceholder}
+            helper={t.cron.helpers.contextFrom}
+          />
+          <MultiValuePicker
+            id={`${idPrefix}-toolsets`}
+            label={t.cron.enabledToolsets}
+            value={form.enabledToolsets}
+            onChange={(value) => setField("enabledToolsets", value)}
+            options={toolsetOptions}
+            placeholder={t.cron.enabledToolsetsPlaceholder}
+            helper={t.cron.helpers.enabledToolsets}
+          />
         </div>
       </section>
     </>
@@ -483,12 +819,20 @@ function CronJobEditModal({
   onClose,
   onSaved,
   profiles,
+  skills,
+  toolsets,
+  modelOptions,
+  contextJobs,
   showToast,
 }: {
   job: CronJob;
   onClose(): void;
   onSaved(): void;
   profiles: ProfileInfo[];
+  skills: SkillInfo[];
+  toolsets: ToolsetInfo[];
+  modelOptions: ModelOptionsResponse | null;
+  contextJobs: CronJob[];
   showToast(message: string, tone: "success" | "error"): void;
 }) {
   const { t } = useI18n();
@@ -554,6 +898,11 @@ function CronJobEditModal({
             form={form}
             setField={setField}
             profiles={profiles}
+            skills={skills}
+            toolsets={toolsets}
+            modelOptions={modelOptions}
+            contextJobs={contextJobs}
+            excludeContextJobId={job.id}
             idPrefix="edit-cron"
             autoFocusName
           />
@@ -580,6 +929,9 @@ function CronJobEditModal({
 export default function CronPage() {
   const [jobs, setJobs] = useState<CronJob[]>([]);
   const [profiles, setProfiles] = useState<ProfileInfo[]>([]);
+  const [skills, setSkills] = useState<SkillInfo[]>([]);
+  const [toolsets, setToolsets] = useState<ToolsetInfo[]>([]);
+  const [modelOptions, setModelOptions] = useState<ModelOptionsResponse | null>(null);
   const [selectedProfile, setSelectedProfile] = useState("all");
   const [loading, setLoading] = useState(true);
   const { toast, showToast } = useToast();
@@ -624,6 +976,21 @@ export default function CronPage() {
       .getProfiles()
       .then((res) => setProfiles(res.profiles))
       .catch(() => setProfiles([]));
+
+    api
+      .getSkills()
+      .then(setSkills)
+      .catch(() => setSkills([]));
+
+    api
+      .getToolsets()
+      .then(setToolsets)
+      .catch(() => setToolsets([]));
+
+    api
+      .getModelOptions()
+      .then(setModelOptions)
+      .catch(() => setModelOptions(null));
   }, []);
 
   useEffect(() => {
@@ -757,6 +1124,10 @@ export default function CronPage() {
           onClose={() => setEditingJob(null)}
           onSaved={loadJobs}
           profiles={profiles}
+          skills={skills}
+          toolsets={toolsets}
+          modelOptions={modelOptions}
+          contextJobs={jobs}
           showToast={showToast}
         />
       )}
@@ -819,6 +1190,10 @@ export default function CronPage() {
                 form={createForm}
                 setField={setCreateField}
                 profiles={profiles}
+                skills={skills}
+                toolsets={toolsets}
+                modelOptions={modelOptions}
+                contextJobs={jobs}
                 idPrefix="create-cron"
                 autoFocusName
               />
