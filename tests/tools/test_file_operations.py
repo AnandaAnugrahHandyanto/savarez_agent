@@ -68,10 +68,12 @@ class TestIsWriteDenied:
             "webhook_subscriptions.json",
             "mcp-tokens/token1.json",
             "mcp-tokens/subdir/token2.json",
+            "hooks/example/HOOK.yaml",
+            "hooks/example/handler.py",
         ],
     )
-    def test_hermes_control_files_and_mcp_tokens_denied(self, path):
-        """Hermes control files and mcp-tokens entries must be write-denied."""
+    def test_hermes_control_files_and_control_dirs_denied(self, path):
+        """Hermes control files and auto-loaded control dirs must be write-denied."""
         from hermes_constants import get_hermes_home
         hermes_home = get_hermes_home()
         full_path = str(hermes_home / path)
@@ -83,10 +85,11 @@ class TestIsWriteDenied:
             "dummy/../config.yaml",
             "./auth.json",
             "mcp-tokens/../config.yaml",
+            "hooks/example/../example/handler.py",
         ],
     )
-    def test_hermes_control_files_traversal_denied(self, path):
-        """Path traversal attempts to control files must be blocked by realpath."""
+    def test_hermes_control_paths_traversal_denied(self, path):
+        """Path traversal attempts to control paths must be blocked by realpath."""
         from hermes_constants import get_hermes_home
         hermes_home = get_hermes_home()
         full_path = str(hermes_home / path)
@@ -139,6 +142,18 @@ class TestIsWriteDenied:
         assert _is_write_denied(str(root / "mcp-tokens" / "tok.json")) is True
         # The directory itself must also be denied (not just files inside)
         assert _is_write_denied(str(root / "mcp-tokens")) is True
+
+    def test_hooks_dir_protected_in_profile_mode(self, tmp_path, monkeypatch):
+        """Event hooks under profile AND under root must both be denied."""
+        root = tmp_path / "hermes"
+        profile = root / "profiles" / "coder"
+        profile.mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(profile))
+
+        assert _is_write_denied(str(profile / "hooks" / "x" / "handler.py")) is True
+        assert _is_write_denied(str(root / "hooks" / "x" / "handler.py")) is True
+        # The directory itself must also be denied (not just files inside)
+        assert _is_write_denied(str(root / "hooks")) is True
 
 
 
