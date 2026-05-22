@@ -1286,6 +1286,17 @@ class DiscordAdapter(BasePlatformAdapter):
             mutation_count += 1
             return result
 
+        # Free Discord command slots before creating anything new. Discord
+        # enforces a hard cap of 100 global application commands per app; if
+        # stale commands are deleted only after creates, a near-cap app can hit
+        # error 30032 even though the final desired set is below the cap.
+        for key in list(existing_by_key):
+            if key in desired_by_key:
+                continue
+            current = existing_by_key.pop(key)
+            await mutate(http.delete_global_command, app_id, current.id)
+            deleted += 1
+
         for key, desired in desired_by_key.items():
             current = existing_by_key.pop(key, None)
             if current is None:
