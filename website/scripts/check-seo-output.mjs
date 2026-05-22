@@ -46,6 +46,92 @@ function expectIncludes(contents, needle, label) {
   pass(`${label} includes ${needle}`);
 }
 
+function jsonLdBlocks(html, relativePath) {
+  const blocks = [];
+  const scriptPattern = /<script\b[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
+  let match;
+  while ((match = scriptPattern.exec(html)) !== null) {
+    blocks.push(match[1].trim());
+  }
+
+  if (blocks.length === 0) {
+    fail(`${relativePath} is missing application/ld+json structured data`);
+  } else {
+    pass(`${relativePath} includes ${blocks.length} JSON-LD block${blocks.length === 1 ? '' : 's'}`);
+  }
+
+  return blocks;
+}
+
+function graphNodes(jsonLd) {
+  if (Array.isArray(jsonLd?.['@graph'])) return jsonLd['@graph'];
+  if (Array.isArray(jsonLd)) return jsonLd.flatMap((entry) => graphNodes(entry));
+  return jsonLd ? [jsonLd] : [];
+}
+
+function nodeHasType(node, expectedType) {
+  const type = node?.['@type'];
+  return Array.isArray(type) ? type.includes(expectedType) : type === expectedType;
+}
+
+function extractUrls(value, urls = []) {
+  if (!value) return urls;
+  if (typeof value === 'string') {
+    if (/^https?:\/\//.test(value)) urls.push(value);
+    return urls;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) extractUrls(item, urls);
+    return urls;
+  }
+  if (typeof value === 'object') {
+    for (const item of Object.values(value)) extractUrls(item, urls);
+  }
+  return urls;
+}
+
+function checkJsonLdRoute(route, expectations) {
+  const relativePath = htmlPathForRoute(route);
+  const html = readRequired(relativePath);
+  if (!html) return;
+
+  const parsedBlocks = [];
+  for (const [index, payload] of jsonLdBlocks(html, relativePath).entries()) {
+    if (!payload) {
+      fail(`${relativePath} JSON-LD block ${index + 1} is empty`);
+      continue;
+    }
+    if (payload.includes('<')) {
+      fail(`${relativePath} JSON-LD block ${index + 1} contains an unescaped < character`);
+    }
+
+    try {
+      parsedBlocks.push(JSON.parse(payload));
+      pass(`${relativePath} JSON-LD block ${index + 1} parses as JSON`);
+    } catch (error) {
+      fail(`${relativePath} JSON-LD block ${index + 1} is malformed JSON: ${error.message}`);
+    }
+  }
+
+  const nodes = parsedBlocks.flatMap((block) => graphNodes(block));
+  for (const expectedType of expectations.types) {
+    if (!nodes.some((node) => nodeHasType(node, expectedType))) {
+      fail(`${relativePath} JSON-LD is missing @type ${expectedType}`);
+    } else {
+      pass(`${relativePath} JSON-LD includes @type ${expectedType}`);
+    }
+  }
+
+  const urls = extractUrls(parsedBlocks);
+  for (const expectedUrl of expectations.urls) {
+    if (!urls.includes(expectedUrl)) {
+      fail(`${relativePath} JSON-LD is missing canonical URL ${expectedUrl}`);
+    } else {
+      pass(`${relativePath} JSON-LD references ${expectedUrl}`);
+    }
+  }
+}
+
 function htmlPathForRoute(route) {
   const normalized = route.replace(/^\//, '').replace(/\/$/, '');
   return normalized ? `${normalized}/index.html` : 'index.html';
@@ -169,6 +255,15 @@ for (const file of [
 for (const route of ['/', '/getting-started/quickstart', '/skills/']) {
   checkMetaRoute(route);
 }
+
+checkJsonLdRoute('/', {
+  types: ['WebSite', 'Organization', 'SoftwareApplication'],
+  urls: [canonicalBase],
+});
+checkJsonLdRoute('/skills/', {
+  types: ['CollectionPage', 'ItemList'],
+  urls: [`${canonicalBase}skills/`],
+});
 
 if (failures.length > 0) {
   console.error('SEO generated-output checks failed:');

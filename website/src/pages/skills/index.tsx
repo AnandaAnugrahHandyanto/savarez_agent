@@ -1,6 +1,8 @@
 import React, { useState, useMemo, useCallback, useRef, useEffect } from "react";
 import Layout from "@theme/Layout";
 import skills from "../../data/skills.json";
+import JsonLd from "@site/src/components/JsonLd";
+import { buildSkillsHubJsonLd } from "@site/src/lib/seoStructuredData";
 import styles from "./styles.module.css";
 
 interface Skill {
@@ -21,6 +23,7 @@ interface Skill {
 }
 
 const allSkills: Skill[] = skills as Skill[];
+const skillsHubJsonLd = buildSkillsHubJsonLd(allSkills);
 
 const CATEGORY_ICONS: Record<string, string> = {
   apple: "\u{f179}",
@@ -387,6 +390,7 @@ export default function SkillsDashboard() {
       title="Skills Hub"
       description="Browse all skills and plugins available for Hermes Agent"
     >
+      <JsonLd data={skillsHubJsonLd} />
       <div className={styles.page}>
         <header className={styles.hero}>
           <div className={styles.heroGlow} />
