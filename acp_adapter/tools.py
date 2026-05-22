@@ -595,6 +595,49 @@ def _format_process_result(
     return _truncate_text("\n".join(lines), limit=7000)
 
 
+def _format_delegate_task_item(item: dict) -> list[str]:
+    lines = []
+    icon = {
+        "completed": "✅",
+        "failed": "✗",
+        "error": "✗",
+        "timeout": "⏱",
+        "interrupted": "⚠",
+    }
+    idx = item.get("task_index")
+    status = str(item.get("status") or "unknown")
+    model = item.get("model")
+    dur = item.get("duration_seconds")
+    role = item.get("_child_role")
+    header = f"{icon.get(status, '•')} Task {idx + 1 if isinstance(idx, int) else '?'}: {status}"
+    bits = []
+    if model:
+        bits.append(str(model))
+    if role:
+        bits.append(f"role={role}")
+    if dur is not None:
+        bits.append(f"{dur}s")
+    if bits:
+        header += " (" + ", ".join(bits) + ")"
+    lines.extend(["", header])
+    summary = str(item.get("summary") or "").strip()
+    error = str(item.get("error") or "").strip()
+    if summary:
+        lines.append(_truncate_text(summary, limit=1200))
+    if error:
+        lines.append("Error: " + _truncate_text(error, limit=800))
+    trace = item.get("tool_trace")
+    if isinstance(trace, list) and trace:
+        names = [str(t.get("tool") or "?") for t in trace if isinstance(t, dict)]
+        if names:
+            lines.append(
+                "Tools: "
+                + ", ".join(names[:12])
+                + (f" (+{len(names) - 12})" if len(names) > 12 else "")
+            )
+    return lines
+
+
 def _format_delegate_result(result: Optional[str]) -> Optional[str]:
     data = _json_loads_maybe(result)
     if not isinstance(data, dict):
