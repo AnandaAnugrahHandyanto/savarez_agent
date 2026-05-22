@@ -700,19 +700,29 @@ def skills_list(category: str = None, task_id: str = None) -> str:
         JSON string with minimal skill info: name, description, category
     """
     try:
+        # Best-effort create the local SKILLS_DIR so future installs land
+        # in a known place, but DO NOT short-circuit on emptiness — when
+        # the operator has only configured ``skills.external_dirs`` (no
+        # bundled ``~/.hermes/skills/`` yet, e.g. a fresh profile),
+        # bailing here used to hide every external skill from
+        # ``skills_list`` even though ``_find_all_skills`` itself scans
+        # external_dirs correctly. ``skill_view`` always honoured
+        # external_dirs in that scenario, which made the inconsistency
+        # invisible until #30119 surfaced the same gap in the TUI
+        # sidebar.
         if not SKILLS_DIR.exists():
-            SKILLS_DIR.mkdir(parents=True, exist_ok=True)
-            return json.dumps(
-                {
-                    "success": True,
-                    "skills": [],
-                    "categories": [],
-                    "message": f"No skills found. Skills directory created at {display_hermes_home()}/skills/",
-                },
-                ensure_ascii=False,
-            )
+            try:
+                SKILLS_DIR.mkdir(parents=True, exist_ok=True)
+            except OSError as e:
+                # Read-only ``~/.hermes`` (Docker bind-mount, locked-down
+                # profile, …) — don't fail the listing; external_dirs
+                # may still be configured and accessible.
+                logger.debug(
+                    "Could not create local skills dir %s: %s",
+                    SKILLS_DIR, e,
+                )
 
-        # Find all skills
+        # Find all skills (handles missing SKILLS_DIR + external_dirs).
         all_skills = _find_all_skills()
 
         if not all_skills:
