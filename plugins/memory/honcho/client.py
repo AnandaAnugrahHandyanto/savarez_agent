@@ -31,6 +31,23 @@ logger = logging.getLogger(__name__)
 
 HOST = "hermes"
 
+# Honcho validates IDs with ^[a-zA-Z0-9_-]+$ — dots, colons, etc. are rejected.
+_HONCHO_ID_UNSAFE_RE = None  # lazy-compiled
+
+
+def _sanitize_honcho_id(raw: str) -> str:
+    """Replace characters outside ``[a-zA-Z0-9_-]`` with hyphens.
+
+    Honcho rejects workspace/peer IDs containing dots, colons, or other
+    special characters.  This helper normalises profile-derived identifiers
+    (e.g. ``hermes.asher`` → ``hermes-asher``) so they pass validation.
+    """
+    import re
+    global _HONCHO_ID_UNSAFE_RE
+    if _HONCHO_ID_UNSAFE_RE is None:
+        _HONCHO_ID_UNSAFE_RE = re.compile(r'[^a-zA-Z0-9_-]+')
+    return _HONCHO_ID_UNSAFE_RE.sub('-', raw).strip('-')
+
 
 def resolve_active_host() -> str:
     """Derive the Honcho host key from the active Hermes profile.
@@ -335,12 +352,12 @@ class HonchoClientConfig:
         timeout = _resolve_optional_float(os.environ.get("HONCHO_TIMEOUT"))
         return cls(
             host=resolved_host,
-            workspace_id=workspace_id,
+            workspace_id=_sanitize_honcho_id(workspace_id),
             api_key=api_key,
             environment=os.environ.get("HONCHO_ENVIRONMENT", "production"),
             base_url=base_url,
             timeout=timeout,
-            ai_peer=resolved_host,
+            ai_peer=_sanitize_honcho_id(resolved_host),
             enabled=bool(api_key or base_url),
         )
 
@@ -446,13 +463,13 @@ class HonchoClientConfig:
 
         return cls(
             host=resolved_host,
-            workspace_id=workspace,
+            workspace_id=_sanitize_honcho_id(workspace),
             api_key=api_key,
             environment=environment,
             base_url=base_url,
             timeout=timeout,
             peer_name=host_block.get("peerName") or raw.get("peerName"),
-            ai_peer=ai_peer,
+            ai_peer=_sanitize_honcho_id(ai_peer),
             pin_peer_name=_resolve_bool(
                 host_block.get("pinPeerName"),
                 raw.get("pinPeerName"),

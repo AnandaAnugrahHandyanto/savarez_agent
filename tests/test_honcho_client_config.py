@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from plugins.memory.honcho.client import HonchoClientConfig
+from plugins.memory.honcho.client import HonchoClientConfig, _sanitize_honcho_id
 
 
 class TestHonchoClientConfigAutoEnable:
@@ -103,3 +103,63 @@ class TestHonchoClientConfigAutoEnable:
 
         assert cfg.api_key == "fallback-key"
         assert cfg.enabled is True  # from_env() sets enabled=True
+
+
+class TestSanitizeHonchoId:
+    """Test _sanitize_honcho_id replaces non-alphanumeric chars with hyphens."""
+
+    def test_dots_replaced(self):
+        assert _sanitize_honcho_id("hermes.asher") == "hermes-asher"
+
+    def test_multiple_dots(self):
+        assert _sanitize_honcho_id("a.b.c.d") == "a-b-c-d"
+
+    def test_colons_replaced(self):
+        assert _sanitize_honcho_id("hermes:profile") == "hermes-profile"
+
+    def test_valid_id_unchanged(self):
+        assert _sanitize_honcho_id("hermes-asher_01") == "hermes-asher_01"
+
+    def test_plain_host_unchanged(self):
+        assert _sanitize_honcho_id("hermes") == "hermes"
+
+    def test_leading_trailing_special_stripped(self):
+        assert _sanitize_honcho_id(".hermes.") == "hermes"
+
+    def test_consecutive_special_collapsed(self):
+        assert _sanitize_honcho_id("a..b") == "a-b"
+
+
+class TestDotProfileSanitization:
+    """Regression tests for #30246: dot-containing profiles produce valid IDs."""
+
+    def test_from_global_config_sanitizes_workspace_and_ai_peer(self, tmp_path, monkeypatch):
+        """workspace_id and ai_peer derived from a dotted host must be sanitized."""
+        config_path = tmp_path / "config.json"
+        config_path.write_text(json.dumps({
+            "apiKey": "test-key",
+        }))
+        # Simulate resolve_active_host() returning "hermes.asher"
+        monkeypatch.setattr(
+            "plugins.memory.honcho.client.resolve_active_host",
+            lambda: "hermes.asher",
+        )
+        cfg = HonchoClientConfig.from_global_config(config_path=config_path)
+        assert cfg.workspace_id == "hermes-asher"
+        assert cfg.ai_peer == "hermes-asher"
+
+    def test_from_env_sanitizes_ai_peer(self, monkeypatch):
+        """from_env() must sanitize ai_peer derived from a dotted host."""
+        monkeypatch.setattr(
+            "plugins.memory.honcho.client.resolve_active_host",
+            lambda: "hermes.asher",
+        )
+        monkeypatch.setenv("HONCHO_API_KEY", "test-key")
+        cfg = HonchoClientConfig.from_env()
+        assert cfg.ai_peer == "hermes-asher"
+
+    def test_from_env_sanitizes_explicit_workspace(self, monkeypatch):
+        """from_env() must sanitize a caller-supplied dotted workspace_id."""
+        monkeypatch.setenv("HONCHO_API_KEY", "test-key")
+        cfg = HonchoClientConfig.from_env(workspace_id="org.team")
+        assert cfg.workspace_id == "org-team"
