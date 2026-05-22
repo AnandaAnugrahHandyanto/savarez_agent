@@ -24,17 +24,14 @@ _CUSTOM_REASONING_MODELS = frozenset({
     "deepseek-v4-flash",
     "mimo-v2.5-pro",
     "mimo-v2.5-pro-precision",
-    "kimi-k2.6",
-    "kimi-k2.6-precision",
-    "kimi-k2.5",
-    "kimi-k2.5-lightning",
     "glm-5.1",
     "glm-5.1-precision",
-    "glm-5",
-    "glm-4.7",
-    "glm-4.7-flash",
-    "greg",
-    "minimax-m2.5",
+    "kimi-k2.6",
+    "kimi-k2.6-precision",
+    "kimi-k2.5-lightning",
+    "qwen3.6-27b",
+    "qwen3.5-397b-a17b",
+    "qwen3.5-9b",
 })
 
 
@@ -112,14 +109,16 @@ crofai = CrofAIProfile(
     fallback_models=(
         "deepseek-v4-pro",
         "deepseek-v4-flash",
-        "deepseek-v3.2",
         "kimi-k2.6",
         "kimi-k2.6-precision",
         "mimo-v2.5-pro",
         "glm-5.1",
         "glm-5",
+        "qwen3.5-397b-a17b",
+        "deepseek-v3.2",
         "gemma-4-31b-it",
         "qwen3.6-27b",
+        "minimax-m2.5",
     ),
 )
 
