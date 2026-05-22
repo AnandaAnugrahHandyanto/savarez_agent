@@ -15,7 +15,7 @@ import { fmtK } from '../lib/text.js'
 import { useScrollbarSnapshot, useViewportSnapshot } from '../lib/viewportStore.js'
 import type { Theme } from '../theme.js'
 import type { Msg, Usage } from '../types.js'
-import { getThinkingVerbs, shouldEllipsisVerb, useI18n } from '../i18n/index.js'
+import { getThinkingVerbs, LOCALES, shouldEllipsisVerb, useI18n } from '../i18n/index.js'
 
 const FACE_TICK_MS = 2500
 const HEART_COLORS = ['#ff5fa2', '#ff4d6d']
@@ -38,7 +38,7 @@ export const displayWidth = (s: string) => { let w = 0; for (const c of s) w += 
 
 // Keep verb segment width stable so status-bar content to the right doesn't
 // jitter when the ticker rotates between short/long verbs.
-export const VERB_PAD_LEN = Math.max(...getThinkingVerbs('en').concat(getThinkingVerbs('zh')).map(v => displayWidth(v))) + 1 // + ellipsis
+export const VERB_PAD_LEN = Math.max(...LOCALES.flatMap(l => getThinkingVerbs(l)).map(v => displayWidth(v))) + 1 // + ellipsis
 export const padVerb = (verb: string) => {
   const text = `${verb}…`
   const pad = Math.max(0, VERB_PAD_LEN - displayWidth(text))
