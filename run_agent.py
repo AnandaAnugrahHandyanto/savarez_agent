@@ -6655,12 +6655,14 @@ class AIAgent:
         return True
 
     def _apply_client_headers_for_base_url(self, base_url: str) -> None:
-        from agent.auxiliary_client import _AI_GATEWAY_HEADERS, build_or_headers
+        from agent.auxiliary_client import _AI_GATEWAY_HEADERS, _LLMGATEWAY_HEADERS, build_or_headers
 
         if base_url_host_matches(base_url, "openrouter.ai"):
             self._client_kwargs["default_headers"] = build_or_headers()
         elif base_url_host_matches(base_url, "ai-gateway.vercel.sh"):
             self._client_kwargs["default_headers"] = dict(_AI_GATEWAY_HEADERS)
+        elif base_url_host_matches(base_url, "llmgateway.io"):
+            self._client_kwargs["default_headers"] = dict(_LLMGATEWAY_HEADERS)
         elif base_url_host_matches(base_url, "api.routermint.com"):
             self._client_kwargs["default_headers"] = _routermint_headers()
         elif base_url_host_matches(base_url, "api.githubcopilot.com"):
