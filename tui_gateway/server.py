@@ -1655,7 +1655,7 @@ def _on_tool_progress(
         _emit("tool.progress", sid, {"name": name, "preview": preview or ""})
         return
     if event_type == "reasoning.available" and preview:
-        payload = {"text": str(preview)}
+        payload: dict[str, object] = {"text": str(preview)}
         if _session_verbose(sid):
             payload["verbose"] = True
         _emit("reasoning.available", sid, payload)

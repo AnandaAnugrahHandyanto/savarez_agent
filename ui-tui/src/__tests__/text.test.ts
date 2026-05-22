@@ -57,6 +57,18 @@ describe('buildVerboseToolTrailLine', () => {
       mark: '✓'
     })
   })
+
+  it('labels verbose failures as errors', () => {
+    const line = buildVerboseToolTrailLine('terminal', 'npm test', true, 0.5, undefined, 'command failed')
+
+    expect(line).toContain('Error:\ncommand failed')
+    expect(line).not.toContain('Result:\ncommand failed')
+    expect(parseToolTrailResultLine(line)).toEqual({
+      call: 'Terminal("npm test") (0.5s)',
+      detail: 'Error:\ncommand failed',
+      mark: '✗'
+    })
+  })
 })
 
 describe('lastCotTrailIndex', () => {

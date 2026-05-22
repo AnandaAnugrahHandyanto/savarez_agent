@@ -65,7 +65,7 @@ def test_tui_verbose_tool_details_fail_closed_when_redaction_fails(monkeypatch):
     def fail_redaction(*_args, **_kwargs):
         raise RuntimeError("redaction unavailable")
 
-    redact_module.redact_sensitive_text = fail_redaction
+    setattr(redact_module, "redact_sensitive_text", fail_redaction)
     monkeypatch.setitem(sys.modules, "agent.redact", redact_module)
 
     assert server._redact_tui_verbose_text("api_key=secret") == ""
@@ -79,7 +79,7 @@ def test_tui_verbose_tool_events_omit_details_when_redaction_fails(monkeypatch):
     def fail_redaction(*_args, **_kwargs):
         raise RuntimeError("redaction unavailable")
 
-    redact_module.redact_sensitive_text = fail_redaction
+    setattr(redact_module, "redact_sensitive_text", fail_redaction)
     monkeypatch.setitem(sys.modules, "agent.redact", redact_module)
 
     events: list[tuple[str, str, dict]] = []

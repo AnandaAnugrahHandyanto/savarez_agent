@@ -226,7 +226,9 @@ export const buildVerboseToolTrailLine = (
   argsText?: string,
   resultText?: string
 ) => {
-  const detail = [verboseToolBlock('Args', argsText), verboseToolBlock('Result', resultText)].filter(Boolean).join('\n')
+  const detail = [verboseToolBlock('Args', argsText), verboseToolBlock(error ? 'Error' : 'Result', resultText)]
+    .filter(Boolean)
+    .join('\n')
   const took = duration !== undefined ? ` (${duration.toFixed(1)}s)` : ''
 
   return `${formatToolCall(name, context)}${took}${detail ? ` :: ${detail}` : ''} ${error ? '✗' : '✓'}`
