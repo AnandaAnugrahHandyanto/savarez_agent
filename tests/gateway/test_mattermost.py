@@ -560,6 +560,86 @@ class TestMattermostMentionBehavior:
 
 
 # ---------------------------------------------------------------------------
+# Channel join/leave gating
+# ---------------------------------------------------------------------------
+
+class TestMattermostChannelJoinGating:
+    def setup_method(self):
+        self.adapter = _make_adapter()
+        self.adapter._bot_user_id = "bot_user_id"
+        self.adapter._bot_username = "hermes-bot"
+        self.adapter._session = MagicMock()
+        self.adapter.handle_message = AsyncMock()
+
+    @pytest.mark.asyncio
+    async def test_user_added_event_triggers_join_handler(self):
+        """user_added event for bot should trigger _handle_channel_join."""
+        self.adapter._handle_channel_join = AsyncMock()
+        event = {
+            "event": "user_added",
+            "data": {
+                "user_id": "bot_user_id",
+                "channel_id": "chan_new",
+                "adder_id": "admin_123",
+            },
+        }
+        await self.adapter._handle_ws_event(event)
+        self.adapter._handle_channel_join.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_user_added_for_other_user_ignored(self):
+        """user_added event for non-bot user should not trigger join handler."""
+        self.adapter._handle_channel_join = AsyncMock()
+        event = {
+            "event": "user_added",
+            "data": {
+                "user_id": "other_user",
+                "channel_id": "chan_new",
+                "adder_id": "someone",
+            },
+        }
+        await self.adapter._handle_ws_event(event)
+        self.adapter._handle_channel_join.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_non_admin_causes_leave(self):
+        """When adder is not admin, bot should leave the channel."""
+        self.adapter._leave_channel = AsyncMock()
+
+        with patch("plugins.swarm_map_policy.is_platform_admin", return_value=False):
+            await self.adapter._handle_channel_join({
+                "channel_id": "chan_restricted",
+                "adder_id": "non_admin_user",
+            })
+        self.adapter._leave_channel.assert_called_once_with("chan_restricted")
+
+    @pytest.mark.asyncio
+    async def test_admin_causes_stay(self):
+        """When adder is admin, bot should stay in the channel."""
+        self.adapter._leave_channel = AsyncMock()
+        self.adapter._api_get = AsyncMock(return_value={"display_name": "General"})
+
+        with patch("plugins.swarm_map_policy.is_platform_admin", return_value=True):
+            await self.adapter._handle_channel_join({
+                "channel_id": "chan_allowed",
+                "adder_id": "admin_user",
+            })
+        self.adapter._leave_channel.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_missing_plugin_causes_leave(self):
+        """When swarm_map_policy is not importable, bot should leave (fail-closed)."""
+        self.adapter._leave_channel = AsyncMock()
+
+        with patch.dict("sys.modules", {"plugins.swarm_map_policy": None}):
+            await self.adapter._handle_channel_join({
+                "channel_id": "chan_no_plugin",
+                "adder_id": "someone",
+            })
+        self.adapter._leave_channel.assert_called_once_with("chan_no_plugin")
+
+
+# ---------------------------------------------------------------------------
 # File upload (send_image)
 # ---------------------------------------------------------------------------
 

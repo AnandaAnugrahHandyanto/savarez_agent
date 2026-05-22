@@ -691,6 +691,15 @@ class MattermostAdapter(BasePlatformAdapter):
     async def _handle_ws_event(self, event: Dict[str, Any]) -> None:
         """Process a single WebSocket event."""
         event_type = event.get("event")
+
+        # Channel join gating: when bot is added to a channel, verify the
+        # adder is an admin.  Non-admin additions cause the bot to leave.
+        if event_type == "user_added":
+            data = event.get("data", {})
+            if data.get("user_id") == self._bot_user_id:
+                await self._handle_channel_join(data)
+            return
+
         if event_type != "posted":
             return
 
@@ -883,7 +892,72 @@ class MattermostAdapter(BasePlatformAdapter):
 
         await self.handle_message(msg_event)
 
+    # ------------------------------------------------------------------
+    # Channel join/leave gating
+    # ------------------------------------------------------------------
 
+    async def _handle_channel_join(self, data: Dict[str, Any]) -> None:
+        """Handle bot being added to a channel. Leave if adder is not admin."""
+        channel_id = data.get("channel_id", "")
+        adder_id = data.get("adder_id", "")  # Mattermost provides this in user_added events
+
+        if not channel_id:
+            return
+
+        try:
+            from plugins.swarm_map_policy import is_platform_admin
+        except (ImportError, TypeError):
+            logger.warning(
+                "swarm-map-policy plugin not available — leaving channel %s (fail-closed)",
+                channel_id,
+            )
+            await self._leave_channel(channel_id)
+            return
+
+        try:
+            is_admin = is_platform_admin(adder_id, "mattermost") if adder_id else False
+        except Exception:
+            is_admin = False
+
+        if not is_admin:
+            logger.info(
+                "Non-admin %s added bot to channel %s — leaving",
+                adder_id, channel_id,
+            )
+            await self._leave_channel(channel_id)
+            return
+
+        # Admin added bot — log and stay.
+        channel_name = ""
+        try:
+            channel_info = await self._api_get(f"channels/{channel_id}")
+            channel_name = channel_info.get("display_name", "") or channel_info.get("name", "")
+        except Exception:
+            pass
+
+        logger.info(
+            "Admin %s added bot to channel %s (%s) — staying",
+            adder_id, channel_id, channel_name,
+        )
+
+    async def _leave_channel(self, channel_id: str) -> None:
+        """Remove bot from a channel via Mattermost API."""
+        if not self._bot_user_id:
+            return
+        import aiohttp
+        url = f"{self._base_url}/api/v4/channels/{channel_id}/members/{self._bot_user_id}"
+        try:
+            async with self._session.delete(
+                url, headers=self._headers(),
+                timeout=aiohttp.ClientTimeout(total=15)
+            ) as resp:
+                if resp.status < 400:
+                    logger.info("Left channel %s", channel_id)
+                else:
+                    body = await resp.text()
+                    logger.error("Failed to leave channel %s: %s %s", channel_id, resp.status, body[:200])
+        except aiohttp.ClientError as exc:
+            logger.error("Network error leaving channel %s: %s", channel_id, exc)
 
 
 # ---------------------------------------------------------------------------
