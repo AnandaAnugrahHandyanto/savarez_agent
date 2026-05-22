@@ -3928,19 +3928,45 @@ class GatewayRunner:
                 # that raised mid-connect may still have a live
                 # aiohttp.ClientSession or child subprocess.
                 await self._safe_adapter_disconnect(adapter, platform)
-                self._update_platform_runtime_status(
-                    platform.value,
-                    platform_state="retrying",
-                    error_code=None,
-                    error_message=str(e),
-                )
-                startup_retryable_errors.append(f"{platform.value}: {e}")
-                # Unexpected exceptions are typically transient — queue for retry
-                self._failed_platforms[platform] = {
-                    "config": platform_config,
-                    "attempts": 1,
-                    "next_retry": time.monotonic() + 30,
-                }
+                # re-check: disconnect() may have detected a permanent
+                # auth error from the adapter's background task
+                # (e.g. Discord _bot_task LoginFailure) and called
+                # _set_fatal_error. Honour that classification instead
+                # of blindly treating every exception as retryable.
+                if adapter.has_fatal_error:
+                    self._update_platform_runtime_status(
+                        platform.value,
+                        platform_state="retrying" if adapter.fatal_error_retryable else "fatal",
+                        error_code=adapter.fatal_error_code,
+                        error_message=adapter.fatal_error_message,
+                    )
+                    if adapter.fatal_error_retryable:
+                        startup_retryable_errors.append(
+                            f"{platform.value}: {adapter.fatal_error_message}"
+                        )
+                        self._failed_platforms[platform] = {
+                            "config": platform_config,
+                            "attempts": 1,
+                            "next_retry": time.monotonic() + 30,
+                        }
+                    else:
+                        startup_nonretryable_errors.append(
+                            f"{platform.value}: {adapter.fatal_error_message}"
+                        )
+                else:
+                    self._update_platform_runtime_status(
+                        platform.value,
+                        platform_state="retrying",
+                        error_code=None,
+                        error_message=str(e),
+                    )
+                    startup_retryable_errors.append(f"{platform.value}: {e}")
+                    # Unexpected exceptions are typically transient — queue for retry
+                    self._failed_platforms[platform] = {
+                        "config": platform_config,
+                        "attempts": 1,
+                        "next_retry": time.monotonic() + 30,
+                    }
         
         if connected_count == 0:
             if startup_nonretryable_errors:
