@@ -1761,7 +1761,7 @@ class TestSignalReactionEnvelope:
         event = captured[0]
         assert "reacted 👍" in event.text
         assert "decide whether this reaction is meaningful" in event.text
-        assert "You do not need to respond" in event.text
+        assert "respond exactly [SILENT]" in event.text
         assert event.reply_to_message_id == "1777600000123"
         assert event.raw_message["reaction"]["emoji"] == "👍"
         assert event.raw_message["reaction"]["targetAuthor"] == "+155****2222"

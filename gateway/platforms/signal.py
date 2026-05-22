@@ -514,7 +514,7 @@ class SignalAdapter(BasePlatformAdapter):
             f"Target author: {target_author}. Target timestamp: {target_ts}.{target_text_hint} "
             "Use this as lightweight conversational input: decide whether this reaction is meaningful, "
             "actionable, or memory-relevant. Emoji such as thumbs up/down, check marks, or crosses may answer a prior question. "
-            "You do not need to respond, especially in group conversations, unless a response or action is useful."
+            "If no visible reply or action is useful, respond exactly [SILENT]."
         )
 
     def _remember_message_context(
