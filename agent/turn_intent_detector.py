@@ -574,6 +574,18 @@ def execute_via_helper(
         import sys as _sys
         venv_python = _sys.executable
 
+    # Inject thread_ts into subprocess env so the helper's _send_slack_dm
+    # (and any Executor it transitively spawns) can bind direct pushes to
+    # the same Slack thread Coach's reply uses.
+    _subprocess_env = os.environ.copy()
+    try:
+        from tools.session_context import get_thread_ts as _ctx_thread_ts
+        _tts = _ctx_thread_ts()
+    except Exception:
+        _tts = None
+    if _tts:
+        _subprocess_env["HERMES_SESSION_THREAD_TS"] = _tts
+
     try:
         proc = subprocess.run(
             [venv_python, helper_path],
@@ -582,6 +594,7 @@ def execute_via_helper(
             text=True,
             timeout=timeout_s,
             check=False,
+            env=_subprocess_env,
         )
     except subprocess.TimeoutExpired:
         fail["error"] = f"helper timed out after {timeout_s}s"
